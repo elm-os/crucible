@@ -2,8 +2,9 @@
 //!
 //! # Threads
 //!
-//! Each root has one named writer thread (`crucible-disk-<root>`). Every mutating operation on the root and
-//! on its files runs there, in submission order: creating directories and files, `preallocate`, `append`,
+//! Each root has one named writer thread (`disk-<root>`, short enough for the 15-byte thread names of
+//! Linux). Every mutating operation on the root and on its files runs there, in submission order:
+//! creating directories and files, `preallocate`, `append`,
 //! `sync_data`, `truncate`, `sync_dir`, `rename` and `remove`. Read operations (`open` for reading,
 //! `read_at`, `list`, `free_space`) run on the runtime's blocking pool so they never queue behind a sync.
 //! An operation that was submitted runs to completion even if its future is dropped.
@@ -226,7 +227,7 @@ impl PortableDisk {
             fs::create_dir_all(dir)?;
             let (writer, jobs) = mpsc::channel::<Job>();
             std::thread::Builder::new()
-                .name(format!("crucible-disk-{}", root.name()))
+                .name(format!("disk-{}", root.name()))
                 .spawn(move || {
                     // Ends when the disk, and every file opened from it, has been dropped.
                     for job in jobs {
