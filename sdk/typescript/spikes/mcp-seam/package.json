@@ -1,0 +1,25 @@
+{
+  "name": "crucible-spike-mcp-seam",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check:private": "node scripts/check-private.mjs",
+    "driver": "node src/driver.ts",
+    "bench": "node src/bench.ts",
+    "matrix": "node scripts/matrix.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
