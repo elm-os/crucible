@@ -23,3 +23,7 @@ Rules learned from corrections and surprises. Read at the start of each session.
    (DevTools protocol) before reporting it done.
 9. **Windows PowerShell 5.1 writes a BOM with `-Encoding utf8`.** A BOM in `package.json` breaks Next and Tailwind
    parsing. Edit JSON and other machine-read files with the Edit tool, Python or POSIX tools, never `Set-Content`.
+10. **Check PR text before opening the PR.** The naming checker reads titles and bodies, and its always-flag phrases
+    (`policy/naming-rules.json`) fire even when the source is our own product. Run
+    `node tools/policy/policy.mjs text` on the body first, and say "inherited from" or "taken from" for our own
+    material.
