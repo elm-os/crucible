@@ -243,7 +243,7 @@ The only way product code reaches ClickHouse, apart from `SqlWorkspaceStore`.
 | `drop_partition(table, partition)` | `crucible_maint` | |
 | `apply_deleted_mask(table, partition) -> MutationId` | `crucible_maint` | |
 | `mutation_status(id) -> Pending or Done or Failed(code)` | `crucible_maint` | |
-| `partition_projects(table, partition) -> Vec<ProjectId>` | `crucible_maint` | Distinct projects with rows in a partition |
+| `partition_projects(table, partition) -> Vec<ProjectId>` | `crucible_maint` | Distinct projects with rows in a partition, excluding the nil marker project. Markers never keep a partition alive: a partition drop removes them too |
 | `masked_parts(table, partition) -> u64` | `crucible_maint` | Parts that still carry a delete mask |
 | `apply_migration(step: MigrationStep) -> Result<()>` | `crucible_admin` | Schema or access step; idempotent |
 | `detect() -> StoreFacts` | `crucible_maint` | Version, flavour, engine family, presence of every setting sent, text-search functions |
@@ -596,7 +596,8 @@ tools at start:
 | `capture_source` | `CaptureSource` |
 | `first_seen`, `last_seen` | Timestamp (the observing span's `start_time`) |
 
-Unused tools are inventory entries with no calls in the window.
+Unused tools are inventory entries with no calls in the window. Inventory rows are capped per frame (section
+5.1).
 
 ### 3.7 Deploy record
 
@@ -686,7 +687,7 @@ by its key (section 6).
 
 | Set | Key | Measures | Freshness target |
 |---|---|---|---|
-| `session_rollup` | project, day, session_id | `trace_count` (incremented on root spans only), `span_count`, first and last seen, cost and token sums, `user_ids` (at most 8) | 10 s |
+| `session_rollup` | project, day, session_id | `trace_count` (incremented on root spans only), `span_count`, `error_count`, first and last seen, cost and token sums, `user_ids` (at most 8) | 10 s |
 | `user_rollup` | project, day, user_id | `trace_count` (root spans only), `span_count`, `error_count`, cost and token sums, first and last seen. A user's distinct session count is computed at read time (default; revisit) | 60 s |
 | `span_metrics` | project, minute, environment, observation_type, model_response, level, release | `count`, `error_count`, `dur_hist`, `ttft_hist`, cost and token sums. No user dimension | 2 s |
 | `mcp_tool_rollup` | project, side, minute, server_name, deploy_id, capture_source, era, method, target_name, client_name, error_class, caller_fault | `count`, `dur_hist`, `semconv_hist`, request and response byte sums, `last_seen` | 5 s |
@@ -734,8 +735,8 @@ mean "end of written data in this segment".
 | 5 | `record_type` | 1 | Section 4.4 |
 | 6 | `flags` | 2 | bit 0: payload is compressed; bit 1: continuation (reserved, must be 0); all other bits must be 0 |
 | 8 | `payload_len` | 4 | Stored payload bytes; at most `MAX_PAYLOAD` = 67,108,864 (64 MiB) |
-| 12 | `lsn` | 8 | Starts at 1 in an epoch and increases by exactly 1 per frame, across segments. Every frame of every type consumes one LSN |
-| 20 | `received_at` | 8 | i64 microseconds, `Clock::wall_now` when the frame was prepared |
+| 12 | `lsn` | 8 | Starts at 1 in an epoch. Within the valid log (section 4.6) it increases by exactly 1 per frame, across segments. Every frame of every type consumes one LSN |
+| 20 | `received_at` | 8 | i64 microseconds, `Clock::wall_now` read by the committer when it assigns the LSN |
 | 28 | `payload_crc32c` | 4 | Over the stored payload bytes |
 | 32 | `header_crc32c` | 4 | Over bytes 0 to 31 |
 
@@ -761,7 +762,7 @@ error.
 |---|---|---|
 | 1 | `IngestRequest` | Envelope, then `otlp: bytes` (the canonical OTLP protobuf `ExportTraceServiceRequest`; JSON bodies are transcoded before append). Envelope: `project_id: uuid`, `api_key_id: uuid`, `compat_dialect: u8` (request-level hint), `transport: u8` (1 HTTP, 2 gRPC), `content_origin: u8` (1 protobuf, 2 JSON), `flags: u8` (bit 0 admin import), `sdk_name: str` (128 bytes), `sdk_version: str` (64 bytes), `idempotency_key: bytes` (128 bytes; empty when absent), `span_count: u32`, `rejected: bytes` (bitmap over span ordinals in wire order; bit set means the span was rejected before the ack and must be skipped). The envelope, together with the payload version and the length prefix of `otlp`, is at most 64 KiB. It never holds secrets or Authorization values |
 | 2 | `NativeBatch` | Reserved. No v0 writer emits it (the proxy ships OTLP). Decoders must accept the type code and skip the frame. Its layout will be frozen by a contract change before first use |
-| 3 | `FactBatch` | `project_id: uuid`, `author_kind: u8`, `author_id: uuid`, `facts: list<Fact>` (at most 1,000). `Fact`: `table: u8` (1 score, 2 tag, 3 flag, 4 correction), `fact_id: uuid`, `target_kind: u8`, `trace_id: [u8; 16]`, `span_id: [u8; 8]`, `session_id: str`, `target_time: i64`, `key: str`, `version: u64`, `retracted: u8`, `created_at: i64`, `body: bytes` (the body fields of section 3.8 in declaration order, in this codec) |
+| 3 | `FactBatch` | `project_id: uuid`, `author_kind: u8`, `author_id: uuid`, `facts: list<Fact>` (at most 1,000 facts and at most 16 MiB of uncompressed payload per frame; the API splits a larger write into several frames and rejects a single fact above the cap with `payload_too_large`). `Fact`: `table: u8` (1 score, 2 tag, 3 flag, 4 correction), `fact_id: uuid`, `target_kind: u8`, `trace_id: [u8; 16]`, `span_id: [u8; 8]`, `session_id: str`, `target_time: i64`, `key: str`, `version: u64`, `retracted: u8`, `created_at: i64`, `body: bytes` (the body fields of section 3.8 in declaration order, in this codec) |
 | 4 | `Tombstone` | `deletion_request_id: uuid`, `project_id: uuid`, `kind: u8` (`DeletionKind`), `requested_at: i64`, `deletion_seq: u64` (deployment-wide, from Postgres), `selector`: for trace `list<[u8; 16]>` (at most 10,000), for user or session `str`, for project nothing |
 | 5 | `BatchSeal` | `batch_seq: u64` (equals `first_lsn`), `first_lsn: u64`, `last_lsn: u64`, `frame_count: u32`, `normalizer_version: u32`, `price_table_version: u32`, `deletion_seq: u64` (highest tombstone sequence applied while normalizing the range) |
 | 6 | `Checkpoint` | `batch_seq: u64`, `last_lsn: u64` (the low watermark: every frame with an LSN at or below it is resolved), `table_bitmap: u64` (bit `table_id` set for every table; all ones for known tables in v0; kept for format stability) |
@@ -802,14 +803,19 @@ bounded by the retained WAL size.
 3. Scan frames forward. For each segment the valid prefix ends at the first position that is zero magic, a short
    read, a bad header CRC or a bad payload CRC.
    - In the last segment this is a **torn tail**: truncate (zero) the segment from that position, `sync_data`.
-   - In an earlier segment it is accepted only if the next segment's `first_lsn` equals the last valid LSN plus 1.
-   - Any other discontinuity (an LSN that is not the previous plus 1, a missing segment, a later segment that does
-     not continue the sequence) is an **LSN gap**: a hard error. The node refuses to start ingest and reports
-     `wal_gap`; nothing is truncated.
+   - The next segment's `first_lsn` is authoritative. Frames in an earlier segment whose LSN is at or above the
+     next segment's `first_lsn` are superseded (they are what a failed group left behind before the committer
+     rotated, section 4.5) and must be ignored. An earlier segment is accepted when its valid prefix reaches at
+     least the next segment's `first_lsn` minus 1.
+   - An **LSN gap** is a hard error: an earlier segment whose valid prefix ends below the next segment's
+     `first_lsn` minus 1, a missing `segment_no`, or an LSN inside a segment that is not its predecessor plus 1.
+     The node refuses to start ingest and reports `wal_gap`; nothing is truncated.
 4. The next LSN is the last valid LSN plus 1. From here the WAL accepts appends, so ingest readiness does not wait
    for the remaining steps.
-5. Collect: the highest `Checkpoint` (the watermark), every `BatchSeal` whose `last_lsn` is above the watermark and
-   not covered by a `Quarantine` (sealed-but-unchecked batches), open quarantines, and tombstones.
+5. Collect: the highest `Checkpoint` (the watermark), every `BatchSeal` whose `last_lsn` is above the watermark
+   (sealed-but-unchecked batches), `Quarantine` frames, and tombstones. A seal stays unchecked until a `Checkpoint`
+   covers it. A `Quarantine` frame resolves only the pairs it lists; every other pair of that batch is still
+   probed and shipped in step 8.
 6. Rebuild the duplicate window and the first-seen set by replaying the retained prefix in LSN order.
 7. Rebuild the recent-span index from every frame above the watermark plus frames at or below it that are younger
    than the visibility grace (section 8.6).
@@ -896,6 +902,10 @@ every table, base and derived, is written by this protocol.
   pressure the limits widen by AIMD on insert latency up to 2 s and 262,144 rows. A batch must also seal before
   adding a frame would push any (table, partition) builder past 262,144 rows; frames are never split across
   batches.
+- One frame can never exceed the block limit by itself: a request holds at most 50,000 spans, each span yields at
+  most one row per table, a `FactBatch` holds at most 1,000 facts, and the normalizer caps tool-inventory rows at
+  65,536 per frame (`MCP_INVENTORY_MAX_ROWS_PER_FRAME`; the first in wire order are kept and the excess is counted
+  in a metric) (default; revisit).
 
 ### 5.2 Routing, tokens and blocks
 
