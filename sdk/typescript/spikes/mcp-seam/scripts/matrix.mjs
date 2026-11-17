@@ -13,6 +13,15 @@ const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const versions =
   process.argv.length > 2 ? process.argv.slice(2) : ["2.0.0", "2.1.0", "2.2.0", "2.3.1", "2.4.0"];
 const shell = process.platform === "win32";
+// The Node adapter is versioned separately; each entry is the newest release whose peer range
+// accepts that server version.
+const nodeAdapter = {
+  "2.0.0": "2.0.0",
+  "2.1.0": "2.1.0",
+  "2.2.0": "2.1.0",
+  "2.3.0": "2.1.1",
+  "2.3.1": "2.1.1",
+};
 
 const results = [];
 for (const version of versions) {
@@ -26,6 +35,8 @@ for (const version of versions) {
       dependencies: {
         ...manifest.dependencies,
         "@modelcontextprotocol/client": version,
+        "@modelcontextprotocol/node":
+          nodeAdapter[version] ?? manifest.dependencies["@modelcontextprotocol/node"],
         "@modelcontextprotocol/server": version,
       },
     }),

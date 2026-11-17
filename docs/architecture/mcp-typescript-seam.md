@@ -38,6 +38,12 @@ Read at tag `v2.4.0` (`packages/server/src/server/`):
   `onclose`, `onerror` and `onmessage`, then calls `start()`. The spike installs accessors for `onmessage` and
   `onclose` before it calls the original `connect`, so the SDK's own assignment goes through the tap and no inbound
   message can be dispatched around it.
+- **Not every transport keeps its callbacks in plain fields.** The Node adapter's Streamable HTTP transport
+  (`packages/middleware/node/src/streamableHttp.ts` lines 114 to 142) forwards `onclose`, `onerror` and
+  `onmessage` to an inner transport through accessors on its class. An accessor placed on the instance would hide
+  that forwarding and the server would stop answering. The tap therefore looks for an existing accessor on the
+  class chain and keeps it in the path: it hands the wrapped callback to the original setter and reads through the
+  original getter. The driver runs this transport as its own scenario.
 - **Some modern HTTP exchanges never reach `connect`.** In `createMcpHandler.ts` these return first: wrong content
   type (line 957), body too large (966), classification rejection (982), unsupported revision (735), standard header
   rejection (756), missing client capability (778), `subscriptions/listen` (814), parameter header rejection (835)
@@ -65,11 +71,11 @@ observed `initialize` request in the legacy era. Only exported constants and typ
 
 | # | Criterion | Result | Evidence |
 |---|---|---|---|
-| 1 | All transports and both eras observed | Pass | Driver: 133 checks pass on 2.4.0 across eight scenarios (below) |
+| 1 | All transports and both eras observed | Pass | Driver: 158 checks pass on 2.4.0 across ten scenarios (below) |
 | 2 | No private member access, enforced | Pass | `tsc --noEmit` in strict mode is clean; `check-private.mjs` reports 0 findings in 7 files and its self-test catches 8 planted violations |
 | 3 | `annotateError` and `identify` reach the active operation from a tool handler | Pass | In every scenario two overlapping `slow` calls each tag their own operation after their wait; `fail` carries its annotation and `throw` carries none |
-| 4 | Added p99 at most 1 ms | Pass | Largest added p99 on a gated path: 0.0375 ms (below) |
-| 5 | Works across 2.x versions | Pass | 2.0.0, 2.1.0, 2.2.0, 2.3.1 and 2.4.0: typecheck clean and 133 of 133 driver checks each |
+| 4 | Added p99 at most 1 ms | Pass | Largest added p99 on a gated path: 0.0376 ms (below) |
+| 5 | Works across 2.x versions | Pass | 2.0.0, 2.1.0, 2.2.0, 2.3.1 and 2.4.0: typecheck clean and 158 of 158 driver checks each, with the client at the same version and the Node adapter at 2.0.0, 2.1.0, 2.1.0, 2.1.1 and 2.1.2 |
 
 Scenarios the driver runs, each with one `tools/list`, one call per tool, two overlapping `slow` calls and one call
 to an unknown tool:
@@ -80,6 +86,7 @@ to an unknown tool:
 | `stdio-serve-legacy` | `serveStdio(factory)` | legacy | connect decoration |
 | `stdio-serve-modern` | `serveStdio(factory)` | modern | connect decoration |
 | `http-session-legacy` | Session-based Streamable HTTP transport plus `connect` | legacy | connect decoration |
+| `http-node-session-legacy` | Node adapter transport (`@modelcontextprotocol/node`) plus `connect` | legacy | connect decoration |
 | `http-stateless-modern` | `createMcpHandler(factory)` | modern | connect decoration |
 | `http-stateless-legacy` | `createMcpHandler(factory)`, stateless legacy leg | legacy | connect decoration; the refused GET stream (405) only by the fetch wrap |
 | `http-modern-edge` | Raw requests to the handler | modern | see next table |
@@ -89,12 +96,16 @@ What each candidate records for exchanges at the HTTP edge:
 | Exchange | HTTP | Connect decoration | Fetch wrap |
 |---|---|---|---|
 | Served `tools/call` | 200 | 1 operation | 0 (no double count) |
+| Served `tools/call` with `responseMode: "sse"` | 200, event stream | 1 operation | 0 |
 | Unsupported revision | 400 | 0 | 1, `protocol_error`, code -32022, with method, target and id |
 | Wrong content type | 415 | 0 | 1, `protocol_error`, code -32000 |
 | `subscriptions/listen` | 200, event stream | 0 | 1, `ok` at stream open |
 
-An eighth scenario, `in-memory-abandon`, closes a transport with a call still in flight. The operation is recorded once as
-`protocol_error` with error type `connection_closed`.
+Two more scenarios cover requests that never get a response. In `in-memory-cancel` the client cancels a call. The
+SDK sends no response for a cancelled request, so the tap finishes the operation when the
+`notifications/cancelled` message arrives: `protocol_error` with error type `cancelled`, recorded once even though
+the handler runs on. In `in-memory-abandon` the transport closes with a call in flight, and the operation is
+recorded once as `protocol_error` with error type `connection_closed`.
 
 The criterion in the design reads "all conformance transcripts pass". The shared conformance suite does not exist
 yet, so the driver's fixed workload stands in for it. Re-run this criterion against the transcripts when they land.
@@ -107,13 +118,17 @@ drops when full, which stands in for the export queue.
 
 | Path | Variant | p50 ms | p99 ms | Added p50 ms | Added p99 ms |
 |---|---|---|---|---|---|
-| In-memory transport, long-lived connection | baseline | 0.0115 | 0.0928 | | |
-| | connect decoration | 0.0122 | 0.1016 | 0.0007 | 0.0088 |
-| Stateless handler in process, modern era | baseline | 0.1591 | 0.5642 | | |
-| | connect decoration | 0.1724 | 0.6017 | 0.0133 | 0.0375 |
-| | connect decoration plus fetch wrap | 0.1787 | 0.5932 | 0.0196 | 0.0290 |
-| Stateless handler over loopback HTTP (2,000 calls, informational) | baseline | 15.5151 | 17.2230 | | |
-| | connect decoration plus fetch wrap | 15.5119 | 17.4444 | -0.0032 | 0.2214 |
+| In-memory transport, long-lived connection | baseline | 0.0106 | 0.0215 | | |
+| | connect decoration | 0.0110 | 0.0217 | 0.0004 | 0.0002 |
+| Stateless handler in process, modern era | baseline | 0.1084 | 0.3610 | | |
+| | connect decoration | 0.1174 | 0.3839 | 0.0090 | 0.0229 |
+| | connect decoration plus fetch wrap | 0.1261 | 0.3986 | 0.0177 | 0.0376 |
+| Stateless handler over loopback HTTP (2,000 calls, informational) | baseline | 15.5445 | 17.2991 | | |
+| | connect decoration plus fetch wrap | 15.5524 | 17.2192 | 0.0079 | -0.0799 |
+
+An earlier full run of the same benchmark, before the accessor and cancel handling were added, gave added p99
+values of 0.0088, 0.0375 and 0.0290 ms on the three gated rows. Absolute times moved between the runs with machine
+load; the added latency stayed two orders of magnitude under the gate.
 
 The loopback run is informational: each call takes about 15 ms on this host, so socket timing hides an effect of
 this size. Not covered by the spike, and still required by the design gate: the three collector states (healthy,
@@ -141,6 +156,8 @@ not include.
   instance, and the SDK assigns `onmessage` as a plain property. Both hold from 2.0.0 to 2.4.0. A weekly run of
   `scripts/matrix.mjs` against the newest 2.x will catch a change. The production code must catch a failed tap and
   leave the server uninstrumented instead of failing `connect`.
+- **Modern HTTP cancellation is a closed stream, not a notification.** The tap then reports the operation through
+  the close path as `connection_closed`. The driver covers the close path only on the in-memory transport.
 - **Progress counting is implemented but not exercised** by the driver. Request and response sizes are not measured.
 - **Only Node 24 was tested.** The module imports `node:async_hooks`. Other runtimes are untested.
 
@@ -160,10 +177,10 @@ The peer range can be `>=2.0.0 <3` on this evidence; the design asked for `>=2.4
 ```ts
 import { annotateError, identify, instrument } from "@elm-os/crucible/mcp";
 
-// One entry point, three overloads, each returns what it was given.
-instrument(server, options?);   // McpServer or Server: decorates connect on it and on its inner server
-instrument(factory, options?);  // McpServerFactory: for createMcpHandler and serveStdio
-instrument(handler, options?);  // result of createMcpHandler: adds the edge operations
+// One entry point, three overloads.
+instrument(server, options?);   // McpServer or Server: decorates connect on it and on its inner server; returns it
+instrument(factory, options?);  // McpServerFactory: returns a factory for createMcpHandler and serveStdio
+instrument(handler, options?);  // result of createMcpHandler: returns a copy whose fetch adds the edge operations
 
 // Typical stateless HTTP server
 const handler = instrument(createMcpHandler(instrument(buildServer)));

@@ -144,31 +144,12 @@ function tap(transport: Transport, connection: Connection, options: InstrumentOp
 
   // The SDK assigns `onmessage` and `onclose` during connect. Accessors installed before that
   // assignment mean no inbound message can be dispatched around the tap.
-  let dispatch = transport.onmessage;
-  Object.defineProperty(transport, "onmessage", {
-    configurable: true,
-    enumerable: true,
-    get: () => dispatch,
-    set: (next: Dispatch | undefined) => {
-      dispatch =
-        next === undefined ? undefined : wrapDispatch(next, transport, connection, options, label);
-    },
-  });
-
-  let onclose = transport.onclose;
-  Object.defineProperty(transport, "onclose", {
-    configurable: true,
-    enumerable: true,
-    get: () => onclose,
-    set: (next: (() => void) | undefined) => {
-      onclose =
-        next === undefined
-          ? undefined
-          : () => {
-              abandon(connection, transport, options.sink);
-              next();
-            };
-    },
+  interpose(transport, "onmessage", (next) =>
+    wrapDispatch(next, transport, connection, options, label),
+  );
+  interpose(transport, "onclose", (next) => () => {
+    abandon(connection, transport, options.sink);
+    next();
   });
 
   const send = transport.send.bind(transport);
@@ -176,6 +157,48 @@ function tap(transport: Transport, connection: Connection, options: InstrumentOp
     observeOutbound(message, sendOptions?.relatedRequestId, transport, connection, options.sink);
     return send(message, sendOptions);
   };
+}
+
+/**
+ * Routes assignments of one callback member through `wrap`. Some transports keep the callback in
+ * a plain field; others forward it to an inner transport through an accessor on their class. An
+ * existing accessor is kept in the path, so the forwarding still happens.
+ */
+function interpose<K extends "onmessage" | "onclose">(
+  transport: Transport,
+  key: K,
+  wrap: (next: NonNullable<Transport[K]>) => NonNullable<Transport[K]>,
+): void {
+  const inherited = findAccessor(transport, key);
+  let current: Transport[K] = inherited === undefined ? transport[key] : undefined;
+  Object.defineProperty(transport, key, {
+    configurable: true,
+    enumerable: true,
+    get: (): Transport[K] =>
+      inherited?.get === undefined ? current : inherited.get.call(transport),
+    set: (next: Transport[K]) => {
+      const wrapped = next === undefined || next === null ? undefined : wrap(next);
+      if (inherited?.set === undefined) {
+        current = wrapped;
+      } else {
+        inherited.set.call(transport, wrapped);
+      }
+    },
+  });
+}
+
+function findAccessor(target: object, key: string): PropertyDescriptor | undefined {
+  for (
+    let holder: object | null = target;
+    holder !== null;
+    holder = Object.getPrototypeOf(holder)
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+    if (descriptor !== undefined) {
+      return descriptor.get === undefined && descriptor.set === undefined ? undefined : descriptor;
+    }
+  }
+  return undefined;
 }
 
 function wrapDispatch(
@@ -190,6 +213,9 @@ function wrapDispatch(
       // A client response to a server-initiated request: not an operation of this server.
       next(message, extra);
       return;
+    }
+    if (message.method === "notifications/cancelled") {
+      cancel(fields(message.params)?.requestId, transport, connection, options.sink);
     }
     const operation = begin(message, extra, connection, options, label);
     const scope = edgeScope.getStore();
@@ -309,6 +335,26 @@ function observeOutbound(
       }
     }
   }
+  finish(operation, transport, sink);
+}
+
+/** The client cancelled a request. The SDK sends no response for it, so it is finished here. */
+function cancel(
+  requestId: unknown,
+  transport: Transport,
+  connection: Connection,
+  sink: Sink,
+): void {
+  if (typeof requestId !== "string" && typeof requestId !== "number") {
+    return;
+  }
+  const operation = connection.pending.get(requestId);
+  if (operation === undefined) {
+    return;
+  }
+  connection.pending.delete(requestId);
+  operation.outcome = "protocol_error";
+  operation.errorType = "cancelled";
   finish(operation, transport, sink);
 }
 

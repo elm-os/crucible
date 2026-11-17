@@ -4,12 +4,15 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
   createMcpHandler,
   InMemoryTransport,
@@ -397,6 +400,32 @@ async function statelessHttpScenarios(): Promise<void> {
       badMedia.recorded[0].outcome === "protocol_error",
   );
 
+  // The same call against a handler that always answers with an event stream.
+  const streaming = instrumentHandler(
+    createMcpHandler(instrumentFactory(buildServer, { sink }), { responseMode: "sse" }),
+    { sink },
+  );
+  const sseHeaders = new Headers(base.headers);
+  sseHeaders.delete("content-length");
+  const sseResponse = await streaming.fetch(
+    new Request(server.url, { method: "POST", headers: sseHeaders, body: base.body }),
+  );
+  const sseText = await sseResponse.text();
+  await sleep(20);
+  const sseRecorded = operations.splice(0);
+  report("tools/call with responseMode sse", sseResponse, sseRecorded);
+  check(
+    scenario,
+    "event stream response: recorded once by the transport tap, ok",
+    (sseResponse.headers.get("content-type") ?? "").includes("text/event-stream") &&
+      sseText.includes("hello") &&
+      sseRecorded.length === 1 &&
+      sseRecorded[0]?.source === "connect" &&
+      sseRecorded[0].outcome === "ok",
+    `content-type ${sseResponse.headers.get("content-type")}`,
+  );
+  await streaming.close();
+
   const abort = new AbortController();
   const listenBody = JSON.parse(base.body) as { params: { _meta: Record<string, unknown> } };
   const listenHeaders = new Headers(base.headers);
@@ -429,6 +458,83 @@ async function statelessHttpScenarios(): Promise<void> {
   );
   abort.abort();
   await handler.close();
+}
+
+/**
+ * The Node adapter's transport forwards its callbacks to an inner transport through accessors on
+ * its class, so it exercises the other branch of the tap.
+ */
+async function nodeAdapterScenario(): Promise<void> {
+  const scenario = "http-node-session-legacy";
+  const operations: Operation[] = [];
+  const sink = (operation: Operation) => void operations.push(operation);
+  const sessions = new Map<string, NodeStreamableHTTPServerTransport>();
+  const server = createServer(async (req, res) => {
+    const header = req.headers["mcp-session-id"];
+    const sessionId = typeof header === "string" ? header : undefined;
+    let transport = sessionId === undefined ? undefined : sessions.get(sessionId);
+    if (transport === undefined) {
+      if (sessionId !== undefined) {
+        res.writeHead(404).end();
+        return;
+      }
+      const created = new NodeStreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => void sessions.set(id, created),
+      });
+      await instrument(buildServer(), { sink }).connect(created);
+      transport = created;
+    }
+    await transport.handleRequest(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const client = newClient("legacy");
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+  await exercise(client);
+  await client.close();
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  check(scenario, "one session was created", sessions.size === 1, `${sessions.size}`);
+  verify(scenario, operations, { era: "legacy", clientInfo: true, sessionId: true });
+}
+
+/** A request the client cancels gets no response from the SDK; it must still be recorded once. */
+async function cancelScenario(): Promise<void> {
+  const scenario = "in-memory-cancel";
+  const operations: Operation[] = [];
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await instrument(buildServer(), { sink: (operation) => void operations.push(operation) }).connect(
+    serverSide,
+  );
+  const client = newClient("legacy");
+  await client.connect(clientSide);
+  const abort = new AbortController();
+  const pending = client
+    .callTool({ name: "slow", arguments: { ms: 400, tag: "cancelled" } }, { signal: abort.signal })
+    .catch(() => undefined);
+  await sleep(50);
+  abort.abort();
+  await pending;
+  await sleep(500); // let the handler finish; a late response must not create a second record
+  await serverSide.close();
+  const slow = operations.filter((op) => op.target === "slow");
+  console.log(`
+== ${scenario}: ${operations.length} operations`);
+  for (const operation of operations) {
+    console.log(`   ${describe(operation)} type=${operation.errorType ?? "-"}`);
+  }
+  check(
+    scenario,
+    "the cancelled call is recorded once as protocol_error cancelled",
+    slow.length === 1 && slow[0]?.outcome === "protocol_error" && slow[0].errorType === "cancelled",
+    `${slow.length} ${slow[0]?.outcome} ${slow[0]?.errorType}`,
+  );
+  check(
+    scenario,
+    "the cancel notification is recorded",
+    operations.some((op) => op.method === "notifications/cancelled" && op.kind === "notification"),
+  );
 }
 
 /** A transport that closes with a request still in flight must not lose the operation. */
@@ -467,7 +573,9 @@ await stdioScenario("stdio-connect-legacy", "connect", "legacy");
 await stdioScenario("stdio-serve-legacy", "serve", "legacy");
 await stdioScenario("stdio-serve-modern", "serve", "modern");
 await sessionHttpScenario();
+await nodeAdapterScenario();
 await statelessHttpScenarios();
+await cancelScenario();
 await abandonScenario();
 console.log(
   `\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECKS FAILED`} (sdk ${sdkVersion})`,
