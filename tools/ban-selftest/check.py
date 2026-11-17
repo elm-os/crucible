@@ -56,7 +56,7 @@ def planted():
 
 def clippy_messages():
     env = dict(os.environ, CLIPPY_CONF_DIR=str(ROOT))
-    command = ["cargo", "clippy", "--locked", "--message-format=json", "--manifest-path", str(HERE / "Cargo.toml")]
+    command = ["cargo", "clippy", "--message-format=json", "--manifest-path", str(HERE / "Cargo.toml")]
     run = subprocess.run(command, env=env, stdout=subprocess.PIPE, text=True, encoding="utf-8")
     if run.returncode != 0:
         fail(f"clippy exited with {run.returncode}; the planted crate must compile")
