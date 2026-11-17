@@ -9,6 +9,17 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-records = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+memchr = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+prost = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
 
 [lints]
 workspace = true

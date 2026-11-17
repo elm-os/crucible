@@ -9,6 +9,17 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+crucible-wal-codec = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

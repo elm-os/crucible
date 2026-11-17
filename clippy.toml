@@ -1,5 +1,6 @@
 # Determinism bans: product crates use crucible-env traits instead of ambient APIs.
-# Only crucible-env-prod, binary main functions, xtask and benches may allow these lints.
+# Only crucible-env-prod, the binary crate, xtask, benches and the scope-minting file of crucible-auth
+# may allow these lints (the allow-attribute guard in ci-rust enforces this).
 msrv = "1.100"
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
@@ -22,13 +23,13 @@ disallowed-methods = [
   { path = "tokio::task::spawn_blocking", reason = "use Spawner::spawn_blocking" },
   { path = "tokio::task::spawn_local", reason = "use crucible_env::Spawner" },
   { path = "tokio::task::block_in_place", reason = "use Spawner::spawn_blocking" },
-  { path = "rand::rng", reason = "use crucible_env::Rng" },
-  { path = "rand::random", reason = "use crucible_env::Rng" },
-  { path = "rand::thread_rng", reason = "use crucible_env::Rng" },
-  { path = "getrandom::fill", reason = "use crucible_env::Rng" },
-  { path = "getrandom::getrandom", reason = "use crucible_env::Rng" },
-  { path = "uuid::Uuid::new_v4", reason = "derive ids from crucible_env::Rng" },
-  { path = "uuid::Uuid::now_v7", reason = "derive ids from crucible_env::Rng and Clock" },
+  { path = "rand::rng", reason = "use crucible_env::Rng", allow-invalid = true },
+  { path = "rand::random", reason = "use crucible_env::Rng", allow-invalid = true },
+  { path = "rand::thread_rng", reason = "use crucible_env::Rng", allow-invalid = true },
+  { path = "getrandom::fill", reason = "use crucible_env::Rng", allow-invalid = true },
+  { path = "getrandom::getrandom", reason = "use crucible_env::Rng", allow-invalid = true },
+  { path = "uuid::Uuid::new_v4", reason = "derive ids from crucible_env::Rng", allow-invalid = true },
+  { path = "uuid::Uuid::now_v7", reason = "derive ids from crucible_env::Rng and Clock", allow-invalid = true },
   { path = "std::env::var", reason = "read the environment only in crucible-config" },
   { path = "std::env::var_os", reason = "read the environment only in crucible-config" },
   { path = "std::env::vars", reason = "read the environment only in crucible-config" },
@@ -49,6 +50,11 @@ disallowed-methods = [
   { path = "tokio::net::TcpListener::bind", reason = "use crucible_env::Net" },
   { path = "std::process::Command::new", reason = "use crucible_env::ChildProcess" },
   { path = "tokio::process::Command::new", reason = "use crucible_env::ChildProcess" },
+  { path = "hashbrown::HashMap::new", reason = "randomly seeded hasher; use crucible_records::det_map", allow-invalid = true },
+  { path = "hashbrown::HashMap::with_capacity", reason = "randomly seeded hasher; use crucible_records::det_map_with_capacity", allow-invalid = true },
+  { path = "hashbrown::HashSet::new", reason = "randomly seeded hasher; use crucible_records::det_set", allow-invalid = true },
+  { path = "hashbrown::HashSet::with_capacity", reason = "randomly seeded hasher; use crucible_records::det_set_with_capacity", allow-invalid = true },
+  { path = "crucible_records::ProjectScope::mint", reason = "only crucible-auth mints scopes (contract 1.4); tests use crucible_auth::test_support", allow-invalid = true },
 ]
 
 disallowed-types = [

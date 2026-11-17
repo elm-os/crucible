@@ -8,7 +8,29 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+wal-uring = ["dep:io-uring"]
+
 [dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+getrandom = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+rustls = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros", "signal"] }
+tokio-rustls = { workspace = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -60,9 +60,12 @@ Uppercase hex on input is accepted and lowered. Any other id form is `validation
 
 ### 1.4 ProjectScope
 
-- `ProjectScope { project_id }` is the only value that authorizes reading or writing project data. Its constructor is
-  private to `crucible-auth`. No other crate may build one, including tests outside `crucible-auth`'s own test support
-  module.
+- `ProjectScope { project_id }` is the only value that authorizes reading or writing project data. The type lives in
+  `crucible-records`, a leaf crate, so that `crucible-plan` and the `Env` store traits can name it without a
+  dependency cycle. Its only constructor, `ProjectScope::mint`, is a disallowed method in `clippy.toml`, and the CI
+  allow-attribute guard permits the allow in exactly one file, `crates/crucible-auth/src/scope.rs`. No other crate
+  may build one. Tests outside `crucible-auth` obtain scopes from `crucible_auth::test_support` (feature
+  `test-support`, which product builds never enable).
 - Every function in `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-lifecycle`, `crucible-sqlws`,
   `crucible-media` and the export writers that touches project data must take a `ProjectScope`.
 - `project_id` comes only from the authenticated credential or from a path id that the permission extractor has
@@ -95,6 +98,34 @@ Dependency rules: `crucible-records`, `crucible-wal-codec`, `crucible-otlp`, `cr
 `clickhouse::Client` is allowed only in `crucible-store-clickhouse`; the Postgres client only in
 `crucible-control-pg`. Names, attribute keys, paths and fixtures that belong to another product live only in
 `crucible-compat`.
+
+Internal dependency edges. A crate may depend only on the internal crates listed for it; a new edge is a contract
+change (section 15). The graph is acyclic: pure crates never depend on `crucible-env`, and `crucible-env` depends
+only on pure crates. Dev-dependencies on `crucible-auth` (for `test_support`) are allowed everywhere; the minting
+path deals only in `crucible-records` types, so the dev-dependency cycle that cargo permits cannot mix types.
+
+| Crate | Internal dependencies |
+|---|---|
+| `crucible-records`, `crucible-chfmt` | none |
+| `crucible-wal-codec`, `crucible-otlp`, `crucible-admission`, `crucible-compat`, `crucible-schema`, `crucible-api-types` | `crucible-records` |
+| `crucible-plan` | `crucible-records`, `crucible-schema` |
+| `crucible-normalize` | `crucible-records`, `crucible-otlp`, `crucible-compat` |
+| `crucible-env` | `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-chfmt` |
+| `crucible-env-prod` | `crucible-env`, `crucible-records` |
+| `crucible-auth` | `crucible-records`, `crucible-env` |
+| `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
+| `crucible-recent` | `crucible-env`, `crucible-records`, `crucible-plan` |
+| `crucible-query` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-recent`, `crucible-schema` |
+| `crucible-shipper` | `crucible-env`, `crucible-records`, `crucible-wal`, `crucible-wal-codec`, `crucible-schema`, `crucible-chfmt`, `crucible-normalize` |
+| `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
+| `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
+| `crucible-ui-assets` | `crucible-env` |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth` |
+| `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
+| `crucible-sim`, `crucible` (binary) | any crate above |
+
+Crates of later milestones (control plane, API, proxy, MCP server and the rest of section 1.5's map) add their rows
+here before their first code lands.
 
 ### 1.6 Frozen enums
 
@@ -233,7 +264,9 @@ two resolutions).
 
 ### 2.6 TelemetryStore
 
-The only way product code reaches ClickHouse, apart from `SqlWorkspaceStore`.
+The only way product code reaches ClickHouse, apart from `SqlWorkspaceStore`. Argument types: `TableId`,
+`PartitionId`, `BatchToken` and `ProjectScope` from `crucible-records`; `EncodedBlock` from `crucible-chfmt`;
+`QueryPlan` and `DeletePlan` from `crucible-plan`; `MigrationStep` and `TableDef` from `crucible-schema`.
 
 | Method | Identity (section 7) | Semantics |
 |---|---|---|
@@ -877,7 +910,7 @@ Other proved kernels, each owned by the named crate:
 
 | Kernel | Crate | Property |
 |---|---|---|
-| Batch token | `crucible-shipper` | Injective over `(wal_epoch, first_lsn, last_lsn, table_id, partition_id)` |
+| Batch token | `crucible-records` | Injective over `(wal_epoch, first_lsn, last_lsn, table_id, partition_id)` |
 | Partition routing and retention boundary | `crucible-schema` | No overflow over the valid time range; monotone in time |
 | Histogram bucket function | `crucible-records` | Total; monotone; `lower(bucket(v)) <= v < lower(bucket(v)) + width(bucket(v))` |
 | Backpressure accounting | `crucible-admission` | Reserve and release never underflow or exceed the cap |

@@ -9,6 +9,19 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-records = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

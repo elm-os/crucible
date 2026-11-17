@@ -9,6 +9,14 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+crucible-auth = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

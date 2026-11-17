@@ -8,7 +8,22 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+wal-uring = ["crucible-env-prod/wal-uring"]
+
 [dependencies]
+crucible-env = { workspace = true }
+crucible-env-prod = { workspace = true }
+crucible-records = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(not(windows))'.dependencies]
+mimalloc = { workspace = true }
 
 [lints]
 workspace = true

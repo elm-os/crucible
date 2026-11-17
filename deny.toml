@@ -28,6 +28,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Internal crates are path dependencies without versions; they are never published.
+allow-wildcard-paths = true
 deny = [{ crate = "openssl" }, { crate = "openssl-sys" }, { crate = "native-tls" }]
 
 [sources]

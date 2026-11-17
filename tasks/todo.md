@@ -18,10 +18,23 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [x] Crate skeletons for every M1 crate and one pinned `[workspace.dependencies]` table -> verify: workspace builds; clippy clean.
 - [x] Formal tools image `crucible-dev-formal:1` (Kani 0.68.0, Quint 0.33.1, cargo-fuzz 0.13.2, Java 21) -> verify: versions print.
 
-- [ ] M1.0 Freeze contracts v2 in `docs/architecture/contracts.md` (reconcile the MCP rollup key with
+- [x] M1.0 Freeze contracts v2 in `docs/architecture/contracts.md` (reconcile the MCP rollup key with
       `capture_source`, a backing set for `mcp/deploys`, one ClickHouse identity scheme with `USING 1` policies for
       every service identity before any workspace policy, owners for the UI's extra API fields, the compat interface)
-      -> verify: doc merged; conformance row "service identities see all rows after access migrations" planned.
+      -> verify: doc merged (#1); conformance row "service identities see all rows after access migrations" planned in
+      `docs/testing/invariants.md`.
+      Owners of the UI's extra API fields (contracts 8.8; every route in `crucible-api`, every DTO in
+      `crucible-api-types`):
+      - `span_count` and paged span children above 5,000 spans: `crucible-plan`, `crucible-query`, `crucible-recent`
+      - live-tail `since`: `crucible-plan`, `crucible-recent`, `crucible-query`, `crucible-cursor`
+      - `partial: true` and `consistency: lagging`: `crucible-recent` (gap, barrier), `crucible-query` (meta)
+      - `data-bounds`: `crucible-query`, `crucible-plan`, `crucible-recent`
+      - filter-values lookup: `crucible-plan` (registry), `crucible-query`
+      - metrics schema and caps: `crucible-plan` (registry and compiler), `crucible-query`
+- [x] A0 foundation: shared primitives in `crucible-records`, `ProjectScope` minting confined to `crucible-auth`,
+      every M1 crate's dependencies wired once, internal dependency edges in contracts 1.5
+      -> verify: clippy clean with the bans; 26 tests pass; `cargo deny` passes; a planted `ProjectScope::mint` call in
+      `crucible-plan` is rejected; Kani, cargo-fuzz and Quint smoke runs pass on the workspace.
 - [ ] `crucible-env` and `crucible-env-prod`; `clippy.toml` bans with the allow-attribute grep
       -> verify: a banned call fails CI; the hello-world app serves `/healthz` on the real runtime.
 - [ ] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
