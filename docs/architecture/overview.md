@@ -21,8 +21,8 @@ or newer, or ClickHouse Cloud. S3-compatible object storage is optional, for med
 
 ## Write path
 
-1. **Decode and admit.** A zero-copy scanner validates the OTLP payload (caps: 64 MiB decoded, 50,000 spans per
-   request). JSON is transcoded to protobuf. Byte budgets and per-project token buckets answer 429 or 503 with
+1. **Decode and admit.** A zero-copy scanner validates the OTLP payload (caps: 64 MiB per request
+   including a 64 KiB envelope reserve, 50,000 spans per request). JSON is transcoded to protobuf. Byte budgets and per-project token buckets answer 429 or 503 with
    `Retry-After` before memory runs out.
 2. **WAL append.** The raw request plus an envelope (project, key, compatibility dialect) is appended to a local
    write-ahead log. A group committer issues one append and one `fsync` per group.
@@ -73,6 +73,7 @@ from an in-memory snapshot; revocations propagate within 5 seconds.
 | Area | Crates |
 |---|---|
 | Environment | `crucible-env`, `crucible-env-prod` |
+| Shared types | `crucible-records` |
 | Ingest and WAL | `crucible-otlp`, `crucible-admission`, `crucible-ingest`, `crucible-wal-codec`, `crucible-wal` |
 | Normalize and ship | `crucible-normalize`, `crucible-compat`, `crucible-schema`, `crucible-chfmt`, `crucible-shipper`, `crucible-store-clickhouse` |
 | Read | `crucible-plan`, `crucible-recent`, `crucible-query`, `crucible-lifecycle` |
