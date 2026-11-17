@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createQueryClient } from "@/components/providers";
@@ -16,6 +16,7 @@ beforeEach(() => {
 afterEach(() => {
   fetchMock.mockReset();
   vi.unstubAllGlobals();
+  onlineManager.setOnline(true);
 });
 
 function renderSection() {
@@ -41,6 +42,13 @@ const json = (body: unknown, status = 200, type = "application/json") =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": type } });
 
 describe("with no backend, the section shows a designed error, never a blank or empty list", () => {
+  test("a browser that reports offline still fetches and shows the error", async () => {
+    onlineManager.setOnline(false);
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    renderSection();
+    expect(await screen.findByText("Couldn't reach Crucible.")).toBeTruthy();
+  });
+
   test("the fetch rejects", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     renderSection();

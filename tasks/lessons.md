@@ -17,3 +17,6 @@ Rules learned from corrections and surprises. Read at the start of each session.
    screenshot is a crop. Use DevTools `Emulation.setDeviceMetricsOverride` for phone-width checks.
 7. **Next 16 rewrites `ui/tsconfig.json`** on `next typegen` and `next build` unless `allowJs` and `esModuleInterop` are
    set. Typed routes are slash-less (`/traces`); `trailingSlash: true` adds the slash when links render.
+8. **jsdom clicks are not presses.** A UI SDK Tree ran `onAction` for a link label under `fireEvent.click` but not
+   under a real press in Chrome, which left the phone drawer open. Check navigation and popup wiring in a real browser
+   (DevTools protocol) before reporting it done.

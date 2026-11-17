@@ -47,11 +47,13 @@ function NavTree({
 }) {
   const pathname = usePathname();
   return (
-    <Tree aria-label="Pages" mode="none" current={navValueFor(pathname)} onAction={onNavigate}>
+    <Tree aria-label="Pages" mode="none" current={navValueFor(pathname)}>
       {NAV_ITEMS.map((item) => (
         <TreeItem key={item.value} value={item.value}>
+          {/* In Chrome a press on the link label left the tree's onAction unrun and the drawer
+              open, so the drawer closes from the link's own onClick. */}
           <TreeItemLabel
-            render={<Link href={scopedHref(item.href, search)} />}
+            render={<Link href={scopedHref(item.href, search)} onClick={onNavigate} />}
             className="ps-2 text-data text-ink-soft data-current:text-midnight-ink"
           >
             {item.label}
