@@ -52,8 +52,16 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [ ] Quint spec of the ingest protocol -> verify: safety properties hold; an ack-before-sync variant is caught.
 - [ ] Conformance C1-C4, startup dedup self-test, single-block rows -> verify: green on 26.3, 26.8, latest.
 - [ ] fsync-honesty probe and load generator baseline -> verify: probe classification recorded.
+- [x] UI scaffold in `ui/`: pinned Next 16.4.6 static export, tokens and fonts, shell with UI SDK navigation, project
+      placeholder and the one global time range -> verify: typecheck, Oxlint, Biome and `next build` green; `ui/out`
+      has one `index.html` per route.
+- [x] UI data layer: typed `/api/v1` client, problem+json mapper, TanStack Query provider, four-state `Section`
+      -> verify: Vitest green (mapper rows, range hook, no-backend shapes, loading ladder, agent test); headless
+      Chrome shows the designed error state on `/traces/` with no backend.
 - [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract.
-- [ ] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback.
+- [x] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback. All five pass on SDK
+      2.0.0 to 2.4.0 (#3); decision in `docs/architecture/mcp-typescript-seam.md`.
+- [x] CI for the UI (`ci-ui`: install, Biome, Oxlint, typecheck, Vitest, static export) -> verify: green on its PR.
 
 ## M2: core observability
 

@@ -1,0 +1,152 @@
+@layer ui-sdk;
+
+@import "tailwindcss";
+@import "@ui-sdk/core/web.css" layer(components);
+@import "./fonts.css";
+
+/* Design tokens. Design reference: docs/design.md in the rightmodeler repository. Light theme only. */
+@theme {
+  /* Colors */
+  --color-parchment-white: #fdfcfc; /* page canvas, dominant background */
+  --color-warm-sand: #f5f3f1; /* card, feature and section surfaces */
+  --color-ash-border: #e5e5e5; /* hairline borders and dividers */
+  --color-midnight-ink: #000000; /* primary text, filled buttons, icon fills */
+  --color-driftwood: #777169; /* secondary text on the canvas, icon strokes */
+  --color-fog: #a59f97; /* decoration only in Crucible: below text contrast */
+  --color-silver-mist: #b1b0b0; /* subtle washes, mid-level dividers */
+  --color-void-violet: #0447ff; /* accent: illustration and chart data only */
+  --color-ember-orange: #ff4704; /* accent: illustration and chart data only */
+
+  /* Loaded by app/fonts.css. The licensed brand face leads each stack, so the real files can be
+     dropped in without a change here. */
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-display:
+    "Waldenburg", var(--font-dm-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-wordmark: "WaldenburgFH", var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Each size carries its own line-height and letter-spacing: use the text-* utilities. */
+  --text-caption: 10px;
+  --text-caption--line-height: 1.4;
+  --text-caption--letter-spacing: 0.1px;
+
+  --text-body: 16px;
+  --text-body--line-height: 1.5;
+  --text-body--letter-spacing: 0.16px;
+
+  --text-subheading: 18px;
+  --text-subheading--line-height: 1.44;
+  --text-subheading--letter-spacing: 0.18px;
+
+  --text-heading-sm: 20px;
+  --text-heading-sm--line-height: 1.4;
+  --text-heading-sm--letter-spacing: 0.2px;
+
+  --text-heading: 32px;
+  --text-heading--line-height: 1.17;
+  --text-heading--letter-spacing: -0.64px;
+  --text-heading--font-weight: 300;
+
+  --text-heading-lg: 36px;
+  --text-heading-lg--line-height: 1.13;
+  --text-heading-lg--letter-spacing: -0.72px;
+  --text-heading-lg--font-weight: 300;
+
+  --text-display: 48px;
+  --text-display--line-height: 1.08;
+  --text-display--letter-spacing: -0.96px;
+  --text-display--font-weight: 300;
+
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Crucible additions. No token above is redefined. */
+@theme static {
+  --color-ink-soft: #5c5750; /* secondary text on any surface: 6.99:1 canvas, 6.47:1 sand */
+  --color-control-edge: #8a857e; /* input, checkbox and focus edges: 3.57:1 canvas, 3.31:1 sand */
+
+  /* Dense UI sizes, between caption and body: labels, grid cells and controls. */
+  --text-label: 12px;
+  --text-label--line-height: 1.5;
+  --text-label--letter-spacing: 0.12px;
+
+  --text-data: 13px;
+  --text-data--line-height: 1.54;
+  --text-data--letter-spacing: 0.13px;
+
+  /* Charts. Two series colors are neutral, so every series also gets its dash and marker. */
+  --color-series-1: var(--color-midnight-ink);
+  --color-series-2: var(--color-void-violet);
+  --color-series-3: var(--color-ember-orange);
+  --color-series-4: var(--color-driftwood);
+  --dash-series-1: none;
+  --dash-series-2: 6 4;
+  --dash-series-3: 1 3;
+  --dash-series-4: 8 3 2 3;
+  --color-chart-grid: var(--color-ash-border);
+  --color-chart-axis: var(--color-driftwood);
+
+  /* Ink opacity for magnitude (heatmaps): even lightness steps on the canvas. */
+  --opacity-ramp-1: 0.12;
+  --opacity-ramp-2: 0.32;
+  --opacity-ramp-3: 0.5;
+  --opacity-ramp-4: 0.68;
+  --opacity-ramp-5: 0.85;
+}
+
+/* UI SDK's default look, themed with the tokens above. */
+:root {
+  color-scheme: light;
+  --ui-background: var(--color-parchment-white);
+  --ui-foreground: var(--color-midnight-ink);
+  --ui-muted: var(--color-warm-sand);
+  --ui-muted-foreground: var(--color-ink-soft);
+  --ui-border: var(--color-ash-border);
+  --ui-input: var(--color-control-edge);
+  --ui-primary: var(--color-midnight-ink);
+  --ui-primary-foreground: var(--color-parchment-white);
+  --ui-destructive: var(--color-midnight-ink);
+  --ui-ring: var(--color-control-edge);
+  --ui-ring-border: var(--color-midnight-ink);
+  --ui-overlay: color-mix(in srgb, var(--color-parchment-white) 70%, transparent);
+  --ui-shadow: 0 8px 24px -12px rgb(0 0 0 / 0.16);
+  --ui-radius: 0.375rem;
+  --ui-font-sans: var(--font-sans);
+  --ui-font-mono: var(--font-mono);
+}
+
+body {
+  background-color: var(--color-parchment-white);
+  color: var(--color-midnight-ink);
+  font-family: var(--font-sans);
+}
+
+/* Brand wordmark: logo only. Never body copy, labels or buttons. */
+@utility wordmark {
+  font-family: var(--font-wordmark);
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+}
+
+/* Skeleton shimmer: opacity only, and a still block when motion is unwelcome. */
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@utility skeleton {
+  border-radius: var(--ui-radius);
+  background-color: color-mix(in srgb, var(--color-midnight-ink) 9%, transparent);
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
