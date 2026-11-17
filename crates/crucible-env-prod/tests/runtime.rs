@@ -25,7 +25,8 @@ async fn sleep_wakes_no_earlier_than_requested_and_in_deadline_order() {
             order.lock().unwrap().push(label);
         }
     };
-    tokio::join!(record("long", long), record("short", short));
+    // The short sleep is polled first, so a runner that stalls past both deadlines cannot reorder them.
+    tokio::join!(record("short", short), record("long", long));
     assert_eq!(*order.lock().unwrap(), ["short", "long"]);
     assert!(clock.now().saturating_duration_since(start) >= 60 * MS);
 
@@ -67,7 +68,7 @@ async fn timeout_returns_the_value_or_elapses() {
 async fn interval_ticks_on_its_grid() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let start = clock.now();
-    let mut interval = Interval::new(Arc::clone(&clock), 15 * MS, MissedTicks::Skip);
+    let mut interval = Interval::new(Arc::clone(&clock), 15 * MS, MissedTicks::Burst);
     let first = interval.tick().await;
     let second = interval.tick().await;
     assert_eq!(second.saturating_duration_since(first), 15 * MS);

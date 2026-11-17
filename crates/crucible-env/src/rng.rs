@@ -143,7 +143,9 @@ mod tests {
 
     #[test]
     fn adapter_satisfies_the_rand_core_traits() {
-        fn needs_crypto_rng<R: rand_core::CryptoRng>(rng: &mut R) -> u64 {
+        // `RngCore` is the deprecated 0.10 name that older call sites still bound on.
+        #[allow(deprecated)]
+        fn needs_crypto_rng<R: rand_core::CryptoRng + rand_core::RngCore>(rng: &mut R) -> u64 {
             rng.next_u64()
         }
         let mut adapter = RngAdapter(Arc::new(ChaChaRng::from_u64(3)));
