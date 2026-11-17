@@ -5,3 +5,7 @@ packages:
 # The root "prepare" script runs `lefthook install`, so lefthook's own postinstall is not needed.
 allowBuilds:
   lefthook: false
+
+minimumReleaseAgeExclude:
+  - '@tanstack/query-core@5.108.0'
+  - '@tanstack/react-query@5.108.0'

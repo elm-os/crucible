@@ -10,3 +10,10 @@ Rules learned from corrections and surprises. Read at the start of each session.
    hooks work on any host without a Rust toolchain.
 4. **Describe rules without quoting them.** Docs that explain the naming rule refer to `policy/naming-rules.json`
    instead of repeating the flagged phrases.
+5. **Fresh pins change the workspace file.** pnpm 11 adds any version younger than its release-age window to
+   `minimumReleaseAgeExclude` in `pnpm-workspace.yaml` during install. Check the version's provenance
+   (`npm view <pkg>@<version> dist.attestations`) and call the exception out for review.
+6. **Phone widths need emulation.** Headless Chrome never lays out narrower than 500px, so a `--window-size=390,...`
+   screenshot is a crop. Use DevTools `Emulation.setDeviceMetricsOverride` for phone-width checks.
+7. **Next 16 rewrites `ui/tsconfig.json`** on `next typegen` and `next build` unless `allowJs` and `esModuleInterop` are
+   set. Typed routes are slash-less (`/traces`); `trailingSlash: true` adds the slash when links render.
