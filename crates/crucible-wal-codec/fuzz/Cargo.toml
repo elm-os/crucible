@@ -1,0 +1,32 @@
+[package]
+name = "crucible-wal-codec-fuzz"
+description = "cargo-fuzz targets of the write-ahead-log codec."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crucible-wal-codec = { path = ".." }
+crc32c = "=0.6.9"
+libfuzzer-sys = "=0.4.13"
+
+# Not a member of the root workspace.
+[workspace]
+
+[[bin]]
+name = "frame_iter"
+path = "fuzz_targets/frame_iter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "payload_decode"
+path = "fuzz_targets/payload_decode.rs"
+test = false
+doc = false
+bench = false
