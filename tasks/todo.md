@@ -9,11 +9,14 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
       -> verify: no such directory in the copy; graph queries locate the ingestion processor and price matcher.
 - [x] Dev container image `crucible-dev:1` (Rust 1.100.0, rustfmt, clippy, nightly, nextest, cargo-deny)
       -> verify: `cargo --version`, `cargo nextest --version`, `cargo deny --version` inside it.
-- [ ] Repository created with license, notices, rules, policy checker, hooks, CI, docs skeleton
+- [x] Repository created with license, notices, rules, policy checker, hooks, CI, docs skeleton
       -> verify: CI green on the first commit; a planted naming violation and a planted AI trailer are rejected.
-- [ ] Skills installed (`ux-guidelines`, `ui-sdk`); graphify set up for this repo -> verify: skills listed; graph builds.
+- [x] Skills installed (`ux-guidelines`, `ui-sdk`); graphify set up for this repo -> verify: skills listed; graph builds.
 
 ## M1: walking skeleton
+
+- [x] Crate skeletons for every M1 crate and one pinned `[workspace.dependencies]` table -> verify: workspace builds; clippy clean.
+- [x] Formal tools image `crucible-dev-formal:1` (Kani 0.68.0, Quint 0.33.1, cargo-fuzz 0.13.2, Java 21) -> verify: versions print.
 
 - [ ] M1.0 Freeze contracts v2 in `docs/architecture/contracts.md` (reconcile the MCP rollup key with
       `capture_source`, a backing set for `mcp/deploys`, one ClickHouse identity scheme with `USING 1` policies for

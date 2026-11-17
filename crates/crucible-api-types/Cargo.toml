@@ -1,0 +1,14 @@
+[package]
+name = "crucible-api-types"
+description = "REST API data transfer objects with serde, OpenAPI and TypeScript derives."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

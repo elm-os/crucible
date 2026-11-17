@@ -3,5 +3,97 @@
 version = 4
 
 [[package]]
+name = "crucible"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-admission"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-api-types"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-chfmt"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-compat"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-conformance"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-env"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-env-prod"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-ingest"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-loadgen"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-normalize"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-otlp"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-plan"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-query"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-recent"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-records"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-schema"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-shipper"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-sim"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-store-clickhouse"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-ui-assets"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-wal"
+version = "0.0.0"
+
+[[package]]
+name = "crucible-wal-codec"
+version = "0.0.0"
+
+[[package]]
 name = "xtask"
 version = "0.0.0"
