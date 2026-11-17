@@ -11,8 +11,9 @@ Rules learned from corrections and surprises. Read at the start of each session.
 4. **Describe rules without quoting them.** Docs that explain the naming rule refer to `policy/naming-rules.json`
    instead of repeating the flagged phrases.
 5. **Fresh pins change the workspace file.** pnpm 11 adds any version younger than its release-age window to
-   `minimumReleaseAgeExclude` in `pnpm-workspace.yaml` during install. Check the version's provenance
-   (`npm view <pkg>@<version> dist.attestations`) and call the exception out for review.
+   `minimumReleaseAgeExclude` in `pnpm-workspace.yaml` during install. Pin the newest version older than the window
+   instead of keeping an exception; if a lockfile already holds a rejected version, run `pnpm clean --lockfile` and
+   reinstall.
 6. **Phone widths need emulation.** Headless Chrome never lays out narrower than 500px, so a `--window-size=390,...`
    screenshot is a crop. Use DevTools `Emulation.setDeviceMetricsOverride` for phone-width checks.
 7. **Next 16 rewrites `ui/tsconfig.json`** on `next typegen` and `next build` unless `allowJs` and `esModuleInterop` are
@@ -20,3 +21,5 @@ Rules learned from corrections and surprises. Read at the start of each session.
 8. **jsdom clicks are not presses.** A UI SDK Tree ran `onAction` for a link label under `fireEvent.click` but not
    under a real press in Chrome, which left the phone drawer open. Check navigation and popup wiring in a real browser
    (DevTools protocol) before reporting it done.
+9. **Windows PowerShell 5.1 writes a BOM with `-Encoding utf8`.** A BOM in `package.json` breaks Next and Tailwind
+   parsing. Edit JSON and other machine-read files with the Edit tool, Python or POSIX tools, never `Set-Content`.

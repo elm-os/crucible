@@ -59,7 +59,9 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
       -> verify: Vitest green (mapper rows, range hook, no-backend shapes, loading ladder, agent test); headless
       Chrome shows the designed error state on `/traces/` with no backend.
 - [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract.
-- [ ] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback.
+- [x] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback. All five pass on SDK
+      2.0.0 to 2.4.0 (#3); decision in `docs/architecture/mcp-typescript-seam.md`.
+- [x] CI for the UI (`ci-ui`: install, Biome, Oxlint, typecheck, Vitest, static export) -> verify: green on its PR.
 
 ## M2: core observability
 

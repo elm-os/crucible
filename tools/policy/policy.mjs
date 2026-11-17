@@ -74,7 +74,10 @@ function checkNaming(text) {
   for (const phrase of rules.context_flag) {
     for (const at of findPhrase(toks, phrase)) {
       if (hasProvenanceNear(toks, at, phrase.split(" ").length, rules.context_window_tokens)) {
-        out.push({ rule: "naming", detail: `phrase "${phrase}" next to a provenance or vendor word` });
+        out.push({
+          rule: "naming",
+          detail: `phrase "${phrase}" next to a provenance or vendor word`,
+        });
         break;
       }
     }
@@ -93,7 +96,9 @@ function isExempt(path) {
 }
 
 function vendorAllowed(path) {
-  return rules.vendor_allowed_paths.some((p) => (p.endsWith("/") ? path.startsWith(p) : path === p));
+  return rules.vendor_allowed_paths.some((p) =>
+    p.endsWith("/") ? path.startsWith(p) : path === p,
+  );
 }
 
 function scanText(label, text, { vendorCheck = false } = {}) {
@@ -110,16 +115,23 @@ function scanText(label, text, { vendorCheck = false } = {}) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.includes(rules.waiver_marker)) continue;
-    const pair = i + 1 < lines.length && !lines[i + 1].includes(rules.waiver_marker) ? `${line} ${lines[i + 1]}` : line;
+    const pair =
+      i + 1 < lines.length && !lines[i + 1].includes(rules.waiver_marker)
+        ? `${line} ${lines[i + 1]}`
+        : line;
     for (const v of checkNaming(line)) report(i + 1, v);
     if (pair !== line) {
       const single = new Set(checkNaming(line).map((v) => v.detail));
       const next = new Set(checkNaming(lines[i + 1]).map((v) => v.detail));
-      for (const v of checkNaming(pair)) if (!single.has(v.detail) && !next.has(v.detail)) report(i + 1, v);
+      for (const v of checkNaming(pair))
+        if (!single.has(v.detail) && !next.has(v.detail)) report(i + 1, v);
     }
     for (const v of checkAttribution(line)) report(i + 1, v);
     if (vendorCheck && vendorRe.test(line)) {
-      report(i + 1, { rule: "vendor-confinement", detail: `vendor name outside ${rules.vendor_allowed_paths.join(", ")}` });
+      report(i + 1, {
+        rule: "vendor-confinement",
+        detail: `vendor name outside ${rules.vendor_allowed_paths.join(", ")}`,
+      });
     }
   }
   return violations;
@@ -150,7 +162,9 @@ function scanFiles(staged) {
     if (looksBinary(buf)) continue;
     violations.push(...scanText(path, buf.toString("utf8"), { vendorCheck: !vendorAllowed(path) }));
     if (vendorRe.test(path) && !vendorAllowed(path)) {
-      violations.push(`${path}:0: [vendor-confinement] vendor name in a path outside the allowed directories`);
+      violations.push(
+        `${path}:0: [vendor-confinement] vendor name in a path outside the allowed directories`,
+      );
     }
   }
   return violations;
@@ -166,10 +180,16 @@ function commitMessageBody(text) {
 }
 
 function selftest() {
-  const flag = readFileSync(join(here, "fixtures", "must-flag.txt"), "utf8").split(/\r?\n/).filter((l) => l.trim());
-  const pass = readFileSync(join(here, "fixtures", "must-pass.txt"), "utf8").split(/\r?\n/).filter((l) => l.trim());
+  const flag = readFileSync(join(here, "fixtures", "must-flag.txt"), "utf8")
+    .split(/\r?\n/)
+    .filter((l) => l.trim());
+  const pass = readFileSync(join(here, "fixtures", "must-pass.txt"), "utf8")
+    .split(/\r?\n/)
+    .filter((l) => l.trim());
   const failures = [];
-  for (const l of flag) if (scanText("fixture", l, { vendorCheck: true }).length === 0) failures.push(`should flag: ${l}`);
+  for (const l of flag)
+    if (scanText("fixture", l, { vendorCheck: true }).length === 0)
+      failures.push(`should flag: ${l}`);
   for (const l of pass) if (scanText("fixture", l).length !== 0) failures.push(`should pass: ${l}`);
   if (failures.length) {
     console.error(failures.join("\n"));
@@ -182,7 +202,9 @@ function selftest() {
 function finish(violations, what) {
   if (violations.length) {
     console.error(violations.join("\n"));
-    console.error(`\npolicy: ${violations.length} violation(s) in ${what}. See AGENTS.md "Naming rule" and "No AI attribution".`);
+    console.error(
+      `\npolicy: ${violations.length} violation(s) in ${what}. See AGENTS.md "Naming rule" and "No AI attribution".`,
+    );
     return 1;
   }
   console.log(`policy: ${what} clean`);
@@ -201,7 +223,10 @@ function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
     case "files":
-      return finish(scanFiles(rest.includes("--staged")), rest.includes("--staged") ? "staged files" : "tracked files");
+      return finish(
+        scanFiles(rest.includes("--staged")),
+        rest.includes("--staged") ? "staged files" : "tracked files",
+      );
     case "commit-msg": {
       if (!rest[0]) return usage();
       const body = commitMessageBody(readFileSync(rest[0], "utf8"));
@@ -233,7 +258,9 @@ function main(argv) {
 }
 
 function usage() {
-  console.error("usage: policy.mjs files [--staged] | commit-msg <file> | text [<s>] | branch <name> | commits <range> | selftest");
+  console.error(
+    "usage: policy.mjs files [--staged] | commit-msg <file> | text [<s>] | branch <name> | commits <range> | selftest",
+  );
   return 2;
 }
 
