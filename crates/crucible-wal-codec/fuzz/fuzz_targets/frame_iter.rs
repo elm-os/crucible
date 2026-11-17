@@ -13,7 +13,10 @@ use libfuzzer_sys::fuzz_target;
 
 fn repair(segment: &mut [u8], mode: u8) {
     let mut offset = 0;
-    while let Some(frame) = segment.get_mut(offset..).filter(|rest| rest.len() >= FRAME_HEADER_LEN) {
+    while let Some(frame) = segment
+        .get_mut(offset..)
+        .filter(|rest| rest.len() >= FRAME_HEADER_LEN)
+    {
         let (header, rest) = frame.split_at_mut(FRAME_HEADER_LEN);
         let declared = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
         let payload_len = declared.min(rest.len());
@@ -75,7 +78,9 @@ fuzz_target!(|data: &[u8]| {
             }
         }
     }
-    let end = iter.end().expect("an ended iterator knows how the data ends");
+    let end = iter
+        .end()
+        .expect("an ended iterator knows how the data ends");
     assert_eq!(end.offset(), expected_offset);
     assert_eq!(iter.offset(), expected_offset);
     assert!(iter.next().is_none());
