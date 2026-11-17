@@ -9,6 +9,18 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-records = { workspace = true }
+crucible-otlp = { workspace = true }
+crucible-compat = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
 
 [lints]
 workspace = true

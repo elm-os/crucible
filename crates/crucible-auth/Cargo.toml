@@ -1,0 +1,18 @@
+[package]
+name = "crucible-auth"
+description = "Authentication and authorization; in M1 only ProjectScope minting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+crucible-records = { workspace = true }
+
+[lints]
+workspace = true

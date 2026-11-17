@@ -143,3 +143,15 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     is the simulated code.
 67. **In-process models may be stricter than the real systems, never more permissive; conformance decides.**
 68. **Contracts change only by a pull request that updates `contracts.md` first.**
+
+## Crate boundaries
+
+69. **`ProjectScope` lives in `crucible-records`; minting is restricted by lint, not by visibility.** A leaf crate
+    breaks the cycle that `crucible-env` (store traits) to `crucible-plan` (plans hold a scope) to `crucible-auth`
+    (minting) to `crucible-env` would form. `clippy.toml` bans `ProjectScope::mint` outside
+    `crates/crucible-auth/src/scope.rs`, and the CI guard confines the allow to that file.
+70. **The internal dependency graph is part of the contract (section 1.5).** A new edge needs a contract change.
+71. **Shared primitives live in `crucible-records`:** ids, `Timestamp`, `Lsn`, `TableId`, `PartitionId`, `BatchToken`,
+    the frozen enums and the deterministic collections. The batch-token injectivity proof moves there with the type.
+72. **Hash collections use a fixed hasher (`DetMap`, `DetSet`).** Randomly seeded constructors are banned in
+    `clippy.toml`, because iteration order would differ between runs.

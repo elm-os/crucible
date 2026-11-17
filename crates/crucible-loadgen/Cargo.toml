@@ -9,6 +9,17 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crucible-env = { workspace = true }
+crucible-env-prod = { workspace = true }
+crucible-records = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+flate2 = { workspace = true }
+hdrhistogram = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [lints]
 workspace = true

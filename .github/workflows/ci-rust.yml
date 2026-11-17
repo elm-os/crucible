@@ -38,9 +38,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Allow-attribute guard
         run: |
-          # Only allowlisted crates may switch off the determinism lints.
-          bad=$(grep -rln --include='*.rs' -E 'allow\((clippy::)?disallowed_(methods|types|macros)' crates sdk 2>/dev/null \
-            | grep -vE '^crates/(crucible-env-prod|crucible)/|/benches/|/src/main\.rs$' || true)
+          # Only allowlisted files may switch off the determinism lints (directly, via a lint group, or via
+          # `warnings`), with either `allow` or `expect`.
+          bad=$(grep -rlnP --include='*.rs' '(allow|expect)\([^)]*(clippy::(disallowed_(methods|types|macros)|style|all)\b|\bwarnings\b)' crates sdk 2>/dev/null \
+            | grep -vE '^crates/(crucible-env-prod|crucible)/|^crates/crucible-auth/src/scope\.rs$|/benches/|/src/main\.rs$' || true)
           if [ -n "$bad" ]; then echo "disallowed-lint allows outside the allowlist:"; echo "$bad"; exit 1; fi
       - name: Tests
         run: cargo nextest run --workspace --locked --no-tests=pass
