@@ -1,0 +1,62 @@
+name: ci-rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152,cargo-deny@0.19.2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (determinism bans active)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Allow-attribute guard
+        run: |
+          # Only allowlisted crates may switch off the determinism lints.
+          bad=$(grep -rln --include='*.rs' -E 'allow\((clippy::)?disallowed_(methods|types|macros)' crates sdk 2>/dev/null \
+            | grep -vE '^crates/(crucible-env-prod|crucible)/|/benches/|/src/main\.rs$' || true)
+          if [ -n "$bad" ]; then echo "disallowed-lint allows outside the allowlist:"; echo "$bad"; exit 1; fi
+      - name: Tests
+        run: cargo nextest run --workspace --locked --no-tests=pass
+      - name: Dependency policy
+        run: cargo deny check --hide-inclusion-graph
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build --workspace --locked

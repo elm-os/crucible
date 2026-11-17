@@ -1,0 +1,83 @@
+{
+  "$comment": "Rules for tools/policy/policy.mjs. Crucible may name other products for integration, compatibility, migration and comparison, but no text may say or imply that Crucible copied, cloned, ported or remade another product or its features. This file and the checker's fixtures are exempt from scanning because they must contain the phrases.",
+  "vendors": [
+    "langfuse",
+    "braintrust",
+    "agnost",
+    "langsmith",
+    "helicone",
+    "arize",
+    "opik",
+    "lunary",
+    "honeyhive",
+    "traceloop",
+    "openllmetry",
+    "agentops",
+    "portkey",
+    "humanloop",
+    "openinference",
+    "logfire",
+    "agentcat",
+    "mcpcat",
+    "shinzo"
+  ],
+  "vendor_allowed_paths": [
+    "crates/crucible-compat/",
+    "docs/integrations/",
+    "docs/migration/",
+    "docs/comparison/",
+    "THIRD_PARTY_NOTICES",
+    "policy/",
+    "tools/policy/"
+  ],
+  "always_flag": [
+    "ported from",
+    "clone of",
+    "remake",
+    "reimplementation of",
+    "re implementation of",
+    "parity with",
+    "feature parity",
+    "inspired by",
+    "copied from",
+    "replica of",
+    "borrowed from",
+    "lifted from"
+  ],
+  "context_flag": [
+    "port of",
+    "cloned from",
+    "derived from",
+    "translated from",
+    "modeled on",
+    "modelled on",
+    "based on",
+    "same as",
+    "drop in replacement",
+    "mirrors"
+  ],
+  "provenance_words": [
+    "their",
+    "upstream",
+    "original",
+    "competitor",
+    "competitors",
+    "reference platform",
+    "reference implementation",
+    "oss platform",
+    "eval platform"
+  ],
+  "context_window_tokens": 12,
+  "exempt_paths": [
+    "THIRD_PARTY_NOTICES",
+    "policy/",
+    "tools/policy/"
+  ],
+  "attribution_patterns": [
+    "^(co-authored-by|signed-off-by)\\s*:.*\\b(claude|anthropic|chatgpt|openai|copilot|codex|cursor|gemini|devin|windsurf)\\b",
+    "^(co-authored-by|signed-off-by)\\s*:.*noreply@(anthropic|openai)\\.com",
+    "\\b(generated|created|written|authored)\\s+(with|by|using)\\s+\\[?(claude|claude code|chatgpt|copilot|codex|cursor|gemini|devin|windsurf)\\b",
+    "claude\\.com/claude-code"
+  ],
+  "waiver_marker": "naming-ok:"
+}

@@ -1,0 +1,7 @@
+packages:
+  - "ui"
+  - "sdk/typescript"
+
+# The root "prepare" script runs `lefthook install`, so lefthook's own postinstall is not needed.
+allowBuilds:
+  lefthook: false

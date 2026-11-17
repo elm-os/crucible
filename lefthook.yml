@@ -1,0 +1,9 @@
+pre-commit:
+  commands:
+    policy:
+      run: node tools/policy/policy.mjs files --staged
+
+commit-msg:
+  commands:
+    policy:
+      run: node tools/policy/policy.mjs commit-msg {1}

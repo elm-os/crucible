@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+# "crates/*" joins the list with the first crate (an empty glob is an error).
+members = ["xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+repository = "https://github.com/elm-os/crucible"
+homepage = "https://github.com/elm-os/crucible"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+large_futures = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+panic = "unwind"
+
+[profile.release-fat]
+inherits = "release"
+lto = "fat"
+
+[profile.profiling]
+inherits = "release"
+debug = "full"
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+debug = "line-tables-only"
+
+[profile.ci.package."*"]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

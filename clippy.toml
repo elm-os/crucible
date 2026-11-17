@@ -1,0 +1,61 @@
+# Determinism bans: product crates use crucible-env traits instead of ambient APIs.
+# Only crucible-env-prod, binary main functions, xtask and benches may allow these lints.
+msrv = "1.100"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "use crucible_env::Clock" },
+  { path = "std::time::SystemTime::now", reason = "use crucible_env::Clock" },
+  { path = "tokio::time::Instant::now", reason = "use crucible_env::Clock" },
+  { path = "tokio::time::sleep", reason = "use Clock::sleep" },
+  { path = "tokio::time::sleep_until", reason = "use Clock::sleep" },
+  { path = "tokio::time::timeout", reason = "use Clock::timeout" },
+  { path = "tokio::time::interval", reason = "use Clock::interval" },
+  { path = "std::thread::sleep", reason = "use Clock::sleep" },
+  { path = "std::thread::spawn", reason = "use crucible_env::Spawner" },
+  { path = "tokio::spawn", reason = "use crucible_env::Spawner" },
+  { path = "tokio::task::spawn", reason = "use crucible_env::Spawner" },
+  { path = "tokio::task::spawn_blocking", reason = "use Spawner::spawn_blocking" },
+  { path = "tokio::task::spawn_local", reason = "use crucible_env::Spawner" },
+  { path = "tokio::task::block_in_place", reason = "use Spawner::spawn_blocking" },
+  { path = "rand::rng", reason = "use crucible_env::Rng" },
+  { path = "rand::random", reason = "use crucible_env::Rng" },
+  { path = "rand::thread_rng", reason = "use crucible_env::Rng" },
+  { path = "getrandom::fill", reason = "use crucible_env::Rng" },
+  { path = "getrandom::getrandom", reason = "use crucible_env::Rng" },
+  { path = "uuid::Uuid::new_v4", reason = "derive ids from crucible_env::Rng" },
+  { path = "uuid::Uuid::now_v7", reason = "derive ids from crucible_env::Rng and Clock" },
+  { path = "std::env::var", reason = "read the environment only in crucible-config" },
+  { path = "std::env::var_os", reason = "read the environment only in crucible-config" },
+  { path = "std::env::vars", reason = "read the environment only in crucible-config" },
+  { path = "std::fs::read", reason = "use crucible_env::Disk" },
+  { path = "std::fs::read_to_string", reason = "use crucible_env::Disk" },
+  { path = "std::fs::write", reason = "use crucible_env::Disk" },
+  { path = "std::fs::create_dir_all", reason = "use crucible_env::Disk" },
+  { path = "std::fs::remove_file", reason = "use crucible_env::Disk" },
+  { path = "std::fs::rename", reason = "use crucible_env::Disk" },
+  { path = "std::fs::read_dir", reason = "use crucible_env::Disk" },
+  { path = "std::fs::metadata", reason = "use crucible_env::Disk" },
+  { path = "tokio::fs::read", reason = "use crucible_env::Disk" },
+  { path = "tokio::fs::write", reason = "use crucible_env::Disk" },
+  { path = "std::net::TcpStream::connect", reason = "use crucible_env::Net" },
+  { path = "std::net::TcpListener::bind", reason = "use crucible_env::Net" },
+  { path = "std::net::UdpSocket::bind", reason = "use crucible_env::Net" },
+  { path = "tokio::net::TcpStream::connect", reason = "use crucible_env::Net" },
+  { path = "tokio::net::TcpListener::bind", reason = "use crucible_env::Net" },
+  { path = "std::process::Command::new", reason = "use crucible_env::ChildProcess" },
+  { path = "tokio::process::Command::new", reason = "use crucible_env::ChildProcess" },
+]
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "use DetMap, BTreeMap or IndexMap (deterministic iteration)" },
+  { path = "std::collections::HashSet", reason = "use DetSet, BTreeSet or IndexSet (deterministic iteration)" },
+  { path = "std::fs::File", reason = "use crucible_env::Disk" },
+  { path = "std::fs::OpenOptions", reason = "use crucible_env::Disk" },
+  { path = "tokio::fs::File", reason = "use crucible_env::Disk" },
+  { path = "tokio::fs::OpenOptions", reason = "use crucible_env::Disk" },
+]

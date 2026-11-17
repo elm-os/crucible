@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / UI
+node_modules/
+/ui/.next/
+/ui/out/
+/ui/next-env.d.ts
+*.tsbuildinfo
+.pnpm-store/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+/sdk/python/dist/
+
+# Go
+/sdk/go/bin/
+
+# Local state
+.env
+.env.*
+!.env.example
+*.log
+/perf/results/local/
+/sim/runs/
+/fuzz/artifacts/
+/fuzz/coverage/
+graphify-out/
+.DS_Store
+Thumbs.db

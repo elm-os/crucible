@@ -1,0 +1,19 @@
+This module is ported from the reference platform.
+The dashboard is a clone of the original one.
+Crucible is a remake of an existing tool.
+We reached feature parity with the competitor.
+The span tree is inspired by another product.
+This parser was copied from upstream.
+A port of their ingestion worker.
+The cost model is derived from the upstream implementation.
+The playground works the same as Braintrust does.
+Translated from their TypeScript code.
+A reimplementation of the original scheduler.
+It is a re-implementation of the upstream store.
+The schema is a replica of another product.
+Trace ingestion compatible with Langfuse SDKs.
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-authored-by: Copilot <copilot@github.com>
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Generated with Claude Code
+This code was written by ChatGPT.
