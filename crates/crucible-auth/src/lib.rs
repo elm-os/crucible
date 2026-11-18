@@ -10,6 +10,7 @@ mod scope;
 // The control plane (milestone 4).
 pub mod cookie;
 pub mod csrf;
+mod db_keys;
 pub mod http;
 mod mint;
 mod next_path;
@@ -19,6 +20,10 @@ pub mod roles;
 mod seal;
 pub mod token;
 
+pub use db_keys::{
+    DbKeys, KeyGrant, KeyVerdict, OUTAGE_AFTER, OutageMode, POLL_EVERY, RETRY_AFTER, Scopes,
+    StoreFeed, run_feed, run_last_used,
+};
 pub use mint::{LookupKey, MintedKey, mint, secret_hash};
 pub use next_path::safe_next;
 pub use seal::{Sealed, Sealer, Unsealable};
