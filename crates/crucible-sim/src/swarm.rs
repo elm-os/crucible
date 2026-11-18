@@ -108,7 +108,7 @@ dimensions! {
     FrameFaults, "frame_faults", Fault, "Some durable frames do not normalize and are quarantined as frames.";
     ProjectRate, "project_rate", Config, "A per-project byte rate, so some requests and fact writes get 429.";
     SmallBudget, "small_budget", Config, "A `shipper.encoded_bytes` budget of a few KiB, so frames wait for batches in flight.";
-    NestedUsage, "nested_usage", Workload, "Spans form parent chains within a request and across requests (the child first), so some have a descendant that carries usage.";
+    NestedUsage, "nested_usage", Workload, "Spans form parent chains within a request, across requests (the child first) and under a span that a request sends again, so some have a descendant that carries usage.";
 }
 
 /// A configuration: one bit per [`Dim`].

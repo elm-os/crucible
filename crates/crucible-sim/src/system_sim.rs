@@ -962,14 +962,33 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let mut wire = Vec::new();
     // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
     // window still holds it, which shifts the spans after it in the frame.
-    let again = state
-        .spans
-        .iter()
-        .filter(|sent| sent.project == project)
-        .nth(pick(rng, 4) as usize)
-        .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
-        .cloned();
+    // With nested usage, half of the time it is a span whose parent no request has sent yet, so that the parent
+    // arrives after a frame that held the repeat.
+    let nth = pick(rng, 4) as usize;
+    let waiting = has(Dim::NestedUsage) && coin(rng);
+    let awaited = &state.awaited;
+    let mut candidates = state.spans.iter().filter(|sent| {
+        sent.project == project
+            && (!waiting
+                || awaited.iter().any(|(p, trace, parent)| {
+                    *p == project
+                        && *trace == sent.info.trace
+                        && parent[..] == sent.wire.parent_span_id[..]
+                }))
+    });
+    let again = if waiting {
+        candidates.next()
+    } else {
+        candidates.nth(nth)
+    }
+    .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
+    .cloned();
     let partial_repeat = again.is_some();
+    // The parent that the repeat waits for: this request may send it beside the repeat.
+    let repeat_parent: Option<([u8; 16], Vec<u8>)> = again
+        .as_ref()
+        .filter(|_| waiting)
+        .map(|sent| (sent.info.trace, sent.wire.parent_span_id.clone()));
     if let Some(sent) = again {
         spans.push(sent.info);
         wire.push(sent.wire);
@@ -989,13 +1008,28 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         // spans: the child was exported first, as a child that ends before its parent is.
         let awaited = (has(Dim::NestedUsage) && pick(rng, 3) == 0)
             .then(|| {
-                let at = state.awaited.iter().position(|(p, ..)| *p == project)?;
+                let at = state.awaited.iter().position(|(p, trace, id)| {
+                    *p == project
+                        && repeat_parent
+                            .as_ref()
+                            .is_none_or(|(t, parent)| trace == t && id[..] == parent[..])
+                })?;
                 Some(state.awaited.remove(at))
             })
             .flatten();
-        let (trace, span, root) = match awaited {
-            Some((_, trace, span)) => (trace, span, false),
-            None => {
+        // Or it hangs under the span of an earlier request that this request sends again: stage B drops the
+        // repeat, which still passes the mark of its new child on to its own parent.
+        let under_repeat = spans
+            .first()
+            .filter(|_| has(Dim::NestedUsage) && partial_repeat && awaited.is_none() && coin(rng))
+            .map(|repeat| repeat.trace);
+        // A span of the repeat's trace reports no trace-level attribute: the forward fill would hand it to the
+        // repeat, which would then be a changed row and no exact repeat.
+        let bare = under_repeat.is_some() || (awaited.is_some() && repeat_parent.is_some());
+        let (trace, span, root) = match (awaited, under_repeat) {
+            (Some((_, trace, span)), _) => (trace, span, false),
+            (None, Some(trace)) => (trace, random::<8>(rng), false),
+            (None, None) => {
                 let root = !other && !rootless;
                 // One root per trace.
                 rootless = true;
@@ -1004,17 +1038,21 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         };
         // With nested usage, half of the spans below the root hang under the latest span of their trace in this
         // request, so chains form.
-        let parent = (has(Dim::NestedUsage) && !root && coin(rng))
-            .then(|| {
-                spans
-                    .iter()
-                    .enumerate()
-                    .skip(first_new)
-                    .rev()
-                    .find(|(_, earlier)| earlier.trace == trace)
-                    .map(|(at, _)| at)
-            })
-            .flatten();
+        let parent = if under_repeat.is_some() {
+            Some(0)
+        } else {
+            (has(Dim::NestedUsage) && !root && coin(rng))
+                .then(|| {
+                    spans
+                        .iter()
+                        .enumerate()
+                        .skip(first_new)
+                        .rev()
+                        .find(|(_, earlier)| earlier.trace == trace)
+                        .map(|(at, _)| at)
+                })
+                .flatten()
+        };
         // Or it names a parent that a later request will send.
         let later_parent =
             (has(Dim::NestedUsage) && !root && parent.is_none() && pick(rng, 3) == 0)
@@ -1051,20 +1089,20 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             name.push_str("BADUTF8!");
             attributes.push(attribute("sim.text", text("a BADUTF8! b".to_owned())));
         }
-        if let Some(session) = &session {
+        if let Some(session) = session.as_ref().filter(|_| !bare) {
             attributes.push(attribute("crucible.session.id", text(session.clone())));
         }
-        if coin(rng) {
+        if coin(rng) && !bare {
             attributes.push(attribute("user.id", text(format!("user-{}", pick(rng, 3)))));
         }
-        if pick(rng, 3) == 0 {
+        if pick(rng, 3) == 0 && !bare {
             let environment = ["prod", "staging"][pick(rng, 2) as usize];
             attributes.push(attribute(
                 "crucible.environment",
                 text(environment.to_owned()),
             ));
         }
-        if pick(rng, 4) == 0 {
+        if pick(rng, 4) == 0 && !bare {
             attributes.push(attribute("crucible.release", text("r1".to_owned())));
         }
         let mut sent = system_oracle::Sent::default();
