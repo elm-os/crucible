@@ -1,0 +1,27 @@
+1:"$Sreact.fragment"
+2:"/_next/static/chunks/1s-jx0-5cf4bm.js"
+3:"/_next/static/chunks/30z37qhmwnwur.js"
+4:"/_next/static/chunks/1tqnlj6g54r0a.js"
+5:I[62961,["$2","$3","$4"],"Providers"]
+6:I[56096,["$2","$3","$4"],"default"]
+7:I[49548,["$2","$3","$4"],"default"]
+8:"/_next/static/chunks/2us82aw5k86j-.js"
+9:I[99560,["$2","$3","$4","$8"],""]
+b:I[24711,["$2","$3","$4"],"ClientPageRoot"]
+c:"/_next/static/chunks/2ck0k4q-fpqah.js"
+d:I[29249,["$2","$3","$4","$c"],"default"]
+10:I[45600,["$2","$3","$4"],"OutletBoundary"]
+11:"$Sreact.suspense"
+13:"ViewportBoundary"
+14:I[45600,["$2","$3","$4"],"$13"]
+16:"MetadataBoundary"
+17:I[45600,["$2","$3","$4"],"$16"]
+19:I[91320,["$2","$3","$4"],"default",1]
+:HL["/_next/static/chunks/2o-o0k874kguo.css","style"]
+a:[["children",{"s":"__PAGE__","h":512,"d":{"r":["$","$1","c",{"children":[["$","$Lb",null,{"Component":"$d","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@e","$@f"]}}],[["$","script","script-0",{"src":"/_next/static/chunks/2ck0k4q-fpqah.js","async":true,"nonce":"$undefined"}]],["$","$L10",null,{"children":["$","$11",null,{"name":"Next.MetadataOutlet","children":"$@12"}]}]]}],"p":false,"v":null}}]]
+0:{"P":null,"c":["",""],"q":"","i":false,"t":{"t":{"s":"","h":528,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/2o-o0k874kguo.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}],["$","script","script-0",{"src":"/_next/static/chunks/1s-jx0-5cf4bm.js","async":true,"nonce":"$undefined"}],["$","script","script-1",{"src":"/_next/static/chunks/30z37qhmwnwur.js","async":true,"nonce":"$undefined"}],["$","script","script-2",{"src":"/_next/static/chunks/1tqnlj6g54r0a.js","async":true,"nonce":"$undefined"}]],["$","html",null,{"lang":"en","children":[["$","head",null,{"children":["$","meta",null,{"property":"csp-nonce"}]}],["$","body",null,{"children":["$","$L5",null,{"children":["$","$L6",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L7",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","main",null,{"className":"grid min-h-dvh place-items-center px-4","children":["$","div",null,{"className":"flex max-w-md flex-col items-start gap-3","children":[["$","p",null,{"className":"text-label font-medium text-ink-soft","children":"Error 404"}],["$","h1",null,{"className":"font-display text-heading","children":"This page doesn't exist."}],["$","p",null,{"className":"text-body text-ink-soft","children":"The address may be mistyped, or the page may have moved."}],["$","$L9",null,{"href":"/home","className":"text-body","children":"Go to Home"}]]}]}],[]],"forbidden":"$undefined","unauthorized":"$undefined"}]}]}]]}]]}],"p":false,"v":null},"c":"$Qa"},"h":{"r":["$","$1","h",{"children":[null,["$","$L14",null,{"children":"$L15"}],["$","$L17",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$11",null,{"name":"Next.Metadata","children":"$L18"}]}],null]}],null]}],"p":false,"v":null}},"m":"$undefined","G":["$19",[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/2o-o0k874kguo.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]]],"S":true,"r":"$undefined","s":"$undefined","a":"$undefined","l":"$undefined","p":"$undefined","d":"$undefined","b":"07_El3sNkZ2AOTCUxcqke"}
+e:{}
+f:"$a:0:1:d:r:props:children:0:props:serverProvidedParams:params"
+15:[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]
+12:null
+18:[["$","title","0",{"children":"Crucible"}],["$","meta","1",{"name":"description","content":"Self-hosted observability and analytics for AI agents and MCP servers."}]]

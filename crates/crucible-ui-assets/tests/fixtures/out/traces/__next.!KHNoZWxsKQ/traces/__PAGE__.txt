@@ -1,0 +1,44 @@
+1:"$Sreact.fragment"
+2:"/_next/static/chunks/1s-jx0-5cf4bm.js"
+3:"/_next/static/chunks/30z37qhmwnwur.js"
+4:"/_next/static/chunks/1tqnlj6g54r0a.js"
+5:I[62961,["$2","$3","$4"],"Providers"]
+6:I[56096,["$2","$3","$4"],"default"]
+7:I[49548,["$2","$3","$4"],"default"]
+8:"/_next/static/chunks/3nu8sw3e9-yj3.js"
+9:"/_next/static/chunks/2zatvpzm2lhfz.js"
+a:"/_next/static/chunks/0mv7-1cxor871.js"
+b:"/_next/static/chunks/2qmwfxbz0ftdu.js"
+c:I[99560,["$2","$3","$4","$8","$9","$a","$b"],""]
+10:I[93824,["$2","$3","$4","$8","$9","$a","$b"],"Nav"]
+11:I[62601,["$2","$3","$4","$8","$9","$a","$b"],"MobileNav"]
+12:I[59499,["$2","$3","$4","$8","$9","$a","$b"],"ProjectSwitcher"]
+13:"TimeRangeControl"
+14:I[79335,["$2","$3","$4","$8","$9","$a","$b"],"$13"]
+1a:"$Sreact.suspense"
+1b:"/_next/static/chunks/34c-e-c79hg08.js"
+1c:I[16071,["$2","$3","$4","$8","$9","$a","$b","$1b"],"SectionFrame"]
+1d:I[16584,["$2","$3","$4","$8","$9","$a","$b","$1b"],"TracesSection"]
+1e:I[45600,["$2","$3","$4"],"OutletBoundary"]
+21:"ViewportBoundary"
+22:I[45600,["$2","$3","$4"],"$21"]
+23:"MetadataBoundary"
+24:I[45600,["$2","$3","$4"],"$23"]
+:HL["/_next/static/chunks/2o-o0k874kguo.css","style"]
+e:X
+18:X
+18:C
+19:[["children",{"s":"__PAGE__","h":160,"d":{"r":["$","$1","c",{"children":[[["$","div",null,{"className":"mb-6 flex flex-col gap-1","children":[["$","h1",null,{"className":"text-heading-sm font-medium","children":"Traces"}],["$","p",null,{"className":"text-data text-ink-soft","children":"Root spans that started in the selected time range."}]]}],["$","$1a",null,{"fallback":["$","$L1c",null,{"title":"Recent traces","children":null}],"children":["$","$L1d",null,{}]}]],[["$","script","script-0",{"src":"/_next/static/chunks/34c-e-c79hg08.js","async":true}]],["$","$L1e",null,{"children":["$","$1a",null,{"name":"Next.MetadataOutlet","children":"$@1f"}]}]]}],"p":"$@20","v":null,"s":"$e"}}]]
+16:[["children",{"s":"traces","h":96,"d":{"r":["$","$1","c",{"children":[null,["$","$L6",null,{"parallelRouterKey":"children","template":["$","$L7",null,{}]}]]}],"p":"$@17","v":"$18","s":"$e"},"c":"$Q19"}]]
+f:[["children",{"s":"(shell)","h":96,"d":{"r":["$","$1","c",{"children":[[["$","script","script-0",{"src":"/_next/static/chunks/3nu8sw3e9-yj3.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/2zatvpzm2lhfz.js","async":true}],["$","script","script-2",{"src":"/_next/static/chunks/0mv7-1cxor871.js","async":true}],["$","script","script-3",{"src":"/_next/static/chunks/2qmwfxbz0ftdu.js","async":true}]],["$","div",null,{"className":"flex min-h-dvh","children":[["$","aside",null,{"className":"sticky top-0 hidden h-dvh w-56 shrink-0 flex-col gap-4 border-e border-ash-border px-3 py-4 md:flex","children":[["$","$Lc",null,{"href":"/home","className":"wordmark px-2 py-1 no-underline","children":"Crucible"}],["$","$L10",null,{}]]}],["$","div",null,{"className":"flex min-w-0 flex-1 flex-col","children":[["$","header",null,{"className":"flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ash-border px-4 py-3 md:px-8","children":[["$","$L11",null,{}],["$","$L12",null,{}],["$","div",null,{"className":"ms-auto","children":["$","$L14",null,{}]}]]}],["$","main",null,{"className":"flex-1 px-4 py-6 md:px-8","children":["$","$L6",null,{"parallelRouterKey":"children","template":["$","$L7",null,{}],"notFound":[["$","main",null,{"className":"grid min-h-dvh place-items-center px-4","children":["$","div",null,{"className":"flex max-w-md flex-col items-start gap-3","children":[["$","p",null,{"className":"text-label font-medium text-ink-soft","children":"Error 404"}],["$","h1",null,{"className":"font-display text-heading","children":"This page doesn't exist."}],["$","p",null,{"className":"text-body text-ink-soft","children":"The address may be mistyped, or the page may have moved."}],["$","$Lc",null,{"href":"/home","className":"text-body","children":"Go to Home"}]]}]}],[]]}]}]]}]]}]]}],"p":"$@15","v":null,"s":"$e"},"c":"$Q16"}]]
+0:{"t":{"t":{"s":"","h":80,"d":{"r":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/2o-o0k874kguo.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/1s-jx0-5cf4bm.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/30z37qhmwnwur.js","async":true}],["$","script","script-2",{"src":"/_next/static/chunks/1tqnlj6g54r0a.js","async":true}]],["$","html",null,{"lang":"en","children":[["$","head",null,{"children":["$","meta",null,{"property":"csp-nonce"}]}],["$","body",null,{"children":["$","$L5",null,{"children":["$","$L6",null,{"parallelRouterKey":"children","template":["$","$L7",null,{}],"notFound":[["$","main",null,{"className":"grid min-h-dvh place-items-center px-4","children":["$","div",null,{"className":"flex max-w-md flex-col items-start gap-3","children":[["$","p",null,{"className":"text-label font-medium text-ink-soft","children":"Error 404"}],["$","h1",null,{"className":"font-display text-heading","children":"This page doesn't exist."}],["$","p",null,{"className":"text-body text-ink-soft","children":"The address may be mistyped, or the page may have moved."}],["$","$Lc",null,{"href":"/home","className":"text-body","children":"Go to Home"}]]}]}],[]]}]}]}]]}]]}],"p":"$@d","v":null,"s":"$e"},"c":"$Qf"},"h":{"r":["$","$1","h",{"children":[null,["$","$L22",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","$L24",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$1a",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"Traces · Crucible"}],["$","meta","1",{"name":"description","content":"Self-hosted observability and analytics for AI agents and MCP servers."}]]}]}],null]}],null]}],"p":"$@25","v":null,"s":"$e"}},"a":"$@26","u":"$@27","b":"07_El3sNkZ2AOTCUxcqke"}
+1f:null
+e:300
+27:true
+e:C
+26:0
+17:"$undefined"
+15:"$undefined"
+d:"$undefined"
+25:"$undefined"
+20:"$undefined"

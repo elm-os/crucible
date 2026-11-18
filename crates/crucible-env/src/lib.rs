@@ -23,6 +23,7 @@
 //! [`JoinHandle`], [`ClockExt::timeout`] over any future, [`Interval`]) are inherent methods on `Env` or
 //! extension traits that box. Async methods are cancel-safe unless their documentation says otherwise.
 
+mod asset;
 mod clock;
 mod disk;
 mod id;
@@ -38,6 +39,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use asset::{Asset, AssetManifest, AssetSource, Encodings};
 pub use clock::{Clock, ClockExt, Elapsed, Instant, Interval, MissedTicks};
 pub use disk::{Disk, DiskError, DiskPath, Entry, File, FileOps, OpenMode, Root};
 pub use id::{IdGen, new_id};
