@@ -746,7 +746,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Some(path) => crate::keys::load(path, env)?,
         None => StaticKeys::new(env.rng.as_ref(), Vec::new())?,
     };
-    if keys.is_empty() {
+    if keys.is_empty() && config.postgres.is_none() {
         tracing::warn!(
             "no project keys are configured (--keys-file); ingest refuses every request"
         );
