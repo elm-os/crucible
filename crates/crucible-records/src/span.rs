@@ -134,6 +134,9 @@ pub struct SpanCore {
     pub price_model_id: Option<Uuid>,
     /// The price tier used.
     pub price_tier_id: Option<Uuid>,
+    /// The span repeats usage that a descendant of it in the same request also carries, so token and cost sums
+    /// leave it out ([`SpanCore::counts_usage`]). The span still stores and shows its own usage.
+    pub usage_aggregate: bool,
     /// Prompt reference; [`caps::PROMPT_NAME_BYTES`].
     pub prompt_name: Box<str>,
     /// Prompt reference; [`caps::PROMPT_VERSION_BYTES`].
@@ -181,6 +184,16 @@ pub struct SpanCore {
 }
 
 impl SpanCore {
+    /// Whether the span's tokens and cost enter the trace, session, user and metrics sums: only generations and
+    /// embeddings do, and not one that repeats the usage of a descendant (`usage_aggregate`), so each model call
+    /// is counted once, on the span that carries the model it is priced with.
+    pub const fn counts_usage(&self) -> bool {
+        matches!(
+            self.observation_type,
+            ObservationType::Generation | ObservationType::Embedding
+        ) && !self.usage_aggregate
+    }
+
     /// `duration_us`: `end_time - start_time`, or zero when `end_time` is not after `start_time`.
     pub const fn duration_us(&self) -> u64 {
         let micros = self
@@ -587,6 +600,7 @@ mod tests {
             cost_source: CostSource::None,
             price_model_id: None,
             price_tier_id: None,
+            usage_aggregate: false,
             prompt_name: "".into(),
             prompt_version: "".into(),
             tool_names: Vec::new(),

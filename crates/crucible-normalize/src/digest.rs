@@ -18,7 +18,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 /// The version of the encoding that [`row_digest`] hashes. A change to it changes digests, so it ships with a new
 /// normalizer version.
-pub const DIGEST_ENCODING: u8 = 1;
+pub const DIGEST_ENCODING: u8 = 2;
 
 /// Where encoded bytes go.
 trait Sink {
@@ -162,6 +162,7 @@ fn encode<S: Sink>(record: &SpanRecord, sink: &mut S) {
         cost_source,
         price_model_id,
         price_tier_id,
+        usage_aggregate,
         prompt_name,
         prompt_version,
         tool_names,
@@ -274,6 +275,7 @@ fn encode<S: Sink>(record: &SpanRecord, sink: &mut S) {
     e.u8(cost_source.value());
     e.uuid(*price_model_id);
     e.uuid(*price_tier_id);
+    e.bool(*usage_aggregate);
     e.bytes(prompt_name.as_bytes());
     e.bytes(prompt_version.as_bytes());
     e.strs(tool_names);
@@ -420,12 +422,13 @@ mod tests {
             cost: NanoUsd::ZERO,
         }];
         let digest = row_digest(&base);
-        let mutations: [fn(&mut SpanRecord); 5] = [
+        let mutations: [fn(&mut SpanRecord); 6] = [
             |r| r.core.usage[0].cost = NanoUsd::from_nanos(1),
             |r| r.core.total_cost_nusd = NanoUsd::from_nanos(1),
             |r| r.core.cost_source = CostSource::Calculated,
             |r| r.core.price_model_id = Some(Uuid::from_bytes([7; 16])),
             |r| r.core.price_tier_id = Some(Uuid::from_bytes([7; 16])),
+            |r| r.core.usage_aggregate = true,
         ];
         for (i, mutate) in mutations.into_iter().enumerate() {
             let mut r = base.clone();

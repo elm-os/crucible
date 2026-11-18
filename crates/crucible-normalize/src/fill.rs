@@ -7,7 +7,7 @@
 //! values are never backfilled into spans of earlier requests.
 
 use bytes::Bytes;
-use crucible_records::{TraceId, TracePublic};
+use crucible_records::{SpanId, TraceId, TracePublic};
 use smallvec::SmallVec;
 
 use crate::mapper::SpanDraft;
@@ -91,5 +91,61 @@ fn fill<T: Blank>(drafts: &mut [SpanDraft], group: &[usize], field: fn(&mut Span
         if slot.blank() {
             *slot = value.clone();
         }
+    }
+}
+
+/// Flags the spans that repeat usage a descendant also carries (`usage_aggregate`, contract 3.1).
+///
+/// A span carries usage when it provides a count above zero. A span is an aggregate when it carries usage and a
+/// descendant of it in the same request and trace carries usage too: the descendant (the leaf, which names the
+/// model the usage is priced with) is what token and cost sums count. Only spans that became drafts take part.
+/// The walk from each usage-carrying span to the top stops at the first span it has already climbed, so the work
+/// is linear and a parent cycle ends.
+pub(crate) fn usage_aggregates(drafts: &mut [SpanDraft]) {
+    let carries = |d: &SpanDraft| d.record.payload.usage_provided.iter().any(|(_, n)| *n > 0);
+    if drafts.iter().filter(|d| carries(d)).count() < 2 {
+        return;
+    }
+    let mut by_id: Vec<(TraceId, SpanId, usize)> = drafts
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.record.core.trace_id, d.record.core.span_id, i))
+        .collect();
+    by_id.sort_unstable();
+    // A span id that repeats within the request resolves to its first occurrence in wire order.
+    let parent_of = |d: &SpanDraft| -> Option<usize> {
+        let core = &d.record.core;
+        if core.parent_span_id == SpanId::ZERO {
+            return None;
+        }
+        let key = (core.trace_id, core.parent_span_id);
+        let at = by_id.partition_point(|&(t, s, _)| (t, s) < key);
+        by_id
+            .get(at)
+            .filter(|&&(t, s, _)| (t, s) == key)
+            .map(|&(.., i)| i)
+    };
+    let mut climbed = vec![false; drafts.len()];
+    let mut above_usage = vec![false; drafts.len()];
+    for start in 0..drafts.len() {
+        if !carries(&drafts[start]) {
+            continue;
+        }
+        let mut at = start;
+        while let Some(parent) = parent_of(&drafts[at]) {
+            if parent == start {
+                break;
+            }
+            let seen = climbed[parent];
+            climbed[parent] = true;
+            above_usage[parent] = true;
+            if seen {
+                break;
+            }
+            at = parent;
+        }
+    }
+    for (draft, above) in drafts.iter_mut().zip(above_usage) {
+        draft.record.core.usage_aggregate = above && carries(draft);
     }
 }

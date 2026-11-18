@@ -1,7 +1,7 @@
 //! Stage A (contract 3.2): one frame to its records, purely.
 
 use bytes::Bytes;
-use crucible_compat::Confidence;
+use crucible_compat::{Confidence, TABLES};
 use crucible_otlp::{SpanView, TraceRequest};
 use crucible_records::{
     CostSource, Ingestion, IoShape, Level, Lsn, McpSide, NanoUsd, ObservationType, SourceFormat,
@@ -9,10 +9,12 @@ use crucible_records::{
     truncate_str,
 };
 
-use crate::mapper::{Hints, MapCtx, NATIVE, SpanDraft, SpanMapper};
+use crate::index::PRODUCTION;
+use crate::mapper::{Hints, MapCtx, SpanDraft, SpanMapper};
 use crate::price::Matches;
 use crate::{
-    FrameSummary, IngestFrame, NormCtx, NormalizeError, NormalizedFrame, cost, digest, fill, json,
+    FrameSummary, IngestFrame, NormCtx, NormalizeError, NormalizedFrame, cost, digest, engine,
+    fill, json,
 };
 
 /// A `start_time` further than this ahead of `received_at` is flagged `clock_skew` (contract 1.2).
@@ -21,21 +23,31 @@ const MAX_CLOCK_LEAD_MICROS: i64 = 24 * 60 * 60 * 1_000_000;
 /// The value of an absent `environment` (contract 3.1).
 const DEFAULT_ENVIRONMENT: &str = "default";
 
-/// Normalizes one frame with the production mappers ([`NATIVE`]).
+/// How the dialect of each span is chosen and mapped.
+enum Mappers<'m> {
+    /// The production tables ([`crate::MAPPERS`]), through the key index: one pass over a span's keys detects
+    /// its dialect, whatever the number of tables.
+    Production,
+    /// The given mappers, asked one by one.
+    Given(&'m [&'m dyn SpanMapper]),
+}
+
+/// Normalizes one frame with the production mappers ([`crate::MAPPERS`]).
 pub fn normalize(
     frame: &IngestFrame<'_>,
     ctx: &NormCtx<'_>,
 ) -> Result<NormalizedFrame, NormalizeError> {
-    normalize_with(&[&NATIVE], frame, ctx)
+    run(&Mappers::Production, frame, ctx)
 }
 
-/// Normalizes one frame with the given mappers.
+/// Normalizes one frame with the given mappers. With [`crate::MAPPERS`] the result equals [`normalize`]'s.
 ///
 /// 1. Re-scan the OTLP body; a body that does not scan fails the whole frame.
 /// 2. Skip each span the envelope's bitmap marks, and any span with a missing id.
 /// 3. Build each draft: ids, kind, name, times, status, scope, links, trace state and the envelope and ingestion
 ///    values; then the chosen mapper fills the rest from the attributes.
-/// 4. Forward-fill trace-level attributes within the request (contract 3.3).
+/// 4. Forward-fill trace-level attributes within the request (contract 3.3), and flag the spans that repeat the
+///    usage of a descendant (`usage_aggregate`).
 /// 5. Finish each record: level, the default environment, usage and cost, payload caps, then the row digest.
 ///
 /// Times: `start_time` and `end_time` are clamped into the valid range, `end_time` is raised to at least
@@ -43,6 +55,14 @@ pub fn normalize(
 /// `received_at` (contract 1.2).
 pub fn normalize_with(
     mappers: &[&dyn SpanMapper],
+    frame: &IngestFrame<'_>,
+    ctx: &NormCtx<'_>,
+) -> Result<NormalizedFrame, NormalizeError> {
+    run(&Mappers::Given(mappers), frame, ctx)
+}
+
+fn run(
+    mappers: &Mappers<'_>,
     frame: &IngestFrame<'_>,
     ctx: &NormCtx<'_>,
 ) -> Result<NormalizedFrame, NormalizeError> {
@@ -66,11 +86,23 @@ pub fn normalize_with(
             continue;
         }
         let mut draft = draft(frame, ctx, &span);
-        if let Some(mapper) = choose(mappers, frame.compat_dialect, &span) {
-            mapper.map(&map_ctx, &span, &mut draft);
+        let dialect = match mappers {
+            Mappers::Production => {
+                let dialect = engine::detect(&PRODUCTION, &span, frame.compat_dialect);
+                TABLES.get(usize::from(dialect)).map(|table| {
+                    engine::map_span(&PRODUCTION, table, &map_ctx, &span, &mut draft);
+                    dialect
+                })
+            }
+            Mappers::Given(mappers) => choose(mappers, frame.compat_dialect, &span).map(|mapper| {
+                mapper.map(&map_ctx, &span, &mut draft);
+                mapper.dialect()
+            }),
+        };
+        if let Some(dialect) = dialect {
             let core = &mut draft.record.core;
-            core.compat_dialect = mapper.dialect();
-            core.source_format = if mapper.dialect() == 0 {
+            core.compat_dialect = dialect;
+            core.source_format = if dialect == 0 {
                 SourceFormat::Otel
             } else {
                 SourceFormat::Compat
@@ -79,6 +111,7 @@ pub fn normalize_with(
         drafts.push(draft);
     }
     fill::forward_fill(&mut drafts);
+    fill::usage_aggregates(&mut drafts);
     let mut matches = Matches::default();
     let spans = drafts
         .into_iter()
@@ -91,19 +124,15 @@ pub fn normalize_with(
     })
 }
 
-/// The mapper of a span (contract 10.2): the request hint's dialect when a mapper for it exists, else the mapper
-/// with the highest detection confidence (ties to the lowest dialect id), else dialect 0's. A hint naming a
-/// dialect without a mapper in this build is ignored, so a record always names the dialect that mapped it.
+/// The mapper of a span (contract 10.2): the mapper with the highest detection confidence (ties to the lowest
+/// dialect id), else the mapper of dialect 0. A request hint is a detection of its dialect at confidence 60, which
+/// each mapper reports from the hints; a hint naming a dialect without a mapper is therefore ignored, so a record
+/// always names the dialect that mapped it.
 fn choose<'m>(
     mappers: &[&'m dyn SpanMapper],
     hint: u8,
     span: &SpanView<'_>,
 ) -> Option<&'m dyn SpanMapper> {
-    if hint != 0
-        && let Some(&mapper) = mappers.iter().find(|m| m.dialect() == hint)
-    {
-        return Some(mapper);
-    }
     let hints = Hints { dialect: hint };
     let mut best: Option<(Confidence, u8, &'m dyn SpanMapper)> = None;
     for &mapper in mappers {
@@ -180,6 +209,7 @@ fn draft(frame: &IngestFrame<'_>, ctx: &NormCtx<'_>, span: &SpanView<'_>) -> Spa
         cost_source: CostSource::None,
         price_model_id: None,
         price_tier_id: None,
+        usage_aggregate: false,
         prompt_name: "".into(),
         prompt_version: "".into(),
         tool_names: Vec::new(),
@@ -232,7 +262,18 @@ fn finish(draft: SpanDraft, ctx: &NormCtx<'_>, matches: &mut Matches) -> SpanRec
         core.environment = DEFAULT_ENVIRONMENT.into();
     }
     cost::apply(&mut record, &ctx.prices, matches);
+    // A mapper sets a preview only to show media tokens replaced; the caps cut every other preview.
+    let previews = (
+        core::mem::take(&mut record.core.input_preview),
+        core::mem::take(&mut record.core.output_preview),
+    );
     record.enforce_payload_caps(&ctx.caps);
+    if !previews.0.is_empty() {
+        record.core.input_preview = previews.0;
+    }
+    if !previews.1.is_empty() {
+        record.core.output_preview = previews.1;
+    }
     record.core.row_digest = digest::row_digest(&record);
     record
 }

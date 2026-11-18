@@ -18,7 +18,7 @@ use crucible_records::{Level, NanoUsd, TracePublic};
 pub struct Double {
     /// The dialect id the double claims.
     pub id: u8,
-    /// What `detect` returns.
+    /// What `detect` returns; a request hint naming the double counts as confidence 60.
     pub confidence: Option<u8>,
 }
 
@@ -40,9 +40,10 @@ impl SpanMapper for Double {
         _resource: ResourceView<'_>,
         _scope: ScopeView<'_>,
         _span: &SpanView<'_>,
-        _hints: &Hints,
+        hints: &Hints,
     ) -> Option<Confidence> {
-        self.confidence.map(Confidence)
+        let hinted = (self.id != 0 && hints.dialect == self.id).then_some(Confidence::HINT);
+        self.confidence.map(Confidence).max(hinted)
     }
 
     fn map(&self, _ctx: &MapCtx<'_>, span: &SpanView<'_>, out: &mut SpanDraft) {

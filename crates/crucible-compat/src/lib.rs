@@ -183,6 +183,33 @@ pub struct UsageMap {
     pub exclusive_bases: &'static [&'static str],
 }
 
+/// How the nested members of a usage object are flattened before its counts are read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UsageDetails {
+    /// A member whose name ends with this suffix and whose value is an object lists the parts of its base.
+    pub suffix: &'static str,
+    /// Base name prefixes whose parts count on the input side: a part `<entry>` becomes `input_<entry>`.
+    pub input_bases: &'static [&'static str],
+    /// Base name prefixes whose parts count on the output side: a part `<entry>` becomes `output_<entry>`.
+    pub output_bases: &'static [&'static str],
+    /// Objects flattened by name, as `(object, [(member, flattened name)])`.
+    pub objects: &'static [(&'static str, &'static [(&'static str, &'static str)])],
+}
+
+/// The flattening every usage object gets: provider `*_details` objects and the cache-creation breakdown.
+pub static USAGE_DETAILS: UsageDetails = UsageDetails {
+    suffix: "_details",
+    input_bases: &["prompt", "input"],
+    output_bases: &["completion", "output"],
+    objects: &[(
+        "cache_creation",
+        &[
+            ("ephemeral_5m_input_tokens", "input_cache_creation_5m"),
+            ("ephemeral_1h_input_tokens", "input_cache_creation_1h"),
+        ],
+    )],
+};
+
 /// How a prefix source builds a map.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PrefixSpec {

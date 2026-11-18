@@ -107,7 +107,13 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
         prop_assert_eq!(c.ingestion.batch_seq, Lsn::ZERO);
         prop_assert!(!c.environment.is_empty());
         prop_assert_eq!(c.mcp_side, McpSide::None);
-        prop_assert_eq!(c.compat_dialect, 0);
+        prop_assert!(usize::from(c.compat_dialect) < crucible_compat::TABLES.len());
+        prop_assert_eq!(
+            c.source_format == crucible_records::SourceFormat::Otel,
+            c.compat_dialect == 0
+        );
+        // A usage aggregate carries usage itself.
+        prop_assert!(!c.usage_aggregate || p.usage_provided.iter().any(|(_, n)| *n > 0));
     }
     Ok(())
 }
