@@ -10,7 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crucible_plan::{Aggregation, Caller, Fill, Filter, Granularity, MeasureId, MetricsQuery, Source};
+use crucible_plan::{
+    Aggregation, Caller, Fill, Filter, Granularity, MeasureId, MetricsQuery, Source,
+};
 use crucible_query::{FactTarget, MetricValue, MetricsRequest, ReadContext};
 use crucible_records::{FactId, ProjectId, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::RetentionSettings;
@@ -27,7 +29,11 @@ const ROOT: i8 = 1;
 
 fn context(project: [u8; 16]) -> Option<ReadContext> {
     let scope = crucible_auth::test_support::scope(ProjectId::from_bytes(project)).ok()?;
-    Some(ReadContext::new(scope, RetentionSettings::default(), Caller::Session))
+    Some(ReadContext::new(
+        scope,
+        RetentionSettings::default(),
+        Caller::Session,
+    ))
 }
 
 /// The target of a fact row: a span when it names one, a trace when it names only a trace, else a session.
@@ -48,9 +54,9 @@ type Target = ([u8; 16], [u8; 16], [u8; 8], Vec<u8>);
 /// I4 through the query service.
 async fn facts(shared: &Shared, node: &Node, model: &ChModel) {
     let Some(rows) = system_oracle::fact_rows(model) else {
-        shared
-            .ledger()
-            .violate(Violation::FactResolution("a fact row does not read".to_owned()));
+        shared.ledger().violate(Violation::FactResolution(
+            "a fact row does not read".to_owned(),
+        ));
         return;
     };
     let Ok(all_time) = TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE) else {
@@ -65,8 +71,9 @@ async fn facts(shared: &Shared, node: &Node, model: &ChModel) {
         let Some(ctx) = context(project) else {
             continue;
         };
-        let expected: BTreeSet<[u8; 16]> =
-            system_oracle::resolve(rows.iter().copied()).into_values().collect();
+        let expected: BTreeSet<[u8; 16]> = system_oracle::resolve(rows.iter().copied())
+            .into_values()
+            .collect();
         let read = node.query.facts(&ctx, &target(rows[0]), all_time).await;
         let found = match read {
             Ok(read) => read.facts,
@@ -124,8 +131,11 @@ fn reference(model: &ChModel, window: TimeWindow) -> Option<BTreeMap<[u8; 16], T
     for part in model.parts(TableId::TraceHeads) {
         let block = &part.block;
         for row in 0..block.rows {
-            if inside(i64_at(block, "start_time", row)?) && i8_at(block, "head_kind", row)? == ROOT {
-                out.entry(uuid_at(block, "project_id", row)?).or_default().traces += 1;
+            if inside(i64_at(block, "start_time", row)?) && i8_at(block, "head_kind", row)? == ROOT
+            {
+                out.entry(uuid_at(block, "project_id", row)?)
+                    .or_default()
+                    .traces += 1;
             }
         }
     }
@@ -153,14 +163,17 @@ async fn metrics(shared: &Shared, node: &Node, model: &ChModel, projects: usize)
         return;
     };
     let Some(reference) = reference(model, window) else {
-        shared
-            .ledger()
-            .violate(Violation::Aggregate("a span_core or trace_heads row does not read".to_owned()));
+        shared.ledger().violate(Violation::Aggregate(
+            "a span_core or trace_heads row does not read".to_owned(),
+        ));
         return;
     };
     let query = |source, measures: Vec<MeasureId>| MetricsQuery {
         source,
-        measures: measures.into_iter().map(|m| (m, Aggregation::Sum)).collect(),
+        measures: measures
+            .into_iter()
+            .map(|m| (m, Aggregation::Sum))
+            .collect(),
         dimensions: Vec::new(),
         filter: Filter::all(),
         granularity: Granularity::Auto,
@@ -185,10 +198,7 @@ async fn metrics(shared: &Shared, node: &Node, model: &ChModel, projects: usize)
         let expected = reference.get(&id).copied().unwrap_or_default();
         let mut found = [0i128; 5];
         for (query, at) in [(spans.clone(), 0), (traces.clone(), 4)] {
-            let request = MetricsRequest {
-                window,
-                query,
-            };
+            let request = MetricsRequest { window, query };
             match node.query.metrics(&ctx, request).await {
                 Ok(result) => {
                     for (i, series) in result.series.iter().enumerate() {
