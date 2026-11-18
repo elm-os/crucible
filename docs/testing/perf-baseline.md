@@ -1,0 +1,311 @@
+# Throughput baseline: milestone 1
+
+The first end-to-end throughput measurement of `crucible serve`: OTLP ingest to the durable acknowledgement
+(burst), and ingest through the shipper into ClickHouse (sustained). Every number on this page was **measured on a
+laptop, not reference hardware**, on one day, with other jobs sharing the machine. Use it to find bottlenecks and
+to compare builds on the same machine, never as a capacity claim. The rig, the load generator and the
+fsync-honesty probe are described in [`perf.md`](perf.md); `tools/perf/baseline.sh` repeats every run below.
+
+**Status: checkpoint, incomplete.** The work was paused on request before the sustained runs finished. What is
+missing is listed under [Incomplete: remaining runs](#incomplete-remaining-runs).
+
+## Summary
+
+| v0 target ([`perf.md`](perf.md)) | Measured here |
+|---|---|
+| At least 250,000 spans/s of 1 KiB spans | Ack path alone (burst): median of the highest passing rates 475,000 spans/s plain (range 304,000 to 625,000) and 400,000 gzip (360,000 to 400,000). At exactly 250,000: plain passed 3 of 3 runs, gzip 1 of 3 |
+| At least 50,000 spans/s of 10 KiB spans | Plain: median 30,400 (24,300 to 30,400); at exactly 50,000 it passed 2 of 3 runs, with 100 and with 10 spans per request. Gzip: not measurable with 1 MiB bodies on this client (below); with 10 spans per request it failed 3 of 3 at 50,000 |
+| Durable-ack p99 at most 20 ms, on a volume the probe classified `honest` | The probe classified the WAL volume `honest` twice. p99 stayed within 20 ms up to the rates above in burst; with the shipper and ClickHouse on the same disk it reached 56 to 663 ms in the 120 s runs |
+| Freshness at most 2 s p95 | 1.15 to 1.84 s in the passing 45 s runs up to 71,200 spans/s of 1 KiB; no 120 s run passed (below) |
+| Zero acknowledged loss | Zero lost and zero duplicated in every sustained run: 57,808,500 acknowledged spans in 10 runs, checked by run id and sequence number |
+
+- **The ack path is bound by the WAL's flushes on this disk, not by CPU.** Crucible used at most 2.2 of its 6 cores
+  in any burst run on the resized rig. Steps failed when a few `fdatasync` calls took 25 to 250 ms, mostly while other jobs wrote to
+  the same virtual disk.
+- **End to end, the shipper's single task is the bottleneck.** Above the sustained limit the task was 91 to 98%
+  busy while Crucible's other cores and ClickHouse (0.8 of 8 cores) idled, and it never waited for ClickHouse.
+  Encoding takes half of the task's time, stage A a fifth.
+- **Recommendation:** take work off the shipper task in milestone 2, encoding first, then stage A
+  ([Recommendation](#recommendation)).
+
+## The fsync-honesty probe
+
+The probe ran on the WAL's named volume (ext4 on the VM's virtual disk), from the Crucible cpuset, before any load
+and again after the rig was resized. Both passes classified it **`honest`**.
+
+| Pass (UTC) | Hop p50 | 4 KiB sync p50 (p99) | 1 MiB sync p50 (p99) | 8 MiB sync p50 | Directory sync p50 | Checks, net ns (small write, scaling, directory) |
+|---|---|---|---|---|---|---|
+| 06:10, other builds running | 39 µs | 3.76 ms (7.76 ms) | 6.70 ms (12.56 ms) | 12.60 ms | 2.55 ms | 3,721,274; 8,838,067; 2,511,029 |
+| 06:20, rig resized | 26 µs | 1.22 ms (2.02 ms) | 1.45 ms (7.56 ms) | 3.81 ms | 1.12 ms | 1,190,707; 2,594,853; 1,091,429 |
+
+The same volume flushed about three times slower in the first pass, while other jobs wrote to the shared disk. That
+spread recurs below: the ack path's tail follows the disk's slowest flushes.
+
+## Rig
+
+Measured on 2026-11-18 (UTC) on a laptop with an Intel Core Ultra 9 275HX (8 performance and 16 efficient cores)
+and 32 GB of memory, on AC power, running Windows 11 and Docker Desktop 29.8.2 with the WSL2 VM (24 vCPUs, 16 GB,
+kernel 6.18.58.1-microsoft-standard-WSL2). The VM's vCPUs float over the host's cores, so a cpuset pins a container
+only within the VM.
+
+| Container | Image | cpuset (vCPUs) | Memory | Notes |
+|---|---|---|---|---|
+| Crucible | `crucible-dev:1` running the release binary | 0-5 (6) | 2 GB | WAL on a named Docker volume, recreated empty for every burst step and for the sustained lane; `--recent-max-bytes 268435456` |
+| ClickHouse | `clickhouse/clickhouse-server:26.8` (26.8.39.19) | 6-13 (8) | 6 GB | Data on a named Docker volume on the same virtual disk as the WAL |
+| Client | `crucible-dev:1` | 14-17 (4) | 1 GB | `crucible-loadgen`, the metric scraper and the checks |
+
+- The sizes leave room for other jobs in the VM's 16 GB; they replace the sizes in `perf.md` (ClickHouse 10 vCPUs
+  and 9 GB, Crucible 3 GB, client 6 vCPUs). Other tracks compiled in Docker throughout. Each run records
+  `docker stats` and the VM's load average before and after it; the tables name the other containers.
+- **The other jobs' containers had no cpuset**, so they ran on the rig's vCPUs as well. The rig's cpusets keep its
+  own containers apart, not other work out.
+- The binaries were built on their own, `cargo build --locked -p crucible --release` and then `-p crucible-loadgen`,
+  from `4a6e68b` plus the metrics commit `7801d64` of branch `feat/shipper-phase-metrics` (below), sha256
+  `50b14e3de580f108...` for `crucible` and `e3edafdbeb514444...` for `crucible-loadgen`. Since then `main` has
+  changed none of the code these runs exercise, apart from a simulation-only flag in ingest; its other changes are on
+  the API's read side.
+- The recent-span index defaults to 10% of the host's memory, at most 1 GiB. The default reads `/proc/meminfo`, which
+  shows the VM's 16 GB rather than the container's limit, so inside 2 GB it would leave too little for the shipper's
+  batches. The runs bound it at 256 MiB. A sample during a sustained run showed 1.35 GiB in use and no memory
+  events.
+
+## Method
+
+### Load
+
+`crucible-loadgen run` sends OTLP/HTTP protobuf requests of 100 spans each (100 KiB bodies for 1 KiB spans,
+1 MiB for 10 KiB spans), open loop, with latency measured from each request's intended send time. The connection
+cap is the larger of 128 and the arrivals of 100 ms (`rate / 10`), so it binds only after a stall five times the
+20 ms limit: below that the generator stays open loop. A first pass with a fixed cap of 128 let the client queue
+behind its connections during server stalls (send lag p99 19 ms at 830,000 spans/s) and was discarded.
+
+### Burst: the ack path alone
+
+- Crucible runs without a telemetry store (ingest only), so a step measures receive, admission, the WAL group
+  commit and the acknowledgement, without the shipper's CPU or ClickHouse's writes on the same disk.
+- Every step starts a fresh Crucible on an empty WAL volume, sends a 3 s warm-up at half the rate, then measures
+  15 s.
+- A step passes when every request is acknowledged with 200, no response is 429 or 503, no request fails, and
+  latency p99 is at most 20 ms.
+- A search starts at a fixed rate, multiplies it by 5/4 until a step fails (or by 4/5 until one passes), then
+  bisects twice, which brackets the highest passing rate to about 6%. Each lane was searched three times
+  independently. Verdicts near the limit are not monotone, so each gate rate also got three runs of its own.
+
+### Sustained: end to end
+
+- Crucible runs with ClickHouse, the shipper and the recent-span index, on one fresh WAL volume per lane. The four
+  milestone 1 tables are emptied (`TRUNCATE`) before every run, so every run starts from empty tables.
+- A run sends at a fixed rate, then waits until `span_core` holds every acknowledged span (the drain).
+- It passes when every request is acknowledged with 200, no response is 429 or 503, no request fails, and:
+  - **zero loss**: the stored `loadgen.seq` values of the run's `loadgen.run_id` in `span_payload` cover every
+    acknowledged sequence number exactly once, and `span_core` holds one row per span;
+  - **freshness**: p95 at most 2 s over every span, and over the spans acknowledged in the run's last 30 s, so a
+    backlog that grows during the run fails it even when the earlier spans were fresh. Freshness is measured per
+    span in ClickHouse: from `received_at`, which the WAL committer stamps just before the frame's append and sync,
+    to the end of the `span_core` insert that made the span readable, which `system.query_log` records with the
+    insert's deduplication token. It starts before the sync, so it overstates ack-to-readable by the sync time;
+  - the ack latency is reported, not judged.
+- The WAL gauges are sampled every second: `crucible_wal_unshipped_bytes` and the LSN distance between the durable
+  and the checkpointed log show whether the backlog stayed flat.
+- A search with 45 s runs brackets the rate; the highest passing rate is then to be confirmed by three 120 s runs.
+
+### Where the time goes
+
+- CPU per container comes from each container's cgroup `cpu.stat`, read before and after the measured load with
+  that container's clock, and is given in cores (CPU seconds per second).
+- Inside Crucible, the runs used three metrics from the companion branch `feat/shipper-phase-metrics`, which is not
+  part of this change:
+  - `crucible_shipper_task_microseconds_total{phase}`: the shipper task's time, charged to the phase it was in:
+    `read` (the next durable frame), `stage_a` (decode and normalize), `stage_b` (duplicate window, first-seen set,
+    recent-index insert), `rows` (table rows into the builders), `encode` (sort, Native encoding and compression
+    of a sealed batch), `wal_append` (durable `BatchSeal` and `Checkpoint` frames, garbage collection),
+    `wait_inserts` (the open batch is full and the most batches are in flight) and `wait_frames` (caught up with
+    the durable log). The phases add up to the task's running time, which a directed simulation test checks;
+  - `crucible_shipper_insert_duration_microseconds`: each insert, from the send to the answer;
+  - `crucible_wal_append_duration_microseconds`: each commit group's append, beside the existing sync histogram.
+- `system.query_log` gives the inserts per table as ClickHouse saw them. Without the companion metrics the script
+  still runs and leaves those fields out.
+
+## Results
+
+### Burst
+
+The highest passing rate of each search, with the details of that passing step.
+
+| Lane | Search | Highest passing spans/s | Lowest failing | p50 / p99 / p99.9 ms | Crucible cores | WAL MB/s | Frames per group | Sync mean ms | Other containers during the search |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 KiB plain | 1 | 625,000 | 664,000 | 3.7 / 10.3 / 15.8 | 1.51 | 226 | 13.9 | 1.86 | 3 |
+| 1 KiB plain | 2 | 304,000 | 320,000 | 2.8 / 5.9 / 10.3 | 0.84 | 111 | 5.0 | 1.45 | 3 |
+| 1 KiB plain | 3 | 475,000 | 500,000 | 3.5 / 14.5 / 79.0 | 1.23 | 173 | 10.2 | 1.79 | 1 |
+| 1 KiB gzip | 1 | 360,000 | 380,000 | 3.4 / 11.8 / 80.4 | 1.52 | 131 | 6.7 | 1.64 | none |
+| 1 KiB gzip | 2 | 400,000 | 425,000 | 3.5 / 13.1 / 68.9 | 1.70 | 146 | 7.6 | 1.66 | 2 |
+| 1 KiB gzip | 3 | 400,000 | 425,000 | 4.1 / 18.3 / 74.9 | 1.77 | 146 | 8.8 | 1.90 | 2 |
+| 10 KiB plain | 1 | 30,400 | 32,000 | 3.8 / 10.8 / 26.5 | 0.54 | 121 | 1.0 | 1.96 | 1 |
+| 10 KiB plain | 2 | 30,400 | 32,000 | 4.5 / 18.1 / 68.0 | 0.60 | 120 | 1.0 | 2.34 | 3 |
+| 10 KiB plain | 3 | 24,300 | 25,600 | 3.6 / 8.2 / 21.2 | 0.42 | 97 | 1.0 | 1.88 | 4 |
+| 10 KiB gzip (client-limited) | 1 | 7,800 | 8,300 | 5.8 / 14.3 / 129.7 | 0.26 | 31 | 1.0 | 2.20 | 3 |
+| 10 KiB gzip (client-limited) | 2 | 8,300 | 8,800 | 6.1 / 19.8 / 147.6 | 0.29 | 33 | 1.0 | 3.05 | 3 |
+| 10 KiB gzip (client-limited) | 3 | 5,200 | 5,500 | 6.0 / 14.1 / 122.0 | 0.18 | 21 | 1.0 | 2.54 | 9 |
+
+| Lane | Median of the highest passing rates | Range |
+|---|---|---|
+| 1 KiB plain | 475,000 spans/s | 304,000 to 625,000 |
+| 1 KiB gzip | 400,000 spans/s | 360,000 to 400,000 |
+| 10 KiB plain | 30,400 spans/s | 24,300 to 30,400 |
+| 10 KiB gzip | not a Crucible measurement | the client was the limit (below) |
+
+### At the gate rates
+
+Three 15 s burst runs at exactly each gate rate.
+
+| Lane | Spans per request | p99 of the three runs, ms | Passed | Slow syncs (over 25 ms) in the failures |
+|---|---|---|---|---|
+| 1 KiB plain at 250,000 spans/s | 100 | 9.5, 12.5, 17.5 | 3 of 3 | |
+| 1 KiB gzip at 250,000 spans/s | 100 | 46.4, 32.6, 12.8 | 1 of 3 | 3, 1 |
+| 10 KiB plain at 50,000 spans/s | 100 | 17.8, 148.0, 10.7 | 2 of 3 | 7 |
+| 10 KiB plain at 50,000 spans/s | 10 | 12.6, 3,547, 9.5 | 2 of 3 | 19 |
+| 10 KiB gzip at 50,000 spans/s | 10 | 274.2, 88.0, 42.8 | 0 of 3 | 2, 0, 0 |
+
+### The client on its own
+
+Against the load generator's stub server, which runs on Crucible's cpuset, inflates and decodes every body, and
+answers 200 at once:
+
+| Lane | Spans per request | Spans/s | p50 / p99 / p99.9 ms | Send lag p99 ms |
+|---|---|---|---|---|
+| 10 KiB gzip | 100 | 8,300 | 2.2 / 3.3 / 123.0 | 0.2 |
+| 10 KiB gzip | 100 | 16,300 | 2.2 / 80.0 / 140.7 | 57.6 |
+| 10 KiB gzip | 100 | 25,600 | 2.9 / 12.0 / 131.5 | 3.3 |
+| 10 KiB plain | 100 | 30,400 | 0.6 / 11.6 / 32.1 | 5.2 |
+| 10 KiB gzip | 10 | 50,000 | 0.4 / 1.3 / 67.5 | 0.5 |
+| 10 KiB plain | 10 | 50,000 | 0.1 / 0.9 / 7.3 | 0.1 |
+| 1 KiB gzip | 100 | 250,000 | 0.3 / 1.5 / 108.0 | 0.5 |
+
+The generator gzips each body on its runtime's worker threads. With 1 MiB bodies on 4 vCPUs that delays its own
+sends, so the 10 KiB gzip burst numbers above measure the client, not Crucible. With 10 spans per request it is
+accurate at the gate rate, and its 10 KiB plain lane with 100 spans per request spends about half the latency
+budget itself at 30,400 spans/s.
+
+### Sustained, 1 KiB spans
+
+| Run | Seconds | Spans/s | Freshness p50 / p95 / p99 s | Last 30 s p95 s | Ack p50 / p99 ms | Shipper busy | ClickHouse cores | Load (1 min) after | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| Search | 45 | 60,000 | 0.77 / 1.15 / 1.25 | 1.18 | 2.5 / 13.2 | 0.73 | 0.68 | 6.5 | pass |
+| Search | 45 | 67,500 | 1.02 / 1.58 / 1.75 | 1.64 | 2.3 / 12.8 | 0.90 | 0.76 | 7.1 | pass |
+| Search | 45 | 71,200 | 1.13 / 1.84 / 2.13 | 1.93 | 2.2 / 11.2 | 0.93 | 0.76 | 6.8 | pass |
+| Search | 45 | 75,000 | 1.94 / 4.33 / 4.73 | 4.48 | 2.9 / 20.0 | 0.95 | 0.80 | 7.5 | fail: backlog grew |
+| Calibration | 45 | 100,000 | 8.70 / 20.93 / 21.68 | 21.21 | 2.9 / 18.9 | 0.98 | 0.79 | 5.7 | fail: backlog grew |
+| Confirmation | 120 | 71,200 | 2.10 / 4.21 / 4.62 | 4.57 | 2.9 / 83.5 | 0.98 | 0.82 | 9.5 | fail: backlog grew |
+| Confirmation | 120 | 71,200 | 1.64 / 5.28 / 5.57 | 5.54 | 3.6 / 287.2 | 0.97 | 0.80 | 6.2 | fail: backlog grew |
+| Confirmation | 120 | 71,200 | 2.11 / 11.31 / 11.64 | 11.62 | 2.6 / 606.7 | 0.98 | 0.85 | 6.8 | fail: backlog grew |
+| Confirmation | 120 | 64,000 | 1.18 / 2.25 / 2.50 | 2.43 | 2.1 / 55.7 | 0.91 | 0.84 | 8.8 | fail: backlog grew |
+| Confirmation | 120 | 64,000 | 4.33 / 6.15 / 6.39 | 6.15 | 3.5 / 662.5 | 0.95 | 0.78 | 10.2 | fail: backlog grew |
+
+- Every run acknowledged every request with 200, and lost and duplicated nothing.
+- No rate held for 120 s, so the sustained limit is not confirmed. The 45 s runs passed up to 71,200 spans/s, but
+  45 s hides a backlog that grows slowly; under heavier load from other jobs (load average up to 10) even 64,000
+  spans/s fell behind over 120 s. The next confirmation, at 57,600 spans/s, was not run before the pause.
+- The drain after each run took 3.3 to 4.9 s, except after the overloaded runs (11.4 and 21.5 s).
+- Ack p99 with the store attached was 11 to 20 ms in the 45 s runs and 56 to 663 ms in the 120 s runs, which saw 23
+  to 79 syncs above 25 ms each: ClickHouse's inserts and merges and the other jobs write to the same virtual disk as
+  the WAL.
+
+## Where the time goes
+
+### The ack path: the WAL's flushes, not CPU
+
+- At the highest passing burst rates Crucible used 0.4 to 1.8 of its 6 cores in the lanes the client did not
+  limit. No burst run saturated its CPU; in the discarded first pass it acknowledged 1.3 million spans/s (the
+  generator's limit) on 2.6 cores.
+- The WAL committer was busy (append plus `fdatasync`) about 90% of the time at the 1 KiB limits, gathering 5 to
+  14 frames of about 39 KB per group (LZ4 shrinks the 100 KiB bodies 2.6 times), at 1.5 to 1.9 ms per sync. Group
+  commit keeps the median latency at 2.8 to 4.1 ms by growing the groups as the rate rises. With 10 KiB spans each
+  1 MiB request is one frame of about 435 KB and nearly every group holds one frame; the committer was 48 to 71%
+  busy at the passing rates.
+- What failed a step was nearly always a handful of slow flushes: one 50 to 100 ms sync and three of 25 to 50 ms
+  failed the 15 s step at 664,000 spans/s, because every request that arrives during a stall waits for it. The
+  searches that ran while other jobs wrote to the disk found the lowest rates, which is why the three 1 KiB plain
+  searches range from 304,000 to 625,000 spans/s.
+- The gzip lanes spend more CPU per request (inflate) and show the largest tails that no slow sync explains, which
+  fits the other jobs running on Crucible's vCPUs: at 50,000 spans/s of 10 KiB gzip spans in 10-span requests,
+  1.2% of requests took more than 25 ms in the server's own handler histogram, with no sync above 25 ms.
+
+### End to end: the shipper task
+
+The evidence comes from the runs above the sustained limit, where the shipper falls behind; in a passing run it
+keeps up by definition and shows idle time.
+
+| 1 KiB, 120 s at 71,200 spans/s (fails) | Share of the shipper task's time |
+|---|---|
+| `encode`: sort, Native encoding, LZ4 and freeing a sealed batch's rows | 50.6% |
+| `stage_a`: decode and normalize | 22.0% |
+| `rows`: table rows into the builders | 14.3% |
+| `stage_b`: duplicate window, first-seen set, recent-index insert | 8.1% |
+| `read`, `wal_append` | 1.3%, 1.9% |
+| `wait_frames` (caught up), `wait_inserts` (blocked on ClickHouse) | 1.4%, 0.0% |
+
+- **The task is saturated** (busy 98.2%), and it is the only saturated resource: Crucible used 1.27 of its 6
+  cores, about one of them this task's, and ClickHouse used 0.82 of its 8.
+- **ClickHouse keeps up.** `wait_inserts` stayed at zero in every run: the open batch never filled while two
+  batches were in flight. Inserts took 76 ms (`span_core`) and 224 ms (`span_payload`, with its text indexes) on
+  average per block of about 72,000 rows, against a 500 ms linger.
+- **Saturated, the task moves about 69,000 spans/s** (8,544,000 spans in the 120 s run and its 3.9 s drain), about
+  14 µs of its time per span: encode 7.4 µs, stage A 3.2 µs, rows 2.1 µs, stage B 1.2 µs. Every saturated run gives
+  the same split, for example the 100,000 spans/s calibration run (busy 98.4%; encode 50.7%, stage A 21.9%, rows
+  14.1%, stage B 8.5%).
+- The other jobs ran on Crucible's vCPUs too (load average up to 10), which slows this one task; on a quiet machine
+  it would move somewhat more. The split between phases is the stable result.
+- What taking work off the task can buy, at most, before the next resource limits:
+  - parallel stage A alone: 1 / (1 - 0.224) = 1.29 times, about 89,000 spans/s;
+  - encoding off the task alone: 1 / (1 - 0.515) = 2.1 times, about 142,000 spans/s;
+  - both: 1 / (1 - 0.739) = 3.8 times, about 265,000 spans/s, if Crucible's other cores and ClickHouse keep up (at
+    69,000 spans/s they used about 1.3 and 0.8 cores).
+
+  Shares are of the task's busy time, and the ceilings leave out the cost of handing work between tasks.
+
+## Recommendation
+
+**Take work off the shipper task in milestone 2, and start with encoding rather than stage A.**
+
+- The single task caps a node at about 69,000 spans/s of 1 KiB spans end to end on this rig, a seventh of what its
+  ack path takes in a burst. A node acknowledging at its burst rate fills the WAL's high-water mark (90% of 16 GiB)
+  within about two minutes, then answers 503: the shipper, not the ack path, sets what a node sustains.
+- Encoding is half of the task's time, and the pairs of a sealed batch are independent: each pair's block can be
+  sorted, encoded and compressed by its own blocking job on the batch's task, which already runs apart from the
+  shipper task, and kept for byte-identical retries as contract 5.2 requires. Stage B's order and the batch
+  identities stay as they are.
+- Parallel stage A comes next. Contract 3.2 already defines stage A as pure and parallel per frame; alone it buys at
+  most 1.29 times, with encoding moved as well up to 3.8 times.
+- Milestone 2 makes the task's work per span larger: the full span model, GenAI mapping and compatibility mappers
+  add stage A work, and the rollup and fact tables add rows and blocks per span. Waiting for milestone 6 lets the
+  ceiling fall further first; the phase metrics show each step's effect.
+- Milestone 6 keeps the rest: builders that write columns directly instead of rows of cells (`rows` and `encode`
+  together are 65% of the task today), the io_uring WAL backend, and the ack path's flush tail on real disks.
+
+## Incomplete: remaining runs
+
+- Sustained 1 KiB: no rate is confirmed. The next step was three 120 s runs at 57,600 spans/s, then 10% lower until
+  three pass, preferably with no other jobs on the machine.
+- Sustained 10 KiB: not run. The search was to start at 8,000 spans/s.
+- Burst 10 KiB gzip with 100 spans per request needs a client that gzips off its runtime's workers or has more
+  vCPUs; only the 10-span gate runs measure Crucible in that lane.
+- Burst searches for 10 KiB spans with 10 spans per request: only the gate runs were done.
+- The companion branch `feat/shipper-phase-metrics` (the three metrics above, a directed simulation test, and an
+  assertion in the group-commit test) passed `cargo fmt`, `cargo clippy --workspace --all-targets` and the tests of
+  `crucible-env`, `crucible-wal`, `crucible-shipper` and the two directed simulation suites; the workspace test
+  run, `cargo deny` and its own pull request are still to do.
+- A repeat on a quiet machine: other jobs' containers had no cpuset, and the burst spread follows them.
+
+## Reproducing
+
+From the repository root, with release builds of `crucible` (with the companion metrics for the phase split) and
+`crucible-loadgen` in a cargo target volume:
+
+```sh
+TARGET_VOLUME=crucible-target tools/perf/baseline.sh all
+```
+
+`up`, `probe`, `burst`, `gate`, `sustained`, `summarize` and `down` run the pieces one at a time; the script's
+header lists their arguments, and its variables set the cpusets, memory limits and run lengths. Results land in
+`perf/results/local/baseline/` (ignored by git): every run's load generator report, CPU and metric snapshots,
+`docker stats` and load average, its verdict and analysis, and `results.md` with the tables.
