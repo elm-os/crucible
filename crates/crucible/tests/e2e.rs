@@ -1,8 +1,10 @@
 //! Milestone 1 end to end, on real infrastructure: the `crucible serve` binary in front of a real ClickHouse.
 //!
 //! A span sent over OTLP goes through ingest, the WAL, the shipper and ClickHouse, and comes back through the
-//! REST API and, when a Chrome binary is given, the UI's traces table. A load burst and a `kill -9` in the
-//! middle of three further runs must lose no acknowledged span and duplicate no row.
+//! REST API and, when a Chrome binary is given, the UI's traces table. Four traces take the four ways in:
+//! OTLP/HTTP protobuf, OTLP/HTTP JSON, OTLP/gRPC with gzip, and a compat ingest route with gzip and the key pair
+//! as Basic auth. A load burst and a `kill -9` in the middle of three further runs must lose no acknowledged
+//! span and duplicate no row.
 //!
 //! The test needs a ClickHouse 26.3 or newer whose admin user may manage access, so it runs only when
 //! `CRUCIBLE_E2E_CLICKHOUSE_URL` is set and passes as skipped otherwise:
@@ -46,7 +48,11 @@ use crucible_records::{Timestamp, Uuid};
 use crucible_schema::ServiceIdentity;
 use crucible_store_clickhouse::render::Statement;
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient;
+use prost::Message as _;
 use serde_json::{Value, json};
+use tonic::codec::CompressionEncoding;
 
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
 const SPANS_PER_REQUEST: u32 = 100;
@@ -55,6 +61,26 @@ const DRAIN: Duration = Duration::from_secs(120);
 
 fn secret(fill: char) -> String {
     format!("csk_{}", fill.to_string().repeat(43))
+}
+
+fn public(fill: char) -> String {
+    format!("cpk_{}", fill.to_string().repeat(43))
+}
+
+/// `Authorization: Basic` with the key pair of `fill`.
+fn basic(fill: char) -> String {
+    use base64::Engine as _;
+    let pair = format!("{}:{}", public(fill), secret(fill));
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(pair)
+    )
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
 }
 
 fn free_addr() -> SocketAddr {
@@ -99,6 +125,7 @@ struct Server {
     child: Child,
     api: SocketAddr,
     ingest: SocketAddr,
+    grpc: SocketAddr,
     log: PathBuf,
 }
 
@@ -128,12 +155,13 @@ impl Rig {
     fn start(&mut self, migrate: bool) -> Server {
         self.starts += 1;
         let log = self.out.join(format!("serve-{}.log", self.starts));
-        let (api, ingest, metrics) = (free_addr(), free_addr(), free_addr());
+        let (api, ingest, grpc, metrics) = (free_addr(), free_addr(), free_addr(), free_addr());
         let mut command = Command::new(&self.binary);
         command
             .arg("serve")
             .args(["--listen", &api.to_string()])
             .args(["--ingest-listen", &ingest.to_string()])
+            .args(["--grpc-listen", &grpc.to_string()])
             .args(["--metrics-listen", &metrics.to_string()])
             .arg("--data-dir")
             .arg(self.dir.join("data"))
@@ -155,6 +183,7 @@ impl Rig {
             child: command.spawn().unwrap(),
             api,
             ingest,
+            grpc,
             log,
         };
         let deadline = Instant::now() + Duration::from_secs(90);
@@ -462,6 +491,8 @@ struct Api {
     addr: SocketAddr,
     project: String,
     bearer: String,
+    /// The key pair as Basic auth.
+    pair: String,
 }
 
 impl Api {
@@ -506,31 +537,95 @@ impl Api {
     }
 }
 
-/// Sends the trace and returns how long after the acknowledgement the API listed it, and how long after it
-/// ClickHouse held both spans.
+/// How a trace is sent.
+#[derive(Clone, Copy, Debug)]
+enum Via {
+    /// OTLP/HTTP protobuf on the ingest listener.
+    Protobuf,
+    /// OTLP/HTTP JSON on the main listener.
+    Json,
+    /// OTLP/gRPC, gzip-compressed, on the gRPC listener.
+    Grpc,
+    /// The first compat ingest route that names its SDK in headers: gzip-compressed protobuf with the key pair
+    /// as Basic auth, as that route's SDKs send it, on the ingest listener.
+    Compat,
+}
+
+/// Sends the trace with the API's key and returns how long after the acknowledgement the API listed it, and
+/// how long after it ClickHouse held both spans.
 async fn send_and_time(
     server: &Server,
     api: &Api,
     stored: &Stored,
     trace: &Trace,
-    protobuf: bool,
+    via: Via,
 ) -> (Duration, Duration) {
     let json = trace.json();
-    let (addr, content_type, body) = if protobuf {
-        let body = crucible_otlp::transcode_json(json.as_bytes()).unwrap();
-        (server.ingest, "application/x-protobuf", body)
-    } else {
-        (server.api, "application/json", json.into_bytes())
+    let protobuf = crucible_otlp::transcode_json(json.as_bytes()).unwrap();
+    let acked = match via {
+        Via::Grpc => {
+            let channel =
+                tonic::transport::Endpoint::from_shared(format!("http://{}", server.grpc))
+                    .unwrap()
+                    .connect()
+                    .await
+                    .unwrap();
+            let mut client =
+                TraceServiceClient::new(channel).send_compressed(CompressionEncoding::Gzip);
+            let message = ExportTraceServiceRequest::decode(protobuf.as_slice()).unwrap();
+            let mut request = tonic::Request::new(message);
+            request
+                .metadata_mut()
+                .insert("authorization", api.bearer.parse().unwrap());
+            let response = client.export(request).await.unwrap().into_inner();
+            assert_eq!(response.partial_success, None);
+            Instant::now()
+        }
+        Via::Protobuf | Via::Json | Via::Compat => {
+            let route = crucible_compat::routes::INGEST_ROUTES
+                .iter()
+                .find(|route| route.sdk_headers.is_some())
+                .unwrap();
+            let (addr, path, content_type, body) = match via {
+                Via::Json => (
+                    server.api,
+                    "/v1/traces",
+                    "application/json",
+                    json.into_bytes(),
+                ),
+                Via::Compat => (
+                    server.ingest,
+                    route.path,
+                    "application/x-protobuf",
+                    gzip(&protobuf),
+                ),
+                _ => (
+                    server.ingest,
+                    "/v1/traces",
+                    "application/x-protobuf",
+                    protobuf,
+                ),
+            };
+            let mut headers = vec![
+                ("authorization", api.bearer.as_str()),
+                ("content-type", content_type),
+            ];
+            if let (Via::Compat, Some(sdk)) = (via, route.sdk_headers) {
+                headers[0].1 = api.pair.as_str();
+                headers.extend([
+                    ("content-encoding", "gzip"),
+                    (sdk.name, "e2e-sdk"),
+                    (sdk.version, "1.0.0"),
+                ]);
+            }
+            let (status, response) = http(addr, "POST", path, &headers, &body).unwrap();
+            let acked = Instant::now();
+            assert_eq!(status, 200, "{}", String::from_utf8_lossy(&response));
+            // A full success rejects nothing: an empty protobuf message, or an empty JSON object.
+            assert!(response.is_empty() || response == b"{}", "{response:?}");
+            acked
+        }
     };
-    let headers = [
-        ("authorization", api.bearer.as_str()),
-        ("content-type", content_type),
-    ];
-    let (status, response) = http(addr, "POST", "/v1/traces", &headers, &body).unwrap();
-    let acked = Instant::now();
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&response));
-    // A full success rejects nothing: an empty protobuf message, or an empty JSON object.
-    assert!(response.is_empty() || response == b"{}", "{response:?}");
 
     while !api.lists(trace) {
         assert!(
@@ -622,7 +717,7 @@ fn terminate(server: &mut Server) -> bool {
 }
 
 /// Connects through the UI's dialog in headless Chrome and reads the traces table.
-fn ui_check(chrome: &str, rig: &Rig, api: &Api, traces: [&Trace; 2]) -> Value {
+fn ui_check(chrome: &str, rig: &Rig, api: &Api, traces: [&Trace; 4]) -> Value {
     let (status, _) = http(api.addr, "GET", "/traces/", &[], b"").unwrap();
     assert_eq!(
         status, 200,
@@ -630,13 +725,17 @@ fn ui_check(chrome: &str, rig: &Rig, api: &Api, traces: [&Trace; 2]) -> Value {
     );
     let screenshot = rig.out.join("traces-table.png");
     let node = std::env::var("CRUCIBLE_E2E_NODE").unwrap_or_else(|_| "node".to_owned());
-    let output = Command::new(node)
+    let mut command = Command::new(node);
+    command
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/e2e/ui-traces.mjs"))
         .args(["--chrome", chrome])
         .args(["--url", &format!("http://{}", api.addr)])
         .args(["--project", &api.project])
-        .args(["--key", api.bearer.trim_start_matches("Bearer ")])
-        .args(["--expect", &traces[0].name, "--expect", &traces[1].name])
+        .args(["--key", api.bearer.trim_start_matches("Bearer ")]);
+    for trace in traces {
+        command.args(["--expect", &trace.name]);
+    }
+    let output = command
         .arg("--screenshot")
         .arg(&screenshot)
         .output()
@@ -650,7 +749,7 @@ fn ui_check(chrome: &str, rig: &Rig, api: &Api, traces: [&Trace; 2]) -> Value {
     assert_eq!(seen["connected_header"], true, "{seen}");
     assert_eq!(seen["console_errors"], json!([]), "{seen}");
     let rows = seen["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "{seen}");
+    assert_eq!(rows.len(), traces.len(), "{seen}");
     for trace in traces {
         // Started, Name, Duration, Spans, Cost, Status.
         let row = rows
@@ -688,9 +787,11 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     std::fs::write(
         dir.join("keys.toml"),
         format!(
-            "[[project_key]]\nproject_id = \"{traces_project}\"\nsecret = \"{}\"\n\n\
-             [[project_key]]\nproject_id = \"{load_project}\"\nsecret = \"{}\"\n",
+            "[[project_key]]\nproject_id = \"{traces_project}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n\n\
+             [[project_key]]\nproject_id = \"{load_project}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n",
+            public('a'),
             secret('a'),
+            public('b'),
             secret('b')
         ),
     )
@@ -739,16 +840,28 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         addr: server.api,
         project: traces_project.clone(),
         bearer: format!("Bearer {}", secret('a')),
+        pair: basic('a'),
     };
 
-    // 2. One trace as protobuf on the ingest listener and one as JSON on the main listener.
+    // 2. One trace each as protobuf on the ingest listener, as JSON on the main listener, over gRPC, and on a
+    // compat ingest route with the key pair.
     let protobuf = Trace::new(env, "e2e protobuf trace");
     let json_trace = Trace::new(env, "e2e json trace");
-    let (protobuf_listed, protobuf_stored) =
-        send_and_time(&server, &api(&server), &trace_rows, &protobuf, true).await;
-    let (json_listed, json_stored) =
-        send_and_time(&server, &api(&server), &trace_rows, &json_trace, false).await;
-    for trace in [&protobuf, &json_trace] {
+    let grpc_trace = Trace::new(env, "e2e grpc trace");
+    let compat_trace = Trace::new(env, "e2e compat route trace");
+    let traces = [&protobuf, &json_trace, &grpc_trace, &compat_trace];
+    let mut freshness = Vec::new();
+    for (trace, via) in traces
+        .into_iter()
+        .zip([Via::Protobuf, Via::Json, Via::Grpc, Via::Compat])
+    {
+        let (listed, stored) = send_and_time(&server, &api(&server), &trace_rows, trace, via).await;
+        freshness.push((
+            format!("{via:?}").to_lowercase(),
+            json!({"ack_to_api_list": millis(listed), "ack_to_clickhouse": millis(stored)}),
+        ));
+    }
+    for trace in traces {
         let api = api(&server);
         trace.assert_round_trip(
             &api.list(),
@@ -801,7 +914,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     // Once the checkpoint and the visibility grace have passed, the same answers come from the store, whole
     // and strong.
     tokio::time::sleep(Duration::from_secs(3)).await;
-    for trace in [&protobuf, &json_trace] {
+    for trace in traces {
         let api = api(&server);
         let (list, detail) = (api.list(), api.detail(trace));
         trace.assert_round_trip(&list, &detail, true, "from the store");
@@ -897,7 +1010,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     }
     assert_no_duplicate_rows(&crash_counts, acked_spans, "after the crashes");
     // The traces of step 2 are long past the grace, so after the restart only the store can serve them.
-    for trace in [&protobuf, &json_trace] {
+    for trace in traces {
         let api = api(&server);
         let (list, detail) = (api.list(), api.detail(trace));
         trace.assert_round_trip(&list, &detail, true, "after the restarts");
@@ -907,7 +1020,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     // 5. The UI, when a Chrome binary is given.
     let ui = std::env::var("CRUCIBLE_E2E_CHROME")
         .ok()
-        .map(|chrome| ui_check(&chrome, &rig, &api(&server), [&protobuf, &json_trace]));
+        .map(|chrome| ui_check(&chrome, &rig, &api(&server), traces));
 
     // 6. A graceful stop exits cleanly.
     #[cfg(unix)]
@@ -923,10 +1036,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
 
     let report = json!({
         "ready_after_ms": millis(ready_after),
-        "freshness_ms": {
-            "protobuf": {"ack_to_api_list": millis(protobuf_listed), "ack_to_clickhouse": millis(protobuf_stored)},
-            "json": {"ack_to_api_list": millis(json_listed), "ack_to_clickhouse": millis(json_stored)},
-        },
+        "freshness_ms": freshness.into_iter().collect::<serde_json::Map<_, _>>(),
         "burst": {
             "acked_requests": burst.report.outcome.acked,
             "check": burst_check,

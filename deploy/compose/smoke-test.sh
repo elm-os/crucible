@@ -45,9 +45,10 @@ services:
 EOF
 cd "$work"
 printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-printf '[[project_key]]\nproject_id = "%s"\nsecret = "csk_0%s"\n' \
+key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
+printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
   "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
-  "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)" > keys.toml
+  "$(key cpk_)" "$(key csk_)" > keys.toml
 printf 'CRUCIBLE_IMAGE=%s\nCRUCIBLE_BIND_ADDRESS=127.0.0.1\nCRUCIBLE_HTTP_PORT=%s\nCRUCIBLE_OTLP_HTTP_PORT=%s\n' \
   "$image" "$http_port" "$otlp_port" >> .env
 

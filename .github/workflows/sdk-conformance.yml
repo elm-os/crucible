@@ -37,12 +37,26 @@ jobs:
         include:
           - sdk: selftest
             manifest: conformance/sdks/selftest.json
+          - sdk: go
+            manifest: sdk/go/conformance/manifest.json
           - sdk: python
             manifest: sdk/python/conformance/manifest.json
+          - sdk: typescript
+            manifest: sdk/typescript/conformance/manifest.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        if: matrix.sdk == 'typescript'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.sdk == 'typescript'
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the TypeScript SDK
+        if: matrix.sdk == 'typescript'
+        run: pnpm install --frozen-lockfile --filter @elm-os/crucible
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -51,6 +65,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the driver
         run: cargo build --locked -p crucible-fake-collector --features test-mutants
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: matrix.sdk == 'go'
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: sdk/go/go.sum
+      - name: Build the Go runner
+        # The manifest runs the runner with `go run`; building it once first fills the build cache, so each case
+        # only links.
+        if: matrix.sdk == 'go'
+        run: go -C sdk/go build -o "$RUNNER_TEMP/go-runner" ./conformance/runner
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: matrix.sdk == 'python'
         with:

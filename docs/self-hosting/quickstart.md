@@ -43,13 +43,15 @@ Keep the master key. Crucible derives the passwords of its four ClickHouse servi
 created once: a server started with a different master key cannot log in to the same ClickHouse data. To start over,
 remove the volumes with `docker compose down -v`.
 
-`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a secret is `csk_`
-followed by 43 characters from `0-9A-Za-z` that encode 32 bytes, which a leading `0` always keeps in range:
+`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a key pair is a public
+key `cpk_` and a secret `csk_`, each followed by 43 characters from `0-9A-Za-z` that encode 32 bytes, which a
+leading `0` always keeps in range:
 
 ```sh
-printf '[[project_key]]\nproject_id = "%s"\nsecret = "csk_0%s"\n' \
+key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
+printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
   "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
-  "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)" > keys.toml
+  "$(key cpk_)" "$(key csk_)" > keys.toml
 ```
 
 The server reads the file as uid 65532, so keep it readable by others (the default mode 644) or give it to that user
@@ -80,6 +82,9 @@ and send the secret from `keys.toml` as `Authorization: Bearer <secret>`. With t
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
 ```
+
+Exporters that speak OTLP over gRPC use `http://127.0.0.1:4317` with the same header
+(`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`).
 
 Or by hand:
 
