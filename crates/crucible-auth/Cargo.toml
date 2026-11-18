@@ -12,12 +12,35 @@ publish.workspace = true
 test-support = []
 
 [dependencies]
+crucible-control = { workspace = true }
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+hmac = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 # Constant-time comparison of key hashes.
 subtle = { version = "=2.6.1", default-features = false }
+# Exact versions until the root [workspace.dependencies] table lists them.
+# Argon2id password hashing (contract 11.4); salts come from `Rng`, so no randomness feature is enabled.
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc"] }
+# Sealing of secrets at rest (contract 11.2): HKDF-SHA256 subkeys and XChaCha20-Poly1305.
+hkdf = "=0.13.0"
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# OAuth 2.0 and OpenID Connect clients (contract 11.4), without their bundled HTTP clients: requests go through `Net`.
+oauth2 = { version = "=5.0.0", default-features = false }
+openidconnect = { version = "=4.1.0", default-features = false }
 
 [dev-dependencies]
 proptest = { workspace = true }

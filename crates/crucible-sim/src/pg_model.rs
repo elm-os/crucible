@@ -28,12 +28,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo,
-    KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
-    MembershipRepo, Migrations, NewJob, Org, OrgMembership, OrgRepo, OrgRole, Project,
-    ProjectMembership, ProjectRepo, Queue, Repos, Secret, SecretRepo, Session, SessionRepo,
-    SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash,
-    TxError, User, UserRepo, duration_micros,
+    ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
+    ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo, KeyChange,
+    KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
+    Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org,
+    OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, Secret,
+    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
+    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -127,6 +128,11 @@ enum Tbl {
     Cursors,
     Jobs,
     Ledger,
+    AuthProviders,
+    OauthAccounts,
+    AuthFlows,
+    OneTimeTokens,
+    Invitations,
 }
 
 type Key = Vec<u8>;
@@ -169,6 +175,11 @@ enum Row {
     Cursor(String),
     Job(JobRow),
     Ledger(LedgerEntry),
+    AuthProvider(AuthProvider),
+    OauthAccount(OauthAccount),
+    AuthFlow(AuthFlow),
+    OneTimeToken(OneTimeToken),
+    Invitation(Invitation),
 }
 
 /// The secondary unique constraints of a row, by the names of the production schema.
@@ -184,6 +195,10 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
         Row::Job(job) => vec![(
             "notification_outbox_dedup_key_key",
             job.dedup_key.as_bytes().to_vec(),
+        )],
+        Row::AuthProvider(provider) if provider.seeded => vec![(
+            "auth_providers_seeded_kind_key",
+            provider.kind.as_str().as_bytes().to_vec(),
         )],
         _ => Vec::new(),
     }
@@ -214,6 +229,14 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             Tbl::Projects,
             project(k.project_id),
         )],
+        Row::OauthAccount(a) => vec![
+            (
+                "oauth_accounts_provider_id_fkey",
+                Tbl::AuthProviders,
+                a.provider_id.to_bytes().to_vec(),
+            ),
+            ("oauth_accounts_user_id_fkey", Tbl::Users, user(a.user_id)),
+        ],
         _ => Vec::new(),
     }
 }
@@ -226,7 +249,9 @@ fn cascades(table: Tbl) -> &'static [Tbl] {
             Tbl::Sessions,
             Tbl::OrgMembers,
             Tbl::ProjectMembers,
+            Tbl::OauthAccounts,
         ],
+        Tbl::AuthProviders => &[Tbl::OauthAccounts],
         _ => &[],
     }
 }
@@ -1014,6 +1039,21 @@ macro_rules! repos {
             fn secrets(&self) -> &dyn SecretRepo {
                 &self.runner
             }
+            fn auth_providers(&self) -> &dyn AuthProviderRepo {
+                &self.runner
+            }
+            fn oauth_accounts(&self) -> &dyn OauthAccountRepo {
+                &self.runner
+            }
+            fn auth_flows(&self) -> &dyn AuthFlowRepo {
+                &self.runner
+            }
+            fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo {
+                &self.runner
+            }
+            fn invitations(&self) -> &dyn InvitationRepo {
+                &self.runner
+            }
             fn leases(&self) -> &dyn Leases {
                 &self.runner
             }
@@ -1060,6 +1100,21 @@ impl Repos for PgModel {
     fn secrets(&self) -> &dyn SecretRepo {
         &*self.runner
     }
+    fn auth_providers(&self) -> &dyn AuthProviderRepo {
+        &*self.runner
+    }
+    fn oauth_accounts(&self) -> &dyn OauthAccountRepo {
+        &*self.runner
+    }
+    fn auth_flows(&self) -> &dyn AuthFlowRepo {
+        &*self.runner
+    }
+    fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo {
+        &*self.runner
+    }
+    fn invitations(&self) -> &dyn InvitationRepo {
+        &*self.runner
+    }
     fn leases(&self) -> &dyn Leases {
         &*self.runner
     }
@@ -1093,6 +1148,8 @@ macro_rules! all {
             .collect::<Vec<_>>()
     };
 }
+
+mod identity;
 
 fn uuid_key(bytes: [u8; 16]) -> Key {
     bytes.to_vec()

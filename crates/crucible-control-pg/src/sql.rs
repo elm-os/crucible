@@ -21,6 +21,7 @@ type Boxed = Box<dyn Error + Sync + Send>;
 #[derive(Debug)]
 pub(crate) enum P<'a> {
     Uuid(Uuid),
+    OptUuid(Option<Uuid>),
     Text(&'a str),
     Int(i64),
     OptInt4(Option<u32>),
@@ -36,7 +37,7 @@ pub(crate) enum P<'a> {
 impl P<'_> {
     pub(crate) fn ty(&self) -> Type {
         match self {
-            Self::Uuid(_) => Type::UUID,
+            Self::Uuid(_) | Self::OptUuid(_) => Type::UUID,
             Self::Text(_) => Type::TEXT,
             Self::Int(_) => Type::INT8,
             Self::OptInt4(_) | Self::Int4(_) => Type::INT4,
@@ -59,7 +60,7 @@ fn put_ts(ts: Timestamp, out: &mut BytesMut) {
 impl ToSql for P<'_> {
     fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Boxed> {
         match self {
-            Self::Uuid(id) => out.put_slice(id.as_bytes()),
+            Self::Uuid(id) | Self::OptUuid(Some(id)) => out.put_slice(id.as_bytes()),
             Self::Text(text) => return text.to_sql(ty, out),
             Self::Int(value) => return value.to_sql(ty, out),
             Self::Int4(value) => return int4(*value)?.to_sql(ty, out),
@@ -68,7 +69,10 @@ impl ToSql for P<'_> {
             Self::Ts(ts) | Self::OptTs(Some(ts)) => put_ts(*ts, out),
             Self::Bytes(bytes) | Self::OptBytes(Some(bytes)) => return bytes.to_sql(ty, out),
             Self::TextArray(items) => return items.to_sql(ty, out),
-            Self::OptInt4(None) | Self::OptTs(None) | Self::OptBytes(None) => {
+            Self::OptInt4(None)
+            | Self::OptTs(None)
+            | Self::OptBytes(None)
+            | Self::OptUuid(None) => {
                 return Ok(IsNull::Yes);
             }
         }
@@ -138,6 +142,10 @@ impl<'a> Cols<'a> {
 
     pub(crate) fn uuid(&mut self) -> Result<Uuid, TxError> {
         Ok(self.take::<PgUuid>()?.0)
+    }
+
+    pub(crate) fn opt_uuid(&mut self) -> Result<Option<Uuid>, TxError> {
+        Ok(self.take::<Option<PgUuid>>()?.map(|id| id.0))
     }
 
     pub(crate) fn text(&mut self) -> Result<String, TxError> {

@@ -206,6 +206,30 @@ text_enum! {
     }
 }
 
+text_enum! {
+    /// The kind of a sign-in provider (contract 11.1).
+    ProviderKind {
+        /// GitHub, over OAuth 2.0.
+        Github => "github",
+        /// Google, over OpenID Connect.
+        Google => "google",
+        /// Any OpenID Connect provider.
+        Oidc => "oidc",
+    }
+}
+
+text_enum! {
+    /// What a one-time token is for (contract 11.1).
+    TokenKind {
+        /// A password reset; the subject is the user id.
+        PasswordReset => "password_reset",
+        /// An invitation; the subject is the invitation id.
+        Invite => "invite",
+        /// First-owner setup; the subject is empty.
+        Setup => "setup",
+    }
+}
+
 /// An email address, case-folded. Uniqueness of users is on this folded form.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Email(String);
@@ -551,6 +575,124 @@ impl fmt::Debug for Secret {
             .field("kind", &self.kind)
             .field("key_id", &self.key_id)
             .finish_non_exhaustive()
+    }
+}
+
+/// A sign-in provider (contract 11.1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AuthProvider {
+    /// The id; it appears in the provider's redirect URI, so it never changes.
+    pub id: Uuid,
+    /// The kind.
+    pub kind: ProviderKind,
+    /// The name on the sign-in button.
+    pub display_name: String,
+    /// The OpenID Connect issuer; empty for GitHub.
+    pub issuer: String,
+    /// The OAuth client id.
+    pub client_id: String,
+    /// The sealed client secret, when it is stored; a provider from configuration keeps its secret there.
+    pub secret_id: Option<Uuid>,
+    /// The scopes to request.
+    pub scopes: Vec<String>,
+    /// Email domains that may sign in through this provider; empty allows every domain.
+    pub allowed_domains: Vec<String>,
+    /// Whether the provider is offered.
+    pub enabled: bool,
+    /// Whether the row comes from configuration: at most one such row per kind, read-only in the UI.
+    pub seeded: bool,
+}
+
+/// A provider identity linked to a user (contract 11.1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OauthAccount {
+    /// The provider.
+    pub provider_id: Uuid,
+    /// The provider's stable subject for the person.
+    pub subject: String,
+    /// The user.
+    pub user_id: UserId,
+}
+
+/// One sign-in attempt through a provider, between the redirect and the callback (contract 11.1).
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthFlow {
+    /// SHA-256 of the `state` parameter; the primary key.
+    pub state_hash: TokenHash,
+    /// The provider.
+    pub provider_id: Uuid,
+    /// The PKCE verifier, sealed under the master key.
+    pub sealed_verifier: Vec<u8>,
+    /// The OpenID Connect nonce; empty for GitHub.
+    pub nonce: String,
+    /// Where to go after sign-in.
+    pub next_path: String,
+    /// The flow is refused after this time.
+    pub expires_at: Timestamp,
+    /// When the callback used it.
+    pub consumed_at: Option<Timestamp>,
+}
+
+impl fmt::Debug for AuthFlow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthFlow")
+            .field("provider_id", &self.provider_id)
+            .field("next_path", &self.next_path)
+            .field("expires_at", &self.expires_at)
+            .field("consumed_at", &self.consumed_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A single-use token (contract 11.1). Only the hash of the token is stored.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OneTimeToken {
+    /// SHA-256 of the 256-bit token; the primary key.
+    pub token_hash: TokenHash,
+    /// What the token is for.
+    pub kind: TokenKind,
+    /// What the token acts on; see [`TokenKind`].
+    pub subject: String,
+    /// The token is refused after this time.
+    pub expires_at: Timestamp,
+    /// When it was used.
+    pub consumed_at: Option<Timestamp>,
+}
+
+impl fmt::Debug for OneTimeToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OneTimeToken")
+            .field("kind", &self.kind)
+            .field("subject", &self.subject)
+            .field("expires_at", &self.expires_at)
+            .field("consumed_at", &self.consumed_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An invitation to join the organization (contract 11.1 and 11.5).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Invitation {
+    /// The id.
+    pub id: Uuid,
+    /// The invited address, case-folded.
+    pub email: Email,
+    /// The organization role the person gets.
+    pub org_role: OrgRole,
+    /// The project memberships the person gets, ordered by project id.
+    pub project_roles: Vec<(ProjectId, ProjectRole)>,
+    /// The invitation is refused after this time.
+    pub expires_at: Timestamp,
+    /// When it was accepted.
+    pub accepted_at: Option<Timestamp>,
+    /// When it was revoked.
+    pub revoked_at: Option<Timestamp>,
+}
+
+impl Invitation {
+    /// Whether the invitation can still be accepted at `now`.
+    pub fn is_open(&self, now: Timestamp) -> bool {
+        self.accepted_at.is_none() && self.revoked_at.is_none() && now < self.expires_at
     }
 }
 
