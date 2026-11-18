@@ -1631,26 +1631,49 @@ mod tests {
         let protobuf = crucible_otlp::transcode_json(span_json(start_nanos).as_bytes()).unwrap();
         let (pair, bearer) = (basic(&public(), &secret()), format!("Bearer {}", secret()));
         let protobuf_type = "application/x-protobuf";
+        let json_type = "application/json";
+        let json = span_json(start_nanos).into_bytes();
+        let gzip = |bytes: &[u8]| {
+            use std::io::Write as _;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(bytes).unwrap();
+            encoder.finish().unwrap()
+        };
+        let (pb, js) = (ContentOrigin::Protobuf, ContentOrigin::Json);
+        // Each encoding on one of the two HTTP ingest listeners: (listener, media type, gzip, body, origin).
+        let sends = [
+            (addrs.api, protobuf_type, false, protobuf.clone(), pb),
+            (addrs.ingest, protobuf_type, false, protobuf.clone(), pb),
+            (addrs.ingest, json_type, false, json.clone(), js),
+            (addrs.api, protobuf_type, true, gzip(&protobuf), pb),
+            (addrs.ingest, json_type, true, gzip(&json), js),
+        ];
         let agent = ("e2e-exporter", "1.0");
-        // (compat_dialect, transport, sdk_name, sdk_version) of each acknowledged request, in order.
+        // (compat_dialect, transport, content origin, (sdk_name, sdk_version)) of each acknowledged request, in
+        // order.
         let mut expected = Vec::new();
 
         for route in crucible_compat::routes::INGEST_ROUTES {
-            for addr in [addrs.api, addrs.ingest] {
+            for (addr, content_type, compressed, body, origin) in &sends {
                 let mut headers = vec![
                     ("authorization", pair.as_str()),
-                    ("content-type", protobuf_type),
+                    ("content-type", *content_type),
                     ("user-agent", "e2e-exporter/1.0"),
                 ];
+                if *compressed {
+                    headers.push(("content-encoding", "gzip"));
+                }
                 if let Some(sdk) = route.sdk_headers {
                     headers.extend([(sdk.name, "sdk-a"), (sdk.version, "2.1.0")]);
                 }
-                let (status, _, body) =
-                    exchange(env, addr, "POST", route.path, &headers, &protobuf).await;
-                assert_eq!(status, "HTTP/1.1 200 OK", "{}: {body:?}", route.path);
-                assert!(body.is_empty());
+                let (status, _, reply) =
+                    exchange(env, *addr, "POST", route.path, &headers, body).await;
+                assert_eq!(status, "HTTP/1.1 200 OK", "{}: {reply:?}", route.path);
+                let empty: &[u8] = if *origin == js { b"{}" } else { b"" };
+                assert_eq!(reply, empty);
                 let sdk = route.sdk_headers.map_or(agent, |_| ("sdk-a", "2.1.0"));
-                expected.push((route.dialect, IngestTransport::Http, sdk));
+                expected.push((route.dialect, IngestTransport::Http, *origin, sdk));
             }
             // A pair whose halves belong to different keys is refused with what to fix.
             let mixed = basic(&format!("cpk_{}", "8".repeat(43)), &secret());
@@ -1677,14 +1700,14 @@ mod tests {
             let (status, ..) =
                 exchange(env, addrs.ingest, "POST", "/v1/traces", &headers, &protobuf).await;
             assert_eq!(status, "HTTP/1.1 200 OK");
-            expected.push((routing.dialect, IngestTransport::Http, agent));
+            expected.push((routing.dialect, IngestTransport::Http, pb, agent));
         }
         for authorization in [&bearer, &pair] {
             let response = grpc_export(addrs.grpc, authorization, &protobuf)
                 .await
                 .unwrap();
             assert_eq!(response.partial_success, None);
-            expected.push((0, IngestTransport::Grpc, ("e2e-grpc", "2.0")));
+            expected.push((0, IngestTransport::Grpc, pb, ("e2e-grpc", "2.0")));
         }
         let refused = grpc_export(addrs.grpc, "Bearer csk_short", &protobuf)
             .await
@@ -1747,12 +1770,18 @@ mod tests {
             assert_eq!(request.project_id.to_string(), PROJECT);
             assert_eq!(request.otlp, protobuf.as_slice());
             let sdk = (request.sdk_name.to_owned(), request.sdk_version.to_owned());
-            written.push((request.compat_dialect, request.transport, sdk));
+            written.push((
+                request.compat_dialect,
+                request.transport,
+                request.content_origin,
+                sdk,
+            ));
         }
         let expected: Vec<_> = expected
             .into_iter()
-            .map(|(dialect, transport, (name, version))| {
-                (dialect, transport, (name.to_owned(), version.to_owned()))
+            .map(|(dialect, transport, origin, (name, version))| {
+                let sdk = (name.to_owned(), version.to_owned());
+                (dialect, transport, origin, sdk)
             })
             .collect();
         assert_eq!(written, expected);
