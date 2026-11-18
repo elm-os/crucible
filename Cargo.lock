@@ -759,13 +759,17 @@ dependencies = [
 name = "crucible-normalize"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "crucible-compat",
  "crucible-otlp",
  "crucible-records",
  "insta",
+ "opentelemetry-proto",
  "proptest",
+ "prost",
  "regex",
  "serde_json",
+ "sha2",
  "smallvec",
  "thiserror",
  "xxhash-rust",
