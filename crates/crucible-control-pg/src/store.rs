@@ -266,6 +266,80 @@ impl PgControlStore {
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
     }
+
+    /// A server setting as the pooled connections see it, or as a transaction sees it.
+    #[cfg(feature = "test-support")]
+    pub async fn current_setting(
+        &self,
+        name: &str,
+        in_transaction: bool,
+    ) -> Result<String, TxError> {
+        let sql = "SELECT current_setting($1)";
+        let rows = if in_transaction {
+            let tx = self.begin_tx().await?;
+            let rows = tx
+                .handle
+                .query(Which::Main, false, sql, &[P::Text(name)])
+                .await?;
+            Box::new(tx).rollback().await;
+            rows
+        } else {
+            self.handle
+                .query(Which::Main, false, sql, &[P::Text(name)])
+                .await?
+        };
+        first(&rows, |c| c.text())?.ok_or_else(|| TxError::Invalid("no such setting".into()))
+    }
+
+    /// Terminates every other connection of this database, as a restart or a failover does. Returns how
+    /// many.
+    #[cfg(feature = "test-support")]
+    pub async fn terminate_other_backends(&self) -> Result<u64, TxError> {
+        let rows = self
+            .handle
+            .query(
+                Which::Main,
+                false,
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+                 WHERE datname = current_database() AND pid <> pg_backend_pid()",
+                &[],
+            )
+            .await?;
+        Ok(rows.len() as u64)
+    }
+
+    async fn begin_tx(&self) -> Result<PgTx, TxError> {
+        let shared = &self.handle.shared;
+        let connection = shared.get(Which::Main).await?;
+        let begun = shared.env.clock.now();
+        match shared
+            .env
+            .timeout(STATEMENT_TIMEOUT, connection.batch_execute(BEGIN))
+            .await
+        {
+            Ok(Ok(())) => Ok(PgTx {
+                handle: Handle {
+                    shared: Arc::clone(shared),
+                    tx: Some(Tx {
+                        connection: Some(connection),
+                        begun,
+                        failed: Mutex::new(None),
+                        broken: AtomicBool::new(false),
+                    }),
+                },
+            }),
+            Ok(Err(error)) => {
+                discard(connection);
+                Err(failure(&error, false).error)
+            }
+            Err(_) => {
+                discard(connection);
+                Err(TxError::Unavailable(
+                    "Postgres did not open a transaction within 10 s".to_owned(),
+                ))
+            }
+        }
+    }
 }
 
 /// One open transaction on a main-pool connection.
@@ -282,36 +356,7 @@ impl fmt::Debug for PgTx {
 #[async_trait]
 impl ControlStore for PgControlStore {
     async fn begin(&self) -> Result<Box<dyn ControlTx>, TxError> {
-        let shared = &self.handle.shared;
-        let connection = shared.get(Which::Main).await?;
-        let begun = shared.env.clock.now();
-        match shared
-            .env
-            .timeout(STATEMENT_TIMEOUT, connection.batch_execute(BEGIN))
-            .await
-        {
-            Ok(Ok(())) => Ok(Box::new(PgTx {
-                handle: Handle {
-                    shared: Arc::clone(shared),
-                    tx: Some(Tx {
-                        connection: Some(connection),
-                        begun,
-                        failed: Mutex::new(None),
-                        broken: AtomicBool::new(false),
-                    }),
-                },
-            })),
-            Ok(Err(error)) => {
-                discard(connection);
-                Err(failure(&error, false).error)
-            }
-            Err(_) => {
-                discard(connection);
-                Err(TxError::Unavailable(
-                    "Postgres did not open a transaction within 10 s".to_owned(),
-                ))
-            }
-        }
+        Ok(Box::new(self.begin_tx().await?))
     }
 
     async fn db_now(&self) -> Result<Timestamp, TxError> {
