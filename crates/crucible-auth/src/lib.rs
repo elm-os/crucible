@@ -1,9 +1,12 @@
 //! Authentication and authorization (contract section 11).
 //!
-//! This crate owns minting of `ProjectScope` values: [`KeyVerifier::verify`] is how a request obtains one. In
-//! milestone 1 the verifier is [`StaticKeys`], the project keys listed in configuration. Sessions, roles, the
-//! key snapshot and the key feed arrive with the platform milestone.
+//! This crate owns minting of `ProjectScope` values: [`KeyVerifier::verify`] and [`KeyVerifier::verify_pair`]
+//! are how a request obtains one, and [`authenticate`] reads the `Authorization` forms of contract 12.2 into
+//! them. Without a control plane the verifier is [`StaticKeys`], the project keys listed in configuration; with
+//! one it is [`DbKeys`], the Postgres key snapshot kept by the key feed. The control plane's sessions, roles,
+//! invitations and provider sign-in are in [`service`].
 
+mod credential;
 mod key;
 mod scope;
 
@@ -29,8 +32,10 @@ pub use mint::{LookupKey, MintedKey, mint, secret_hash};
 pub use next_path::safe_next;
 pub use seal::{Sealed, Sealer, Unsealable};
 
+pub use credential::{Refusal, authenticate};
 pub use key::{
-    KeyConfigError, KeyPrincipal, KeyVerifier, MalformedKey, SecretKey, StaticKey, StaticKeys,
+    KeyConfigError, KeyPrincipal, KeyVerifier, MalformedKey, MalformedPublicKey, PairError,
+    PublicKey, SecretKey, StaticKey, StaticKeys,
 };
 
 #[cfg(any(test, feature = "test-support"))]

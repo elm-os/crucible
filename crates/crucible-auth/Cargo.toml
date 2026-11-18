@@ -17,6 +17,7 @@ crucible-control = { workspace = true }
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
 async-trait = { workspace = true }
+# Basic credentials (contract 12.2).
 base64 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

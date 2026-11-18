@@ -86,6 +86,8 @@ pub struct Server {
     pub listen: SocketAddr,
     /// Address of the OTLP/HTTP ingest listener.
     pub ingest_listen: SocketAddr,
+    /// Address of the OTLP/gRPC ingest listener.
+    pub grpc_listen: SocketAddr,
     /// Address of the Prometheus metrics listener.
     pub metrics_listen: SocketAddr,
     /// Serve the UI from this directory instead of the one compiled in.

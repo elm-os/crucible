@@ -84,7 +84,33 @@ fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
             keys.check_pair(&stranger.public_key, &stranger.secret),
             KeyVerdict::Invalid
         );
-        // Ingest takes only keys with the ingest scope.
+        // Ingest and the compat routes take only keys with the ingest scope, as a secret or as a pair.
+        assert_eq!(
+            keys.verify_pair(&a.public_key, &a.secret)
+                .map(|p| p.api_key_id),
+            Ok(rows[0].id)
+        );
+        assert_eq!(
+            keys.verify_pair(&b.public_key, &a.secret),
+            Err(crate::PairError::Mismatch)
+        );
+        assert_eq!(
+            keys.verify_pair(&b.public_key, &b.secret),
+            Err(crate::PairError::Secret)
+        );
+        let basic = |public: &str, secret: &str| {
+            use base64::Engine as _;
+            let pair = format!("{public}:{secret}");
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(pair)
+            )
+        };
+        assert!(crate::authenticate(&keys, &basic(&a.public_key, &a.secret)).is_ok());
+        assert_eq!(
+            crate::authenticate(&keys, &format!("Bearer {}", stranger.secret)),
+            Err(crate::Refusal::UnknownSecret)
+        );
         assert_eq!(
             keys.verify(&a.secret).map(|p| p.api_key_id),
             Some(rows[0].id)
@@ -154,7 +180,13 @@ fn outage_modes() {
         // Healthy: an unknown key is simply invalid.
         assert_eq!(open.check_secret(&b.secret), KeyVerdict::Invalid);
         env.clock.sleep(OUTAGE_AFTER).await;
-        // Fail-open: known keys keep working, unknown ones are 503.
+        // Fail-open: known keys keep working, unknown ones are 503, also through `authenticate`.
+        assert_eq!(
+            crate::authenticate(&open, &format!("Bearer {}", b.secret)),
+            Err(crate::Refusal::Unavailable)
+        );
+        assert_eq!(open.retry_after(&b.secret), Some(RETRY_AFTER));
+        assert_eq!(open.retry_after(&a.secret), None);
         assert!(valid(open.check_secret(&a.secret)).is_some());
         assert_eq!(
             open.check_secret(&b.secret),

@@ -36,16 +36,17 @@ crates into the binary.
 
 All three live in `deploy/compose/` and are ignored by git.
 
-`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a secret is `csk_`
-followed by 43 characters from `0-9A-Za-z`:
+`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a key pair is a public
+key `cpk_` and a secret `csk_`, each followed by 43 characters from `0-9A-Za-z`:
 
 ```sh
 cd deploy/compose
 python3 - > keys.toml <<'PY'
 import secrets, string, uuid
 alphabet = string.digits + string.ascii_letters
-secret = "csk_" + "".join(secrets.choice(alphabet) for _ in range(43))
-print(f'[[project_key]]\nproject_id = "{uuid.uuid4()}"\nsecret = "{secret}"')
+# 43 characters encode 32 bytes only below 2^256; a leading zero keeps the value in range.
+key = lambda prefix: prefix + "0" + "".join(secrets.choice(alphabet) for _ in range(42))
+print(f'[[project_key]]\nproject_id = "{uuid.uuid4()}"\npublic_key = "{key("cpk_")}"\nsecret = "{key("csk_")}"')
 PY
 ```
 
@@ -80,6 +81,9 @@ and send the secret from `keys.toml` as `Authorization: Bearer <secret>`. With t
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
 ```
+
+Exporters that speak OTLP over gRPC use `http://127.0.0.1:4317` with the same header
+(`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`).
 
 Or by hand:
 

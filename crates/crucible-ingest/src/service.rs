@@ -1,4 +1,4 @@
-//! The ingest service: `POST /v1/traces`.
+//! The ingest service: `POST /v1/traces` and the compat ingest routes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,11 +11,11 @@ use axum::http::header::{AUTHORIZATION, USER_AGENT};
 use axum::response::Response;
 use axum::routing::post;
 use crucible_admission::{BucketConfig, UNAVAILABLE_MIN_S};
-use crucible_auth::{KeyPrincipal, KeyVerifier};
+use crucible_auth::{KeyPrincipal, KeyVerifier, Refusal};
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env};
 use crucible_otlp::{JsonError, PartialSuccess, ScanError, TraceRequest, transcode_json};
-use crucible_records::{Timestamp, truncate_str};
+use crucible_records::{ProjectId, Timestamp, truncate_str};
 use crucible_wal::{AppendError, Wal, WalConfig};
 use crucible_wal_codec::{
     Compression, ContentOrigin, FRAME_HEADER_LEN, IngestRequest, IngestTransport,
@@ -46,6 +46,29 @@ pub enum Mutant {
     AckBeforeAppend,
 }
 
+/// A compat ingest route (contract 12.1): a path served like `/v1/traces` whose requests carry a dialect hint.
+/// The routes themselves are data of the compat registry, which the binary hands in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CompatRoute {
+    /// The request path.
+    pub path: &'static str,
+    /// The envelope's `compat_dialect` for every request on the path.
+    pub dialect: u8,
+    /// The lowercase names of the headers that carry the SDK's name and version, in that order. When either is
+    /// present, `sdk_name` and `sdk_version` come from them instead of `User-Agent`.
+    pub sdk_headers: Option<(&'static str, &'static str)>,
+}
+
+/// A request header whose presence on `/v1/traces` sets a dialect hint (contract 12.1). It never selects a
+/// project.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RoutingHeader {
+    /// The lowercase header name.
+    pub name: &'static str,
+    /// The envelope's `compat_dialect` when the header is present.
+    pub dialect: u8,
+}
+
 #[derive(Clone, Debug)]
 pub struct IngestConfig {
     /// `ingest.inflight_bytes`: the budget for the request bytes that handlers hold, from the first body byte
@@ -61,6 +84,10 @@ pub struct IngestConfig {
     /// backpressure governs (contract 11.9). An operator who sets a rate should keep the burst at or above the
     /// largest body a client sends, because a request larger than the burst can never pass.
     pub project_rate: Option<BucketConfig>,
+    /// The compat ingest routes that [`Ingest::router`] serves besides `/v1/traces`; none by default.
+    pub compat_routes: Vec<CompatRoute>,
+    /// The routing headers that set a hint on `/v1/traces`, checked in order; none by default.
+    pub routing_headers: Vec<RoutingHeader>,
     /// A seeded defect; `None` outside the simulation suite.
     pub mutant: Option<Mutant>,
 }
@@ -81,12 +108,14 @@ impl Default for IngestConfig {
             max_event_age: DEFAULT_MAX_EVENT_AGE,
             compression: Compression::Lz4,
             project_rate: None,
+            compat_routes: Vec::new(),
+            routing_headers: Vec::new(),
             mutant: None,
         }
     }
 }
 
-/// OTLP/HTTP trace ingest in front of one WAL. Cloning gives another handle to the same service.
+/// OTLP trace ingest in front of one WAL. Cloning gives another handle to the same service.
 #[derive(Clone, Debug)]
 pub struct Ingest {
     pub(crate) inner: Arc<Inner>,
@@ -100,7 +129,9 @@ pub(crate) struct Inner {
     max_event_age_micros: i64,
     pub(crate) compression: Compression,
     acks_before_append: bool,
-    metrics: Metrics,
+    compat_routes: Vec<CompatRoute>,
+    routing_headers: Vec<RoutingHeader>,
+    pub(crate) metrics: Metrics,
     pub(crate) facts: crate::facts::FactMetrics,
 }
 
@@ -109,7 +140,7 @@ pub(crate) struct Inner {
 const SPAN_OUTCOMES: [&str; 4] = ["accepted", "missing_trace_id", "missing_span_id", "too_old"];
 
 #[derive(Debug)]
-struct Metrics {
+pub(crate) struct Metrics {
     accepted: Counter,
     partial: Counter,
     refused: [Counter; Reject::OUTCOMES.len()],
@@ -128,7 +159,7 @@ impl Metrics {
         }
     }
 
-    fn acknowledged(&self, acked: &Acked) {
+    pub(crate) fn acknowledged(&self, acked: &Acked) {
         let rejected = acked.partial.map_or(0, |p| p.rejected_spans());
         if let Some(partial) = acked.partial {
             self.partial.add(1);
@@ -140,13 +171,19 @@ impl Metrics {
         }
         self.spans[0].add(u64::from(acked.spans.saturating_sub(rejected)));
     }
+
+    pub(crate) fn refused(&self, reject: &Reject) {
+        if let Some(counter) = self.refused.get(reject.outcome()) {
+            counter.add(1);
+        }
+    }
 }
 
 /// What the client is told after its frame is durable.
 #[derive(Debug)]
-struct Acked {
+pub(crate) struct Acked {
     spans: u32,
-    partial: Option<PartialSuccess>,
+    pub(crate) partial: Option<PartialSuccess>,
 }
 
 /// A frame ready for the WAL, and the reservation that covers it until it is durable.
@@ -159,36 +196,64 @@ struct Prepared {
 
 /// A received body and what its frame needs from the request.
 #[derive(Debug)]
-struct Job {
-    wire: Vec<u8>,
-    gzip: bool,
-    format: Format,
-    principal: KeyPrincipal,
-    sdk: Sdk,
+pub(crate) struct Job {
+    pub(crate) wire: Vec<u8>,
+    pub(crate) gzip: bool,
+    pub(crate) format: Format,
+    pub(crate) transport: IngestTransport,
+    pub(crate) principal: KeyPrincipal,
+    pub(crate) origin: Origin,
     /// Spans that start before this are rejected as too old.
-    min_start: Timestamp,
+    pub(crate) min_start: Timestamp,
 }
 
-/// What the envelope takes from the request headers.
-#[derive(Debug)]
-struct Sdk {
-    name: String,
-    version: String,
+/// What the envelope takes from the route and the request headers (contracts 4.4, 10.1 and 12.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Origin {
+    /// `compat_dialect`: the request-level dialect hint, 0 for none.
+    dialect: u8,
+    sdk_name: String,
+    sdk_version: String,
 }
 
-impl Sdk {
-    /// `sdk_name` and `sdk_version` (contract 4.4): the first product of `User-Agent`, `name/version` as OTLP
-    /// exporters send it, cut to the envelope's caps.
-    fn from_headers(headers: &HeaderMap) -> Self {
-        let agent = headers
-            .get(USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
-        let product = agent.split_ascii_whitespace().next().unwrap_or_default();
-        let (name, version) = product.split_once('/').unwrap_or((product, ""));
+/// A header's value as text, when it is present and visible ASCII.
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+impl Origin {
+    /// The hint and the SDK of a request. On a compat route the hint is the route's, and the SDK comes from the
+    /// route's SDK headers when either is present. Elsewhere the first routing header present sets the hint.
+    /// Otherwise the SDK is the first product of `User-Agent`, `name/version` as OTLP exporters send it. Both
+    /// are cut to the envelope's caps.
+    pub(crate) fn of(
+        headers: &HeaderMap,
+        route: Option<&CompatRoute>,
+        routing: &[RoutingHeader],
+    ) -> Self {
+        let dialect = match route {
+            Some(route) => route.dialect,
+            None => routing
+                .iter()
+                .find(|r| headers.contains_key(r.name))
+                .map_or(0, |r| r.dialect),
+        };
+        let from_sdk_headers = route
+            .and_then(|r| r.sdk_headers)
+            .and_then(|(name, version)| {
+                let (name, version) = (header(headers, name), header(headers, version));
+                (name.is_some() || version.is_some())
+                    .then(|| (name.unwrap_or_default(), version.unwrap_or_default()))
+            });
+        let (name, version) = from_sdk_headers.unwrap_or_else(|| {
+            let agent = header(headers, USER_AGENT.as_str()).unwrap_or_default();
+            let product = agent.split_ascii_whitespace().next().unwrap_or_default();
+            product.split_once('/').unwrap_or((product, ""))
+        });
         Self {
-            name: truncate_str(name, MAX_SDK_NAME_BYTES).to_owned(),
-            version: truncate_str(version, MAX_SDK_VERSION_BYTES).to_owned(),
+            dialect,
+            sdk_name: truncate_str(name.trim(), MAX_SDK_NAME_BYTES).to_owned(),
+            sdk_version: truncate_str(version.trim(), MAX_SDK_VERSION_BYTES).to_owned(),
         }
     }
 }
@@ -247,6 +312,7 @@ impl Ingest {
             Arc::clone(&env.clock),
         );
         let max_age = i64::try_from(config.max_event_age.as_micros()).unwrap_or(i64::MAX);
+        let acks_before_append = config.acks_before_append();
         Self {
             inner: Arc::new(Inner {
                 env: env.clone(),
@@ -254,63 +320,110 @@ impl Ingest {
                 admission: Arc::new(admission),
                 max_event_age_micros: max_age,
                 compression: config.compression,
-                acks_before_append: config.acks_before_append(),
+                acks_before_append,
+                compat_routes: config.compat_routes,
+                routing_headers: config.routing_headers,
                 metrics: Metrics::new(env),
                 facts: crate::facts::FactMetrics::new(env),
             }),
         }
     }
 
-    /// The routes: `POST /v1/traces` (contract 12.6), for the `:8080` and `:4318` listeners alike.
+    /// The HTTP routes for the `:8080` and `:4318` listeners alike: `POST /v1/traces` (contract 12.6) and
+    /// each compat ingest route of the configuration.
     pub fn router(&self) -> Router {
+        let mut router = Router::new().route(
+            "/v1/traces",
+            post(|State(ingest): State<Ingest>, request: Request| export(ingest, None, request)),
+        );
+        for route in &self.inner.compat_routes {
+            let route = *route;
+            router = router.route(
+                route.path,
+                post(move |State(ingest): State<Ingest>, request: Request| {
+                    export(ingest, Some(route), request)
+                }),
+            );
+        }
+        router.with_state(self.clone())
+    }
+
+    /// The gRPC routes for the `:4317` listener: `TraceService/Export` (contract 12.1); any other method answers
+    /// `UNIMPLEMENTED`.
+    pub fn grpc_router(&self) -> Router {
         Router::new()
-            .route("/v1/traces", post(export))
+            .route(crate::grpc::EXPORT_PATH, post(crate::grpc::export))
+            .fallback(crate::grpc::unimplemented)
             .with_state(self.clone())
     }
 }
 
-/// `POST /v1/traces`. The response is in the request's format; a request in an unsupported format is answered
-/// in protobuf, the OTLP default.
-async fn export(State(ingest): State<Ingest>, request: Request) -> Response {
+/// An OTLP/HTTP export on `/v1/traces` or a compat route. The response is in the request's format; a request in
+/// an unsupported format is answered in protobuf, the OTLP default.
+async fn export(ingest: Ingest, route: Option<CompatRoute>, request: Request) -> Response {
     let inner = &ingest.inner;
     let (parts, body) = request.into_parts();
     let format = Format::of(&parts.headers);
     let reply_format = format.unwrap_or(Format::Protobuf);
-    match inner.export(&parts.headers, format, body).await {
+    let origin = Origin::of(&parts.headers, route.as_ref(), &inner.routing_headers);
+    match inner.export(&parts.headers, format, origin, body).await {
         Ok(acked) => {
             inner.metrics.acknowledged(&acked);
             reply::accepted(reply_format, acked.partial.as_ref())
         }
         Err(reject) => {
-            if let Some(counter) = inner.metrics.refused.get(reject.outcome()) {
-                counter.add(1);
-            }
+            inner.metrics.refused(&reject);
             reply::rejected(reply_format, &reject)
         }
     }
 }
 
 impl Inner {
-    fn authenticate(&self, headers: &HeaderMap) -> Result<KeyPrincipal, Reject> {
+    /// The principal of the request's `Authorization` header (contract 12.2): a secret key as Bearer, or a
+    /// public and secret key pair as Basic.
+    pub(crate) fn authenticate(&self, headers: &HeaderMap) -> Result<KeyPrincipal, Reject> {
         let value = headers
             .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or(Reject::Unauthenticated)?;
-        let (scheme, secret) = value.split_once(' ').ok_or(Reject::Unauthenticated)?;
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return Err(Reject::Unauthenticated);
-        }
-        self.keys
-            .verify(secret.trim())
-            .ok_or(Reject::Unauthenticated)
+            .ok_or(Reject::Unauthenticated(Refusal::Missing))?;
+        let value = value
+            .to_str()
+            .map_err(|_| Reject::Unauthenticated(Refusal::Malformed))?;
+        crucible_auth::authenticate(self.keys.as_ref(), value).map_err(|refusal| match refusal {
+            // Contract 11.8: a key the server cannot check while Postgres is unreachable is retried later.
+            Refusal::Unavailable => Reject::Unavailable {
+                retry_after_s: u32::try_from(crucible_auth::RETRY_AFTER.as_secs()).unwrap_or(5),
+                detail: "the server cannot check this key while its control plane is unreachable",
+            },
+            other => Reject::Unauthenticated(other),
+        })
     }
 
-    /// Authenticate, check the headers, admit, read; then decode, scan and prepare the frame off the async
-    /// threads; then append, and return only once the frame is durable.
+    /// The earliest start time a span of a request arriving now may have.
+    pub(crate) fn min_start(&self) -> Timestamp {
+        self.env
+            .clock
+            .wall_now()
+            .saturating_add_micros(self.max_event_age_micros.saturating_neg())
+    }
+
+    /// Charges `bytes` that a request sent beyond what it declared to the project's rate.
+    pub(crate) fn charge(&self, project: ProjectId, bytes: u64) -> Result<(), Reject> {
+        if bytes > 0
+            && !self.admission.take(project, bytes)
+            && let Some(reject) = self.admission.refusal(false, true)
+        {
+            return Err(reject);
+        }
+        Ok(())
+    }
+
+    /// Authenticate, check the headers, admit, read; then decode, scan, prepare and append the frame
+    /// ([`Inner::commit`]).
     async fn export(
         self: &Arc<Self>,
         headers: &HeaderMap,
         format: Option<Format>,
+        origin: Origin,
         body: Body,
     ) -> Result<Acked, Reject> {
         let principal = self.authenticate(headers)?;
@@ -333,25 +446,25 @@ impl Inner {
         let mut held = self.admission.admit(project, declared.unwrap_or(0))?;
         let wire = body::read(body, cap, declared, &mut held).await?;
         // A body without a declared length is charged to the project's rate once its size is known.
-        let undeclared = (wire.len() as u64).saturating_sub(declared.unwrap_or(0));
-        if undeclared > 0
-            && !self.admission.take(project, undeclared)
-            && let Some(reject) = self.admission.refusal(false, true)
-        {
-            return Err(reject);
-        }
+        self.charge(
+            project,
+            (wire.len() as u64).saturating_sub(declared.unwrap_or(0)),
+        )?;
         let job = Job {
             wire,
             gzip,
             format,
+            transport: IngestTransport::Http,
             principal,
-            sdk: Sdk::from_headers(headers),
-            min_start: self
-                .env
-                .clock
-                .wall_now()
-                .saturating_add_micros(self.max_event_age_micros.saturating_neg()),
+            origin,
+            min_start: self.min_start(),
         };
+        self.commit(job, held).await
+    }
+
+    /// Decodes, scans and prepares the frame off the async threads; then appends it, and returns only once the
+    /// frame is durable.
+    pub(crate) async fn commit(self: &Arc<Self>, job: Job, held: Held) -> Result<Acked, Reject> {
         let inner = Arc::clone(self);
         let mut task = self
             .env
@@ -379,8 +492,9 @@ impl Inner {
             wire,
             gzip,
             format,
+            transport,
             principal,
-            sdk,
+            origin,
             min_start,
         } = job;
         let decoded = if gzip {
@@ -415,14 +529,13 @@ impl Inner {
         let envelope = IngestRequest {
             project_id: principal.scope.project_id(),
             api_key_id: principal.api_key_id,
-            // Native OTLP carries no request-level dialect hint (contract 10.1).
-            compat_dialect: 0,
-            transport: IngestTransport::Http,
+            compat_dialect: origin.dialect,
+            transport,
             content_origin,
             // Import keys arrive with the control plane.
             admin_import: false,
-            sdk_name: &sdk.name,
-            sdk_version: &sdk.version,
+            sdk_name: &origin.sdk_name,
+            sdk_version: &origin.sdk_version,
             // Idempotency keys are not honoured on OTLP ingest (contract 12.5).
             idempotency_key: &[],
             span_count: acked.spans,

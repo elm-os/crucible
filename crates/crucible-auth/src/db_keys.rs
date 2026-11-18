@@ -26,7 +26,7 @@ use crucible_env::{Clock, Env, Instant};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp};
 use subtle::ConstantTimeEq;
 
-use crate::key::{KeyPrincipal, KeyVerifier};
+use crate::key::{KeyPrincipal, KeyVerifier, PairError};
 use crate::mint::{LookupKey, secret_hash};
 use crate::scope;
 
@@ -463,13 +463,33 @@ impl DbKeys {
     }
 }
 
-/// The verifier of ingest: only keys with the `ingest` scope pass (contract 11.3). The API checks each route's
-/// own permission through [`DbKeys::check_secret`] and [`DbKeys::check_pair`] instead.
+/// The verifier of ingest and the compat routes: only keys with the `ingest` scope pass (contract 11.3). The API
+/// checks each route's own permission through [`DbKeys::check_secret`] and [`DbKeys::check_pair`] instead.
 impl KeyVerifier for DbKeys {
     fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
         match self.check_secret(secret) {
             KeyVerdict::Valid(grant) if grant.scopes.has(KeyScope::Ingest) => Some(grant.principal),
             KeyVerdict::Valid(_) | KeyVerdict::Invalid | KeyVerdict::Unavailable { .. } => None,
+        }
+    }
+
+    fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError> {
+        let principal = self.verify(secret).ok_or(PairError::Secret)?;
+        let ours = self
+            .current()
+            .and_then(|snapshot| snapshot.by_id.get(&principal.api_key_id).cloned())
+            .ok_or(PairError::Secret)?;
+        if bool::from(public.as_bytes().ct_eq(ours.public_key.as_bytes())) {
+            Ok(principal)
+        } else {
+            Err(PairError::Mismatch)
+        }
+    }
+
+    fn retry_after(&self, secret: &str) -> Option<Duration> {
+        match self.check_secret(secret) {
+            KeyVerdict::Unavailable { retry_after } => Some(retry_after),
+            KeyVerdict::Valid(_) | KeyVerdict::Invalid => None,
         }
     }
 }
