@@ -1,0 +1,117 @@
+# Crucible with a bundled ClickHouse 26.8 LTS and Postgres 18. Development preview: see docs/self-hosting/README.md.
+#
+# Two files beside this one, made once before the first start (docs/self-hosting/quickstart.md):
+#   .env       CLICKHOUSE_PASSWORD, POSTGRES_PASSWORD and CRUCIBLE_MASTER_KEY:
+#              printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+#   keys.toml  the project keys that ingest and the API accept
+# Then: docker compose up -d --wait
+#
+# Optional settings in .env:
+#   CRUCIBLE_IMAGE           the Crucible image (default ghcr.io/elm-os/crucible:latest)
+#   CRUCIBLE_BIND_ADDRESS    the host address the ports are published on (default 0.0.0.0, every interface;
+#                            127.0.0.1 keeps them on this machine)
+#   CRUCIBLE_HTTP_PORT       host port of the UI, the REST API and OTLP/HTTP ingest (default 8080)
+#   CRUCIBLE_OTLP_HTTP_PORT  host port of OTLP/HTTP ingest (default 4318)
+#
+# Postgres holds the control plane. In this milestone that is the migrations ledger: each schema step is recorded
+# there and applied once. Sign-in, projects and keys will live there too.
+name: crucible
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: crucible_admin
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env (docs/self-hosting/quickstart.md)}
+      # crucible_admin creates Crucible's service users and their row policies.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile: 262144
+    healthcheck:
+      # /ping takes no credentials, so no password appears in the container's configuration.
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crucible
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (docs/self-hosting/quickstart.md)}
+      POSTGRES_DB: crucible
+    volumes:
+      # Postgres 18 images keep the cluster in a versioned directory under this one.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP: the server that initializes a new volume listens on the Unix socket only.
+      test: ["CMD", "pg_isready", "--host=127.0.0.1", "--username=crucible", "--dbname=crucible"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  crucible:
+    image: ${CRUCIBLE_IMAGE:-ghcr.io/elm-os/crucible:latest}
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      CRUCIBLE_CLICKHOUSE_URL: http://clickhouse:8123
+      CRUCIBLE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env (docs/self-hosting/quickstart.md)}
+      CRUCIBLE_POSTGRES_URL: postgres://crucible@postgres:5432/crucible
+      CRUCIBLE_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (docs/self-hosting/quickstart.md)}
+      CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (docs/self-hosting/quickstart.md)}
+    # Every start migrates: the ledger in Postgres skips the steps that are already applied.
+    command:
+      - serve
+      - --migrate
+      - --data-dir=/var/lib/crucible/data
+      - --keys-file=/etc/crucible/keys.toml
+    volumes:
+      - crucible-data:/var/lib/crucible
+      - type: bind
+        source: ./keys.toml
+        target: /etc/crucible/keys.toml
+        read_only: true
+        bind:
+          # Docker Engine then refuses to start without keys.toml and names the path. Docker Desktop for Windows
+          # makes an empty directory instead, which the server reports as "Is a directory"; delete it, make the file.
+          create_host_path: false
+    ports:
+      # The UI, the REST API and OTLP/HTTP ingest.
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_HTTP_PORT:-8080}:8080"
+      # OTLP/HTTP ingest.
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_OTLP_HTTP_PORT:-4318}:4318"
+    # The server writes only to its data volume.
+    read_only: true
+    # After SIGTERM the server finishes its open requests for up to 30 s.
+    stop_grace_period: 35s
+
+  # The Crucible image has no shell or HTTP client, so this service reports the server's /readyz as its health:
+  # `docker compose up --wait` returns once Crucible is ready, and `docker compose ps` shows the state.
+  ready:
+    image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+    restart: unless-stopped
+    depends_on:
+      - crucible
+    command: ["sleep", "infinity"]
+    stop_signal: SIGKILL
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--output", "/dev/null", "http://crucible:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 1s
+
+volumes:
+  clickhouse-data:
+  postgres-data:
+  crucible-data:

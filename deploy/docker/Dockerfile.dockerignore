@@ -1,0 +1,24 @@
+# Build context of deploy/docker/Dockerfile: only what the image build reads.
+*
+!.cargo
+!Cargo.lock
+!Cargo.toml
+!LICENSE
+!THIRD_PARTY_NOTICES
+!crates
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!rust-toolchain.toml
+!ui
+!xtask
+
+# Local build output and dependencies inside the directories above.
+**/node_modules
+**/target
+crates/*/fuzz/artifacts
+crates/*/fuzz/corpus
+ui/.next
+ui/out
+ui/playwright-report
+ui/test-results
