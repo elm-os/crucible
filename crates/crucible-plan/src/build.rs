@@ -26,13 +26,6 @@ pub const SPAN_CHILDREN_DEFAULT_LIMIT: u32 = 500;
 /// The largest page of span children.
 pub const SPAN_CHILDREN_MAX_LIMIT: u32 = 2_000;
 
-/// The `trace_hash` column value of a trace: the low 32 bits of xxh3-64 of the 16 raw id bytes (contract
-/// section 6.1).
-pub fn trace_hash(trace_id: TraceId) -> u32 {
-    // Truncation to the low 32 bits is the definition.
-    xxhash_rust::xxh3::xxh3_64(trace_id.as_bytes()) as u32
-}
-
 /// The window a table can still serve: `from` clamped to the table's retention cut-off at `now`, so expired rows
 /// are hidden at once (contract section 13.1). `None` when the whole window has expired.
 pub fn effective_window(
@@ -61,7 +54,7 @@ pub fn trace_bounds_window(
 
 fn in_trace(trace_id: TraceId) -> [Pred; 2] {
     [
-        Pred::eq(SpanCoreCol::TraceHash, trace_hash(trace_id)),
+        Pred::eq(SpanCoreCol::TraceHash, trace_id.trace_hash()),
         Pred::eq(SpanCoreCol::TraceId, trace_id),
     ]
 }
@@ -225,7 +218,7 @@ pub fn span_children(
 /// The two plans of the data-bounds endpoint. Each returns `min(minute)` and `max(minute)` of a rollup.
 #[derive(Clone, PartialEq, Debug)]
 pub struct DataBoundsPlans {
-    /// Over `span_metrics`: one row.
+    /// Over `span_metrics`: one row, or none when the window holds no data.
     pub spans: QueryPlan,
     /// Over `mcp_tool_rollup`, grouped by `side`: one row per side.
     pub mcp: QueryPlan,

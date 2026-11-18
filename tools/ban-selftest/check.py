@@ -173,7 +173,8 @@ def check_guard():
         ("expect attribute in a product crate", {"crates/crucible-wal/src/lib.rs": fixture}, True, "crates/crucible-wal/src/lib.rs"),
         ("expect attribute in an SDK", {"sdk/rust/src/lib.rs": fixture}, True, "sdk/rust/src/lib.rs"),
         ("allow attribute in a product crate", {"crates/crucible-wal/src/x.rs": fixture.replace("#[expect(", "#[allow(")}, True, "crates/crucible-wal/src/x.rs"),
-        ("expect attribute inside the allowlist", {"crates/crucible-env-prod/src/lib.rs": fixture, "crates/crucible/src/serve.rs": fixture, "crates/crucible-auth/src/scope.rs": fixture, "crates/crucible-wal/benches/b.rs": fixture, "crates/crucible-loadgen/src/main.rs": fixture}, False, None),
+        ("expect attribute in the shipper outside its probe file", {"crates/crucible-shipper/src/lib.rs": fixture}, True, "crates/crucible-shipper/src/lib.rs"),
+        ("expect attribute inside the allowlist", {"crates/crucible-env-prod/src/lib.rs": fixture, "crates/crucible/src/serve.rs": fixture, "crates/crucible-auth/src/scope.rs": fixture, "crates/crucible-shipper/src/probe.rs": fixture, "crates/crucible-wal/benches/b.rs": fixture, "crates/crucible-loadgen/src/main.rs": fixture}, False, None),
         ("no attribute anywhere", {"crates/crucible-wal/src/lib.rs": clean}, False, None),
     ]
     for description, files, must_fail, named in cases:
