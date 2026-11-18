@@ -1,0 +1,134 @@
+{
+  "$comment": "Scrub rules for captured MCP content and error messages (contract 9.10). Patterns are in the RE2-compatible subset (no lookaround or backreferences) with bounded repetition, so matching is linear-time. 'literal' is a substring a match must contain, checked first so most text skips the pattern. Each vector's output is what scrubbing its input must produce.",
+  "schema": "crucible.scrub-rules/v1",
+  "replacement": "[redacted:{rule}]",
+  "keys": {
+    "rule": "sensitive_key",
+    "comment": "A JSON member whose key, lowercased with every non-alphanumeric character removed, ends with one of these names has its string or scalar value replaced.",
+    "names": [
+      "password",
+      "passwd",
+      "secret",
+      "token",
+      "apikey",
+      "authorization",
+      "cookie",
+      "privatekey",
+      "credential",
+      "credentials",
+      "ssn",
+      "cvv",
+      "cvc"
+    ]
+  },
+  "patterns": [
+    {
+      "rule": "pem_private_key",
+      "literal": "PRIVATE KEY-----",
+      "regex": "-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----[A-Za-z0-9+/=\\\\\\s]{0,65536}(?:-----END [A-Z ]{0,32}PRIVATE KEY-----)?"
+    },
+    {
+      "rule": "jwt",
+      "literal": "eyJ",
+      "regex": "eyJ[A-Za-z0-9_-]{2,4096}\\.eyJ[A-Za-z0-9_-]{2,8192}\\.[A-Za-z0-9_-]{0,4096}"
+    },
+    {
+      "rule": "bearer",
+      "literal": "earer",
+      "regex": "[Bb]earer[ \\t]{1,4}[A-Za-z0-9._~+/=-]{8,4096}"
+    },
+    {
+      "rule": "crucible_key",
+      "literal": "k_",
+      "regex": "\\b(?:csk|cpk)_[A-Za-z0-9]{16,64}"
+    },
+    {
+      "rule": "key_prefix",
+      "regex": "\\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,128}|sk-[A-Za-z0-9_-]{20,256}|gh[pousr]_[A-Za-z0-9]{30,255}|xox[abposr]-[A-Za-z0-9-]{10,255}|AKIA[0-9A-Z]{16})"
+    },
+    {
+      "rule": "email",
+      "literal": "@",
+      "regex": "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\\.[A-Za-z]{2,24}"
+    },
+    {
+      "rule": "card",
+      "check": "luhn",
+      "regex": "\\b(?:\\d{4}[ -]){3}\\d{4}\\b|\\b\\d{4}[ -]\\d{6}[ -]\\d{5}\\b|\\b\\d{14,19}\\b"
+    },
+    {
+      "rule": "phone",
+      "regex": "(?:\\+\\d{1,3}[ .-]?)?\\(?\\b\\d{3}\\)?[ .-]\\d{3}[ .-]\\d{4}\\b|\\+\\d{10,15}\\b"
+    },
+    {
+      "rule": "ipv4",
+      "literal": ".",
+      "regex": "\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b"
+    },
+    {
+      "rule": "ipv6",
+      "literal": ":",
+      "regex": "\\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\\b|\\b(?:[0-9A-Fa-f]{1,4}:){1,7}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?"
+    }
+  ],
+  "vectors": [
+    {
+      "input": "write to alice.smith+ops@example.co.uk today",
+      "output": "write to [redacted:email] today"
+    },
+    {
+      "input": "call +1 415-555-2671 or (415) 555-2671",
+      "output": "call [redacted:phone] or [redacted:phone]"
+    },
+    { "input": "dial +14155552671", "output": "dial [redacted:phone]" },
+    { "input": "card 4111 1111 1111 1111 ok", "output": "card [redacted:card] ok" },
+    { "input": "card 4111-1111-1111-1111", "output": "card [redacted:card]" },
+    {
+      "input": "order 4111111111111112 and 1763491200000",
+      "output": "order 4111111111111112 and 1763491200000"
+    },
+    {
+      "input": "Authorization: Bearer abcdef0123456789xyz",
+      "output": "Authorization: [redacted:bearer]"
+    },
+    {
+      "input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl end",
+      "output": "token [redacted:jwt] end"
+    },
+    {
+      "input": "key csk_0abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP end",
+      "output": "key [redacted:crucible_key] end"
+    },
+    {
+      "input": "key ghp_abcdefghijklmnopqrstuvwxyz0123456789 end",
+      "output": "key [redacted:key_prefix] end"
+    },
+    { "input": "aws AKIAABCDEFGHIJKLMNOP end", "output": "aws [redacted:key_prefix] end" },
+    { "input": "from 203.0.113.7 at noon", "output": "from [redacted:ipv4] at noon" },
+    { "input": "from 2001:db8::8a2e:370:7334 at noon", "output": "from [redacted:ipv6] at noon" },
+    {
+      "input": "k -----BEGIN RSA PRIVATE KEY-----\\nMIIBOgIBAAJBAKj34GkxFhD9\\n-----END RSA PRIVATE KEY----- done",
+      "output": "k [redacted:pem_private_key] done"
+    },
+    {
+      "input": "cut -----BEGIN PRIVATE KEY-----\\nMIIBOgIBAAJBAKj34Gkx",
+      "output": "cut [redacted:pem_private_key]"
+    },
+    {
+      "input": "{\"password\":\"hunter2\",\"user\":\"bob\",\"pin\":1234}",
+      "output": "{\"password\":\"[redacted:sensitive_key]\",\"user\":\"bob\",\"pin\":1234}"
+    },
+    {
+      "input": "{\"X-Api-Key\": 99887766, \"accessToken\": \"abc\", \"tokenizer\": \"bpe\"}",
+      "output": "{\"X-Api-Key\": \"[redacted:sensitive_key]\", \"accessToken\": \"[redacted:sensitive_key]\", \"tokenizer\": \"bpe\"}"
+    },
+    {
+      "input": "{\"client_secret\":\"s3cr3t-cut-at-the-c",
+      "output": "{\"client_secret\":\"[redacted:sensitive_key]\""
+    },
+    {
+      "input": "plain text 2026-11-18T09:30:00Z version 1.2.3 id 42",
+      "output": "plain text 2026-11-18T09:30:00Z version 1.2.3 id 42"
+    }
+  ]
+}
