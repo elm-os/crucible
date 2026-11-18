@@ -16,7 +16,7 @@ crucible-wal-codec = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-plan = { workspace = true }
-crucible-shipper = { workspace = true }
+crucible-shipper = { workspace = true, features = ["test-mutants"] }
 crucible-recent = { workspace = true }
 crucible-query = { workspace = true }
 crucible-ingest = { workspace = true }
@@ -28,6 +28,8 @@ async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
+prost = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
 shuttle = { workspace = true }

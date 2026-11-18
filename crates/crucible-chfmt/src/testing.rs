@@ -3,159 +3,17 @@
 use proptest::collection::vec;
 use proptest::prelude::*;
 
-use crate::types::{WireType, parse};
 use crate::{
     ArrayColumn, Block, Column, Compression, NullableColumn, Number, StringColumn, TupleColumn,
     UuidColumn, decompress,
 };
 
-/// Decoded values of one column.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Values {
-    UInt8(Vec<u8>),
-    UInt16(Vec<u16>),
-    UInt32(Vec<u32>),
-    UInt64(Vec<u64>),
-    Int8(Vec<i8>),
-    Int32(Vec<i32>),
-    Int64(Vec<i64>),
-    /// Bit patterns, so that NaN payloads compare.
-    Float32(Vec<u32>),
-    Float64(Vec<u64>),
-    /// Standard (RFC 9562) byte order.
-    Uuid(Vec<[u8; 16]>),
-    String(Vec<Vec<u8>>),
-    FixedString(usize, Vec<Vec<u8>>),
-    Nullable(Vec<bool>, Box<Values>),
-    Array(Vec<u64>, Box<Values>),
-    Tuple(Vec<Values>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DecodedColumn {
-    pub name: String,
-    pub ty: String,
-    pub values: Values,
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, len: usize) -> &'a [u8] {
-        let taken = &self.bytes[self.pos..self.pos + len];
-        self.pos += len;
-        taken
-    }
-
-    fn varint(&mut self) -> u64 {
-        let mut value = 0;
-        for shift in (0..64).step_by(7) {
-            let byte = self.take(1)[0];
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte < 0x80 {
-                return value;
-            }
-        }
-        panic!("varint longer than 10 bytes");
-    }
-
-    fn string(&mut self) -> &'a [u8] {
-        let len = self.varint() as usize;
-        self.take(len)
-    }
-
-    fn le<const W: usize>(&mut self, rows: usize) -> Vec<[u8; W]> {
-        self.take(rows * W).as_chunks::<W>().0.to_vec()
-    }
-
-    fn values(&mut self, ty: &WireType, rows: usize) -> Values {
-        match ty {
-            WireType::UInt8 => Values::UInt8(self.take(rows).to_vec()),
-            WireType::UInt16 => {
-                Values::UInt16(self.le(rows).into_iter().map(u16::from_le_bytes).collect())
-            }
-            WireType::UInt32 => {
-                Values::UInt32(self.le(rows).into_iter().map(u32::from_le_bytes).collect())
-            }
-            WireType::UInt64 => {
-                Values::UInt64(self.le(rows).into_iter().map(u64::from_le_bytes).collect())
-            }
-            WireType::Int8 => {
-                Values::Int8(self.le(rows).into_iter().map(i8::from_le_bytes).collect())
-            }
-            WireType::Int32 => {
-                Values::Int32(self.le(rows).into_iter().map(i32::from_le_bytes).collect())
-            }
-            WireType::Int64 => {
-                Values::Int64(self.le(rows).into_iter().map(i64::from_le_bytes).collect())
-            }
-            WireType::Float32 => {
-                Values::Float32(self.le(rows).into_iter().map(u32::from_le_bytes).collect())
-            }
-            WireType::Float64 => {
-                Values::Float64(self.le(rows).into_iter().map(u64::from_le_bytes).collect())
-            }
-            WireType::Uuid => Values::Uuid(
-                self.le::<16>(rows)
-                    .into_iter()
-                    .map(|wire| {
-                        let mut uuid = wire;
-                        uuid[..8].reverse();
-                        uuid[8..].reverse();
-                        uuid
-                    })
-                    .collect(),
-            ),
-            WireType::String => Values::String((0..rows).map(|_| self.string().to_vec()).collect()),
-            WireType::FixedString(n) => Values::FixedString(
-                *n,
-                self.take(rows * n)
-                    .chunks_exact(*n)
-                    .map(<[u8]>::to_vec)
-                    .collect(),
-            ),
-            WireType::Nullable(inner) => {
-                let nulls = self.take(rows).iter().map(|&b| b != 0).collect();
-                Values::Nullable(nulls, Box::new(self.values(inner, rows)))
-            }
-            WireType::Array(inner) => {
-                let offsets: Vec<u64> = self.le(rows).into_iter().map(u64::from_le_bytes).collect();
-                let elements = offsets.last().copied().unwrap_or(0) as usize;
-                Values::Array(offsets, Box::new(self.values(inner, elements)))
-            }
-            WireType::Tuple(elements) => Values::Tuple(
-                elements
-                    .iter()
-                    .map(|element| self.values(element, rows))
-                    .collect(),
-            ),
-        }
-    }
-}
+pub use crate::decode::{DecodedColumn, Values};
 
 /// Decodes one Native block from the front of `bytes`: its rows, its columns and the bytes it took.
 pub fn decode_block(bytes: &[u8]) -> (usize, Vec<DecodedColumn>, usize) {
-    let mut reader = Reader { bytes, pos: 0 };
-    let columns = reader.varint() as usize;
-    let rows = reader.varint() as usize;
-    let decoded = (0..columns)
-        .map(|_| {
-            let name = String::from_utf8(reader.string().to_vec()).unwrap();
-            let ty = String::from_utf8(reader.string().to_vec()).unwrap();
-            let wire = parse(&ty)
-                .unwrap_or_else(|| panic!("unsupported header type `{ty}`"))
-                .wire;
-            DecodedColumn {
-                name,
-                ty,
-                values: reader.values(&wire, rows),
-            }
-        })
-        .collect();
-    (rows, decoded, reader.pos)
+    let (block, used) = crate::decode::decode_block(bytes).unwrap();
+    (block.rows, block.columns, used)
 }
 
 /// A builder holding decoded values, for re-encoding them.
