@@ -1,0 +1,74 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: a span that carries both the GenAI message key and the dialect 2 message list",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD2, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The native layer ranks before dialect 2, so the GenAI key wins and the indexed family stays residual."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "my.app"
+            },
+            "spans": [
+              {
+                "traceId": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+                "spanId": "0000000000000001",
+                "name": "chat",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "openinference.span.kind",
+                    "value": {
+                      "stringValue": "LLM"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.input.messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hi\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.role",
+                    "value": {
+                      "stringValue": "user"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.content",
+                    "value": {
+                      "stringValue": "hi"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 2,
+      "observation_type": "generation",
+      "input": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hi\"}]}]",
+      "io_shape": "genai_messages",
+      "residual": [
+        "llm.input_messages.0.message.role",
+        "llm.input_messages.0.message.content"
+      ]
+    }
+  }
+}

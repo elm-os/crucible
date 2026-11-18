@@ -3,7 +3,8 @@
 //! through the real `QueryService`, equal a reference folded from the rows the store holds.
 //!
 //! The reference is the one the rollups are checked against (`system_oracle`), taken per session and per user:
-//! the `span_core` rows on the UTC days of the window (the rollups select whole days), and, for session counts
+//! the `span_core` rows on the UTC days of the window (the rollups select whole days), with the tokens and cost
+//! of usage aggregates left out of the sums as the rollups leave them out, and, for session counts
 //! and the sessions of a user, the `trace_heads` rows inside the window. Runs with a quarantine are skipped, as
 //! the rollup check skips them, because a quarantined pair can hold back one table's rows and not another's.
 //! The check reads only: it records no trace event and draws no randomness, and it runs last, so it changes
@@ -102,6 +103,9 @@ fn reference(model: &ChModel, project: [u8; 16], window: TimeWindow) -> Option<R
                 continue;
             }
             let user = bytes_at(block, "user_id", row)?.to_vec();
+            // As in the rollups, token and cost sums leave out the spans that are usage aggregates.
+            let counted = u8_at(block, "usage_aggregate", row)? == 0;
+            let tokens = |name: &str| u64_at(block, name, row).map(|v| if counted { v } else { 0 });
             let one = Expected {
                 traces: u64::from(u8_at(block, "is_root", row)? == 1),
                 spans: 1,
@@ -109,10 +113,14 @@ fn reference(model: &ChModel, project: [u8; 16], window: TimeWindow) -> Option<R
                     i8_at(block, "status_code", row)? == STATUS_ERROR
                         || i8_at(block, "level", row)? == LEVEL_ERROR,
                 ),
-                input: u64_at(block, "input_tokens", row)?,
-                output: u64_at(block, "output_tokens", row)?,
-                total: u64_at(block, "total_tokens", row)?,
-                cost: i64_at(block, "total_cost_nusd", row)?,
+                input: tokens("input_tokens")?,
+                output: tokens("output_tokens")?,
+                total: tokens("total_tokens")?,
+                cost: if counted {
+                    i64_at(block, "total_cost_nusd", row)?
+                } else {
+                    0
+                },
                 first: start,
                 last: i64_at(block, "end_time", row)?,
                 users: if user.is_empty() {

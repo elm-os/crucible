@@ -173,7 +173,9 @@ pub(crate) async fn load(ctx: &Ctx) -> Result<Fixture> {
         .each("version", |row| text(if row < 3 { "v1" } else { "v2" }))
         .each("level", |row| Value::Enum(levels[row].value()))
         .each("observation_type", |row| Value::Enum(types[row].value()))
-        .each("tags", |row| texts(&[&format!("tag{row}"), "common"]));
+        .each("tags", |row| texts(&[&format!("tag{row}"), "common"]))
+        // The column a later schema step added: both sides must read it back as written.
+        .each("usage_aggregate", |row| Value::UInt(u64::from(row % 2 == 0)));
     put(spans, T0).await?;
 
     // The payloads of the first four spans.

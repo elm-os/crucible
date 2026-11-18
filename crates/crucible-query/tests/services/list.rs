@@ -67,6 +67,31 @@ fn named(mut entry: SpanEntry, trace_name: &str, user: &str) -> SpanEntry {
     entry
 }
 
+/// The sums rule of contract 3.1 on the list: a usage aggregate is counted as a span and left out of the token
+/// and cost sums, whether the trace is read from the index or from the store.
+#[test]
+fn token_and_cost_sums_leave_out_a_usage_aggregate_from_either_source() {
+    let mut world = World::new(100);
+    let mut root = span(1, 10, 0, at(-30));
+    root.summary.usage_aggregate = true;
+    let lsn = world.ack(vec![root, span(1, 11, 10, at(-29))]);
+    let sums = |world: &World| {
+        let summary = page(world, 10, None).data[0].summary.clone();
+        (
+            summary.span_count,
+            summary.total_cost_nusd.nanos(),
+            summary.input_tokens,
+            summary.output_tokens,
+            summary.total_tokens,
+        )
+    };
+    // Each span reports a cost of 7 and 1, 2 and 3 tokens: the child alone is summed.
+    assert_eq!(sums(&world), (2, 7, 1, 2, 3));
+    world.ship(lsn);
+    world.checkpoint(lsn);
+    assert_eq!(sums(&world), (2, 7, 1, 2, 3));
+}
+
 #[test]
 fn the_first_page_merges_the_store_and_the_index_newest_first() {
     let mut world = World::new(100);

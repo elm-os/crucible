@@ -64,9 +64,9 @@ fn strs(items: &[Box<str>]) -> Vec<&str> {
 }
 
 #[test]
-fn records_carry_normalizer_version_3() {
-    assert_eq!(NORMALIZER_VERSION, 3);
-    assert_eq!(one(Vec::new()).core.normalizer_version, 3);
+fn records_carry_normalizer_version_4() {
+    assert_eq!(NORMALIZER_VERSION, 4);
+    assert_eq!(one(Vec::new()).core.normalizer_version, 4);
 }
 
 #[test]
@@ -241,22 +241,22 @@ fn metadata_is_flattened_from_its_prefix() {
         s("crucible.metadatax", "other key"),
     ]);
     let p = &r.payload;
-    // Members in ascending name order, whatever the wire order.
+    // Members of one source in wire order.
     assert_eq!(
         text(&p.metadata),
-        r#"{"attempt":3,"beta":true,"nested":{"k":"v"},"plan":"pro"}"#
+        r#"{"plan":"pro","attempt":3,"beta":true,"nested":{"k":"v"}}"#
     );
     assert_eq!(
         strs(&p.metadata_keys),
-        ["attempt", "beta", "nested", "plan"]
+        ["plan", "attempt", "beta", "nested"]
     );
     assert_eq!(
         strs(&p.metadata_values),
-        ["3", "true", r#"{"k":"v"}"#, "pro"]
+        ["pro", "3", "true", r#"{"k":"v"}"#]
     );
     assert_eq!(
         strs(&p.metadata_kv),
-        ["attempt=3", "beta=true", r#"nested={"k":"v"}"#, "plan=pro"]
+        ["plan=pro", "attempt=3", "beta=true", r#"nested={"k":"v"}"#]
     );
     assert_eq!(
         text(&p.attributes),
@@ -280,15 +280,14 @@ fn a_repeated_metadata_key_keeps_its_first_occurrence() {
 
 #[test]
 fn metadata_keeps_256_keys_and_cuts_kv_items() {
-    let mut attributes: Vec<KeyValue> = (0..300)
-        .map(|i| s(&format!("crucible.metadata.k{i:03}"), "v"))
-        .collect();
-    attributes.push(s("crucible.metadata.a", &"x".repeat(2_000)));
+    let mut attributes = vec![s("crucible.metadata.a", &"x".repeat(2_000))];
+    attributes.extend((0..300).map(|i| s(&format!("crucible.metadata.k{i:03}"), "v")));
     let r = one(attributes);
     let p = &r.payload;
     assert_eq!(p.metadata_keys.len(), caps::METADATA_MAX_KEYS);
     assert_eq!(p.metadata_values.len(), caps::METADATA_MAX_KEYS);
     assert_eq!(p.metadata_kv.len(), caps::METADATA_MAX_KEYS);
+    // The first 256 members in wire order are kept.
     assert_eq!(&*p.metadata_keys[0], "a");
     assert_eq!(p.metadata_values[0].len(), 2_000);
     assert_eq!(p.metadata_kv[0].len(), caps::METADATA_KV_ITEM_BYTES);
@@ -342,7 +341,7 @@ fn trace_level_keys_fill_tags_metadata_and_the_public_flag() {
     assert_eq!(strs(&r.core.trace_tags), ["x", "y"]);
     assert_eq!(
         text(&r.payload.trace_metadata),
-        r#"{"shard":4,"tenant":"acme"}"#
+        r#"{"tenant":"acme","shard":4}"#
     );
     assert_eq!(text(&r.payload.metadata), r#"{"own":"1"}"#);
     assert_eq!(r.core.trace_public, TracePublic::Public);
@@ -353,12 +352,20 @@ fn trace_level_keys_fill_tags_metadata_and_the_public_flag() {
             .trace_public,
         TracePublic::Private
     );
-    // Only a boolean decodes.
-    let r = one(vec![s("crucible.trace.public", "true")]);
+    // A boolean decodes, and so do the strings `true` and `false`; nothing else does.
+    for (value, public) in [
+        ("true", TracePublic::Public),
+        ("false", TracePublic::Private),
+    ] {
+        let r = one(vec![s("crucible.trace.public", value)]);
+        assert_eq!(r.core.trace_public, public);
+        assert_eq!(text(&r.payload.attributes), "");
+    }
+    let r = one(vec![s("crucible.trace.public", "True")]);
     assert_eq!(r.core.trace_public, TracePublic::Unset);
     assert_eq!(
         text(&r.payload.attributes),
-        r#"{"crucible.trace.public":"true"}"#
+        r#"{"crucible.trace.public":"True"}"#
     );
 }
 
@@ -376,19 +383,21 @@ fn input_and_output_keys_fill_spans_without_messages() {
 }
 
 #[test]
-fn a_span_with_messages_keeps_them() {
+fn an_explicit_body_outranks_messages() {
+    // The `crucible.*` keys are the first layer (contract 10.3), so an explicit body wins over the message keys;
+    // the losing messages stay in the residual.
     let r = one(vec![
         s("crucible.input", "explicit"),
         s("gen_ai.input.messages", r#"[{"role":"user"}]"#),
-        s("crucible.output", "explicit out"),
+        s("gen_ai.output.messages", r#"[{"role":"assistant"}]"#),
     ]);
-    assert_eq!(text(&r.payload.input), r#"[{"role":"user"}]"#);
-    assert_eq!(r.core.io_shape, IoShape::GenaiMessages);
-    // The side without messages takes the explicit body; the losing body stays in the residual.
-    assert_eq!(text(&r.payload.output), "explicit out");
+    assert_eq!(text(&r.payload.input), "explicit");
+    assert_eq!(r.core.io_shape, IoShape::Raw);
+    // The side without an explicit body keeps its messages.
+    assert_eq!(text(&r.payload.output), r#"[{"role":"assistant"}]"#);
     assert_eq!(
         text(&r.payload.attributes),
-        r#"{"crucible.input":"explicit"}"#
+        r#"{"gen_ai.input.messages":"[{\"role\":\"user\"}]"}"#
     );
 }
 
@@ -530,11 +539,12 @@ fn model_parameters_come_from_three_sources_in_priority_order() {
         s("crucible.model_parameters.service_tier", "flex"),
         s(service_tier_key(), "priority"),
     ]);
-    // The model stays `model_requested`; the explicit keys win per member; members in ascending name order.
+    // The model stays `model_requested`; the explicit keys win per member; members in source order, then wire
+    // order.
     assert_eq!(&*r.core.model_requested, "gpt-4o");
     assert_eq!(
         text(&r.payload.model_parameters),
-        r#"{"max_tokens":100,"service_tier":"flex","stop_sequences":["END"],"temperature":0.5}"#
+        r#"{"max_tokens":100,"service_tier":"flex","temperature":0.5,"stop_sequences":["END"]}"#
     );
     assert_eq!(
         text(&r.payload.attributes),
@@ -550,7 +560,7 @@ fn model_parameters_come_from_three_sources_in_priority_order() {
     ]);
     assert_eq!(
         text(&r.payload.model_parameters),
-        r#"{"service_tier":"priority","top_p":0.9}"#
+        r#"{"top_p":0.9,"service_tier":"priority"}"#
     );
     assert_eq!(text(&r.payload.attributes), "");
     // A model key that does not decode as a model is still not a parameter.
@@ -675,7 +685,7 @@ fn protobuf_and_json_agree_on_every_source_key() {
     assert_eq!(root.core.total_cost_nusd.nanos(), 12_500_000);
     assert_eq!(
         text(&root.payload.model_parameters),
-        r#"{"max_tokens":64,"service_tier":"flex","temperature":0.5}"#
+        r#"{"temperature":0.5,"max_tokens":64,"service_tier":"flex"}"#
     );
     // Every key was consumed, and the child took the trace-level values.
     assert_eq!(text(&root.payload.attributes), "");
@@ -761,7 +771,7 @@ proptest! {
     }
 
     /// String metadata round-trips: the stored object, the key and value lists and the `key=value` items all
-    /// hold exactly the members sent, in ascending key order.
+    /// hold exactly the members sent, in wire order.
     #[test]
     fn string_metadata_round_trips(
         members in btree_map("[a-z][a-z0-9_.]{0,8}", "[ -~]{1,20}", 0..12),
@@ -776,8 +786,12 @@ proptest! {
         }
         let r = one(attributes);
         let p = &r.payload;
-        let keys: Vec<&str> = members.keys().map(String::as_str).collect();
-        let values: Vec<&str> = members.values().map(String::as_str).collect();
+        let mut members: Vec<(String, String)> = members.into_iter().collect();
+        if reversed {
+            members.reverse();
+        }
+        let keys: Vec<&str> = members.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<&str> = members.iter().map(|(_, v)| v.as_str()).collect();
         prop_assert_eq!(strs(&p.metadata_keys), keys);
         prop_assert_eq!(strs(&p.metadata_values), values);
         let kv_items: Vec<String> = members.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -786,14 +800,15 @@ proptest! {
             prop_assert!(p.metadata.is_empty());
         } else {
             let object: serde_json::Value = serde_json::from_slice(&p.metadata).unwrap();
-            let stored: Vec<(String, String)> = object
+            let mut stored: Vec<(String, String)> = object
                 .as_object()
                 .unwrap()
                 .iter()
                 .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
                 .collect();
-            let sent: Vec<(String, String)> = members.into_iter().collect();
-            prop_assert_eq!(stored, sent);
+            stored.sort();
+            members.sort();
+            prop_assert_eq!(stored, members);
         }
         prop_assert!(p.attributes.is_empty());
     }

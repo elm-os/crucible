@@ -284,7 +284,8 @@ impl Stats {
 
     /// Adds one recent entry. The bounds, the root flag and the picks merge idempotently, so every entry
     /// counts. The sums count only entries above the checkpoint watermark: an entry at or below it is confirmed
-    /// in the store, whose sums already hold it.
+    /// in the store, whose sums already hold it. Token and cost sums leave out a usage aggregate, as the store's
+    /// do (the sums rule of contract 3.1); the counts take every span.
     fn add_recent(&mut self, span: &RecentSpan, state: ReadState) {
         let s = &span.summary;
         self.min_start = self.min_start.min(s.start_time);
@@ -302,10 +303,12 @@ impl Stats {
             self.error_count = self
                 .error_count
                 .saturating_add(u64::from(s.level == Level::Error));
-            self.total_cost_nusd = self.total_cost_nusd.saturating_add(s.total_cost_nusd);
-            self.input_tokens = self.input_tokens.saturating_add(s.input_tokens);
-            self.output_tokens = self.output_tokens.saturating_add(s.output_tokens);
-            self.total_tokens = self.total_tokens.saturating_add(s.total_tokens);
+            if !s.usage_aggregate {
+                self.total_cost_nusd = self.total_cost_nusd.saturating_add(s.total_cost_nusd);
+                self.input_tokens = self.input_tokens.saturating_add(s.input_tokens);
+                self.output_tokens = self.output_tokens.saturating_add(s.output_tokens);
+                self.total_tokens = self.total_tokens.saturating_add(s.total_tokens);
+            }
         }
     }
 

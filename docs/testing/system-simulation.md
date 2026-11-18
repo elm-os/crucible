@@ -66,11 +66,11 @@ Configuration seed `c` gives the mask and the run seeds `c * 1000 + s`.
 
 | Kind | Dimensions |
 |---|---|
-| Workload | `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts` |
+| Workload | `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts`, `nested_usage` (spans form parent chains within a request, across requests with the child first, and under a span that a request sends again, so some have a descendant that carries usage) |
 | Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize) |
 | Config | `wal_compression_off`, `small_batches`, `week_partitions`, `tiny_recent`, `small_segments`, `clustered`, `one_connection`, `replay_retention`, `project_rate` (a per-project byte rate), `small_budget` (a `shipper.encoded_bytes` budget of 20 or 200 KiB) |
 
-That is 45 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
+That is 46 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
 draw, so a recorded mask and seed keep their meaning. With 200 configurations, any 6 chosen dimensions are all on in at least one of them with
 probability 95.7% (`1 - (1 - 2^-6)^200`).
 
@@ -89,7 +89,7 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 | I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
 | I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain |
 | I5 | A refusal for load is a 429 or a 503 with `Retry-After`, a 429 only with `project_rate`; a fact write is refused only for load. The rows the shipper holds stay within `shipper.encoded_bytes` plus one frame | |
-| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). After the last restart the same holds on the read path: every project's session list and user list, read through the real `QueryService` page by page, and the detail of each session and user, equal the reference per session and per user over the window's UTC days, with the users of a session (up to the 8 the rollup keeps), each user's distinct session count and the sessions of each user taken from `trace_heads` in the window (`system_sim/lists.rs`, which records no event and draws no randomness). One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
+| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. A span flagged `usage_aggregate` has a descendant that carries usage or cost in its frame or an earlier one, where a row of an earlier frame may stand in a later frame as a dropped exact repeat and pass the mark on to its parent; and a span with such a descendant among the kept spans of its own frame is always flagged (the set holds what the retained WAL prefix holds, so garbage collection and a restart forget earlier frames) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. After the last restart the same holds on the read path: every project's session list and user list, read through the real `QueryService` page by page, and the detail of each session and user, equal the reference per session and per user over the window's UTC days, with the users of a session (up to the 8 the rollup keeps), each user's distinct session count and the sessions of each user taken from `trace_heads` in the window (`system_sim/lists.rs`, which records no event and draws no randomness). One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
 | I3 | A trace-by-id read through the query service after every ack, and from concurrent readers for requests of any incarnation. A response that omits an acknowledged span must carry `partial` or `consistency: lagging`. `not_found` for an acknowledged trace is a violation. A marker must be warranted by the configuration: `store_unavailable` only with `outages`, `long_outages`, `ch_read_errors` or `tiny_recent`; `quarantined` only with `ch_poison` or `frame_faults` | Every acknowledged request is read back, and the whole trace list of every project must hold every acknowledged trace that has a root span. No marker is accepted, except `quarantined` when a quarantine directory exists. Repeated after the last restart |
 | I6 | No trace-by-id response holds a span the project did not send, and no list holds a trace of another project (with `multi_project` the projects share trace ids) | The same |
 | I12 | The recovered log equals the uninterrupted reference recovery although crashes cut the real one | A restart after the drain sends no insert and leaves the store and the watermark as they were |
@@ -133,18 +133,23 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 
 | Mutant | Crate | Defect | Caught as | Seed | Config |
 |---|---|---|---|---|---|
-| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace read right after the ack answers `not_found` (86 other runs of the budget report I1 after a crash) | 0 | `0xaeca437a47` |
-| `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x1e574beef1d` |
-| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 14000 | `0x17dced818fe` |
-| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5000 | `0x48461657e2` |
-| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x1c5fa7b02ff` |
-| `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace read right after the ack answers `not_found` (110 other runs report I1) | 0 | `0xaeca437a47` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x911e418a948` |
+| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace read right after the ack answers `not_found` (other runs of the budget report I1, I2 or a liveness failure) | 0 | `0xeaeca437a47` |
+| `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x2fe574beef1d` |
+| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 1001 | `0x2fe574beef1d` |
+| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5000 | `0xe48461657e2` |
+| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x3c5fa7b02ff` |
+| `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace read right after the ack answers `not_found` (other runs report I1) | 0 | `0xeaeca437a47` |
+| `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 0 | `0xeaeca437a47` |
+| `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3000 | `0xebd29ab92c5` |
+| `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0xeaeca437a47` |
+| `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x2fe574beef1d` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x2911e418a948` |
 
-Of the 600 runs of the budget, the first six mutants are caught by 589, 131, 38, 35, 96 and 480 runs, in the
-order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a repeat, a collection
-and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run is a line of the
-regression corpus, and six of the nine corpus lines of this defect catch it.
+Of the 600 runs of the budget, the first ten mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and
+178 runs, in the order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a
+repeat, a collection and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run
+has the seed of a line of the regression corpus (the corpus line keeps its own mask, without
+`nested_usage`), and six of the nine corpus lines of this defect catch it.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
@@ -185,7 +190,8 @@ cargo nextest run -p crucible-sim --test system_dst
 ```
 
 Mutant names: `skip-wal-sync`, `drop-token`, `gc-above-checkpoint`, `silent-eviction`,
-`skip-probe-after-unknown`, `ack-before-append`.
+`skip-probe-after-unknown`, `ack-before-append`, `double-count-rollup`, `drop-fact-on-retry`,
+`frame-quarantine-without-copy`, `count-aggregate-usage`.
 
 A failing run prints its replay command and the line to append to the corpus; `--record` appends it.
 

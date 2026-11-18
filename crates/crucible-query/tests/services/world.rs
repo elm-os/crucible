@@ -78,6 +78,7 @@ pub fn span(trace_n: u64, id: u64, parent: u64, start: Timestamp) -> SpanEntry {
             input_tokens: 1,
             output_tokens: 2,
             total_tokens: 3,
+            usage_aggregate: false,
         },
         head: is_root.then_some(HeadKind::Root),
         locator: WalLocator {
@@ -127,6 +128,7 @@ pub fn span_core_row(entry: &SpanEntry, lsn: Lsn, received_at: Timestamp) -> Vec
             ("output_tokens", Value::UInt(s.output_tokens)),
             ("total_tokens", Value::UInt(s.total_tokens)),
             ("total_cost_nusd", Value::Int(s.total_cost_nusd.nanos())),
+            ("usage_aggregate", Value::UInt(u64::from(s.usage_aggregate))),
             // A column only the store has: the index keeps no preview.
             ("input_preview", text("preview")),
             ("lsn", Value::UInt(lsn.get())),
@@ -181,6 +183,8 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
         .into_iter()
         .map(|((project_id, trace_id, _), members)| {
             let summaries = || members.iter().map(|entry| &entry.summary);
+            // Token and cost sums leave out the usage aggregates (the sums rule of contract 3.1).
+            let counted = || summaries().filter(|s| !s.usage_aggregate);
             let pick = |value: fn(&SpanSummary) -> &str| {
                 let merged = summaries()
                     .map(|s| Pick::new(s.is_root, s.end_time, s.span_id, value(s)))
@@ -222,19 +226,19 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
                     ),
                     (
                         "total_cost_nusd",
-                        Value::Int(summaries().map(|s| s.total_cost_nusd.nanos()).sum()),
+                        Value::Int(counted().map(|s| s.total_cost_nusd.nanos()).sum()),
                     ),
                     (
                         "input_tokens",
-                        Value::UInt(summaries().map(|s| s.input_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.input_tokens).sum()),
                     ),
                     (
                         "output_tokens",
-                        Value::UInt(summaries().map(|s| s.output_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.output_tokens).sum()),
                     ),
                     (
                         "total_tokens",
-                        Value::UInt(summaries().map(|s| s.total_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.total_tokens).sum()),
                     ),
                     ("trace_name_pick", pick(|s| &s.trace_name)),
                     ("user_id_pick", pick(|s| &s.user_id)),
@@ -274,6 +278,9 @@ pub fn rollup_rows(
         .into_iter()
         .map(|((project_id, _, key), members)| {
             let sum = |f: &dyn Fn(&SpanSummary) -> u64| members.iter().map(|s| f(s)).sum::<u64>();
+            // Token and cost sums leave out the usage aggregates (the sums rule of contract 3.1).
+            let counted =
+                |f: fn(&SpanSummary) -> u64| sum(&|s| if s.usage_aggregate { 0 } else { f(s) });
             let mut cells = vec![
                 ("project_id", Value::Uuid(project_id.uuid())),
                 ("day", Value::Date(members[0].start_time.date())),
@@ -295,12 +302,18 @@ pub fn rollup_rows(
                         u64::from(s.level == Level::Error || s.status_code == StatusCode::Error)
                     })),
                 ),
-                ("input_tokens", Value::UInt(sum(&|s| s.input_tokens))),
-                ("output_tokens", Value::UInt(sum(&|s| s.output_tokens))),
-                ("total_tokens", Value::UInt(sum(&|s| s.total_tokens))),
+                ("input_tokens", Value::UInt(counted(|s| s.input_tokens))),
+                ("output_tokens", Value::UInt(counted(|s| s.output_tokens))),
+                ("total_tokens", Value::UInt(counted(|s| s.total_tokens))),
                 (
                     "total_cost_nusd",
-                    Value::Int(members.iter().map(|s| s.total_cost_nusd.nanos()).sum()),
+                    Value::Int(
+                        members
+                            .iter()
+                            .filter(|s| !s.usage_aggregate)
+                            .map(|s| s.total_cost_nusd.nanos())
+                            .sum(),
+                    ),
                 ),
             ];
             if table_id == TableId::SessionRollup {
