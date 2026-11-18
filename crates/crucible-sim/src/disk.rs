@@ -40,7 +40,8 @@ pub struct DiskFaults {
     pub short_write_ppm: u32,
     /// Chance per read of EIO.
     pub read_error_ppm: u32,
-    /// Chance per non-empty read of one flipped bit in the returned bytes.
+    /// Chance per non-empty read of one flipped bit in the returned bytes. The read of the same file that
+    /// follows a flipped read is never flipped.
     pub bit_flip_ppm: u32,
     /// Chance per sync of EIO. The file's dirty state is dropped.
     pub sync_error_ppm: u32,
@@ -62,6 +63,8 @@ struct Inode {
     dirty: BTreeSet<usize>,
     /// Blocks whose dirty state a failed or lying sync dropped.
     dropped: BTreeSet<usize>,
+    /// The last read of this file returned a flipped bit.
+    last_read_flipped: bool,
 }
 
 fn block_range(block: usize, len: usize) -> std::ops::Range<usize> {
@@ -709,11 +712,16 @@ impl FileOps for SimFile {
             return Err(io_error(std::io::ErrorKind::Other, "EIO on read"));
         }
         let flip = state.faults.bit_flip_ppm;
-        let data = &inode(&mut state, self.inode)?.data;
-        let start = (offset as usize).min(data.len());
-        let end = start.saturating_add(len).min(data.len());
-        let mut out = data[start..end].to_vec();
-        if !out.is_empty() && hit(streams.bit_flip.as_ref(), flip) {
+        let file = inode(&mut state, self.inode)?;
+        let start = (offset as usize).min(file.data.len());
+        let end = start.saturating_add(len).min(file.data.len());
+        let mut out = file.data[start..end].to_vec();
+        // Never two flipped reads of one file in a row: the simulation compresses the rate of this
+        // transient fault, not its correlation, so a second read is a sound way to confirm a first.
+        let flipped =
+            !out.is_empty() && !file.last_read_flipped && hit(streams.bit_flip.as_ref(), flip);
+        file.last_read_flipped = flipped;
+        if flipped {
             let bit = streams.bit_flip.next_u64() % (out.len() as u64 * 8);
             out[(bit / 8) as usize] ^= 1 << (bit % 8);
         }

@@ -167,6 +167,27 @@ fn same_seed_same_trace_hash() {
     assert_eq!(hashes.len(), 40, "two seeds share a trace hash");
 }
 
+/// Prints every seed of the budget that catches each mutant.
+#[test]
+#[ignore = "census tool: lists the catching seeds of every mutant"]
+fn mutant_census() {
+    for mutant in [
+        Mutant::AckBeforeSync,
+        Mutant::GcAboveCheckpoint,
+        Mutant::KeepTornTail,
+    ] {
+        let caught: Vec<u64> = MUTANT_BUDGET
+            .filter(|&seed| !run_wal_sim(seed, Options::mutant(mutant)).violations.is_empty())
+            .collect();
+        println!(
+            "{mutant:?}: {} of {} seeds, first {:?}",
+            caught.len(),
+            MUTANT_BUDGET.end,
+            caught.iter().take(12).collect::<Vec<_>>()
+        );
+    }
+}
+
 fn env_u64(name: &str) -> Option<u64> {
     let value = std::env::var(name).ok()?;
     Some(

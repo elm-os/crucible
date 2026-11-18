@@ -4,7 +4,8 @@
 //!
 //! - **I1** every acknowledged frame above the recovered watermark is in the recovered log, intact, at
 //!   its LSN; frames a recovery returned stay in the log; the log holds no frame that was not submitted
-//!   in the incarnation that owns its LSN; nothing above the watermark is removed.
+//!   in the incarnation that owns its LSN, and no valid frame is left beyond the end of the recovered log;
+//!   nothing above the watermark is removed.
 //! - **I12** a recovery interrupted by crashes ends in the state one uninterrupted recovery reaches (the
 //!   reference runs on a fault-free copy of the crashed disk); a second recovery repairs nothing; the
 //!   bytes scanned are bounded by the retained segments.
@@ -15,15 +16,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use crucible_env::{Env, Rng};
+use crucible_env::{DiskPath, Env, Rng, Root};
 use crucible_records::Lsn;
 use crucible_wal::{
     AppendError, GcReport, Mutant, RecoveryError, RecoveryReport, SegmentMeta, Wal, WalConfig,
     WalFrame,
 };
 use crucible_wal_codec::{
-    BatchSeal, Checkpoint, Compression, FRAME_HEADER_LEN, PreparedFrame, Record, RecordType,
-    SEGMENT_HEADER_LEN,
+    BatchSeal, Checkpoint, Compression, FRAME_HEADER_LEN, FRAME_MAGIC, PreparedFrame, Record,
+    RecordType, SEGMENT_HEADER_LEN, Scan, scan_frame,
 };
 use futures::FutureExt;
 
@@ -93,6 +94,14 @@ pub enum Violation {
     PhantomFrame {
         /// The frame's LSN.
         lsn: u64,
+    },
+    /// I1: after a recovery the last segment holds a valid frame beyond the end of the log, which a later
+    /// append can splice into the log.
+    StaleFrameBeyondEnd {
+        /// The segment.
+        segment_no: u64,
+        /// Offset of the stale frame.
+        offset: u64,
     },
     /// I1: the recovered watermark is below an acknowledged checkpoint or above every submitted one.
     WatermarkWrong {
@@ -172,7 +181,11 @@ struct Plan {
     incarnations: u64,
     clients: u64,
     compressible: bool,
+    /// Every workload frame has this encoded length.
+    uniform_len: Option<usize>,
     bursts: bool,
+    /// Some incarnations crash within a few operations of their recovery.
+    crash_loops: bool,
     pin_recent: bool,
     crash_in_recovery: bool,
     double_recovery: bool,
@@ -218,6 +231,7 @@ impl Plan {
         if options.tier == Tier::Stress {
             faults.fsync_lie_ppm = fault(lie, 60_000);
         }
+        let crash_loops = coin(rng);
         Self {
             config: WalConfig {
                 segment_bytes,
@@ -227,10 +241,16 @@ impl Plan {
                 mutant: options.mutant,
                 ..WalConfig::default()
             },
-            incarnations: 2 + pick(rng, 5),
+            incarnations: if crash_loops {
+                10 + pick(rng, 20)
+            } else {
+                2 + pick(rng, 5)
+            },
             clients: 1 + pick(rng, 4),
             compressible: coin(rng),
+            uniform_len: coin(rng).then(|| 256 << pick(rng, 4)),
             bursts: coin(rng),
+            crash_loops,
             pin_recent: coin(rng),
             crash_in_recovery: coin(rng),
             double_recovery: coin(rng),
@@ -537,9 +557,12 @@ async fn client(shared: Shared, env: Env, wal: Wal, rng: Arc<dyn Rng>) {
         for _ in 0..burst {
             // A few sizes whose encoded length is a power of two, so that a stale frame left behind a torn
             // tail can line up with new ones.
-            let encoded = 64usize << pick(rng.as_ref(), 7);
+            let encoded = plan
+                .uniform_len
+                .unwrap_or_else(|| 64 << pick(rng.as_ref(), 7));
             let len = encoded.min(capacity) - FRAME_HEADER_LEN;
-            let compressible = plan.compressible && pick(rng.as_ref(), 4) == 0;
+            let compressible =
+                plan.uniform_len.is_none() && plan.compressible && pick(rng.as_ref(), 4) == 0;
             let (id, payload) = shared.oracle().submit_data(len, compressible);
             if let Some(frame) = prepare(RecordType::Noop, payload) {
                 waiting.push((id, wal.append(frame)));
@@ -656,6 +679,30 @@ impl Run<'_> {
         !self.shared.oracle().violations.is_empty()
     }
 
+    /// Looks for a valid frame after the end of the recovered log in the last segment.
+    fn stale_frame_beyond_end(
+        &self,
+        report: &RecoveryReport,
+        log: &BTreeMap<u64, WalFrame>,
+    ) -> Option<Violation> {
+        let segment_no = report.segments.last()?.segment_no;
+        let path = DiskPath::new(Root::Wal, &format!("seg-{segment_no:020}.wal")).ok()?;
+        let bytes = self.disk.read_file(&path)?;
+        let end = log
+            .values()
+            .filter(|frame| frame.segment_no() == segment_no)
+            .map(WalFrame::end_offset)
+            .max()
+            .unwrap_or(SEGMENT_HEADER_LEN as u64) as usize;
+        (end..bytes.len())
+            .filter(|&at| bytes[at..].starts_with(&FRAME_MAGIC))
+            .find(|&at| matches!(scan_frame(&bytes, at), Scan::Frame(_)))
+            .map(|at| Violation::StaleFrameBeyondEnd {
+                segment_no,
+                offset: at as u64,
+            })
+    }
+
     /// What one uninterrupted recovery of the disk as it is now yields, computed on a fault-free copy.
     async fn reference(&self) -> Result<(LogState, bool), RecoveryError> {
         let label = format!("wal-sim/reference-{}", self.boots);
@@ -751,6 +798,9 @@ impl Run<'_> {
                 if report.scanned_bytes > retained {
                     self.violate(Violation::RecoveryUnbounded);
                 }
+                if let Some(violation) = self.stale_frame_beyond_end(&report, &log) {
+                    self.violate(violation);
+                }
                 self.shared.oracle().check_recovery(&report, &log);
             }
             Err(e) => self.violate(Violation::LogUnreadable(e)),
@@ -816,11 +866,13 @@ impl Run<'_> {
 
         // The crash point: a seeded number of disk operations from now, or a seeded virtual time,
         // whichever comes first.
+        let short = self.plan().crash_loops && pick(self.rng.as_ref(), 4) > 0;
+        let (ops, micros) = if short { (12, 4_000) } else { (400, 250_000) };
         if coin(self.rng.as_ref()) {
             self.disk
-                .arm_crash_after_ops(1 + pick(self.rng.as_ref(), 400));
+                .arm_crash_after_ops(1 + pick(self.rng.as_ref(), ops));
         }
-        let run_for = Duration::from_micros(500 + pick(self.rng.as_ref(), 250_000));
+        let run_for = Duration::from_micros(500 + pick(self.rng.as_ref(), micros));
         {
             let mut crash_point = Box::pin(self.disk.crash_point_reached()).fuse();
             let mut timer = host.env.clock.sleep(run_for).fuse();
