@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use hmac::{Hmac, KeyInit as _, Mac as _};
-#[cfg(feature = "mcp-client")]
-use opentelemetry::propagation::Injector;
 #[cfg(feature = "mcp")]
 use opentelemetry::propagation::Extractor;
+#[cfg(feature = "mcp-client")]
+use opentelemetry::propagation::Injector;
 use opentelemetry::propagation::TextMapPropagator as _;
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -49,7 +49,11 @@ impl Transport {
 
 /// `mcp.protocol.version` and the era it implies (`crucible.mcp.era`).
 pub(crate) fn era(version: &str) -> [KeyValue; 2] {
-    let era = if is_modern(version) { "modern" } else { "legacy" };
+    let era = if is_modern(version) {
+        "modern"
+    } else {
+        "legacy"
+    };
     [
         KeyValue::new(k::PROTOCOL_VERSION, version.to_owned()),
         KeyValue::new(k::ERA, era),
@@ -94,7 +98,8 @@ struct MetaMut<'a>(&'a mut JsonObject);
 #[cfg(feature = "mcp-client")]
 impl Injector for MetaMut<'_> {
     fn set(&mut self, key: &str, value: String) {
-        self.0.insert(key.to_owned(), serde_json::Value::String(value));
+        self.0
+            .insert(key.to_owned(), serde_json::Value::String(value));
     }
 }
 

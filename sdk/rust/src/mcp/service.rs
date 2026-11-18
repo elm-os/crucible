@@ -20,8 +20,8 @@ use rmcp::model::{
     ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListSkillsResult,
     ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
     ReadResourceDirectoryRequestParams, ReadResourceDirectoryResult, ReadResourceRequestParams,
-    ReadResourceResponse, ServerConfig, SubscribeRequestParams,
-    SubscriptionFilter, Tool, UnsubscribeRequestParams, UpdateTaskParams,
+    ReadResourceResponse, ServerConfig, SubscribeRequestParams, SubscriptionFilter, Tool,
+    UnsubscribeRequestParams, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleServer, SubscriptionContext};
 
@@ -83,6 +83,10 @@ impl<S> CrucibleService<S> {
         self.inner
     }
 
+    fn remember(&self, version: Option<String>) {
+        *self.version.lock().unwrap_or_else(PoisonError::into_inner) = version;
+    }
+
     fn remembered(&self) -> Option<String> {
         self.version
             .lock()
@@ -97,9 +101,13 @@ impl<S> CrucibleService<S> {
         state_in: Option<&'a str>,
         context: &'a RequestContext<RoleServer>,
     ) -> Option<Op> {
-        let version = context.protocol_version().map(|v| v.as_str().to_owned());
+        // An initialize request names the version the client wants; the version of the session is the one
+        // the handshake settles on, which `initialize` records once its handler returns.
+        let version = (method != "initialize")
+            .then(|| context.protocol_version().map(|v| v.as_str().to_owned()))
+            .flatten();
         if version.is_some() {
-            version.clone_into(&mut self.version.lock().unwrap_or_else(PoisonError::into_inner));
+            self.remember(version.clone());
         }
         let start = Start {
             method,
@@ -152,7 +160,10 @@ impl<S> CrucibleService<S> {
             .map(str::to_owned);
         let peer = context.peer.peer_info();
         let version = header
-            .or_else(|| peer.as_ref().map(|p| p.protocol_version.as_str().to_owned()))
+            .or_else(|| {
+                peer.as_ref()
+                    .map(|p| p.protocol_version.as_str().to_owned())
+            })
             .or_else(|| self.remembered());
         let start = Start {
             method,
@@ -216,10 +227,17 @@ macro_rules! notification {
 
 impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
     request!(ping, "ping", ());
-    request!(initialize, "initialize", InitializeRequestParams, InitializeResult);
     request!(discover, "server/discover", DiscoverResult);
-    request!(complete, "completion/complete", CompleteRequestParams, CompleteResult);
-    #[expect(deprecated, reason = "the wrapped handler may still serve the legacy method")]
+    request!(
+        complete,
+        "completion/complete",
+        CompleteRequestParams,
+        CompleteResult
+    );
+    #[expect(
+        deprecated,
+        reason = "the wrapped handler may still serve the legacy method"
+    )]
     async fn set_level(
         &self,
         request: rmcp::model::SetLevelRequestParams,
@@ -229,20 +247,45 @@ impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
         self.traced(op, context, move |cx| self.inner.set_level(request, cx))
             .await
     }
-    request!(list_prompts, "prompts/list", Option<PaginatedRequestParams>, ListPromptsResult);
-    request!(list_resources, "resources/list", Option<PaginatedRequestParams>, ListResourcesResult);
+    request!(
+        list_prompts,
+        "prompts/list",
+        Option<PaginatedRequestParams>,
+        ListPromptsResult
+    );
+    request!(
+        list_resources,
+        "resources/list",
+        Option<PaginatedRequestParams>,
+        ListResourcesResult
+    );
     request!(
         list_resource_templates,
         "resources/templates/list",
         Option<PaginatedRequestParams>,
         ListResourceTemplatesResult
     );
-    request!(list_tools, "tools/list", Option<PaginatedRequestParams>, ListToolsResult);
+    request!(
+        list_tools,
+        "tools/list",
+        Option<PaginatedRequestParams>,
+        ListToolsResult
+    );
     request!(get_task, "tasks/get", GetTaskParams, GetTaskResult);
     request!(update_task, "tasks/update", UpdateTaskParams, ());
     request!(cancel_task, "tasks/cancel", CancelTaskParams, ());
-    request!(list_skills, "skills/list", Option<PaginatedRequestParams>, ListSkillsResult);
-    request!(get_skill, "skills/get", GetSkillRequestParams, GetSkillResult);
+    request!(
+        list_skills,
+        "skills/list",
+        Option<PaginatedRequestParams>,
+        ListSkillsResult
+    );
+    request!(
+        get_skill,
+        "skills/get",
+        GetSkillRequestParams,
+        GetSkillResult
+    );
     request!(
         read_resource_directory,
         "resources/directory/read",
@@ -250,10 +293,47 @@ impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
         ReadResourceDirectoryResult
     );
 
-    notification!(on_cancelled, "notifications/cancelled", CancelledNotificationParam);
-    notification!(on_progress, "notifications/progress", ProgressNotificationParam);
+    notification!(
+        on_cancelled,
+        "notifications/cancelled",
+        CancelledNotificationParam
+    );
+    notification!(
+        on_progress,
+        "notifications/progress",
+        ProgressNotificationParam
+    );
     notification!(on_initialized, "notifications/initialized");
     notification!(on_roots_list_changed, "notifications/roots/list_changed");
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        mut context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let requested = request.protocol_version.clone();
+        let Some(op) = self.start("initialize", None, None, &context) else {
+            return self.inner.initialize(request, context).await;
+        };
+        context.extensions.insert(op.handle());
+        let cancelled = context.ct.clone();
+        let result = self
+            .inner
+            .initialize(request, context)
+            .with_context(op.context())
+            .await;
+        if let Ok(offered) = &result {
+            let version = negotiated(
+                &requested,
+                &offered.protocol_version,
+                &self.inner.supported_protocol_versions(),
+            );
+            op.set_version(version.as_str());
+            self.remember(Some(version.as_str().to_owned()));
+        }
+        op.finish(&result, cancelled.is_cancelled());
+        result
+    }
 
     async fn call_tool(
         &self,
@@ -352,7 +432,10 @@ impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
         result
     }
 
-    #[expect(deprecated, reason = "the wrapped handler may still serve the legacy method")]
+    #[expect(
+        deprecated,
+        reason = "the wrapped handler may still serve the legacy method"
+    )]
     async fn subscribe(
         &self,
         request: SubscribeRequestParams,
@@ -363,7 +446,10 @@ impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
             .await
     }
 
-    #[expect(deprecated, reason = "the wrapped handler may still serve the legacy method")]
+    #[expect(
+        deprecated,
+        reason = "the wrapped handler may still serve the legacy method"
+    )]
     async fn unsubscribe(
         &self,
         request: UnsubscribeRequestParams,
@@ -399,4 +485,26 @@ impl<S: ServerHandler> ServerHandler for CrucibleService<S> {
     fn get_info(&self) -> ServerConfig {
         self.inner.get_info()
     }
+}
+
+/// The version an `initialize` handshake settles on, by rmcp's rule: the requested version when the server can
+/// serve it over the handshake, else the version the handler offered when it has a handshake, else the newest
+/// supported version that has one.
+fn negotiated(
+    requested: &ProtocolVersion,
+    offered: &ProtocolVersion,
+    supported: &[ProtocolVersion],
+) -> ProtocolVersion {
+    if requested.has_initialize() && supported.contains(requested) {
+        return requested.clone();
+    }
+    if offered.has_initialize() {
+        return offered.clone();
+    }
+    supported
+        .iter()
+        .filter(|v| v.has_initialize())
+        .max_by(|a, b| a.as_str().cmp(b.as_str()))
+        .unwrap_or(offered)
+        .clone()
 }

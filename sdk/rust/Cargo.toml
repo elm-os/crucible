@@ -69,3 +69,11 @@ todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 
+
+[[test]]
+name = "mcp"
+required-features = ["mcp"]
+
+[[test]]
+name = "mcp_client"
+required-features = ["mcp", "mcp-client"]

@@ -29,8 +29,8 @@ use rmcp::model::{
 };
 use rmcp::service::{PeerRequestOptions, RoleClient, ServiceError};
 
-pub use crate::mcp_common::Transport;
 use crate::keys::mcp as k;
+pub use crate::mcp_common::Transport;
 use crate::mcp_common::{self, Annotations, Outcome};
 use crate::scrub;
 
@@ -163,7 +163,9 @@ impl TracedClient {
             .await?
         {
             ServerResult::CallToolResult(result) => Ok(CallToolResponse::Complete(result)),
-            ServerResult::InputRequiredResult(result) => Ok(CallToolResponse::InputRequired(result)),
+            ServerResult::InputRequiredResult(result) => {
+                Ok(CallToolResponse::InputRequired(result))
+            }
             ServerResult::CreateTaskResult(result) => Ok(CallToolResponse::Task(result)),
             _ => Err(ServiceError::UnexpectedResponse),
         }

@@ -7,7 +7,9 @@ use std::sync::{Arc, PoisonError};
 
 use opentelemetry::trace::{SpanBuilder, SpanKind, Status, TraceContextExt as _, Tracer as _};
 use opentelemetry::{Context, KeyValue};
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Extensions, JsonObject};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Extensions, JsonObject,
+};
 use serde::Serialize;
 
 use super::{CaptureRule, Config, Field, Identity, OpHandle, OpState};
@@ -103,7 +105,10 @@ impl Op {
             }
             // Legacy sessions only: the raw id is never sent (contract 9.4).
             if !modern && let Some(session) = header("mcp-session-id") {
-                attributes.push(KeyValue::new(k::SESSION_ID, mcp_common::session_hash(session)));
+                attributes.push(KeyValue::new(
+                    k::SESSION_ID,
+                    mcp_common::session_hash(session),
+                ));
             }
         }
         if let Some((key, name)) = start.target {
@@ -155,6 +160,11 @@ impl Op {
     /// The context the handler runs in: its spans are children of the operation's.
     pub(super) fn context(&self) -> Context {
         self.cx.clone()
+    }
+
+    /// Records the protocol version and era once they are known (an `initialize` handshake).
+    pub(super) fn set_version(&self, version: &str) {
+        self.cx.span().set_attributes(mcp_common::era(version));
     }
 
     /// The handle a tool handler reaches the operation through.
@@ -247,17 +257,22 @@ impl Op {
         (text, cut || cut_after)
     }
 
-    /// Text scrubbed by the shared rules and the `scrub` hook, and capped. `None` when there is nothing to
-    /// send.
+    /// Text scrubbed by the shared rules and then the `scrub` hook, both over the window the cap reads, and
+    /// then capped. `None` when there is nothing to send.
     fn scrubbed(&self, field: Field, text: &str, max: usize) -> (Option<String>, bool) {
-        let (mut text, cut) = scrub::capped(text, max);
+        let (window, cut) = scrub::prefix(text, scrub::window(max));
+        let mut text = scrub::scrub(window);
         if let Some(hook) = &self.config.options.scrub {
             match hook(field, &text) {
-                Some(changed) => text = scrub::prefix(&changed, max).0.to_owned(),
+                Some(changed) => text = changed,
                 None => return (None, cut),
             }
         }
-        ((!text.is_empty()).then_some(text), cut)
+        let (text, cut_after) = scrub::prefix(&text, max);
+        (
+            (!text.is_empty()).then(|| text.to_owned()),
+            cut || cut_after,
+        )
     }
 
     /// Ends the span with the outcome of a request.
@@ -306,8 +321,15 @@ impl Op {
         }
         if let Some(capture) = &self.capture {
             attributes.push(KeyValue::new(k::CONTENT_CAPTURED, true));
-            attributes.push(KeyValue::new(k::CONTENT_SAMPLE_RATE, capture.rule.sample_rate));
-            let truncation = if capture.truncated { "cap_exceeded" } else { "none" };
+            attributes.push(KeyValue::new(
+                k::CONTENT_SAMPLE_RATE,
+                capture.rule.sample_rate,
+            ));
+            let truncation = if capture.truncated {
+                "cap_exceeded"
+            } else {
+                "none"
+            };
             attributes.push(KeyValue::new(k::CONTENT_TRUNCATION, truncation));
         }
         span.set_attributes(attributes);

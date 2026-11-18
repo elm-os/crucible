@@ -33,9 +33,9 @@ pub use crate::mcp_common::Transport;
 mod op;
 mod service;
 
-pub use service::CrucibleService;
 /// The rmcp trait [`CrucibleService`] implements and wraps.
 pub use rmcp::ServerHandler;
+pub use service::CrucibleService;
 
 /// The default cap on each captured field.
 const DEFAULT_MAX_BYTES: usize = 16 * 1024;

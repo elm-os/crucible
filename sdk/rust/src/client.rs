@@ -227,13 +227,12 @@ fn validate(options: Options) -> Result<Config, InitError> {
     if options.secret_key.is_empty() {
         return Err(InitError::MissingSecretKey);
     }
-    if !options.secret_key.starts_with("csk_") || HeaderValue::from_str(&options.secret_key).is_err() {
+    if !options.secret_key.starts_with("csk_")
+        || HeaderValue::from_str(&options.secret_key).is_err()
+    {
         return Err(InitError::NotASecretKey);
     }
-    let mut attributes = vec![KeyValue::new(
-        keys::SERVICE_INSTANCE_ID,
-        instance_id(),
-    )];
+    let mut attributes = vec![KeyValue::new(keys::SERVICE_INSTANCE_ID, instance_id())];
     for (key, value) in [
         (keys::SERVICE_NAME, &options.service_name),
         (keys::SERVICE_VERSION, &options.service_version),
@@ -261,7 +260,11 @@ fn validate(options: Options) -> Result<Config, InitError> {
 }
 
 fn nonzero<T: Default + PartialEq>(value: T, default: T) -> T {
-    if value == T::default() { default } else { value }
+    if value == T::default() {
+        default
+    } else {
+        value
+    }
 }
 
 /// A random version 4 UUID: the process's `service.instance.id`, the group key of last resort (contract 9.4).
@@ -291,8 +294,11 @@ impl Client {
             .with_resource(config.resource.clone())
             .with_span_processor(processor)
             .build();
-        let tracer = provider
-            .tracer_with_scope(InstrumentationScope::builder(SCOPE).with_version(VERSION).build());
+        let tracer = provider.tracer_with_scope(
+            InstrumentationScope::builder(SCOPE)
+                .with_version(VERSION)
+                .build(),
+        );
         Ok(Self {
             tracer,
             #[cfg(any(feature = "mcp", feature = "mcp-client"))]
@@ -328,7 +334,8 @@ fn exporter(config: &Config) -> Result<opentelemetry_otlp::SpanExporter, InitErr
         .with_protocol(Protocol::HttpBinary)
         .with_timeout(config.export_timeout)
         .with_headers(HashMap::from([(
-            "user-agent".to_owned(),
+            // The key the exporter uses for its own default, so this value replaces it.
+            "User-Agent".to_owned(),
             format!("crucible-sdk-rust/{VERSION}"),
         )]))
         .build()

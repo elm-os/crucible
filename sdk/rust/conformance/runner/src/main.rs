@@ -90,7 +90,10 @@ struct Step {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("runner: {error}");
@@ -99,7 +102,9 @@ fn main() -> ExitCode {
     };
     let result = runtime.block_on(async {
         match args.get(1).map(String::as_str) {
-            Some("serve-stdio") => server::serve_stdio(args.get(2).map_or("", String::as_str)).await,
+            Some("serve-stdio") => {
+                server::serve_stdio(args.get(2).map_or("", String::as_str)).await
+            }
             _ => run().await,
         }
     });

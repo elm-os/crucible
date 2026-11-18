@@ -22,7 +22,10 @@ const REQUEST_STATE: &str = "crucible-conformance-request-state-1";
 
 /// The instrumentation built from the run spec's `sdk` options.
 pub(crate) fn instrumentation(spec: &RunSpec) -> Result<Instrumentation, String> {
-    let server = spec.server.clone().ok_or("an MCP run spec names its server")?;
+    let server = spec
+        .server
+        .clone()
+        .ok_or("an MCP run spec names its server")?;
     Instrumentation::new(mcp::Options {
         server_name: server.name,
         server_version: server.version,
@@ -106,12 +109,36 @@ impl ServerHandler for Reference {
         let integer = json!({ "type": "integer" });
         Ok(ListToolsResult::with_all_items(vec![
             tool("echo", "Returns its text.", json!({ "text": string })),
-            tool("fail", "Fails with the reason, annotated as an upstream error.", json!({ "reason": string })),
-            tool("throw", "Returns a JSON-RPC internal error, a handler's error path.", json!({ "message": string })),
-            tool("slow", "Waits, sending progress when asked.", json!({ "ms": integer, "steps": integer })),
-            tool("secret", "Returns its note unchanged.", json!({ "note": string })),
-            tool("needs_input", "Asks for a confirmation before answering.", json!({ "item": string })),
-            tool("lookup_order", "Looks an order up.", json!({ "order_id": string })),
+            tool(
+                "fail",
+                "Fails with the reason, annotated as an upstream error.",
+                json!({ "reason": string }),
+            ),
+            tool(
+                "throw",
+                "Returns a JSON-RPC internal error, a handler's error path.",
+                json!({ "message": string }),
+            ),
+            tool(
+                "slow",
+                "Waits, sending progress when asked.",
+                json!({ "ms": integer, "steps": integer }),
+            ),
+            tool(
+                "secret",
+                "Returns its note unchanged.",
+                json!({ "note": string }),
+            ),
+            tool(
+                "needs_input",
+                "Asks for a confirmation before answering.",
+                json!({ "item": string }),
+            ),
+            tool(
+                "lookup_order",
+                "Looks an order up.",
+                json!({ "order_id": string }),
+            ),
         ]))
     }
 
@@ -127,12 +154,22 @@ impl ServerHandler for Reference {
                 CallToolResult::error(vec![ContentBlock::text(arg(&request, "reason"))])
             }
             // A handler's error: rmcp answers it with a JSON-RPC error.
-            "throw" => return Err(ErrorData::internal_error(arg(&request, "message").to_owned(), None)),
+            "throw" => {
+                return Err(ErrorData::internal_error(
+                    arg(&request, "message").to_owned(),
+                    None,
+                ));
+            }
             "slow" => slow(&request, &context).await?,
             "secret" => text(arg(&request, "note")),
             "needs_input" => return needs_input(&request),
             "lookup_order" => text(format!("order {}: shipped", arg(&request, "order_id"))),
-            other => return Err(ErrorData::invalid_params(format!("unknown tool {other}"), None)),
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown tool {other}"),
+                    None,
+                ));
+            }
         };
         Ok(CallToolResponse::Complete(result))
     }
@@ -146,7 +183,11 @@ async fn slow(
 ) -> Result<CallToolResult, ErrorData> {
     let total = Duration::from_millis(number(request, "ms"));
     let token = context.meta.get_progress_token();
-    let steps = if token.is_some() { number(request, "steps") } else { 0 };
+    let steps = if token.is_some() {
+        number(request, "steps")
+    } else {
+        0
+    };
     let start = Instant::now();
     let cancelled = || ErrorData::internal_error("cancelled", None);
     for i in 1..=steps {
@@ -156,7 +197,8 @@ async fn slow(
             () = context.ct.cancelled() => return Err(cancelled()),
         }
         if let Some(token) = &token {
-            let params = ProgressNotificationParam::new(token.clone(), i as f64).with_total(steps as f64);
+            let params =
+                ProgressNotificationParam::new(token.clone(), i as f64).with_total(steps as f64);
             mcp::notify_progress(context, params)
                 .await
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -202,9 +244,14 @@ fn needs_input(request: &CallToolRequestParams) -> Result<CallToolResponse, Erro
         .and_then(|r| r.get("confirm"))
         .is_some_and(|r| r.get("action").and_then(Value::as_str) == Some("accept"));
     if !accepted {
-        return Err(ErrorData::invalid_params("the confirmation was not accepted", None));
+        return Err(ErrorData::invalid_params(
+            "the confirmation was not accepted",
+            None,
+        ));
     }
-    Ok(CallToolResponse::Complete(text(format!("confirmed {item}"))))
+    Ok(CallToolResponse::Complete(text(format!(
+        "confirmed {item}"
+    ))))
 }
 
 /// The stdio reference server: serves on stdin and stdout until stdin closes, then flushes.

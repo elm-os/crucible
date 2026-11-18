@@ -86,8 +86,8 @@ pub(crate) fn start(
         .name("crucible-export".to_owned())
         .spawn(move || runtime.block_on(worker.run()))
         .map_err(|e| format!("the export thread: {e}"))?;
-    let release = (!config.release.is_empty())
-        .then(|| KeyValue::new(keys::RELEASE, config.release.clone()));
+    let release =
+        (!config.release.is_empty()).then(|| KeyValue::new(keys::RELEASE, config.release.clone()));
     Ok((
         Processor {
             queue,

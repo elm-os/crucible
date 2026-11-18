@@ -22,10 +22,10 @@ mod scrub;
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
-#[cfg(any(feature = "mcp", feature = "mcp-client"))]
-mod mcp_common;
 #[cfg(feature = "mcp-client")]
 pub mod mcp_client;
+#[cfg(any(feature = "mcp", feature = "mcp-client"))]
+mod mcp_common;
 
 pub use agent::{
     Cost, Observation, ObservationType, Usage, observe, with_metadata, with_session, with_tags,

@@ -54,11 +54,15 @@ pub(crate) async fn run(spec: &RunSpec) -> Result<(), String> {
         if let Some(node) = &step.observe {
             observe_node(&Context::new(), node).map_err(fail)?;
         } else if step.flush.is_some() {
-            crucible_sdk::flush().await.map_err(|e| fail(e.to_string()))?;
+            crucible_sdk::flush()
+                .await
+                .map_err(|e| fail(e.to_string()))?;
         } else if let Some(name) = &step.checkpoint {
             checkpoint(&spec.checkpoint_url, name).await.map_err(fail)?;
         } else if step.shutdown.is_some() {
-            crucible_sdk::shutdown().await.map_err(|e| fail(e.to_string()))?;
+            crucible_sdk::shutdown()
+                .await
+                .map_err(|e| fail(e.to_string()))?;
             shut_down = true;
         } else if let Some(ms) = step.sleep_ms {
             tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -108,7 +112,10 @@ fn observe_node(parent: &Context, node: &Node) -> Result<(), String> {
         observation.set_attribute(KeyValue::new("gen_ai.input.messages", messages.to_string()));
     }
     if let Some(messages) = &node.output_messages {
-        observation.set_attribute(KeyValue::new("gen_ai.output.messages", messages.to_string()));
+        observation.set_attribute(KeyValue::new(
+            "gen_ai.output.messages",
+            messages.to_string(),
+        ));
     }
     if let Some(reasons) = &node.finish_reasons {
         let reasons = reasons.iter().cloned().map(StringValue::from).collect();

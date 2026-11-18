@@ -189,7 +189,10 @@ impl StdioPeer {
             .spawn()
             .map_err(|e| format!("starting the reference server: {e}"))?;
         let stdin = child.stdin.take();
-        let stdout = child.stdout.take().ok_or("the reference server has no stdout")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("the reference server has no stdout")?;
         let inflight = Inflights::default();
         let reader = tokio::spawn(read_lines(stdout, inflight.clone()));
         Ok(Self {
@@ -303,14 +306,26 @@ impl HttpPeer {
         })
     }
 
-    fn send(&self, id: Option<String>, body: Vec<u8>, step_headers: &BTreeMap<String, String>) -> Exchange {
+    fn send(
+        &self,
+        id: Option<String>,
+        body: Vec<u8>,
+        step_headers: &BTreeMap<String, String>,
+    ) -> Exchange {
         let mut headers = vec![
             ("content-type".to_owned(), "application/json".to_owned()),
-            ("accept".to_owned(), "application/json, text/event-stream".to_owned()),
+            (
+                "accept".to_owned(),
+                "application/json, text/event-stream".to_owned(),
+            ),
         ];
         headers.extend(step_headers.iter().map(|(k, v)| (k.clone(), v.clone())));
         let session = self.session.clone();
-        if let Some(id) = session.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+        if let Some(id) = session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
             headers.push(("mcp-session-id".to_owned(), id));
         }
         let url = self.url.clone();
@@ -388,7 +403,10 @@ pub(crate) async fn post(
     }
 }
 
-async fn read_response(response: http::Response<Incoming>, id: Option<&str>) -> Result<Response, String> {
+async fn read_response(
+    response: http::Response<Incoming>,
+    id: Option<&str>,
+) -> Result<Response, String> {
     let header = |name| {
         response
             .headers()
