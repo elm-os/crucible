@@ -91,6 +91,7 @@ fn entry(lsn: u64) -> SpanEntry {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            usage_aggregate: false,
         },
         head: Some(HeadKind::Root),
         locator: WalLocator {

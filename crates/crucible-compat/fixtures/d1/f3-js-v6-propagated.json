@@ -1,0 +1,131 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "langfuse/langfuse-js v6.1.1 tests/integration/tracing.integration.test.ts lines 375-467",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD1, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others"
+  },
+  "request": {
+    "path": "/api/public/otel/v1/traces",
+    "headers": {
+      "x-langfuse-sdk-name": "javascript",
+      "x-langfuse-sdk-version": "6.0.2"
+    }
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "langfuse-sdk",
+              "version": "6.0.2"
+            },
+            "spans": [
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000001",
+                "name": "test-generation",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.model.name",
+                    "value": {
+                      "stringValue": "atlas-large"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.input",
+                    "value": {
+                      "stringValue": "{\"prompt\":\"Say hi\"}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.output",
+                    "value": {
+                      "stringValue": "{\"content\":\"Hi there\"}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.level",
+                    "value": {
+                      "stringValue": "DEFAULT"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.usage_details",
+                    "value": {
+                      "stringValue": "{\"promptTokens\":5,\"completionTokens\":6,\"totalTokens\":11}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.metadata.test_run",
+                    "value": {
+                      "stringValue": "true"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.metadata.version",
+                    "value": {
+                      "stringValue": "\"2.0\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.name",
+                    "value": {
+                      "stringValue": "js-propagation"
+                    }
+                  },
+                  {
+                    "key": "user.id",
+                    "value": {
+                      "stringValue": "user-9"
+                    }
+                  },
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "session-2"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 1,
+      "observation_type": "generation",
+      "level": "default",
+      "model_response": "atlas-large",
+      "input": "{\"prompt\":\"Say hi\"}",
+      "output": "{\"content\":\"Hi there\"}",
+      "io_shape": "raw",
+      "usage_provided": {
+        "input": 5,
+        "output": 6,
+        "total": 11
+      },
+      "metadata": {
+        "test_run": true,
+        "version": "2.0"
+      },
+      "trace_name": "js-propagation",
+      "user_id": "user-9",
+      "session_id": "session-2",
+      "residual": []
+    }
+  }
+}

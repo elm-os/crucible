@@ -1,0 +1,62 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: flattened input messages of the dialect 7 key namespace",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others"
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "my.app"
+            },
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "chat",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.input.0.role",
+                    "value": {
+                      "stringValue": "user"
+                    }
+                  },
+                  {
+                    "key": "braintrust.input.0.content",
+                    "value": {
+                      "stringValue": "hello"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "input_json": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ],
+      "io_shape": "indexed_messages",
+      "residual": []
+    }
+  }
+}

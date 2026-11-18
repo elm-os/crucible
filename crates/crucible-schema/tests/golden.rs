@@ -7,7 +7,7 @@
 
 use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PasswordHash, ProfileCaps, TABLES, Variant,
-    access_service, create_table, schema_base, service_policy_check,
+    access_service, create_table, schema_base, schema_span_usage_aggregate, service_policy_check,
 };
 
 fn variants() -> [(&'static str, Variant); 3] {
@@ -82,6 +82,8 @@ fn migration_steps() {
             );
         }
         let step = access_service(&variant, &params());
+        insta::assert_snapshot!(format!("step__{variant_name}__{}", step.id), script(&step));
+        let step = schema_span_usage_aggregate(&variant);
         insta::assert_snapshot!(format!("step__{variant_name}__{}", step.id), script(&step));
     }
     insta::assert_snapshot!(

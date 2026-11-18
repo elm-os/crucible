@@ -1,13 +1,16 @@
 //! Proptest strategies for requests that exercise the normalizer.
 //!
-//! Attribute keys come from the compat tables (iterated, so the generator follows the tables) mixed with random
-//! keys, so mapping, consumption and the residuals are all hit. Values have the expected type, another type, or an
+//! Attribute keys, scope names and event names come from the compat layers (iterated, so the generator follows the
+//! tables of every dialect and names none of their keys itself) mixed with random ones, so detection, mapping,
+//! consumption and the residuals are all hit. Values have the expected type, another type, or an
 //! edge value (empty, negative or extreme integers, NaN). Trace and span ids come from small domains so that
 //! traces group and keys repeat, with some empty or all-zero ids for the rejection paths. Times stray outside the
 //! valid range and ahead of `received_at`. With `finite` set, doubles are finite: OTLP/JSON has no lossless form for
 //! the others. Model keys mostly carry names that bundled price rows match, so usage meets the calculated cost path.
 
-use crucible_compat::{Decoder, KeyMatch, Location, TABLES, Target};
+use crucible_compat::{
+    Decoder, DetectOn, KeyMatch, LAYERS, Location, Target, ToolCallShape, UsageMap, ValueEncoding,
+};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -22,11 +25,25 @@ use proptest::sample::select;
 
 use super::BASE_NANOS;
 
-/// Every key the tables read at `location`, with the observation-type keys for span attributes. A prefix source
-/// gives the bare prefix (which names no member) and the prefix with two member names.
+/// Key suffixes that make a prefix source's key: a member name, a dotted member name, and the keys of an indexed
+/// family with a wrapper segment and a nested list.
+const SUFFIXES: [&str; 8] = [
+    "total",
+    "a.b",
+    "0.role",
+    "0.content",
+    "1.message.role",
+    "0.message.tool_calls.0.tool_call.function.name",
+    "0.tool_calls.0.name",
+    "0.finish_reason",
+];
+
+/// Every key the layers read at `location`, with the observation-type and detection keys for span attributes. A
+/// prefix gives the bare prefix (which names no member), the prefix with each of [`SUFFIXES`], and for a usage
+/// prefix the member names its usage map knows.
 pub fn table_keys(location: Location) -> Vec<String> {
     let mut keys = Vec::new();
-    for table in TABLES {
+    for table in LAYERS {
         for rule in table.fields {
             for source in rule.sources {
                 if source.location != location {
@@ -35,8 +52,16 @@ pub fn table_keys(location: Location) -> Vec<String> {
                 let text = source.key.text();
                 keys.push(text.to_owned());
                 if matches!(source.key, KeyMatch::Prefix(_)) {
-                    keys.push(format!("{text}total"));
-                    keys.push(format!("{text}a.b"));
+                    keys.extend(SUFFIXES.iter().map(|suffix| format!("{text}{suffix}")));
+                    if let Decoder::PrefixUsage(map) = source.decoder {
+                        keys.extend(map.aliases.iter().map(|(m, _)| format!("{text}{m}")));
+                        keys.extend(
+                            map.sums
+                                .iter()
+                                .flat_map(|(_, addends)| *addends)
+                                .map(|m| format!("{text}{m}")),
+                        );
+                    }
                 }
             }
         }
@@ -47,28 +72,245 @@ pub fn table_keys(location: Location) -> Vec<String> {
                     .iter()
                     .map(|rule| rule.key.to_owned()),
             );
+            for rule in table.detect {
+                match rule.on {
+                    DetectOn::SpanKey(KeyMatch::Exact(key)) => keys.push(key.to_owned()),
+                    DetectOn::SpanKey(KeyMatch::Prefix(prefix)) => keys.push(format!("{prefix}x")),
+                    DetectOn::ScopeName(_) => {}
+                }
+            }
         }
     }
     keys
 }
 
-/// Values that the decoder of a source reading `key` accepts, for the decoders random values rarely satisfy.
-fn decoder_values_of(key: &str) -> Vec<&'static str> {
-    let decoders = TABLES
+/// Scope names that detection rules recognize.
+fn scope_names() -> Vec<String> {
+    LAYERS
+        .iter()
+        .flat_map(|t| t.detect)
+        .filter_map(|rule| match rule.on {
+            DetectOn::ScopeName(KeyMatch::Exact(name)) => Some(name.to_owned()),
+            DetectOn::ScopeName(KeyMatch::Prefix(prefix)) => Some(format!("{prefix}x")),
+            DetectOn::SpanKey(_) => None,
+        })
+        .collect()
+}
+
+/// Event names that sources read.
+fn event_names() -> Vec<String> {
+    LAYERS
         .iter()
         .flat_map(|t| t.fields)
         .flat_map(|rule| rule.sources)
-        .filter(|source| source.key.matches(key))
-        .map(|source| source.decoder);
-    let mut values = Vec::new();
-    for decoder in decoders {
-        match decoder {
-            Decoder::Level => values.extend(["debug", "default", "warning", "error"]),
-            Decoder::Time => {
-                values.extend(["2026-11-17T09:30:00.125Z", "2026-11-17t09:30:00+02:00"])
+        .filter_map(|source| match source.location {
+            Location::Event(name) | Location::EventTime(name) => Some(name.to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn string(text: impl Into<String>) -> any_value::Value {
+    any_value::Value::StringValue(text.into())
+}
+
+fn string_array(items: &[&str]) -> any_value::Value {
+    any_value::Value::ArrayValue(ArrayValue {
+        values: items
+            .iter()
+            .map(|s| AnyValue {
+                value: Some(string(*s)),
+            })
+            .collect(),
+    })
+}
+
+/// A JSON object nested along `path` around `leaf`.
+fn nest(path: &[&str], leaf: serde_json::Value) -> serde_json::Value {
+    path.iter()
+        .rev()
+        .fold(leaf, |inner, step| serde_json::json!({ *step: inner }))
+}
+
+/// JSON text of a usage or cost object that exercises a usage map: its aliases, the addends of its sums, an
+/// ignored member, a member it does not know and a details object.
+fn usage_object(map: &UsageMap, cost: bool) -> String {
+    let mut object = serde_json::Map::new();
+    let amount = |n: usize| {
+        if cost {
+            serde_json::json!(n as f64 / 1000.0)
+        } else {
+            serde_json::json!(n)
+        }
+    };
+    for (i, (member, _)) in map.aliases.iter().enumerate().filter(|(i, _)| i % 2 == 0) {
+        object.insert((*member).to_owned(), amount(i + 1));
+    }
+    for (_, addends) in map.sums {
+        for (i, addend) in addends.iter().enumerate() {
+            object.insert((*addend).to_owned(), amount(10 * (i + 1)));
+        }
+    }
+    for member in map.ignore.iter().take(1) {
+        object.insert((*member).to_owned(), amount(99));
+    }
+    object.insert("some_other_count".to_owned(), amount(7));
+    object.insert(
+        "prompt_tokens_details".to_owned(),
+        serde_json::json!({ "cached_tokens": 2 }),
+    );
+    serde_json::Value::Object(object).to_string()
+}
+
+/// JSON text of a tool-call list in a source's shape.
+fn tool_call_list(shape: &ToolCallShape) -> String {
+    let mut call = serde_json::Map::new();
+    for (path, leaf) in [
+        (shape.id, serde_json::json!("call-1")),
+        (shape.name, serde_json::json!("lookup")),
+        (shape.arguments, serde_json::json!({ "q": "x" })),
+    ] {
+        let Some((first, rest)) = path.split_first() else {
+            continue;
+        };
+        let nested = nest(rest, leaf);
+        match (call.get_mut(*first), nested) {
+            (Some(serde_json::Value::Object(existing)), serde_json::Value::Object(more)) => {
+                existing.extend(more);
             }
-            Decoder::Usd => values.extend(["0.0125", "3", "-1", "1e-3"]),
-            _ => {}
+            (_, nested) => {
+                call.insert((*first).to_owned(), nested);
+            }
+        }
+    }
+    serde_json::json!([call, { "unrelated": true }]).to_string()
+}
+
+/// Values that the decoder of a source reading `key` accepts, for the decoders random values rarely satisfy. A
+/// source with a member path gets an object that holds such a value at its path; a table that encodes values as
+/// JSON text also gets each string value as a JSON string literal.
+fn decoder_values_of(key: &str) -> Vec<any_value::Value> {
+    use any_value::Value as V;
+    let mut values = Vec::new();
+    for table in LAYERS {
+        let sources = table
+            .fields
+            .iter()
+            .flat_map(|rule| rule.sources)
+            .filter(|source| source.key.matches(key));
+        for source in sources {
+            let mut own: Vec<V> = match source.decoder {
+                Decoder::Level(map) => map
+                    .names
+                    .iter()
+                    .map(|(name, _)| string(name.to_ascii_uppercase()))
+                    .chain(map.numbers.iter().map(|(n, _)| V::IntValue(*n)))
+                    .chain(map.numbers.iter().map(|(n, _)| string(n.to_string())))
+                    .collect(),
+                Decoder::Timestamp => vec![
+                    string("2026-11-17T09:30:00.125Z"),
+                    string("2026-11-17t09:30:00+02:00"),
+                    string("\"2026-11-17T09:30:00.125Z\""),
+                    V::IntValue(BASE_NANOS as i64 + 5),
+                ],
+                Decoder::Usd => vec![
+                    string("0.0125"),
+                    string("3"),
+                    string("-1"),
+                    string("1e-3"),
+                    V::DoubleValue(0.25),
+                ],
+                Decoder::StringOrInt => vec![V::IntValue(42), string("v7"), string("\"quoted\"")],
+                Decoder::Bool => vec![
+                    V::BoolValue(true),
+                    V::BoolValue(false),
+                    string("true"),
+                    string("false"),
+                ],
+                Decoder::Tags { .. } => vec![
+                    string_array(&["a", " b ", "a"]),
+                    string("x, y,,x"),
+                    string(r#"["p","q"]"#),
+                ],
+                Decoder::OffsetFromStart(_) => {
+                    vec![V::IntValue(100), V::DoubleValue(0.0625), V::IntValue(-1)]
+                }
+                Decoder::JsonObject => vec![
+                    string(r#"{"k":"v","n":1,"nested":{"deep":[1,2]}}"#),
+                    string(r#"{"k":"other","model":"m","provider":"p","tools":[{"name":"t"}]}"#),
+                    string("[1]"),
+                ],
+                Decoder::UsageObject(map) => vec![string(usage_object(map, false))],
+                Decoder::CostObject(map) => vec![string(usage_object(map, true))],
+                Decoder::PrefixUsage(_) | Decoder::Integer => {
+                    vec![V::IntValue(7), V::IntValue(0), string("12")]
+                }
+                Decoder::MapMember(_) => vec![
+                    V::DoubleValue(0.5),
+                    V::IntValue(3),
+                    V::BoolValue(true),
+                    string_array(&["stop"]),
+                    string(r#"{"type":"auto"}"#),
+                ],
+                Decoder::JsonStrings => vec![string_array(&[r#"{"a":1}"#, "plain"])],
+                Decoder::ToolCalls(shape) => vec![string(tool_call_list(shape))],
+                Decoder::Json | Decoder::JsonOrString(_) => vec![
+                    string(
+                        r#"[{"role":"assistant","parts":[{"type":"tool_call","id":"c","name":"f","arguments":{}}]}]"#,
+                    ),
+                    string("plain body"),
+                ],
+                Decoder::Indexed(_) | Decoder::IndexedList(_) => {
+                    vec![string("user"), string(r#"{"type":"object"}"#)]
+                }
+                Decoder::String | Decoder::PrefixMap(_) => vec![string("\"quoted\"")],
+            };
+            if !source.path.is_empty() {
+                own = own
+                    .into_iter()
+                    .filter_map(|value| {
+                        let leaf = match value {
+                            V::StringValue(s) => serde_json::json!(s),
+                            V::IntValue(i) => serde_json::json!(i),
+                            V::DoubleValue(d) => serde_json::json!(d),
+                            V::BoolValue(b) => serde_json::json!(b),
+                            _ => return None,
+                        };
+                        // A numeric step indexes an array: the generated path holds its element at index 0.
+                        let object = source.path.iter().rev().fold(leaf, |inner, step| {
+                            if step.bytes().all(|b| b.is_ascii_digit()) {
+                                serde_json::json!([inner])
+                            } else {
+                                serde_json::json!({ *step: inner })
+                            }
+                        });
+                        Some(string(object.to_string()))
+                    })
+                    .collect();
+            }
+            if table.encoding == ValueEncoding::JsonText {
+                let quoted: Vec<V> = own
+                    .iter()
+                    .filter_map(|value| match value {
+                        V::StringValue(s) => Some(string(serde_json::json!(s).to_string())),
+                        _ => None,
+                    })
+                    .collect();
+                own.extend(quoted);
+            }
+            values.extend(own);
+        }
+        for rule in table.observation_types.iter().filter(|r| r.key == key) {
+            for (value, _) in rule.values {
+                values.push(if rule.path.is_empty() {
+                    string(*value)
+                } else {
+                    string(nest(rule.path, serde_json::json!(value)).to_string())
+                });
+                if table.encoding == ValueEncoding::JsonText {
+                    values.push(string(serde_json::json!(value).to_string()));
+                }
+            }
         }
     }
     values
@@ -84,19 +326,21 @@ const PRICED_MODELS: [&str; 6] = [
     "us.anthropic.claude-opus-4-7",
 ];
 
-/// Every key the tables read for a model name.
+/// Every key the layers read whole for a model name.
 fn model_keys() -> Vec<&'static str> {
-    TABLES
+    LAYERS
         .iter()
         .flat_map(|t| t.fields)
         .filter(|rule| matches!(rule.target, Target::ModelRequested | Target::ModelResponse))
-        .flat_map(|rule| rule.sources.iter().map(|s| s.key.text()))
+        .flat_map(|rule| rule.sources)
+        .filter(|s| s.path.is_empty())
+        .map(|s| s.key.text())
         .collect()
 }
 
 /// Every value an observation-type rule recognizes.
 fn type_values() -> Vec<&'static str> {
-    TABLES
+    LAYERS
         .iter()
         .flat_map(|t| t.observation_types)
         .flat_map(|rule| rule.values.iter().map(|(v, _)| *v))
@@ -190,47 +434,21 @@ fn nested(finite: bool) -> BoxedStrategy<AnyValue> {
         .boxed()
 }
 
-/// The values that an observation-type rule recognizes on `key`; empty for any other key.
-fn type_values_of(key: &str) -> Vec<&'static str> {
-    TABLES
-        .iter()
-        .flat_map(|t| t.observation_types)
-        .filter(|rule| rule.key == key)
-        .flat_map(|rule| rule.values.iter().map(|(v, _)| *v))
-        .collect()
-}
-
-/// One attribute. An observation-type key mostly carries a value its rule recognizes, so every rule yields, and a
-/// model key mostly carries a priced model name.
+/// One attribute. A key that a source or a type rule reads mostly carries a value its decoder accepts, so every
+/// source and rule yields, and a model key mostly carries a priced model name.
 fn pair(location: Location, finite: bool) -> BoxedStrategy<KeyValue> {
     key(location)
         .prop_flat_map(move |key| {
-            let mut known = type_values_of(&key);
-            known.extend(decoder_values_of(&key));
+            let mut known = decoder_values_of(&key);
             if model_keys().contains(&key.as_str()) {
-                known.extend(PRICED_MODELS);
+                known.extend(PRICED_MODELS.map(string));
             }
             let any = option::weighted(0.9, value(finite));
-            let flag = TABLES
-                .iter()
-                .flat_map(|t| t.fields)
-                .flat_map(|rule| rule.sources)
-                .any(|source| source.decoder == Decoder::Bool && source.key.matches(&key));
-            let value = if flag {
-                prop_oneof![
-                    3 => proptest::bool::ANY.prop_map(|b| Some(AnyValue {
-                        value: Some(any_value::Value::BoolValue(b)),
-                    })),
-                    1 => any,
-                ]
-                .boxed()
-            } else if known.is_empty() {
+            let value = if known.is_empty() {
                 any.boxed()
             } else {
                 prop_oneof![
-                    3 => select(known).prop_map(|v| Some(AnyValue {
-                        value: Some(any_value::Value::StringValue(v.to_owned())),
-                    })),
+                    3 => select(known).prop_map(|v| Some(AnyValue { value: Some(v) })),
                     1 => any,
                 ]
                 .boxed()
@@ -272,7 +490,8 @@ fn time() -> BoxedStrategy<u64> {
 }
 
 fn event(finite: bool) -> BoxedStrategy<Event> {
-    (time(), text(), attributes(Location::Span, finite))
+    let name = prop_oneof![1 => select(event_names()), 2 => text()];
+    (time(), name, attributes(Location::Span, finite))
         .prop_map(|(time_unix_nano, name, attributes)| Event {
             time_unix_nano,
             name,
@@ -351,7 +570,9 @@ fn span(finite: bool) -> BoxedStrategy<Span> {
 }
 
 fn scope_spans(finite: bool) -> BoxedStrategy<ScopeSpans> {
-    let scope = (text(), text(), attributes(Location::Span, finite)).prop_map(
+    let name = prop_oneof![1 => select(scope_names()), 1 => text()];
+    let version = prop_oneof![1 => text(), 1 => "[1-9]\\.[0-9]\\.[0-9]"];
+    let scope = (name, version, attributes(Location::Span, finite)).prop_map(
         |(name, version, attributes)| InstrumentationScope {
             name,
             version,

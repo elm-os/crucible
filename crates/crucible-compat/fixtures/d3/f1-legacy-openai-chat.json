@@ -1,0 +1,183 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "traceloop/openllmetry tag 0.53.3 packages/opentelemetry-instrumentation-openai/tests/traces/test_chat.py lines 21-61",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD3, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The finish reason is derived from the per-element finish reason of the indexed output."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "opentelemetry.instrumentation.openai.v1",
+              "version": "0.53.3"
+            },
+            "spans": [
+              {
+                "traceId": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+                "spanId": "0000000000000001",
+                "name": "openai.chat",
+                "kind": 3,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "llm.request.type",
+                    "value": {
+                      "stringValue": "chat"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "llm.headers",
+                    "value": {
+                      "stringValue": "None"
+                    }
+                  },
+                  {
+                    "key": "llm.is_streaming",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "gen_ai.openai.api_base",
+                    "value": {
+                      "stringValue": "https://api.northwind.example/v1/"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.prompt.0.role",
+                    "value": {
+                      "stringValue": "user"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.prompt.0.content",
+                    "value": {
+                      "stringValue": "Tell me a joke about tracing"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "nw-chat-small-0301"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.id",
+                    "value": {
+                      "stringValue": "chatcmpl-invented03"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.openai.system_fingerprint",
+                    "value": {
+                      "stringValue": "fp_invented01"
+                    }
+                  },
+                  {
+                    "key": "llm.usage.total_tokens",
+                    "value": {
+                      "intValue": "29"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "17"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.completion.0.finish_reason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.completion.0.role",
+                    "value": {
+                      "stringValue": "assistant"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.completion.0.content",
+                    "value": {
+                      "stringValue": "A span walks into a trace and asks for context."
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 3,
+      "source_format": "compat",
+      "observation_type": "generation",
+      "provider": "northwind",
+      "model_requested": "nw-chat-small",
+      "model_response": "nw-chat-small-0301",
+      "usage_provided": {
+        "input": 12,
+        "output": 17,
+        "total": 29
+      },
+      "input_json": [
+        {
+          "role": "user",
+          "content": "Tell me a joke about tracing"
+        }
+      ],
+      "output_json": [
+        {
+          "finish_reason": "stop",
+          "role": "assistant",
+          "content": "A span walks into a trace and asks for context."
+        }
+      ],
+      "output": "[{\"finish_reason\":\"stop\",\"role\":\"assistant\",\"content\":\"A span walks into a trace and asks for context.\"}]",
+      "io_shape": "indexed_messages",
+      "finish_reasons": [
+        "stop"
+      ],
+      "model_parameters": {
+        "stream": false
+      },
+      "residual": [
+        "llm.headers",
+        "gen_ai.openai.api_base",
+        "gen_ai.response.id",
+        "gen_ai.openai.system_fingerprint"
+      ]
+    }
+  }
+}
