@@ -24,8 +24,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Decide scope
+        id: scope
+        # The check stays required on every PR; a PR without Rust changes finishes in seconds. Pushes to main always
+        # run every proof.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed=$(git diff --name-only "$BASE"...HEAD)
+          if printf '%s
+' "$changed" | grep -qE '^(crates/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/kani\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No Rust changes in this pull request: proofs skipped (main runs them on every push)."
+          fi
       - name: Discover crates with proofs
         id: discover
+        if: steps.scope.outputs.run == 'true'
         run: |
           crates=$(grep -rl "kani::proof" crates/*/src | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)
           echo "crates: ${crates:-none}"
