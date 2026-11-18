@@ -358,8 +358,10 @@ impl Trace {
         Timestamp::from_unix_nanos(self.start_nanos + offset_nanos).to_string()
     }
 
-    /// Checks the trace as the list and the detail endpoints return it.
-    fn assert_round_trip(&self, list: &Value, detail: &Value, when: &str) {
+    /// Checks the trace as the list and the detail endpoints return it. The list's sums are store sums plus the
+    /// recent-index entries above the watermark, so they can run ahead between an insert and its checkpoint
+    /// (contract 8.9); `settled` says that this window has passed and the sums are exact.
+    fn assert_round_trip(&self, list: &Value, detail: &Value, settled: bool, when: &str) {
         let item = list["data"]
             .as_array()
             .unwrap()
@@ -375,7 +377,10 @@ impl Trace {
             ("error_count", json!(1)),
         ];
         for (field, value) in &expected {
-            assert_eq!(&item[*field], value, "{when}: list {field} in {item}");
+            let sum = matches!(*field, "span_count" | "error_count");
+            if settled || !sum {
+                assert_eq!(&item[*field], value, "{when}: list {field} in {item}");
+            }
         }
         assert_eq!(detail["trace_id"], self.trace_id.as_str(), "{when}");
         assert_eq!(detail["span_count"], 2, "{when}: {detail}");
@@ -704,6 +709,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         trace.assert_round_trip(
             &api.list(),
             &api.detail(trace),
+            false,
             "while the recent index serves it",
         );
     }
@@ -754,28 +760,37 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     for trace in [&protobuf, &json_trace] {
         let api = api(&server);
         let (list, detail) = (api.list(), api.detail(trace));
-        trace.assert_round_trip(&list, &detail, "from the store");
+        trace.assert_round_trip(&list, &detail, true, "from the store");
         for meta in [&list["meta"], &detail["meta"]] {
             assert_eq!(meta["partial"], false, "{meta}");
             assert_eq!(meta["consistency"], "strong", "{meta}");
         }
     }
 
-    // 4. kill -9 in the middle of a run, three times at different points, each followed by a restart on the
-    // same data directory. Everything before a restart is in doubt: sealed batches are probed and shipped
-    // again with their tokens, and the unsealed tail is shipped for the first time.
+    // 4. Stop the server in the middle of a run, three times at different points, each followed by a restart
+    // on the same data directory: kill -9 twice, then SIGTERM under load, which must exit cleanly. Everything
+    // before a restart is in doubt: sealed batches are probed and shipped again with their tokens, and the
+    // unsealed tail is shipped for the first time.
     let mut ledgers = vec![burst.ledger.clone()];
     let mut crashes = Vec::new();
     let mut acked_spans = 20_000;
-    for kill_after_ms in [2_000, 2_650, 3_300] {
+    for (kill_after_ms, graceful) in [(2_000, false), (2_650, false), (3_300, cfg!(unix))] {
         let config = run_config(&server, &load_bearer, 6);
         let (run_env, run_pool) = (env.clone(), pool(env));
         let running =
             tokio::spawn(async move { crucible_loadgen::run(&run_env, run_pool, &config).await });
         tokio::time::sleep(Duration::from_millis(kill_after_ms)).await;
-        server.child.kill().unwrap();
-        let killed = server.child.wait().unwrap();
-        assert!(!killed.success(), "the process was killed, not stopped");
+        if graceful {
+            #[cfg(unix)]
+            assert!(
+                terminate(&mut server),
+                "SIGTERM under load must exit cleanly"
+            );
+        } else {
+            server.child.kill().unwrap();
+            let killed = server.child.wait().unwrap();
+            assert!(!killed.success(), "the process was killed, not stopped");
+        }
         let crashed = running.await.unwrap().unwrap();
         let acked = crashed.report.outcome.acked;
         assert!(
@@ -793,7 +808,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         assert_eq!(
             (check.lost_spans, check.duplicate_spans),
             (0, 0),
-            "after the kill at {kill_after_ms} ms: {check:?}"
+            "after the stop at {kill_after_ms} ms: {check:?}"
         );
         acked_spans += check.acked_spans;
         let log = plain(&std::fs::read_to_string(&server.log).unwrap());
@@ -802,9 +817,10 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
             rest.split_whitespace().next()?.parse::<u64>().ok()
         };
         crashes.push(json!({
-            "kill_after_ms": kill_after_ms,
-            "acked_requests_before_kill": acked,
-            "span_core_rows_at_kill": rows_at_kill,
+            "stopped_after_ms": kill_after_ms,
+            "stopped_with": if graceful { "SIGTERM" } else { "SIGKILL" },
+            "acked_requests_before_stop": acked,
+            "span_core_rows_at_stop": rows_at_kill,
             "ready_again_after_ms": millis(ready_again),
             "wal_last_lsn": recovered("last_lsn"),
             "checkpoint_watermark": recovered("watermark"),
@@ -840,7 +856,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     for trace in [&protobuf, &json_trace] {
         let api = api(&server);
         let (list, detail) = (api.list(), api.detail(trace));
-        trace.assert_round_trip(&list, &detail, "after the restart");
+        trace.assert_round_trip(&list, &detail, true, "after the restarts");
         assert_eq!(detail["meta"]["partial"], false, "{detail}");
     }
 
@@ -874,8 +890,8 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
             "ack_latency_us": burst.report.latency_us,
             "counts": burst_counts,
         },
-        "crashes": crashes,
-        "after_all_crashes": {
+        "restarts": crashes,
+        "after_all_restarts": {
             "acked_spans": acked_spans,
             "checks_per_run": final_checks,
             "counts": crash_counts,

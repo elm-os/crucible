@@ -136,8 +136,8 @@ requests. A section that answers 401 offers the same dialog. The code is `ui/src
 ## The end-to-end test
 
 `crates/crucible/tests/e2e.rs` runs the real binary against a real ClickHouse: OTLP traces as protobuf and JSON come
-back through the API (the time from acknowledgement to visibility is recorded), a 20,000-span burst and a `kill -9`
-in the middle of a second run must lose no acknowledged span and duplicate no row (checked against ClickHouse
+back through the API (the time from acknowledgement to visibility is recorded), a 20,000-span burst and two `kill -9` and one SIGTERM
+in the middle of further runs, each followed by a restart, must lose no acknowledged span and duplicate no row (checked against ClickHouse
 directly, through the load generator's `SequenceReader`), and, when a Chrome binary is given, the embedded UI's
 traces table must show the traces after connecting through the dialog. Without `CRUCIBLE_E2E_CLICKHOUSE_URL` the
 test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real.

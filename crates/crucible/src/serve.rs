@@ -810,7 +810,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crucible_env_prod::WalBackend;
-    use crucible_records::{Lsn, RequestId};
+    use crucible_recent::{WalLocator, WalReadError, WalView as _};
+    use crucible_records::RequestId;
     use crucible_wal_codec::{Compression, ContentOrigin, PreparedFrame, Record, RecordType};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1390,6 +1391,44 @@ mod tests {
             origins.push(request.content_origin);
         }
         assert_eq!(origins, [ContentOrigin::Protobuf, ContentOrigin::Json]);
+
+        // The point read behind a recent-span locator: the frame at its segment and offset, and nothing
+        // anywhere else.
+        let mut replay = wal.replay(Lsn::new(2));
+        let second = replay.next().await.unwrap().unwrap();
+        let (segment, offset) = (second.segment_no(), second.offset());
+        assert_eq!(wal.read_at(segment, offset).await.unwrap(), Some(second));
+        assert_eq!(wal.read_at(segment, offset + 1).await.unwrap(), None);
+        assert_eq!(wal.read_at(segment, 1 << 40).await.unwrap(), None);
+        assert_eq!(wal.read_at(segment + 1, offset).await.unwrap(), None);
+
+        // The recent index re-reads a span through it and the normalizer, inside its project only.
+        let view = WalSpans {
+            wal: wal.clone(),
+            ctx: NormCtx::new(
+                PriceTable::bundled().unwrap(),
+                ShipperConfig::default().caps,
+            ),
+        };
+        let project = crucible_records::ProjectId::parse(PROJECT).unwrap();
+        let locator = |ordinal| WalLocator {
+            segment,
+            offset,
+            ordinal,
+        };
+        let span = view.read_span(project, locator(0)).await.unwrap();
+        assert_eq!(&*span.core.name, "tool call");
+        assert_eq!(span.core.ingestion.lsn, Lsn::new(2));
+        assert_eq!(view.durable_lsn(), Lsn::new(2));
+        let gone = Err(WalReadError::Gone);
+        assert_eq!(view.read_span(project, locator(1)).await, gone);
+        let other = crucible_records::ProjectId::from_bytes([9; 16]);
+        assert_eq!(view.read_span(other, locator(0)).await, gone);
+        let missing = WalLocator {
+            offset: offset + 1,
+            ..locator(0)
+        };
+        assert_eq!(view.read_span(project, missing).await, gone);
     }
 
     #[tokio::test(flavor = "multi_thread")]
