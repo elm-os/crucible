@@ -202,6 +202,10 @@ struct State {
     failing_syncs: u32,
     /// Syncs that still succeed before `failing_syncs` applies.
     passing_syncs: u32,
+    /// Renames fail, for directed tests.
+    failing_renames: bool,
+    /// Directory syncs fail and leave their directory operations pending, for directed tests.
+    failing_dir_syncs: bool,
 }
 
 impl State {
@@ -367,6 +371,8 @@ impl SimDisk {
         state.failing_writes = 0;
         state.failing_syncs = 0;
         state.passing_syncs = 0;
+        state.failing_renames = false;
+        state.failing_dir_syncs = false;
         state.crash_at_op = None;
         state.frozen = false;
         Self::with_state(rng, Arc::new(Trace::new()), state)
@@ -397,6 +403,17 @@ impl SimDisk {
         let mut state = self.shared.lock();
         state.passing_syncs = skip;
         state.failing_syncs = n;
+    }
+
+    /// Makes every rename fail with EIO while `on`.
+    pub fn fail_renames(&self, on: bool) {
+        self.shared.lock().failing_renames = on;
+    }
+
+    /// Makes every directory sync fail with EIO while `on`: the directory operations before it stay pending,
+    /// so a crash may keep or drop them.
+    pub fn fail_dir_syncs(&self, on: bool) {
+        self.shared.lock().failing_dir_syncs = on;
     }
 
     /// Operations started so far.
@@ -598,6 +615,9 @@ impl Disk for SimDisk {
         if !state.dir_exists(dir) {
             return Err(DiskError::NotFound);
         }
+        if state.failing_dir_syncs {
+            return Err(io_error(std::io::ErrorKind::Other, "injected EIO"));
+        }
         let pending = std::mem::take(&mut state.pending_dir_ops);
         let (synced, rest): (Vec<_>, Vec<_>) = pending.into_iter().partition(|op| op.dir() == *dir);
         for op in &synced {
@@ -618,6 +638,9 @@ impl Disk for SimDisk {
         }
         if !state.names.contains_key(from) {
             return Err(DiskError::NotFound);
+        }
+        if state.failing_renames {
+            return Err(io_error(std::io::ErrorKind::Other, "injected EIO"));
         }
         state.dir_op(DirOp::Rename(from.clone(), to.clone()));
         Ok(())
