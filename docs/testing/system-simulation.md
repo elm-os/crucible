@@ -91,7 +91,17 @@ Each defect is behind a `test-mutants` cargo feature that only `crucible-sim` en
 the per-pull-request budget (200 configurations from configuration seed 0, 3 seeds each), and its first catching
 run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must pass without the defect.
 
-MUTANT-TABLE
+| Mutant | Crate | Defect | Caught as | Seed | Config |
+|---|---|---|---|---|---|
+| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace read right after the ack answers `not_found` (86 other runs of the budget report I1 after a crash) | 0 | `0xaeca437a47` |
+| `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x1e574beef1d` |
+| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 14000 | `0x17dced818fe` |
+| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5000 | `0x48461657e2` |
+| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x1c5fa7b02ff` |
+| `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace read right after the ack answers `not_found` (110 other runs report I1) | 0 | `0xaeca437a47` |
+
+Of the 600 runs of the budget, the mutants are caught by 589, 131, 38, 35, 96 and 480 runs, in the order of the
+table.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
@@ -117,7 +127,7 @@ cargo xtask sim run --configs 200 --seeds 3
 cargo xtask sim run --configs 5000 --seeds 1 --tier stress --base 7000 --shard 0/4
 
 # Replay one run and print what the oracle found
-cargo xtask sim replay --seed 17002 --config 0x1e574beef1d
+cargo xtask sim replay --seed 17002 --config 0x139c20f0394
 cargo xtask sim replay --seed 17002                       # the mask the budget pairs with the seed
 cargo xtask sim replay --seed 17002 --tier stress --mutant drop-token
 
@@ -144,4 +154,5 @@ A failing run prints its replay command and the line to append to the corpus; `-
   over 4 shards. The fresh configurations start at the workflow run id;
 - a nightly job runs 5,000 fresh configurations in the stress tier, split the same way.
 
-TIMING
+Measured in the dev container on 3 CPUs with a debug build: the 600 runs of the pull-request budget take about
+70 s, so one shard of 150 runs and the corpus stays far inside the 10 minute target, most of which is the build.

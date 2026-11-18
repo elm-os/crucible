@@ -367,7 +367,9 @@ pub fn report(records: &[RunRecord]) -> String {
     }
     out.push_str(
         "\n## Targets\n\nA trigger raises the rate of a target and a suppressor lowers it; a dimension is listed \
-         when the 95% Wilson\nintervals of the two rates do not overlap. The rates are `on` and `off` in percent.\n\n\
+         when the 95% Wilson\nintervals of the two rates do not overlap. The rates are `on` and `off` in percent.\n\
+         Each cell is its own test, so of the roughly thousand dimension and target pairs a few dozen are listed by\n\
+         chance; a pair that matters shows a large difference and returns in the next log.\n\n\
          | Target | Runs | Triggers | Suppressors |\n|---|---|---|---|\n",
     );
     for name in &names {

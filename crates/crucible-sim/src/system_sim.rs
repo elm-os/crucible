@@ -619,6 +619,7 @@ impl Plan {
             overload_ppm: fault(Dim::ChHangOverload, 300_000),
             overload_micros: (1_000_000, 90_000_000),
             probe_error_ppm: fault(Dim::ChProbeErrors, 50_000),
+            read_error_ppm: fault(Dim::ChReadErrors, 100_000),
             poison_pair_ppm: fault(Dim::ChPoison, 60_000),
             poison_first_in_flight_ppm: 500_000,
             expire_ppm: fault(Dim::WindowExpiry, 700_000) / scale,
@@ -632,7 +633,6 @@ impl Plan {
             } else {
                 (1_000_000, 120_000_000)
             },
-            ..ChFaults::default()
         };
         Self {
             mask,
@@ -1026,9 +1026,6 @@ fn check_error(shared: &Shared, error: &QueryServiceError, permitted: Permitted)
 /// I3: reads every trace of an acknowledged request by id and checks that its spans are there, or that the
 /// response says why they may not be.
 async fn read_back(shared: &Shared, node: &Node, index: usize, permitted: Permitted) {
-    if std::env::var_os("SIM_NO_READS").is_some() {
-        return;
-    } // TEMP
     let request = shared.ledger().requests[index].clone();
     let Some(ctx) = shared.context(request.project) else {
         return;
@@ -1112,9 +1109,6 @@ async fn read_list(
     whole: bool,
     permitted: Permitted,
 ) {
-    if std::env::var_os("SIM_NO_READS").is_some() {
-        return;
-    } // TEMP
     let Some(ctx) = shared.context(project) else {
         return;
     };
