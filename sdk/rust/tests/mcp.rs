@@ -77,6 +77,7 @@ impl ServerHandler for Orders {
                     () = context.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
                 }
             }
+            "panic" => panic!("the handler has a bug"),
             "needs_input" => Ok(match &request.request_state {
                 None => InputRequiredResult::from_request_state(STATE).into(),
                 Some(_) => text("confirmed"),
@@ -165,6 +166,18 @@ async fn legacy_operations_carry_the_wire_keys() {
         .await
         .unwrap_err();
     assert!(thrown.to_string().contains("exploded"), "{thrown}");
+    let panicked = ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(call(
+        "panic",
+        json!({}),
+    )));
+    let options = PeerRequestOptions::with_timeout(Duration::from_millis(500));
+    let no_answer = client
+        .send_request_with_option(panicked, options)
+        .await
+        .unwrap()
+        .await_response()
+        .await;
+    assert!(no_answer.is_err());
     let spans = finish(&collector, client).await;
 
     let initialize = &spans["initialize"];
@@ -226,6 +239,13 @@ async fn legacy_operations_carry_the_wire_keys() {
         throw.status_message,
         "exploded holding [redacted:secret_key]"
     );
+
+    // A handler that panicked never answered; its span still ends, as an unhandled exception.
+    let panic = &spans["tools/call panic"];
+    assert_eq!(panic.attr("error.type"), json!("panic"));
+    assert_eq!(panic.attr("crucible.mcp.error.class"), json!("internal"));
+    assert_eq!(panic.attr("rpc.response.status_code"), json!(null));
+    assert_eq!(panic.status_code, 2);
     crucible_sdk::shutdown().await.unwrap();
 }
 

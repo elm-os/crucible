@@ -141,6 +141,8 @@ pub(crate) struct Outcome {
     pub(crate) cancel: Option<&'static str>,
     /// The transport went away with the operation pending.
     pub(crate) transport: bool,
+    /// The handler panicked: an unhandled exception.
+    pub(crate) panicked: bool,
     /// The JSON-RPC error code of an error response.
     pub(crate) code: Option<i32>,
     /// The error message: the JSON-RPC error message, or the first text block of an `isError` result.
@@ -195,6 +197,9 @@ impl Outcome {
         if self.transport {
             return "transport";
         }
+        if self.panicked {
+            return "internal";
+        }
         if let Some(code) = self.code {
             return match code {
                 -32700 | -32600 | -32601 | -32020 | -32021 | -32022 => "protocol",
@@ -235,6 +240,8 @@ impl Outcome {
         if let Some(code) = self.code {
             kv.push(KeyValue::new(k::ERROR_TYPE, code.to_string()));
             kv.push(KeyValue::new(k::RPC_STATUS_CODE, code.to_string()));
+        } else if self.panicked {
+            kv.push(KeyValue::new(k::ERROR_TYPE, "panic"));
         } else if self.is_error {
             kv.push(KeyValue::new(k::ERROR_TYPE, "tool_error"));
         }

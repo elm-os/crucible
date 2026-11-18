@@ -357,7 +357,7 @@ impl Drop for Op {
         // transport went away with the operation pending (row 3).
         let panicked = std::thread::panicking();
         let outcome = Outcome {
-            code: panicked.then_some(-32603),
+            panicked,
             transport: !panicked,
             message: "the handler did not return".to_owned(),
             ..Outcome::default()

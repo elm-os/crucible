@@ -12,7 +12,9 @@ use opentelemetry_http::hyper::HyperClient;
 use opentelemetry_otlp::{Protocol, WithExportConfig as _, WithHttpConfig as _};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::resource::TelemetryResourceDetector;
-use opentelemetry_sdk::trace::{IdGenerator as _, RandomIdGenerator, Sampler, SdkTracer};
+use opentelemetry_sdk::trace::{
+    IdGenerator as _, RandomIdGenerator, Sampler, SdkTracer, SpanLimits,
+};
 
 use crate::export::{self, Pipeline};
 use crate::keys;
@@ -291,6 +293,8 @@ impl Client {
             // Every span is kept: an unsampled remote parent must not suppress an MCP operation, and
             // OTEL_TRACES_SAMPLER cannot turn sampling off.
             .with_sampler(Sampler::AlwaysOn)
+            // Fixed limits: OTEL_SPAN_*_LIMIT variables cannot drop the keys Crucible reads.
+            .with_span_limits(SpanLimits::default())
             .with_resource(config.resource.clone())
             .with_span_processor(processor)
             .build();
