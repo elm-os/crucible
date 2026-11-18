@@ -143,12 +143,13 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3000 | `0xebd29ab92c5` |
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0xeaeca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x2fe574beef1d` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x911e418a948` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x2911e418a948` |
 
 Of the 600 runs of the budget, the first ten mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and
 178 runs, in the order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a
 repeat, a collection and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run
-is a line of the regression corpus, and six of the nine corpus lines of this defect catch it.
+has the seed of a line of the regression corpus (the corpus line keeps its own mask, without
+`nested_usage`), and six of the nine corpus lines of this defect catch it.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
