@@ -205,7 +205,7 @@ The proxy never writes non-protocol bytes to stdout and never injects content.
 
 | Check | Kind |
 |---|---|
-| Byte identity over seeded chunk splitting with `ProxyCore` hosted in the simulator | Continuous |
+| Byte identity over seeded chunk splitting with `ProxyCore` hosted in a deterministic simulation (`crucible-proxy` tests, 10,000 seeds) | Continuous |
 | Real processes: collector killed or stalled, huge lines, signals and exit codes, overhead at or under 1 ms p99 | Process tests |
 
 ### I12. Recovery is idempotent and bounded
