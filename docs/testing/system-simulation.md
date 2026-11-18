@@ -118,7 +118,8 @@ the two attempts equal, and I7 and the quiescence half of I2 check them in every
   is checkpointed, and nothing is collected while a batch that recovery found waits for its frames
   (`ship_directed.rs`, `a_restart_drops_the_repeats_that_the_first_attempt_dropped`);
 - after a failed collection no frame is admitted until one succeeds, because a removal that is not durable
-  leaves open what a restart will find.
+  leaves open what a restart will find. No directed test covers this rule; only the swarm reaches it, through
+  `disk_sync_errors` and `disk_write_errors`.
 
 Six corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
 the rollups counted a repeat that `span_core` did not hold, or the reverse.
