@@ -1083,31 +1083,44 @@ fn micros(t: Timestamp) -> String {
     format!("{}.{:06}", t.micros() / 1_000_000, t.micros() % 1_000_000)
 }
 
-/// The values the window's lower and upper bound are bound as for a table's time column.
-fn window_bounds(id: TableId, window: TimeWindow) -> (String, [String; 2]) {
+/// The window predicates of one table reference, with `?` for each placeholder: the text that follows the
+/// project predicate, the text that follows the grouping, and the values the placeholders are bound to, in order.
+fn window_clause(id: TableId, window: TimeWindow) -> (String, String, Vec<String>) {
     let def = table(id);
     let time = def.retention.time_column;
     let last = window.to().saturating_add_micros(-1);
     let minute = |t: Timestamp| (t.floor_minute().micros() / 1_000_000).to_string();
+    let date = |t: Timestamp| t.date().to_string();
+    let (mut filter, mut having, mut values) = (String::new(), String::new(), Vec::new());
     match def.column(time).unwrap().ty {
-        Ty::DateTime64 => (
-            format!("{time} >= ? AND {time} < ?"),
-            [micros(window.from()), micros(window.to())],
-        ),
-        Ty::DateTime => (
-            format!("{time} >= ? AND {time} <= ?"),
-            [minute(window.from()), minute(last)],
-        ),
-        Ty::Date => (
-            format!("{time} >= ? AND {time} <= ?"),
-            [window.from().date().to_string(), last.date().to_string()],
-        ),
-        Ty::Saf(..) => (
-            format!("max({time}) >= ? AND min(first_seen) < ?"),
-            [micros(window.from()), micros(window.to())],
-        ),
+        Ty::DateTime64 => {
+            filter = format!(" AND {time} >= ? AND {time} < ?");
+            values.extend([micros(window.from()), micros(window.to())]);
+        }
+        Ty::DateTime => {
+            filter = format!(" AND {time} >= ? AND {time} <= ?");
+            values.extend([minute(window.from()), minute(last)]);
+        }
+        Ty::Date => {
+            filter = format!(" AND {time} >= ? AND {time} <= ?");
+            values.extend([date(window.from()), date(last)]);
+        }
+        Ty::Saf(..) => {
+            having = format!("max({time}) >= ? AND min(first_seen) < ?");
+            values.extend([micros(window.from()), micros(window.to())]);
+        }
         other => panic!("no window for {other}"),
     }
+    // The sort-key bounds.
+    if def.column("start_minute").is_some() {
+        filter.push_str(" AND start_minute >= ? AND start_minute <= ?");
+        values.extend([minute(window.from()), minute(last)]);
+    }
+    if def.column("target_day").is_some() {
+        filter.push_str(" AND target_day >= ? AND target_day <= ?");
+        values.extend([date(window.from()), date(last)]);
+    }
+    (filter, having, values)
 }
 
 /// Checks one statement against its plan. Returns the placeholder-free text.
@@ -1126,46 +1139,47 @@ fn check(plan: &QueryPlan, statement: &Statement) -> Result<String, TestCaseErro
         prop_assert!(indexes.contains(&index), "p{index} is bound and unused");
     }
 
-    // Every table reference is followed at once by the project predicate, bound to the scope.
+    // Every table reference is followed at once by the project predicate, bound to the scope, and then by the
+    // window predicates of that table, bound to the plan's window.
     let tables = plan.root().tables();
     let project = plan.scope().project_id().to_string();
     let mut references = 0;
     for (at, _) in text.match_indices("FROM crucible.") {
         let rest = &text[at + "FROM crucible.".len()..];
         let name = rest.split(' ').next().unwrap();
+        let id = TableId::from_name(name).unwrap();
+        prop_assert!(tables.contains(&id), "{name} is not a table of the plan");
+        let scoped = " WHERE project_id = ?";
         prop_assert!(
-            rest[name.len()..].starts_with(" WHERE project_id = ?"),
+            rest[name.len()..].starts_with(scoped),
             "{name} is read without the project predicate: {text}"
         );
-        let placeholder = text
-            [..at + "FROM crucible.".len() + name.len() + " WHERE project_id = ?".len()]
-            .matches('?')
-            .count()
-            - 1;
+        let after_project = at + "FROM crucible.".len() + name.len() + scoped.len();
+        let placeholder = text[..after_project].matches('?').count() - 1;
         prop_assert_eq!(value(placeholder), project.as_str());
         prop_assert_eq!(&statement.params[indexes[placeholder]].ty, "UUID");
-        prop_assert!(tables.iter().any(|t| t.name() == name), "{name}");
+
+        let (filter, having, bounds) = window_clause(id, plan.window());
+        prop_assert!(
+            text[after_project..].starts_with(&filter),
+            "{name} is read without its window predicate {filter}: {text}"
+        );
+        let first = if having.is_empty() {
+            placeholder + 1
+        } else {
+            // The window of a table whose time column is aggregated applies after its grouping.
+            let found: Vec<usize> = text.match_indices(&having).map(|(at, _)| at).collect();
+            prop_assert_eq!(found.len(), 1, "{} in {}", having, text);
+            prop_assert!(found[0] > after_project);
+            text[..found[0]].matches('?').count()
+        };
+        for (n, bound) in bounds.iter().enumerate() {
+            prop_assert_eq!(value(first + n), bound.as_str(), "bound {} of {}", n, name);
+        }
         references += 1;
     }
     prop_assert_eq!(references, tables.len(), "{}", text);
     prop_assert_eq!(text.matches("project_id").count(), tables.len());
-
-    // Every table reference carries the window predicate, bound to the plan's window.
-    for id in &tables {
-        let (pattern, bounds) = window_bounds(*id, plan.window());
-        // Tables that share a time column share the pattern.
-        let wanted = tables
-            .iter()
-            .filter(|t| window_bounds(**t, plan.window()).0 == pattern)
-            .count();
-        let found: Vec<usize> = text.match_indices(&pattern).map(|(at, _)| at).collect();
-        prop_assert_eq!(found.len(), wanted, "{} in {}", pattern, text);
-        for at in found {
-            let first = text[..at].matches('?').count();
-            prop_assert_eq!(value(first), bounds[0].as_str(), "{}", pattern);
-            prop_assert_eq!(value(first + 1), bounds[1].as_str(), "{}", pattern);
-        }
-    }
     Ok(text)
 }
 

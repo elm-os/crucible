@@ -682,19 +682,25 @@ impl ClickHouseStore {
         Ok(())
     }
 
-    /// The newest mutation of a table. Mutations of a table finish in order, so when this one is done every
-    /// earlier one is, including the one the caller just started.
-    async fn latest_mutation(&self, id: TableId) -> Result<MutationId, StoreError> {
+    /// The newest mutation of one partition of a table. The store's mutations all name their partition, and the
+    /// mutations of one partition finish in order, so when this one is done every earlier one is, including the
+    /// one the caller just started. A mutation of another partition says nothing about it.
+    async fn latest_mutation(
+        &self,
+        id: TableId,
+        partition: PartitionId,
+    ) -> Result<MutationId, StoreError> {
         let mut b = Binder::default();
         let database = b.string(DATABASE);
         let name = b.string(id.name());
+        // The form the server prints for both a lightweight delete and a mask application.
+        let in_partition = b.string(&format!("IN PARTITION ID '{partition}'"));
         let digits = b.string("[0-9]+");
         let answer = self
             .lookup(
                 ServiceIdentity::Maint,
                 &b.finish(format!(
-                    "SELECT mutation_id FROM system.mutations WHERE database = {database} AND table = {name} \
-                     ORDER BY toUInt64OrZero(extract(mutation_id, {digits})) DESC LIMIT 1"
+                    "SELECT mutation_id FROM system.mutations WHERE database = {database} AND table = {name}                      AND position(command, {in_partition}) > 0 ORDER BY toUInt64OrZero(extract(mutation_id,                      {digits})) DESC LIMIT 1"
                 )),
             )
             .await?;
@@ -837,7 +843,7 @@ impl TelemetryStore for ClickHouseStore {
             render::delete(&plan).map_err(|error| StoreError::Internal(error.to_string()))?;
         let settings = DELETE_SETTINGS.map(|(name, value)| (name, value.to_owned()));
         self.change(&statement, &settings).await?;
-        self.latest_mutation(plan.table()).await
+        self.latest_mutation(plan.table(), plan.partition()).await
     }
 
     async fn drop_partition(
@@ -861,15 +867,15 @@ impl TelemetryStore for ClickHouseStore {
         partition: PartitionId,
     ) -> Result<MutationId, StoreError> {
         let mut b = Binder::default();
-        let partition = b.string(&partition.to_string());
+        let id = b.string(&partition.to_string());
         let statement = b.finish(format!(
-            "ALTER TABLE {DATABASE}.{} APPLY DELETED MASK IN PARTITION ID {partition}",
+            "ALTER TABLE {DATABASE}.{} APPLY DELETED MASK IN PARTITION ID {id}",
             table.name()
         ));
         // The mutation runs in the background; `mutation_status` follows it.
         let settings = [("mutations_sync", "0".to_owned())];
         self.change(&statement, &settings).await?;
-        self.latest_mutation(table).await
+        self.latest_mutation(table, partition).await
     }
 
     async fn mutation_status(&self, id: &MutationId) -> Result<MutationStatus, StoreError> {

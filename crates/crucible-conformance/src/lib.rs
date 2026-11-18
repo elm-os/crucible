@@ -292,11 +292,13 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     if single {
         row!("C12 stable error codes", codes::c12(&ctx));
         row!("C13 cancel-on-close and kill", cancel::c13(&ctx));
-        row!(
-            "Typed plans on the real server (8.1, 8.3)",
-            reads::reads(&ctx)
-        );
-        row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
+    }
+    row!(
+        "Typed plans on the real server (8.1, 8.3)",
+        reads::reads(&ctx)
+    );
+    row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
+    if single {
         row!(
             "Service identities see all rows (7.3)",
             startup::visibility(&ctx)

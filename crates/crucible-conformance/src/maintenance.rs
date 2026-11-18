@@ -59,6 +59,9 @@ pub(crate) async fn maintenance(ctx: &Ctx) -> Result<String> {
         Pred::cmp(McpOpsCol::DurationUs, CmpOp::Ge, 4u64),
     )?;
     let delete = ctx.store.delete(plan).await.context("delete")?;
+    expect(!delete.name().is_empty(), || {
+        "the delete's mutation was not found in system.mutations".to_owned()
+    })?;
     let left = (
         count(ctx, table, first).await?,
         count(ctx, table, second).await?,

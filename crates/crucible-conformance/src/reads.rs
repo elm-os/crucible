@@ -13,11 +13,12 @@ use crucible_plan::{
     trace_list, trace_spans, trace_time_bounds,
 };
 use crucible_records::{
-    McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
-    WalEpoch,
+    CivilDate, McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId,
+    Uuid, WalEpoch,
 };
 use crucible_schema::{
-    Column, FactTagsCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol,
+    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpToolInventoryCol, SessionRollupCol,
+    SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol, UserRollupCol,
 };
 
 use crate::blocks::Rows;
@@ -190,6 +191,13 @@ async fn load(ctx: &Ctx) -> Result<Fixture> {
         .each("fact_id", |row| uuid(Uuid::from_bytes([row as u8 + 1; 16])))
         .all("wal_epoch", uuid(epoch.uuid()));
     insert(facts, T0).await?;
+
+    // One tool seen from half an hour before the fixture instant up to it.
+    let inventory = rollup(TableId::McpToolInventory, project, epoch, 0, 1)
+        .each("server_name", |row| text(if row == 0 { "srv" } else { "" }))
+        .all("first_seen", Value::Time(at(-HOUR / 2)))
+        .all("last_seen", Value::Time(T0));
+    insert(inventory, T0).await?;
 
     Ok(Fixture {
         scope: scope(project).map_err(|e| anyhow!("{e}"))?,
@@ -679,6 +687,30 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         format!("a semi-join over its id cap gave {too_many:?}, not query_too_broad")
     })?;
 
+    // The id cap counts the ids of the right side only: a longer literal list on the left does not trip it.
+    let facts = Aggregate::new(
+        TableId::FactTags,
+        Pred::all(),
+        [FactTagsCol::TraceId],
+        vec![Measure::LatestByVersion(FactTagsCol::Version.column_ref())],
+    )?;
+    let listed = Scan::new(
+        TableId::SpanCore,
+        [SpanCoreCol::Name],
+        Pred::is_in(
+            SpanCoreCol::SpanId,
+            (0..5).map(|row| span_id(row).into()).collect(),
+        ),
+    )?;
+    let join = SemiJoin::new(listed, SpanCoreCol::TraceId, Node::Aggregate(facts), 2)?;
+    same(
+        "a semi-join at its id cap with a longer literal list",
+        &rows(ctx, plan(QueryClass::List, Node::SemiJoin(join)))
+            .await?
+            .len(),
+        &5,
+    )?;
+
     let latest = Aggregate::new(
         TableId::FactTags,
         Pred::all(),
@@ -694,7 +726,139 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             vec![trace_bytes(1), uuid(Uuid::from_bytes([3; 16]))],
         ],
     )?;
-    Ok(plans + 14)
+    Ok(plans + 15)
+}
+
+/// The remaining statement shapes: every rollup table grouped and ungrouped, the window that applies after
+/// grouping, and every time-series step. A read without rows still returns the header the adapter checks
+/// against the plan, so each of these proves that the statement parses and has the plan's result types.
+async fn shape_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
+    let scope = f.scope;
+    let mut plans = 0;
+    let rollups: [(TableId, ColumnRef, Measure); 5] = [
+        (
+            TableId::SessionRollup,
+            SessionRollupCol::SessionId.column_ref(),
+            Measure::Max(SessionRollupCol::LastSeen.column_ref()),
+        ),
+        (
+            TableId::UserRollup,
+            UserRollupCol::UserId.column_ref(),
+            Measure::Sum(UserRollupCol::SpanCount.column_ref()),
+        ),
+        (
+            TableId::McpDeploys,
+            McpDeploysCol::ServerName.column_ref(),
+            Measure::Min(McpDeploysCol::FirstSeen.column_ref()),
+        ),
+        (
+            TableId::TraceStats,
+            TraceStatsCol::RowDay.column_ref(),
+            Measure::PickMerge(TraceStatsCol::TraceNamePick.column_ref()),
+        ),
+        (
+            TableId::McpToolInventory,
+            McpToolInventoryCol::ServerName.column_ref(),
+            Measure::Max(McpToolInventoryCol::LastSeen.column_ref()),
+        ),
+    ];
+    for (table, key, measure) in rollups {
+        for group in [vec![key], Vec::new()] {
+            let aggregate = Aggregate::new(table, Pred::all(), group, vec![measure])?;
+            let plan = QueryPlan::new(
+                scope,
+                f.window,
+                QueryClass::Analytics,
+                Node::Aggregate(aggregate),
+            );
+            let found = rows(ctx, plan).await.with_context(|| table.name())?.len();
+            let expected = usize::from(matches!(
+                table,
+                TableId::TraceStats | TableId::McpToolInventory
+            ));
+            same(table.name(), &found, &expected)?;
+            plans += 1;
+        }
+    }
+
+    // The window of a table whose time column is aggregated: the group must overlap it.
+    let seen = async |from: i64, to: i64| -> Result<Vec<Vec<Value>>> {
+        let aggregate = Aggregate::new(
+            TableId::McpToolInventory,
+            Pred::all(),
+            [McpToolInventoryCol::ServerName],
+            vec![Measure::Max(McpToolInventoryCol::LastSeen.column_ref())],
+        )?;
+        let window = TimeWindow::new(at(from), at(to)).map_err(|e| anyhow!("{e}"))?;
+        let plan = QueryPlan::new(
+            scope,
+            window,
+            QueryClass::Analytics,
+            Node::Aggregate(aggregate),
+        );
+        Ok(values(&rows(ctx, plan).await?))
+    };
+    same(
+        "a tool seen inside the window",
+        &seen(-HOUR, HOUR).await?,
+        &vec![vec![text("srv"), Value::Time(T0)]],
+    )?;
+    same(
+        "a tool last seen before the window",
+        &seen(1, HOUR).await?.len(),
+        &0,
+    )?;
+    same(
+        "a tool first seen after the window",
+        &seen(-HOUR, -HOUR / 2).await?.len(),
+        &0,
+    )?;
+    same(
+        "a window that ends as the tool is first seen",
+        &seen(-HOUR, -HOUR / 2 + 1).await?.len(),
+        &1,
+    )?;
+    plans += 4;
+
+    // Every step: the buckets hold the ten counted spans, and a week starts on Monday.
+    let steps = [
+        Step::Minute,
+        Step::FiveMinutes,
+        Step::FifteenMinutes,
+        Step::Hour,
+        Step::Day,
+        Step::Week,
+    ];
+    for step in steps {
+        let counts = Aggregate::new(
+            TableId::SpanMetrics,
+            Pred::all(),
+            [SpanMetricsCol::Environment],
+            vec![Measure::Sum(SpanMetricsCol::Count.column_ref())],
+        )?;
+        let series = TimeSeries::new(counts, SpanMetricsCol::Minute, step, Fill::None)?;
+        let plan = QueryPlan::new(
+            scope,
+            f.window,
+            QueryClass::Analytics,
+            Node::TimeSeries(series),
+        );
+        let buckets = values(&rows(ctx, plan).await.with_context(|| format!("{step:?}"))?);
+        let total: u64 = buckets
+            .iter()
+            .map(|row| match row.as_slice() {
+                [Value::Time(_), Value::String(_), Value::UInt(count)] => *count,
+                _ => 0,
+            })
+            .sum();
+        same(&format!("the counts of the {step:?} buckets"), &total, &10)?;
+        if step == Step::Week {
+            let monday = CivilDate::new(2026, 11, 16).context("a date")?.start();
+            same("the week bucket", &buckets[0][0], &Value::Time(monday))?;
+        }
+        plans += 1;
+    }
+    Ok(plans)
 }
 
 pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
@@ -703,9 +867,13 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
         .await
         .context("endpoint plans")?;
     let nodes = node_plans(ctx, &fixture).await.context("node plans")?;
+    let shapes = shape_plans(ctx, &fixture)
+        .await
+        .context("statement shapes")?;
     Ok(format!(
         "{endpoints} reads of the endpoint builders (trace bounds, trace spans, trace list, span children, \
-         data bounds) and {nodes} reads over every node kind and predicate form returned the expected rows, \
-         each block valid under the plan's output schema"
+         data bounds), {nodes} reads over every node kind and predicate form and {shapes} reads over every \
+         rollup table and time-series step returned the expected rows, each block valid under the plan's \
+         output schema"
     ))
 }

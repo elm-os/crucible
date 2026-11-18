@@ -6,6 +6,7 @@ use crucible_env::{
     EngineFamily, StoreError, StoreFlavour, StoreHealth, StoreVersion, TelemetryStore,
 };
 use crucible_schema::TABLES;
+use crucible_store_clickhouse::{ClickHouseStore, StoreConfig};
 
 use crate::{Ctx, expect};
 
@@ -47,7 +48,29 @@ pub(crate) async fn startup(ctx: &Ctx) -> Result<String> {
         })?;
     }
 
+    // With `clickhouse.flavor = auto` the flavour is read from the server.
+    let auto = ClickHouseStore::new(
+        ctx.env.clone(),
+        StoreConfig {
+            flavour: None,
+            ..ctx.config.clone()
+        },
+    );
+    let detected = auto
+        .detect()
+        .await
+        .context("detect with the flavour unset")?;
+    expect(detected.flavour == ctx.flavour, || {
+        format!(
+            "detected flavour {:?}, expected {:?}",
+            detected.flavour, ctx.flavour
+        )
+    })?;
+
     ctx.store.dedup_selftest().await.context("dedup_selftest")?;
+    auto.dedup_selftest()
+        .await
+        .context("dedup_selftest with the flavour unset")?;
     Ok(format!(
         "version {}.{}, {:?}, {} tables, every setting known, self-test left one row",
         facts.version.major,

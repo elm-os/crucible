@@ -102,6 +102,8 @@ pub enum RenderError {
 pub(crate) struct Binder {
     params: Vec<Param>,
     settings: Vec<(&'static str, String)>,
+    /// The length of the longest literal `In` list bound so far.
+    longest_in: usize,
 }
 
 fn escape(text: &str) -> String {
@@ -290,6 +292,7 @@ fn pred(b: &mut Binder, p: &Pred) -> Result<String, RenderError> {
             )
         }
         Pred::In(column, values) => {
+            b.longest_in = b.longest_in.max(values.len());
             format!("{} IN ({})", column.name(), b.list(column.ty(), values)?)
         }
         Pred::StartsWith(column, prefix) => {
@@ -596,12 +599,15 @@ fn semi_join(b: &mut Binder, scope: &Scope, n: &SemiJoin) -> Result<String, Rend
         }
         right => node(b, scope, right)?,
     };
-    // More ids than the cap fails the statement with the set-size code, which is `query_too_broad`.
-    b.settings
-        .push(("max_rows_in_set", n.max_ids().to_string()));
-    b.settings.push(("set_overflow_mode", "throw".to_owned()));
     let restriction = format!("{} IN ({ids})", n.on().name());
-    scan(b, scope, n.left(), Some(&restriction))
+    let sql = scan(b, scope, n.left(), Some(&restriction))?;
+    // More ids than the cap fails the statement with the set-size code, which is `query_too_broad`. The server
+    // applies the limit to every set of the statement, so it must also admit the longest literal list: the cap
+    // is exact unless a filter lists more values than `max_ids`.
+    let cap = u64::from(n.max_ids()).max(b.longest_in as u64);
+    b.settings.push(("max_rows_in_set", cap.to_string()));
+    b.settings.push(("set_overflow_mode", "throw".to_owned()));
+    Ok(sql)
 }
 
 fn text_search(b: &mut Binder, scope: &Scope, n: &TextSearch) -> Result<String, RenderError> {
