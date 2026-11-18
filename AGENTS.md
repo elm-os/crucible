@@ -43,6 +43,13 @@ Correctness comes from empirical and formal methods, not from review passes:
 
 Do not spawn adversarial-review or QA agents. A change is done when its `[step] -> verify` checks pass.
 
+### Security with good UX
+
+Crucible is self-hosted. Keep the protections that cost users nothing always on (project isolation, hashed secrets,
+constant-time comparisons, parameterized SQL, durability before acknowledgement). Hardening that adds friction is an
+operator switch, never the default: the defaults must work on an internal network over plain HTTP, and every refusal
+says which setting changes it (contracts 1.7).
+
 ### Legal
 Some product behaviour is implemented from an MIT-licensed project under the notice in `THIRD_PARTY_NOTICES`. The
 vendored reference copy lives outside this repository and excludes every directory that project licenses separately.

@@ -129,8 +129,8 @@ every sealed batch is probed before anything is sent again. Tasks get 30 s befor
 
 The UI has no browser sessions until the control plane lands (milestone 4). Until then the shell has a **Connect**
 dialog, labelled as temporary: it takes a project id and that project's secret key, checks them against the API,
-keeps them in the tab's `sessionStorage` (never `localStorage`) and sends the key as `Authorization: Bearer` on API
-requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
+keeps them in this browser's local storage until you press Disconnect (a new tab or a restart does not ask again)
+and sends the key as `Authorization: Bearer` on API requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
 `ui/src/components/shell/connect-dialog.tsx`; sessions will replace both.
 
 ## The end-to-end test
