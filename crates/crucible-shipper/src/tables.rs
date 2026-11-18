@@ -5,9 +5,9 @@
 
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_records::{
-    Fact, FactBody, HeadKind, Histogram, Ingestion, Level, McpSide, NO_HEAD_START, ObservationType,
-    PartitionId, Pick, SessionRollupRow, SpanCore, SpanMetricsRow, SpanRecord, StatusCode, TableId,
-    Timestamp, TraceHead, TraceStatsRow, UserRollupRow, Uuid,
+    Fact, FactBody, HeadKind, Histogram, Ingestion, Level, McpSide, NO_HEAD_START, NanoUsd,
+    ObservationType, PartitionId, Pick, SessionRollupRow, SpanCore, SpanMetricsRow, SpanRecord,
+    StatusCode, TableId, Timestamp, TraceHead, TraceStatsRow, UserRollupRow, Uuid,
 };
 use crucible_schema::{Granularity, OutOfRange, route};
 
@@ -122,6 +122,7 @@ pub fn span_core_row(span: &SpanRecord) -> Vec<Value> {
         Value::bytes(&c.input_sha256.unwrap_or([0; 32])),
         Value::bytes(&c.output_sha256.unwrap_or([0; 32])),
         Value::U64(c.row_digest),
+        Value::flag(c.usage_aggregate),
     ]);
     ingestion(&mut cells, &c.ingestion);
     cells
@@ -237,9 +238,38 @@ pub fn is_error(c: &SpanCore) -> bool {
     c.status_code == StatusCode::Error || c.level == Level::Error
 }
 
+/// The tokens and cost a span adds to the trace, session, user and metrics sums (contracts 3.9 and 3.10): its
+/// own, whatever its type, unless it has a descendant that carries usage or cost ([`SpanCore::counts_usage`]),
+/// in which case nothing: the descendant is counted.
+struct Counted {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    total_cost_nusd: NanoUsd,
+}
+
+fn counted(c: &SpanCore) -> Counted {
+    if c.counts_usage() {
+        Counted {
+            input_tokens: c.input_tokens,
+            output_tokens: c.output_tokens,
+            total_tokens: c.total_tokens,
+            total_cost_nusd: c.total_cost_nusd,
+        }
+    } else {
+        Counted {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            total_cost_nusd: NanoUsd::ZERO,
+        }
+    }
+}
+
 /// The partial one span contributes to its trace's stats (contract 3.9).
 pub fn trace_stats(span: &SpanRecord, is_head: bool) -> TraceStatsRow {
     let c = &span.core;
+    let counted = counted(c);
     let pick = |value: &str| Pick::new(c.is_root, c.end_time, c.span_id, value);
     let is_error = is_error(c);
     TraceStatsRow {
@@ -256,10 +286,10 @@ pub fn trace_stats(span: &SpanRecord, is_head: bool) -> TraceStatsRow {
         generation_count: u64::from(c.observation_type == ObservationType::Generation),
         tool_count: u64::from(c.observation_type == ObservationType::Tool),
         mcp_count: u64::from(c.mcp_side != McpSide::None),
-        total_cost_nusd: c.total_cost_nusd,
-        input_tokens: c.input_tokens,
-        output_tokens: c.output_tokens,
-        total_tokens: c.total_tokens,
+        total_cost_nusd: counted.total_cost_nusd,
+        input_tokens: counted.input_tokens,
+        output_tokens: counted.output_tokens,
+        total_tokens: counted.total_tokens,
         environments: if c.environment.is_empty() {
             Vec::new()
         } else {
@@ -319,6 +349,7 @@ fn histogram(h: &Histogram) -> Value {
 /// session. `trace_count` counts root spans only.
 pub fn session_rollup(span: &SpanRecord) -> Option<SessionRollupRow> {
     let c = &span.core;
+    let counted = counted(c);
     (!c.session_id.is_empty()).then(|| SessionRollupRow {
         project_id: c.project_id,
         day: c.start_time.date(),
@@ -328,10 +359,10 @@ pub fn session_rollup(span: &SpanRecord) -> Option<SessionRollupRow> {
         trace_count: u64::from(c.is_root),
         span_count: 1,
         error_count: u64::from(is_error(c)),
-        input_tokens: c.input_tokens,
-        output_tokens: c.output_tokens,
-        total_tokens: c.total_tokens,
-        total_cost_nusd: c.total_cost_nusd,
+        input_tokens: counted.input_tokens,
+        output_tokens: counted.output_tokens,
+        total_tokens: counted.total_tokens,
+        total_cost_nusd: counted.total_cost_nusd,
         user_ids: if c.user_id.is_empty() {
             Vec::new()
         } else {
@@ -367,6 +398,7 @@ pub fn session_rollup_row(row: &SessionRollupRow) -> Vec<Value> {
 /// `trace_count` counts root spans only.
 pub fn user_rollup(span: &SpanRecord) -> Option<UserRollupRow> {
     let c = &span.core;
+    let counted = counted(c);
     (!c.user_id.is_empty()).then(|| UserRollupRow {
         project_id: c.project_id,
         day: c.start_time.date(),
@@ -376,10 +408,10 @@ pub fn user_rollup(span: &SpanRecord) -> Option<UserRollupRow> {
         trace_count: u64::from(c.is_root),
         span_count: 1,
         error_count: u64::from(is_error(c)),
-        input_tokens: c.input_tokens,
-        output_tokens: c.output_tokens,
-        total_tokens: c.total_tokens,
-        total_cost_nusd: c.total_cost_nusd,
+        input_tokens: counted.input_tokens,
+        output_tokens: counted.output_tokens,
+        total_tokens: counted.total_tokens,
+        total_cost_nusd: counted.total_cost_nusd,
     })
 }
 
@@ -409,6 +441,7 @@ pub fn user_rollup_row(row: &UserRollupRow) -> Vec<Value> {
 /// `completion_start_time - start_time` of generations that carry one.
 pub fn span_metrics(span: &SpanRecord) -> SpanMetricsRow {
     let c = &span.core;
+    let counted = counted(c);
     let mut dur_hist = Histogram::new();
     dur_hist.record(c.duration_us());
     let mut ttft_hist = Histogram::new();
@@ -429,10 +462,10 @@ pub fn span_metrics(span: &SpanRecord) -> SpanMetricsRow {
         release: c.release.clone(),
         count: 1,
         error_count: u64::from(is_error(c)),
-        input_tokens: c.input_tokens,
-        output_tokens: c.output_tokens,
-        total_tokens: c.total_tokens,
-        total_cost_nusd: c.total_cost_nusd,
+        input_tokens: counted.input_tokens,
+        output_tokens: counted.output_tokens,
+        total_tokens: counted.total_tokens,
+        total_cost_nusd: counted.total_cost_nusd,
         dur_hist,
         ttft_hist,
     }
@@ -525,6 +558,17 @@ pub fn derive(
     admission: &Admission,
     granularity: Granularity,
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
+    derive_rows(frame, admission, granularity, false)
+}
+
+/// [`derive`], with the defect of the mutant that counts the usage of aggregate spans when `count_aggregates` is
+/// set: the sums then take every span, while `span_core` keeps the flag.
+pub(crate) fn derive_rows(
+    frame: &NormalizedFrame,
+    admission: &Admission,
+    granularity: Granularity,
+    count_aggregates: bool,
+) -> Result<Vec<RoutedRow>, OutOfRange> {
     let mut out = Vec::with_capacity(frame.spans.len() * 7);
     for (index, span) in frame.spans.iter().enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
@@ -543,6 +587,15 @@ pub fn derive(
         };
         push(TableId::SpanCore, span_core_row(span))?;
         push(TableId::SpanPayload, span_payload_row(span))?;
+        let unflagged;
+        let span = if count_aggregates && span.core.usage_aggregate {
+            let mut copy = span.clone();
+            copy.core.usage_aggregate = false;
+            unflagged = copy;
+            &unflagged
+        } else {
+            span
+        };
         let head_kind = if span.core.is_root {
             Some(HeadKind::Root)
         } else if admission.provisional_heads.contains(&index) {

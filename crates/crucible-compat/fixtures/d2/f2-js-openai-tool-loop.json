@@ -1,0 +1,361 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "Arize-ai/openinference tag python-openinference-semantic-conventions-v0.1.46 js/packages/openinference-instrumentation-openai/test/openai.test.ts lines 441-678",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD2, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The tool calls, the tool names and the tool call count are derived from the output messages."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "@arizeai/openinference-instrumentation-openai",
+              "version": "4.2.0"
+            },
+            "spans": [
+              {
+                "traceId": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+                "spanId": "0000000000000001",
+                "name": "OpenAI Chat Completions",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "input.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "input.value",
+                    "value": {
+                      "stringValue": "{\"model\":\"nw-chat-small\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the forecast?\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_a1\",\"type\":\"function\",\"function\":{\"arguments\":\"{}\",\"name\":\"find_city\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_a1\",\"content\":\"Lisbon\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"find_city\",\"parameters\":{\"type\":\"object\",\"properties\":{}},\"description\":\"Find the city of the user.\"}},{\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}},\"description\":\"Get the forecast for a city.\"}}],\"tool_choice\":\"auto\",\"stream\":false}"
+                    }
+                  },
+                  {
+                    "key": "llm.finish_reason",
+                    "value": {
+                      "stringValue": "tool_calls"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.content",
+                    "value": {
+                      "stringValue": "What is the forecast?"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.role",
+                    "value": {
+                      "stringValue": "user"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.1.message.role",
+                    "value": {
+                      "stringValue": "assistant"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.1.message.tool_calls.0.tool_call.function.arguments",
+                    "value": {
+                      "stringValue": "{}"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.1.message.tool_calls.0.tool_call.function.name",
+                    "value": {
+                      "stringValue": "find_city"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.1.message.tool_calls.0.tool_call.id",
+                    "value": {
+                      "stringValue": "call_a1"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.2.message.content",
+                    "value": {
+                      "stringValue": "Lisbon"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.2.message.role",
+                    "value": {
+                      "stringValue": "tool"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.2.message.tool_call_id",
+                    "value": {
+                      "stringValue": "call_a1"
+                    }
+                  },
+                  {
+                    "key": "llm.invocation_parameters",
+                    "value": {
+                      "stringValue": "{\"model\":\"nw-chat-small\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"find_city\",\"parameters\":{\"type\":\"object\",\"properties\":{}},\"description\":\"Find the city of the user.\"}},{\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}},\"description\":\"Get the forecast for a city.\"}}],\"tool_choice\":\"auto\",\"stream\":false}"
+                    }
+                  },
+                  {
+                    "key": "llm.model_name",
+                    "value": {
+                      "stringValue": "nw-chat-small-0301"
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.role",
+                    "value": {
+                      "stringValue": "assistant"
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments",
+                    "value": {
+                      "stringValue": "{\n  \"city\": \"Lisbon\"\n}"
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.tool_calls.0.tool_call.function.name",
+                    "value": {
+                      "stringValue": "get_forecast"
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.tool_calls.0.tool_call.id",
+                    "value": {
+                      "stringValue": "call_b2"
+                    }
+                  },
+                  {
+                    "key": "llm.provider",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "llm.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.completion",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.prompt",
+                    "value": {
+                      "intValue": "70"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.total",
+                    "value": {
+                      "intValue": "82"
+                    }
+                  },
+                  {
+                    "key": "llm.tools.0.tool.json_schema",
+                    "value": {
+                      "stringValue": "{\"type\":\"function\",\"function\":{\"name\":\"find_city\",\"parameters\":{\"type\":\"object\",\"properties\":{}},\"description\":\"Find the city of the user.\"}}"
+                    }
+                  },
+                  {
+                    "key": "llm.tools.1.tool.json_schema",
+                    "value": {
+                      "stringValue": "{\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}},\"description\":\"Get the forecast for a city.\"}}"
+                    }
+                  },
+                  {
+                    "key": "openinference.span.kind",
+                    "value": {
+                      "stringValue": "LLM"
+                    }
+                  },
+                  {
+                    "key": "output.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "output.value",
+                    "value": {
+                      "stringValue": "{\"id\":\"chatcmpl-invented02\",\"object\":\"chat.completion\",\"created\":1770000100,\"model\":\"nw-chat-small-0301\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_b2\",\"type\":\"function\",\"function\":{\"name\":\"get_forecast\",\"arguments\":\"{\\n  \\\"city\\\": \\\"Lisbon\\\"\\n}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":70,\"completion_tokens\":12,\"total_tokens\":82},\"system_fingerprint\":null}"
+                    }
+                  },
+                  {
+                    "key": "server.address",
+                    "value": {
+                      "stringValue": "api.northwind.example"
+                    }
+                  },
+                  {
+                    "key": "server.port",
+                    "value": {
+                      "intValue": "443"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 2,
+      "observation_type": "generation",
+      "input_json": [
+        {
+          "content": "What is the forecast?",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{}",
+                "name": "find_city"
+              },
+              "id": "call_a1"
+            }
+          ]
+        },
+        {
+          "content": "Lisbon",
+          "role": "tool",
+          "tool_call_id": "call_a1"
+        }
+      ],
+      "output_json": [
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\n  \"city\": \"Lisbon\"\n}",
+                "name": "get_forecast"
+              },
+              "id": "call_b2"
+            }
+          ]
+        }
+      ],
+      "io_shape": "indexed_messages",
+      "tool_calls": [
+        {
+          "id": "call_b2",
+          "name": "get_forecast",
+          "arguments": "{\n  \"city\": \"Lisbon\"\n}"
+        }
+      ],
+      "tool_names": [
+        "get_forecast"
+      ],
+      "tool_call_count": 1,
+      "tool_definitions": [
+        {
+          "json_schema": {
+            "type": "function",
+            "function": {
+              "name": "find_city",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              },
+              "description": "Find the city of the user."
+            }
+          }
+        },
+        {
+          "json_schema": {
+            "type": "function",
+            "function": {
+              "name": "get_forecast",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                }
+              },
+              "description": "Get the forecast for a city."
+            }
+          }
+        }
+      ],
+      "finish_reasons": [
+        "tool_calls"
+      ],
+      "model_response": "nw-chat-small-0301",
+      "provider": "northwind",
+      "usage_provided": {
+        "input": 70,
+        "output": 12,
+        "total": 82
+      },
+      "model_parameters": {
+        "model": "nw-chat-small",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "find_city",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              },
+              "description": "Find the city of the user."
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_forecast",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                }
+              },
+              "description": "Get the forecast for a city."
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "stream": false
+      },
+      "residual": [
+        "input.mime_type",
+        "input.value",
+        "llm.system",
+        "output.mime_type",
+        "output.value",
+        "server.address",
+        "server.port"
+      ]
+    }
+  }
+}

@@ -1,18 +1,23 @@
 //! The mapping traits (contract 10.2) and their one production implementation, [`TableMapper`].
 //!
 //! Stage A depends only on [`SpanMapper`] and [`McpProjector`]. [`TableMapper`] is a thin wrapper over the pure
-//! table-driven engine: `detect` evaluates its table's detection rules and `map` runs the engine for one span. Test
+//! table-driven engine: `detect` evaluates its table's detection rules and `map` runs the engine for one span, with
+//! every dialect table as a layer and its own table as the table of the chosen dialect. Test
 //! doubles may implement the traits; no second production implementation exists.
 //!
 //! The traits live here rather than in `crucible-compat` because they name [`SpanView`], and `crucible-compat` may
 //! depend only on `crucible-records` (contract 1.5).
 
-use crucible_compat::{Confidence, DIALECT_0, DetectOn, DialectTable};
+use crucible_compat::{
+    Confidence, DIALECT_0, DIALECT_1, DIALECT_2, DIALECT_3, DIALECT_4, DIALECT_5, DIALECT_6,
+    DIALECT_7, DialectTable, LAYERS,
+};
 use crucible_otlp::{ResourceView, ScopeView, SpanView};
 use crucible_records::{Level, McpOpRecord, McpToolInventoryRecord, SpanRecord};
 
 use crate::IngestFrame;
 use crate::engine;
+use crate::index::{Index, PRODUCTION};
 
 /// A span as mappers fill it: the record before the request-local forward-fill, defaults, cost, caps and the row
 /// digest. Stage A fills the fields that do not depend on the dialect (ids, times, status, scope, links, the
@@ -22,6 +27,9 @@ pub struct SpanDraft {
     /// The record under construction.
     pub record: SpanRecord,
     /// An explicit level. Without one the level is `error` when the status is `error`, else `default`.
+    ///
+    /// A mapper may also set `input_preview` or `output_preview` on the record: stage A keeps a preview that is
+    /// not empty (a preview with media tokens replaced) and cuts the others from the bodies.
     pub level: Option<Level>,
 }
 
@@ -98,28 +106,26 @@ impl SpanMapper for TableMapper {
         self.table.dialect
     }
 
-    /// The highest confidence among the table's rules that match. The request hint is not a rule: stage A applies
-    /// it before detection.
+    /// The highest confidence among the rules of the table that match; a request hint naming the dialect counts
+    /// as a detection at confidence 60 (contract 10.2).
     fn detect(
         &self,
         _resource: ResourceView<'_>,
         scope: ScopeView<'_>,
         span: &SpanView<'_>,
-        _hints: &Hints,
+        hints: &Hints,
     ) -> Option<Confidence> {
-        self.table
-            .detect
-            .iter()
-            .filter(|rule| match rule.on {
-                DetectOn::ScopeName(name) => name.matches(scope.name()),
-                DetectOn::SpanKey(key) => span.attributes().any(|(k, _)| key.matches(k)),
-            })
-            .map(|rule| rule.confidence)
-            .max()
+        engine::confidence(self.table, scope.name(), span, hints.dialect)
     }
 
+    /// Maps the span with every layer, this table being the table of the chosen dialect. A table outside the
+    /// production layers is mapped alone.
     fn map(&self, ctx: &MapCtx<'_>, span: &SpanView<'_>, out: &mut SpanDraft) {
-        engine::map_span(self.table, ctx, span, out);
+        if LAYERS.iter().any(|layer| core::ptr::eq(*layer, self.table)) {
+            engine::map_span(&PRODUCTION, self.table, ctx, span, out);
+        } else {
+            engine::map_span(&Index::new(&[self.table]), self.table, ctx, span, out);
+        }
     }
 }
 
@@ -133,5 +139,17 @@ impl McpProjector for TableMapper {
     }
 }
 
-/// The native mapper (dialect 0), the only production mapper in this build.
+/// The native mapper (dialect 0).
 pub static NATIVE: TableMapper = TableMapper::new(&DIALECT_0);
+
+/// The production mappers, one per dialect, indexed by dialect id.
+pub static MAPPERS: [TableMapper; 8] = [
+    TableMapper::new(&DIALECT_0),
+    TableMapper::new(&DIALECT_1),
+    TableMapper::new(&DIALECT_2),
+    TableMapper::new(&DIALECT_3),
+    TableMapper::new(&DIALECT_4),
+    TableMapper::new(&DIALECT_5),
+    TableMapper::new(&DIALECT_6),
+    TableMapper::new(&DIALECT_7),
+];

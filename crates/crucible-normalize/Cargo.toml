@@ -13,6 +13,7 @@ crucible-records = { workspace = true }
 crucible-otlp = { workspace = true }
 crucible-compat = { workspace = true }
 bytes = { workspace = true }
+memchr = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

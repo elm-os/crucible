@@ -1,0 +1,73 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: propagated identity keys inside observation metadata, and an in-value media reference token, of langfuse/langfuse-python v5.2.0",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD1, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "One attribute feeds two fields and leaves the residual once. The stored input keeps the media token; the preview shows a placeholder in its place."
+  },
+  "request": {
+    "path": "/api/public/otel/v1/traces",
+    "headers": {
+      "x-langfuse-sdk-name": "python",
+      "x-langfuse-sdk-version": "5.1.0"
+    }
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "langfuse-sdk",
+              "version": "5.1.0"
+            },
+            "spans": [
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000001",
+                "name": "vision",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.metadata.langfuse_user_id",
+                    "value": {
+                      "stringValue": "\"u-1\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.input",
+                    "value": {
+                      "stringValue": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"@@@langfuseMedia:type=image/png|id=Zm9vYmFyYmF6cXV4MTIzNA|source=base64_data_uri@@@\"}}]}]"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 1,
+      "observation_type": "generation",
+      "user_id": "u-1",
+      "metadata": {
+        "langfuse_user_id": "u-1"
+      },
+      "input": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"@@@langfuseMedia:type=image/png|id=Zm9vYmFyYmF6cXV4MTIzNA|source=base64_data_uri@@@\"}}]}]",
+      "input_preview": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what is this?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"[media]\"}}]}]",
+      "residual": []
+    }
+  }
+}

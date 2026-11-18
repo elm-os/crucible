@@ -1,0 +1,352 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "langfuse/langfuse v4.82.0 web/src/__tests__/server/api/otel/otelMapping.servertest.ts lines 211-551",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD1, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The scope version is below the first major that JSON-encodes metadata values, so the quoted metadata values are stored as sent. The root span takes the trace name, user, session, version and public flag of the generation span through the request-local forward-fill; its own trace tags stay."
+  },
+  "request": {
+    "path": "/api/public/otel/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "python"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "opentelemetry"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "1.30.0"
+              }
+            },
+            {
+              "key": "langfuse.environment",
+              "value": {
+                "stringValue": "staging"
+              }
+            },
+            {
+              "key": "langfuse.release",
+              "value": {
+                "stringValue": "2.4.0"
+              }
+            },
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "unknown_service"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "langfuse-sdk",
+              "version": "2.58.1",
+              "attributes": [
+                {
+                  "key": "public_key",
+                  "value": {
+                    "stringValue": "pk-lf-invented"
+                  }
+                }
+              ]
+            },
+            "spans": [
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000001",
+                "name": "my-generation",
+                "kind": 1,
+                "startTimeUnixNano": "1772600767100000000",
+                "endTimeUnixNano": "1772600767400000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.level",
+                    "value": {
+                      "stringValue": "WARNING"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.status_message",
+                    "value": {
+                      "stringValue": "retry budget low"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.input",
+                    "value": {
+                      "stringValue": "[{\"role\": \"user\", \"content\": \"ping\"}]"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.output",
+                    "value": {
+                      "stringValue": "{\"role\": \"assistant\", \"content\": \"pong\"}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.model.name",
+                    "value": {
+                      "stringValue": "atlas-large"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.prompt.name",
+                    "value": {
+                      "stringValue": "greeter"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.prompt.version",
+                    "value": {
+                      "intValue": "3"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.usage_details",
+                    "value": {
+                      "stringValue": "{\"input_tokens\": 210, \"output_tokens\": 34}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.cost_details",
+                    "value": {
+                      "stringValue": "{\"input_tokens\": 0.0003, \"output_tokens\": 0.0011}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.completion_start_time",
+                    "value": {
+                      "stringValue": "\"2026-03-04T05:06:07.250000Z\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.model_parameters",
+                    "value": {
+                      "stringValue": "{\"temperature\": 0.7, \"top_p\": \"0.9\"}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.metadata.key1",
+                    "value": {
+                      "stringValue": "\"alpha\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.metadata.key2",
+                    "value": {
+                      "stringValue": "\"beta\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.name",
+                    "value": {
+                      "stringValue": "nightly-eval"
+                    }
+                  },
+                  {
+                    "key": "user.id",
+                    "value": {
+                      "stringValue": "user-17"
+                    }
+                  },
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "session-4"
+                    }
+                  },
+                  {
+                    "key": "langfuse.version",
+                    "value": {
+                      "stringValue": "build-12"
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.input",
+                    "value": {
+                      "stringValue": "[{\"role\": \"user\", \"content\": \"ping\"}]"
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.output",
+                    "value": {
+                      "stringValue": "{\"role\": \"assistant\", \"content\": \"pong\"}"
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.tags",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "blue"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.public",
+                    "value": {
+                      "boolValue": true
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.metadata.trace-key1",
+                    "value": {
+                      "stringValue": "\"one\""
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.metadata.trace-key2",
+                    "value": {
+                      "stringValue": "\"two\""
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000002",
+                "status": {}
+              },
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000002",
+                "name": "my-span",
+                "kind": 1,
+                "startTimeUnixNano": "1772600767000000000",
+                "endTimeUnixNano": "1772600767500000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "span"
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.tags",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "green"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "langfuse.trace.metadata.trace-key0",
+                    "value": {
+                      "stringValue": "\"zero\""
+                    }
+                  }
+                ],
+                "status": {}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 1,
+      "source_format": "compat",
+      "observation_type": "generation",
+      "level": "warning",
+      "status_message": "retry budget low",
+      "input": "[{\"role\": \"user\", \"content\": \"ping\"}]",
+      "output": "{\"role\": \"assistant\", \"content\": \"pong\"}",
+      "io_shape": "raw",
+      "model_response": "atlas-large",
+      "prompt_name": "greeter",
+      "prompt_version": "3",
+      "usage_provided": {
+        "input": 210,
+        "output": 34
+      },
+      "total_tokens": 244,
+      "cost_provided": {
+        "input": 300000,
+        "output": 1100000
+      },
+      "total_cost_nusd": 1400000,
+      "cost_source": "provided",
+      "completion_start_time": "2026-03-04T05:06:07.250000Z",
+      "model_parameters": null,
+      "metadata": {
+        "key1": "\"alpha\"",
+        "key2": "\"beta\""
+      },
+      "trace_name": "nightly-eval",
+      "user_id": "user-17",
+      "session_id": "session-4",
+      "version": "build-12",
+      "trace_tags": [
+        "blue"
+      ],
+      "trace_public": "public",
+      "trace_metadata": {
+        "trace-key1": "\"one\"",
+        "trace-key2": "\"two\""
+      },
+      "environment": "staging",
+      "release": "2.4.0",
+      "is_root": false,
+      "usage_aggregate": false,
+      "telemetry_sdk_language": "python",
+      "service_name": "unknown_service",
+      "residual": [
+        "langfuse.observation.model_parameters",
+        "langfuse.trace.input",
+        "langfuse.trace.output"
+      ],
+      "resource_residual": []
+    },
+    "0000000000000002": {
+      "compat_dialect": 1,
+      "observation_type": "span",
+      "level": "default",
+      "is_root": true,
+      "trace_tags": [
+        "green"
+      ],
+      "trace_metadata": {
+        "trace-key0": "\"zero\""
+      },
+      "environment": "staging",
+      "release": "2.4.0",
+      "trace_name": "nightly-eval",
+      "user_id": "user-17",
+      "session_id": "session-4",
+      "version": "build-12",
+      "trace_public": "public",
+      "metadata": null,
+      "residual": [],
+      "resource_residual": []
+    }
+  }
+}

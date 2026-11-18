@@ -1,0 +1,164 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: the metrics objects of braintrust-sdk-go commit 31a87dafd05438bdf81aabdb8b548d58af21ee52 trace/contrib/anthropic/traceanthropic_test.go lines 85-140",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others"
+  },
+  "request": {
+    "path": "/otel/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {},
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "llm-1",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"llm\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics",
+                    "value": {
+                      "stringValue": "{\"prompt_tokens\":11,\"completion_tokens\":6,\"tokens\":17}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000002",
+                "name": "llm-2",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"llm\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics",
+                    "value": {
+                      "stringValue": "{\"prompt_tokens\":47,\"completion_tokens\":9,\"tokens\":56,\"prompt_cached_tokens\":40}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000003",
+                "name": "llm-3",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"llm\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics",
+                    "value": {
+                      "stringValue": "{\"prompt_tokens\":260,\"completion_tokens\":14,\"tokens\":274,\"prompt_cache_creation_tokens\":180,\"prompt_cached_tokens\":65}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000004",
+                "name": "llm-4",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"llm\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics",
+                    "value": {
+                      "stringValue": "{\"prompt_tokens\":150,\"completion_tokens\":8,\"tokens\":158,\"prompt_cached_tokens\":30,\"prompt_cache_creation_5m_tokens\":45,\"prompt_cache_creation_1h_tokens\":55}"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "observation_type": "generation",
+      "usage_provided": {
+        "input": 11,
+        "output": 6,
+        "total": 17
+      },
+      "residual": [
+        "braintrust.span_attributes"
+      ]
+    },
+    "0000000000000002": {
+      "usage_provided": {
+        "input": 47,
+        "output": 9,
+        "total": 56,
+        "cache_read": 40
+      },
+      "residual": [
+        "braintrust.span_attributes"
+      ]
+    },
+    "0000000000000003": {
+      "usage_provided": {
+        "input": 260,
+        "output": 14,
+        "total": 274,
+        "cache_read": 65,
+        "cache_write": 180
+      },
+      "residual": [
+        "braintrust.span_attributes"
+      ]
+    },
+    "0000000000000004": {
+      "usage_provided": {
+        "input": 150,
+        "output": 8,
+        "total": 158,
+        "cache_read": 30,
+        "cache_write": 100,
+        "prompt_cache_creation_5m_tokens": 45,
+        "prompt_cache_creation_1h_tokens": 55
+      },
+      "residual": [
+        "braintrust.span_attributes"
+      ]
+    }
+  }
+}

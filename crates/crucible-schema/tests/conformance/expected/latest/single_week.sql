@@ -72,6 +72,7 @@ CREATE TABLE crucible.span_core
     `input_sha256` FixedString(32) CODEC(ZSTD(1)),
     `output_sha256` FixedString(32) CODEC(ZSTD(1)),
     `row_digest` UInt64 CODEC(ZSTD(1)),
+    `usage_aggregate` UInt8 CODEC(ZSTD(1)),
     `wal_epoch` UUID CODEC(ZSTD(1)),
     `batch_seq` UInt64 CODEC(T64, ZSTD(1)),
     `lsn` UInt64 CODEC(T64, ZSTD(1)),
