@@ -2,7 +2,9 @@
 //! (`resolve`, `connect` and, for `https`, `tls_connect`), with a deadline on the `Env` clock, no redirects and a
 //! cap on the response body. Sign-in calls are rare, so connections are not pooled.
 
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -132,5 +134,15 @@ impl NetHttp {
         };
         driver.abort();
         result
+    }
+}
+
+/// The client of the OAuth and OpenID Connect crates.
+impl<'c> oauth2::AsyncHttpClient<'c> for NetHttp {
+    type Error = HttpError;
+    type Future = Pin<Box<dyn Future<Output = Result<Response<Vec<u8>>, HttpError>> + Send + 'c>>;
+
+    fn call(&'c self, request: Request<Vec<u8>>) -> Self::Future {
+        Box::pin(self.send(request))
     }
 }

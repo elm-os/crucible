@@ -109,6 +109,28 @@ pub struct KeyGrant {
     pub import: bool,
 }
 
+impl KeyGrant {
+    /// The scope of a request by this key to `project_id` that needs `permission` (contract 11.6): another
+    /// project is invisible, and a missing scope is too low.
+    pub fn authorize(
+        &self,
+        project_id: ProjectId,
+        permission: crate::roles::ProjectPermission,
+    ) -> Result<crucible_records::ProjectScope, crate::roles::Denied> {
+        if self.principal.scope.project_id() != project_id {
+            return Err(crate::roles::Denied::NotVisible);
+        }
+        let allowed = permission
+            .key_scope()
+            .is_some_and(|scope| self.scopes.has(scope));
+        if allowed {
+            Ok(self.principal.scope)
+        } else {
+            Err(crate::roles::Denied::TooLow)
+        }
+    }
+}
+
 /// The answer to a presented key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeyVerdict {

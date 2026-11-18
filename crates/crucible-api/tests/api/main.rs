@@ -15,6 +15,7 @@ mod world;
 mod document;
 mod endpoints;
 mod errors;
+mod identity;
 
 use std::future::Future;
 use std::sync::Arc;

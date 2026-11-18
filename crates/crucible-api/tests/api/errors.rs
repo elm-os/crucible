@@ -217,7 +217,7 @@ fn unknown_paths_and_methods_are_problems() {
             .assert_problem(404, "not_found");
         let post = send(&api, Method::POST, &path(1, "/data-bounds"), Some(&key())).await;
         post.assert_problem(405, "method_not_allowed");
-        assert_eq!(post.header("allow"), Some("GET, HEAD"));
+        assert_eq!(post.header("allow"), Some("GET,HEAD"));
         // HEAD runs the GET handler without a body.
         let head = send(&api, Method::HEAD, &path(1, "/data-bounds"), Some(&key())).await;
         assert_eq!(head.status, 200);

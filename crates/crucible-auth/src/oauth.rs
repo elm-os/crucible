@@ -128,8 +128,7 @@ fn issuer_of(config: &ProviderConfig) -> &str {
 
 async fn discover(http: &NetHttp, config: &ProviderConfig) -> Result<OidcClient, ProviderError> {
     let issuer = IssuerUrl::new(issuer_of(config).to_owned()).map_err(config_error)?;
-    let client = |request| http.send(request);
-    let metadata = CoreProviderMetadata::discover_async(issuer, &client)
+    let metadata = CoreProviderMetadata::discover_async(issuer, http)
         .await
         .map_err(exchange_error)?;
     Ok(CoreClient::from_provider_metadata(
@@ -209,7 +208,6 @@ pub async fn identify(
     code: &str,
     now: Timestamp,
 ) -> Result<ProviderIdentity, ProviderError> {
-    let client = |request| http.send(request);
     let verifier = PkceCodeVerifier::new(secrets.verifier.clone());
     let code = AuthorizationCode::new(code.to_owned());
     match config.kind {
@@ -217,7 +215,7 @@ pub async fn identify(
             let token = github_client(config)?
                 .exchange_code(code)
                 .set_pkce_verifier(verifier)
-                .request_async(&client)
+                .request_async(http)
                 .await
                 .map_err(exchange_error)?;
             github_identity(http, token.access_token().secret()).await
@@ -228,7 +226,7 @@ pub async fn identify(
                 .exchange_code(code)
                 .map_err(config_error)?
                 .set_pkce_verifier(verifier)
-                .request_async(&client)
+                .request_async(http)
                 .await
                 .map_err(exchange_error)?;
             let id_token = token.id_token().ok_or_else(|| {

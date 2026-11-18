@@ -821,9 +821,11 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "crucible-api-types",
  "crucible-auth",
  "crucible-chfmt",
+ "crucible-control",
  "crucible-cursor",
  "crucible-env",
  "crucible-plan",
@@ -836,6 +838,7 @@ dependencies = [
  "http-body-util",
  "insta",
  "proptest",
+ "serde",
  "serde_json",
  "tower",
  "tracing",
@@ -4886,6 +4889,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "brotli",
+ "crucible-api",
  "crucible-api-types",
  "crucible-sim",
  "flate2",

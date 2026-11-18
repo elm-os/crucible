@@ -187,6 +187,15 @@ impl OrgPermission {
     }
 }
 
+/// Why a project request is refused (contract 11.6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Denied {
+    /// The caller cannot see the project, or a key names another project: 404 `not_found`.
+    NotVisible,
+    /// The project is visible but the role or scope is too low: 403 `forbidden`.
+    TooLow,
+}
+
 /// The rank of an org role: higher is more.
 pub const fn org_rank(role: OrgRole) -> u8 {
     match role {

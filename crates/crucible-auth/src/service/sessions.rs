@@ -10,10 +10,10 @@ use crucible_control::{
     Org, OrgRole, Project, ProjectMembership, ProjectRole, Session, TokenHash, User, UserStatus,
 };
 use crucible_env::Instant;
-use crucible_records::ProjectId;
+use crucible_records::{ProjectId, ProjectScope};
 
 use super::{AuthError, CACHE_FOR, Identity, SESSION_IDLE, TOUCH_EVERY};
-use crate::roles::effective_project_role;
+use crate::roles::{Denied, ProjectPermission, effective_project_role};
 use crate::token;
 
 /// A signed-in user, as one request sees them.
@@ -37,6 +37,20 @@ impl SessionPrincipal {
     /// The user's effective role on a project; `None` when it is not visible to them.
     pub fn project_role(&self, project_id: ProjectId) -> Option<ProjectRole> {
         self.projects.get(&project_id).map(|(_, role)| *role)
+    }
+
+    /// The scope of a request to `project_id` that needs `permission` (contract 11.6): a project the user cannot
+    /// see is invisible, and a role below the permission is too low. The only way a session obtains a scope.
+    pub fn authorize(
+        &self,
+        project_id: ProjectId,
+        permission: ProjectPermission,
+    ) -> Result<ProjectScope, Denied> {
+        let role = self.project_role(project_id).ok_or(Denied::NotVisible)?;
+        if !permission.allowed_for(role) {
+            return Err(Denied::TooLow);
+        }
+        crate::scope::mint(project_id).map_err(|_| Denied::NotVisible)
     }
 }
 
