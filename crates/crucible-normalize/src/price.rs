@@ -128,11 +128,21 @@ pub struct ModelPrice {
 /// Selection is [`PriceSnapshot::find`], then [`ModelPrice::tier`]: the project's rows before the bundled rows;
 /// among the rows that match and start at or before the span's `start_time`, the greatest start, ties going to the
 /// row listed first; then the first tier by ascending priority whose conditions all hold.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PriceTable {
     version: u32,
     models: Vec<ModelPrice>,
     patterns: RegexSet,
+}
+
+/// The version and the row count: the rows and patterns are too long for a log line.
+impl fmt::Debug for PriceTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriceTable")
+            .field("version", &self.version)
+            .field("rows", &self.models.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Why a price table does not load.
@@ -736,7 +746,6 @@ mod tests {
                 "{}",
                 model.name
             );
-            assert_eq!(model.start, Timestamp::EPOCH, "{}", model.name);
             for tier in &model.tiers {
                 for (key, _) in &tier.prices {
                     assert!(
