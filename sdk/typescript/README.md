@@ -3,11 +3,11 @@
 `@elm-os/crucible` sends traces from Node.js agents and MCP servers to a self-hosted Crucible. It has three entry
 points:
 
-| Import | Contents |
-|---|---|
-| `@elm-os/crucible` | `init`, `flush`, `shutdown`, `stats`; agent helpers `withContext` and `observe`; `feedback` (a stub) |
-| `@elm-os/crucible/mcp` | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify` |
-| `@elm-os/crucible/mcp-client` | `instrumentClient` |
+| Import                        | Contents                                                                                             |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `@elm-os/crucible`            | `init`, `flush`, `shutdown`, `stats`; agent helpers `withContext` and `observe`; `feedback` (a stub) |
+| `@elm-os/crucible/mcp`        | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify`     |
+| `@elm-os/crucible/mcp-client` | `instrumentClient`                                                                                   |
 
 Status: the package is not published yet. It will be published to npm as `@elm-os/crucible`; until then it builds
 from this directory and is marked private. It requires Node.js 24. The MCP entry points work with the 2.x line of
@@ -33,17 +33,17 @@ process.on("SIGTERM", async () => {
 
 Spans go to `POST {endpoint}/v1/traces` as OTLP/HTTP protobuf with `Authorization: Bearer <secretKey>`.
 
-| Option | Default | Effect |
-|---|---|---|
-| `endpoint` | `CRUCIBLE_ENDPOINT`, else `http://localhost:4318` | Base URL of the OTLP listener; `/v1/traces` is added unless present |
-| `secretKey` | `CRUCIBLE_SECRET_KEY` | Required; `init` throws without it and says which setting to use |
-| `serviceName`, `serviceVersion` | | Resource `service.name`, `service.version` |
-| `environment` | | Resource `deployment.environment.name` |
-| `release` | | `crucible.release` on every span |
-| `deployId` | | Resource `crucible.deploy.id`; Crucible falls back to the server version |
-| `queueSize` | 2,048 | Spans held for export, including the batch being sent |
-| `flushIntervalMs` | 1,000 | Longest wait before a partial batch is sent |
-| `exportTimeoutMs` | 10,000 | Bound on one export, and on `flush` and `shutdown` |
+| Option                          | Default                                           | Effect                                                                   |
+| ------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
+| `endpoint`                      | `CRUCIBLE_ENDPOINT`, else `http://localhost:4318` | Base URL of the OTLP listener; `/v1/traces` is added unless present      |
+| `secretKey`                     | `CRUCIBLE_SECRET_KEY`                             | Required; `init` throws without it and says which setting to use         |
+| `serviceName`, `serviceVersion` |                                                   | Resource `service.name`, `service.version`                               |
+| `environment`                   |                                                   | Resource `deployment.environment.name`                                   |
+| `release`                       |                                                   | `crucible.release` on every span                                         |
+| `deployId`                      |                                                   | Resource `crucible.deploy.id`; Crucible falls back to the server version |
+| `queueSize`                     | 2,048                                             | Spans held for export, including the batch being sent                    |
+| `flushIntervalMs`               | 1,000                                             | Longest wait before a partial batch is sent                              |
+| `exportTimeoutMs`               | 10,000                                            | Bound on one export, and on `flush` and `shutdown`                       |
 
 The SDK uses its own tracer provider and never registers it globally, so an application's own OpenTelemetry setup
 is left alone. When the application has a context manager registered, Crucible spans nest under the active span
@@ -59,20 +59,22 @@ blocks, whether the collector is up, refusing connections or not answering. `sta
 ```ts
 import { observe, withContext } from "@elm-os/crucible";
 
-await withContext({ sessionId: "conv-42", userId: "u-7", tags: ["beta"], metadata: { plan: "pro" } }, () =>
-  observe("plan trip", { type: "agent" }, async () => {
-    await observe("chat", { type: "generation" }, async (generation) => {
-      const reply = await callModel();
-      generation.update({
-        model: "model-large",
-        provider: "acme",
-        usage: { input: 1200, output: 300, cacheRead: 1000 },
-        cost: { total: "0.0042" },
-        prompt: { name: "trip-planner", version: 3 },
-        output: reply.text,
+await withContext(
+  { sessionId: "conv-42", userId: "u-7", tags: ["beta"], metadata: { plan: "pro" } },
+  () =>
+    observe("plan trip", { type: "agent" }, async () => {
+      await observe("chat", { type: "generation" }, async (generation) => {
+        const reply = await callModel();
+        generation.update({
+          model: "model-large",
+          provider: "acme",
+          usage: { input: 1200, output: 300, cacheRead: 1000 },
+          cost: { total: "0.0042" },
+          prompt: { name: "trip-planner", version: 3 },
+          output: reply.text,
+        });
       });
-    });
-  }),
+    }),
 );
 ```
 
@@ -127,13 +129,13 @@ markNotFound(); // the tool error, or an invalid-params error, means "not found"
 identify({ userId, tenant, handleId }); // merges into the operation's identity
 ```
 
-| Option of `instrument` | Effect |
-|---|---|
-| `capture` | Content capture rules by tool glob, for example `[{ tool: "lookup_*", result: false, maxBytes: 4096 }]` |
-| `handleParams` | Per tool, the argument whose value is the handle id, for example `{ lookup_order: "order_id" }` |
-| `identify` | Called once per inbound message with the transport's `authInfo` and HTTP request; returns an identity |
-| `identity: "none"` | Sends no identity keys at all |
-| `transport` | Overrides the transport label (`stdio`, `streamable_http`, `sse`, `unknown`) |
+| Option of `instrument` | Effect                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- |
+| `capture`              | Content capture rules by tool glob, for example `[{ tool: "lookup_*", result: false, maxBytes: 4096 }]` |
+| `handleParams`         | Per tool, the argument whose value is the handle id, for example `{ lookup_order: "order_id" }`         |
+| `identify`             | Called once per inbound message with the transport's `authInfo` and HTTP request; returns an identity   |
+| `identity: "none"`     | Sends no identity keys at all                                                                           |
+| `transport`            | Overrides the transport label (`stdio`, `streamable_http`, `sse`, `unknown`)                            |
 
 Content capture is off by default. A tool call matching a `capture` rule is sampled (`sampleRate`, default 1)
 before its arguments are read; arguments and results are sent as `gen_ai.tool.call.arguments` and
