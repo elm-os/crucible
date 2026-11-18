@@ -31,6 +31,7 @@ use crucible_wal_codec::{
 use futures::FutureExt;
 
 use crate::disk::{DiskFaults, SimDisk};
+use crate::boot::{BootCounts, Booted, Recovery, recover};
 use crate::runtime::{Host, Sim, run};
 
 /// How hostile the disk is.
@@ -187,37 +188,37 @@ pub struct Outcome {
 
 /// What the seed decides about one run (swarm testing: each feature and fault has its own coin).
 #[derive(Clone, Debug)]
-struct Plan {
-    config: WalConfig,
-    incarnations: u64,
-    clients: u64,
-    compressible: bool,
+pub(crate) struct Plan {
+    pub(crate) config: WalConfig,
+    pub(crate) incarnations: u64,
+    pub(crate) clients: u64,
+    pub(crate) compressible: bool,
     /// Every workload frame has this encoded length.
-    uniform_len: Option<usize>,
-    bursts: bool,
+    pub(crate) uniform_len: Option<usize>,
+    pub(crate) bursts: bool,
     /// Some incarnations crash within a few operations of their recovery.
-    crash_loops: bool,
-    pin_recent: bool,
-    tail_reader: bool,
+    pub(crate) crash_loops: bool,
+    pub(crate) pin_recent: bool,
+    pub(crate) tail_reader: bool,
     /// Some incarnations end with a process stop instead of a crash.
-    clean_stops: bool,
-    crash_in_recovery: bool,
-    double_recovery: bool,
-    wall_offset_micros: i64,
-    wall_steps: bool,
-    faults: DiskFaults,
+    pub(crate) clean_stops: bool,
+    pub(crate) crash_in_recovery: bool,
+    pub(crate) double_recovery: bool,
+    pub(crate) wall_offset_micros: i64,
+    pub(crate) wall_steps: bool,
+    pub(crate) faults: DiskFaults,
 }
 
-fn pick(rng: &dyn Rng, n: u64) -> u64 {
+pub(crate) fn pick(rng: &dyn Rng, n: u64) -> u64 {
     rng.next_u64() % n.max(1)
 }
 
-fn coin(rng: &dyn Rng) -> bool {
+pub(crate) fn coin(rng: &dyn Rng) -> bool {
     rng.next_u64().is_multiple_of(2)
 }
 
 impl Plan {
-    fn draw(rng: &dyn Rng, options: &Options) -> Self {
+    pub(crate) fn draw(rng: &dyn Rng, options: &Options) -> Self {
         let segment_bytes = [8 << 10, 16 << 10, 64 << 10][pick(rng, 3) as usize];
         let max_segments = [6, 12, 48][pick(rng, 3) as usize];
         let retention = [
@@ -500,7 +501,7 @@ impl Oracle {
 /// The logical state a recovery ends in. Two recoveries of one crashed disk must agree on it. The epoch
 /// and segment creation times are left out: a recovery that initialises an empty directory mints them.
 #[derive(Clone, PartialEq, Eq, Debug)]
-struct LogState {
+pub(crate) struct LogState {
     last_lsn: Lsn,
     watermark: Option<Checkpoint>,
     unchecked_seals: Vec<BatchSeal>,
@@ -509,7 +510,7 @@ struct LogState {
 }
 
 impl LogState {
-    fn new(report: &RecoveryReport, log: &BTreeMap<u64, WalFrame>) -> Self {
+    pub(crate) fn new(report: &RecoveryReport, log: &BTreeMap<u64, WalFrame>) -> Self {
         Self {
             last_lsn: report.last_lsn,
             watermark: report.watermark.map(|w| w.checkpoint),
@@ -536,7 +537,7 @@ impl LogState {
 }
 
 /// Reads the whole retained log through the replay API.
-async fn read_log(wal: &Wal, from: Lsn) -> Result<BTreeMap<u64, WalFrame>, String> {
+pub(crate) async fn read_log(wal: &Wal, from: Lsn) -> Result<BTreeMap<u64, WalFrame>, String> {
     let mut replay = wal.replay(from);
     let mut log = BTreeMap::new();
     loop {
@@ -763,108 +764,41 @@ impl Run<'_> {
             })
     }
 
-    /// What one uninterrupted recovery of the disk as it is now yields, computed on a fault-free copy:
-    /// the state, whether a tail was repaired, and how many disk operations the recovery took.
-    async fn reference(&self) -> Result<(LogState, bool, u64), RecoveryError> {
-        let label = format!("wal-sim/reference-{}-{}", self.boots, self.disk.ops());
-        let copy = self.disk.fork(self.sim.rng(&label).as_ref());
-        let host = self.sim.host(&label, &copy, self.plan().wall_offset_micros);
-        let ops_before = copy.ops();
-        let opened = Box::pin(Wal::open(&host.env, self.plan().config.clone())).await;
-        let ops = copy.ops() - ops_before;
-        let state = match opened {
-            Ok((wal, report)) => {
-                let log = read_log(&wal, report.first_retained_lsn())
-                    .await
-                    .unwrap_or_default();
-                let repaired = report.tail_repair.is_some();
-                Ok((LogState::new(&report, &log), repaired, ops))
-            }
-            Err(e) => Err(e),
-        };
-        host.stop().await;
-        state
-    }
-
     /// Recovers the WAL on a new host, through crashes and faults, then checks the result. Also returns
     /// whether the uninterrupted reference recovery had a tail to repair. `None` when a violation ended
     /// the run.
     async fn boot(&mut self) -> Option<(Host, Wal, RecoveryReport, bool)> {
         self.boots += 1;
         let workload_faults = self.disk.faults();
-        let mut reference = None;
-        let mut attempt = 0u64;
-        let (host, wal, report) = loop {
-            // After a stop, a crash during recovery loses what was readable and not durable, so the
-            // reference is taken again after that crash. From then on, and after a crash from the start,
-            // the disk holds durable bytes only and every later attempt must reach the one reference.
-            if reference.is_none() {
-                match self.reference().await {
-                    Ok(state) => reference = Some(state),
-                    Err(e) => {
-                        self.violate(Violation::RecoveryFailed(e));
-                        return None;
-                    }
-                }
-            }
-            let recovery_ops = reference.as_ref().map_or(1, |r| r.2);
-            attempt += 1;
-            // After three failures the faults are healed: a recovery must then succeed.
-            let healed = attempt > 3;
-            if healed {
-                self.disk.set_faults(DiskFaults::default());
-            }
-            let name = format!("wal-sim/boot-{}/attempt-{attempt}", self.boots);
-            let host = self
-                .sim
-                .host(&name, &self.disk, self.plan().wall_offset_micros);
-            if self.plan().crash_in_recovery && !healed && coin(self.rng.as_ref()) {
-                // Anywhere in the recovery, its last operation included.
-                self.disk
-                    .arm_crash_after_ops(1 + pick(self.rng.as_ref(), recovery_ops));
-            }
-            self.shared.oracle().stats.recovery_attempts += 1;
-            let opened = {
-                let mut open = Box::pin(Wal::open(&host.env, self.plan().config.clone())).fuse();
-                let mut crash_point = Box::pin(self.disk.crash_point_reached()).fuse();
-                futures::select_biased! {
-                    opened = open => Some(opened),
-                    () = crash_point => None,
-                }
-            };
-            self.disk.disarm_crash();
-            match opened {
-                Some(Ok((wal, report))) => break (host, wal, report),
-                Some(Err(e)) if healed => {
-                    self.violate(Violation::RecoveryFailed(e));
-                    host.stop().await;
-                    return None;
-                }
-                failed => {
-                    self.event("recovery.retry", &[attempt, u64::from(failed.is_some())]);
-                    self.shared.oracle().stats.recovery_retries += 1;
-                    let errored = failed.is_some();
-                    drop(failed);
-                    if errored && self.plan().clean_stops && coin(self.rng.as_ref()) {
-                        // The process gives up and is started again; the machine stays up, so what
-                        // this attempt wrote is readable and not durable.
-                        self.shared.oracle().stats.stops += 1;
-                        host.stop().await;
-                        self.stopped = true;
-                        reference = None;
-                    } else {
-                        self.shared.oracle().stats.crashes += 1;
-                        host.crash().await;
-                        if std::mem::take(&mut self.stopped) {
-                            reference = None;
-                        }
-                    }
-                }
+        let recovery = Recovery {
+            sim: self.sim,
+            disk: &self.disk,
+            plan: &self.shared.plan,
+            rng: self.rng.as_ref(),
+            boots: self.boots,
+        };
+        let mut counts = BootCounts::default();
+        let booted = recover(&recovery, &mut self.stopped, &mut counts).await;
+        {
+            let stats = &mut self.shared.oracle().stats;
+            stats.recovery_attempts += counts.attempts;
+            stats.recovery_retries += counts.retries;
+            stats.stops += counts.stops;
+            stats.crashes += counts.crashes;
+        }
+        let Booted {
+            host,
+            wal,
+            report,
+            reference,
+            repaired,
+        } = match booted {
+            Ok(booted) => booted,
+            Err(e) => {
+                self.violate(Violation::RecoveryFailed(e));
+                return None;
             }
         };
-
-        self.stopped = false;
-        let (reference, repaired, _) = reference?;
         // The checks read the log back, so they run on a healed disk.
         self.disk.set_faults(DiskFaults::default());
         self.event(

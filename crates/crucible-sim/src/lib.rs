@@ -15,8 +15,11 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+mod boot;
+pub mod ch_model;
 mod disk;
 mod runtime;
+pub mod ship_sim;
 mod trace;
 pub mod wal_sim;
 
