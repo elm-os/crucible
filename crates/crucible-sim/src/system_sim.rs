@@ -41,7 +41,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
-use crucible_auth::{SecretKey, StaticKey, StaticKeys};
+use crucible_auth::{PublicKey, SecretKey, StaticKey, StaticKeys};
 use crucible_chfmt::Compression;
 use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
 use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
@@ -2607,6 +2607,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
             Some(StaticKey {
                 id: ApiKeyId::from_bytes([project as u8 + 0x40; 16]),
                 project_id: project_id(project),
+                public_key: PublicKey::parse(&secret(project).replace("csk_", "cpk_")).ok()?,
                 secret: SecretKey::parse(&secret(project)).ok()?,
             })
         })
