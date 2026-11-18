@@ -2,23 +2,35 @@
 //! `v1.<kid>.<payload>.<mac>` with the node's key ring, bound to the request's project, list, filters, sort and
 //! window, and expiring 24 h after issue. A cursor that does not open for the request is `cursor_invalid`.
 //!
-//! Canonical filter forms, which the filter hash covers: the trace list takes no filter parameters yet, so its
-//! form is empty; the children of a span are selected by the trace and the parent span, so their 24 raw bytes
-//! are the form.
+//! Canonical filter forms, which the filter hash covers: the trace list and the span list hash the canonical
+//! bytes of their list filter (`Filter::canonical_bytes`, empty without a filter); the children of a span are
+//! selected by the trace and the parent span, so their 24 raw bytes are the form; the session and user lists
+//! take no filter, so their form is empty; the sessions of a user are selected by the user, so the bytes of
+//! its id are the form.
 
 use crucible_cursor::{
-    Binding, Cursor, CursorError, FilterHash, KeyRing, Kind, Position, Route, Sort,
+    Binding, Cursor, CursorError, CursorId, FilterHash, IdList, KeyRing, Kind, Position, Route,
+    Sort,
 };
-use crucible_query::{ChildCursor, HeadCursor, PageCursor};
+use crucible_plan::Filter;
+use crucible_query::{ChildCursor, HeadCursor, IdCursor, PageCursor, SpanListCursor};
 use crucible_records::{ProjectId, SpanId, TimeWindow, Timestamp, TraceId};
 
-/// The order of the trace list.
+/// The order of the trace list, the span list and the lists keyed by a text id.
 const TRACE_SORT: Sort = Sort::NewestFirst;
 /// The order of the children of a span.
 const CHILD_SORT: Sort = Sort::OldestFirst;
 
-fn trace_filters() -> FilterHash {
-    FilterHash::of(&[])
+fn list_filters(filter: &Filter) -> FilterHash {
+    FilterHash::from_bytes(filter.hash())
+}
+
+/// The filter form of a list keyed by a text id: the user of the sessions of a user, nothing for the others.
+fn id_filters(list: IdList, scope_id: Option<&str>) -> FilterHash {
+    match (list, scope_id) {
+        (IdList::UserSessions, Some(user_id)) => FilterHash::of(user_id.as_bytes()),
+        _ => FilterHash::of(&[]),
+    }
 }
 
 fn child_filters(trace_id: TraceId, parent: SpanId) -> FilterHash {
@@ -61,19 +73,19 @@ impl Cursors<'_> {
         self.ring.open(text, &binding, self.now)
     }
 
-    /// A trace-list page cursor.
-    pub(crate) fn seal_page(&self, cursor: &PageCursor) -> String {
+    /// A trace-list page cursor, bound to the list's filter.
+    pub(crate) fn seal_page(&self, cursor: &PageCursor, filter: &Filter) -> String {
         let (_, window, as_of, last) = cursor.parts();
         let position = Position::TracePage {
             window,
             as_of,
             last,
         };
-        self.seal(trace_filters(), TRACE_SORT, position)
+        self.seal(list_filters(filter), TRACE_SORT, position)
     }
 
-    /// A live-tail head cursor.
-    pub(crate) fn seal_head(&self, cursor: &HeadCursor) -> String {
+    /// A live-tail head cursor, bound to the list's filter.
+    pub(crate) fn seal_head(&self, cursor: &HeadCursor, filter: &Filter) -> String {
         let (_, window, as_of, wal_epoch, lsn) = cursor.parts();
         let position = Position::TraceHead {
             window,
@@ -81,7 +93,35 @@ impl Cursors<'_> {
             wal_epoch,
             lsn,
         };
-        self.seal(trace_filters(), TRACE_SORT, position)
+        self.seal(list_filters(filter), TRACE_SORT, position)
+    }
+
+    /// A span-list page cursor, bound to the list's filter.
+    pub(crate) fn seal_span_page(&self, cursor: &SpanListCursor, filter: &Filter) -> String {
+        let (_, window, as_of, last) = cursor.parts();
+        let position = Position::SpanPage {
+            window,
+            as_of,
+            last,
+        };
+        self.seal(list_filters(filter), TRACE_SORT, position)
+    }
+
+    /// A page cursor of a list keyed by a text id; `scope_id` is the user of the sessions of a user. `None`
+    /// when the last row's id is longer than a cursor holds, which no stored id is (contract 3.1).
+    pub(crate) fn seal_id_page(
+        &self,
+        list: IdList,
+        scope_id: Option<&str>,
+        cursor: &IdCursor,
+    ) -> Option<String> {
+        let (_, window, (last_seen, id)) = cursor.parts();
+        let position = Position::IdPage {
+            list,
+            window,
+            last: (last_seen, CursorId::new(id.as_bytes())?),
+        };
+        Some(self.seal(id_filters(list, scope_id), TRACE_SORT, position))
     }
 
     /// A span-children cursor.
@@ -95,14 +135,15 @@ impl Cursors<'_> {
         self.seal(child_filters(trace_id, parent), CHILD_SORT, position)
     }
 
-    /// The page cursor of a trace-list request over `window`.
+    /// The page cursor of a trace-list request over `window` with `filter`.
     pub(crate) fn open_page(
         &self,
         text: &str,
         window: TimeWindow,
+        filter: &Filter,
     ) -> Result<PageCursor, CursorError> {
         let list = (Route::TraceList, Kind::Page);
-        let cursor = self.open(text, list, trace_filters(), TRACE_SORT, Some(window))?;
+        let cursor = self.open(text, list, list_filters(filter), TRACE_SORT, Some(window))?;
         match cursor.position {
             Position::TracePage {
                 window,
@@ -118,14 +159,15 @@ impl Cursors<'_> {
         }
     }
 
-    /// The head cursor of a live-tail request over `window`.
+    /// The head cursor of a live-tail request over `window` with `filter`.
     pub(crate) fn open_head(
         &self,
         text: &str,
         window: TimeWindow,
+        filter: &Filter,
     ) -> Result<HeadCursor, CursorError> {
         let list = (Route::TraceList, Kind::Head);
-        let cursor = self.open(text, list, trace_filters(), TRACE_SORT, Some(window))?;
+        let cursor = self.open(text, list, list_filters(filter), TRACE_SORT, Some(window))?;
         match cursor.position {
             Position::TraceHead {
                 window,
@@ -139,6 +181,60 @@ impl Cursors<'_> {
                 wal_epoch,
                 lsn,
             )),
+            _ => Err(CursorError::WrongKind),
+        }
+    }
+
+    /// The page cursor of a span-list request over `window` with `filter`.
+    pub(crate) fn open_span_page(
+        &self,
+        text: &str,
+        window: TimeWindow,
+        filter: &Filter,
+    ) -> Result<SpanListCursor, CursorError> {
+        let list = (Route::SpanList, Kind::Page);
+        let cursor = self.open(text, list, list_filters(filter), TRACE_SORT, Some(window))?;
+        match cursor.position {
+            Position::SpanPage {
+                window,
+                as_of,
+                last,
+            } => Ok(SpanListCursor::from_parts(
+                cursor.project_id,
+                window,
+                as_of,
+                last,
+            )),
+            _ => Err(CursorError::WrongKind),
+        }
+    }
+
+    /// The page cursor of a request for a list keyed by a text id over `window`; `scope_id` is the user of
+    /// the sessions of a user. An id that is not UTF-8 never came from these lists, so it is malformed.
+    pub(crate) fn open_id_page(
+        &self,
+        text: &str,
+        list: IdList,
+        scope_id: Option<&str>,
+        window: TimeWindow,
+    ) -> Result<IdCursor, CursorError> {
+        let route = (list.route(), Kind::Page);
+        let filters = id_filters(list, scope_id);
+        let cursor = self.open(text, route, filters, TRACE_SORT, Some(window))?;
+        match cursor.position {
+            Position::IdPage {
+                window,
+                last: (last_seen, id),
+                ..
+            } => {
+                let id = String::from_utf8(id.as_bytes().to_vec())
+                    .map_err(|_| CursorError::Malformed)?;
+                Ok(IdCursor::from_parts(
+                    cursor.project_id,
+                    window,
+                    (last_seen, id),
+                ))
+            }
             _ => Err(CursorError::WrongKind),
         }
     }
@@ -172,6 +268,7 @@ impl Cursors<'_> {
 #[cfg(test)]
 mod tests {
     use crucible_cursor::{Kid, SigningKey};
+    use crucible_plan::TextField;
     use crucible_records::{Lsn, WalEpoch};
     use proptest::prelude::*;
 
@@ -203,6 +300,7 @@ mod tests {
             as_of: i64,
             start: i64,
             lsn: u64,
+            user in ".{1,40}",
         ) {
             let ring = ring(secret);
             let project = ProjectId::from_bytes(project);
@@ -211,19 +309,20 @@ mod tests {
                 (TraceId::from_bytes(trace), SpanId::from_bytes(span), SpanId::from_bytes(parent));
             let (window, as_of, start) =
                 (window(from, len), Timestamp::from_micros(as_of), Timestamp::from_micros(start));
+            let all = Filter::all();
             let page = PageCursor::from_parts(project, window, as_of, (start, trace.trace_hash(), trace));
             let head = HeadCursor::from_parts(project, window, as_of, WalEpoch::from_bytes(epoch), Lsn::new(lsn));
             let child = ChildCursor::from_parts(project, trace, parent, (start, span));
             let (page_text, head_text, child_text) =
-                (cursors.seal_page(&page), cursors.seal_head(&head), cursors.seal_child(&child));
-            prop_assert_eq!(cursors.open_page(&page_text, window), Ok(page));
-            prop_assert_eq!(cursors.open_head(&head_text, window), Ok(head));
+                (cursors.seal_page(&page, &all), cursors.seal_head(&head, &all), cursors.seal_child(&child));
+            prop_assert_eq!(cursors.open_page(&page_text, window, &all), Ok(page));
+            prop_assert_eq!(cursors.open_head(&head_text, window, &all), Ok(head));
             prop_assert_eq!(cursors.open_child(&child_text, trace, parent), Ok(child));
             prop_assert!(page_text.starts_with("v1.k."));
             // A cursor never opens as another kind.
-            prop_assert_eq!(cursors.open_head(&page_text, window), Err(CursorError::WrongKind));
-            prop_assert_eq!(cursors.open_page(&head_text, window), Err(CursorError::WrongKind));
-            prop_assert_eq!(cursors.open_page(&child_text, window), Err(CursorError::WrongRoute));
+            prop_assert_eq!(cursors.open_head(&page_text, window, &all), Err(CursorError::WrongKind));
+            prop_assert_eq!(cursors.open_page(&head_text, window, &all), Err(CursorError::WrongKind));
+            prop_assert_eq!(cursors.open_page(&child_text, window, &all), Err(CursorError::WrongRoute));
             prop_assert_eq!(
                 cursors.open_child(&page_text, trace, parent),
                 Err(CursorError::WrongRoute)
@@ -234,6 +333,50 @@ mod tests {
                 cursors.open_child(&child_text, trace, other),
                 Err(CursorError::FiltersChanged)
             );
+
+            // List cursors are bound to the list filter's canonical form: an equivalent filter opens them, any
+            // other does not.
+            let by_user = Filter::Text(TextField::UserId, vec![user.clone()]);
+            let shuffled = Filter::And(vec![by_user.clone(), Filter::all()]);
+            let filtered_page = cursors.seal_page(&page, &by_user);
+            prop_assert_eq!(cursors.open_page(&filtered_page, window, &shuffled), Ok(page));
+            prop_assert_eq!(cursors.open_page(&filtered_page, window, &all), Err(CursorError::FiltersChanged));
+            prop_assert_eq!(cursors.open_page(&page_text, window, &by_user), Err(CursorError::FiltersChanged));
+            let filtered_head = cursors.seal_head(&head, &by_user);
+            prop_assert_eq!(cursors.open_head(&filtered_head, window, &all), Err(CursorError::FiltersChanged));
+
+            let spans = SpanListCursor::from_parts(project, window, as_of, (start, span));
+            let spans_text = cursors.seal_span_page(&spans, &by_user);
+            prop_assert_eq!(cursors.open_span_page(&spans_text, window, &by_user), Ok(spans));
+            prop_assert_eq!(cursors.open_span_page(&spans_text, window, &all), Err(CursorError::FiltersChanged));
+            prop_assert_eq!(cursors.open_page(&spans_text, window, &by_user), Err(CursorError::WrongRoute));
+
+            // The lists keyed by a text id: each opens only as its own list, and the sessions of a user only for
+            // that user.
+            let id = IdCursor::from_parts(project, window, (start, user.clone()));
+            for list in [IdList::Sessions, IdList::Users, IdList::UserSessions] {
+                let scope_id = (list == IdList::UserSessions).then_some(user.as_str());
+                let text = cursors.seal_id_page(list, scope_id, &id).unwrap();
+                prop_assert_eq!(cursors.open_id_page(&text, list, scope_id, window), Ok(id.clone()));
+                for other in [IdList::Sessions, IdList::Users, IdList::UserSessions] {
+                    if other != list {
+                        let scope = (other == IdList::UserSessions).then_some(user.as_str());
+                        prop_assert_eq!(
+                            cursors.open_id_page(&text, other, scope, window),
+                            Err(CursorError::WrongRoute)
+                        );
+                    }
+                }
+            }
+            let mine = cursors.seal_id_page(IdList::UserSessions, Some(&user), &id).unwrap();
+            let someone = format!("{user}-else");
+            prop_assert_eq!(
+                cursors.open_id_page(&mine, IdList::UserSessions, Some(&someone), window),
+                Err(CursorError::FiltersChanged)
+            );
+            // An id longer than a cursor holds cannot be sealed.
+            let long = IdCursor::from_parts(project, window, (start, "x".repeat(513)));
+            prop_assert_eq!(cursors.seal_id_page(IdList::Sessions, None, &long), None);
         }
     }
 }

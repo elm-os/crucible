@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{Problem, Saturation, TraceListPage, TraceListParams, usd_from_nanos};
-use crucible_plan::{Pred, TRACE_LIST_MAX_LIMIT};
+use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_LIMIT};
 use crucible_query as query;
 use crucible_query::{TraceListQuery, TraceTailQuery};
 use utoipa::OpenApi;
@@ -15,6 +15,7 @@ use super::cursor_invalid;
 use crate::access::{ApiState, Project};
 use crate::convert::{meta, micros_between};
 use crate::cursor::Cursors;
+use crate::filters::list_filter;
 use crate::params::{Params, check_window};
 use crate::problem::{ApiError, field_error};
 
@@ -31,7 +32,9 @@ pub(super) struct Paths;
 /// List traces
 ///
 /// The traces whose head (the root span, or the earliest span while the root has not arrived) started in the
-/// window, newest first. With `since`, the traces whose head arrived after that head cursor instead.
+/// window, newest first. With `since`, the traces whose head arrived after that head cursor instead. The
+/// filter parameters test the head span's values, except `observation_type` and `metadata`, which keep the
+/// traces with a matching span in the window; a cursor works only with the filters it was issued for.
 #[utoipa::path(
     get,
     path = "/api/v1/projects/{project_id}/traces",
@@ -59,6 +62,7 @@ pub(crate) async fn list_traces(
     let window = params.window();
     let limit = params.limit(TRACE_LIST_MAX_LIMIT);
     let (page, since) = (params.optional("cursor"), params.optional("since"));
+    let filter = list_filter(&mut params);
     params.finish()?;
     let Some(window) = window else {
         return Err(ApiError::validation(rid, Vec::new()));
@@ -71,33 +75,50 @@ pub(crate) async fn list_traces(
         );
         return Err(ApiError::validation(rid, vec![error]));
     }
+    if !span_conditions_fit_one_table(&filter) {
+        let error = field_error(
+            "metadata",
+            "conflict",
+            "`metadata` cannot be combined with `observation_type` on the trace list;              the span list (`GET .../spans`) filters by both",
+        );
+        return Err(ApiError::validation(rid, vec![error]));
+    }
     check_window(rid, window, project.settings.max_window_days)?;
     let cursors = state.cursors(&project);
-    let since = since.map(|text| cursors.open_head(&text, window));
+    let since = since.map(|text| cursors.open_head(&text, window, &filter));
     let since = since.transpose().map_err(cursor_invalid(rid))?;
-    let cursor = page.map(|text| cursors.open_page(&text, window));
+    let cursor = page.map(|text| cursors.open_page(&text, window, &filter));
     let cursor = cursor.transpose().map_err(cursor_invalid(rid))?;
     let service = state.service(rid)?;
     if let Some(since) = since {
         let query = TraceTailQuery {
             window,
-            filter: Pred::all(),
+            filter: filter.clone(),
             limit,
             since,
         };
         let tail = service.trace_list_since(&project.ctx, query).await;
         let tail = tail.map_err(|e| ApiError::query(rid, &e))?;
-        return Ok(Json(trace_tail(&tail, &cursors)));
+        return Ok(Json(trace_tail(&tail, &cursors, &filter)));
     }
     let query = TraceListQuery {
         window,
-        filter: Pred::all(),
+        filter: filter.clone(),
         limit,
         cursor,
     };
     let page = service.trace_list(&project.ctx, query).await;
     let page = page.map_err(|e| ApiError::query(rid, &e))?;
-    Ok(Json(trace_list(&page, &cursors)))
+    Ok(Json(trace_list(&page, &cursors, &filter)))
+}
+
+/// The conditions that heads do not carry are evaluated on one span table, `span_core` or `span_payload`
+/// (`crucible_plan::filtered_trace_list`), which holds when they do not test both `observation_type` and
+/// `metadata`.
+fn span_conditions_fit_one_table(filter: &Filter) -> bool {
+    let (_, on_spans) = filter.split(FilterTarget::TraceHeads);
+    on_spans.unsupported(FilterTarget::SpanCore).is_none()
+        || on_spans.unsupported(FilterTarget::SpanPayload).is_none()
 }
 
 fn list_item(item: &query::TraceListItem) -> wire::TraceListItem {
@@ -127,23 +148,37 @@ fn list_item(item: &query::TraceListItem) -> wire::TraceListItem {
     }
 }
 
-fn trace_list(page: &query::TraceListPage, cursors: &Cursors<'_>) -> wire::TraceListPage {
+fn trace_list(
+    page: &query::TraceListPage,
+    cursors: &Cursors<'_>,
+    filter: &Filter,
+) -> wire::TraceListPage {
     wire::TraceListPage {
         data: page.data.iter().map(list_item).collect(),
-        next_cursor: page.next_cursor.as_ref().map(|c| cursors.seal_page(c)),
+        next_cursor: page
+            .next_cursor
+            .as_ref()
+            .map(|c| cursors.seal_page(c, filter)),
         has_more: page.has_more,
-        head_cursor: page.head_cursor.as_ref().map(|c| cursors.seal_head(c)),
+        head_cursor: page
+            .head_cursor
+            .as_ref()
+            .map(|c| cursors.seal_head(c, filter)),
         new_count: None,
         meta: meta(&page.meta),
     }
 }
 
-fn trace_tail(tail: &query::TraceTail, cursors: &Cursors<'_>) -> wire::TraceListPage {
+fn trace_tail(
+    tail: &query::TraceTail,
+    cursors: &Cursors<'_>,
+    filter: &Filter,
+) -> wire::TraceListPage {
     wire::TraceListPage {
         data: tail.data.iter().map(list_item).collect(),
         next_cursor: None,
         has_more: tail.has_more,
-        head_cursor: Some(cursors.seal_head(&tail.head_cursor)),
+        head_cursor: Some(cursors.seal_head(&tail.head_cursor, filter)),
         new_count: Some(tail.new_count),
         meta: meta(&tail.meta),
     }

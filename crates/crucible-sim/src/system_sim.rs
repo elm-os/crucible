@@ -46,7 +46,7 @@ use crucible_chfmt::Compression;
 use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
 use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
 use crucible_normalize::{IngestFrame, NormCtx, PriceTable, normalize};
-use crucible_plan::{Caller, Pred};
+use crucible_plan::{Caller, Filter};
 use crucible_query::{
     Consistency, Meta, PartialReason, QueryService, QueryServiceError, ReadContext, SpanSource,
     TraceListQuery,
@@ -1524,7 +1524,7 @@ async fn read_list(
     for _ in 0..pages {
         let query = TraceListQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(if whole { 200 } else { 10 }),
             cursor: cursor.take(),
         };

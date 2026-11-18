@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::enums::{HeadKind, Level, StatusCode};
+use crate::enums::{HeadKind, Level, ObservationType, StatusCode};
 use crate::meta::Meta;
 use crate::wire::SafeU64;
 
@@ -30,10 +30,62 @@ pub struct TraceListParams {
     #[ts(optional)]
     pub cursor: Option<String>,
     /// Live tail: the `head_cursor` of a first page or of the previous live-tail response, with the same
-    /// window. Not combined with `cursor`.
+    /// window and filters. Not combined with `cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub since: Option<String>,
+    /// Keep traces whose head span's environment is one of these. Repeat the parameter for several values;
+    /// different parameters must all hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub environment: Option<Vec<String>>,
+    /// Keep traces whose head span's release is one of these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub release: Option<Vec<String>>,
+    /// Keep traces whose head span's version is one of these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub version: Option<Vec<String>>,
+    /// Keep traces whose head span's level is one of these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub level: Option<Vec<Level>>,
+    /// Keep traces with at least one span in the window of one of these types. Cannot be combined with
+    /// `metadata`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub observation_type: Option<Vec<ObservationType>>,
+    /// Keep traces whose head span names one of these users.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub user_id: Option<Vec<String>>,
+    /// Keep traces whose head span names one of these sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub session_id: Option<Vec<String>>,
+    /// Keep traces whose head span carries at least one of these tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub tags: Option<Vec<String>>,
+    /// Keep traces with at least one span in the window whose metadata holds every `key=value` given (split
+    /// at the first `=`). Cannot be combined with `observation_type`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(style = Form, explode)]
+    #[ts(optional)]
+    pub metadata: Option<Vec<String>>,
+    /// Keep traces whose head span's name contains this text, without regard to ASCII case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
 }
 
 /// One trace of the list: its head (the root span, or the earliest span while the root has not arrived) and

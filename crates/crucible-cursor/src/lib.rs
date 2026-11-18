@@ -2,7 +2,8 @@
 //! key ring that signs and verifies it (contract 11.2).
 //!
 //! - **Payload.** [`Cursor`] is what a cursor holds: the project, filter hash, sort and [`Position`] (kind,
-//!   route, window, `as_of` and the sort tuple of the last row, or for a head cursor the `wal_epoch` and LSN),
+//!   route, window, `as_of` and the sort tuple of the last row, or for a head cursor the `wal_epoch` and LSN;
+//!   the lists keyed by a text id carry the id inline as a [`CursorId`] of at most [`MAX_ID_LEN`] bytes),
 //!   with its issue time and an expiry [`CURSOR_TTL_MICROS`] later. [`Cursor::encode`] and [`Cursor::decode`]
 //!   are the versioned binary codec; Kani proves that decoding never panics and that the codec round-trips.
 //! - **Text and MAC.** [`KeyRing::seal`] signs with the active key: HMAC-SHA256 truncated to [`TAG_LEN`]
@@ -20,8 +21,8 @@ mod proofs;
 mod ring;
 
 pub use payload::{
-    Cursor, DecodeError, FilterHash, Kind, MAX_PAYLOAD_LEN, PAYLOAD_VERSION, Payload, Position,
-    Route, Sort,
+    Cursor, CursorId, DecodeError, FilterHash, IdList, Kind, MAX_ID_LEN, MAX_PAYLOAD_LEN,
+    PAYLOAD_VERSION, Payload, Position, Route, Sort,
 };
 pub use ring::{
     Binding, CursorError, InvalidKid, KeyRing, KeyRingError, KeyState, Kid, MAX_KID_LEN,

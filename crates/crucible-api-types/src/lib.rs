@@ -17,18 +17,24 @@ mod data_bounds;
 mod enums;
 mod meta;
 mod problem;
+mod sessions;
+mod span_list;
 mod spans;
 mod trace_detail;
 mod traces;
+mod users;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
 pub use meta::Meta;
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use sessions::{EntityParams, SessionDetail, SessionItem, SessionListParams, SessionPage};
+pub use span_list::{SpanListItem, SpanListPage, SpanListParams};
 pub use spans::{SpanPage, SpanPageParams};
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
+pub use users::{UserDetail, UserItem, UserListParams, UserPage, UserSessionItem, UserSessionPage};
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 
 /// Visits every type the TypeScript client is generated from; `cargo xtask gen-ts` exports each with the
@@ -36,13 +42,23 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 /// not change the output, one file per type.
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<DataBounds>();
+    visitor.visit::<EntityParams>();
     visitor.visit::<Problem>();
+    visitor.visit::<SessionDetail>();
+    visitor.visit::<SessionListParams>();
+    visitor.visit::<SessionPage>();
+    visitor.visit::<SpanListPage>();
+    visitor.visit::<SpanListParams>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<TraceDetail>();
     visitor.visit::<TraceDetailParams>();
     visitor.visit::<TraceListPage>();
     visitor.visit::<TraceListParams>();
+    visitor.visit::<UserDetail>();
+    visitor.visit::<UserListParams>();
+    visitor.visit::<UserPage>();
+    visitor.visit::<UserSessionPage>();
 }
 
 #[cfg(test)]

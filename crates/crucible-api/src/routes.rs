@@ -1,13 +1,16 @@
-//! The telemetry routes of milestone 1 (contract 12.6) and their OpenAPI operations, one module per route group.
+//! The telemetry routes (contract 12.6) and their OpenAPI operations, one module per route group.
 //! Each group exposes its routes and the OpenAPI document of its paths, and is registered here with its `mod`
 //! line, one line in [`router`] and one in [`document`]. Each handler checks its parameters before it asks for
 //! the query service, so a request without a store configured is still authenticated and validated before it
 //! is answered with `telemetry_store_unavailable`.
 
 mod data_bounds;
+mod sessions;
+mod span_list;
 mod spans;
 mod trace_detail;
 mod traces;
+mod users;
 
 use axum::Router;
 use crucible_api_types::ProblemCode;
@@ -24,18 +27,24 @@ use crate::problem::ApiError;
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(data_bounds::routes())
+        .merge(sessions::routes())
+        .merge(span_list::routes())
         .merge(spans::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
+        .merge(users::routes())
 }
 
 /// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
 /// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(data_bounds::Paths::openapi());
+    doc.merge(sessions::Paths::openapi());
+    doc.merge(span_list::Paths::openapi());
     doc.merge(spans::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
+    doc.merge(users::Paths::openapi());
     doc
 }
 

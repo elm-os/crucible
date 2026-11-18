@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crucible_plan::{Pred, TRACE_LIST_MAX_LIMIT, TraceListRequest, trace_list};
+use crucible_plan::{Filter, TRACE_LIST_MAX_LIMIT, TraceListRequest, filtered_trace_list};
 use crucible_recent::{Consistency, ReadState, RecentSpan};
 use crucible_records::{HeadKind, TableId, TimeWindow, TraceId};
 
@@ -104,7 +104,7 @@ impl Read<'_> {
         &self,
         entries: Vec<RecentSpan>,
         state: ReadState,
-        filter: &Pred,
+        filter: &Filter,
         keep: impl Fn(&RecentSpan) -> bool,
     ) -> Result<RecentHeads, QueryServiceError> {
         let entries: Vec<RecentSpan> = self
@@ -112,7 +112,7 @@ impl Read<'_> {
             .into_iter()
             .filter(|span| span.head.is_some() && keep(span))
             .collect();
-        if *filter != Pred::all() {
+        if !filter.is_all() {
             return Ok(RecentHeads {
                 heads: VecDeque::new(),
                 state,
@@ -169,13 +169,15 @@ impl Read<'_> {
         &mut self,
         window: TimeWindow,
         request: TraceListRequest,
+        filter: &Filter,
     ) -> Result<Vec<Candidate>, QueryServiceError> {
-        let plan = trace_list(
+        let plan = filtered_trace_list(
             self.ctx.scope,
             window,
             &self.clamp,
             self.ctx.caller,
             request,
+            filter,
         );
         let rows = self.rows(plan).await?;
         rows.iter()

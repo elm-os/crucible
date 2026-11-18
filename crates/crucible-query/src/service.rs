@@ -20,6 +20,18 @@ pub(crate) fn all_time() -> Result<TimeWindow, QueryServiceError> {
         .map_err(|_| QueryServiceError::Internal("the valid time range is empty".to_owned()))
 }
 
+/// Whether `t` falls on one of the UTC days that a rollup read of `window` selects: from the day of `from` to
+/// the day of the window's last instant (contract 8.3).
+pub(crate) fn on_window_days(window: TimeWindow, t: Timestamp) -> bool {
+    let last = window.to().saturating_add_micros(-1);
+    (window.from().date()..=last.date()).contains(&t.date())
+}
+
+/// `Lagging` when the base is, or when the read left out recent entries the store may not hold yet.
+pub(crate) const fn lagging_if(base: Consistency, left_out: bool) -> Consistency {
+    if left_out { Consistency::Lagging } else { base }
+}
+
 /// The read services over the telemetry store and the recent-span index (contract 8.2, 8.7 and 8.8).
 ///
 /// Every method takes a [`ReadContext`], and so a `ProjectScope` and the project's retention settings. The
@@ -124,6 +136,21 @@ impl Read<'_> {
             spans.retain(|span| span.summary.start_time >= cutoff);
         }
         Ok(spans)
+    }
+
+    /// The recent entries that the store may not hold yet: those above the checkpoint watermark, which a read of
+    /// the store alone (a rollup, or a filter the index cannot evaluate) leaves out, minus what retention has
+    /// expired. The state is taken with the entries.
+    pub(crate) fn unconfirmed(&self) -> Result<(Vec<RecentSpan>, ReadState), QueryServiceError> {
+        let index = &self.service.index;
+        let watermark = index.read_state(self.ctx.scope).watermark;
+        let (entries, state) = index.since(self.ctx.scope, watermark);
+        let entries = self
+            .retained(entries)?
+            .into_iter()
+            .filter(|span| span.lsn > state.watermark)
+            .collect();
+        Ok((entries, state))
     }
 
     /// Ends the read. `from_index` says whether the recent index contributed to the answer: with the store

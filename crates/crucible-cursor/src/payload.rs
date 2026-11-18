@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | payload version, 1 |
 //! | 1 | kind: 1 `page`, 2 `head` |
-//! | 2 | route: 1 trace list, 2 span children |
+//! | 2 | route: 1 trace list, 2 span children, 3 span list, 4 session list, 5 user list, 6 a user's sessions |
 //! | 3 | sort: 1 newest first, 2 oldest first |
 //! | 4..20 | project id |
 //! | 20..36 | filter hash |
@@ -18,10 +18,13 @@
 //! | page, trace list | window `from` and `to`, `as_of`, then the last row's `start_time`, `trace_hash` (`u32`) and `trace_id` | 104 |
 //! | head, trace list | window `from` and `to`, `as_of`, `wal_epoch`, LSN (`u64`) | 100 |
 //! | page, span children | `trace_id`, parent `span_id`, then the last child's `start_time` and `span_id` | 92 |
+//! | page, span list | window `from` and `to`, `as_of`, then the last row's `start_time` and `span_id` | 92 |
+//! | page, session list, user list or a user's sessions | window `from` and `to`, the last row's `last_seen`, then its id: length (`u16`) and bytes | 78 to 590 |
 //!
-//! Decoding accepts exactly what encoding produces: another version, an unknown code, the pair head and span
-//! children, a window that is not `from < to`, or a length other than the layout's is an error. Values the
-//! layout cannot check (the hash, the times) are carried as they are; the MAC is what vouches for them.
+//! Decoding accepts exactly what encoding produces: another version, an unknown code, a head of any list but
+//! the trace list, a window that is not `from < to`, an id longer than [`MAX_ID_LEN`], or a length other than
+//! the layout's is an error. Values the layout cannot check (the hash, the times, the id's bytes) are carried
+//! as they are; the MAC is what vouches for them.
 
 use crucible_records::{Lsn, ProjectId, SpanId, TimeWindow, Timestamp, TraceId, WalEpoch};
 use sha2::{Digest as _, Sha256};
@@ -32,8 +35,23 @@ use crate::ring::Binding;
 /// The payload version this codec writes and reads.
 pub const PAYLOAD_VERSION: u8 = 1;
 
-/// The longest payload: a trace-list page.
-pub const MAX_PAYLOAD_LEN: usize = 104;
+/// The longest id that a page of a list keyed by a text id carries: the cap of `session_id` and `user_id`
+/// (contract 3.1).
+#[cfg(not(kani))]
+pub const MAX_ID_LEN: usize = 512;
+/// Under Kani the cap is the one that makes the longest id page as long as a trace page, so the proofs keep the
+/// bounds they had before ids existed; every id length takes the same code path, and the property tests and
+/// the fuzz target cover ids up to the real cap.
+#[cfg(kani)]
+pub const MAX_ID_LEN: usize = 26;
+
+/// The longest payload: a page of a list keyed by a text id with an id of [`MAX_ID_LEN`] bytes, or a trace
+/// page (104 bytes) when that is longer.
+pub const MAX_PAYLOAD_LEN: usize = if 78 + MAX_ID_LEN > 104 {
+    78 + MAX_ID_LEN
+} else {
+    104
+};
 
 /// The kind of a cursor (contract 12.4).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -69,6 +87,14 @@ pub enum Route {
     TraceList,
     /// `GET projects/{id}/traces/{trace_id}/spans`.
     SpanChildren,
+    /// `GET projects/{id}/spans`.
+    SpanList,
+    /// `GET projects/{id}/sessions`.
+    SessionList,
+    /// `GET projects/{id}/users`.
+    UserList,
+    /// `GET projects/{id}/users/{user_id}/sessions`.
+    UserSessions,
 }
 
 impl Route {
@@ -76,6 +102,10 @@ impl Route {
         match self {
             Self::TraceList => 1,
             Self::SpanChildren => 2,
+            Self::SpanList => 3,
+            Self::SessionList => 4,
+            Self::UserList => 5,
+            Self::UserSessions => 6,
         }
     }
 
@@ -83,8 +113,72 @@ impl Route {
         match code {
             1 => Some(Self::TraceList),
             2 => Some(Self::SpanChildren),
+            3 => Some(Self::SpanList),
+            4 => Some(Self::SessionList),
+            5 => Some(Self::UserList),
+            6 => Some(Self::UserSessions),
             _ => None,
         }
+    }
+}
+
+/// A list whose rows are keyed by a text id and ordered by `(last_seen, id)`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum IdList {
+    /// The session list.
+    Sessions,
+    /// The user list.
+    Users,
+    /// The sessions of one user.
+    UserSessions,
+}
+
+impl IdList {
+    /// The route of the list.
+    pub const fn route(self) -> Route {
+        match self {
+            Self::Sessions => Route::SessionList,
+            Self::Users => Route::UserList,
+            Self::UserSessions => Route::UserSessions,
+        }
+    }
+}
+
+/// The id of the last row of a page of an [`IdList`]: at most [`MAX_ID_LEN`] bytes, held inline so that a
+/// cursor stays a fixed-size value.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CursorId {
+    len: u16,
+    bytes: [u8; MAX_ID_LEN],
+}
+
+impl CursorId {
+    /// The id, when it is at most [`MAX_ID_LEN`] bytes.
+    pub fn new(id: &[u8]) -> Option<Self> {
+        if id.len() > MAX_ID_LEN {
+            return None;
+        }
+        let mut bytes = [0; MAX_ID_LEN];
+        bytes[..id.len()].copy_from_slice(id);
+        Some(Self {
+            len: id.len() as u16,
+            bytes,
+        })
+    }
+
+    /// The id's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+impl core::fmt::Debug for CursorId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "CursorId({:?})",
+            String::from_utf8_lossy(self.as_bytes())
+        )
     }
 }
 
@@ -172,13 +266,34 @@ pub enum Position {
         /// The sort tuple `(start_time, span_id)` of the last child.
         last: (Timestamp, SpanId),
     },
+    /// The next page of the span list.
+    SpanPage {
+        /// The window of the list.
+        window: TimeWindow,
+        /// Fixed by the first page; later pages read only rows that arrived by then.
+        as_of: Timestamp,
+        /// The sort tuple `(start_time, span_id)` of the last row.
+        last: (Timestamp, SpanId),
+    },
+    /// The next page of a list keyed by a text id.
+    IdPage {
+        /// The list.
+        list: IdList,
+        /// The window of the list.
+        window: TimeWindow,
+        /// The sort tuple `(last_seen, id)` of the last row.
+        last: (Timestamp, CursorId),
+    },
 }
 
 impl Position {
     /// The kind of a cursor at this position.
     pub const fn kind(&self) -> Kind {
         match self {
-            Self::TracePage { .. } | Self::ChildPage { .. } => Kind::Page,
+            Self::TracePage { .. }
+            | Self::ChildPage { .. }
+            | Self::SpanPage { .. }
+            | Self::IdPage { .. } => Kind::Page,
             Self::TraceHead { .. } => Kind::Head,
         }
     }
@@ -188,13 +303,18 @@ impl Position {
         match self {
             Self::TracePage { .. } | Self::TraceHead { .. } => Route::TraceList,
             Self::ChildPage { .. } => Route::SpanChildren,
+            Self::SpanPage { .. } => Route::SpanList,
+            Self::IdPage { list, .. } => list.route(),
         }
     }
 
     /// The window of the list, for lists that have one.
     pub const fn window(&self) -> Option<TimeWindow> {
         match self {
-            Self::TracePage { window, .. } | Self::TraceHead { window, .. } => Some(*window),
+            Self::TracePage { window, .. }
+            | Self::TraceHead { window, .. }
+            | Self::SpanPage { window, .. }
+            | Self::IdPage { window, .. } => Some(*window),
             Self::ChildPage { .. } => None,
         }
     }
@@ -311,6 +431,26 @@ impl Cursor {
                 w.time(start);
                 w.put(span.as_bytes());
             }
+            Position::SpanPage {
+                window,
+                as_of,
+                last: (start, span),
+            } => {
+                w.window(window);
+                w.time(as_of);
+                w.time(start);
+                w.put(span.as_bytes());
+            }
+            Position::IdPage {
+                window,
+                last: (last_seen, id),
+                ..
+            } => {
+                w.window(window);
+                w.time(last_seen);
+                w.put(&id.len.to_be_bytes());
+                w.put(id.as_bytes());
+            }
         }
         Payload {
             bytes: w.bytes,
@@ -353,7 +493,22 @@ impl Cursor {
                 parent: SpanId::from_bytes(r.array()?),
                 last: (r.time()?, SpanId::from_bytes(r.array()?)),
             },
-            (Kind::Head, Route::SpanChildren) => return Err(DecodeError::Value),
+            (Kind::Page, Route::SpanList) => Position::SpanPage {
+                window: r.window()?,
+                as_of: r.time()?,
+                last: (r.time()?, SpanId::from_bytes(r.array()?)),
+            },
+            (Kind::Page, Route::SessionList) => r.id_page(IdList::Sessions)?,
+            (Kind::Page, Route::UserList) => r.id_page(IdList::Users)?,
+            (Kind::Page, Route::UserSessions) => r.id_page(IdList::UserSessions)?,
+            (
+                Kind::Head,
+                Route::SpanChildren
+                | Route::SpanList
+                | Route::SessionList
+                | Route::UserList
+                | Route::UserSessions,
+            ) => return Err(DecodeError::Value),
         };
         if !r.0.is_empty() {
             return Err(DecodeError::Length);
@@ -426,5 +581,22 @@ impl Reader<'_> {
 
     fn window(&mut self) -> Result<TimeWindow, DecodeError> {
         TimeWindow::new(self.time()?, self.time()?).map_err(|_| DecodeError::Value)
+    }
+
+    fn id_page(&mut self, list: IdList) -> Result<Position, DecodeError> {
+        let window = self.window()?;
+        let last_seen = self.time()?;
+        let len = usize::from(u16::from_be_bytes(self.array()?));
+        if len > MAX_ID_LEN {
+            return Err(DecodeError::Value);
+        }
+        let (id, rest) = self.0.split_at_checked(len).ok_or(DecodeError::Length)?;
+        self.0 = rest;
+        let id = CursorId::new(id).ok_or(DecodeError::Value)?;
+        Ok(Position::IdPage {
+            list,
+            window,
+            last: (last_seen, id),
+        })
     }
 }

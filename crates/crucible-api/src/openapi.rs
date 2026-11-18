@@ -34,7 +34,11 @@ impl Modify for ProjectKey {
         license(name = "MIT"),
     ),
     modifiers(&ProjectKey),
-    tags((name = "traces", description = "Traces, their spans and the project's data bounds.")),
+    tags(
+        (name = "sessions", description = "Sessions: the spans that share a session id, aggregated."),
+        (name = "traces", description = "Traces, their spans and the project's data bounds."),
+        (name = "users", description = "Users: the spans that share a user id, aggregated, and their sessions."),
+    ),
 )]
 struct ApiDoc;
 

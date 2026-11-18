@@ -3,14 +3,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crucible_plan::{Pred, Value};
+use crucible_plan::{Filter, TextField, Value};
 use crucible_query::{
     Consistency, HeadCursor, MinuteRange, PageCursor, PartialReason, QueryServiceError,
     TraceListItem, TraceListPage, TraceListQuery, TraceTail, TraceTailQuery,
 };
 use crucible_recent::SpanEntry;
 use crucible_records::{HeadKind, Lsn, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
-use crucible_schema::TraceHeadsCol;
 
 use crate::store::stored_row;
 use crate::world::{DAY, EPOCH, NOW, World, ctx, project, run, span, trace};
@@ -33,7 +32,7 @@ fn at(ms: i64) -> Timestamp {
 fn page(world: &World, limit: u32, cursor: Option<PageCursor>) -> TraceListPage {
     let query = TraceListQuery {
         window: window(),
-        filter: Pred::all(),
+        filter: Filter::all(),
         limit: Some(limit),
         cursor,
     };
@@ -43,7 +42,7 @@ fn page(world: &World, limit: u32, cursor: Option<PageCursor>) -> TraceListPage 
 fn tail(world: &World, since: HeadCursor) -> TraceTail {
     let query = TraceTailQuery {
         window: window(),
-        filter: Pred::all(),
+        filter: Filter::all(),
         limit: Some(10),
         since,
     };
@@ -312,7 +311,7 @@ fn a_filtered_list_reads_the_store_only_and_says_when_that_trails() {
     let filtered = |world: &World| {
         let query = TraceListQuery {
             window: window(),
-            filter: Pred::eq(TraceHeadsCol::UserId, "ada"),
+            filter: Filter::Text(TextField::UserId, vec!["ada".to_owned()]),
             limit: None,
             cursor: None,
         };
@@ -348,7 +347,7 @@ fn cursors_are_bound_to_their_project_and_window() {
     let list = |cursor, window| {
         let query = TraceListQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(2),
             cursor: Some(cursor),
         };
@@ -368,7 +367,7 @@ fn cursors_are_bound_to_their_project_and_window() {
     let since = |since, window| {
         let query = TraceTailQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: None,
             since,
         };
@@ -388,7 +387,7 @@ fn cursors_are_bound_to_their_project_and_window() {
     for limit in [0, 201] {
         let query = TraceListQuery {
             window: window(),
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(limit),
             cursor: None,
         };
@@ -403,7 +402,7 @@ fn with_the_store_down_the_list_answers_from_the_index_or_fails() {
     world.store.set_unavailable(true);
     let query = || TraceListQuery {
         window: window(),
-        filter: Pred::all(),
+        filter: Filter::all(),
         limit: None,
         cursor: None,
     };
