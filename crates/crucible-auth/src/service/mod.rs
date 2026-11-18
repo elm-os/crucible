@@ -17,7 +17,7 @@ pub use account::{NewSession, SetupLink};
 pub use admin::{
     ApiKeyChange, InvitationCreated, KeyCreated, OrgChange, ProviderChange, ProviderInput,
 };
-pub use provider_flow::{CallbackQuery, FlowFailure, FlowStart, SignedIn};
+pub use provider_flow::{CallbackQuery, FlowFailure, FlowStart, SignInView, SignedIn};
 pub use sessions::{SessionPrincipal, SessionVerdict};
 
 use crate::csrf::Origins;
@@ -165,6 +165,8 @@ pub struct Identity {
     sessions: sessions::Cache,
     config: IdentityConfig,
     http: NetHttp,
+    /// The last sign-in view read from Postgres, served while Postgres is unreachable.
+    last_view: std::sync::Mutex<Option<SignInView>>,
 }
 
 impl std::fmt::Debug for Identity {
@@ -196,6 +198,7 @@ impl Identity {
             keys,
             sessions: sessions::Cache::default(),
             config,
+            last_view: std::sync::Mutex::new(None),
         })
     }
 

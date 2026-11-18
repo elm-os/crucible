@@ -500,11 +500,44 @@ fn keys_made_through_the_api_work_at_once_and_stop_at_once() {
         call(&p.router, Method::GET, &bounds, &key, None, &[])
             .await
             .assert_problem(401, "unauthenticated");
-        // During a Postgres outage an unknown key is 503 with Retry-After, and a known one keeps working.
+        // During a Postgres outage an open session survives a page reload: the sign-in mode and the session both
+        // answer, from this node's last read and its session cache.
+        let owner_view = call(
+            &p.router,
+            Method::GET,
+            "/api/v1/auth/providers",
+            &As::Nobody,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(owner_view.status, StatusCode::OK);
         p.model.set_faults(PgFaults {
             unavailable_ppm: 1_000_000,
             ..PgFaults::default()
         });
+        env.clock.sleep(std::time::Duration::from_secs(6)).await;
+        let reload = call(
+            &p.router,
+            Method::GET,
+            "/api/v1/auth/providers",
+            &As::Nobody,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(reload.status, StatusCode::OK, "{:#}", reload.body);
+        let session = call(
+            &p.router,
+            Method::GET,
+            "/api/v1/auth/session",
+            &p.owner,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(session.status, StatusCode::OK, "{:#}", session.body);
+        // During a Postgres outage an unknown key is 503 with Retry-After, and a known one keeps working.
         env.clock.sleep(crucible_auth::OUTAGE_AFTER).await;
         let unknown = call(
             &p.router,

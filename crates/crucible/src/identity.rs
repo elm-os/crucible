@@ -74,8 +74,22 @@ fn hash_permits() -> usize {
         .min(4)
 }
 
-/// Starts the key feed, the `last_used_at` writes and the first-run setup link.
-pub(crate) fn start(env: &Env, identity: &Arc<Identity>, store: Arc<dyn ControlStore>) {
+/// Starts the key feed, the `last_used_at` writes and the first-run setup link, after the Postgres migrations
+/// when `migrate` asks for them. Each retries until Postgres answers, so a node starts while Postgres is down.
+pub(crate) fn start(env: &Env, identity: &Arc<Identity>, control: &Control, migrate: bool) {
+    if migrate {
+        let (env2, control) = (env.clone(), control.clone());
+        env.spawn("postgres-migrate", async move {
+            while let Err(error) = control.migrate_postgres(&env2).await {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "the Postgres migrations did not run; retrying"
+                );
+                env2.clock.sleep(SETUP_RETRY).await;
+            }
+        });
+    }
+    let store: Arc<dyn ControlStore> = Arc::new(control.store.clone());
     let keys = Arc::clone(identity.keys());
     env.spawn(
         "key-feed",

@@ -304,7 +304,12 @@ pub(crate) async fn session_info(
     identity: &Identity,
     principal: &SessionPrincipal,
 ) -> Result<wire::SessionInfo, AuthError> {
-    let providers = identity.sign_in_providers().await?;
+    // During a Postgres outage the session still answers, from the cache, with the providers this node last read.
+    let providers = identity
+        .sign_in_view()
+        .await
+        .map(|view| view.providers)
+        .unwrap_or_default();
     let session = &principal.session;
     Ok(wire::SessionInfo {
         user: wire::SessionUser {

@@ -180,6 +180,7 @@ fn sessions_expire_idle_and_absolute_and_survive_an_outage_within_the_grace() {
         let session = owner(&identity).await;
         let token = session.token.as_str().to_owned();
         valid(identity.session(&token).await);
+        identity.sign_in_view().await.unwrap();
 
         // Postgres goes away: the cached session keeps working for the grace, then the node says 503.
         model.set_faults(PgFaults {
@@ -192,6 +193,8 @@ fn sessions_expire_idle_and_absolute_and_survive_an_outage_within_the_grace() {
             identity.login("owner@example.com", PASSWORD).await,
             Err(AuthError::Unavailable)
         ));
+        // The sign-in view is served from the last read, so a reload during the outage still finds sign-in.
+        assert!(!identity.sign_in_view().await.unwrap().setup_required);
         env.clock.sleep(OUTAGE_GRACE).await;
         assert!(matches!(
             identity.session(&token).await,
@@ -385,9 +388,34 @@ fn keys_work_at_once_and_stop_at_once() {
                 .revoked_at
                 .is_some()
         );
+        // Deleting a project revokes its keys at once.
+        let other = identity
+            .create_key(project.id, None, None, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            identity.keys().check_secret(&other.secret),
+            KeyVerdict::Valid(_)
+        ));
+        identity
+            .delete_project(project.id, project.version)
+            .await
+            .unwrap();
+        assert_eq!(
+            identity.keys().check_secret(&other.secret),
+            KeyVerdict::Invalid
+        );
+        assert!(
+            identity
+                .api_keys(project.id)
+                .await
+                .unwrap()
+                .iter()
+                .all(|k| k.revoked_at.is_some())
+        );
         // A taken slug is a conflict that says what to do.
         assert!(matches!(
-            identity.create_project("Again", "agents").await,
+            identity.create_project("Again", "default").await,
             Err(AuthError::Conflict(_))
         ));
     });

@@ -825,14 +825,12 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Some(postgres) => Some(Control::new(env, postgres)?),
         None => None,
     };
-    // With a control plane, identity serves sessions and the Postgres keys. Its tables must exist first.
+    // With a control plane, identity serves sessions and the Postgres keys. Until its tables exist and the key
+    // snapshot has loaded, the node is not ready and ingest stays closed; listeners still bind.
     let identity = match &control {
         Some(control) => {
-            if migrate {
-                control.migrate_postgres(env).await?;
-            }
             let identity = crate::identity::build(env, &config, control)?;
-            crate::identity::start(env, &identity, Arc::new(control.store.clone()));
+            crate::identity::start(env, &identity, control, migrate);
             Some(identity)
         }
         None => None,

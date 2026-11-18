@@ -197,11 +197,12 @@ impl Identity {
         let touched_at = session
             .idle_expires_at
             .saturating_add_micros(-micros(SESSION_IDLE));
-        if now.micros() - touched_at.micros() >= micros(TOUCH_EVERY) {
-            let idle = self.later(SESSION_IDLE).min(session.absolute_expires_at);
-            if store.sessions().touch(&hash, idle).await.unwrap_or(false) {
-                session.idle_expires_at = idle;
-            }
+        let idle = self.later(SESSION_IDLE).min(session.absolute_expires_at);
+        if now.micros() - touched_at.micros() >= micros(TOUCH_EVERY)
+            && idle > session.idle_expires_at
+            && store.sessions().touch(&hash, idle).await.unwrap_or(false)
+        {
+            session.idle_expires_at = idle;
         }
         Ok(Some(SessionPrincipal {
             token_hash: hash,

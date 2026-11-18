@@ -618,19 +618,52 @@ impl Identity {
         Ok(project)
     }
 
-    /// Deletes a project (a soft delete); `expected` is the `If-Match` version.
+    /// Deletes a project (a soft delete); `expected` is the `If-Match` version. Its keys are revoked in the same
+    /// transaction, so they stop working here at once and on every node through the key feed.
     pub async fn delete_project(&self, id: ProjectId, expected: u64) -> Result<(), AuthError> {
         let mut project = self.live_project(id).await?;
         let version = check_version(project.version, Some(expected))?;
-        project.deleted_at = Some(self.now());
+        let now = self.now();
+        project.deleted_at = Some(now);
         project.version += 1;
-        if !self
+        let revoked: Vec<ApiKey> = self
             .store
-            .projects()
-            .update_if_version(&project, version)
+            .api_keys()
+            .list(id)
             .await?
-        {
+            .into_iter()
+            .filter(|key| key.revoked_at.is_none())
+            .map(|mut key| {
+                key.revoked_at = Some(now);
+                key.version += 1;
+                key
+            })
+            .collect();
+        let writes = revoked.clone();
+        let deleted = transaction(self.store.as_ref(), move |tx| {
+            Box::pin(async move {
+                if !tx.projects().update_if_version(&project, version).await? {
+                    return Ok(false);
+                }
+                for key in &writes {
+                    let changed = tx
+                        .api_keys()
+                        .update_if_version(key, key.version - 1, KeyChangeKind::Revoked)
+                        .await?;
+                    if !changed {
+                        // A key changed since it was read: nothing is applied, and the caller retries.
+                        return Err(crucible_control::TxError::SerializationFailure);
+                    }
+                }
+                Ok(true)
+            })
+        })
+        .await?;
+        if !deleted {
             return Err(AuthError::PreconditionFailed);
+        }
+        for key in &revoked {
+            self.keys.apply_local(key);
         }
         self.forget_sessions();
         Ok(())

@@ -17,6 +17,17 @@ use crate::next_path::safe_next;
 use crate::oauth::{FlowSecrets, ProviderConfig, authorize_url, identify};
 use crate::token::{self, Token};
 
+/// What the sign-in page offers (`GET auth/providers`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SignInView {
+    /// The providers people can sign in with.
+    pub providers: Vec<crucible_control::AuthProvider>,
+    /// Whether password sign-in is on.
+    pub password_login_enabled: bool,
+    /// Whether no owner exists yet.
+    pub setup_required: bool,
+}
+
 /// Where the start redirect goes, with the flow cookie's value. `Debug` shows neither: both carry the state.
 pub struct FlowStart {
     /// The provider's authorization URL.
@@ -125,6 +136,34 @@ impl Identity {
             .into_iter()
             .filter(|p| p.enabled)
             .collect())
+    }
+
+    /// What the sign-in page offers. While Postgres is unreachable the last view read on this node is served, so
+    /// a page reload during an outage still finds the sign-in mode (contract 11.4: open sessions keep working).
+    pub async fn sign_in_view(&self) -> Result<SignInView, AuthError> {
+        let read = async {
+            let org = self.org().await?;
+            Ok::<_, AuthError>(SignInView {
+                providers: self.sign_in_providers().await?,
+                password_login_enabled: org
+                    .as_ref()
+                    .is_none_or(|org| org.settings.password_login_enabled),
+                setup_required: org.is_none(),
+            })
+        };
+        let last = || {
+            self.last_view
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        match read.await {
+            Ok(view) => {
+                *last() = Some(view.clone());
+                Ok(view)
+            }
+            Err(AuthError::Unavailable) => last().clone().ok_or(AuthError::Unavailable),
+            Err(error) => Err(error),
+        }
     }
 
     async fn provider_config(

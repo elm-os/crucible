@@ -91,16 +91,15 @@ async fn signed_in(
     security(()),
 )]
 pub(crate) async fn get_providers(public: Public) -> Result<Json<SignInOptions>, ApiError> {
-    let rid = public.request_id;
-    let identity = &public.identity;
-    let org = identity.org().await.map_err(auth(rid))?;
-    let providers = identity.sign_in_providers().await.map_err(auth(rid))?;
+    let view = public
+        .identity
+        .sign_in_view()
+        .await
+        .map_err(auth(public.request_id))?;
     Ok(Json(SignInOptions {
-        providers: providers.iter().map(crate::control::button).collect(),
-        password_login_enabled: org
-            .as_ref()
-            .is_none_or(|org| org.settings.password_login_enabled),
-        setup_required: org.is_none(),
+        providers: view.providers.iter().map(crate::control::button).collect(),
+        password_login_enabled: view.password_login_enabled,
+        setup_required: view.setup_required,
     }))
 }
 
