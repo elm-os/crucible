@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use crucible_chfmt::EncodedBlock;
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, Row, RowBlock};
 use crucible_records::{BatchToken, PartitionId, ProjectId, TableId, Uuid};
-use crucible_schema::MigrationStep;
+use crucible_schema::{INGEST_MAX_EXECUTION_SECONDS, MigrationStep};
 use futures::stream::{BoxStream, Stream, StreamExt, TryStreamExt};
 
 /// The deployment flavour of the store (contract 6.2).
@@ -41,8 +41,8 @@ pub struct InsertSettings {
 }
 
 impl InsertSettings {
-    /// `max_execution_time` of an insert, in seconds.
-    pub const MAX_EXECUTION_TIME_SECS: u32 = 60;
+    /// `max_execution_time` of an insert, in seconds: the ceiling of the ingest identity's settings profile.
+    pub const MAX_EXECUTION_TIME_SECS: u32 = INGEST_MAX_EXECUTION_SECONDS;
 
     /// The name of every setting an insert can carry, in the order of contract 5.4. `insert_quorum` is sent to
     /// the clustered flavour only.

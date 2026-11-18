@@ -80,7 +80,8 @@ impl QueryPlan {
     /// Rows: a node with an order returns rows in that order, and rows that tie on it in no defined order; a
     /// node without one returns rows in no defined order. A grouped read returns one row per group that has at
     /// least one matching row. An `Aggregate` with no group dimensions is one group: it returns one row when at
-    /// least one row matches and **no row** otherwise, never a row of defaults.
+    /// least one row matches and **no row** otherwise, never a row of defaults. The one exception is a
+    /// `TimeSeries` with `Fill::Zero`, which also returns rows for its empty buckets.
     pub fn output(&self) -> OutputSchema {
         value::output(&self.root)
     }

@@ -1632,6 +1632,7 @@ pass `OutputSchema::check_row`, and a store reports a result that does not as `i
   come in no defined order.
 - A grouped read returns one row per group with at least one matching row. An `Aggregate` without group dimensions
   is one group: it returns one row when at least one row matches and no row otherwise, never a row of defaults.
+  The one exception is a `TimeSeries` with zero fill, which also returns rows for its empty buckets.
 
 ### 8.2 Post-operators
 
