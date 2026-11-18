@@ -363,8 +363,9 @@ func TestProgressAndCancellation(t *testing.T) {
 				"crucible.mcp.result_type":    nil,
 			})
 			expect(t, client(t, c, "tools/call slow"), map[string]any{
-				"crucible.mcp.cancel.source": "notification",
-				"crucible.mcp.error.class":   "cancelled",
+				"crucible.mcp.cancel.source":  "notification",
+				"crucible.mcp.error.class":    "cancelled",
+				"crucible.mcp.progress.count": nil,
 			})
 		})
 	}

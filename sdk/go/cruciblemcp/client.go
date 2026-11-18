@@ -97,7 +97,9 @@ func (c *client) send(next mcp.MethodHandler) mcp.MethodHandler {
 			}
 		}
 		out := observe(ctx, res, err, false)
-		okv, class := outcomeAttrs(out, &op{}, notification)
+		// This middleware sees neither the server's annotations nor the progress notifications the client
+		// receives, so the count stays absent: unobserved.
+		okv, class := outcomeAttrs(out, &op{}, notification, false)
 		kv = append(kv, okv...)
 		span.SetAttributes(kv...)
 		if class != "none" {

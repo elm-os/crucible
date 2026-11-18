@@ -187,7 +187,7 @@ The MCP Go SDK hands middleware a method, its decoded params and a context, whic
 | Not observed | Why |
 |---|---|
 | `jsonrpc.request.id` without `Transport` or `Handler` | go-sdk v1.8.0 keeps the request id under an unexported context key |
-| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; `crucible proxy` sees them |
+| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; the planned `crucible proxy` is designed to see them |
 | HTTP status and transport failures | They happen in the HTTP handler and the transport, outside the middleware |
 | The resource template of `resources/read` | Only the concrete URI is visible, and a raw URI is not used as a target name |
 | Client IP prefix, response size, client capabilities hash | The SDK does not expose the peer address or the encoded response, and the contract fixes no algorithm for the capabilities hash |

@@ -183,7 +183,7 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		if out.cancel != "" && transport == TransportStreamableHTTP && version >= modernVersion {
 			out.cancel = "stream_close"
 		}
-		okv, class := outcomeAttrs(out, o, notification)
+		okv, class := outcomeAttrs(out, o, notification, true)
 		kv = append(kv, okv...)
 		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {
 			if text, cut, ok := s.captured(FieldResult, resultText(r), rule.MaxBytes); ok {

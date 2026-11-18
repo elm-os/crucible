@@ -269,9 +269,9 @@ func errorClass(out outcome, o *op) string {
 	return "none"
 }
 
-// outcomeAttrs returns the outcome keys of contract 9.1 and the error class; message is the scrubbed error
-// message, for the span status.
-func outcomeAttrs(out outcome, o *op, notification bool) (kv []attribute.KeyValue, class string) {
+// outcomeAttrs returns the outcome keys of contract 9.1 and the error class. progress says whether the side
+// observes progress notifications; when it does not, the count is absent, which means unobserved.
+func outcomeAttrs(out outcome, o *op, notification, progress bool) (kv []attribute.KeyValue, class string) {
 	class = errorClass(out, o)
 	if class != "none" {
 		kv = append(kv, attribute.String(keyErrorClass, class))
@@ -312,7 +312,9 @@ func outcomeAttrs(out outcome, o *op, notification bool) (kv []attribute.KeyValu
 			kv = append(kv, attribute.String(keyStateOut, h))
 		}
 	}
-	kv = append(kv, attribute.Int64(keyProgressCount, int64(o.progress.Load())))
+	if progress {
+		kv = append(kv, attribute.Int64(keyProgressCount, int64(o.progress.Load())))
+	}
 	kv = append(kv, blockAttrs(out.blocks)...)
 	return kv, class
 }

@@ -27,8 +27,9 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // serveHTTP serves an instrumented reference server over streamable HTTP behind a bearer-token check, and
-// connects a client at version. The modern era needs a stateless handler; the legacy one keeps sessions.
-func serveHTTP(t *testing.T, opts cruciblemcp.Options, version string) *mcp.ClientSession {
+// connects a client at version that passes the progress it receives to progress, when that is not nil. The
+// modern era needs a stateless handler; the legacy one keeps sessions.
+func serveHTTP(t *testing.T, opts cruciblemcp.Options, version string, progress chan<- float64) *mcp.ClientSession {
 	t.Helper()
 	srv := newServer(t, opts)
 	verify := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
@@ -49,7 +50,7 @@ func serveHTTP(t *testing.T, opts cruciblemcp.Options, version string) *mcp.Clie
 		Endpoint:   hs.URL,
 		HTTPClient: &http.Client{Transport: bearer{"user-token", http.DefaultTransport}},
 	}
-	cs, err := newClient(t, nil).Connect(t.Context(), transport, &mcp.ClientSessionOptions{ProtocolVersion: version})
+	cs, err := newClient(t, progress).Connect(t.Context(), transport, &mcp.ClientSessionOptions{ProtocolVersion: version})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestStreamableHTTP(t *testing.T) {
 	for _, era := range eras {
 		t.Run(era.name, func(t *testing.T) {
 			c := startCrucible(t)
-			cs := serveHTTP(t, cruciblemcp.Options{}, era.version)
+			cs := serveHTTP(t, cruciblemcp.Options{}, era.version, nil)
 			if _, err := call(t, cs, "echo", map[string]any{"text": "hello"}); err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +122,7 @@ func TestStreamableHTTP(t *testing.T) {
 
 func TestNoIdentityIgnoresVerifiedTokens(t *testing.T) {
 	c := startCrucible(t)
-	cs := serveHTTP(t, cruciblemcp.Options{NoIdentity: true}, legacy)
+	cs := serveHTTP(t, cruciblemcp.Options{NoIdentity: true}, legacy, nil)
 	if _, err := call(t, cs, "echo", map[string]any{"text": "hello"}); err != nil {
 		t.Fatal(err)
 	}

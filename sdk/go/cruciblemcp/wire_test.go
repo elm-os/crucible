@@ -156,14 +156,21 @@ func TestWrappedHandlerKeepsTheBodyLimit(t *testing.T) {
 // Over legacy streamable HTTP the wrapped handler records the client's cancellation with the session's hash.
 func TestWrappedHandlerRecordsCancellation(t *testing.T) {
 	c := startCrucible(t)
-	cs := serveHTTP(t, cruciblemcp.Options{}, legacy)
+	got := make(chan float64, 4)
+	cs := serveHTTP(t, cruciblemcp.Options{}, legacy, got)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		_, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}})
+		params := &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}}
+		params.SetProgressToken("progress-1")
+		_, err := cs.CallTool(ctx, params)
 		done <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not start")
+	}
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("a cancelled call succeeded")
@@ -187,4 +194,30 @@ func TestWrappedHandlerRecordsCancellation(t *testing.T) {
 	if n.Kind != tracepb.Span_SPAN_KIND_SERVER {
 		t.Errorf("kind = %v", n.Kind)
 	}
+}
+
+// Without Transport or Handler the middleware records the same operation, without its JSON-RPC id.
+func TestUnwrappedTransportHasNoRequestID(t *testing.T) {
+	c := startCrucible(t)
+	srv := newServer(t, cruciblemcp.Options{})
+	st, ct := mcp.NewInMemoryTransports()
+	ss, err := srv.Connect(t.Context(), st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+	cs, err := newClient(t, nil).Connect(t.Context(), ct, &mcp.ClientSessionOptions{ProtocolVersion: modern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	if _, err := call(t, cs, "echo", map[string]any{"text": "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, server(t, c, "tools/call echo"), map[string]any{
+		"mcp.method.name":          "tools/call",
+		"crucible.mcp.era":         "modern",
+		"crucible.mcp.result_type": "complete",
+		"jsonrpc.request.id":       nil,
+	})
 }
