@@ -5,6 +5,8 @@
 //! is answered with `telemetry_store_unavailable`.
 
 mod data_bounds;
+mod payload;
+mod search;
 mod spans;
 mod trace_detail;
 mod traces;
@@ -24,6 +26,8 @@ use crate::problem::ApiError;
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(data_bounds::routes())
+        .merge(payload::routes())
+        .merge(search::routes())
         .merge(spans::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
@@ -33,6 +37,8 @@ pub(crate) fn router() -> Router<ApiState> {
 /// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(data_bounds::Paths::openapi());
+    doc.merge(payload::Paths::openapi());
+    doc.merge(search::Paths::openapi());
     doc.merge(spans::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
