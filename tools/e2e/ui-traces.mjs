@@ -57,7 +57,10 @@ function cleanUp() {
 
 const browserUrl = await new Promise((resolve, reject) => {
   let log = "";
-  const timer = setTimeout(() => reject(new Error(`Chrome did not start:\n${log}`)), STEP_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => reject(new Error(`Chrome did not start:\n${log}`)),
+    STEP_TIMEOUT_MS,
+  );
   chrome.stderr.on("data", (chunk) => {
     log += chunk;
     const found = /DevTools listening on (ws:\/\/\S+)/.exec(log);
@@ -72,7 +75,9 @@ const browserUrl = await new Promise((resolve, reject) => {
 const socket = new WebSocket(browserUrl);
 await new Promise((resolve, reject) => {
   socket.addEventListener("open", resolve, { once: true });
-  socket.addEventListener("error", () => reject(new Error("the DevTools socket failed")), { once: true });
+  socket.addEventListener("error", () => reject(new Error("the DevTools socket failed")), {
+    once: true,
+  });
 });
 let nextId = 0;
 const waiting = new Map();
@@ -171,7 +176,10 @@ try {
   );
   await type("Project id", args.project);
   await type("Secret key", args.key);
-  await until("the dialog's Connect button", clickButton('[data-slot="dialog-content"] form', "Connect"));
+  await until(
+    "the dialog's Connect button",
+    clickButton('[data-slot="dialog-content"] form', "Connect"),
+  );
 
   await until(
     "the traces table to show every expected trace",

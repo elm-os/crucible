@@ -104,12 +104,14 @@ The Connect dialog is temporary. This preview has no sign-in, so the UI sends th
 is forgotten when the tab closes. Browser sessions will replace the dialog in milestone 4. Do not expose this
 preview to a network you do not trust.
 
-The same data is available from the API:
+The same data is available from the API, for example the trace sent above:
 
 ```sh
 curl -s -H "Authorization: Bearer <secret>" \
-  "http://127.0.0.1:8080/api/v1/projects/<project id>/traces?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z"
+  "http://127.0.0.1:8080/api/v1/projects/<project id>/traces/5b8efff798038103d269b633813fc60c"
 ```
+
+The trace list takes a time window of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
 
 ## Without Compose
 
