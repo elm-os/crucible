@@ -220,7 +220,13 @@
     { "field": "server_version", "assert": "$server_version", "contract": "9.1" },
     { "field": "deploy_id", "assert": "$deploy_id", "contract": "9.7" },
     { "field": "identity_source", "assert": "none", "contract": "9.3" },
-    { "key": "mcp.protocol.version", "assert": "$protocol_version", "contract": "9.1" },
+    { "key": "mcp.protocol.version", "assert": "$protocol_version", "unless": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
+    {
+      "key": "mcp.protocol.version",
+      "assert": { "optional": "$protocol_version" },
+      "if": { "crucible.mcp.is_notification": true },
+      "contract": "9.1"
+    },
     { "key": "mcp.session.id", "assert": { "absent": true }, "when": { "era": "modern" }, "contract": "9.4" },
     { "key": "mcp.session.id", "assert": { "absent": true }, "when": { "transport": "stdio" }, "contract": "9.4" },
     {
