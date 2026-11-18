@@ -1,0 +1,89 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"repositories\")"
+---
+org before setup: None
+org insert: ()
+second org: error UniqueViolation("org_singleton_key")
+org update at 1: true
+org update at 1 again: false
+org: Some(Org { id: OrgId(01a3185c-5001-7000-8000-000000000001), name: "Acme Corp", settings: OrgSettings { signup_mode: InviteOnly, allowed_email_domains: ["example.com"], password_login_enabled: true, project_access: Explicit }, version: 2 })
+user insert: ()
+user insert 2: ()
+user same id: error UniqueViolation("users_pkey")
+user same email: error UniqueViolation("users_email_key")
+user get: Some(User { id: UserId(01a3185c-500a-7000-8000-00000000000a), email: Email("user10@example.com"), name: "User 10", status: Active, email_verified_at: None })
+user by email: Some(User { id: UserId(01a3185c-500b-7000-8000-00000000000b), email: Email("user11@example.com"), name: "User 11", status: Active, email_verified_at: None })
+user by unknown email: None
+user update: true
+user update missing: false
+user list: [User { id: UserId(01a3185c-500a-7000-8000-00000000000a), email: Email("user10@example.com"), name: "User 10", status: Active, email_verified_at: None }, User { id: UserId(01a3185c-500b-7000-8000-00000000000b), email: Email("user11@example.com"), name: "User 11", status: Disabled, email_verified_at: Some(Timestamp(2027-01-15T08:00:05.000000Z)) }]
+credential put: ()
+credential put again: ()
+credential without user: error ForeignKeyViolation("credentials_user_id_fkey")
+credential delete: true
+credential delete again: false
+credential restore: ()
+session insert: ()
+session insert: ()
+session insert: ()
+session same token: error UniqueViolation("sessions_pkey")
+session without user: error ForeignKeyViolation("sessions_user_id_fkey")
+session touch: true
+session touch missing: false
+session revoke: true
+session revoke again: false
+session revoke others: 1
+session: Some(("csrf-1", Timestamp(2027-01-15T08:20:00.000000Z), Some(Timestamp(2027-01-15T08:00:07.000000Z))))
+session: Some(("csrf-2", Timestamp(2027-01-15T08:10:00.000000Z), Some(Timestamp(2027-01-15T08:00:09.000000Z))))
+session: Some(("csrf-3", Timestamp(2027-01-15T08:10:00.000000Z), None))
+sessions expired before hour 2: 1
+session 1 after expiry sweep: false
+project insert: ()
+project insert 2: ()
+project same slug: error UniqueViolation("projects_slug_key")
+project update at 1: true
+project update at 1 again: false
+project get: Some(Project { id: ProjectId(01a3185c-5014-7000-8000-000000000014), name: "Web", slug: "project-20", settings: JsonDoc(Object {"mask": Array [String("email")], "sampling": Number(1)}), retention_days: None, payload_retention_days: Some(7), mcp_content_retention_days: None, config_version: 2, version: 2, deleted_at: None })
+project by slug: Some(ProjectId(01a3185c-5015-7000-8000-000000000015))
+project soft delete: true
+project list: [ProjectId(01a3185c-5014-7000-8000-000000000014)]
+deleted project still reads: Some(2)
+org member: ()
+org member 2: ()
+org member role change: ()
+org member without user: error ForeignKeyViolation("org_memberships_user_id_fkey")
+org role: Some(Member)
+org list: [OrgMembership { user_id: UserId(01a3185c-500a-7000-8000-00000000000a), role: Owner }, OrgMembership { user_id: UserId(01a3185c-500b-7000-8000-00000000000b), role: Member }]
+project member: ()
+project member: ()
+project member: ()
+project member: ()
+project member without project: error ForeignKeyViolation("project_memberships_project_id_fkey")
+project member without user: error ForeignKeyViolation("project_memberships_user_id_fkey")
+members of web: [ProjectMembership { project_id: ProjectId(01a3185c-5014-7000-8000-000000000014), user_id: UserId(01a3185c-500a-7000-8000-00000000000a), role: Admin }, ProjectMembership { project_id: ProjectId(01a3185c-5014-7000-8000-000000000014), user_id: UserId(01a3185c-500b-7000-8000-00000000000b), role: Member }]
+projects of bob: [ProjectMembership { project_id: ProjectId(01a3185c-5014-7000-8000-000000000014), user_id: UserId(01a3185c-500b-7000-8000-00000000000b), role: Member }, ProjectMembership { project_id: ProjectId(01a3185c-5015-7000-8000-000000000015), user_id: UserId(01a3185c-500b-7000-8000-00000000000b), role: Member }]
+project member delete: true
+project member delete again: false
+org member delete: true
+org member delete again: false
+user delete: true
+user delete again: false
+after user delete: (false, false, None, [ProjectMembership { project_id: ProjectId(01a3185c-5014-7000-8000-000000000014), user_id: UserId(01a3185c-500b-7000-8000-00000000000b), role: Member }])
+signing key insert: ()
+signing key insert: ()
+signing key insert: ()
+signing key same kid: error UniqueViolation("signing_keys_pkey")
+signing key state: true
+signing key state missing: false
+cursor keys: [("cur-1", VerifyOnly, [99, 117, 114, 45, 49], Timestamp(2027-01-15T08:00:10.000000Z)), ("cur-2", Active, [99, 117, 114, 45, 50], Timestamp(2027-01-15T08:00:20.000000Z))]
+signing key get: Some(Download)
+secret insert: ()
+secret same id: error UniqueViolation("secrets_pkey")
+secret delete: true
+secret delete again: false
+secret after delete: false
+ledger apply schema: true
+ledger apply access: true
+ledger apply schema again: false
+ledger: [LedgerEntry { id: "0001_schema_base", kind: ClickhouseSchema, applied_at: Timestamp(2027-01-15T08:01:40.000000Z), checksum: "aa" }, LedgerEntry { id: "0002_access_service", kind: ClickhouseAccess, applied_at: Timestamp(2027-01-15T08:01:40.000000Z), checksum: "bb" }]

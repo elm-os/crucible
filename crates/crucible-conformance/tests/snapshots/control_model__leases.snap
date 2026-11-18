@@ -1,0 +1,31 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"leases\")"
+---
+no lease yet: None
+a acquires: ("node-a", 1, true)
+b is refused while a holds: false
+a cannot acquire twice: false
+another lease is independent: Some(1)
+a writes its cursor: ()
+cursor: Some("a-1")
+a releases: true
+a cannot renew after release: false
+b acquires: ("node-b", 2)
+a's stale write is fenced: error Fenced
+a's stale release: false
+b writes its cursor: ()
+b cannot renew after expiry: false
+c acquires: ("node-c", 3)
+b's stale write is fenced: error Fenced
+cursor: Some("b-1")
+stale fence: error Fenced
+commit after a stale fence: error Fenced
+live fence: ()
+fenced write: ()
+fenced commit: ()
+cursor: Some("c-1")
+fenced commit under an expired lease: ()
+d acquires after the fenced commit: ("node-d", 4)
+c is fenced after d took over: error Fenced
+the lease row: Some(("node-d", 4))

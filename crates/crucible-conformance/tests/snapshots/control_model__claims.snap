@@ -1,0 +1,26 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"claims\")"
+---
+enqueue: ()
+enqueue: ()
+enqueue: ()
+enqueue: ()
+enqueue same dedup key: error UniqueViolation("notification_outbox_dedup_key_key")
+enqueue same id: error UniqueViolation("notification_outbox_pkey")
+claim one: [("job 2", 1)]
+claim the rest: [("job 1", 1), ("job 3", 1)]
+nothing left to claim: []
+complete: true
+complete again: false
+fail after complete: false
+fail with a retry in the past: true
+claim after the failure: [("job 1", 2)]
+the older attempt cannot complete: false
+claim after the lease ran out: [("job 1", 3)]
+late complete: false
+complete: true
+job 3 is given back: true
+claimed inside a transaction: [("job 6", 1)]
+claimed outside meanwhile: [("job 7", 1), ("job 3", 2)]
+claimed after the rollback: [("job 6", 1)]
