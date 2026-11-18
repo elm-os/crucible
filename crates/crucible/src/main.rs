@@ -65,7 +65,11 @@ struct ServeArgs {
     #[arg(long, env = "CRUCIBLE_CLICKHOUSE_URL")]
     clickhouse_url: Option<String>,
     /// The ClickHouse admin user that the operator created; it runs the migrations.
-    #[arg(long, env = "CRUCIBLE_CLICKHOUSE_USER", default_value = "crucible_admin")]
+    #[arg(
+        long,
+        env = "CRUCIBLE_CLICKHOUSE_USER",
+        default_value = "crucible_admin"
+    )]
     clickhouse_user: String,
     /// File that holds the admin user's password. Without it the password is read from the environment
     /// variable CRUCIBLE_CLICKHOUSE_PASSWORD.
@@ -158,13 +162,19 @@ mod tests {
             "--recent-max-bytes",
             "1048576",
         ]);
-        assert_eq!(args.clickhouse_url.as_deref(), Some("http://clickhouse:8123"));
+        assert_eq!(
+            args.clickhouse_url.as_deref(),
+            Some("http://clickhouse:8123")
+        );
         assert_eq!(args.clickhouse_user, "crucible_admin");
         assert_eq!(
             args.clickhouse_password_file,
             Some(PathBuf::from("/run/secrets/clickhouse"))
         );
-        assert_eq!(args.master_key_file, Some(PathBuf::from("/run/secrets/master")));
+        assert_eq!(
+            args.master_key_file,
+            Some(PathBuf::from("/run/secrets/master"))
+        );
         assert!(args.migrate);
         assert_eq!(args.recent_max_bytes, Some(1 << 20));
     }

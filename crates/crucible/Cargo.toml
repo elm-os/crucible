@@ -48,11 +48,15 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# The end-to-end test (tests/e2e.rs) drives the load generator as a library and reads ClickHouse directly.
+crucible-loadgen = { path = "../crucible-loadgen" }
 crucible-otlp = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
+crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
+http = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
 
 [target.'cfg(not(windows))'.dependencies]
 mimalloc = { workspace = true }

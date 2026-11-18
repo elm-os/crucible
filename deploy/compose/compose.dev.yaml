@@ -1,0 +1,53 @@
+# Development preview: ClickHouse 26.8 and a locally built Crucible. Not a release and not for production.
+# docs/self-hosting/quickstart.md walks through the three files this needs beside it:
+#   bin/crucible   the binary, built with the embedded UI
+#   keys.toml      the project keys
+#   .env           CLICKHOUSE_PASSWORD and CRUCIBLE_MASTER_KEY
+name: crucible-dev
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    environment:
+      CLICKHOUSE_USER: crucible_admin
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+      # crucible_admin creates the four service identities and their row policies.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "crucible_admin", "--password", "${CLICKHOUSE_PASSWORD}", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  crucible:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CRUCIBLE_CLICKHOUSE_URL: http://clickhouse:8123
+      CRUCIBLE_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env}
+    command:
+      - serve
+      - --migrate
+      - --data-dir=/var/lib/crucible/data
+      - --keys-file=/etc/crucible/keys.toml
+    volumes:
+      - crucible-data:/var/lib/crucible
+      - ./keys.toml:/etc/crucible/keys.toml:ro
+    ports:
+      # The UI, the REST API and OTLP/HTTP ingest.
+      - "127.0.0.1:8080:8080"
+      # OTLP/HTTP ingest.
+      - "127.0.0.1:4318:4318"
+
+volumes:
+  clickhouse-data:
+  crucible-data:

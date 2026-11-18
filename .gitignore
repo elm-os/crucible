@@ -39,3 +39,9 @@ _apalache-out/
 specs/tmp/
 # Fuzz crates resolve their own dependencies; a committed lock drifts whenever a fuzzed crate's dependencies change.
 /crates/*/fuzz/Cargo.lock
+
+# The development Compose file's local inputs (docs/self-hosting/quickstart.md)
+/deploy/compose/bin/
+/deploy/compose/keys.toml
+/deploy/compose/.env
+/e2e-out/

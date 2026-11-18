@@ -14,15 +14,15 @@ use crucible_wal_codec::{Record, RecordType};
 #[derive(Debug)]
 pub(crate) struct WalSpans {
     pub(crate) wal: Wal,
-    pub(crate) ctx: NormCtx,
+    pub(crate) ctx: NormCtx<'static>,
 }
 
 /// The spans stage A makes of an `IngestRequest` frame.
-fn spans(wal: &Wal, frame: &WalFrame, ctx: &NormCtx) -> Result<Vec<SpanRecord>, WalReadError> {
+fn spans(wal: &Wal, frame: &WalFrame, ctx: &NormCtx<'_>) -> Result<Vec<SpanRecord>, WalReadError> {
     let failed = |reason: String| WalReadError::Failed(reason);
     let payload = frame.payload().map_err(|e| failed(e.to_string()))?;
-    let record = Record::decode(RecordType::IngestRequest, &payload)
-        .map_err(|e| failed(e.to_string()))?;
+    let record =
+        Record::decode(RecordType::IngestRequest, &payload).map_err(|e| failed(e.to_string()))?;
     let Record::IngestRequest(request) = record else {
         return Err(WalReadError::Gone);
     };

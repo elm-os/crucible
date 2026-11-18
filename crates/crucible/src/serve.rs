@@ -38,12 +38,12 @@ use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyVerifier, StaticKeys};
 use crucible_env::metrics::registry;
 use crucible_env::{
-    AssetSource, Counter, DiskPath, Env, Histogram, JoinHandle, Listener, MemoryRecorder,
-    NetError, OpenMode, Root, Stores, Stream,
+    AssetSource, Counter, DiskPath, Env, Histogram, JoinHandle, Listener, MemoryRecorder, NetError,
+    OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
 use crucible_ingest::{Ingest, IngestConfig};
-use crucible_normalize::NormCtx;
+use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, TableId};
@@ -545,7 +545,10 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let view = Arc::new(WalSpans {
         wal: wal.clone(),
-        ctx: NormCtx::new(shipper_config.price_table_version, shipper_config.caps),
+        ctx: NormCtx::new(
+            PriceTable::bundled().context("loading the bundled price table")?,
+            shipper_config.caps,
+        ),
     });
     // The index starts empty at the recovered watermark; the shipper's replay of the retained prefix feeds
     // it through the hook (contract 4.6, steps 6 and 7).
@@ -589,10 +592,12 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
 /// `recent.max_bytes` (contract 8.6): min(1 GiB, 10% of RAM), from `/proc/meminfo` where there is one.
 #[allow(clippy::disallowed_methods)] // The binary reads the host's memory size.
 fn default_recent_max_bytes() -> u64 {
-    let total_kib = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| {
-        let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
-        line.split_whitespace().nth(1)?.parse::<u64>().ok()
-    });
+    let total_kib = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
+            line.split_whitespace().nth(1)?.parse::<u64>().ok()
+        });
     total_kib.map_or(RECENT_FALLBACK_BYTES, |kib| {
         RecentConfig::default_max_bytes(kib.saturating_mul(1024))
     })
@@ -614,10 +619,11 @@ fn clickhouse(args: &ServeArgs) -> anyhow::Result<Option<ClickHouse>> {
     .context(
         "--clickhouse-url needs the admin password: --clickhouse-password-file or CRUCIBLE_CLICKHOUSE_PASSWORD",
     )?;
-    let master_key = store::secret(args.master_key_file.as_deref(), "CRUCIBLE_MASTER_KEY")?.context(
-        "--clickhouse-url needs the master key, from which the service passwords are derived: \
+    let master_key = store::secret(args.master_key_file.as_deref(), "CRUCIBLE_MASTER_KEY")?
+        .context(
+            "--clickhouse-url needs the master key, from which the service passwords are derived: \
          --master-key-file or CRUCIBLE_MASTER_KEY",
-    )?;
+        )?;
     Ok(Some(ClickHouse {
         url: url.clone(),
         admin: Credentials {
@@ -782,7 +788,10 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         anyhow::bail!("the {name} server stopped without a shutdown request");
     }
     if let Some(mut task) = store {
-        server_result("telemetry-store", task.join().await.map(|r| r.map_err(io::Error::other)))?;
+        server_result(
+            "telemetry-store",
+            task.join().await.map(|r| r.map_err(io::Error::other)),
+        )?;
     }
     server_result("api", servers.api.join().await)?;
     server_result("ingest", servers.ingest.join().await)?;

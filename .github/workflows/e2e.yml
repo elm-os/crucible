@@ -1,0 +1,109 @@
+name: e2e
+
+# Milestone 1 end to end on real infrastructure (crates/crucible/tests/e2e.rs): the release-shaped
+# `crucible serve` binary with the embedded UI in front of ClickHouse 26.8. OTLP traces as protobuf and JSON
+# come back through the REST API and the UI's traces table; a 20,000-span burst and a kill -9 in the middle of
+# a second run lose no acknowledged span and duplicate no row.
+
+on:
+  pull_request:
+    paths:
+      - crates/**
+      - ui/**
+      - tools/e2e/**
+      - Cargo.lock
+      - .github/workflows/e2e.yml
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.8
+        env:
+          CLICKHOUSE_USER: crucible_admin
+          CLICKHOUSE_PASSWORD: e2e-admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Build the UI
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter crucible-ui build
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Compress the UI
+        run: cargo run --locked --package xtask -- ui compress
+      # The server is built on its own, never with the workspace or beside the test: either would compile the
+      # test-only features of other crates' dependencies into it.
+      - name: Build the server with the embedded UI
+        run: cargo build --locked --package crucible --release --features embed-ui
+      - name: The server has no test-only feature
+        run: |
+          found=$(cargo tree --locked -p crucible -e normal,build,features --target all | grep -E 'test-mutants|test-support' || true)
+          if [ -n "$found" ]; then
+            echo "The server binary would be built with test-only features:"
+            echo "$found"
+            exit 1
+          fi
+      - name: Build the test
+        run: cargo test --locked --package crucible --test e2e --no-run
+      - name: Wait for ClickHouse
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8123/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "ClickHouse did not answer on port 8123" >&2
+          exit 1
+      - name: End to end
+        env:
+          CRUCIBLE_E2E_CLICKHOUSE_URL: http://localhost:8123
+          CRUCIBLE_E2E_CLICKHOUSE_USER: crucible_admin
+          CRUCIBLE_E2E_CLICKHOUSE_PASSWORD: e2e-admin
+        run: |
+          export CRUCIBLE_E2E_BIN="$PWD/target/release/crucible"
+          export CRUCIBLE_E2E_OUT="$PWD/e2e-out"
+          export CRUCIBLE_E2E_CHROME="$(command -v google-chrome)"
+          cargo test --locked --package crucible --test e2e -- --nocapture
+      - name: Report
+        if: always()
+        run: |
+          if [ -f e2e-out/report.json ]; then
+            { echo '```json'; cat e2e-out/report.json; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-out
+          path: e2e-out
+          if-no-files-found: ignore

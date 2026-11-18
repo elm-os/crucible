@@ -140,8 +140,10 @@ fn float(value: f64) -> String {
     }
 }
 
+/// Unix seconds as ten digits: the server reads a `DateTime` parameter of fewer than five digits as a broken
+/// date, not as a timestamp, so the first hours of 1970 need their leading zeros.
 fn seconds(t: Timestamp) -> String {
-    t.micros().div_euclid(1_000_000).to_string()
+    format!("{:010}", t.micros().div_euclid(1_000_000))
 }
 
 fn micros(t: Timestamp) -> String {
@@ -778,6 +780,8 @@ mod tests {
         let t = Timestamp::from_micros(1_794_907_800_000_001);
         assert_eq!(micros(t), "1794907800.000001");
         assert_eq!(seconds(t), "1794907800");
+        assert_eq!(seconds(Timestamp::EPOCH), "0000000000");
+        assert_eq!(seconds(Timestamp::from_micros(60_000_000)), "0000000060");
         assert_eq!(micros(Timestamp::from_micros(-500_000)), "-0.500000");
         assert_eq!(micros(Timestamp::EPOCH), "0.000000");
     }

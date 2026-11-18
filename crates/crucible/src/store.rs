@@ -15,7 +15,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use crucible_env::{Env, StoreFacts, StoreFlavour, StoreVersion, TelemetryStore, TlsRoots};
+use crucible_env::{
+    Env, StoreError, StoreFacts, StoreFlavour, StoreVersion, TelemetryStore, TlsRoots,
+};
 use crucible_plan::profile_caps;
 use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PasswordHash, ServiceIdentity, TABLES,
@@ -231,7 +233,16 @@ pub(crate) async fn bring_up(
         }
     }
     // `detect` includes the check that every service identity sees a known row.
-    let facts = store.detect().await.context("startup detection")?;
+    let facts = store.detect().await.map_err(|error| {
+        let hint = match &error {
+            // AUTHENTICATION_FAILED for a generated identity.
+            StoreError::Rejected { code: 516, .. } => {
+                " (the service users are missing, or were created under a different master key;                  see --migrate and --master-key-file)"
+            }
+            _ => "",
+        };
+        anyhow::anyhow!("startup detection{hint}: {error}")
+    })?;
     if let Some(reason) = refusal(&facts) {
         anyhow::bail!(reason);
     }
@@ -253,7 +264,13 @@ mod tests {
     #[test]
     fn master_keys_are_64_hex_characters_and_never_echoed() {
         assert!(MasterKey::parse(&format!("  {KEY}\n")).is_ok());
-        for bad in ["", "abc", &KEY[2..], &format!("{KEY}00"), &KEY.replace('f', "g")] {
+        for bad in [
+            "",
+            "abc",
+            &KEY[2..],
+            &format!("{KEY}00"),
+            &KEY.replace('f', "g"),
+        ] {
             let error = format!("{:#}", MasterKey::parse(bad).unwrap_err());
             assert!(error.contains("64 hexadecimal"), "{error}");
             assert!(bad.len() < 8 || !error.contains(&bad[..8]), "{error}");
@@ -291,7 +308,9 @@ mod tests {
         // Every identity and every generation has its own password.
         let mut passwords: Vec<String> = ServiceIdentity::GENERATED
             .into_iter()
-            .flat_map(|identity| [0, 1].map(|generation| key.identity_password(identity, generation)))
+            .flat_map(|identity| {
+                [0, 1].map(|generation| key.identity_password(identity, generation))
+            })
             .collect();
         passwords.sort();
         passwords.dedup();
@@ -313,7 +332,10 @@ mod tests {
         let steps = config.steps().unwrap();
         assert_eq!(
             steps.each_ref().map(|step| step.id),
-            [crucible_schema::SCHEMA_BASE, crucible_schema::ACCESS_SERVICE]
+            [
+                crucible_schema::SCHEMA_BASE,
+                crucible_schema::ACCESS_SERVICE
+            ]
         );
         let sql = steps[1].statements.join("\n");
         // Only digests reach a statement: neither a derived password nor the admin's.

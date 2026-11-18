@@ -75,10 +75,95 @@ Regenerate both after changing a handler or a DTO, and commit the result. CI reg
 and fails on any difference, or on `bigint` in a generated type (`.github/workflows/drift.yml`); a test of
 `crucible-api` also fails while the committed OpenAPI document is stale.
 
-Requests authenticate with a project's secret key from `--keys-file` as `Authorization: Bearer <key>`. Until a
-telemetry store is configured, `crucible serve` checks the key, the project and the parameters of each request and
-then answers 503 with the problem code `telemetry_store_unavailable`. The UI sends no credentials yet: browser
-sessions will arrive with the control plane, so against a running server its API requests answer 401.
+Requests authenticate with a project's secret key from `--keys-file` as `Authorization: Bearer <key>`. Without a
+telemetry store (see the next section), `crucible serve` checks the key, the project and the parameters of each
+request and then answers 503 with the problem code `telemetry_store_unavailable`.
+
+## Running crucible serve
+
+`crucible serve` has two modes.
+
+**Ingest only**, without `--clickhouse-url`: requests are made durable in the WAL and stay there, because nothing
+ships them. The API answers 503 as described above.
+
+**With ClickHouse**, the mode [the quickstart](self-hosting/quickstart.md) runs:
+
+| Flag | Environment variable | Meaning |
+|---|---|---|
+| `--clickhouse-url` | `CRUCIBLE_CLICKHOUSE_URL` | The HTTP endpoint, `http://host:8123` or `https://host:8443` |
+| `--clickhouse-user` | `CRUCIBLE_CLICKHOUSE_USER` | The admin user the operator created; default `crucible_admin`. It needs access management |
+| `--clickhouse-password-file` | `CRUCIBLE_CLICKHOUSE_PASSWORD_FILE` | A file with the admin password. Without it the password is read from `CRUCIBLE_CLICKHOUSE_PASSWORD` |
+| `--master-key-file` | `CRUCIBLE_MASTER_KEY_FILE` | A file with the master key, 64 hexadecimal characters. Without it the key is read from `CRUCIBLE_MASTER_KEY` |
+| `--migrate` | | Apply the schema and create the service identities before the startup checks |
+| `--recent-max-bytes` | | Memory bound of the recent-span index; default 10% of RAM, at most 1 GiB |
+
+Secrets have no flag that takes the value itself, so they never appear in a process list.
+
+Startup, in order:
+
+1. The WAL is opened and recovered, and the listeners start. Ingest answers 503 and `/readyz` answers 503 with the
+   reason until step 4 has finished.
+2. With `--migrate`, schema step `0001_schema_base` and access step `0002_access_service` are applied as the admin
+   user. Both are idempotent, so the flag can stay on. The migration ledger will live in Postgres with the control
+   plane; until then nothing records which steps ran (`MigrationLedger` in `crates/crucible/src/store.rs` is where
+   it will plug in). This preview migrates a single-node server only.
+3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
+   one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
+   logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.
+4. The recent-span index is created, the shipper starts, the API is mounted over the store and ingest opens. The
+   shipper replays the retained WAL: sealed batches without a checkpoint are probed and shipped again with their
+   original tokens, and the replay also refills the recent-span index.
+
+The passwords of the four generated ClickHouse users (`crucible_ingest`, `crucible_read_ui`, `crucible_read_agent`,
+`crucible_maint`) are never configured or stored. Each is HKDF-SHA256 of the master key with the info string
+`crucible/clickhouse-identity/v1/<user>/<generation>` (generation 0), as 64 hexadecimal characters; ClickHouse
+receives only its SHA-256. The users are created once, so a ClickHouse that was migrated under one master key
+refuses a server started with another: detection fails and `/readyz` says so. Key rotation will arrive with
+`crucible admin rotate-keys`.
+
+On SIGTERM or Ctrl-C the listeners stop accepting and finish their open requests, whose WAL appends complete; the
+shipper stops at its next step and abandons the inserts in flight. That is safe: after a restart every pair of
+every sealed batch is probed before anything is sent again. Tasks get 30 s before they are aborted.
+
+## The UI against a running server
+
+The UI has no browser sessions until the control plane lands (milestone 4). Until then the shell has a **Connect**
+dialog, labelled as temporary: it takes a project id and that project's secret key, checks them against the API,
+keeps them in the tab's `sessionStorage` (never `localStorage`) and sends the key as `Authorization: Bearer` on API
+requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
+`ui/src/components/shell/connect-dialog.tsx`; sessions will replace both.
+
+## The end-to-end test
+
+`crates/crucible/tests/e2e.rs` runs the real binary against a real ClickHouse: OTLP traces as protobuf and JSON come
+back through the API (the time from acknowledgement to visibility is recorded), a 20,000-span burst and a `kill -9`
+in the middle of a second run must lose no acknowledged span and duplicate no row (checked against ClickHouse
+directly, through the load generator's `SequenceReader`), and, when a Chrome binary is given, the embedded UI's
+traces table must show the traces after connecting through the dialog. Without `CRUCIBLE_E2E_CLICKHOUSE_URL` the
+test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real.
+
+```sh
+docker network create crucible-e2e
+docker run -d --rm --name crucible-e2e-ch --network crucible-e2e \
+  -e CLICKHOUSE_USER=crucible_admin -e CLICKHOUSE_PASSWORD=e2e-admin -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+  clickhouse/clickhouse-server:26.8
+
+pnpm --filter crucible-ui build
+docker run --rm --network crucible-e2e -v "$PWD":/work -v crucible-target:/target \
+  -v crucible-cargo:/usr/local/cargo/registry \
+  -e CRUCIBLE_E2E_BIN=/target/release/crucible -e CRUCIBLE_E2E_OUT=/work/e2e-out \
+  -e CRUCIBLE_E2E_CLICKHOUSE_URL=http://crucible-e2e-ch:8123 -e CRUCIBLE_E2E_CLICKHOUSE_PASSWORD=e2e-admin \
+  crucible-dev:1 sh -c '
+    cargo xtask ui compress &&
+    cargo build --locked -p crucible --release --features embed-ui &&
+    cargo test --locked -p crucible --test e2e -- --nocapture'
+```
+
+The server under test is always the binary named by `CRUCIBLE_E2E_BIN`, built on its own: the one cargo builds
+beside the test carries the test-only features of the test's dependencies. The UI check also needs
+`CRUCIBLE_E2E_CHROME` (a Chrome or Chromium binary) and Node 24 where the test runs, which the dev container does
+not have; `tools/e2e/ui-traces.mjs` is the script it runs. The report, the server logs and the screenshot land in
+`CRUCIBLE_E2E_OUT`.
 
 ## Hooks
 
