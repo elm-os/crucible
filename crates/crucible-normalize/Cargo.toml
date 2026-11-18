@@ -14,6 +14,7 @@ crucible-otlp = { workspace = true }
 crucible-compat = { workspace = true }
 bytes = { workspace = true }
 regex = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }

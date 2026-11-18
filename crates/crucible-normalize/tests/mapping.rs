@@ -238,12 +238,37 @@ fn io_shape_follows_the_body_sources() {
         one(vec![s("gen_ai.output.messages", "[]")]).core.io_shape,
         IoShape::GenaiMessages
     );
+    // Input and output take text too, labelled with the shape of their source.
+    let text = one(vec![s("gen_ai.input.messages", "hello")]);
+    assert_eq!(&text.payload.input[..], b"hello");
+    assert_eq!(text.core.io_shape, IoShape::GenaiMessages);
     assert_eq!(
-        one(vec![s("gen_ai.system_instructions", "x")])
+        one(vec![s("gen_ai.system_instructions", "[]")])
             .core
             .io_shape,
         IoShape::Raw
     );
+}
+
+#[test]
+fn json_bodies_take_only_json() {
+    let r = one(vec![
+        s("gen_ai.system_instructions", "be brief"),
+        s("gen_ai.tool.definitions", "{\"a\":"),
+    ]);
+    assert!(r.payload.system_instructions.is_empty() && r.payload.tool_definitions.is_empty());
+    assert_eq!(
+        residual(&r),
+        r#"{"gen_ai.system_instructions":"be brief","gen_ai.tool.definitions":"{\"a\":"}"#
+    );
+    // JSON text is kept verbatim; a scalar value is rendered as JSON.
+    let r = one(vec![
+        s("gen_ai.system_instructions", " \"be brief\" "),
+        kv("gen_ai.tool.definitions", any_value::Value::BoolValue(true)),
+    ]);
+    assert_eq!(&r.payload.system_instructions[..], b" \"be brief\" ");
+    assert_eq!(&r.payload.tool_definitions[..], b"true");
+    assert!(r.payload.attributes.is_empty());
 }
 
 #[test]

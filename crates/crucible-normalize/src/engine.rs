@@ -5,13 +5,15 @@
 //!   occurrences of one source (a repeated key, or several matching events) the first in wire order wins.
 //! - The observation type is the type of the highest-priority rule that yields one, else `span` (contract 10.4).
 //! - Only the attribute occurrence that supplied a value is consumed. Losing candidates, values that do not
-//!   decode and keys the table does not know stay in the residual `attributes` or `resource_attributes`, so mapping
-//!   drops nothing. Events are never consumed: `events` keeps all of them, up to its item cap.
+//!   decode and keys the table does not know stay in the residual `attributes` or `resource_attributes`, so no
+//!   span or resource attribute is dropped. Events are never consumed: `events` keeps all of them, up to its item
+//!   cap. Instrumentation-scope attributes have no column in contract 3.1 and are not stored.
 
 use bytes::Bytes;
 use crucible_compat::{Decoder, DialectTable, Location, Target};
 use crucible_otlp::{AnyValueView, SpanView};
 use crucible_records::{IoShape, ObservationType, caps, truncate_str};
+use serde::de::IgnoredAny;
 use smallvec::SmallVec;
 
 use crate::json;
@@ -92,11 +94,22 @@ fn decode<'a>(target: Target, decoder: Decoder, value: &AnyValueView<'a>) -> Opt
             AnyValueView::Int(i) => u64::try_from(i).ok().map(Value::Count),
             _ => None,
         },
-        Decoder::Json(shape) => match *value {
+        Decoder::Json => match *value {
+            AnyValueView::Empty | AnyValueView::String("") => None,
+            AnyValueView::String(s) if !is_json(s) => None,
+            _ => Some(Value::Body(value.clone(), IoShape::Raw)),
+        },
+        Decoder::JsonOrString(shape) => match *value {
             AnyValueView::Empty | AnyValueView::String("") => None,
             _ => Some(Value::Body(value.clone(), shape)),
         },
     }
+}
+
+/// Whether `s` is JSON text, checked without building a value. Text nested beyond the parser's recursion limit
+/// (128 levels) counts as not JSON.
+fn is_json(s: &str) -> bool {
+    serde_json::from_str::<IgnoredAny>(s).is_ok()
 }
 
 /// Offers one attribute to every source that reads it.

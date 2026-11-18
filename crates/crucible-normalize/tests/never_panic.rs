@@ -62,12 +62,15 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
             .iter()
             .all(|&f| p.field(f).is_empty());
         prop_assert!(p.stored_bytes() <= ctx.caps.max_span_bytes || order_empty);
-        // The JSON the normalizer writes is valid JSON unless a cap cut it.
+        // The JSON the normalizer writes, and the bodies it takes only as JSON, are valid JSON unless a cap cut
+        // them.
         for field in [
             PayloadField::Attributes,
             PayloadField::ResourceAttributes,
             PayloadField::Events,
             PayloadField::Links,
+            PayloadField::SystemInstructions,
+            PayloadField::ToolDefinitions,
         ] {
             let stored = p.field(field);
             if !stored.is_empty() && !p.truncated_fields.contains(field) {

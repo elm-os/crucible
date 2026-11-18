@@ -124,9 +124,12 @@ pub enum Decoder {
     String,
     /// A non-negative integer.
     Integer,
-    /// A body kept as JSON text: a string value verbatim, any other value rendered as JSON. For `input` and
-    /// `output`, the shape the stored body has (`io_shape`).
-    Json(IoShape),
+    /// A JSON body: a structured or scalar value rendered as JSON, or a string that is JSON text, kept verbatim.
+    /// Any other string does not decode.
+    Json,
+    /// A body that is JSON or text: as [`Decoder::Json`], except that any non-empty string is kept verbatim. It
+    /// carries the shape the stored body has (`io_shape`), for `input` and `output`.
+    JsonOrString(IoShape),
 }
 
 /// A record field that a source fills.
@@ -171,9 +174,9 @@ impl Target {
     pub const fn accepts(self, decoder: Decoder) -> bool {
         match self {
             Self::Usage(_) => matches!(decoder, Decoder::Integer),
-            Self::Input | Self::Output | Self::SystemInstructions | Self::ToolDefinitions => {
-                matches!(decoder, Decoder::Json(_))
-            }
+            // `input` and `output` are JSON or text; the other bodies are JSON (contract 3.1).
+            Self::Input | Self::Output => matches!(decoder, Decoder::JsonOrString(_)),
+            Self::SystemInstructions | Self::ToolDefinitions => matches!(decoder, Decoder::Json),
             Self::ServiceName
             | Self::ServiceVersion
             | Self::TelemetrySdkName
@@ -372,6 +375,8 @@ pub static DIALECT_0: DialectTable = DialectTable {
             Target::Usage(UsageEntry::OUTPUT),
             &[span("gen_ai.usage.output_tokens", Decoder::Integer)],
         ),
+        // The semantic conventions count cache reads and writes inside the input tokens, and reasoning inside the
+        // output tokens, so these three keys are parts of `input` and `output`, not additions to them.
         field(
             Target::Usage(UsageEntry::CACHE_READ),
             &[span(
@@ -397,26 +402,23 @@ pub static DIALECT_0: DialectTable = DialectTable {
             Target::Input,
             &[span(
                 "gen_ai.input.messages",
-                Decoder::Json(IoShape::GenaiMessages),
+                Decoder::JsonOrString(IoShape::GenaiMessages),
             )],
         ),
         field(
             Target::Output,
             &[span(
                 "gen_ai.output.messages",
-                Decoder::Json(IoShape::GenaiMessages),
+                Decoder::JsonOrString(IoShape::GenaiMessages),
             )],
         ),
         field(
             Target::SystemInstructions,
-            &[span(
-                "gen_ai.system_instructions",
-                Decoder::Json(IoShape::Raw),
-            )],
+            &[span("gen_ai.system_instructions", Decoder::Json)],
         ),
         field(
             Target::ToolDefinitions,
-            &[span("gen_ai.tool.definitions", Decoder::Json(IoShape::Raw))],
+            &[span("gen_ai.tool.definitions", Decoder::Json)],
         ),
     ],
 };

@@ -768,6 +768,7 @@ dependencies = [
  "proptest",
  "prost",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
  "smallvec",
