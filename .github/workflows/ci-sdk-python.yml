@@ -1,0 +1,68 @@
+name: ci-sdk-python
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/python/**"
+      - "conformance/**"
+      - ".github/workflows/ci-sdk-python.yml"
+  pull_request:
+    paths:
+      - "sdk/python/**"
+      - "conformance/**"
+      - ".github/workflows/ci-sdk-python.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-sdk-python-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every Python version the mcp package (2.x) supports.
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: sdk/python
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: sdk/python/uv.lock
+      - name: Sync
+        run: uv sync --locked
+      - name: Lint (ruff)
+        run: uv run --locked ruff check .
+      - name: Format (ruff)
+        run: uv run --locked ruff format --check .
+      - name: Type check (mypy)
+        run: uv run --locked mypy
+      - name: Tests (pytest)
+        run: uv run --locked pytest
+      - name: Build
+        run: |
+          uv build --out-dir dist
+          python3 - <<'EOF'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          for required in ("crucible_sdk/py.typed", "crucible_sdk/scrub_rules.json", "crucible_sdk/mcp/__init__.py"):
+              assert required in names, f"{required} is missing from the wheel"
+          EOF
