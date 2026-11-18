@@ -738,6 +738,10 @@ mod tests {
             (7, -5, 0),
             (u64::MAX, i64::MAX, i64::MAX),
             (u64::MAX, 1_000, i64::MAX),
+            // The largest product below the top tie: 9_204_925_292_781_066_255.885 rounds up and fits.
+            (u64::MAX, 499, 9_204_925_292_781_066_256),
+            // Exactly i64::MAX + 0.5: the even neighbour does not fit, so the cost saturates.
+            (u64::MAX, 500, i64::MAX),
         ];
         for (units, price, nanos) in cases {
             assert_eq!(cost_nusd(units, price), n(nanos), "{units} x {price}");
@@ -1101,6 +1105,11 @@ mod tests {
         );
     }
 
+    /// A value below `2^bits` whose magnitude is itself random: a random word cut to a random width.
+    fn below(bits: u32) -> impl Strategy<Value = u64> {
+        (any::<u64>(), 0..=bits).prop_map(|(word, width)| word.checked_shr(64 - width).unwrap_or(0))
+    }
+
     /// A tier that prices a random subset of the normalized keys and one other key.
     fn any_tier() -> impl Strategy<Value = PriceTier> {
         let keys = [
@@ -1162,26 +1171,37 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2_000))]
 
-        /// Exact: the result is the integer nearest to `units * price / 1000`, the even one on a tie, unless that
-        /// exceeds the `i64` range, which saturates.
+        /// Exact where the cost fits: the integer nearest to `units * price / 1000`, the even one on a tie.
+        /// Products in this domain stay below 2^72, so no case saturates.
         #[test]
-        fn the_kernel_is_exact(units in any::<u64>(), price in 0i64..=i64::MAX) {
+        fn the_kernel_is_exact(units in below(40), price in below(32)) {
+            let price = i64::try_from(price).unwrap();
             let exact = i128::from(units) * i128::from(price);
             let cost = i128::from(cost_nusd(units, price).nanos());
-            let nearest_fits = exact <= i128::from(i64::MAX) * 1_000 + 500;
-            if nearest_fits {
-                let error = cost * 1_000 - exact;
-                prop_assert!(error.abs() <= 500, "{units} x {price}: {cost}");
-                if error.abs() == 500 {
-                    prop_assert_eq!(cost % 2, 0);
-                }
-            } else {
-                prop_assert_eq!(cost, i128::from(i64::MAX));
+            let error = cost * 1_000 - exact;
+            prop_assert!(error.abs() <= 500, "{units} x {price}: {cost}");
+            if error.abs() == 500 {
+                prop_assert_eq!(cost % 2, 0, "{} x {}: {}", units, price, cost);
             }
         }
 
+        /// `(2k + 1) * 500 / 1000` is `k + 0.5`, which rounds to the even one of `k` and `k + 1`.
         #[test]
-        fn the_kernel_is_monotone_in_units(a in any::<u64>(), b in any::<u64>(), price in any::<i64>()) {
+        fn the_kernel_rounds_ties_to_even(k in 0u64..1 << 40) {
+            let even = if k % 2 == 0 { k } else { k + 1 };
+            prop_assert_eq!(cost_nusd(2 * k + 1, 500), n(i64::try_from(even).unwrap()));
+        }
+
+        /// Products in this domain are at least 2^84, far beyond `i64::MAX * 1000`.
+        #[test]
+        fn the_kernel_saturates(units in (1u64 << 44)..=u64::MAX, price in (1i64 << 40)..=i64::MAX) {
+            prop_assert_eq!(cost_nusd(units, price), NanoUsd::MAX);
+        }
+
+        /// Units and prices of every magnitude, so pairs fall on both sides of the saturation boundary.
+        #[test]
+        fn the_kernel_is_monotone_in_units(a in below(64), b in below(64), price in below(40)) {
+            let price = i64::try_from(price).unwrap();
             let (low, high) = (a.min(b), a.max(b));
             prop_assert!(cost_nusd(low, price) <= cost_nusd(high, price));
         }

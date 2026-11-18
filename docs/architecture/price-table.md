@@ -13,7 +13,7 @@ changes under a version, so a replay computes identical costs. A test fails unti
 
 ## Format
 
-The file is a JSON array of model rows.
+The file is a JSON array of model rows. An illustrative row (the bundled rows carry no `start`):
 
 ```json
 {
@@ -87,5 +87,8 @@ threshold on `input`, which already includes the cache reads and writes.
 3. A new model is a new row. Put rows with more specific patterns first when patterns can overlap.
 4. Run `cargo nextest run -p crucible-normalize`. The table loads in a test, which checks every rule above and
    rejects match patterns that are longer than 1,024 bytes, nest groups more than 32 deep or compile too large.
-   The version test then prints the new `BUNDLED_PRICE_TABLE_VERSION`; set the constant to it.
-5. A change to the data file changes the price table version, not `NORMALIZER_VERSION`.
+   The version test then prints the new `BUNDLED_PRICE_TABLE_VERSION`; set the constant to it. A new row or tier
+   also changes the row and tier counts that `the_bundled_table_loads` asserts.
+5. When a new model has names worth pinning, add them with the row they must match to
+   `crates/crucible-normalize/tests/fixtures/model_names.json` and update the corpus count in `tests/prices.rs`.
+6. A change to the data file changes the price table version, not `NORMALIZER_VERSION`.
