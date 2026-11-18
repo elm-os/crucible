@@ -20,7 +20,11 @@ crucible-query = { workspace = true }
 crucible-records = { workspace = true }
 axum = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+# JSON pointers for request-body problems (contract 12.3); axum's json feature already builds it.
+serde_path_to_error = "=0.1.20"
+sha2 = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true }
 

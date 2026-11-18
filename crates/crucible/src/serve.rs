@@ -453,6 +453,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// Where the API's fact writes go: this node's ingest.
+    facts: Arc<dyn crucible_api::FactWriter>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -533,6 +535,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        facts: fact_writer,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -610,6 +613,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         keys,
         Arc::new(StaticProjectSettings::default()),
         cursors,
+        fact_writer,
     ));
     tracing::info!(
         watermark = %watermark,
@@ -778,6 +782,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }

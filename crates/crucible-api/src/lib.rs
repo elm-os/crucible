@@ -18,14 +18,17 @@
 //!   checked with the other parameters before the store is asked.
 
 mod access;
+mod body;
 mod convert;
 mod cursor;
+mod idempotency;
 mod layers;
 mod openapi;
 mod params;
 mod problem;
 mod routes;
 mod settings;
+mod writer;
 
 use std::sync::Arc;
 
@@ -47,22 +50,25 @@ pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use settings::{
     DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
 };
+pub use writer::{AcceptedFact, FactAppend, FactAuthor, FactRefusal, FactWriter, NewFact};
 
 use crate::access::ApiState;
 
 /// The base path of the API (contract 12.1).
 pub const BASE_PATH: &str = "/api/v1";
 
-/// The API over a query service, with its routes under [`BASE_PATH`], signing cursors with `cursors`. Merge it
-/// into the main listener's router, then wrap that router in [`common_layers`].
+/// The API over a query service, with its routes under [`BASE_PATH`], signing cursors with `cursors` and
+/// writing facts through `facts`. Merge it into the main listener's router, then wrap that router in
+/// [`common_layers`].
 pub fn router(
     env: &Env,
     service: QueryService,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    facts: Arc<dyn FactWriter>,
 ) -> Router {
-    build(env, Some(service), keys, settings, cursors)
+    build(env, Some((service, facts)), keys, settings, cursors)
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -78,17 +84,20 @@ pub fn router_without_store(
 
 fn build(
     env: &Env,
-    service: Option<QueryService>,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
+    let (service, facts) = store.unzip();
     let state = ApiState {
         env: env.clone(),
         service,
         keys,
         settings,
         cursors,
+        facts,
+        idempotency: Arc::default(),
     };
     let api = routes::router()
         .fallback(unknown_path)
@@ -113,16 +122,15 @@ async fn unknown_path(State(state): State<ApiState>, request: Request) -> Respon
     problem(id, ProblemCode::NotFound, "no resource exists at this path")
 }
 
-/// Every route of milestone 1 is a read.
+/// A route asked with a method it does not take: the reads take GET and HEAD, the writes and the metrics query
+/// POST.
 async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
     let id = request_id(request.extensions(), &state.env);
-    let mut response = problem(
-        id,
-        ProblemCode::MethodNotAllowed,
-        "the resource supports GET and HEAD only",
-    );
+    let allowed = routes::allowed_methods(request.uri().path());
+    let detail = format!("the resource supports {allowed} only");
+    let mut response = problem(id, ProblemCode::MethodNotAllowed, &detail);
     response
         .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
+        .insert(ALLOW, HeaderValue::from_static(allowed));
     response
 }

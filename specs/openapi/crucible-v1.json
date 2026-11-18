@@ -9,6 +9,146 @@
     "version": "0.0.0"
   },
   "paths": {
+    "/api/v1/projects/{project_id}/corrections": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Correct an output",
+        "description": "Records the corrected output of a trace, a span or a session; `retracted: true` removes the correction.\nThe body is at most 1 MiB.",
+        "operationId": "post_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/data-bounds": {
       "get": {
         "tags": [
@@ -81,6 +221,874 @@
           },
           "504": {
             "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/facts": {
+      "get": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Get the facts of a target",
+        "description": "The effective facts of a trace, a span or a session: per key the latest write, without retracted keys.",
+        "operationId": "get_facts",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "description": "The target trace (32 hex characters); with `span_id`, its span.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "query",
+            "description": "The target span (16 hex characters), with `trace_id`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "The target session, instead of a trace.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The facts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Facts"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/feedback": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Record feedback",
+        "description": "Writes a score with `source = feedback` about a trace, a span or a session. A score with the same name\n(and `score_id`) replaces the earlier one; `retracted: true` removes it.",
+        "operationId": "post_feedback",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/filter-values": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Get filter values",
+        "description": "The values of a filter field of a metrics source in the window, most frequent first, with how many spans\ncarry each. The fields are those of the metrics schema.",
+        "operationId": "get_filter_values",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "The source whose field is looked up.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "field",
+            "in": "query",
+            "description": "A filter field of the source.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only values that start with this text.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many values: 1 to 100, default 20.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterValues"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/flags": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Set a flag",
+        "description": "Sets the `bookmarked` or `public` flag of a trace, a span or a session.",
+        "operationId": "post_flag",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/metrics/query": {
+      "post": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Query metrics",
+        "description": "The series of up to four measures of a source, bucketed in time and split by up to two dimensions, with\nat most 500 buckets per series, 20 keys and 10,000 points. Keys beyond `top_n` form an `other` series for\nadditive measures; for percentiles they are left out and `truncated` is set.",
+        "operationId": "query_metrics",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricsQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The series.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` (with `limit` and `suggested_granularity`) or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/metrics/schema": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Get the metrics schema",
+        "description": "Per source: the measures with their units and aggregations, the dimensions, the filter fields with\ntheir operators, the granularities and the caps of a query. Generated from the registry the query\ncompiler uses.",
+        "operationId": "get_metrics_schema",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The schema.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tags": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Edit a tag",
+        "description": "Adds a tag to a trace, a span or a session, or removes it. A trace's effective tags are the tags it was\nsent with, plus the added ones, minus the removed ones.",
+        "operationId": "post_tag",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -492,6 +1500,15 @@
   },
   "components": {
     "schemas": {
+      "AuthorKind": {
+        "type": "string",
+        "description": "Who wrote a fact.",
+        "enum": [
+          "user",
+          "api_key",
+          "system"
+        ]
+      },
       "Consistency": {
         "type": "string",
         "description": "Whether a response reflects every span this node acknowledged before the request arrived.",
@@ -499,6 +1516,78 @@
           "strong",
           "lagging"
         ]
+      },
+      "Correction": {
+        "type": "object",
+        "description": "The latest correction of an output.",
+        "required": [
+          "corrected",
+          "note",
+          "fact"
+        ],
+        "properties": {
+          "corrected": {
+            "type": "object",
+            "description": "The corrected output."
+          },
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "note": {
+            "type": "string",
+            "description": "The note."
+          }
+        }
+      },
+      "CorrectionRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/corrections`: the corrected output of the target.",
+        "required": [
+          "corrected"
+        ],
+        "properties": {
+          "corrected": {
+            "type": "object",
+            "description": "The corrected output: any JSON value."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note, at most 4 KiB."
+          },
+          "retracted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Retracts the correction: the target has none afterwards."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          }
+        },
+        "additionalProperties": false
       },
       "DataBounds": {
         "type": "object",
@@ -545,6 +1634,219 @@
           }
         }
       },
+      "FactRef": {
+        "type": "object",
+        "description": "The fact that holds a value: the latest write of its key.",
+        "required": [
+          "fact_id",
+          "version",
+          "created_at",
+          "author_kind",
+          "author_id"
+        ],
+        "properties": {
+          "author_id": {
+            "type": "string",
+            "description": "The user or API key that wrote it."
+          },
+          "author_kind": {
+            "$ref": "#/components/schemas/AuthorKind",
+            "description": "Who wrote it."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was written."
+          },
+          "fact_id": {
+            "type": "string",
+            "description": "The fact's id."
+          },
+          "version": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The fact's version."
+          }
+        }
+      },
+      "FactWritten": {
+        "type": "object",
+        "description": "What the server assigned to a fact it made durable.",
+        "required": [
+          "fact_id",
+          "key",
+          "version",
+          "created_at",
+          "target_time"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the fact was accepted."
+          },
+          "fact_id": {
+            "type": "string",
+            "description": "The fact's id (a UUIDv7)."
+          },
+          "key": {
+            "type": "string",
+            "description": "The key latest-wins resolves over: the score name (with `#` and the score id), the tag, the flag or\n`output`."
+          },
+          "target_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of the target the fact is filed under: a trace's earliest known start, a session's first\nseen."
+          },
+          "version": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The server's microsecond clock at acceptance: of two facts of one key, the greater version wins."
+          }
+        }
+      },
+      "Facts": {
+        "type": "object",
+        "description": "The effective facts of one target: per key the latest write, without retracted keys.",
+        "required": [
+          "scores",
+          "tags",
+          "bookmarked",
+          "public",
+          "correction",
+          "meta"
+        ],
+        "properties": {
+          "bookmarked": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FlagValue",
+                "description": "The `bookmarked` flag; null when it was never set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "correction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Correction",
+                "description": "The correction of the output; null when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the response is."
+          },
+          "public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FlagValue",
+                "description": "The `public` flag; null when it was never set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Score"
+            },
+            "description": "The scores, by name."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagEdit"
+            },
+            "description": "The latest edit of each tag. The target's effective tags are its ingest tags plus the added ones minus\nthe removed ones."
+          }
+        }
+      },
+      "FeedbackRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/feedback`: one score with `source = feedback`.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A comment, at most 4 KiB."
+          },
+          "data_type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScoreDataType",
+                "description": "How to read the value; by default `numeric` for a number, `boolean` for a boolean and `categorical` for\na string."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A JSON object, at most 16 KiB."
+          },
+          "name": {
+            "type": "string",
+            "description": "The score name, without `#`."
+          },
+          "retracted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Retracts the score of this name (and id): the target has no value for it afterwards."
+          },
+          "score_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's id of this score: scores with the same name and different ids are kept apart."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          },
+          "value": {
+            "$ref": "#/components/schemas/ScoreValue",
+            "description": "The value."
+          }
+        },
+        "additionalProperties": false
+      },
       "FieldError": {
         "type": "object",
         "description": "One invalid part of a request.",
@@ -567,6 +1869,142 @@
             "description": "A JSON pointer to the invalid part: `/<name>` for a query or path parameter."
           }
         }
+      },
+      "FillMode": {
+        "type": "string",
+        "description": "What an empty bucket holds.",
+        "enum": [
+          "zero",
+          "none"
+        ]
+      },
+      "FilterValue": {
+        "type": "object",
+        "description": "One value of a filter field.",
+        "required": [
+          "value",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How many spans carry it in the window."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
+      "FilterValues": {
+        "type": "object",
+        "description": "The answer of `GET projects/{project_id}/filter-values`: the most frequent values first.",
+        "required": [
+          "data",
+          "truncated",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterValue"
+            },
+            "description": "The values."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more values exist than `data` holds."
+          }
+        }
+      },
+      "FlagName": {
+        "type": "string",
+        "description": "A flag of a target.",
+        "enum": [
+          "bookmarked",
+          "public"
+        ]
+      },
+      "FlagRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/flags`: sets a flag of the target.",
+        "required": [
+          "flag",
+          "value"
+        ],
+        "properties": {
+          "flag": {
+            "$ref": "#/components/schemas/FlagName",
+            "description": "The flag."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          },
+          "value": {
+            "type": "boolean",
+            "description": "Its new value."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FlagValue": {
+        "type": "object",
+        "description": "The latest value of a flag.",
+        "required": [
+          "value",
+          "fact"
+        ],
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "value": {
+            "type": "boolean",
+            "description": "The value."
+          }
+        }
+      },
+      "Granularity": {
+        "type": "string",
+        "description": "The bucket width of a metrics query.",
+        "enum": [
+          "auto",
+          "minute",
+          "five_minutes",
+          "fifteen_minutes",
+          "hour",
+          "day",
+          "week"
+        ]
       },
       "HeadKind": {
         "type": "string",
@@ -604,6 +2042,25 @@
           }
         }
       },
+      "MeasureRequest": {
+        "type": "object",
+        "description": "One measure of a query and how it is aggregated.",
+        "required": [
+          "measure",
+          "aggregation"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "An aggregation the measure allows: `sum`, or a percentile `p50`, `p90`, `p95`, `p99`."
+          },
+          "measure": {
+            "type": "string",
+            "description": "A measure id of the source in the metrics schema."
+          }
+        },
+        "additionalProperties": false
+      },
       "Meta": {
         "type": "object",
         "description": "How complete and how fresh a telemetry response is.",
@@ -629,6 +2086,314 @@
           "partial_reason": {
             "$ref": "#/components/schemas/PartialReason",
             "description": "Why rows may be missing; present only when `partial` is true."
+          }
+        }
+      },
+      "MetricsFilter": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Every operand holds.",
+            "required": [
+              "and"
+            ],
+            "properties": {
+              "and": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MetricsFilter"
+                },
+                "description": "Every operand holds."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Any operand holds.",
+            "required": [
+              "or"
+            ],
+            "properties": {
+              "or": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MetricsFilter"
+                },
+                "description": "Any operand holds."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The operand does not hold.",
+            "required": [
+              "not"
+            ],
+            "properties": {
+              "not": {
+                "$ref": "#/components/schemas/MetricsFilter",
+                "description": "The operand does not hold."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The field is one of the values (operator `in`).",
+            "required": [
+              "in"
+            ],
+            "properties": {
+              "in": {
+                "type": "object",
+                "description": "The field is one of the values (operator `in`).",
+                "required": [
+                  "field",
+                  "values"
+                ],
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "description": "The field."
+                  },
+                  "values": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The values."
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "A filter over a source's filter fields: conditions combined with `and`, `or` and `not`. The fields and\nthe operator each takes are in the metrics schema."
+      },
+      "MetricsPoint": {
+        "type": "object",
+        "description": "One bucket of a series.",
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The first instant of the bucket."
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The value in the measure's unit; null for a percentile of a bucket without spans."
+          }
+        }
+      },
+      "MetricsQueryRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/metrics/query` (`MetricsQuery` v1).",
+        "required": [
+          "source",
+          "measures",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to two dimension ids of the source, to split the series by."
+          },
+          "fill": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FillMode",
+                "description": "What an empty bucket holds; `zero` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MetricsFilter",
+                "description": "A filter over the source's filter fields."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window, inclusive (RFC 3339)."
+          },
+          "granularity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Granularity",
+                "description": "The bucket width; `auto` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MeasureRequest"
+            },
+            "description": "One to four measures."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source: `spans` or `traces`."
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The time zone of the buckets. Only `UTC` is supported yet."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window, exclusive (RFC 3339). At most the project's maximum window."
+          },
+          "top_n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "With dimensions: how many keys to return, 1 to 20, default 20.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MetricsResponse": {
+        "type": "object",
+        "description": "The answer of `POST projects/{project_id}/metrics/query`.",
+        "required": [
+          "series",
+          "granularity",
+          "truncated",
+          "source_tier",
+          "as_of",
+          "partial_last_bucket",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant the answer describes."
+          },
+          "granularity": {
+            "$ref": "#/components/schemas/Granularity",
+            "description": "The granularity used."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "partial_last_bucket": {
+            "type": "boolean",
+            "description": "Whether the last bucket ends after `as_of` and may still grow."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a value above saturated at 2^53 - 1."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricsSeries"
+            },
+            "description": "The series."
+          },
+          "source_tier": {
+            "type": "string",
+            "description": "Where the measures were read: `rollup` or `core`."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether keys beyond `top_n` were left out of a percentile measure, which has no `other` series."
+          }
+        }
+      },
+      "MetricsSchema": {
+        "type": "object",
+        "description": "The answer of `GET projects/{project_id}/metrics/schema`.",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceSchema"
+            },
+            "description": "One entry per source with metrics."
+          }
+        }
+      },
+      "MetricsSeries": {
+        "type": "object",
+        "description": "One series: one measure of one dimension key, or of the `other` key.",
+        "required": [
+          "measure",
+          "aggregation",
+          "unit",
+          "key",
+          "other",
+          "points"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "The aggregation."
+          },
+          "key": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesKey"
+            },
+            "description": "The dimension values of the key; empty without dimensions and for the `other` series."
+          },
+          "measure": {
+            "type": "string",
+            "description": "The measure id."
+          },
+          "other": {
+            "type": "boolean",
+            "description": "Whether this series sums every key beyond `top_n` (additive measures only)."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricsPoint"
+            },
+            "description": "The buckets in time order."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of the values: `count`, `tokens`, `usd` or `us`."
           }
         }
       },
@@ -786,6 +2551,291 @@
         "maximum": 9007199254740991,
         "minimum": 0
       },
+      "SchemaDimension": {
+        "type": "object",
+        "description": "A dimension of the metrics schema.",
+        "required": [
+          "id",
+          "type",
+          "high_cardinality"
+        ],
+        "properties": {
+          "high_cardinality": {
+            "type": "boolean",
+            "description": "Whether the dimension can take many values."
+          },
+          "id": {
+            "type": "string",
+            "description": "The dimension id."
+          },
+          "type": {
+            "type": "string",
+            "description": "`string`, or `enum` for a closed set of names."
+          }
+        }
+      },
+      "SchemaFilterField": {
+        "type": "object",
+        "description": "A filter field of the metrics schema.",
+        "required": [
+          "field",
+          "operator"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The field."
+          },
+          "operator": {
+            "type": "string",
+            "description": "The operator its condition takes."
+          }
+        }
+      },
+      "SchemaLimits": {
+        "type": "object",
+        "description": "The caps of a source's queries.",
+        "required": [
+          "max_buckets",
+          "max_series",
+          "max_points",
+          "max_measures",
+          "max_dimensions"
+        ],
+        "properties": {
+          "max_buckets": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most buckets per series.",
+            "minimum": 0
+          },
+          "max_dimensions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most dimensions of one query.",
+            "minimum": 0
+          },
+          "max_measures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most measures of one query.",
+            "minimum": 0
+          },
+          "max_points": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most points in one answer.",
+            "minimum": 0
+          },
+          "max_series": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most dimension keys; the rest form the `other` series of additive measures.",
+            "minimum": 0
+          }
+        }
+      },
+      "SchemaMeasure": {
+        "type": "object",
+        "description": "A measure of the metrics schema.",
+        "required": [
+          "id",
+          "label",
+          "unit",
+          "aggregations",
+          "additive",
+          "tier"
+        ],
+        "properties": {
+          "additive": {
+            "type": "boolean",
+            "description": "Whether the values of two keys add up to the value of both: true for sums."
+          },
+          "aggregations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The aggregations it allows."
+          },
+          "id": {
+            "type": "string",
+            "description": "The measure id."
+          },
+          "label": {
+            "type": "string",
+            "description": "The label."
+          },
+          "tier": {
+            "type": "string",
+            "description": "Where it is read: `rollup` or `core`."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of its values: `count`, `tokens`, `usd` or `us`."
+          }
+        }
+      },
+      "Score": {
+        "type": "object",
+        "description": "A score.",
+        "required": [
+          "name",
+          "score_id",
+          "data_type",
+          "value",
+          "source",
+          "comment",
+          "metadata",
+          "fact"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "The comment; empty in trace lists."
+          },
+          "data_type": {
+            "$ref": "#/components/schemas/ScoreDataType",
+            "description": "How to read the value."
+          },
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The metadata object; null when there is none, and in trace lists."
+          },
+          "name": {
+            "type": "string",
+            "description": "The score name."
+          },
+          "score_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's score id; null when the score was written without one."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ScoreSource",
+            "description": "Where it came from."
+          },
+          "value": {
+            "$ref": "#/components/schemas/ScoreValue",
+            "description": "The value."
+          }
+        }
+      },
+      "ScoreDataType": {
+        "type": "string",
+        "description": "How to read a score's value.",
+        "enum": [
+          "numeric",
+          "categorical",
+          "boolean",
+          "text"
+        ]
+      },
+      "ScoreSource": {
+        "type": "string",
+        "description": "Where a score came from.",
+        "enum": [
+          "feedback",
+          "api",
+          "annotation",
+          "eval"
+        ]
+      },
+      "ScoreValue": {
+        "oneOf": [
+          {
+            "type": "number",
+            "format": "double",
+            "description": "A number."
+          },
+          {
+            "type": "boolean",
+            "description": "A boolean."
+          },
+          {
+            "type": "string",
+            "description": "A string."
+          }
+        ],
+        "description": "A score's value: a number for `numeric`, a boolean for `boolean`, a string for `categorical` and `text`."
+      },
+      "SeriesKey": {
+        "type": "object",
+        "description": "One dimension value of a series key.",
+        "required": [
+          "dimension",
+          "value"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "description": "The dimension id."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
+      "SourceSchema": {
+        "type": "object",
+        "description": "What can be queried of one source.",
+        "required": [
+          "source",
+          "measures",
+          "dimensions",
+          "filter_fields",
+          "granularities",
+          "limits"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaDimension"
+            },
+            "description": "Its dimensions."
+          },
+          "filter_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaFilterField"
+            },
+            "description": "Its filter fields."
+          },
+          "granularities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Granularity"
+            },
+            "description": "The explicit granularities, finest first; `auto` picks among them."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SchemaLimits",
+            "description": "The caps."
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaMeasure"
+            },
+            "description": "Its measures."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source."
+          }
+        }
+      },
       "Span": {
         "type": "object",
         "description": "One span of a trace.",
@@ -930,6 +2980,77 @@
           "error"
         ]
       },
+      "TagEdit": {
+        "type": "object",
+        "description": "The latest edit of a tag.",
+        "required": [
+          "tag",
+          "op",
+          "fact"
+        ],
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "op": {
+            "$ref": "#/components/schemas/TagOp",
+            "description": "Whether it was added or removed."
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag."
+          }
+        }
+      },
+      "TagOp": {
+        "type": "string",
+        "description": "A tag edit.",
+        "enum": [
+          "add",
+          "remove"
+        ]
+      },
+      "TagRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/tags`: adds a tag to the target or removes it.",
+        "required": [
+          "tag",
+          "op"
+        ],
+        "properties": {
+          "op": {
+            "$ref": "#/components/schemas/TagOp",
+            "description": "`add` or `remove`. Removing a tag the trace was sent with hides it."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag, 1 to 256 bytes."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          }
+        },
+        "additionalProperties": false
+      },
       "TimeRange": {
         "type": "object",
         "description": "The first and last minute with data; both null when there is none.",
@@ -964,10 +3085,15 @@
           "span_count",
           "paged",
           "spans",
+          "facts",
           "meta",
           "saturated"
         ],
         "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/TraceFacts",
+            "description": "The trace's facts: effective tags, flags, scores and the correction of its output."
+          },
           "meta": {
             "$ref": "#/components/schemas/Meta",
             "description": "How complete and how fresh the response is."
@@ -997,6 +3123,55 @@
           }
         }
       },
+      "TraceFacts": {
+        "type": "object",
+        "description": "The facts a trace view shows.",
+        "required": [
+          "tags",
+          "bookmarked",
+          "public",
+          "scores",
+          "correction"
+        ],
+        "properties": {
+          "bookmarked": {
+            "type": "boolean",
+            "description": "Whether the trace is bookmarked."
+          },
+          "correction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Correction",
+                "description": "The correction of the trace's output; null when there is none, and in trace lists."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "public": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The `public` flag; null when it was never set."
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Score"
+            },
+            "description": "The scores, by name. In trace lists they carry no comment or metadata."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The effective tags: the tags the trace was sent with, plus the added ones, minus the removed ones."
+          }
+        }
+      },
       "TraceListItem": {
         "type": "object",
         "description": "One trace of the list: its head (the root span, or the earliest span while the root has not arrived) and\nthe trace's merged aggregates.",
@@ -1020,6 +3195,7 @@
           "environment",
           "release",
           "tags",
+          "facts",
           "saturated"
         ],
         "properties": {
@@ -1034,6 +3210,10 @@
           "error_count": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Spans of level `error`."
+          },
+          "facts": {
+            "$ref": "#/components/schemas/TraceFacts",
+            "description": "The trace's facts. Scores carry no comment or metadata here, and there is no correction."
           },
           "head_kind": {
             "$ref": "#/components/schemas/HeadKind",
@@ -1085,7 +3265,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The trace tags; empty until the store serves the head."
+            "description": "The effective trace tags: the head's tags, which are empty until the store serves the head, plus the\ntags added by edits, minus the removed ones."
           },
           "total_cost_usd": {
             "type": "number",
@@ -1168,6 +3348,14 @@
     }
   },
   "tags": [
+    {
+      "name": "facts",
+      "description": "Scores, tags, flags and corrections written about traces, spans and sessions."
+    },
+    {
+      "name": "metrics",
+      "description": "Time series over the project's spans and traces, their schema and filter values."
+    },
     {
       "name": "traces",
       "description": "Traces, their spans and the project's data bounds."

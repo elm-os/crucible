@@ -19,6 +19,7 @@ pub mod control_pg;
 mod differential;
 mod inserts;
 mod m2;
+mod m2_facts;
 mod maintenance;
 mod reads;
 mod startup;

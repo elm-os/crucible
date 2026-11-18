@@ -95,7 +95,9 @@ fn columns(table: FactTable) -> Columns {
     match table {
         FactTable::Scores => columns!(
             FactScoresCol,
-            [DataType, ValueNum, ValueStr, Comment, Source, Metadata, ConfigId]
+            [
+                DataType, ValueNum, ValueStr, Comment, Source, Metadata, ConfigId
+            ]
         ),
         FactTable::Tags => columns!(FactTagsCol, [Op]),
         FactTable::Flags => columns!(FactFlagsCol, [Value]),

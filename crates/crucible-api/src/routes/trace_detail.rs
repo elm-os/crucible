@@ -10,7 +10,7 @@ use crucible_query as query;
 use utoipa::OpenApi;
 
 use crate::access::{ApiState, Project};
-use crate::convert::{meta, span};
+use crate::convert::{meta, span, trace_facts};
 use crate::params::Params;
 use crate::problem::ApiError;
 
@@ -77,6 +77,7 @@ fn trace_detail(detail: &query::TraceDetail) -> wire::TraceDetail {
         span_count: s.u64(detail.span_count),
         paged: detail.paged,
         spans: detail.spans.iter().map(span).collect(),
+        facts: trace_facts(&detail.facts),
         meta: meta(&detail.meta),
         saturated: s.saturated(),
     }
@@ -135,6 +136,7 @@ mod tests {
             span_count: u64::MAX,
             paged: true,
             spans: vec![span(u64::MAX, 10, 20), span(3, 20, 10)],
+            facts: query::TraceFacts::default(),
             meta: query::Meta {
                 as_of: Timestamp::EPOCH,
                 partial: false,

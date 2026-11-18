@@ -5,6 +5,9 @@
 //! is answered with `telemetry_store_unavailable`.
 
 mod data_bounds;
+mod facts;
+mod filter_values;
+mod metrics;
 mod spans;
 mod trace_detail;
 mod traces;
@@ -24,6 +27,9 @@ use crate::problem::ApiError;
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(data_bounds::routes())
+        .merge(facts::routes())
+        .merge(filter_values::routes())
+        .merge(metrics::routes())
         .merge(spans::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
@@ -33,10 +39,22 @@ pub(crate) fn router() -> Router<ApiState> {
 /// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(data_bounds::Paths::openapi());
+    doc.merge(facts::Paths::openapi());
+    doc.merge(filter_values::Paths::openapi());
+    doc.merge(metrics::Paths::openapi());
     doc.merge(spans::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
     doc
+}
+
+/// The methods a path under the base path takes, for the `Allow` header of a wrong method.
+pub(crate) fn allowed_methods(path: &str) -> &'static str {
+    let post = facts::POST_PATHS
+        .iter()
+        .chain(&metrics::POST_PATHS)
+        .any(|suffix| path.ends_with(suffix));
+    if post { "POST" } else { "GET, HEAD" }
 }
 
 fn cursor_invalid(request_id: RequestId) -> impl FnOnce(CursorError) -> ApiError {

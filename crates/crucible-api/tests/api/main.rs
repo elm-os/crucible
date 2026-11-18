@@ -15,6 +15,8 @@ mod world;
 mod document;
 mod endpoints;
 mod errors;
+mod facts;
+mod metrics;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -74,10 +76,15 @@ pub(crate) fn cursor_keys() -> Arc<KeyRing> {
     Arc::new(KeyRing::new(key))
 }
 
-/// The API over the world's query service.
+/// The API over the world's query service, writing facts into the world's store.
 pub(crate) fn api(env: &Env, world: &World) -> Router {
+    api_writing(env, world, facts::FakeWriter::new(world))
+}
+
+/// The API over the world's query service with this fact writer.
+pub(crate) fn api_writing(env: &Env, world: &World, writer: Arc<facts::FakeWriter>) -> Router {
     let service = world.service.clone();
-    crucible_api::router(env, service, keys(env), settings(), cursor_keys())
+    crucible_api::router(env, service, keys(env), settings(), cursor_keys(), writer)
 }
 
 /// The API before a telemetry store is configured.
@@ -150,6 +157,35 @@ pub(crate) async fn send(router: &Router, method: Method, uri: &str, key: Option
 /// A GET with project 1's key.
 pub(crate) async fn get(router: &Router, uri: &str) -> Reply {
     send(router, Method::GET, uri, Some(&key())).await
+}
+
+/// A POST of a JSON body with project 1's key and the extra headers.
+pub(crate) async fn post(
+    router: &Router,
+    uri: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> Reply {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {}", key()))
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let (parts, body) = response.into_parts();
+    let bytes = body.collect().await.unwrap().to_bytes();
+    Reply {
+        status: parts.status,
+        headers: parts.headers,
+        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    }
 }
 
 /// Runs `body` with the `Env` of a simulated host: a paused virtual clock and seeded streams, so request ids

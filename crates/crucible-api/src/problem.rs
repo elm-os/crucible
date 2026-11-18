@@ -1,6 +1,6 @@
 //! Error responses: problem documents (contract 12.3) that carry the request id.
 
-use axum::http::header::{CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{Extensions, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use crucible_api_types::{FieldError, Problem, ProblemCode, ProblemLimit};
@@ -32,6 +32,8 @@ pub(crate) struct ApiError {
     detail: String,
     errors: Vec<FieldError>,
     limit: Option<ProblemLimit>,
+    retry_after_s: Option<u32>,
+    suggested_granularity: Option<String>,
 }
 
 impl ApiError {
@@ -42,6 +44,8 @@ impl ApiError {
             detail: detail.into(),
             errors: Vec::new(),
             limit: None,
+            retry_after_s: None,
+            suggested_granularity: None,
         }
     }
 
@@ -71,6 +75,32 @@ impl ApiError {
                 "the request is invalid; see `errors`",
             )
         }
+    }
+
+    /// Sets `retry_after_s` and the `Retry-After` header.
+    pub(crate) fn with_retry_after(self, seconds: u32) -> Self {
+        Self {
+            retry_after_s: Some(seconds),
+            ..self
+        }
+    }
+
+    /// Sets `suggested_granularity`: the granularity under which a refused metrics query fits.
+    pub(crate) fn with_suggested_granularity(self, granularity: Option<String>) -> Self {
+        Self {
+            suggested_granularity: granularity,
+            ..self
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> ProblemCode {
+        self.code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn errors(&self) -> &[FieldError] {
+        &self.errors
     }
 
     pub(crate) fn with_limit(self, name: &str, value: u32) -> Self {
@@ -155,13 +185,19 @@ impl IntoResponse for ApiError {
             code: self.code,
             request_id: self.request_id.to_string(),
             errors: (!self.errors.is_empty()).then_some(self.errors),
-            retry_after_s: None,
+            retry_after_s: self.retry_after_s,
             limit: self.limit,
-            suggested_granularity: None,
+            suggested_granularity: self.suggested_granularity,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();
         let mut response = (status, [(CONTENT_TYPE, PROBLEM_JSON)], json).into_response();
+        if let Some(value) = self
+            .retry_after_s
+            .and_then(|seconds| HeaderValue::from_str(&seconds.to_string()).ok())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
         if self.code == ProblemCode::Unauthenticated {
             response
                 .headers_mut()

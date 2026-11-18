@@ -733,7 +733,10 @@ fn fact_and_filter_value_outputs() {
     use crucible_plan::{FactTable, FactsOf, FilterField, FilterValuesRequest, Source, TextField};
 
     let envelope = [
-        ("target_kind", "Enum8('trace' = 1, 'span' = 2, 'session' = 3)"),
+        (
+            "target_kind",
+            "Enum8('trace' = 1, 'span' = 2, 'session' = 3)",
+        ),
         ("trace_id", "FixedString(16)"),
         ("span_id", "FixedString(8)"),
         ("session_id", "String"),
@@ -741,7 +744,10 @@ fn fact_and_filter_value_outputs() {
         ("version", "UInt64"),
         ("fact_id", "UUID"),
         ("retracted", "UInt8"),
-        ("author_kind", "Enum8('user' = 1, 'api_key' = 2, 'system' = 3)"),
+        (
+            "author_kind",
+            "Enum8('user' = 1, 'api_key' = 2, 'system' = 3)",
+        ),
         ("author_id", "UUID"),
         ("created_at", "DateTime64(6, 'UTC')"),
     ];
@@ -817,7 +823,10 @@ fn fact_and_filter_value_outputs() {
     assert_eq!(
         values(FilterField::Level),
         pairs(&[
-            ("level", "Enum8('debug' = 0, 'default' = 1, 'warning' = 2, 'error' = 3)"),
+            (
+                "level",
+                "Enum8('debug' = 0, 'default' = 1, 'warning' = 2, 'error' = 3)"
+            ),
             ("sum_count", "UInt64")
         ])
     );

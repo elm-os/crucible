@@ -404,7 +404,10 @@ impl SourceSchema {
     /// The schema of a source the compiler covers, or `None`.
     pub fn of(source: Source) -> Option<Self> {
         let (dimensions, filter_fields) = match source {
-            Source::Spans => (DimensionId::ALL.to_vec(), FilterTarget::SpanMetrics.fields()),
+            Source::Spans => (
+                DimensionId::ALL.to_vec(),
+                FilterTarget::SpanMetrics.fields(),
+            ),
             Source::Traces => (Vec::new(), Vec::new()),
             Source::McpOps => return None,
         };
@@ -430,5 +433,8 @@ impl SourceSchema {
 
 /// The metrics schema: one entry per source the compiler covers, in the order of [`Source::ALL`].
 pub fn metrics_schema() -> Vec<SourceSchema> {
-    Source::ALL.into_iter().filter_map(SourceSchema::of).collect()
+    Source::ALL
+        .into_iter()
+        .filter_map(SourceSchema::of)
+        .collect()
 }

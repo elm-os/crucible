@@ -22,6 +22,14 @@ macro_rules! mirror {
                 }
             }
         }
+
+        impl From<$name> for records::$name {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => Self::$variant,)+
+                }
+            }
+        }
     };
 }
 
@@ -88,6 +96,56 @@ mirror! {
     }
 }
 
+mirror! {
+    /// Who wrote a fact.
+    AuthorKind {
+        /// A user.
+        User,
+        /// An API key.
+        ApiKey,
+        /// The server.
+        System,
+    }
+}
+
+mirror! {
+    /// How to read a score's value.
+    ScoreDataType {
+        /// A number.
+        Numeric,
+        /// One of a set of names.
+        Categorical,
+        /// True or false.
+        Boolean,
+        /// Free text.
+        Text,
+    }
+}
+
+mirror! {
+    /// Where a score came from.
+    ScoreSource {
+        /// End-user feedback.
+        Feedback,
+        /// Written through the API.
+        Api,
+        /// A reviewer's annotation.
+        Annotation,
+        /// An evaluation.
+        Eval,
+    }
+}
+
+mirror! {
+    /// A tag edit.
+    TagOp {
+        /// The tag is added.
+        Add,
+        /// The tag is removed.
+        Remove,
+    }
+}
+
 /// Whether a response reflects every span this node acknowledged before the request arrived.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -136,6 +194,18 @@ mod tests {
         }
         for &value in records::HeadKind::ALL {
             assert_eq!(wire(HeadKind::from(value)), value.as_str());
+        }
+        for &value in records::AuthorKind::ALL {
+            assert_eq!(wire(AuthorKind::from(value)), value.as_str());
+        }
+        for &value in records::ScoreDataType::ALL {
+            assert_eq!(wire(ScoreDataType::from(value)), value.as_str());
+        }
+        for &value in records::ScoreSource::ALL {
+            assert_eq!(wire(ScoreSource::from(value)), value.as_str());
+        }
+        for &value in records::TagOp::ALL {
+            assert_eq!(wire(TagOp::from(value)), value.as_str());
         }
     }
 

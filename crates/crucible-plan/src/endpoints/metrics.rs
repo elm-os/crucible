@@ -179,10 +179,7 @@ pub fn metrics_shape(
         other_columns.push(id.additive().then(|| place(&mut other, measure)));
     }
     // Rank by the first additive measure, or by the span count when every measure is a percentile.
-    let rank = other
-        .first()
-        .copied()
-        .unwrap_or(MeasureId::Count.measure());
+    let rank = other.first().copied().unwrap_or(MeasureId::Count.measure());
 
     // One series per measure and dimension key; the `other` series counts as a key.
     let per_key = query.measures.len() as u64;
@@ -358,12 +355,7 @@ fn series(
 ) -> Result<Option<QueryPlan>, MetricsError> {
     let (_, time, class) = source_table(query.source);
     let series = TimeSeries::new(aggregate, time, step, query.fill)?;
-    Ok(clamp.plan(
-        scope,
-        window,
-        caller.class(class),
-        Node::TimeSeries(series),
-    )?)
+    Ok(clamp.plan(scope, window, caller.class(class), Node::TimeSeries(series))?)
 }
 
 /// The series of a query: `bucket`, the dimensions, then the plan measures that [`MetricsShape::columns`]
