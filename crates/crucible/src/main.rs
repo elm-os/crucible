@@ -1,5 +1,6 @@
 //! The Crucible server binary. Subcommands are wired as their crates land.
 
+mod control;
 mod cursor_keys;
 mod keys;
 mod recent;
@@ -7,11 +8,11 @@ mod serve;
 mod store;
 
 use std::io::Write as _;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
-use crucible_env_prod::WalBackend;
+use crucible_config::{Config, ConfigErrors, Loaded};
 
 #[cfg(not(windows))]
 #[global_allocator]
@@ -32,76 +33,220 @@ struct Cli {
 enum Command {
     /// Run the server.
     Serve(Box<ServeArgs>),
+    /// Apply the Postgres migrations and the ClickHouse schema and access steps, then exit. The steps are
+    /// idempotent; with Postgres configured each is recorded in its ledger and applied once.
+    Migrate(Box<ConfigArgs>),
+    /// Check or print the configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
     Openapi,
 }
 
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Load the configuration and report every problem at once. Exits with 1 when there is one.
+    Check(Box<ConfigArgs>),
+    /// Print the effective configuration as TOML, each value with where it came from. Secrets are redacted.
+    Print(Box<ConfigArgs>),
+}
+
 #[derive(Debug, Args)]
 struct ServeArgs {
-    /// Address of the main listener (API, UI, ingest and health paths).
-    #[arg(long, default_value = "0.0.0.0:8080")]
-    listen: SocketAddr,
-    /// Address of the OTLP/HTTP ingest listener.
-    #[arg(long, default_value = "0.0.0.0:4318")]
-    ingest_listen: SocketAddr,
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// Apply the migrations before the startup checks: the ClickHouse schema and the service identities and,
+    /// with Postgres configured, the Postgres migrations. The steps are idempotent.
+    #[arg(long)]
+    migrate: bool,
+}
+
+/// The settings that have a flag. Each layer overrides the one before: the configuration file, then the
+/// `CRUCIBLE_*` environment variables, then these flags. `crucible config print` shows the result.
+#[derive(Debug, Default, Args)]
+struct ConfigArgs {
+    /// TOML configuration file. Also read from CRUCIBLE_CONFIG.
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Address of the main listener (API, UI, ingest and health paths) [default: 0.0.0.0:8080].
+    #[arg(long)]
+    listen: Option<String>,
+    /// Address of the OTLP/HTTP ingest listener [default: 0.0.0.0:4318].
+    #[arg(long)]
+    ingest_listen: Option<String>,
     /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id` and
     /// `secret`. Without it, every ingest request is refused.
     #[arg(long)]
-    keys_file: Option<PathBuf>,
-    /// Address of the Prometheus metrics listener.
-    #[arg(long, default_value = "127.0.0.1:9464")]
-    metrics_listen: SocketAddr,
-    /// Directory that holds the `wal`, `quarantine` and `exports` roots.
-    #[arg(long, default_value = "data")]
-    data_dir: PathBuf,
-    /// Disk backend for the WAL: `auto`, `portable` or `uring`.
-    #[arg(long, default_value = "auto")]
-    wal_backend: WalBackend,
+    keys_file: Option<String>,
+    /// Address of the Prometheus metrics listener [default: 127.0.0.1:9464].
+    #[arg(long)]
+    metrics_listen: Option<String>,
+    /// Directory that holds the `wal`, `quarantine` and `exports` roots [default: data].
+    #[arg(long)]
+    data_dir: Option<String>,
+    /// Disk backend for the WAL: `auto`, `portable` or `uring` [default: auto].
+    #[arg(long)]
+    wal_backend: Option<String>,
     /// Serve the UI from this directory (a built export such as `ui/out`) instead of the one compiled in.
     /// The files are read once at startup.
     #[arg(long)]
-    ui_dir: Option<PathBuf>,
+    ui_dir: Option<String>,
     /// HTTP endpoint of the ClickHouse telemetry store, `http://host:8123` or `https://host:8443`. Without
     /// it the server only ingests: requests are made durable and wait in the WAL, and the API answers 503.
-    #[arg(long, env = "CRUCIBLE_CLICKHOUSE_URL")]
-    clickhouse_url: Option<String>,
-    /// The ClickHouse admin user that the operator created; it runs the migrations.
-    #[arg(
-        long,
-        env = "CRUCIBLE_CLICKHOUSE_USER",
-        default_value = "crucible_admin"
-    )]
-    clickhouse_user: String,
-    /// File that holds the admin user's password. Without it the password is read from the environment
-    /// variable CRUCIBLE_CLICKHOUSE_PASSWORD.
-    #[arg(long, env = "CRUCIBLE_CLICKHOUSE_PASSWORD_FILE")]
-    clickhouse_password_file: Option<PathBuf>,
-    /// File that holds the master key as 64 hexadecimal characters. The passwords of the four service
-    /// identities are derived from it. Without it the key is read from the environment variable
-    /// CRUCIBLE_MASTER_KEY.
-    #[arg(long, env = "CRUCIBLE_MASTER_KEY_FILE")]
-    master_key_file: Option<PathBuf>,
-    /// Apply the ClickHouse schema and create the service identities before the startup checks. The steps
-    /// are idempotent.
+    /// Also read from CRUCIBLE_CLICKHOUSE_URL.
     #[arg(long)]
-    migrate: bool,
+    clickhouse_url: Option<String>,
+    /// The ClickHouse admin user that the operator created; it runs the migrations [default:
+    /// crucible_admin]. Also read from CRUCIBLE_CLICKHOUSE_USER.
+    #[arg(long)]
+    clickhouse_user: Option<String>,
+    /// File that holds the admin user's password. Also read from CRUCIBLE_CLICKHOUSE_PASSWORD_FILE; the
+    /// password itself is read from CRUCIBLE_CLICKHOUSE_PASSWORD.
+    #[arg(long)]
+    clickhouse_password_file: Option<String>,
+    /// File that holds the master key as 64 hexadecimal characters. The passwords of the four service
+    /// identities are derived from it. Also read from CRUCIBLE_MASTER_KEY_FILE; the key itself is read from
+    /// CRUCIBLE_MASTER_KEY.
+    #[arg(long)]
+    master_key_file: Option<String>,
     /// Bound on the memory of the recent-span index, in bytes. The default is 10% of RAM, at most 1 GiB.
     #[arg(long)]
-    recent_max_bytes: Option<u64>,
+    recent_max_bytes: Option<String>,
+    /// The control plane, `postgres://user@host:5432/database`; add `?sslmode=require` for TLS. Without it
+    /// the server runs without a control plane. Also read from CRUCIBLE_POSTGRES_URL.
+    #[arg(long)]
+    postgres_url: Option<String>,
+    /// File that holds the Postgres password. Also read from CRUCIBLE_POSTGRES_PASSWORD_FILE; the password
+    /// itself is read from CRUCIBLE_POSTGRES_PASSWORD.
+    #[arg(long)]
+    postgres_password_file: Option<String>,
+}
+
+impl ConfigArgs {
+    /// The flags that were given, as `(dotted key, value)`.
+    fn flags(&self) -> Vec<(&'static str, String)> {
+        [
+            ("server.listen", &self.listen),
+            ("server.ingest_listen", &self.ingest_listen),
+            ("server.keys_file", &self.keys_file),
+            ("server.metrics_listen", &self.metrics_listen),
+            ("data.dir", &self.data_dir),
+            ("data.wal_backend", &self.wal_backend),
+            ("server.ui_dir", &self.ui_dir),
+            ("clickhouse.url", &self.clickhouse_url),
+            ("clickhouse.user", &self.clickhouse_user),
+            ("clickhouse.password_file", &self.clickhouse_password_file),
+            ("master_key_file", &self.master_key_file),
+            ("recent.max_bytes", &self.recent_max_bytes),
+            ("postgres.url", &self.postgres_url),
+            ("postgres.password_file", &self.postgres_password_file),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, value.clone()?)))
+        .collect()
+    }
+
+    /// The configuration of this process: file, environment, then these flags.
+    fn load(&self) -> Result<Loaded, ConfigErrors> {
+        crucible_config::load(self.config.as_deref(), &self.flags())
+    }
+
+    /// Loads the configuration for a command that runs, logging what looks like a mistake.
+    fn load_for_run(&self) -> anyhow::Result<Config> {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .init();
+        let loaded = self.load()?;
+        for warning in &loaded.warnings {
+            tracing::warn!("{warning}");
+        }
+        Ok(loaded.config)
+    }
+}
+
+/// The disk backend the configuration names.
+fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBackend {
+    match backend {
+        crucible_config::WalBackend::Auto => crucible_env_prod::WalBackend::Auto,
+        crucible_config::WalBackend::Portable => crucible_env_prod::WalBackend::Portable,
+        crucible_config::WalBackend::Uring => crucible_env_prod::WalBackend::Uring,
+    }
+}
+
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("crucible-worker")
+        .build()
+        .context("starting the runtime")
+}
+
+/// `crucible migrate`: the Postgres migrations, then the ClickHouse steps, whichever are configured.
+async fn migrate(config: Config) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.postgres.is_some() || config.clickhouse.is_some(),
+        "nothing to migrate: set postgres.url (--postgres-url, CRUCIBLE_POSTGRES_URL) or clickhouse.url \
+         (--clickhouse-url, CRUCIBLE_CLICKHOUSE_URL)"
+    );
+    let prod = crucible_env_prod::build(
+        tokio::runtime::Handle::current(),
+        &crucible_env_prod::ProdConfig::default(),
+    )
+    .context("building the production environment")?;
+    let env = &prod.env;
+    let control = match &config.postgres {
+        Some(postgres) => Some(control::Control::new(env, postgres)?),
+        None => None,
+    };
+    match (&config.clickhouse, &control) {
+        (Some(clickhouse), control) => {
+            let clickhouse = store::ClickHouse::new(clickhouse)?;
+            let store = clickhouse.store(env);
+            store::apply_migrations(env, &clickhouse, &store, control.as_ref()).await?;
+        }
+        (None, Some(control)) => {
+            control.migrate_postgres(env).await?;
+        }
+        (None, None) => {}
+    }
+    tracing::info!(
+        postgres = config.postgres.is_some(),
+        clickhouse = config.clickhouse.is_some(),
+        "the migrations are applied"
+    );
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve(args) => {
-            tracing_subscriber::fmt()
-                .with_writer(std::io::stderr)
-                .init();
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("crucible-worker")
-                .build()?;
-            runtime.block_on(serve::run(*args))
+            let config = args.config.load_for_run()?;
+            runtime()?.block_on(serve::run(config, args.migrate))
+        }
+        Command::Migrate(args) => {
+            let config = args.load_for_run()?;
+            runtime()?.block_on(migrate(config))
+        }
+        Command::Config { command } => {
+            let (args, print) = match &command {
+                ConfigCommand::Check(args) => (args, false),
+                ConfigCommand::Print(args) => (args, true),
+            };
+            let loaded = args.load()?;
+            let mut err = std::io::stderr().lock();
+            for warning in &loaded.warnings {
+                writeln!(err, "warning: {warning}")?;
+            }
+            let mut out = std::io::stdout().lock();
+            if print {
+                out.write_all(loaded.print().as_bytes())?;
+            } else {
+                writeln!(out, "the configuration is valid")?;
+            }
+            Ok(())
         }
         Command::Openapi => {
             let json = crucible_api::openapi_json()?;
@@ -113,9 +258,15 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+    use std::path::Path;
+
     use clap::CommandFactory;
+    use crucible_config::{Layers, resolve};
 
     use super::*;
+
+    const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
     #[test]
     fn cli_is_well_formed_and_prints_the_version() {
@@ -134,23 +285,90 @@ mod tests {
         }
     }
 
+    /// The configuration that `argv` and `env` give, with the two secret files of the tests.
+    fn config(argv: &[&str], env: &[(&str, &str)]) -> Result<Config, ConfigErrors> {
+        let flags = serve_args(argv).config.flags();
+        let flags: Vec<(&str, String)> = flags.into_iter().collect();
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let layers = Layers {
+            file: None,
+            env: &env,
+            flags: &flags,
+        };
+        let files = |path: &Path| match path.to_str() {
+            Some("/run/secrets/clickhouse") => Ok("password\n".to_owned()),
+            Some("/run/secrets/master") => Ok(format!("{KEY}\n")),
+            _ => Err(std::io::Error::other("no such file")),
+        };
+        resolve(&layers, &files).map(|loaded| loaded.config)
+    }
+
     #[test]
     fn serve_defaults_match_the_contract_ports() {
-        let args = serve_args(&["crucible", "serve"]);
-        assert_eq!(args.listen.to_string(), "0.0.0.0:8080");
-        assert_eq!(args.ingest_listen.to_string(), "0.0.0.0:4318");
-        assert_eq!(args.metrics_listen.to_string(), "127.0.0.1:9464");
-        assert_eq!(args.wal_backend, WalBackend::Auto);
-        assert_eq!(args.keys_file, None);
-        assert_eq!(args.ui_dir, None);
-        assert!(Cli::try_parse_from(["crucible", "serve", "--wal-backend", "floppy"]).is_err());
-        let args = serve_args(&["crucible", "serve", "--ui-dir", "ui/out"]);
-        assert_eq!(args.ui_dir, Some(PathBuf::from("ui/out")));
+        let config = config(&["crucible", "serve"], &[]).unwrap();
+        assert_eq!(config.server.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.server.ingest_listen.to_string(), "0.0.0.0:4318");
+        assert_eq!(config.server.metrics_listen.to_string(), "127.0.0.1:9464");
+        assert_eq!(config.data.dir, Path::new("data"));
+        assert_eq!(config.data.wal_backend, crucible_config::WalBackend::Auto);
+        assert_eq!(config.server.keys_file, None);
+        assert_eq!(config.server.ui_dir, None);
+        assert_eq!(config.clickhouse, None);
+        assert_eq!(config.postgres, None);
+        assert!(!serve_args(&["crucible", "serve"]).migrate);
+        let error =
+            self::config(&["crucible", "serve", "--wal-backend", "floppy"], &[]).unwrap_err();
+        assert!(
+            error.to_string().contains("auto, portable, uring"),
+            "{error}"
+        );
+        let config = self::config(&["crucible", "serve", "--ui-dir", "ui/out"], &[]).unwrap();
+        assert_eq!(config.server.ui_dir.as_deref(), Some(Path::new("ui/out")));
+    }
+
+    #[test]
+    fn serve_takes_every_first_flag() {
+        let config = config(
+            &[
+                "crucible",
+                "serve",
+                "--listen",
+                "127.0.0.1:1",
+                "--ingest-listen",
+                "127.0.0.1:2",
+                "--metrics-listen",
+                "127.0.0.1:3",
+                "--keys-file",
+                "keys.toml",
+                "--data-dir",
+                "/var/lib/crucible",
+                "--wal-backend",
+                "portable",
+            ],
+            &[],
+        )
+        .unwrap();
+        let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
+        assert_eq!(config.server.listen, addr("127.0.0.1:1"));
+        assert_eq!(config.server.ingest_listen, addr("127.0.0.1:2"));
+        assert_eq!(config.server.metrics_listen, addr("127.0.0.1:3"));
+        assert_eq!(
+            config.server.keys_file.as_deref(),
+            Some(Path::new("keys.toml"))
+        );
+        assert_eq!(config.data.dir, Path::new("/var/lib/crucible"));
+        assert_eq!(
+            config.data.wal_backend,
+            crucible_config::WalBackend::Portable
+        );
     }
 
     #[test]
     fn serve_takes_the_telemetry_store_from_flags() {
-        let args = serve_args(&[
+        let argv = [
             "crucible",
             "serve",
             "--clickhouse-url",
@@ -162,22 +380,113 @@ mod tests {
             "--migrate",
             "--recent-max-bytes",
             "1048576",
-        ]);
-        assert_eq!(
-            args.clickhouse_url.as_deref(),
-            Some("http://clickhouse:8123")
+        ];
+        assert!(serve_args(&argv).migrate);
+        let config = config(&argv, &[]).unwrap();
+        let clickhouse = config.clickhouse.unwrap();
+        assert_eq!(clickhouse.url, "http://clickhouse:8123");
+        assert_eq!(clickhouse.user, "crucible_admin");
+        assert_eq!(clickhouse.password.expose(), "password");
+        assert_eq!(clickhouse.master_key.expose(), KEY);
+        assert_eq!(config.recent_max_bytes, Some(1 << 20));
+    }
+
+    #[test]
+    fn serve_takes_the_telemetry_store_from_the_environment() {
+        // The four variables the first `serve` read, and the two value variables of the secrets.
+        let env = [
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse:8123"),
+            ("CRUCIBLE_CLICKHOUSE_USER", "admin"),
+            ("CRUCIBLE_CLICKHOUSE_PASSWORD", "from-env"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ];
+        let clickhouse = config(&["crucible", "serve"], &env)
+            .unwrap()
+            .clickhouse
+            .unwrap();
+        assert_eq!(clickhouse.user, "admin");
+        assert_eq!(clickhouse.password.expose(), "from-env");
+        let env = [
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse:8123"),
+            (
+                "CRUCIBLE_CLICKHOUSE_PASSWORD_FILE",
+                "/run/secrets/clickhouse",
+            ),
+            ("CRUCIBLE_MASTER_KEY_FILE", "/run/secrets/master"),
+        ];
+        let clickhouse = config(&["crucible", "serve"], &env)
+            .unwrap()
+            .clickhouse
+            .unwrap();
+        assert_eq!(clickhouse.password.expose(), "password");
+        assert_eq!(clickhouse.master_key.expose(), KEY);
+        // The URL without its secrets says which settings are missing.
+        let error = config(
+            &["crucible", "serve", "--clickhouse-url", "http://c:8123"],
+            &[],
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("--clickhouse-password-file") && text.contains("--master-key-file"),
+            "{text}"
         );
-        assert_eq!(args.clickhouse_user, "crucible_admin");
+    }
+
+    #[test]
+    fn postgres_is_optional_and_comes_from_a_flag_or_the_environment() {
+        let argv = [
+            "crucible",
+            "serve",
+            "--postgres-url",
+            "postgres://crucible@postgres:5432/crucible",
+            "--postgres-password-file",
+            "/run/secrets/clickhouse",
+        ];
+        let postgres = config(&argv, &[]).unwrap().postgres.unwrap();
         assert_eq!(
-            args.clickhouse_password_file,
-            Some(PathBuf::from("/run/secrets/clickhouse"))
+            postgres.url.expose(),
+            "postgres://crucible@postgres:5432/crucible"
         );
-        assert_eq!(
-            args.master_key_file,
-            Some(PathBuf::from("/run/secrets/master"))
-        );
-        assert!(args.migrate);
-        assert_eq!(args.recent_max_bytes, Some(1 << 20));
+        assert_eq!(postgres.password.unwrap().expose(), "password");
+        assert_eq!(postgres.pool_size, 8);
+        let env = [("CRUCIBLE_POSTGRES_URL", "postgres://u:p@h/d")];
+        let postgres = config(&["crucible", "serve"], &env)
+            .unwrap()
+            .postgres
+            .unwrap();
+        assert_eq!(postgres.password, None);
+    }
+
+    #[test]
+    fn migrate_and_config_take_the_same_settings() {
+        let argv = ["crucible", "migrate", "--postgres-url", "postgres://u@h/d"];
+        assert!(matches!(
+            Cli::parse_from(argv).command,
+            Command::Migrate(args) if args.postgres_url.is_some()
+        ));
+        for sub in ["check", "print"] {
+            let argv = [
+                "crucible",
+                "config",
+                sub,
+                "--config",
+                "crucible.toml",
+                "--listen",
+                "0.0.0.0:1",
+            ];
+            match Cli::parse_from(argv).command {
+                Command::Config {
+                    command: ConfigCommand::Check(args) | ConfigCommand::Print(args),
+                } => {
+                    assert_eq!(args.config.as_deref(), Some(Path::new("crucible.toml")));
+                    assert_eq!(args.flags(), [("server.listen", "0.0.0.0:1".to_owned())]);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(Cli::try_parse_from(["crucible", "config"]).is_err());
+        assert!(Cli::try_parse_from(["crucible", "serve", "--no-such-flag"]).is_err());
     }
 
     #[test]

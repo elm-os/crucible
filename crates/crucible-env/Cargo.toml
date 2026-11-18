@@ -13,6 +13,8 @@ crucible-records = { workspace = true }
 crucible-plan = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-control = { path = "../crucible-control" }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }

@@ -41,6 +41,7 @@ use std::time::Duration;
 
 pub use asset::{Asset, AssetManifest, AssetSource, Encodings};
 pub use clock::{Clock, ClockExt, Elapsed, Instant, Interval, MissedTicks};
+pub use crucible_control::ControlStore;
 pub use disk::{Disk, DiskError, DiskPath, Entry, File, FileOps, OpenMode, Root};
 pub use id::{IdGen, new_id};
 pub use metrics::{
@@ -142,10 +143,13 @@ impl Env {
 }
 
 /// The stores handed to product code alongside an [`Env`]: one cloneable bundle of `Arc<dyn Trait>` handles,
-/// built once after the `Env` they run over (see the crate documentation). `ControlStore` and the later stores
-/// join it as their traits land.
+/// built once after the `Env` they run over (see the crate documentation). The later stores join it as their
+/// traits land.
 #[derive(Clone, Debug)]
 pub struct Stores {
+    /// Postgres, or its simulation model. `None` on a node that runs without a control plane: `serve` without
+    /// Postgres still ingests and reads telemetry.
+    pub control: Option<Arc<dyn ControlStore>>,
     /// ClickHouse, or its simulation model.
     pub telemetry: Arc<dyn TelemetryStore>,
 }
@@ -153,6 +157,16 @@ pub struct Stores {
 impl Stores {
     /// Bundles the handles.
     pub fn new(telemetry: Arc<dyn TelemetryStore>) -> Self {
-        Self { telemetry }
+        Self {
+            control: None,
+            telemetry,
+        }
+    }
+
+    /// The same bundle with the control store.
+    #[must_use]
+    pub fn with_control(mut self, control: Arc<dyn ControlStore>) -> Self {
+        self.control = Some(control);
+        self
     }
 }
