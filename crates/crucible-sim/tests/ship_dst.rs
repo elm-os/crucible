@@ -158,12 +158,12 @@ const MUTANT_BUDGET: Range<u64> = 0..500;
 /// Each mutant must be caught inside the budget through the invariant it breaks, and the first seed that does so
 /// is recorded here. A change to the workload, the fault model or the product moves these seeds: update them
 /// from the failure message, which prints the new first catching seed.
-const CAUGHT_SKIP_PROBE_AFTER_UNKNOWN: u64 = 0;
+const CAUGHT_SKIP_PROBE_AFTER_UNKNOWN: u64 = 2;
 const CAUGHT_SEND_BEFORE_SEAL: u64 = 0;
-const CAUGHT_DROP_TOKEN: u64 = 0;
+const CAUGHT_DROP_TOKEN: u64 = 1;
 const CAUGHT_CHECKPOINT_BEFORE_RESOLUTION: u64 = 0;
-const CAUGHT_QUARANTINE_WITHOUT_PROBE: u64 = 0;
-const CAUGHT_REJECTION_CLEARS_DOUBT: u64 = 0;
+const CAUGHT_QUARANTINE_WITHOUT_PROBE: u64 = 4;
+const CAUGHT_REJECTION_CLEARS_DOUBT: u64 = 44;
 
 fn assert_caught(mutant: Mutant, by: Evidence, recorded: u64) {
     // The recorded seed first: when nothing moved, one run settles it.
