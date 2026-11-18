@@ -31,14 +31,17 @@ pub struct StubConfig {
     pub status: StatusCode,
     /// How long to wait before answering.
     pub delay: Duration,
+    /// Keep connections open between requests; when false, every connection closes after one response.
+    pub keep_alive: bool,
 }
 
 impl Default for StubConfig {
-    /// 200 at once.
+    /// 200 at once, on persistent connections.
     fn default() -> Self {
         Self {
             status: StatusCode::OK,
             delay: Duration::ZERO,
+            keep_alive: true,
         }
     }
 }
@@ -57,6 +60,7 @@ pub async fn serve(
         // Dropping the handle detaches the connection task.
         drop(env.spawn("stub-connection", async move {
             let _closed = http1::Builder::new()
+                .keep_alive(config.keep_alive)
                 .serve_connection(TokioIo::new(stream), service)
                 .await;
         }));

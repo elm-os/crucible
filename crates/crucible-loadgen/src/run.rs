@@ -586,6 +586,16 @@ async fn worker(
 }
 
 async fn send(env: &Env, plan: &Plan, connection: &mut Option<Connection>, body: Bytes) -> Attempt {
+    // A connection the peer closed while it sat idle is replaced before anything is written, so the request
+    // is neither counted as sent nor retried.
+    if let Some(idle) = connection.as_mut()
+        && !matches!(
+            env.timeout(plan.timeout, idle.sender.ready()).await,
+            Ok(Ok(()))
+        )
+    {
+        *connection = None;
+    }
     let open = match connection {
         Some(open) => open,
         None => match Connection::open(env, plan.target, plan.timeout).await {

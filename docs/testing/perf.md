@@ -69,7 +69,10 @@ Results are reported per lane and never averaged across lanes:
    pairs move in the regression direction (p = 1/32). More pairs make the test more sensitive.
 4. Durable-ack p99 gates only when the probe classified the WAL volume `honest` in the same session. On a
    `suspicious` volume the latency is reported, labelled, and not gated.
-5. The result will be posted as a `perf-gate` commit status through `gh`. The public repository has no
+5. `latency_us` covers 2xx responses only, so a stall longer than `--timeout-ms` shows up in `errors.timeout`
+   rather than in the latency. A latency comparison holds only when both arms show zero errors and no non-2xx
+   responses.
+6. The result will be posted as a `perf-gate` commit status through `gh`. The public repository has no
    self-hosted runner, so the gate runs on the laptop.
 
 ## The fsync-honesty probe
@@ -120,7 +123,7 @@ On the WAL volume of the rig (a named Docker volume here), from the dev containe
 
 ```sh
 docker run --rm -v crucible-target:/target -v <wal-volume>:/probe crucible-dev:1 \
-  /target/release/crucible-loadgen fsync-probe --dir /probe --out /probe-report.json
+  /target/release/crucible-loadgen fsync-probe --dir /probe > probe-report.json
 ```
 
 | Flag | Default | Meaning |
@@ -183,7 +186,8 @@ The default target is `127.0.0.1:4318` (contract 12.1).
   about 2.5 ms late. One pacer task sleeps on the timer until 3 ms before a due time, then yields in a loop until
   the time comes, and releases the request to its connection. The pacer keeps about one core busy, and the CPU
   figures below include it.
-- **No retries.** A failed request is counted and never resent, and its connection is replaced.
+- **No retries.** A failed request is counted and never resent, and its connection is replaced. A connection
+  the server closed while it sat idle is replaced before the next request is written.
 - **Partial success.** A 2xx response is decoded. A response that reports rejected spans is counted under
   `partial_success_requests` and does not count as acknowledged.
 

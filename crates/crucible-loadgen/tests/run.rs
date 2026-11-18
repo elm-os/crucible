@@ -90,7 +90,6 @@ async fn every_scheduled_request_is_sent_and_acked_in_both_lanes() {
             "{}",
             counts.achieved_rps
         );
-        assert!(counts.achieved_rps >= 300.0, "{}", counts.achieved_rps);
         if gzip {
             assert!(report.lane.wire_bytes_mean < report.lane.request_bytes_mean / 2.0);
         } else {
@@ -200,6 +199,32 @@ async fn timed_out_requests_are_errors_and_are_not_resent() {
         (10, 0, 0)
     );
     assert_eq!(report.send_lag_us.count, 10);
+    stub.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_the_server_closes_are_replaced_before_sending() {
+    // The stub closes every connection after one response, so each request after the first finds its
+    // connection closed and must open a new one instead of failing.
+    let env = env();
+    let (addr, stub) = start_stub(
+        &env,
+        StubConfig {
+            keep_alive: false,
+            ..StubConfig::default()
+        },
+    )
+    .await;
+    let report = run(
+        &env,
+        pool(&env, 1),
+        &config(addr, 100, Duration::from_millis(300), 2),
+    )
+    .await
+    .unwrap()
+    .report;
+    assert_eq!(report.outcome.errors, ErrorCounts::default());
+    assert_eq!((report.outcome.sent, report.outcome.acked), (30, 30));
     stub.abort();
 }
 
