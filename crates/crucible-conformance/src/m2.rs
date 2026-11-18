@@ -19,10 +19,11 @@ use crucible_plan::{
     session_detail, session_list, span_list, user_detail, user_list, user_session_counts,
 };
 use crucible_records::{
-    Level, ObservationType, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId,
+    Level, ObservationType, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
 };
 use crucible_schema::{
-    Column, McpOpsCol, RetentionSettings, SessionRollupCol, SpanCoreCol, SpanMetricsCol,
+    Column, FactTagsCol, McpOpsCol, RetentionSettings, SessionRollupCol, SpanCoreCol,
+    SpanMetricsCol, TraceStatsCol,
 };
 
 use crate::blocks::Rows;
@@ -337,6 +338,28 @@ pub(crate) async fn load(ctx: &Ctx) -> Result<Fixture> {
         T0,
     )
     .await?;
+
+    // One trace's stats with a name pick, and two versions of one tag fact.
+    let stats = rollup(TableId::TraceStats, project, epoch, 0, 1)
+        .all("trace_id", trace_bytes.clone())
+        .all("row_day", Value::Date(T0.date()))
+        .all("min_start", Value::Time(T0))
+        .all("max_end", Value::Time(at(5 * SECOND)))
+        .all("min_head_start", Value::Time(T0))
+        .all("span_count", Value::UInt(6))
+        .each("trace_name_pick", |row| {
+            text(if row == 0 { "Chat Completion" } else { "" })
+        });
+    put(stats, T0).await?;
+    let facts = Rows::new(TableId::FactTags, 2)
+        .all("project_id", uuid(project.uuid()))
+        .all("key", text("quality"))
+        .all("target_day", Value::Date(T0.date()))
+        .all("target_time", Value::Time(T0))
+        .all("trace_id", trace_bytes.clone())
+        .each("version", |row| Value::UInt(row as u64 + 1))
+        .each("fact_id", |row| uuid(Uuid::from_bytes([row as u8 + 1; 16])));
+    put(facts, T0).await?;
 
     // Nullable numbers: the operations with `duration_us = 0` have no progress count at all.
     let ops = plain_rows(TableId::McpOps, project, epoch, 1, T0, 4, SALT)
@@ -1150,6 +1173,50 @@ async fn fills(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         ],
     )?;
     plans += 1;
+
+    // A pick and a latest value in a filled series: null in the buckets without a row.
+    let picks = Aggregate::new(
+        TableId::TraceStats,
+        Pred::all(),
+        [] as [TraceStatsCol; 0],
+        vec![
+            Measure::PickMerge(TraceStatsCol::TraceNamePick.column_ref()),
+            Measure::Sum(TraceStatsCol::SpanCount.column_ref()),
+        ],
+    )?;
+    let series = TimeSeries::new(picks, TraceStatsCol::RowDay, Step::Day, Fill::Zero)?;
+    let found = rows(
+        ctx,
+        plan(window(-DAY - HOUR, 2 * HOUR)?, Node::TimeSeries(series)),
+    )
+    .await?;
+    same(
+        "a zero-filled pick",
+        &values(&found),
+        &vec![
+            vec![day(-1), Value::Null, Value::UInt(0)],
+            vec![day(0), text("Chat Completion"), Value::UInt(6)],
+        ],
+    )?;
+    let latest = Aggregate::new(
+        TableId::FactTags,
+        Pred::all(),
+        [] as [FactTagsCol; 0],
+        vec![Measure::LatestByVersion(FactTagsCol::FactId.column_ref())],
+    )?;
+    let series = TimeSeries::new(latest, FactTagsCol::TargetTime, Step::Hour, Fill::Zero)?;
+    let found = rows(ctx, plan(f.window, Node::TimeSeries(series))).await?;
+    same(
+        "a zero-filled latest value",
+        &values(&found),
+        &vec![
+            vec![hour(-1), Value::Null],
+            vec![hour(0), uuid(Uuid::from_bytes([2; 16]))],
+            vec![hour(1), Value::Null],
+            vec![hour(2), Value::Null],
+        ],
+    )?;
+    plans += 2;
 
     // A distinct count of a nullable column is null for the group whose values are all null.
     let distinct = Aggregate::new(
