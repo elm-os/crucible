@@ -585,7 +585,8 @@ Trace-level attributes are `trace_name`, `user_id`, `session_id`, `trace_tags`, 
   date; each tier has a priority and conditions (numeric thresholds on usage keys, or set membership on model
   parameters). Selection: project override before bundled; greatest start date at or before the span's
   `start_time`; then the first tier by priority whose conditions hold. Per-key cost is
-  `usage[key] * price_nusd_per_unit[key]` with a saturating multiply.
+  `round_half_even(usage[key] * price_pusd_per_unit[key] / 1000)`: prices are stored in pico-USD per unit (`i64`),
+  so fractional nano-USD prices are exact; the product is computed in 128-bit arithmetic and saturated to `i64`.
 - The version used is recorded in `BatchSeal` (section 4.4), so a replay computes identical costs.
 
 ### 3.5 McpOpRecord
@@ -641,7 +642,7 @@ or summed.
 | | `session_key` | string, 32 hex characters, optional | Legacy era only; section 9.4 |
 | | `handle_id` | string, 256 bytes | Section 9.8 |
 | | `group_key`, `group_key_kind` | string, 256 bytes; `GroupKeyKind` | Section 9.4 |
-| | `ip_prefix` | string | /24 or /48 prefix, truncated by the sender |
+| | `ip_prefix` | string, 64 bytes | /24 or /48 prefix, truncated by the sender |
 | | `user_agent` | string, 512 bytes | |
 | Sizes | `request_bytes`, `response_bytes` | u64 | Uncompressed JSON-RPC message; 0 when unknown |
 | | `content_blocks` | ordered map string to u32 | Count per content type; 16 keys |
@@ -766,6 +767,21 @@ by its key (section 6).
 | `mcp_tool_rollup` | project, side, minute, server_name, deploy_id, capture_source, era, method, target_name, client_name, error_class, caller_fault | `count`, `dur_hist`, `semconv_hist`, request and response byte sums, `last_seen` | 5 s |
 | `mcp_deploys` | project, server_name, deploy_id, server_version, capture_source | first and last seen | 5 s |
 | `mcp_tool_inventory` | project, server_name, deploy_id, tool_name, schema_hash | first and last seen | 5 s |
+
+### 3.11 Settled in code
+
+| Topic | Rule |
+|---|---|
+| Derived columns | `duration_us`, `start_minute` and `trace_hash` are computed by methods from their inputs, never stored separately, so they cannot disagree |
+| One copy per value | `SpanPayload` holds only payload-tier fields; the key, `user_id`, `session_id` and ingestion columns live once in `SpanCore` |
+| Usage and cost | One aligned list of `{ key, units, cost }` entries |
+| MCP content sizes | `McpOpRecord` carries `args_bytes` and `result_bytes`: sizes as received, before the content cap |
+| Per-span cap | Sums the 13 body fields. A field with its own cap is cut at the smaller of that cap and the per-field cap and is listed in `truncated_fields` |
+| Missing caps | `ip_prefix` 64 bytes; tool inventory `server_name` 256 bytes and `deploy_id` 128 bytes (default; revisit) |
+| Explicit error class | An explicitly annotated class is kept only when the classifier table pairs it with the observed status; a subclass is kept only with `tool_execution` |
+| Time parsing | RFC 3339 inputs: a leap second `:60` carries into the next minute; lowercase `t` and `z` are accepted; a space separator is rejected |
+| Provided cost | A NaN provided cost becomes 0 |
+| No-head sentinel | `NO_HEAD_START` is `2299-12-31T23:59:59.999999Z`, the largest `DateTime64(6)` value |
 
 ## 4. WAL
 
@@ -955,7 +971,7 @@ Other proved kernels, each owned by the named crate:
 | Histogram bucket function | `crucible-records` | Total; monotone; `lower(bucket(v)) <= v < lower(bucket(v)) + width(bucket(v))` |
 | Backpressure accounting | `crucible-admission` | Reserve and release never underflow or exceed the cap |
 | Cursor codec | `crucible-cursor` | Round-trip; no panic on arbitrary input |
-| MCP error classifier | `crucible-records` | Total over (era, JSON-RPC code, `isError`, HTTP status, cancel source, timeout, transport failure, annotations) |
+| MCP error classifier | `crucible-records` | Total over (era, side, JSON-RPC code, `isError`, HTTP status, cancel source, timeout, transport failure, unhandled exception, annotations) |
 | Rate limiter arithmetic | `crucible-auth` | No overflow |
 
 Payload codecs and checksum strength over whole payloads are covered by property tests and simulation, not Kani.
@@ -1004,10 +1020,12 @@ every table, base and derived, is written by this protocol.
 | Partition expression | `partition_id` |
 |---|---|
 | `toDate(t)` | `YYYYMMDD` |
-| `toMonday(t)` (the `week` provisioning option, replacing `toDate`) | `YYYYMMDD` of that Monday |
+| `toMonday(toDate(t))` (the `week` provisioning option, replacing `toDate`; `toMonday` of a `DateTime64` wraps in early 1970) | `YYYYMMDD` of that Monday; the days before the first Monday of 1970 route to `19700101` |
 | `toYYYYMM(t)` | `YYYYMM` |
 | none | `all` |
 
+- Partition ids have four-digit years. Routing uses `crucible_schema::route` only (never a calendar helper, which
+  differs in the first week of 1970).
 - Routing reads the time column verbatim from the raw frame (UTC). It is frozen across normalizer versions:
   changing a routing rule requires a new `wal_epoch`. A row can therefore never move between pairs across
   attempts.
@@ -1334,8 +1352,9 @@ head.
 `error_class Enum8`, `caller_fault UInt8`, marker columns. Measures: `count SAF(sum, UInt64)`,
 `request_bytes SAF(sum, UInt64)`, `response_bytes SAF(sum, UInt64)`, `dur_hist` (histogram), `semconv_hist`
 (`SAF(sumMap, Tuple(Array(UInt8), Array(UInt64)))`: exact counts per fixed bucket of the MCP operation-duration
-metric; the boundary list is the constant `MCP_SEMCONV_DURATION_BOUNDS` in `crucible-records`, taken at
-implementation time from the pinned semantic-convention revision and frozen by a contract change), and
+metric; the boundary list is the constant `MCP_SEMCONV_DURATION_BOUNDS` in `crucible-records`, frozen at semantic
+conventions v1.40.0: inclusive upper bounds of 10, 20, 50, 100, 200 and 500 ms and 1, 2, 5, 10, 30, 60, 120 and
+300 s, giving 15 buckets with the last above 300 s), and
 `last_seen SAF(max, DateTime64(6, 'UTC'))`.
 
 **`mcp_deploys`**: key `project_id`, `server_name LC`, `deploy_id String`, `server_version String`,
@@ -1394,6 +1413,25 @@ report(b) = lower(b) + width(b) / 2          (integer division)
 - A schema step that creates a base table must, in that same step, create the table's service-identity row policy
   (section 7.3).
 
+### 6.7 Settled in code
+
+Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper cluster.
+
+| Topic | Rule |
+|---|---|
+| Step order | Migration ids `0001_schema_base`, then `0002_access_service` (access step A1 with every service policy), then `0003_access_workspace` (A2). A later table step creates its own service policies with `crucible_schema::service_policy` |
+| Clustered DDL | `ON CLUSTER` statements carry `distributed_ddl_entry_format_version = 8` or higher, and every host must set `distributed_ddl_use_initial_user_and_roles = 1` (text-index preprocessors need it); startup detection (5.8) checks the server setting on the clustered variant |
+| Replication path | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` |
+| Profile ceilings | Constraints use `MIN 1`, because 0 means unlimited for these settings |
+| Codecs | `T64` on scalar `UInt32`, `UInt64` and `Int64` columns except hash-valued ones; arrays and `start_minute` use `ZSTD(1)` |
+| Column order | Fact body columns precede the ingestion columns; marker columns follow the key columns |
+| Skip-index granularity | Unspecified granularities are 1; text indexes use `GRANULARITY 100000000` |
+| Defaults | No column defaults |
+| Marker-row enums | Enums without a 0 value (`capture_source`, `era`) take their first variant in marker rows |
+| Native block headers | The TableDef type, except `LowCardinality(String)` is sent as `String`; `SimpleAggregateFunction` wrappers are kept, so the server converts nothing |
+| Insert compression | ZSTD level 1 when ZSTD is configured. A `compress=1` response may come back LZ4 or ZSTD (26.10 answers ZSTD), and readers accept both |
+| Empty blocks | Never sent; a zero-row block is a header only and creates no part |
+
 ## 7. ClickHouse identities and access
 
 ### 7.1 The final identity set
@@ -1404,10 +1442,10 @@ exist.
 | Identity | Created by | Used by | Grants | Settings profile |
 |---|---|---|---|---|
 | `crucible_admin` | The operator (supplied in config) | `crucible migrate`, schema and access steps, the SQL identity reconciler | All privileges on `crucible.*` and `crucible_sql.*` with grant option; access management (users, roles, row policies, quotas, settings profiles) | none imposed |
-| `crucible_ingest` | Access step A1 | `insert_block`, `BatchProbe`, `dedup_selftest` | `INSERT` on every `crucible` table except `sql_probe`; column-level `SELECT` on the probe columns only (`project_id`, `wal_epoch`, `batch_seq`, `marker_epoch`, `marker_batch_seq`, and `id` on `dedup_selftest`) | `crucible_ingest_profile`: `max_execution_time` at most 60 |
+| `crucible_ingest` | Access step A1 | `insert_block`, `BatchProbe`, `dedup_selftest` | `INSERT` on every `crucible` table except `sql_probe`; column-level `SELECT` on the probe columns only (`_partition_id`, `project_id`, `wal_epoch`, `batch_seq`, `marker_epoch`, `marker_batch_seq`, and `id` on `dedup_selftest`) | `crucible_ingest_profile`: `max_execution_time` at most 60 |
 | `crucible_read_ui` | A1 | Typed plans for session-authenticated requests, alert evaluation, exports and jobs. Classes `point`, `list`, `search`, `analytics`, `analytics_raw`, `alert`, `export` | `SELECT` on `crucible.*` | `crucible_read_ui_profile`: `readonly = 2`; maximum constraints equal to the largest class values in section 8.4 |
 | `crucible_read_agent` | A1 | Typed plans for API-key principals and the MCP server. Class `agent` | `SELECT` on `crucible.*` | `crucible_read_agent_profile`: `readonly = 2`; maximum constraints equal to the `agent` class; `max_concurrent_queries_for_user = 16` (default; revisit). Quota `crucible_agent_quota`: per hour 100,000 queries and 7,200 s of execution time (default; revisit) |
-| `crucible_maint` | A1 | `crucible-lifecycle` (deletes, partition drops, mask application, marker purge), `detect`, `kill`, health | `ALTER DELETE`, `ALTER DROP PARTITION` and the privilege needed for `APPLY DELETED MASK` on `crucible.*`; `SELECT` on `crucible.*`; `KILL QUERY`; `SELECT` on `system.mutations`, `system.parts`, `system.settings`, `system.merge_tree_settings`, `system.functions`, `system.processes` | `crucible_maint_profile` |
+| `crucible_maint` | A1 | `crucible-lifecycle` (deletes, partition drops, mask application, marker purge), `detect`, `kill`, health | `ALTER DELETE` on `crucible.*` (it covers mutations, partition drops and `APPLY DELETED MASK`) and per-table `ALTER UPDATE(_row_exists)` (a lightweight `DELETE` needs it); `SELECT` on `crucible.*`; `KILL QUERY`; `SELECT` on `system.mutations`, `system.parts`, `system.settings`, `system.merge_tree_settings`, `system.functions`, `system.processes` | `crucible_maint_profile` |
 | `crucible_sql_<project hex>` | The reconciler (section 7.4) | `SqlWorkspaceStore` for one project | Role `crucible_sql_reader` | `crucible_sql_profile`, quota `crucible_sql_quota` |
 
 `<project hex>` is the project id as 32 lowercase hex characters without hyphens.
@@ -1612,8 +1650,8 @@ capture-source selection (section 9.5), and search highlighting.
   `toDate`, `minute`, `day`), clamps `from` to the table's retention binding (so expired rows are hidden at once),
   and adds `received_at <= as_of` from the cursor on plain tables.
 - Every statement carries a `query_id` (UUIDv7 from `Rng` and `Clock`) and the class settings, explicitly.
-- No rendered statement contains `FINAL`. Aggregating tables are always read through an `Aggregate` that groups by
-  the full key or a prefix of it.
+- No rendered statement contains `FINAL`. Aggregating tables are always read through an `Aggregate` whose dimensions
+  are key columns (any subset of the key: re-aggregating `SimpleAggregateFunction` columns is associative).
 - A property test asserts that every rendered statement other than `BatchProbe` carries the project predicate and
   the window predicate and contains only bound values.
 
@@ -1710,6 +1748,16 @@ Each item has a contract here, a route in section 12 and owning crates. `crucibl
 `granularity` (`auto`, minute, 5 minutes, 15 minutes, hour, day, week); window; timezone; `top_n`; fill mode.
 Response: series with keys and points, the granularity used, `truncated`, `source_tier`, `as_of`,
 `partial_last_bucket`.
+
+### 8.9 Settled in code
+
+- Trace detail reads spans in `[min_start, max_end + 1 µs)`, so a span that starts exactly at the trace's end is
+  included.
+- `dedup_selftest` is reachable only through `TelemetryStore::dedup_selftest`, never through a plan.
+- The closed measure set has no set merge yet, so no plan reads the `groupUniqArrayArray` columns; the measure is
+  added when the session and user screens need them.
+- The retention clamp of 8.3 is applied when a plan is built (`effective_window`); the query layer makes it
+  structural before the first read endpoint ships.
 
 ## 9. MCP
 

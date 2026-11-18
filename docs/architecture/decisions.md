@@ -159,4 +159,8 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     lints.** Both crates implement the traits over real primitives; product crates never get the exemption.
 74. **I1 is guaranteed on Linux and macOS; Windows is a development platform.** Windows has no directory sync
     barrier through the standard library, and `unsafe` is denied.
+75. **Prices are pico-USD per unit.** Whole nano-USD per unit cannot express common fractional prices; cost stays
+    exact nano-USD with half-even rounding.
+76. **Native block headers keep `SimpleAggregateFunction` wrappers.** ClickHouse accepts both forms; sending the
+    column's own type means the server converts nothing.
 
