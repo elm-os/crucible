@@ -92,7 +92,7 @@ pub struct Server {
     pub metrics_listen: SocketAddr,
     /// Serve the UI from this directory instead of the one compiled in.
     pub ui_dir: Option<PathBuf>,
-    /// TOML file of the project keys that ingest accepts.
+    /// TOML file of the project keys, for a server without Postgres.
     pub keys_file: Option<PathBuf>,
     /// The URL people reach the server at.
     pub public_url: Option<String>,

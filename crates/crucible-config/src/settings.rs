@@ -66,7 +66,7 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "server.keys_file",
         None,
-        "TOML file of the project keys that ingest accepts",
+        "TOML file of the project keys, for a server without Postgres (with Postgres the keys live there)",
     ),
     plain(
         "server.public_url",

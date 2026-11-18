@@ -159,8 +159,9 @@ struct ConfigArgs {
     /// Address of the OTLP/gRPC ingest listener [default: 0.0.0.0:4317].
     #[arg(long)]
     grpc_listen: Option<String>,
-    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id`,
-    /// `public_key` and `secret`. Without it, every ingest request is refused.
+    /// TOML file of the project keys, for a server without Postgres: `[[project_key]]` tables with `project_id`,
+    /// `public_key` and `secret`. With Postgres the keys live there; make them in Settings or with
+    /// `crucible admin create-key`.
     #[arg(long)]
     keys_file: Option<String>,
     /// Address of the Prometheus metrics listener [default: 127.0.0.1:9464].

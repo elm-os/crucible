@@ -421,6 +421,48 @@ fn keys_work_at_once_and_stop_at_once() {
     });
 }
 
+/// `crucible admin create-key`: the project by slug or id, and the import flag of contract 11.3.
+#[test]
+fn the_command_line_finds_projects_and_marks_import_keys() {
+    sim(12, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        let project = identity.create_project("Agents", "agents").await.unwrap();
+        let by_slug = identity.project_by_reference("agents").await.unwrap();
+        let by_id = identity
+            .project_by_reference(&project.id.to_string())
+            .await
+            .unwrap();
+        assert_eq!((by_slug.id, by_id.id), (project.id, project.id));
+        assert_eq!(
+            identity.project_by_reference("nope").await.unwrap_err(),
+            AuthError::NotFound
+        );
+        let import = identity
+            .create_key(project.id, None, None, None, true)
+            .await
+            .unwrap();
+        assert!(import.key.import);
+        let KeyVerdict::Valid(grant) = identity.keys().check_secret(&import.secret) else {
+            panic!("the import key does not verify");
+        };
+        assert!(grant.import);
+        let plain = identity
+            .create_key(project.id, None, None, None, false)
+            .await
+            .unwrap();
+        assert!(!plain.key.import);
+        identity
+            .delete_project(project.id, project.version)
+            .await
+            .unwrap();
+        assert_eq!(
+            identity.project_by_reference("agents").await.unwrap_err(),
+            AuthError::NotFound
+        );
+    });
+}
+
 #[test]
 fn password_changes_and_resets_revoke_sessions() {
     sim(6, async |env, model| {
