@@ -42,6 +42,39 @@ test.describe("phone at 390 px", () => {
     await expectAccessible(page, "home on a phone");
   });
 
+  test("search results and their snippets wrap within the page", async ({ page, api }) => {
+    const words = "a long input that keeps going ".repeat(12);
+    api.on(
+      new RegExp(`/projects/${PROJECT}/search$`),
+      json({
+        data: [
+          {
+            trace_id: traceItem().trace_id,
+            span: traceDetail().spans[1],
+            matches: [
+              {
+                field: "input",
+                fragments: [
+                  { text: words, highlighted: false },
+                  { text: "refund", highlighted: true },
+                ],
+                cut_before: true,
+                cut_after: true,
+              },
+            ],
+          },
+        ],
+        next_cursor: null,
+        has_more: false,
+        meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
+      }),
+    );
+    await page.goto(`/search/?project=${PROJECT}&q=refund`);
+    await expect(page.getByRole("link", { name: "plan reply" })).toBeVisible();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "search on a phone");
+  });
+
   test("the traces table scrolls inside its frame, never the page", async ({ page, api }) => {
     api.on(LIST_PATH, json(tracePage([traceItem()])));
     await page.goto(`/traces/?project=${PROJECT}`);

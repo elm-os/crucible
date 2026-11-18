@@ -56,6 +56,7 @@ function span(fields: Partial<Span>): Span {
     output_tokens: 0,
     total_tokens: 0,
     child_count: null,
+    io_shape: null,
     saturated: false,
     ...fields,
   };
@@ -176,7 +177,12 @@ describe("the trace page", () => {
     expect(row.getAttribute("aria-selected")).toBe("true");
     expect(within(panel).getByText("gpt-x")).toBeTruthy();
     expect(within(panel).getByText("1,200 in, 300 out, 1,500 total")).toBeTruthy();
-    expect(within(panel).getByText(/once the span detail API ships/)).toBeTruthy();
+    // The overview is open; the payload tabs ask for nothing until one is chosen.
+    expect(within(panel).getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(within(panel).getByRole("tab", { name: "Input" })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/payload"))).toBe(false);
   });
 
   test("a paged trace says its totals cover the loaded spans, and expanding fetches children", async () => {
