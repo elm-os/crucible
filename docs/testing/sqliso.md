@@ -80,6 +80,11 @@ runtime self-probe) run against it, and at least one must fail; otherwise the su
 deployment. The row records which detectors caught it and whether the runtime self-probe was among them, because
 the probe is all a running server has.
 
+The runtime self-probe reads the probe table only. It catches a profile that is not read-only, a granted system
+table, a missing profile and a base table granted in full; it does not see a policy dropped on another table. The
+reconciler writes each project's policies again at least once an hour, and access step A2 restores the static
+layer.
+
 | Mutant | Break |
 |---|---|
 | D1 | Every policy of both layers dropped on one table. Under the permissive switch project A then reads every row of it, and the canary oracle must be what reports it |
@@ -124,7 +129,95 @@ What the suite found on real servers, and what was done about each.
 
 ## Results
 
-RESULTS
+Head `2f2807e`, run with `crates/crucible-conformance/scripts/sqliso.sh` (seed 1, 5,000 statements of layer B under the
+strict switch and 1,000 under the permissive one, 20 extra identities in W14) and with layer C against the same
+three versions. Server versions: 26.3 is 26.3.66.4, 26.8 is 26.8.39.19, latest is 26.10.4.207. Each cell is the result under the strict switch, then under the
+permissive one. W15 needs a ClickHouse Cloud service and was not run.
+
+### Layer A: direct attacks
+
+| Row | 26.3 | 26.8 | latest |
+|---|---|---|---|
+| sqliso bootstrap | pass / pass | pass / pass | pass / pass |
+| W0 deployment as declared | pass / pass | pass / pass | pass / pass |
+| Runtime self-probe (7.5) | pass / pass | pass / pass | pass / pass |
+| W8 quota exhaustion | pass / pass | pass / pass | pass / pass |
+| Quota lifted for the run | pass / pass | pass / pass | pass / pass |
+| W1 cross-project reads | pass / pass | pass / pass | pass / pass |
+| W2 table functions | pass / pass | pass / pass | pass / pass |
+| W3 system tables | pass / pass | pass / pass | pass / pass |
+| W4 setting changes | pass / pass | pass / pass | pass / pass |
+| W5 writes and DDL | pass / pass | pass / pass | pass / pass |
+| W6 every function | pass / pass | pass / pass | pass / pass |
+| W7 resource guards | pass / pass | pass / pass | pass / pass |
+| W9 changeable_in_readonly | pass / pass | pass / pass | pass / pass |
+| W10 error text, EXPLAIN and caches | pass / pass | pass / pass | pass / pass |
+| W11 lifecycle races | pass / pass | pass / pass | pass / pass |
+| W12 definer-rights views | pass / pass | pass / pass | pass / pass |
+| W13 window backstops through views | pass / pass | pass / pass | pass / pass |
+| W14 many identities | pass / pass | pass / pass | pass / pass |
+| W15 Cloud specifics | not run / not run | not run / not run | not run / not run |
+| Admin ping after the suite | pass / pass | pass / pass | pass / pass |
+
+### Layer B: grammar fuzzing
+
+| Row | 26.3 | 26.8 | latest |
+|---|---|---|---|
+| Layer B grammar fuzzing with canary oracles | pass / pass | pass / pass | pass / pass |
+
+### Layer D: broken deployments
+
+| Row | 26.3 | 26.8 | latest |
+|---|---|---|---|
+| D1 mutant: policies dropped on one table | pass / pass | pass / pass | pass / pass |
+| D2 mutant: one restrictive policy dropped | pass / pass | pass / pass | pass / pass |
+| D3 mutant: a source granted | pass / pass | pass / pass | pass / pass |
+| D4 mutant: readonly = 2 | pass / pass | pass / pass | pass / pass |
+| D5 mutant: a system log table granted | pass / pass | pass / pass | pass / pass |
+| D6 mutant: profile missing | pass / pass | pass / pass | pass / pass |
+| D7 mutant: base table granted in full | pass / pass | pass / pass | pass / pass |
+| Layer D: detectors pass after repair | pass / pass | pass / pass | pass / pass |
+| D8 mutant: the server switch flipped | pass | pass | pass |
+
+### What each version showed (strict switch)
+
+| | 26.3 | 26.8 | latest |
+|---|---|---|---|
+| W1 statements | 495 | 495 | 495 |
+| W2 table functions: listed, refused, benign | 88, 82, 6 | 94, 87, 7 | 99, 92, 7 |
+| W3 system tables: listed, refused, readable | 155, 134, 21 | 180, 157, 23 | 192, 169, 23 |
+| W4 attempts | 41 | 41 | 41 |
+| W5 statements refused | 55 | 55 | 55 |
+| W6 functions, calls | 1789, 10734 | 1889, 11334 | 2008, 12048 |
+| W9 settings the server leaves changeable | 0 | 15 | 15 |
+| W14 provisioning per identity | 67 ms | 75 ms | 74 ms |
+| Layer B: answered, refused | 1555, 3445 | 1553, 3447 | 1607, 3393 |
+
+### Which detectors caught each mutant
+
+The same on all three versions unless a cell says otherwise. "Probe" means the runtime self-probe was among
+them; "leak" means the canary oracle reported another project's canary.
+
+| Mutant | Strict switch | Permissive switch |
+|---|---|---|
+| D1 mutant: policies dropped on one table | W0, W1, W4 | W0, W1, W4; leak |
+| D2 mutant: one restrictive policy dropped | W0 | W0 |
+| D3 mutant: a source granted | W0 | W0 |
+| D4 mutant: readonly = 2 | W0, probe, W4 | W0, probe, W4 |
+| D5 mutant: a system log table granted | W0, probe, W5 | W0, probe, W5 |
+| D6 mutant: profile missing | W0, probe, W4 | W0, probe, W4 |
+| D7 mutant: base table granted in full | W0, probe, W1, W2; leak | W0, probe, W1, W2; leak |
+| D8 mutant: the server switch flipped | W0, on all three versions | |
+
+### Layer C: through the API
+
+| | 26.3 | 26.8 | latest |
+|---|---|---|---|
+| `the_sql_workspace_holds_through_the_api` | pass | pass | pass |
+| Audit rows of project A | 30 | 30 | 30 |
+| Cancellation observed before the statement ended | true | true | true |
+
+Layer C ran against servers with the shipped (permissive) switch.
 
 ## Running it
 
