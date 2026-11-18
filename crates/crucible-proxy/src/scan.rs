@@ -641,6 +641,7 @@ impl Scanner {
         }
     }
 
+    /// A string value for `field`. A string where a number or boolean belongs is ignored.
     fn set_text(&mut self, field: Field, text: String) {
         let message = &mut self.message;
         match field {
@@ -674,12 +675,12 @@ impl Scanner {
                     message.content_blocks.insert(text, 1);
                 }
             }
-            // A string is no boolean and no number.
-            Field::IsError => message.is_error = false,
-            Field::ErrorCode => message.error_code = None,
+            Field::IsError | Field::ErrorCode => {}
         }
     }
 
+    /// A number, boolean or null for the field at the current position. A literal where a string belongs is
+    /// ignored.
     fn end_literal(&mut self) {
         if !self.in_literal {
             return;
@@ -701,25 +702,7 @@ impl Scanner {
             Field::MetaProgressToken => message.meta_progress_token = number(),
             Field::IsError => message.is_error = text == "true",
             Field::ErrorCode => message.error_code = text.parse().ok(),
-            // A literal where a string belongs clears what an earlier duplicate key set.
-            Field::Method => message.method = None,
-            Field::Name => message.name = None,
-            Field::Traceparent => message.traceparent = None,
-            Field::ProtocolVersion => {
-                if !message.version_in_meta {
-                    message.protocol_version = None;
-                }
-            }
-            Field::MetaProtocolVersion => {
-                message.protocol_version = None;
-                message.version_in_meta = false;
-            }
-            Field::ClientName => message.client_name = None,
-            Field::ClientVersion => message.client_version = None,
-            Field::ServerName => message.server_name = None,
-            Field::ServerVersion => message.server_version = None,
-            Field::ResultType => message.result_type = None,
-            Field::ContentType => {}
+            _ => {}
         }
     }
 }
