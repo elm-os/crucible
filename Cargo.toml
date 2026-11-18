@@ -32,6 +32,7 @@ crucible-store-clickhouse = { path = "crates/crucible-store-clickhouse" }
 crucible-plan = { path = "crates/crucible-plan" }
 crucible-recent = { path = "crates/crucible-recent" }
 crucible-query = { path = "crates/crucible-query" }
+crucible-ui-assets = { path = "crates/crucible-ui-assets" }
 
 # Runtime, HTTP and gRPC
 tokio = { version = "1.54.1", default-features = false }
