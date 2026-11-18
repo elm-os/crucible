@@ -877,6 +877,11 @@ impl ChModel {
         self.settled().read.merge_ppm = ppm;
     }
 
+    /// The rows a second a read scans, for the execution-time guardrail (10,000,000 unless set).
+    pub fn set_scan_rows_per_sec(&self, rate: u64) {
+        self.settled().read.scan_rows_per_sec = rate;
+    }
+
     /// Merges every partition of every table down to one part, as `OPTIMIZE ... FINAL` would.
     pub fn merge_all(&self) {
         let mut state = self.settled();

@@ -11,6 +11,7 @@ mod build;
 mod class;
 mod endpoints;
 mod error;
+mod filter;
 mod literal;
 mod node;
 mod plan;
@@ -26,12 +27,18 @@ pub use class::{
 };
 pub use endpoints::*;
 pub use error::PlanError;
+pub use filter::{Filter, FilterField, FilterTarget, TextField};
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{
     AggOutput, Aggregate, ArrivalBounds, DEFAULT_MAX_IDS, Direction, FieldRange, Fill, Having,
-    Measure, Node, Order, PointLookup, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode,
+    MAX_SNIPPET_TOKENS, Measure, Node, Order, PointLookup, Scan, SemiJoin, Snippet, Step,
+    TextSearch, TimeSeries, TokenMode,
 };
 pub use plan::{BatchProbe, DeletePlan, DeleteTarget, ProbeKind, QueryPlan};
 pub use pred::{CmpOp, MAX_LIST, Pred};
-pub use registry::{Rollup, Source};
+pub use registry::{
+    Aggregation, DimensionId, DimensionType, METRICS_MAX_BUCKETS, METRICS_MAX_DIMENSIONS,
+    METRICS_MAX_MEASURES, METRICS_MAX_POINTS, METRICS_MAX_SERIES, MeasureId, MetricsLimits, Rollup,
+    Source, SourceSchema, Tier, metrics_schema,
+};
 pub use value::{MAX_ROWS_PER_BLOCK, OutputColumn, OutputSchema, Row, RowBlock, ShapeError, Value};

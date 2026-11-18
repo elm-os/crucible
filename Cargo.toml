@@ -27,6 +27,9 @@ crucible-admission = { path = "crates/crucible-admission" }
 crucible-ingest = { path = "crates/crucible-ingest" }
 crucible-normalize = { path = "crates/crucible-normalize" }
 crucible-compat = { path = "crates/crucible-compat" }
+crucible-config = { path = "crates/crucible-config" }
+crucible-control = { path = "crates/crucible-control" }
+crucible-control-pg = { path = "crates/crucible-control-pg" }
 crucible-cursor = { path = "crates/crucible-cursor" }
 crucible-schema = { path = "crates/crucible-schema" }
 crucible-chfmt = { path = "crates/crucible-chfmt" }
@@ -59,6 +62,10 @@ getrandom = "0.4.3"
 
 # Storage clients
 clickhouse = { version = "0.15.3", default-features = false }
+tokio-postgres = { version = "0.7.18", default-features = false }
+deadpool = { version = "0.13.1", default-features = false }
+refinery = { version = "0.10.0", default-features = false }
+toml = { version = "1.2.1", default-features = false }
 
 # Serialization, codecs, hashing
 serde = { version = "1.0.229", features = ["derive"] }
@@ -108,8 +115,7 @@ insta = "1.49.0"
 hdrhistogram = "7.6.0"
 
 # Planned, added to this table when first used (versions verified on 2026-11-17):
-# tonic 0.14.9 (gRPC ingest), tower-http 0.7.1, tokio-postgres 0.7.18, deadpool-postgres 0.14.2,
-# refinery 0.10.0, rmcp 3.11.0, utoipa-axum 0.3.0, indexmap 2.14.2, arc-swap 1.9.5,
+# tonic 0.14.9 (gRPC ingest), tower-http 0.7.1, rmcp 3.11.0, utoipa-axum 0.3.0, indexmap 2.14.2, arc-swap 1.9.5,
 # criterion 0.8.2, process-wrap 10.0.1.
 
 [workspace.lints.rust]

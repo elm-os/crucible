@@ -15,6 +15,7 @@ test-support = []
 [dependencies]
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }
+sha2 = { workspace = true }
 smallvec = { workspace = true }
 xxhash-rust = { workspace = true }
 thiserror = { workspace = true }
