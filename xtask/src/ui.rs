@@ -152,9 +152,10 @@ mod tests {
     }
 
     /// The committed fixture variants are exactly what this step writes today, so a run on any machine
-    /// reproduces them byte for byte.
+    /// reproduces them byte for byte. A compressor upgrade may change them; then regenerate them.
     #[test]
     fn the_committed_fixture_variants_are_reproduced() {
+        const REGENERATE: &str = "regenerate with `cargo xtask ui compress crates/crucible-ui-assets/tests/fixtures/out`";
         let files = fixture_files();
         let mut checked = 0;
         for file in files.iter().filter(|file| is_compressible(file)) {
@@ -162,10 +163,19 @@ mod tests {
             for (ext, expected) in [("br", brotli(&data).unwrap()), ("gz", gzip(&data).unwrap())] {
                 let path = with_extension(file, ext);
                 if expected.len() < data.len() {
-                    assert_eq!(fs::read(&path).unwrap(), expected, "{}", path.display());
+                    let committed = fs::read(&path).unwrap_or_default();
+                    assert!(
+                        committed == expected,
+                        "{} differs; {REGENERATE}",
+                        path.display()
+                    );
                     checked += 1;
                 } else {
-                    assert!(!path.exists(), "{} should not exist", path.display());
+                    assert!(
+                        !path.exists(),
+                        "{} should not exist; {REGENERATE}",
+                        path.display()
+                    );
                 }
             }
         }

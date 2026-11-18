@@ -27,7 +27,8 @@ On Windows PowerShell, replace `"$PWD"` with `"${PWD}"`.
 `crucible serve` answers every path that no other route claims with the UI. Where the UI comes from:
 
 - A default build has none: every page answers 404 with a note on how to add one.
-- `crucible serve --ui-dir ui/out` serves a built export from a directory, which suits UI work.
+- `crucible serve --ui-dir ui/out` serves a built export from a directory. The files are read once at startup, so
+  restart the server after a UI rebuild.
 - The `embed-ui` feature compiles `ui/out` into the binary:
 
 ```sh

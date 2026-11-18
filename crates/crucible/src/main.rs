@@ -44,6 +44,7 @@ struct ServeArgs {
     #[arg(long, default_value = "auto")]
     wal_backend: WalBackend,
     /// Serve the UI from this directory (a built export such as `ui/out`) instead of the one compiled in.
+    /// The files are read once at startup.
     #[arg(long)]
     ui_dir: Option<PathBuf>,
 }
