@@ -26,6 +26,7 @@ fn the_document_matches_the_committed_file() {
 fn concrete(path: &str) -> String {
     path.replace("{project_id}", "01010101-0101-0101-0101-010101010101")
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
+        .replace("{span_id}", "0000000000000001")
 }
 
 #[test]
@@ -56,6 +57,6 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        assert_eq!(operations, 4);
+        assert_eq!(operations, 6);
     });
 }

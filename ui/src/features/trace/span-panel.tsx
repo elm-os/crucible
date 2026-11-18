@@ -1,9 +1,13 @@
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
 import type { ReactNode } from "react";
 import type { Level } from "@/api/generated/Level";
+import type { PayloadField } from "@/api/generated/PayloadField";
 import { EmptyState } from "@/components/empty-state";
 import { useLoadingPhase } from "@/components/section";
 import { StatusLabel } from "@/components/status";
+import { PayloadViewer } from "@/features/payload/payload-viewer";
 import { formatCost, formatCount, formatDuration, formatOffset, formatTime } from "@/lib/format";
+import { useUrlParam } from "@/lib/url-state";
 import { TYPE_LABEL } from "./span-waterfall";
 import type { TraceNode, TraceTree } from "./trace-tree";
 
@@ -16,12 +20,24 @@ const LEVEL_LABEL: Record<Level, string> = {
   error: "Error",
 };
 
+// The payload tabs: the field each reads and the noun its copy uses.
+const PAYLOAD_TABS: { field: PayloadField; label: string; noun: string }[] = [
+  { field: "input", label: "Input", noun: "input" },
+  { field: "output", label: "Output", noun: "output" },
+  { field: "attributes", label: "Attributes", noun: "attributes" },
+  { field: "events", label: "Events", noun: "events" },
+];
+
 export function SpanPanelBody({
+  project,
+  trace,
   tree,
   paged,
   requested,
   selected,
 }: {
+  project: string;
+  trace: string;
   tree: TraceTree;
   paged: boolean;
   requested: string | null;
@@ -54,55 +70,99 @@ export function SpanPanelBody({
       </EmptyState>
     );
   }
-  return <SpanDetails node={node} tree={tree} />;
+  return <SpanDetails project={project} trace={trace} node={node} tree={tree} />;
 }
 
-function SpanDetails({ node, tree }: { node: TraceNode; tree: TraceTree }) {
+function SpanDetails({
+  project,
+  trace,
+  node,
+  tree,
+}: {
+  project: string;
+  trace: string;
+  node: TraceNode;
+  tree: TraceTree;
+}) {
   const { span } = node;
-  const childCount = Math.max(span.child_count ?? 0, node.children.length);
+  const [tabParam, setTab] = useUrlParam("tab");
+  const tab = PAYLOAD_TABS.some((t) => t.field === tabParam) ? tabParam : "overview";
+  const payloadSpan = { traceId: trace, spanId: span.span_id, startTime: span.start_time };
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
         <p className="text-body font-medium break-words">{span.name || "Unnamed span"}</p>
         <p className="text-label text-ink-soft">{TYPE_LABEL[span.observation_type]}</p>
       </div>
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-data">
-        <Field label="Status">
-          <StatusLabel status={span.status_code} label={STATUS_LABEL[span.status_code]} />
-        </Field>
-        <Field label="Level">{LEVEL_LABEL[span.level]}</Field>
-        <Field label="Started">
-          {formatTime(span.start_time)}{" "}
-          <span className="text-ink-soft">({formatOffset(node.startUs - tree.startUs)})</span>
-        </Field>
-        <Field label="Duration">{formatDuration(span.duration_us)}</Field>
-        {span.model ? <Field label="Model">{span.model}</Field> : null}
-        {span.total_tokens > 0 ? (
-          <Field label="Tokens">
-            {formatCount(span.input_tokens)} in, {formatCount(span.output_tokens)} out,{" "}
-            {formatCount(span.total_tokens)} total
-          </Field>
-        ) : null}
-        {span.total_cost_usd > 0 ? (
-          <Field label="Cost">{formatCost(span.total_cost_usd)}</Field>
-        ) : null}
-        <Field label="Child spans">{formatCount(childCount)}</Field>
-        <Field label="Span id">
-          <span className="font-mono break-all">{span.span_id}</span>
-        </Field>
-        <Field label="Parent span">
-          {span.parent_span_id ? (
-            <span className="font-mono break-all">{span.parent_span_id}</span>
-          ) : (
-            "None, this is a root span"
-          )}
-        </Field>
-      </dl>
-      <EmptyState kind="planned" title="Input, output, attributes and events">
-        Previews of the span&apos;s input and output, its attributes and its events will show here
-        once the span detail API ships.
-      </EmptyState>
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next === "overview" || next === null ? null : next)}
+        className="flex flex-col gap-3"
+      >
+        <TabsList aria-label="Span details" className="flex flex-wrap gap-1 text-data">
+          <TabsTab value="overview">Overview</TabsTab>
+          {PAYLOAD_TABS.map((t) => (
+            <TabsTab key={t.field} value={t.field}>
+              {t.label}
+            </TabsTab>
+          ))}
+        </TabsList>
+        <TabsPanel value="overview">
+          <SpanOverview node={node} tree={tree} />
+        </TabsPanel>
+        {PAYLOAD_TABS.map((t) => (
+          <TabsPanel key={t.field} value={t.field}>
+            <PayloadViewer
+              key={`${span.span_id}/${t.field}`}
+              project={project}
+              span={payloadSpan}
+              field={t.field}
+              noun={t.noun}
+              ioShape={span.io_shape}
+            />
+          </TabsPanel>
+        ))}
+      </Tabs>
     </div>
+  );
+}
+
+function SpanOverview({ node, tree }: { node: TraceNode; tree: TraceTree }) {
+  const { span } = node;
+  const childCount = Math.max(span.child_count ?? 0, node.children.length);
+  return (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-data">
+      <Field label="Status">
+        <StatusLabel status={span.status_code} label={STATUS_LABEL[span.status_code]} />
+      </Field>
+      <Field label="Level">{LEVEL_LABEL[span.level]}</Field>
+      <Field label="Started">
+        {formatTime(span.start_time)}{" "}
+        <span className="text-ink-soft">({formatOffset(node.startUs - tree.startUs)})</span>
+      </Field>
+      <Field label="Duration">{formatDuration(span.duration_us)}</Field>
+      {span.model ? <Field label="Model">{span.model}</Field> : null}
+      {span.total_tokens > 0 ? (
+        <Field label="Tokens">
+          {formatCount(span.input_tokens)} in, {formatCount(span.output_tokens)} out,{" "}
+          {formatCount(span.total_tokens)} total
+        </Field>
+      ) : null}
+      {span.total_cost_usd > 0 ? (
+        <Field label="Cost">{formatCost(span.total_cost_usd)}</Field>
+      ) : null}
+      <Field label="Child spans">{formatCount(childCount)}</Field>
+      <Field label="Span id">
+        <span className="font-mono break-all">{span.span_id}</span>
+      </Field>
+      <Field label="Parent span">
+        {span.parent_span_id ? (
+          <span className="font-mono break-all">{span.parent_span_id}</span>
+        ) : (
+          "None, this is a root span"
+        )}
+      </Field>
+    </dl>
   );
 }
 
