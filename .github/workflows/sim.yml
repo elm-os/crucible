@@ -1,0 +1,72 @@
+name: sim
+
+# The whole-system deterministic simulation with swarm testing (docs/testing/system-simulation.md).
+#
+# - Every pull request: the regression corpus plus 200 fresh configurations with 3 seeds each, in the realistic
+#   tier, split over 4 shards. The fresh configurations start at the workflow run id, so each run explores
+#   configurations no earlier run has seen.
+# - Nightly: 5,000 fresh configurations in the stress tier, split the same way.
+# - By hand (workflow_dispatch): either budget on any ref; the pull-request budget by default.
+#
+# A failing run prints its replay command (`cargo xtask sim replay --seed <n> --config <mask>`) and the line to
+# add to sim/corpus/seeds.jsonl.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: realistic runs the pull-request budget, stress the nightly one
+        type: choice
+        options: [realistic, stress]
+        default: realistic
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  swarm:
+    name: swarm ${{ matrix.shard }}/4
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'schedule' && 150 || inputs.tier == 'stress' && 150 || 20 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: sim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the runner
+        run: cargo build --locked -p xtask
+      - name: Corpus and fresh configurations (realistic tier)
+        if: github.event_name == 'pull_request' || inputs.tier == 'realistic'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          cargo xtask sim run --configs 200 --seeds 3 --tier realistic \
+            --base "$GITHUB_RUN_ID" --shard "$SHARD/4"
+      - name: Corpus and fresh configurations (stress tier)
+        if: github.event_name == 'schedule' || inputs.tier == 'stress'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          cargo xtask sim run --configs 5000 --seeds 1 --tier stress \
+            --base "$GITHUB_RUN_ID" --shard "$SHARD/4"

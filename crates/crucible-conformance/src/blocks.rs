@@ -220,6 +220,23 @@ fn column(ty: &Ty, values: &[Value]) -> Result<Box<dyn Column>> {
     })
 }
 
+/// The order of two sort-key values of one column, as the bytes of a block compare.
+fn key_order(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(Value::UInt(x)), Some(Value::UInt(y))) => x.cmp(y),
+        (Some(Value::Int(x)), Some(Value::Int(y))) => x.cmp(y),
+        (Some(Value::Time(x)), Some(Value::Time(y))) => x.micros().cmp(&y.micros()),
+        (Some(Value::Date(x)), Some(Value::Date(y))) => x.day_number().cmp(&y.day_number()),
+        (Some(Value::Enum(x)), Some(Value::Enum(y))) => (*x as i8).cmp(&(*y as i8)),
+        (Some(Value::Uuid(x)), Some(Value::Uuid(y))) => x.to_bytes().cmp(&y.to_bytes()),
+        (Some(x), Some(y)) => match (bytes(x), bytes(y)) {
+            (Ok(x), Ok(y)) => x.cmp(y),
+            _ => std::cmp::Ordering::Equal,
+        },
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
 /// The rows of one block for one table.
 #[derive(Clone, Debug)]
 pub struct Rows {
@@ -255,6 +272,34 @@ impl Rows {
     pub fn each(self, name: &'static str, f: impl Fn(usize) -> Value) -> Self {
         let rows = self.rows;
         self.with(name, (0..rows).map(f).collect())
+    }
+
+    /// The rows in the table's `ORDER BY` order, which is how the shipper sends a block and what the store
+    /// model checks. A real server sorts a block itself.
+    pub fn sorted(mut self) -> Self {
+        let def = table(self.table);
+        let keys: Vec<Vec<Value>> = def
+            .order_by
+            .iter()
+            .filter_map(|name| {
+                let set = self.set.iter().find(|(set, _)| set == name);
+                let ty = &def.column(name)?.ty;
+                Some(set.map_or_else(|| vec![default_value(ty); self.rows], |(_, v)| v.clone()))
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..self.rows).collect();
+        order.sort_by(|a, b| {
+            keys.iter()
+                .map(|column| key_order(column.get(*a), column.get(*b)))
+                .find(|o| o.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (_, values) in &mut self.set {
+            if values.len() == order.len() {
+                *values = order.iter().map(|at| values[*at].clone()).collect();
+            }
+        }
+        self
     }
 
     /// The table.

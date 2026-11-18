@@ -768,8 +768,10 @@ dependencies = [
  "crucible-plan",
  "crucible-records",
  "crucible-schema",
+ "crucible-sim",
  "crucible-store-clickhouse",
  "futures",
+ "proptest",
  "sha2",
  "thiserror",
  "tokio",
@@ -1010,6 +1012,7 @@ name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "blake3",
  "bytes",
  "crucible-admission",
@@ -1035,10 +1038,12 @@ dependencies = [
  "prost",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
+ "serde_json",
  "shuttle",
  "tempfile",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "turmoil",
 ]
@@ -3471,6 +3476,7 @@ version = "0.0.0"
 dependencies = [
  "brotli",
  "crucible-api-types",
+ "crucible-sim",
  "flate2",
  "ts-rs",
 ]

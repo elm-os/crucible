@@ -18,8 +18,8 @@ Crucible is verified empirically and formally. There is no review-based gate: a 
 
 ## Swarm testing
 
-Each simulation configuration flips an independent coin for about 34 dimensions (workload features, fault types and
-config flags), so some runs leave out the features that would otherwise hide a bug. With 200 configurations per pull
+Each simulation configuration flips an independent coin for 41 dimensions (workload features, fault types and
+config flags; [`system-simulation.md`](system-simulation.md) lists them), so some runs leave out the features that would otherwise hide a bug. With 200 configurations per pull
 request, any 6 specific features appear together in at least one run with 95.7% probability; with 5,000 nightly
 configurations, any 10 do with 99.2% probability.
 

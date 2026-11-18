@@ -7,6 +7,7 @@
 )]
 
 mod gen_ts;
+mod sim;
 mod ui;
 
 use std::path::PathBuf;
@@ -19,17 +20,25 @@ commands:
   gen-ts               regenerate the TypeScript types of the REST API in ui/src/api/generated/ from the
                        DTOs of crucible-api-types; commit the result (CI fails on any difference)
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
-                       (default ui/out); run it after every UI build that will be embedded or served
+                       (default ui/out); run it after every UI build that will be embedded or served";
 
-Planned: sim (run, replay), perf (gate, fsync-probe), conformance, authz-matrix.";
+const PLANNED: &str = "Planned: perf (gate, fsync-probe), conformance, authz-matrix.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("help" | "--help" | "-h") => {
-            println!("{USAGE}");
+            println!("{USAGE}\n{}\n\n{PLANNED}", sim::USAGE);
             ExitCode::SUCCESS
         }
+        Some("sim") => match sim::main(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("sim: {e}");
+                ExitCode::from(2)
+            }
+        },
         Some("gen-ts") => match gen_ts::generate() {
             Ok((dir, files)) => {
                 println!("{}: {files} files", dir.display());
@@ -65,7 +74,7 @@ fn main() -> ExitCode {
             }
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\n\n{USAGE}");
+            eprintln!("unknown command: {other}\n\n{USAGE}\n{}", sim::USAGE);
             ExitCode::from(2)
         }
     }

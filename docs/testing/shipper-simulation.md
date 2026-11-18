@@ -9,7 +9,7 @@ shipper follows is in [`formal-model.md`](formal-model.md); the disk and the WAL
 
 | Piece | Where | What it is |
 |---|---|---|
-| Store model | `crucible_sim::ch_model::ChModel` | The insert, deduplication and probe side of the simulated ClickHouse behind `TelemetryStore` |
+| Store model | `crucible_sim::ch_model::ChModel` | The simulated ClickHouse behind `TelemetryStore`. This suite uses its insert, deduplication and probe side |
 | Workload and oracle | `crucible_sim::ship_sim` | The WAL suite's plan (segment sizes, disk faults, crash loops, process stops, crashes during recovery), clients that append OTLP requests as `IngestRequest` frames, the real shipper, seeded crash points, and the ledger that checks I1, I2, I12, I13 and I14 |
 | Recovery driver | `crucible_sim::boot` (crate-private) | Recovers the WAL through crashes and faults and compares it with an uninterrupted reference recovery. Both suites use it |
 | Suite | `crates/crucible-sim/tests/ship_dst.rs` | The per-pull-request seeds, the mutants, the determinism test, the long run and the replay tool |
@@ -51,8 +51,9 @@ shipper suite runs the same plan and the same disk through the real shipper.
 | Poison pair | A data error on every attempt, except that the first attempt may be accepted and stay in flight | As stated |
 | Probe error | The probe fails | Nothing |
 
-The plan interpreter, merges, deletes and partition drops are not part of this model yet; those methods answer
-`Internal`.
+The read side of the model (the typed-plan interpreter, merges, deletes and partition drops) is used by the
+system simulation, [`system-simulation.md`](system-simulation.md), and checked against real servers by the
+conformance suite. The raw landed parts that this suite inspects are unaffected by merges.
 
 ## Crash points
 

@@ -17,12 +17,17 @@ crucible-chfmt = { workspace = true }
 crucible-plan = { workspace = true, features = ["test-support"] }
 crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
 crucible-auth = { workspace = true, features = ["test-support"] }
+# The store model that the differential rows compare with the real server.
+crucible-sim = { path = "../crucible-sim" }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

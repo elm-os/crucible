@@ -2,6 +2,9 @@ name: conformance
 
 # The production ClickHouse adapter against real servers: the conformance rows of docs/testing/invariants.md
 # that crates/crucible-conformance implements. One job per server version, each with its own service container.
+# The same run is the differential check of the simulation's store model (crates/crucible-sim, ChModel): the
+# suite gives the model the blocks it inserts into the server and compares the answer of every typed plan and
+# maintenance call (the two "ChModel differential" rows).
 # The 1 shard x 2 replica run needs server configuration files, which a service container cannot take, so it
 # stays in crates/crucible-conformance/scripts/conformance.sh.
 
@@ -12,6 +15,8 @@ on:
       - crates/crucible-conformance/**
       - crates/crucible-schema/**
       - crates/crucible-chfmt/**
+      - crates/crucible-plan/**
+      - crates/crucible-sim/src/ch_*.rs
       - .github/workflows/conformance.yml
   schedule:
     - cron: "17 3 * * *"
@@ -67,7 +72,7 @@ jobs:
           done
           echo "ClickHouse did not answer on port 8123" >&2
           exit 1
-      - name: Conformance rows
+      - name: Conformance rows and the ChModel differential
         env:
           TAG: ${{ matrix.tag }}
         run: |

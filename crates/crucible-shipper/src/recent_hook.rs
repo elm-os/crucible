@@ -70,11 +70,6 @@ impl RecentHook {
             pairs,
         });
     }
-
-    /// Runs eviction and gap closure without a frame, for a node that receives no traffic.
-    pub fn maintain(&self) {
-        self.writer().maintain();
-    }
 }
 
 fn control(source: &WalFrame) -> Frame {

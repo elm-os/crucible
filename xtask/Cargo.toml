@@ -10,6 +10,7 @@ publish.workspace = true
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-api-types = { workspace = true }
 brotli = "=9.1.1"
+crucible-sim = { path = "../crates/crucible-sim" }
 flate2 = { workspace = true }
 ts-rs = { workspace = true }
 

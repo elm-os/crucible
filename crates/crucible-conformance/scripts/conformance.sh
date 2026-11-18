@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runs the conformance suite of crucible-conformance against real ClickHouse servers in Docker.
+# The suite includes the differential check of the simulation's store model (the "ChModel differential" rows).
 #
 #   scripts/conformance.sh single [tag ...]    one server per tag (default tags: 26.3 26.8 latest)
 #   scripts/conformance.sh cluster [tag ...]   1 shard x 2 replicas with Keeper, per tag
