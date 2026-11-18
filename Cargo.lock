@@ -1155,6 +1155,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-sqlws"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-env",
+ "crucible-records",
+ "crucible-schema",
+ "crucible-sim",
+ "proptest",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-store-clickhouse"
 version = "0.0.0"
 dependencies = [
