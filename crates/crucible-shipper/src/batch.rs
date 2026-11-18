@@ -112,9 +112,10 @@ impl OpenBatch {
         }
     }
 
-    /// Whether a size threshold is reached: the batch takes no further frame.
+    /// Whether a size threshold is reached: the batch takes no further frame. A batch of the shipper's own
+    /// control frames alone is never full, because it cannot seal.
     pub fn is_full(&self, limits: &SealLimits, seal_bytes: u64) -> bool {
-        self.span_rows >= limits.rows() || self.raw_bytes >= seal_bytes
+        self.is_sealable() && (self.span_rows >= limits.rows() || self.raw_bytes >= seal_bytes)
     }
 
     /// Whether the batch must seal now (contract 5.1): it holds something to seal and has reached the linger,

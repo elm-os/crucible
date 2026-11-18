@@ -495,7 +495,6 @@ impl Shipper {
         } else {
             ctx.stats.reshipped.fetch_add(1, Ordering::Relaxed);
         }
-
         let marker_at = batch.marker_at();
         let mut jobs = Vec::new();
         for (pair, rows) in batch.into_pairs() {

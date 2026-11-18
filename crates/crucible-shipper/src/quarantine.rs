@@ -77,6 +77,9 @@ async fn copy(
 ) -> Result<(), CopyError> {
     let disk = &ctx.env.disk;
     disk.create_dir_all(dir).await?;
+    // An earlier copy's manifest must not describe the frames of this one while they are written.
+    let manifest_path = dir.join(MANIFEST_FILE)?;
+    write_file(ctx, &manifest_path, Vec::new()).await?;
     let file = disk.open(&dir.join(FRAMES_FILE)?, OpenMode::Write).await?;
     file.truncate(0).await?;
     let mut replay = ctx.wal.replay(batch.first_lsn);
@@ -101,7 +104,7 @@ async fn copy(
     flush(&file, &mut offset, &mut pending).await?;
     file.sync_data().await?;
     let manifest = format!("{manifest_head}frames={frames}\nbytes={offset}\n");
-    write_file(ctx, &dir.join(MANIFEST_FILE)?, vec![Bytes::from(manifest)]).await?;
+    write_file(ctx, &manifest_path, vec![Bytes::from(manifest)]).await?;
     disk.sync_dir(dir).await?;
     disk.sync_dir(&DiskPath::root_dir(Root::Quarantine)).await?;
     Ok(())

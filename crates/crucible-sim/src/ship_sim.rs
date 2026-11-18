@@ -35,7 +35,7 @@ use crucible_shipper::{
 use crucible_wal::{AppendError, RecoveryReport, Wal};
 use crucible_wal_codec::{
     ContentOrigin, FRAME_HEADER_LEN, FrameHeader, IngestRequest, IngestTransport, PreparedFrame,
-    Record, RecordType, SEGMENT_HEADER_LEN,
+    Record, RecordType, SEGMENT_HEADER_LEN, load_payload,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -122,6 +122,8 @@ pub enum Violation {
         watermark: u64,
         /// The last such frame.
         target: u64,
+        /// What the draining shipper did.
+        shipper: StatsSnapshot,
     },
     /// I13: at quiescence a segment wholly at or below the watermark was still there.
     SpaceNotReclaimed {
@@ -321,7 +323,14 @@ impl Ledger {
     }
 
     fn violate(&mut self, violation: Violation) {
-        if self.violations.len() < 16 && !self.violations.contains(&violation) {
+        // A few of each kind tell the story; thousands of lost rows would bury the first cause.
+        let kind = std::mem::discriminant(&violation);
+        let same = self
+            .violations
+            .iter()
+            .filter(|v| std::mem::discriminant(*v) == kind)
+            .count();
+        if same < 3 && !self.violations.contains(&violation) {
             self.violations.push(violation);
         }
     }
@@ -593,12 +602,25 @@ struct Shipping {
 }
 
 /// A quarantine directory whose pair is in fact quarantined.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Quarantined {
     table: TableId,
     partition: PartitionId,
     first: u64,
     last: u64,
+    /// The payloads of the copied frames.
+    payloads: Vec<Vec<u8>>,
+}
+
+impl Quarantined {
+    /// Whether a copied frame carries the span. A repeat of a request may have been dropped for a frame that
+    /// was never acknowledged, whose LSN the ledger does not know.
+    fn holds(&self, trace: &[u8; 16], span: &[u8; 8]) -> bool {
+        let has = |payload: &[u8], id: &[u8]| payload.windows(id.len()).any(|w| w == id);
+        self.payloads
+            .iter()
+            .any(|payload| has(payload, trace) && has(payload, span))
+    }
 }
 
 fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
@@ -612,29 +634,24 @@ fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.quarantined += s.quarantined;
 }
 
-/// Whether the frames file holds exactly the frames `first..=last`, in order.
-fn copy_is_complete(bytes: &[u8], first: u64, last: u64) -> bool {
+/// The payloads of a frames file, when it holds exactly the frames `first..=last`, in order and intact.
+fn copied_payloads(bytes: &[u8], first: u64, last: u64) -> Option<Vec<Vec<u8>>> {
     let mut at = 0;
     let mut next = first;
+    let mut payloads = Vec::new();
     while at < bytes.len() {
-        let Some(header) = bytes
-            .get(at..at + FRAME_HEADER_LEN)
-            .and_then(|h| <&[u8; FRAME_HEADER_LEN]>::try_from(h).ok())
-            .and_then(|h| FrameHeader::decode(h).ok())
-        else {
-            return false;
-        };
+        let header: &[u8; FRAME_HEADER_LEN] = bytes.get(at..at + FRAME_HEADER_LEN)?.try_into().ok()?;
+        let header = FrameHeader::decode(header).ok()?;
         let end = at + FRAME_HEADER_LEN + header.payload_len as usize;
-        let payload_ok = bytes
-            .get(at + FRAME_HEADER_LEN..end)
-            .is_some_and(|stored| header.payload_matches(stored));
-        if header.lsn.get() != next || !payload_ok {
-            return false;
+        let stored = bytes.get(at + FRAME_HEADER_LEN..end)?;
+        if header.lsn.get() != next || !header.payload_matches(stored) {
+            return None;
         }
+        payloads.push(load_payload(header.compressed, stored).ok()?.into_owned());
         next += 1;
         at = end;
     }
-    next == last + 1
+    (next == last + 1).then_some(payloads)
 }
 
 struct Run<'a> {
@@ -724,7 +741,7 @@ impl Run<'_> {
 
     /// The quarantine directories whose pair is quarantined, checked against contract 5.6. A directory whose
     /// pair landed after all is what a crash between the copy and the `Quarantine` frame leaves behind.
-    fn quarantines(&self) -> Vec<Quarantined> {
+    fn quarantines(&self, through: u64) -> Vec<Quarantined> {
         let mut found = Vec::new();
         let mut directories = 0;
         for path in self.disk.files(Root::Quarantine) {
@@ -745,12 +762,17 @@ impl Run<'_> {
                     partition: PartitionId::parse(field("partition")?).ok()?,
                     first: number("first_lsn")?,
                     last: number("last_lsn")?,
+                    payloads: Vec::new(),
                 })
             })();
-            let Some(q) = parsed else {
+            let Some(mut q) = parsed else {
                 // A crash can cut the manifest of a copy that was never announced.
                 continue;
             };
+            // Above the watermark the pair may still be shipped: the copy is not a quarantine yet.
+            if q.last > through {
+                continue;
+            }
             let (accepted, last) = self.model.pair_history(&(q.table, q.partition, q.first));
             match last {
                 Some(LastAnswer::ProbeAbsent) => {}
@@ -761,7 +783,7 @@ impl Run<'_> {
                         batch_seq: q.first,
                     });
                 }
-                // The pair landed, or is still being shipped: the copy is not a quarantine (yet).
+                // The pair landed after all: the copy is what a crash before the `Quarantine` frame left.
                 _ => continue,
             }
             let frames = DiskPath::new(Root::Quarantine, &format!("{dir}/{FRAMES_FILE}"))
@@ -769,11 +791,12 @@ impl Run<'_> {
                 .and_then(|p| self.disk.read_file(&p))
                 .unwrap_or_default();
             let declared = number("bytes").unwrap_or(u64::MAX) as usize;
-            let complete = frames
+            match frames
                 .get(..declared)
-                .is_some_and(|bytes| copy_is_complete(bytes, q.first, q.last));
-            if !complete {
-                self.violate(Violation::QuarantineCopy(dir.to_owned()));
+                .and_then(|bytes| copied_payloads(bytes, q.first, q.last))
+            {
+                Some(payloads) => q.payloads = payloads,
+                None => self.violate(Violation::QuarantineCopy(dir.to_owned())),
             }
             found.push(q);
         }
@@ -791,7 +814,7 @@ impl Run<'_> {
         if let Some((first, second)) = model.overlapping_ranges() {
             self.violate(Violation::IdentityOverlap { first, second });
         }
-        let quarantined = self.quarantines();
+        let quarantined = self.quarantines(through);
         let granularity = self.plan().config.granularity;
         let in_quarantine = |table: TableId, lsn: u64, start: Timestamp| {
             route(table, granularity, start).is_ok_and(|partition| {
@@ -801,17 +824,6 @@ impl Run<'_> {
             })
         };
         let mut ledger = self.shared.ledger();
-        // Where every accepted span key was acknowledged: a repeat may be dropped for an earlier frame.
-        let mut key_frames: BTreeMap<SpanKey, Vec<(u64, Timestamp)>> = BTreeMap::new();
-        for (&lsn, &index) in &ledger.acked {
-            let request = &ledger.requests[index];
-            for span in request.spans.iter().filter(|s| !s.rejected) {
-                key_frames
-                    .entry((request.project, span.trace, span.span))
-                    .or_default()
-                    .push((lsn, span.start));
-            }
-        }
         let mut found = Vec::new();
         let mut core_rows = 0u64;
         let mut core_roots: BTreeSet<(u64, [u8; 8])> = BTreeSet::new();
@@ -861,11 +873,10 @@ impl Run<'_> {
                     } else {
                         by_key.contains(&key)
                     };
-                    let parked = key_frames.get(&key).is_some_and(|frames| {
-                        frames
+                    let parked = in_quarantine(table, lsn, span.start)
+                        || quarantined
                             .iter()
-                            .any(|&(lsn, start)| in_quarantine(table, lsn, start))
-                    });
+                            .any(|q| q.table == table && q.holds(&span.trace, &span.span));
                     if !landed && !parked {
                         found.push(Violation::AckedSpanLost { table: name, lsn });
                     }
@@ -1134,6 +1145,7 @@ impl Run<'_> {
             self.violate(Violation::NotDrained {
                 watermark: watermark(&wal),
                 target,
+                shipper: shipping.stats.snapshot(),
             });
         }
         // Past replay retention, however the wall clock was stepped, and past the last insert in flight.
