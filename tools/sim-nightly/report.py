@@ -145,7 +145,10 @@ def summary(args):
             output.write(f"failures={len(items)}\ngate={'fail' if gate else 'pass'}\n")
 
     out = ["## Nightly simulation", "", f"The {run_line()}.", ""]
-    out += ["| Lane | Shard logs | Runs | Fresh runs | Passed | Failed | Losses expected |", "|---|---|---|---|---|---|---|"]
+    out += [
+        "| Lane | Shard logs | Runs | Fresh runs | Passed | Failed | Losses expected |",
+        "|---|---|---|---|---|---|---|",
+    ]
     out += rows + [""]
     if gate:
         out.append(f"**Fail**: {'; '.join(gate)}.")
