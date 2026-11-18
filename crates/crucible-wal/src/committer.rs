@@ -156,7 +156,13 @@ impl Committer {
         let first_lsn = self.next_lsn;
 
         let config = &self.shared.config;
+        let started = clock.now();
         let mut written = self.file.append(self.offset, vec![Bytes::from(buf)]).await;
+        let micros = clock.now().saturating_duration_since(started).as_micros();
+        self.shared
+            .metrics
+            .append_duration
+            .record(u64::try_from(micros).unwrap_or(u64::MAX));
         if written.is_ok() && config.ack_before_sync() {
             for (acked, item) in (first_lsn..).zip(std::mem::take(&mut items)) {
                 item.finish(Ok(Lsn::new(acked)));

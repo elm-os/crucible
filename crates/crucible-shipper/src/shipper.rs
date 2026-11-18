@@ -5,7 +5,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crucible_env::{Env, Instant, JoinHandle, Rng, Stores};
+use crucible_env::metrics::registry;
+use crucible_env::{Counter, Env, Histogram, Instant, JoinHandle, Rng, Stores};
 use crucible_normalize::{
     Admission, IngestFrame, NORMALIZER_VERSION, NormCtx, NormalizedFrame, PriceTable, StageB,
     normalize,
@@ -112,6 +113,8 @@ pub(crate) struct Ctx {
     pub(crate) gate: Gate,
     pub(crate) rng: Arc<dyn Rng>,
     pub(crate) stats: Arc<ShipperStats>,
+    /// `crucible_shipper_insert_duration_microseconds`.
+    pub(crate) insert_duration: Histogram,
     limits: Mutex<SealLimits>,
 }
 
@@ -163,6 +166,67 @@ impl Ctx {
 /// A pair that a durable `Quarantine` frame names.
 type QuarantinedPair = (Lsn, Lsn, TableId, PartitionId);
 
+/// A phase of the shipper task, the `phase` label of `crucible_shipper_task_microseconds_total`.
+#[derive(Clone, Copy, Debug)]
+enum Phase {
+    /// Reading the next durable frame from the WAL.
+    Read,
+    /// Decoding and normalizing a frame (contract 3.2, stage A).
+    StageA,
+    /// The duplicate window, the first-seen set and the recent-index insert (stage B).
+    StageB,
+    /// Deriving a frame's table rows and adding them to the builders.
+    Rows,
+    /// Sorting, encoding and compressing the blocks of a sealed batch.
+    Encode,
+    /// Waiting for durable `BatchSeal` and `Checkpoint` frames, and collecting garbage.
+    WalAppend,
+    /// Idle with the open batch full while the most batches are in flight.
+    WaitInserts,
+    /// Idle at the end of the durable log.
+    WaitFrames,
+}
+
+impl Phase {
+    const LABELS: [&'static str; 8] = [
+        "read",
+        "stage_a",
+        "stage_b",
+        "rows",
+        "encode",
+        "wal_append",
+        "wait_inserts",
+        "wait_frames",
+    ];
+}
+
+/// Charges the shipper task's time to phases. Each lap charges the time since the previous one to one phase, so
+/// the phases add up to the time the task has run.
+#[derive(Debug)]
+struct Laps {
+    mark: Instant,
+    phases: [Counter; Phase::LABELS.len()],
+}
+
+impl Laps {
+    fn new(env: &Env) -> Self {
+        let phases =
+            Phase::LABELS.map(|phase| env.metrics.counter(&registry::SHIPPER_TASK_TIME, &[phase]));
+        Self {
+            mark: env.clock.now(),
+            phases,
+        }
+    }
+
+    fn lap(&mut self, phase: Phase, now: Instant) {
+        let micros = now.saturating_duration_since(self.mark).as_micros();
+        if let Some(counter) = self.phases.get(phase as usize) {
+            counter.add(u64::try_from(micros).unwrap_or(u64::MAX));
+        }
+        self.mark = now;
+    }
+}
+
 /// A frame that stage B admitted and that is not in a batch yet.
 #[derive(Debug)]
 struct Held {
@@ -208,6 +272,7 @@ pub struct Shipper {
     done_rx: mpsc::UnboundedReceiver<BatchDone>,
     last_gc: Instant,
     read_failures: u32,
+    laps: Laps,
 }
 
 impl Drop for Shipper {
@@ -303,6 +368,9 @@ impl Shipper {
             gate: Gate::new(config.connections),
             rng: env.rng.fork("crucible-shipper/backoff"),
             stats: Arc::default(),
+            insert_duration: env
+                .metrics
+                .histogram(&registry::SHIPPER_INSERT_DURATION, &[]),
             barriers: hooks.barriers,
             recent: hooks.recent,
             wal,
@@ -324,8 +392,15 @@ impl Shipper {
             done_rx,
             last_gc: ctx.env.clock.now(),
             read_failures: 0,
+            laps: Laps::new(env),
             ctx,
         })
+    }
+
+    /// Charges the time since the previous lap to `phase`.
+    fn lap(&mut self, phase: Phase) {
+        let now = self.ctx.env.clock.now();
+        self.laps.lap(phase, now);
     }
 
     /// The shipper's counters.
@@ -365,11 +440,14 @@ impl Shipper {
     async fn rebuild(&mut self) -> Result<(), ShipError> {
         let shutdown = self.ctx.env.shutdown();
         while self.replay.position() <= self.watermark && !shutdown.is_shutdown() {
-            let Some(frame) = self.next_frame().await? else {
+            let next = self.next_frame().await;
+            self.lap(Phase::Read);
+            let Some(frame) = next? else {
                 continue;
             };
             if frame.record_type() == RecordType::IngestRequest {
                 let mut normalized = normalize_frame(&self.ctx.wal, &frame, &self.norm_ctx())?;
+                self.lap(Phase::StageA);
                 let admission = self
                     .stage_b
                     .admit(&mut normalized)
@@ -378,6 +456,7 @@ impl Shipper {
             } else {
                 self.ctx.recent.passed(&frame);
             }
+            self.lap(Phase::StageB);
         }
         Ok(())
     }
@@ -409,17 +488,21 @@ impl Shipper {
         match frame.record_type() {
             RecordType::IngestRequest => {
                 let mut normalized = normalize_frame(&self.ctx.wal, frame, &self.norm_ctx())?;
+                self.lap(Phase::StageA);
                 let admission = self
                     .stage_b
                     .admit(&mut normalized)
                     .map_err(|e| frame_error(lsn, e))?;
                 self.ctx.recent.applied(frame, &normalized, &admission);
-                self.place(Held {
+                self.lap(Phase::StageB);
+                let placed = self.place(Held {
                     frame: normalized,
                     admission,
                     received_at: frame.received_at(),
                     raw_bytes,
-                })
+                });
+                self.lap(Phase::Rows);
+                placed
             }
             record_type => {
                 // Control frames contribute no rows. The shipper's own do not warrant a seal either; any other
@@ -432,6 +515,7 @@ impl Shipper {
                 let now = self.ctx.env.clock.now();
                 self.open
                     .take_frame(lsn, frame.received_at(), raw_bytes, !own, now);
+                self.lap(Phase::StageB);
                 Ok(())
             }
         }
@@ -502,6 +586,7 @@ impl Shipper {
         } else {
             ctx.stats.reshipped.fetch_add(1, Ordering::Relaxed);
         }
+        self.lap(Phase::WalAppend);
         let marker_at = batch.marker_at();
         let mut jobs = Vec::new();
         for (pair, rows) in batch.into_pairs() {
@@ -530,6 +615,7 @@ impl Shipper {
             BatchState::Shipping
         };
         self.in_flight.push_back(InFlight { id, state, task });
+        self.lap(Phase::Encode);
         Ok(())
     }
 
@@ -583,6 +669,7 @@ impl Shipper {
     /// with fresh boundaries and keeps tailing the log.
     pub async fn run(mut self) -> Result<(), ShipError> {
         let mut shutdown = self.ctx.env.shutdown();
+        self.laps.mark = self.ctx.env.clock.now();
         self.rebuild().await?;
         loop {
             if shutdown.is_shutdown() {
@@ -592,6 +679,7 @@ impl Shipper {
                 self.on_done(done)?;
             }
             self.checkpoint_resolved().await?;
+            self.lap(Phase::WalAppend);
             if self.seal_due() {
                 self.seal().await?;
                 continue;
@@ -599,17 +687,22 @@ impl Shipper {
             if let Some(held) = self.held.take_if(|_| !self.open.is_sealable()) {
                 // The batch the frame did not fit is sealed; the frame opens the next one.
                 self.place(held)?;
+                self.lap(Phase::Rows);
                 continue;
             }
-            if self.can_read()
-                && let Some(frame) = self.next_frame().await?
-            {
-                self.on_frame(&frame)?;
-                continue;
+            let can_read = self.can_read();
+            if can_read {
+                let next = self.next_frame().await;
+                self.lap(Phase::Read);
+                if let Some(frame) = next? {
+                    self.on_frame(&frame)?;
+                    continue;
+                }
             }
             let now = self.ctx.env.clock.now();
             if now.saturating_duration_since(self.last_gc) >= self.ctx.config.gc_interval {
                 self.collect_garbage().await;
+                self.lap(Phase::WalAppend);
             }
             let mut tick = self.ctx.env.clock.sleep(self.ctx.config.tail_poll).fuse();
             select_biased! {
@@ -621,6 +714,12 @@ impl Shipper {
                 () = tick => {}
                 () = (&mut shutdown).fuse() => return Ok(()),
             }
+            // Unable to read here means that the open batch is full and cannot seal at the in-flight cap.
+            self.lap(if can_read {
+                Phase::WaitFrames
+            } else {
+                Phase::WaitInserts
+            });
         }
     }
 }

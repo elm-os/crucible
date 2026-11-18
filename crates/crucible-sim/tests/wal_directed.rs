@@ -921,6 +921,10 @@ fn queued_appends_share_one_group_and_one_sync() {
         // Twenty frames, one append, one sync.
         assert_eq!(node.syncs() - syncs_at_open, 1);
         let recorder = &node.host.recorder;
+        let appends = recorder
+            .histogram_value(&registry::WAL_APPEND_DURATION, &[])
+            .map_or(0, |h| h.count);
+        assert_eq!(appends, 1);
         assert_eq!(
             recorder.counter_value(&registry::WAL_APPENDED_FRAMES, &[]),
             20

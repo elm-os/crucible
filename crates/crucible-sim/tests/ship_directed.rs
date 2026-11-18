@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crucible_env::metrics::registry;
 use crucible_env::{
     DiskPath, InsertError, InsertSettings, RetryReason, Root, StoreFlavour, Stores,
 };
@@ -99,6 +100,11 @@ fn config() -> ShipperConfig {
 impl Rig {
     /// Starts a node on the disk: recovers the WAL and runs the shipper.
     async fn boot(&self) -> (Node, RecoveryReport) {
+        self.boot_with(config()).await
+    }
+
+    /// [`Rig::boot`] with these shipper settings.
+    async fn boot_with(&self, shipper_config: ShipperConfig) -> (Node, RecoveryReport) {
         let boot = {
             let mut boots = self.boots.lock().unwrap();
             *boots += 1;
@@ -118,7 +124,7 @@ impl Rig {
             &stores,
             wal.clone(),
             &report,
-            config(),
+            shipper_config,
             Hooks::default(),
         )
         .unwrap();
@@ -628,6 +634,70 @@ fn rows_carry_the_batch_they_were_sealed_into() {
                 Some(part.token.first_lsn().get())
             );
         }
+        node.host.stop().await;
+    });
+}
+
+/// The `phase` labels of `crucible_shipper_task_microseconds_total`.
+const PHASES: [&str; 8] = [
+    "read",
+    "stage_a",
+    "stage_b",
+    "rows",
+    "encode",
+    "wal_append",
+    "wait_inserts",
+    "wait_frames",
+];
+
+#[test]
+fn the_shipper_task_time_adds_up_and_every_insert_is_timed() {
+    directed(|rig| async move {
+        // Every insert answers after exactly 100 ms, and a batch is full at four rows: with two batches in
+        // flight, the third waits for an insert to finish.
+        rig.model.set_script(Script::new(|_, _| None));
+        rig.model.set_faults(ChFaults {
+            latency_micros: (100_000, 100_000),
+            ..ChFaults::default()
+        });
+        let (node, _) = rig
+            .boot_with(ShipperConfig {
+                seal_rows: 4,
+                ..config()
+            })
+            .await;
+        let start = node.host.env.clock.now();
+        for tag in 1..=4 {
+            node.ingest(tag, 4).await;
+        }
+        node.sleep(1_000).await;
+        let elapsed = node.host.env.clock.now().saturating_duration_since(start);
+        let elapsed = u64::try_from(elapsed.as_micros()).unwrap();
+
+        let recorder = &node.host.recorder;
+        let phase = |name: &str| recorder.counter_value(&registry::SHIPPER_TASK_TIME, &[name]);
+        let charged: u64 = PHASES.iter().map(|name| phase(name)).sum();
+        // Every moment of the task's run is in exactly one phase; only the wait in progress, at most one tail
+        // poll long, is not charged yet.
+        assert!(
+            charged <= elapsed && elapsed - charged <= 1_000,
+            "charged {charged} of {elapsed} us"
+        );
+        assert!(phase("wait_inserts") >= 50_000, "{}", phase("wait_inserts"));
+        assert!(phase("wait_frames") > 0);
+
+        // Four batches of four pairs, each insert timed at exactly the store's latency.
+        let inserts = rig
+            .model
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, Call::Insert { .. }))
+            .count() as u64;
+        assert_eq!(inserts, 16);
+        let timed = recorder
+            .histogram_value(&registry::SHIPPER_INSERT_DURATION, &[])
+            .unwrap();
+        assert_eq!((timed.count, timed.sum), (inserts, inserts * 100_000));
         node.host.stop().await;
     });
 }

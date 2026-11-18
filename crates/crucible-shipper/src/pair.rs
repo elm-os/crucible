@@ -153,6 +153,8 @@ pub(crate) async fn ship_pair(
             )
             .await;
         let latency = ctx.env.clock.now().saturating_duration_since(now);
+        ctx.insert_duration
+            .record(u64::try_from(latency.as_micros()).unwrap_or(u64::MAX));
         drop(connection);
         ctx.barriers
             .reached(Barrier::InsertSent(pair.0, pair.1))

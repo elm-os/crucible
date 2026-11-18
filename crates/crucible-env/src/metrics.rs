@@ -141,6 +141,17 @@ pub mod registry {
         ],
     };
 
+    /// Duration of each WAL commit group's `append`, the write before its sync.
+    pub static WAL_APPEND_DURATION: HistogramDef = HistogramDef {
+        name: "crucible_wal_append_duration_microseconds",
+        help: "Duration of each WAL commit group's append, in microseconds.",
+        labels: &[],
+        buckets: &[
+            50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000,
+            1_000_000, 5_000_000,
+        ],
+    };
+
     /// The last durable LSN.
     pub static WAL_DURABLE_LSN: GaugeDef = GaugeDef {
         name: "crucible_wal_durable_lsn",
@@ -211,6 +222,25 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Time the shipper task spent in each phase of its loop. Every moment of the task's run falls in exactly
+    /// one phase, so the phases add up to the time the task has run.
+    pub static SHIPPER_TASK_TIME: CounterDef = CounterDef {
+        name: "crucible_shipper_task_microseconds_total",
+        help: "Time the shipper task spent in each phase of its loop, in microseconds.",
+        labels: &["phase"],
+    };
+
+    /// Duration of each insert the shipper sent, from the send to the answer or the timeout.
+    pub static SHIPPER_INSERT_DURATION: HistogramDef = HistogramDef {
+        name: "crucible_shipper_insert_duration_microseconds",
+        help: "Duration of each insert the shipper sent, in microseconds.",
+        labels: &[],
+        buckets: &[
+            1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000,
+            2_500_000, 5_000_000, 10_000_000, 30_000_000, 90_000_000,
+        ],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -231,6 +261,11 @@ pub mod registry {
                 WAL_SYNC_DURATION.labels,
                 WAL_SYNC_DURATION.buckets,
             ),
+            (
+                WAL_APPEND_DURATION.name,
+                WAL_APPEND_DURATION.labels,
+                WAL_APPEND_DURATION.buckets,
+            ),
             (WAL_DURABLE_LSN.name, WAL_DURABLE_LSN.labels, &[]),
             (WAL_CHECKPOINT_LSN.name, WAL_CHECKPOINT_LSN.labels, &[]),
             (WAL_SEGMENT_BYTES.name, WAL_SEGMENT_BYTES.labels, &[]),
@@ -248,6 +283,12 @@ pub mod registry {
                 INGEST_INFLIGHT_BYTES.name,
                 INGEST_INFLIGHT_BYTES.labels,
                 &[],
+            ),
+            (SHIPPER_TASK_TIME.name, SHIPPER_TASK_TIME.labels, &[]),
+            (
+                SHIPPER_INSERT_DURATION.name,
+                SHIPPER_INSERT_DURATION.labels,
+                SHIPPER_INSERT_DURATION.buckets,
             ),
         ]
     }
