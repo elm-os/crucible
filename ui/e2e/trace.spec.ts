@@ -414,3 +414,164 @@ test.describe("trace detail: links", () => {
     expect(api.calls).toEqual([]);
   });
 });
+
+// Scripts the page loaded, by body, so a test can tell whether the layout library was among them:
+// its ranker's name appears in no other script.
+function collectScripts(page: import("@playwright/test").Page): Promise<string>[] {
+  const bodies: Promise<string>[] = [];
+  page.on("response", (response) => {
+    if (response.request().resourceType() === "script") {
+      bodies.push(response.text().catch(() => ""));
+    }
+  });
+  return bodies;
+}
+const loadsDagre = async (bodies: Promise<string>[]) =>
+  (await Promise.all(bodies)).some((body) => body.includes("network-simplex"));
+
+test.describe("trace detail: agent graph", () => {
+  test("loading: the layout library loads only for the graph, behind a skeleton", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    const scripts = collectScripts(page);
+    await page.goto(traceUrl());
+    await expect(page.getByRole("treegrid", { name: "Spans" })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    expect(await loadsDagre(scripts)).toBe(false);
+
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    await page.route("**/_next/static/chunks/**", async (route) => {
+      await gate;
+      await route.continue();
+    });
+    await page.getByRole("radio", { name: "Graph" }).click();
+    const section = page.getByRole("region", { name: "Agent graph" });
+    await expect(section.getByRole("status")).toHaveText("Loading agent graph");
+    await expectAccessible(page, "agent graph loading");
+    release();
+    await expect(page.getByRole("listbox", { name: "Agent graph" })).toBeVisible();
+    await expect(page).toHaveURL(/view=graph/);
+    expect(await loadsDagre(scripts)).toBe(true);
+  });
+
+  test("success: each agent, tool and model is a node that says what it calls", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    await page.goto(traceUrl({ view: "graph" }));
+    const graph = page.getByRole("listbox", { name: "Agent graph" });
+    await expect(graph.getByRole("option")).toHaveCount(6);
+    await expect(graph.getByRole("option", { name: /search_docs/ })).toHaveAccessibleDescription(
+      "Called by support agent 2 times.",
+    );
+    await expect(graph.getByRole("option", { name: /support agent/ })).toHaveAccessibleDescription(
+      /^Calls .*search_docs 2 times.*review agent 1 time/,
+    );
+    await expect(graph.getByRole("option", { name: /send_reply/ })).toContainText("1 error");
+    await expectAccessible(page, "agent graph success");
+    await page.screenshot({ path: test.info().outputPath("trace-graph.png"), fullPage: true });
+  });
+
+  test("keyboard: one tab stop that reaches every node; Enter chooses and filters the timeline", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    await page.goto(traceUrl({ view: "graph" }));
+    const graph = page.getByRole("listbox", { name: "Agent graph" });
+    const nodes = graph.getByRole("option");
+    await expect(nodes).toHaveCount(6);
+    await expect(graph.locator('[role="option"][tabindex="0"]')).toHaveCount(1);
+
+    await page.getByRole("radio", { name: "Graph" }).focus();
+    await page.keyboard.press("Tab");
+    const reached = new Set<string>();
+    for (let step = 0; step < 6; step += 1) {
+      reached.add(
+        await page.evaluate(() =>
+          document.activeElement?.getAttribute("role") === "option"
+            ? (document.activeElement.textContent ?? "")
+            : "not a node",
+        ),
+      );
+      await page.keyboard.press("ArrowDown");
+    }
+    expect([...reached].toSorted()).toEqual((await nodes.allTextContents()).toSorted());
+
+    const tool = graph.getByRole("option", { name: /search_docs/ });
+    await tool.focus();
+    await page.keyboard.press("Enter");
+    await expect(tool).toHaveAttribute("aria-selected", "true");
+    await expect(
+      page.getByText("The timeline shows the 2 spans of tool search_docs."),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Show in timeline" }).click();
+
+    const grid = page.getByRole("treegrid", { name: "Spans" });
+    await expect(grid.getByRole("rowheader")).toHaveCount(3);
+    await expect(page.getByText(/Showing the 2 spans of tool search_docs/)).toBeVisible();
+    await expectAccessible(page, "timeline filtered by a graph node");
+    await page.getByRole("button", { name: "Show all spans" }).click();
+    await expect(grid.getByRole("rowheader")).toHaveCount(8);
+  });
+
+  test("error: when the layout library can't load, the section offers a retry that works", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    await page.goto(traceUrl());
+    await expect(page.getByRole("treegrid", { name: "Spans" })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await page.route("**/_next/static/chunks/**", (route) => route.abort());
+    await page.getByRole("radio", { name: "Graph" }).click();
+    const section = page.getByRole("region", { name: "Agent graph" });
+    await expect(section.getByText("This section couldn't load.")).toBeVisible();
+    await expectAccessible(page, "agent graph error");
+
+    await page.unroute("**/_next/static/chunks/**");
+    await section.getByRole("button", { name: "Retry agent graph" }).click();
+    await expect(page.getByRole("listbox", { name: "Agent graph" })).toBeVisible();
+  });
+
+  test("empty: a trace without agents, tools or model calls says so and offers the timeline", async ({
+    page,
+    api,
+  }) => {
+    api.on(
+      TRACE_PATH,
+      json(
+        traceDetail({
+          spans: [
+            span("d000000000000001", null, 0, 1_000, { name: "GET /health" }),
+            span("d000000000000002", "d000000000000001", 10, 500, { name: "db.query" }),
+          ],
+        }),
+      ),
+    );
+    await page.goto(traceUrl({ view: "graph" }));
+    await expect(page.getByText("This trace has no agents, tools or model calls.")).toBeVisible();
+    await expectAccessible(page, "agent graph empty");
+    await page.getByRole("button", { name: "Show the timeline" }).click();
+    await expect(page.getByRole("treegrid", { name: "Spans" })).toBeVisible();
+  });
+
+  test("a paged trace says the graph covers the loaded spans only", async ({ page, api }) => {
+    const root = span("e000000000000001", null, 0, 9_000, {
+      name: "batch agent",
+      observation_type: "agent",
+      child_count: 1,
+    });
+    const tool = span("e000000000000002", "e000000000000001", 10, 500, {
+      name: "fetch",
+      observation_type: "tool",
+      child_count: 0,
+    });
+    api.on(TRACE_PATH, json(traceDetail({ paged: true, span_count: 9_000, spans: [root, tool] })));
+    await page.goto(traceUrl({ view: "graph" }));
+    await expect(page.getByText("The graph covers the 2 spans loaded so far.")).toBeVisible();
+  });
+});

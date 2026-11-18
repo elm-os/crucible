@@ -203,15 +203,19 @@ function SpanRow({ row, tree }: { row: WaterfallDataRow; tree: TraceTree }) {
         ) : (
           <span aria-hidden="true" className="w-4 shrink-0" />
         )}
+        {/* The spaces between flex items don't render, but they keep the row's name as words. */}
         <span className="shrink-0 text-label text-ink-soft max-sm:hidden">
           {TYPE_LABEL[span.observation_type]}
-        </span>
+        </span>{" "}
         <span className="truncate">{item.label}</span>
         {failed ? (
-          <span className="flex shrink-0 items-center gap-1 text-label">
-            <AlertIcon className="shrink-0" />
-            Error
-          </span>
+          <>
+            {" "}
+            <span className="flex shrink-0 items-center gap-1 text-label">
+              <AlertIcon className="shrink-0" />
+              Error
+            </span>
+          </>
         ) : null}
       </WaterfallRowHeader>
       <WaterfallBar />

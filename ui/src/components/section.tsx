@@ -121,7 +121,7 @@ export function Section<T>({
   );
 }
 
-function ErrorCard({
+export function ErrorCard({
   error,
   label,
   onRetry,

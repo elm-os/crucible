@@ -140,9 +140,9 @@ describe("the trace page", () => {
     renderPage();
     await screen.findByRole("treegrid", { name: "Spans" });
     expect(rows()).toEqual([
-      ["Agentagent run", "", "1.3 s"],
-      ["Toolsearch toolError", "", "<1 ms"],
-      ["GenerationUnnamed span", "", "40 ms"],
+      ["Agent agent run", "", "1.3 s"],
+      ["Tool search tool Error", "", "<1 ms"],
+      ["Generation Unnamed span", "", "40 ms"],
     ]);
     const bars = within(screen.getByRole("treegrid")).getAllByRole("gridcell");
     expect(bars[0]?.getAttribute("aria-label")).toBe("Starts at 0 ms, lasts 1.3 s");
@@ -309,5 +309,49 @@ describe("the trace page", () => {
       "Retry spans",
     ]);
     expect(screen.queryByRole("region", { name: "Span" })).toBeNull();
+  });
+});
+
+describe("the agent graph view", () => {
+  test("an agent finds the graph's nodes, and choosing one filters the timeline", async () => {
+    window.history.replaceState(null, "", `/trace/?project=p-1&trace=${TRACE}&view=graph`);
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    const graph = await screen.findByRole("listbox", { name: "Agent graph" });
+    // Flow order: left to right, then top to bottom.
+    expect(
+      within(graph)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "Agent agent run 1 span ",
+      "Model gpt-x 1 span ",
+      "Tool search tool 1 span 1 error",
+    ]);
+    const tool = within(graph).getByRole("option", { name: /search tool/ });
+    const description = document.getElementById(tool.getAttribute("aria-describedby") ?? "");
+    expect(description?.textContent).toBe("Called by agent run 1 time.");
+
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    expect(components.map((entry) => entry.label)).toEqual(
+      expect.arrayContaining(["View", "Agent graph"]),
+    );
+    const chosen = await agent.act({
+      steps: [{ ref: "Agent graph", action: "setValue", args: ["Tool search tool"] }],
+    });
+    expect(chosen.ok, chosen.error?.message).toBe(true);
+    expect(tool.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The timeline shows the 1 span of tool search tool.")).toBeTruthy();
+
+    await act(async () => screen.getByRole("button", { name: "Show in timeline" }).click());
+    expect(new URLSearchParams(window.location.search).get("view")).toBeNull();
+    expect(rows().map(([name]) => name)).toEqual(["Agent agent run", "Tool search tool Error"]);
+    await act(async () => screen.getByRole("button", { name: "Show all spans" }).click());
+    expect(rows()).toHaveLength(3);
   });
 });

@@ -10,6 +10,11 @@ import {
   DrawerTitle,
   DrawerTrigger,
 } from "@ui-sdk/react/drawer";
+import {
+  SegmentedControl,
+  SegmentedControlIndicator,
+  SegmentedControlItem,
+} from "@ui-sdk/react/segmented-control";
 import type { Route } from "next";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -33,9 +38,12 @@ import {
   withNextPage,
   withRestart,
 } from "./child-pages";
+import { AgentGraphView, KIND_LABEL } from "./agent-graph-view";
 import { SpanPanelBody, SpanPanelSkeleton } from "./span-panel";
 import { SpanWaterfall } from "./span-waterfall";
 import {
+  agentGraphModel,
+  ancestorsOf,
   buildTraceTree,
   initiallyExpanded,
   type TraceTree,
@@ -98,13 +106,19 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
   const [requests, setRequests] = useState<PageRequests>(new Map());
   const children = useChildPages(project, trace, requests);
   const [spanParam, setSpanParam] = useUrlParam("span");
+  const [viewParam, setView] = useUrlParam("view");
   const [expandedState, setExpanded] = useState<string[] | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // The agent graph node whose spans the timeline shows, if one is chosen.
+  const [graphNode, setGraphNode] = useState<string | null>(null);
 
   const detail = query.data;
   const tree = detail ? buildTraceTree(detail.spans, children.pages) : null;
   const expanded = expandedState ?? (tree && detail ? initiallyExpanded(tree, detail.paged) : []);
   const selected = parseSpanId(spanParam);
+  const view = viewParam === "graph" ? "graph" : "timeline";
+  const graph = tree ? agentGraphModel(tree) : null;
+  const filter = graph?.nodes.find((node) => node.id === graphNode) ?? null;
 
   // An open span whose children have not been read yet requests their first page. Requests are
   // state, not derived, so a page stays loaded after its span closes; once requested, a span is no
@@ -134,6 +148,17 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
     if (span !== null && !isWide()) setSheetOpen(true);
   };
 
+  // A chosen graph node's spans must show in the timeline, so the spans above them open.
+  const chooseGraphNode = (id: string | null) => {
+    setGraphNode(id);
+    const node = graph?.nodes.find((candidate) => candidate.id === id);
+    if (!node || !tree) return;
+    const open = new Set(expanded);
+    for (const span of node.spans)
+      for (const ancestor of ancestorsOf(tree, span)) open.add(ancestor);
+    setExpanded([...open]);
+  };
+
   const panel =
     tree && detail ? (
       <SpanPanelBody tree={tree} paged={detail.paged} requested={spanParam} selected={selected} />
@@ -146,9 +171,25 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
         description={<span className="font-mono break-all">{trace}</span>}
       />
       <TraceSummary query={query} tree={tree} />
+      {detail && detail.spans.length > 0 ? (
+        <SegmentedControl
+          aria-label="View"
+          value={view}
+          onValueChange={(next) => setView(next === "graph" ? "graph" : null)}
+          className="mb-3"
+        >
+          <SegmentedControlIndicator />
+          <SegmentedControlItem value="timeline" className="text-data">
+            Timeline
+          </SegmentedControlItem>
+          <SegmentedControlItem value="graph" className="text-data">
+            Graph
+          </SegmentedControlItem>
+        </SegmentedControl>
+      ) : null}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
-          title="Spans"
+          title={view === "graph" ? "Agent graph" : "Spans"}
           className="min-w-0 lg:self-start"
           query={query}
           skeleton={<SpansSkeleton />}
@@ -163,19 +204,48 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
             </EmptyState>
           }
         >
-          {() =>
-            tree ? (
-              <SpanWaterfall
-                tree={tree}
-                items={waterfallItems(tree)}
-                expanded={expanded}
-                onExpandedChange={setExpanded}
-                selected={selected !== null && tree.nodes.has(selected) ? selected : null}
-                onSelect={select}
-                onMore={loadMore}
-              />
-            ) : null
-          }
+          {(body) => {
+            if (!tree || !graph) return null;
+            if (view === "graph") {
+              return (
+                <AgentGraphView
+                  model={graph}
+                  paged={body.paged}
+                  loadedSpans={tree.nodes.size}
+                  selected={filter?.id ?? null}
+                  onSelect={chooseGraphNode}
+                  onShowTimeline={() => setView(null)}
+                />
+              );
+            }
+            return (
+              <>
+                {filter ? (
+                  <div
+                    data-filter
+                    className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-data"
+                  >
+                    <p>
+                      Showing the {formatCount(filter.spans.length)}{" "}
+                      {filter.spans.length === 1 ? "span" : "spans"} of{" "}
+                      {KIND_LABEL[filter.kind].toLowerCase()} {filter.name}, with the spans above
+                      them.
+                    </p>
+                    <Button onClick={() => setGraphNode(null)}>Show all spans</Button>
+                  </div>
+                ) : null}
+                <SpanWaterfall
+                  tree={tree}
+                  items={waterfallItems(tree, filter ? new Set(filter.spans) : null)}
+                  expanded={expanded}
+                  onExpandedChange={setExpanded}
+                  selected={selected !== null && tree.nodes.has(selected) ? selected : null}
+                  onSelect={select}
+                  onMore={loadMore}
+                />
+              </>
+            );
+          }}
         </Section>
         {query.isPending || panel ? (
           <SectionFrame
