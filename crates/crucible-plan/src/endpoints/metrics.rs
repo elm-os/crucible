@@ -124,7 +124,10 @@ fn points(step: Step, window: TimeWindow, series: u64) -> (u64, u64) {
 /// Checks a query against the registry and the caps of contract 8.8 and picks its granularity. `auto` picks
 /// the finest step that fits [`METRICS_MAX_BUCKETS`] and [`METRICS_MAX_POINTS`]; an explicit step that does not
 /// fit is refused with the step `auto` would pick.
-pub fn metrics_shape(window: TimeWindow, query: &MetricsQuery) -> Result<MetricsShape, MetricsError> {
+pub fn metrics_shape(
+    window: TimeWindow,
+    query: &MetricsQuery,
+) -> Result<MetricsShape, MetricsError> {
     if query.source != Source::Spans {
         return Err(invalid("source", "only the spans source has metrics"));
     }
@@ -148,16 +151,20 @@ pub fn metrics_shape(window: TimeWindow, query: &MetricsQuery) -> Result<Metrics
 
     let (mut measures, mut other): (Vec<Measure>, Vec<Measure>) = (Vec::new(), Vec::new());
     let (mut columns, mut other_columns) = (Vec::new(), Vec::new());
-    let place = |list: &mut Vec<Measure>, measure: Measure| match list.iter().position(|m| *m == measure) {
-        Some(at) => at,
-        None => {
-            list.push(measure);
-            list.len() - 1
-        }
-    };
+    let place =
+        |list: &mut Vec<Measure>, measure: Measure| match list.iter().position(|m| *m == measure) {
+            Some(at) => at,
+            None => {
+                list.push(measure);
+                list.len() - 1
+            }
+        };
     for (id, aggregation) in &query.measures {
         if !id.aggregations().contains(aggregation) {
-            return Err(invalid("measures", "the measure does not allow the aggregation"));
+            return Err(invalid(
+                "measures",
+                "the measure does not allow the aggregation",
+            ));
         }
         let measure = if id.additive() {
             Measure::Sum(id.column())
@@ -200,7 +207,13 @@ pub fn metrics_shape(window: TimeWindow, query: &MetricsQuery) -> Result<Metrics
         suggested_granularity: finest,
     };
     // No step fits: the widest one names the limit.
-    let step = step.ok_or_else(|| too_broad(fits(Step::Week).err().unwrap_or(("max_points", METRICS_MAX_POINTS))))?;
+    let step = step.ok_or_else(|| {
+        too_broad(
+            fits(Step::Week)
+                .err()
+                .unwrap_or(("max_points", METRICS_MAX_POINTS)),
+        )
+    })?;
     fits(step).map_err(too_broad)?;
     Ok(MetricsShape {
         step,
@@ -334,7 +347,12 @@ pub fn metrics_series(
     let among = match (shape.keys, keys) {
         (0, None) => None,
         (0, Some(_)) => return Err(invalid("keys", "a query without dimensions takes no keys")),
-        (_, None) => return Err(invalid("keys", "a query with dimensions takes the ranked keys")),
+        (_, None) => {
+            return Err(invalid(
+                "keys",
+                "a query with dimensions takes the ranked keys",
+            ));
+        }
         (most, Some(keys)) if keys.len() > most as usize => {
             return Err(invalid("keys", "more keys than top_n"));
         }
@@ -346,7 +364,9 @@ pub fn metrics_series(
         dimensions(query),
         shape.measures,
     )?;
-    series(scope, window, clamp, caller, aggregate, shape.step, query.fill)
+    series(
+        scope, window, clamp, caller, aggregate, shape.step, query.fill,
+    )
 }
 
 /// The `other` series of a query with dimensions: `bucket`, then the sums of the additive measures
@@ -370,5 +390,7 @@ pub fn metrics_other(
         [] as [SpanMetricsCol; 0],
         shape.other,
     )?;
-    series(scope, window, clamp, caller, aggregate, shape.step, query.fill)
+    series(
+        scope, window, clamp, caller, aggregate, shape.step, query.fill,
+    )
 }

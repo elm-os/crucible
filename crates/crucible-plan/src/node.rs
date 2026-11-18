@@ -511,7 +511,9 @@ impl Aggregate {
             AggOutput::Group(i) => self.group.get(i).is_some_and(|c| value.fits(c.ty())),
             AggOutput::Measure(i) => self.measures.get(i).is_some_and(|m| m.comparable(value)),
         };
-        if !one_direction || after.len() != self.order.len() || !self.order.iter().zip(&after).all(fits)
+        if !one_direction
+            || after.len() != self.order.len()
+            || !self.order.iter().zip(&after).all(fits)
         {
             return Err(PlanError::Cursor);
         }

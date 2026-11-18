@@ -70,7 +70,8 @@ fn aggregate_row(aggregate: &Aggregate) -> Row {
         | Measure::Max(c)
         | Measure::HistogramMerge(c)
         | Measure::PickMerge(c)
-        | Measure::LatestByVersion(c) => stored(c.ty()),
+        | Measure::LatestByVersion(c)
+        | Measure::SetMerge(c) => stored(c.ty()),
     }));
     Row::new(values)
 }

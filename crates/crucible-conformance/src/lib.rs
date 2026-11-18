@@ -16,6 +16,7 @@ mod cancel;
 mod codes;
 mod differential;
 mod inserts;
+mod m2;
 mod maintenance;
 mod reads;
 mod startup;

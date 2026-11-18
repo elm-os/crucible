@@ -518,10 +518,9 @@ fn measure(m: &Measure, filled: bool) -> String {
         Measure::HistogramMerge(c) => format!("sumMap({})", c.name()),
         // A pick partial is rank-prefixed, so its merge is the maximum.
         Measure::Max(c) | Measure::PickMerge(c) => absent(format!("max({})", c.name()), c),
-        Measure::LatestByVersion(c) => absent(
-            format!("argMax({}, (version, fact_id))", c.name()),
-            c,
-        ),
+        Measure::LatestByVersion(c) => {
+            absent(format!("argMax({}, (version, fact_id))", c.name()), c)
+        }
         // The union of the stored sets, ascending, cut to the column's bound.
         Measure::SetMerge(c) => {
             let bound = match c.ty().agg_fn() {
@@ -616,15 +615,17 @@ fn aggregate(
     }
     let output = |output: &AggOutput| match output {
         AggOutput::Group(i) => n.group().get(*i).map(|c| (c.name().to_owned(), *c.ty())),
-        AggOutput::Measure(i) => n.measures().get(*i).map(|m| (format!("m{i}"), measure_ty(m))),
+        AggOutput::Measure(i) => n
+            .measures()
+            .get(*i)
+            .map(|m| (format!("m{i}"), measure_ty(m))),
     };
     if let (Some(cursor), Some((_, direction))) = (n.cursor(), n.order().first()) {
         // The keyset of a grouped list: a tuple comparison over the order outputs, after grouping.
         let mut names = Vec::with_capacity(cursor.len());
         let mut values = Vec::with_capacity(cursor.len());
         for ((by, _), value) in n.order().iter().zip(cursor) {
-            let (name, ty) =
-                output(by).ok_or_else(|| RenderError::Literal("cursor".to_owned()))?;
+            let (name, ty) = output(by).ok_or_else(|| RenderError::Literal("cursor".to_owned()))?;
             values.push(b.literal(&ty, value)?);
             names.push(name);
         }
@@ -659,7 +660,8 @@ fn aggregate(
                 outputs.join(", ")
             );
         }
-        b.settings.push(("use_with_fill_by_sorting_prefix", "1".to_owned()));
+        b.settings
+            .push(("use_with_fill_by_sorting_prefix", "1".to_owned()));
         return Ok(sql);
     }
     if !n.order().is_empty() {

@@ -21,15 +21,15 @@ use crucible_plan::{
     trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
     user_session_counts,
 };
-use crucible_records::{Level, ObservationType};
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
     TraceId, Uuid, WalEpoch,
 };
+use crucible_records::{Level, ObservationType};
 use crucible_schema::{
-    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol,
-    RetentionSettings, SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol,
-    TraceHeadsCol, TraceStatsCol, Ty, UserRollupCol, table,
+    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpOpsCol, McpToolInventoryCol,
+    McpToolRollupCol, RetentionSettings, SessionRollupCol, SpanCoreCol, SpanMetricsCol,
+    SpanPayloadCol, TraceHeadsCol, TraceStatsCol, Ty, UserRollupCol, table,
 };
 use crucible_store_clickhouse::render::{self, Statement};
 use proptest::prelude::*;
@@ -588,7 +588,11 @@ fn m2_users() {
         "user-9",
     ));
     insta::assert_snapshot!("m2_user_detail", rendered(&detail));
-    let users = ["user-1".to_owned(), "user-2".to_owned(), "user-3".to_owned()];
+    let users = [
+        "user-1".to_owned(),
+        "user-2".to_owned(),
+        "user-3".to_owned(),
+    ];
     let counts = live(user_session_counts(
         project(),
         window(),
@@ -603,10 +607,7 @@ fn m2_users() {
 fn core_filter() -> Filter {
     Filter::And(vec![
         Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
-        Filter::Text(
-            TextField::Release,
-            vec!["r2".to_owned(), "r1".to_owned()],
-        ),
+        Filter::Text(TextField::Release, vec!["r2".to_owned(), "r1".to_owned()]),
         Filter::Text(TextField::Version, vec!["v1".to_owned()]),
         Filter::Level(vec![Level::Error, Level::Warning]),
         Filter::ObservationType(vec![ObservationType::Generation]),
@@ -670,7 +671,11 @@ fn m2_search() {
     let request = SearchRequest {
         tokens: vec!["Rate".to_owned(), "limit".to_owned(), "exceeded".to_owned()],
         mode: TokenMode::All,
-        fields: vec![SearchField::Input, SearchField::Output, SearchField::Metadata],
+        fields: vec![
+            SearchField::Input,
+            SearchField::Output,
+            SearchField::Metadata,
+        ],
         filter: Filter::And(vec![
             metadata_filter(),
             Filter::Text(TextField::UserId, vec!["u1".to_owned()]),
@@ -708,12 +713,7 @@ fn m2_payload_range() {
         offset: 4_096,
         len: 65_536,
     };
-    let range = live(payload_range(
-        project(),
-        &clamp(),
-        Caller::Session,
-        request,
-    ));
+    let range = live(payload_range(project(), &clamp(), Caller::Session, request));
     insta::assert_snapshot!(rendered(&range));
 }
 
@@ -779,7 +779,10 @@ fn node_text_search_with_snippets() {
         len: 160,
     })
     .unwrap();
-    insta::assert_snapshot!(rendered(&plan(QueryClass::Search, Node::TextSearch(search))));
+    insta::assert_snapshot!(rendered(&plan(
+        QueryClass::Search,
+        Node::TextSearch(search)
+    )));
 }
 
 #[test]
@@ -1168,16 +1171,14 @@ fn shape() -> impl Strategy<Value = Shape> {
         ),
         (0usize..7, flag()).prop_map(|(table, grouped)| Shape::AggregateRollup { table, grouped }),
         (flag(), pred_shape()).prop_map(|(right_scan, pred)| Shape::SemiJoin { right_scan, pred }),
-        (1usize..7, 0usize..3, flag(), flag()).prop_map(
-            |(tokens, mode, both_fields, snippets)| {
-                Shape::TextSearch {
-                    tokens,
-                    mode,
-                    both_fields,
-                    snippets,
-                }
+        (1usize..7, 0usize..3, flag(), flag()).prop_map(|(tokens, mode, both_fields, snippets)| {
+            Shape::TextSearch {
+                tokens,
+                mode,
+                both_fields,
+                snippets,
             }
-        ),
+        }),
         (0usize..6, flag(), flag()).prop_map(|(step, grouped, zero)| Shape::TimeSeries {
             step,
             grouped,
@@ -1272,7 +1273,10 @@ fn rollup(index: usize) -> (TableId, ColumnRef, Vec<Measure>) {
 fn filter(v: &mut Values, filtered: bool, metadata: bool) -> Filter {
     let mut conditions = Vec::new();
     if filtered {
-        conditions.push(Filter::Text(TextField::Environment, vec![v.string(), v.string()]));
+        conditions.push(Filter::Text(
+            TextField::Environment,
+            vec![v.string(), v.string()],
+        ));
         conditions.push(Filter::Not(Box::new(Filter::Level(vec![Level::Error]))));
         conditions.push(Filter::Or(vec![
             Filter::Tags(vec![v.string()]),
@@ -1657,9 +1661,14 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             let built = match (*dimensions, *plan) {
                 (0, _) => metrics_series(scope, window, &clamp(), Caller::Session, &query, None),
                 (_, 0) => metrics_ranking(scope, window, &clamp(), Caller::Session, &query),
-                (_, 1) => {
-                    metrics_series(scope, window, &clamp(), Caller::Session, &query, Some(&keys))
-                }
+                (_, 1) => metrics_series(
+                    scope,
+                    window,
+                    &clamp(),
+                    Caller::Session,
+                    &query,
+                    Some(&keys),
+                ),
                 _ => metrics_other(scope, window, &clamp(), Caller::Session, &query, &keys),
             };
             built.unwrap().unwrap()

@@ -264,11 +264,24 @@ fn the_canonical_bytes_are_pinned() {
 #[test]
 fn each_target_evaluates_its_own_fields() {
     let names = |target: FilterTarget| -> Vec<&str> {
-        target.fields().into_iter().map(FilterField::as_str).collect()
+        target
+            .fields()
+            .into_iter()
+            .map(FilterField::as_str)
+            .collect()
     };
     assert_eq!(
         names(FilterTarget::TraceHeads),
-        ["environment", "release", "version", "level", "user_id", "session_id", "tags", "name"]
+        [
+            "environment",
+            "release",
+            "version",
+            "level",
+            "user_id",
+            "session_id",
+            "tags",
+            "name"
+        ]
     );
     assert_eq!(
         names(FilterTarget::SpanCore),
@@ -313,7 +326,8 @@ fn each_target_evaluates_its_own_fields() {
             ]);
             for filter in [condition(field), nested] {
                 let supported = target.supports(field)
-                    && (filter == condition(field) || target.supports(FilterField::Text(TextField::UserId)));
+                    && (filter == condition(field)
+                        || target.supports(FilterField::Text(TextField::UserId)));
                 match filter.pred(target) {
                     Ok(_) => assert!(supported, "{field:?} compiled for {target:?}"),
                     Err(PlanError::UnsupportedFilter { field: named, .. }) => {
@@ -340,10 +354,16 @@ fn a_split_keeps_whole_conjuncts_together() {
     let user = Filter::Text(TextField::UserId, vec!["u".to_owned()]);
     let filter = Filter::And(vec![metadata.clone(), environment.clone(), user.clone()]);
     let (core, rest) = filter.split(FilterTarget::SpanCore);
-    assert_eq!(core.canonical(), Filter::And(vec![environment.clone(), user.clone()]).canonical());
+    assert_eq!(
+        core.canonical(),
+        Filter::And(vec![environment.clone(), user.clone()]).canonical()
+    );
     assert_eq!(rest.canonical(), metadata);
     let (payload, rest) = filter.split(FilterTarget::SpanPayload);
-    assert_eq!(payload.canonical(), Filter::And(vec![metadata.clone(), user]).canonical());
+    assert_eq!(
+        payload.canonical(),
+        Filter::And(vec![metadata.clone(), user]).canonical()
+    );
     assert_eq!(rest.canonical(), environment);
     // A disjunction over two tables cannot be split: it stays whole, in the rest.
     let mixed = Filter::Or(vec![metadata, environment]);

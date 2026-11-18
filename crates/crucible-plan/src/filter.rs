@@ -363,9 +363,9 @@ impl Filter {
     /// The first field, in the filter's own order, that `target` cannot evaluate.
     pub fn unsupported(&self, target: FilterTarget) -> Option<FilterField> {
         match self {
-            Self::And(operands) | Self::Or(operands) => {
-                operands.iter().find_map(|operand| operand.unsupported(target))
-            }
+            Self::And(operands) | Self::Or(operands) => operands
+                .iter()
+                .find_map(|operand| operand.unsupported(target)),
             Self::Not(operand) => operand.unsupported(target),
             condition => condition.field().filter(|field| !target.supports(*field)),
         }
@@ -384,7 +384,10 @@ impl Filter {
         };
         let column = |field: FilterField| target.column(field).ok_or_else(|| refused(field));
         let all = |operands: &[Self]| -> Result<Vec<Pred>, PlanError> {
-            operands.iter().map(|operand| operand.compile(target)).collect()
+            operands
+                .iter()
+                .map(|operand| operand.compile(target))
+                .collect()
         };
         Ok(match self {
             Self::And(operands) => Pred::And(all(operands)?),

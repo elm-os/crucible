@@ -57,6 +57,9 @@ const DEFAULT_MERGE_PPM: u32 = 300_000;
 /// The rows a second a read scans, for its execution time: slower than a server, so that the model's time
 /// limit is the stricter one.
 pub const SCAN_ROWS_PER_SEC: u64 = 10_000_000;
+/// One series of a zero-filled time series: its dimension values, and its rows by bucket.
+type Series = (Vec<Value>, BTreeMap<i64, Vec<Value>>);
+
 /// The most rows a zero-filled time series may hold in the model before it is refused as out of memory.
 const MAX_FILLED_ROWS: u64 = 1_000_000;
 
@@ -1558,7 +1561,7 @@ impl<'a> Interp<'a> {
         // The fill of the renderer's statement: every series holds every bucket the window overlaps. A series
         // is a key of group dimensions with a row; without group dimensions there is one, rows or not.
         let dimensions = n.aggregate().group().len();
-        let mut series: BTreeMap<Vec<u8>, (Vec<Value>, BTreeMap<i64, Vec<Value>>)> = BTreeMap::new();
+        let mut series: BTreeMap<Vec<u8>, Series> = BTreeMap::new();
         if dimensions == 0 {
             series.insert(Vec::new(), (Vec::new(), BTreeMap::new()));
         }

@@ -70,14 +70,14 @@ fn buckets_are_counted_from_the_first_to_the_last_one_the_window_overlaps() {
     assert_eq!(Step::Minute.buckets(window(0, MINUTE)), (T0, 1));
     assert_eq!(Step::Minute.buckets(window(0, MINUTE + 1)), (T0, 2));
     // An unaligned hour overlaps two hour buckets, although it is one hour long.
-    assert_eq!(
-        Step::Hour.buckets(window(0, HOUR)),
-        (at(-30 * MINUTE), 2)
-    );
+    assert_eq!(Step::Hour.buckets(window(0, HOUR)), (at(-30 * MINUTE), 2));
     assert_eq!(Step::Hour.buckets(window(30 * MINUTE, 90 * MINUTE)).1, 1);
     assert_eq!(Step::FiveMinutes.bucket(at(4 * MINUTE)), T0);
     assert_eq!(Step::FifteenMinutes.bucket(at(14 * MINUTE)), T0);
-    assert_eq!(Step::Day.bucket(T0), CivilDate::new(2026, 11, 17).unwrap().start());
+    assert_eq!(
+        Step::Day.bucket(T0),
+        CivilDate::new(2026, 11, 17).unwrap().start()
+    );
     // Weeks start on Monday, before the epoch too.
     let monday = CivilDate::new(2026, 11, 16).unwrap().start();
     assert_eq!(Step::Week.bucket(T0), monday);
@@ -103,7 +103,11 @@ fn a_series_holds_at_most_500_buckets() {
     let over = window(500 * MINUTE + 1);
     assert_eq!(
         metrics_shape(over, &query(1, 0, Granularity::Step(Step::Minute))),
-        Err(too_broad("max_buckets", METRICS_MAX_BUCKETS, Some(Step::FiveMinutes)))
+        Err(too_broad(
+            "max_buckets",
+            METRICS_MAX_BUCKETS,
+            Some(Step::FiveMinutes)
+        ))
     );
     let auto = metrics_shape(over, &query(1, 0, Granularity::Auto)).unwrap();
     assert_eq!((auto.step, auto.buckets.1), (Step::FiveMinutes, 101));
@@ -119,11 +123,15 @@ fn a_query_returns_at_most_10_000_points() {
     let fits = window(238 * MINUTE);
     let shape = metrics_shape(fits, &two(Granularity::Step(Step::Minute))).unwrap();
     assert_eq!((shape.buckets.1, shape.keys), (238, 20));
-    assert!(42 * 238 <= METRICS_MAX_POINTS && 42 * 239 > METRICS_MAX_POINTS);
+    const { assert!(42 * 238 <= METRICS_MAX_POINTS && 42 * 239 > METRICS_MAX_POINTS) };
     let over = window(239 * MINUTE);
     assert_eq!(
         metrics_shape(over, &two(Granularity::Step(Step::Minute))),
-        Err(too_broad("max_points", METRICS_MAX_POINTS, Some(Step::FiveMinutes)))
+        Err(too_broad(
+            "max_points",
+            METRICS_MAX_POINTS,
+            Some(Step::FiveMinutes)
+        ))
     );
     assert_eq!(
         metrics_shape(over, &two(Granularity::Auto)).unwrap().step,
@@ -194,7 +202,10 @@ fn at_most_20_keys_are_returned_and_the_ranking_reads_one_more() {
     assert_eq!(metrics_shape(window(HOUR), &flat).unwrap().keys, 0);
     assert!(matches!(
         run(&flat),
-        Err(MetricsError::Invalid { field: "dimensions", .. })
+        Err(MetricsError::Invalid {
+            field: "dimensions",
+            ..
+        })
     ));
 }
 
@@ -222,9 +233,19 @@ fn the_series_take_the_ranked_keys_and_the_other_series_takes_the_rest() {
     let keys = metrics_keys(&by, &rows).unwrap();
     assert_eq!(
         keys[0],
-        [Literal::String("prod".to_owned()), Literal::String("m1".to_owned())]
+        [
+            Literal::String("prod".to_owned()),
+            Literal::String("m1".to_owned())
+        ]
     );
-    let series = metrics_series(scope(), window(HOUR), &keep(), Caller::Session, &by, Some(&keys));
+    let series = metrics_series(
+        scope(),
+        window(HOUR),
+        &keep(),
+        Caller::Session,
+        &by,
+        Some(&keys),
+    );
     let series = series.unwrap().unwrap();
     let Node::TimeSeries(node) = series.root() else {
         panic!("a time series")
@@ -254,14 +275,21 @@ fn the_series_take_the_ranked_keys_and_the_other_series_takes_the_rest() {
     let invalid = |result| matches!(result, Err(MetricsError::Invalid { field: "keys", .. }));
     assert!(invalid(run(&by, None)));
     assert!(invalid(run(&by, Some(&[]))));
-    assert!(invalid(run(&by, Some(&[vec![Literal::String("prod".to_owned())]]))));
+    assert!(invalid(run(
+        &by,
+        Some(&[vec![Literal::String("prod".to_owned())]])
+    )));
     let one = MetricsQuery {
         top_n: Some(1),
         ..by.clone()
     };
     assert!(invalid(run(&one, Some(&keys))));
     assert!(invalid(run(&query(1, 0, Granularity::Auto), Some(&keys))));
-    assert!(run(&query(1, 0, Granularity::Auto), None).unwrap().is_some());
+    assert!(
+        run(&query(1, 0, Granularity::Auto), None)
+            .unwrap()
+            .is_some()
+    );
     // A value that is no dimension value gives no keys.
     assert_eq!(
         metrics_keys(&by, &[Row::new(vec![Value::Null, Value::UInt(1)])]),
@@ -301,8 +329,14 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
             let allowed = measure.aggregations().contains(&aggregation);
             assert_eq!(run(&query).is_ok(), allowed, "{measure:?} {aggregation:?}");
             // A percentile is a quantile of the histogram kernel; a sum is additive.
-            assert_eq!(aggregation.quantile_ppm().is_some(), aggregation != Aggregation::Sum);
-            assert_eq!(allowed && measure.additive(), allowed && aggregation == Aggregation::Sum);
+            assert_eq!(
+                aggregation.quantile_ppm().is_some(),
+                aggregation != Aggregation::Sum
+            );
+            assert_eq!(
+                allowed && measure.additive(),
+                allowed && aggregation == Aggregation::Sum
+            );
         }
     }
     for dimension in &spans.dimensions {
@@ -341,7 +375,11 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
             Err(other) => panic!("{other:?}"),
         }
     }
-    assert!(spans.filter_fields.contains(&FilterField::Text(TextField::Environment)));
+    assert!(
+        spans
+            .filter_fields
+            .contains(&FilterField::Text(TextField::Environment))
+    );
 
     // What the registry does not allow.
     let invalid = |query: MetricsQuery, field: &str| {
@@ -351,9 +389,21 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
         );
     };
     for source in [Source::McpOps, Source::Traces] {
-        invalid(MetricsQuery { source, ..base.clone() }, "source");
+        invalid(
+            MetricsQuery {
+                source,
+                ..base.clone()
+            },
+            "source",
+        );
     }
-    invalid(MetricsQuery { measures: Vec::new(), ..base.clone() }, "measures");
+    invalid(
+        MetricsQuery {
+            measures: Vec::new(),
+            ..base.clone()
+        },
+        "measures",
+    );
     invalid(
         MetricsQuery {
             measures: vec![(MeasureId::Count, Aggregation::Sum); 5],

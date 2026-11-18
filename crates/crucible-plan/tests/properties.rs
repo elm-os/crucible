@@ -792,7 +792,7 @@ proptest! {
         assert_scoped(&users, scope, window, caller, QueryClass::List, TableId::UserRollup)?;
         let one = user_detail(scope, window, &keep(), caller, &user).unwrap().unwrap();
         assert_scoped(&one, scope, window, caller, QueryClass::List, TableId::UserRollup)?;
-        let counts = user_session_counts(scope, window, &keep(), caller, &[user.clone()]).unwrap().unwrap();
+        let counts = user_session_counts(scope, window, &keep(), caller, std::slice::from_ref(&user)).unwrap().unwrap();
         assert_scoped(&counts, scope, window, caller, QueryClass::List, TableId::TraceHeads)?;
 
         let metadata = Filter::Metadata { key: user.clone(), value: user.clone() };
@@ -1086,10 +1086,11 @@ proptest! {
             metrics_ranking(scope, window, &clamp, caller, &query),
             metrics_series(scope, window, &clamp, caller, &query, Some(&keys)),
             metrics_other(scope, window, &clamp, caller, &query, &keys),
-        ] {
-            if let Ok(plan) = plan {
-                prop_assert_eq!(plan.map(|plan| plan.window()), expected);
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            prop_assert_eq!(plan.map(|plan| plan.window()), expected);
         }
         let tables = [
             TableId::SessionRollup,
