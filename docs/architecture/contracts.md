@@ -121,9 +121,10 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
 | `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types` |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth` |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
+| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
 
 Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
 `crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
@@ -171,6 +172,13 @@ variants append.
 
 `SourceFormat` and `IoShape` carry no product names: a span mapped by a dialect other than 0 has
 `source_format = compat` and the dialect id in `compat_dialect` (section 10).
+
+### 1.7 Security posture
+
+Crucible is self-hosted and single-organization. Protections that cost users nothing are always on: project isolation,
+hashed secrets, constant-time comparisons, parameterized SQL, durability before acknowledgement. Hardening that adds
+friction is an operator switch, never the default: the default works on an internal network over plain HTTP, and every
+refusal says which setting changes it.
 
 ## 2. Env traits
 
@@ -1806,6 +1814,12 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - Heads of one trace with the same `(start_time, trace_hash, trace_id)` collapse to one row; a trace with several
   roots at different start times appears once per root.
 - The read barrier must stay shorter than the visibility grace.
+- The shipper feeds the index through `RecentHook`: `applied(frame, normalized, admission)` for ingest frames and
+  `passed(frame)` for every other frame. After a restart the host restores quarantine marks from the manifests under
+  the quarantine root (the `Quarantine` frames may have been collected), with reach `All`.
+- `WalLocator.ordinal` is the span's position among the spans stage B admitted from the frame; a payload re-read must
+  apply the same admission (open: the binary's re-read path uses stage A positions, fixed in milestone 2).
+- `ChModel` does not yet apply query-class guardrails, so it is more permissive than ClickHouse there (milestone 2).
 - Live tail can miss a head that was durable but unapplied when the cursor was issued, or whose `received_at` equals
   the cursor's `as_of`; the head cursor gains `wal_epoch` and LSN with a `>=` arrival bound when `crucible-cursor`
   lands (milestone 2).
@@ -2217,17 +2231,17 @@ alone answers cross-origin requests, without credentials; a project setting can 
 
 | Aspect | Contract |
 |---|---|
-| Cookie | `__Host-crucible_session`: Secure, HttpOnly, SameSite=Lax, Path=/. A variant without the prefix and without Secure is allowed only on loopback binds |
+| Cookie | HttpOnly, SameSite=Lax, Path=/ always. When the public origin is HTTPS the cookie is `__Host-crucible_session` with Secure. When it is plain HTTP (common on internal networks) the cookie is `crucible_session` without Secure, sign-in works, and the server logs one startup notice recommending HTTPS; `security.require_https = true` makes plain HTTP refuse sign-in instead |
 | Token | 256 random bits from `Rng`; only its SHA-256 is stored |
 | Expiry | Idle 7 days (sliding; writes throttled to once per 60 s); absolute 30 days |
 | Rotation | A new token at every login. A password or role change revokes the user's other sessions |
-| Fixation | Pre-login state lives in a separate `__Host-crucible_flow` cookie; no pre-auth identifier ever becomes a session |
-| Cache | Nodes cache sessions and memberships for 5 s. During a Postgres outage UI sessions fail closed after that TTL with `control_plane_unavailable`. Only ingest fails open |
+| Fixation | Pre-login state lives in a separate flow cookie (`__Host-crucible_flow` over HTTPS, `crucible_flow` over plain HTTP); no pre-auth identifier ever becomes a session |
+| Cache | Nodes cache sessions and memberships for 5 s. During a Postgres outage, sessions and memberships already in the cache stay valid for `auth.session_outage_grace` (default 10 min), so open UIs keep reading telemetry; new sign-ins and control-plane writes answer `control_plane_unavailable`. A revocation made before the outage still applies, because the cache refreshes every 5 s while Postgres is up. `auth.session_outage_grace = 0` restores fail-closed |
 | Passwords | Argon2id, 64 MiB, 3 iterations, 1 lane, on `Spawner::spawn_blocking` behind a semaphore of min(cores, 4); overflow is 429. Unknown emails get a dummy verify. 12 to 128 characters |
 
 | Request | Rule |
 |---|---|
-| Cookie-authenticated, any method other than GET or HEAD (including POST reads such as `search` and `metrics/query`) | `X-Crucible-CSRF` must equal the session's token (constant-time compare). `Origin` must equal `server.public_url`. `Sec-Fetch-Site`, when present, must be `same-origin`. Failures are `csrf_invalid` or `origin_invalid` |
+| Cookie-authenticated, any method other than GET or HEAD (including POST reads such as `search` and `metrics/query`) | `X-Crucible-CSRF` must equal the session's token (constant-time compare). `Origin` must equal the server's own origin: `server.public_url` when set, otherwise the request's `Host` (same-origin), or one of `server.allowed_origins`. `Sec-Fetch-Site`, when present, must be `same-origin`. Failures are `csrf_invalid` or `origin_invalid` |
 | Pre-session POSTs (login, reset request and confirm, invitation accept, first-owner setup) | The `Origin` and `Sec-Fetch-Site` checks, plus `X-Crucible-CSRF: prelogin` |
 | `Authorization` header present | Key auth only. The cookie is ignored; there is no fallback. Exempt from CSRF |
 | OAuth and OIDC callbacks (GET) | Protected by state, the flow cookie, PKCE (S256) and nonce |
@@ -2355,7 +2369,7 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `specs/openapi/crucible-v1.json`, and checked for drift and for `openapi: 3.1.x` in CI.
 - Paths under `/api/`, `/v1/`, `/mcp` and the health paths never fall back to HTML; unknown paths there return
   problem 404.
-- `server.public_url` is required configuration; it drives origin checks, cookie flags and redirect URIs.
+- `server.public_url` is needed only where an absolute URL leaves the server: OAuth and OIDC redirect URIs and links in email. Without it, origin checks and cookie flags follow the request (same-origin; HTTPS when the request arrived over TLS or a trusted proxy says so), and the startup log says which features need it.
 - Middleware order, outermost first: request id, trace span, panic catcher, security headers, body limit, `Clock`
   timeout, test fault (debug builds only, header `X-Crucible-Test-Fault`), IP rate limit, principal resolution,
   CSRF and origin, principal rate limit, handler.
@@ -2368,6 +2382,15 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `project_id` and `secret`; error messages never echo the file).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
   code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product.
+- With ClickHouse configured, `serve` also takes `--clickhouse-url`, `--clickhouse-user`, `--clickhouse-password-file`,
+  `--master-key-file`, `--migrate` and `--recent-max-bytes` (the first four also read `CRUCIBLE_*` variables; the
+  secrets have no value-taking flag). Listeners bind first with ingest closed (503 with `Retry-After`, `/readyz` gives
+  the reason) until migration (when asked), `detect`, `dedup_selftest`, the recent-index rebuild through the shipper's
+  replay, quarantine restore and shipper start have finished. Without ClickHouse, `serve` runs ingest only and the API
+  answers 503.
+- Service-identity passwords are HKDF-SHA256 of the 64-hex-character master key with info
+  `crucible/clickhouse-identity/v1/<user>/<generation>` and no salt, written as 64 hex characters; generation 0 until
+  rotation lands (milestone 4). A server migrated under another master key fails `detect`.
 - `/api/v1` defaults: 30 s request timeout and 1 MiB body limit (default; revisit). A malformed project id answers 404
   (visibility); malformed trace and span ids answer 422.
 - UI serving: try-files ignores the query string; slashless routes serve the page directly; under `/api/`, `/v1/`,
@@ -2538,7 +2561,7 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `POST dashboards/{dashboard_id}/duplicate` | Also accepts a `builtin_key`; copies into rows |
 | `POST dashboards/{dashboard_id}/widgets`, `PATCH dashboards/{dashboard_id}/widgets/{widget_id}`, `DELETE dashboards/{dashboard_id}/widgets/{widget_id}` | At most 50 widgets; a widget holds a `MetricsQuery` without a window, display options and a rectangle on a 12-column grid |
 | `GET alerts`, `POST alerts`, `GET alerts/{alert_id}`, `PATCH alerts/{alert_id}`, `DELETE alerts/{alert_id}`, `GET alerts/{alert_id}/history`, `POST alerts/preview` | A rule is one measure, at most 2 dimensions, comparison and threshold, `window` (1 min to 24 h), `interval` (at least 60 s), `for`, no-data policy, `renotify` (default 4 h, minimum 5 min), `source`, channels; at most 50 series |
-| `GET channels`, `POST channels`, `GET channels/{channel_id}`, `PATCH channels/{channel_id}`, `DELETE channels/{channel_id}`, `POST channels/{channel_id}/test` | Kinds: Slack incoming webhook, email, signed webhook (`X-Crucible-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`). Test-send returns `{ ok, status_class, latency_ms, error_code }` and never echoes the receiver's body |
+| `GET channels`, `POST channels`, `GET channels/{channel_id}`, `PATCH channels/{channel_id}`, `DELETE channels/{channel_id}`, `POST channels/{channel_id}/test` | Kinds: Slack incoming webhook, email, signed webhook (`X-Crucible-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`). Test-send returns `{ ok, status_class, latency_ms, error_code }` and never echoes the receiver's body. Egress policy (`crucible-egress`): by default HTTP and HTTPS targets on any network are allowed, including private networks (self-hosted receivers often live there); cloud metadata addresses (169.254.169.254, fd00:ec2::254 and the link-local metadata ranges) are always refused; redirects are not followed; connect and response timeouts are 5 s and 10 s. `egress.mode = strict` adds HTTPS-only and refuses loopback, private, link-local, CGNAT and mapped ranges except `egress.allow_cidrs`. A refusal is `ssrf_blocked` with the reason and the setting that would allow it |
 
 **Deletion, exports, SQL, media** (under `projects/{id}/`)
 

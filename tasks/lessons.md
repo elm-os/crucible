@@ -27,3 +27,7 @@ Rules learned from corrections and surprises. Read at the start of each session.
     (`policy/naming-rules.json`) fire even when the source is our own product. Run
     `node tools/policy/policy.mjs text` on the body first, and say "inherited from" or "taken from" for our own
     material.
+11. **Edit workflow and data files with the Edit tool, never through escaped strings.** A `\n` inside a Python
+    heredoc sent through a tool call arrives as a real newline: it split a shell line in `kani.yml`, GitHub could not
+    parse the workflow, and the required check vanished from every pull request. The policy workflow now parses every
+    workflow file.

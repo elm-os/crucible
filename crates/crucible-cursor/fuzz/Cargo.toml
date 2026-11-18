@@ -1,0 +1,25 @@
+[package]
+name = "crucible-cursor-fuzz"
+description = "cargo-fuzz targets of the cursor codec."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crucible-cursor = { path = ".." }
+crucible-records = { path = "../../crucible-records" }
+libfuzzer-sys = "=0.4.13"
+
+# Not a member of the root workspace.
+[workspace]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false

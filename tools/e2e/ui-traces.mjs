@@ -190,13 +190,13 @@ try {
   );
   const rows = await evaluate(rowsExpression);
   const stored = await evaluate(`({
-    sessionKey: sessionStorage.getItem("crucible.connection.key") !== null,
-    localStorageHoldsKey: JSON.stringify({ ...localStorage }).includes(${JSON.stringify(args.key)}),
+    // The Connect dialog remembers the key in this browser until Disconnect (contracts 1.7: no extra friction).
+    storedKey: localStorage.getItem("crucible.connection.key") === ${JSON.stringify(args.key)},
     header: document.querySelector("header").innerText,
     columns: [...document.querySelectorAll("table thead th")].map((th) => th.innerText.trim()),
   })`);
-  if (!stored.sessionKey || stored.localStorageHoldsKey) {
-    throw new Error("the key must be in sessionStorage and never in localStorage");
+  if (!stored.storedKey) {
+    throw new Error("the Connect dialog must remember the key in this browser");
   }
   if (args.screenshot) {
     const { data } = await page("Page.captureScreenshot", { format: "png" });

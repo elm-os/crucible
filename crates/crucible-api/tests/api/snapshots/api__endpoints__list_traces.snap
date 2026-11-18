@@ -6,7 +6,7 @@ expression: list.pretty()
   "data": [
     {
       "duration_us": 1001000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 2,
@@ -28,7 +28,7 @@ expression: list.pretty()
     },
     {
       "duration_us": 3001000,
-      "environment": "prod",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 4,
@@ -50,7 +50,7 @@ expression: list.pretty()
     }
   ],
   "has_more": false,
-  "head_cursor": "tmp1.h.AQEBAQEBAQEBAQEBAQEBAQAGYGFr-3YAAAZgdmBmegAABmB1ig_fAAAAAAAAAAAD",
+  "head_cursor": "v1.test.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgdmBmegAABmB1ig_fAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAAw.Um5WDlXm0bC_5wtm3AO3EQ",
   "meta": {
     "as_of": "2026-11-17T09:30:04.000000Z",
     "consistency": "strong",

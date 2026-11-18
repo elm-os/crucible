@@ -179,7 +179,7 @@ pub fn span_record(entry: &SpanEntry, lsn: Lsn, received_at: Timestamp) -> SpanR
         sdk_version: "".into(),
         observation_type: s.observation_type,
         level: s.level,
-        environment: "default".into(),
+        environment: (&*s.environment).into(),
         release: "".into(),
         version: "".into(),
         trace_name: (*s.trace_name).into(),

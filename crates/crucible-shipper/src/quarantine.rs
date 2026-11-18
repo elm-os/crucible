@@ -20,8 +20,10 @@
 //! | `frames` | The one frame, as above |
 //! | `manifest` | Text, one `key=value` per line: `version`, `kind=frame`, `wal_epoch`, `lsn`, `record_type`, `project_id` (when the envelope decodes), `normalizer_version`, `stage`, `reason`, `frames=1`, `bytes` |
 //!
-//! `bytes` is the last line of a whole manifest. The manifest is created with `CreateNew` after the frames file
-//! is synced; a manifest that is already whole ends the copy at once.
+//! `bytes` is the last line of a whole manifest. The manifest is created with `CreateNew` before the frame is
+//! copied and filled in after the frames file is synced. A repeat of the copy (after a failed sync, a crash or
+//! a stop) finds the manifest, empties it and writes the same bytes again, because a file that reads back whole
+//! need not be durable; every file and both directories are synced before the frame counts as quarantined.
 
 use std::sync::Arc;
 
@@ -234,7 +236,8 @@ impl FrameManifest {
     }
 }
 
-/// One attempt at the copy of a frame. `Ok` once a whole manifest and the frame it describes are durable.
+/// One attempt at the copy of a frame. `Ok` once the frame, a whole manifest and their directory entries are
+/// durable.
 async fn copy_frame(
     ctx: &Ctx,
     dir: &DiskPath,
@@ -244,12 +247,13 @@ async fn copy_frame(
     let disk = &ctx.env.disk;
     disk.create_dir_all(dir).await?;
     let manifest_path = dir.join(MANIFEST_FILE)?;
-    if let Ok(file) = disk.open(&manifest_path, OpenMode::Read).await {
-        let held = file.read_at(0, manifest.len() + 1).await?;
-        if held == manifest.as_bytes() {
-            // A repeat after a crash: the copy is there.
-            return Ok(());
-        }
+    match disk.open(&manifest_path, OpenMode::CreateNew).await {
+        Ok(_) => {}
+        // A repeat: an earlier attempt, or an incarnation before a crash or a stop, left a manifest. A copy
+        // that reads back whole need not be durable, so it is written and synced again. The manifest is
+        // emptied first: it must not describe the frames file while that is rewritten.
+        Err(DiskError::AlreadyExists) => write_file(ctx, &manifest_path, Vec::new()).await?,
+        Err(e) => return Err(e.into()),
     }
     let header = frame.header().encode().map_err(|_| CopyError::Header)?;
     let chunks = vec![
@@ -258,15 +262,7 @@ async fn copy_frame(
     ];
     write_file(ctx, &dir.join(FRAMES_FILE)?, chunks).await?;
     let chunks = vec![Bytes::copy_from_slice(manifest.as_bytes())];
-    match disk.open(&manifest_path, OpenMode::CreateNew).await {
-        Ok(file) => {
-            file.append(0, chunks).await?;
-            file.sync_data().await?;
-        }
-        // What a crash inside an earlier attempt left: a manifest that is not whole.
-        Err(DiskError::AlreadyExists) => write_file(ctx, &manifest_path, chunks).await?,
-        Err(e) => return Err(e.into()),
-    }
+    write_file(ctx, &manifest_path, chunks).await?;
     disk.sync_dir(dir).await?;
     disk.sync_dir(&DiskPath::root_dir(Root::Quarantine)).await?;
     Ok(())

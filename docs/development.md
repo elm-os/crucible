@@ -77,7 +77,11 @@ and fails on any difference, or on `bigint` in a generated type (`.github/workfl
 
 Requests authenticate with a project's secret key from `--keys-file` as `Authorization: Bearer <key>`. Without a
 telemetry store (see the next section), `crucible serve` checks the key, the project and the parameters of each
-request and then answers 503 with the problem code `telemetry_store_unavailable`.
+request, cursors included, and then answers 503 with the problem code `telemetry_store_unavailable`.
+
+List cursors (`next_cursor`, `head_cursor`) are signed with HMAC-SHA256, bound to the request's project, filters,
+sort and window, and expire 24 hours after they are issued; any other cursor answers 400 `cursor_invalid`, and the
+client starts again from the first page.
 
 ## Running crucible serve
 
@@ -121,6 +125,11 @@ receives only its SHA-256. The users are created once, so a ClickHouse that was 
 refuses a server started with another: detection fails and `/readyz` says so. Key rotation will arrive with
 `crucible admin rotate-keys`.
 
+The key that signs API cursors is derived the same way, with the info string `crucible/cursor-signing/v1/0`, until
+signing keys move to the control plane. Every server started with the same master key opens the cursors of the
+others, across restarts. Without ClickHouse no list issues a cursor, and a random key made at startup only lets
+the API refuse the cursors it is sent.
+
 On SIGTERM or Ctrl-C the listeners stop accepting and finish their open requests, whose WAL appends complete; the
 shipper stops at its next step and abandons the inserts in flight. That is safe: after a restart every pair of
 every sealed batch is probed before anything is sent again. Tasks get 30 s before they are aborted.
@@ -129,8 +138,8 @@ every sealed batch is probed before anything is sent again. Tasks get 30 s befor
 
 The UI has no browser sessions until the control plane lands (milestone 4). Until then the shell has a **Connect**
 dialog, labelled as temporary: it takes a project id and that project's secret key, checks them against the API,
-keeps them in the tab's `sessionStorage` (never `localStorage`) and sends the key as `Authorization: Bearer` on API
-requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
+keeps them in this browser's local storage until you press Disconnect (a new tab or a restart does not ask again)
+and sends the key as `Authorization: Bearer` on API requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
 `ui/src/components/shell/connect-dialog.tsx`; sessions will replace both.
 
 ## The end-to-end test

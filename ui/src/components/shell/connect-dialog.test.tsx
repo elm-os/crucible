@@ -54,7 +54,7 @@ test("the dialog says it is temporary and names its fields", async () => {
   expect(screen.getByLabelText("Secret key").getAttribute("type")).toBe("password");
 });
 
-test("a key the server accepts is kept for the tab only and sent as a bearer token", async () => {
+test("a key the server accepts is remembered in this browser and sent as a bearer token", async () => {
   renderDialog();
   const dialog = await open();
   fetchMock.mockResolvedValueOnce(answer(200));
@@ -70,9 +70,9 @@ test("a key the server accepts is kept for the tab only and sent as a bearer tok
   expect(url).toBe(`/api/v1/projects/${PROJECT}/data-bounds`);
   expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
   await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
-  expect(sessionStorage.getItem("crucible.connection.key")).toBe(KEY);
-  expect(sessionStorage.getItem("crucible.connection.project")).toBe(PROJECT);
-  expect(JSON.stringify({ ...localStorage })).not.toContain(KEY);
+  expect(localStorage.getItem("crucible.connection.key")).toBe(KEY);
+  expect(localStorage.getItem("crucible.connection.project")).toBe(PROJECT);
+  expect(JSON.stringify({ ...sessionStorage })).not.toContain(KEY);
   expect(window.location.search).toBe(`?range=7d&project=${PROJECT}`);
 
   fetchMock.mockResolvedValueOnce(answer(200));
@@ -96,7 +96,7 @@ test.each([
   const alert = await screen.findByRole("alert");
   expect(alert.getAttribute("data-error")).toBe(kind);
   expect(alert.textContent).toContain(text);
-  expect(sessionStorage.length).toBe(0);
+  expect(localStorage.length).toBe(0);
   expect(submitButton(dialog).disabled).toBe(false);
 });
 
@@ -110,12 +110,12 @@ test("a server that cannot be reached is reported, and nothing is kept", async (
     fireEvent.submit(submitButton(dialog).form as HTMLFormElement);
   });
   expect((await screen.findByRole("alert")).textContent).toContain("Couldn't reach Crucible");
-  expect(sessionStorage.length).toBe(0);
+  expect(localStorage.length).toBe(0);
 });
 
 test("disconnect forgets the key and the project", async () => {
-  sessionStorage.setItem("crucible.connection.key", KEY);
-  sessionStorage.setItem("crucible.connection.project", PROJECT);
+  localStorage.setItem("crucible.connection.key", KEY);
+  localStorage.setItem("crucible.connection.project", PROJECT);
   window.history.replaceState(null, "", `/traces/?project=${PROJECT}`);
   renderDialog();
   await act(async () => {
@@ -126,7 +126,7 @@ test("disconnect forgets the key and the project", async () => {
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
   });
-  expect(sessionStorage.length).toBe(0);
+  expect(localStorage.length).toBe(0);
   expect(window.location.search).toBe("");
   await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy());
 });

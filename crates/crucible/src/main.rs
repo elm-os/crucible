@@ -1,5 +1,6 @@
 //! The Crucible server binary. Subcommands are wired as their crates land.
 
+mod cursor_keys;
 mod keys;
 mod recent;
 mod serve;

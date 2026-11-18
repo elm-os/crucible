@@ -100,8 +100,7 @@ Open <http://127.0.0.1:8080/traces/>. The page asks you to connect: choose **Con
 project id and the secret from `keys.toml`.
 
 The Connect dialog is temporary. This preview has no sign-in, so the UI sends the project key as
-`Authorization: Bearer` on its API requests and keeps it in the tab's `sessionStorage`, never in `localStorage`; it
-is forgotten when the tab closes. Browser sessions will replace the dialog in milestone 4. Do not expose this
+`Authorization: Bearer` on its API requests and remembers it in this browser until you press Disconnect. Browser sessions will replace the dialog in milestone 4. Do not expose this
 preview to a network you do not trust.
 
 The same data is available from the API, for example the trace sent above:

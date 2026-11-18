@@ -2294,7 +2294,12 @@ impl Run<'_> {
         let node = Arc::new(Node {
             router: ingest.router(),
             ingest,
-            query: QueryService::new(stores, host.env.clock.clone(), Arc::clone(&index)),
+            query: QueryService::new(
+                stores,
+                host.env.clock.clone(),
+                Arc::clone(&index),
+                wal.epoch(),
+            ),
             index,
             view,
         });

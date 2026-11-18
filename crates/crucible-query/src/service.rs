@@ -8,7 +8,7 @@ use crucible_env::{Clock, QueryError, Stores};
 use crucible_plan::{MAX_LIST, PlanError, QueryPlan, RetentionClamp, Row, trace_page_stats};
 use crucible_recent::{Consistency, ReadState, RecentIndex, RecentSpan};
 use crucible_records::{
-    Level, NO_HEAD_START, NanoUsd, Pick, TableId, TimeWindow, Timestamp, TraceId,
+    Level, NO_HEAD_START, NanoUsd, Pick, TableId, TimeWindow, Timestamp, TraceId, WalEpoch,
 };
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
@@ -30,15 +30,23 @@ pub struct QueryService {
     pub(crate) stores: Stores,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) index: Arc<RecentIndex>,
+    /// The epoch of the WAL that feeds `index`: the LSNs of this node's head cursors count its frames.
+    pub(crate) wal_epoch: WalEpoch,
 }
 
 impl QueryService {
-    /// A service over these stores and this node's recent index.
-    pub fn new(stores: Stores, clock: Arc<dyn Clock>, index: Arc<RecentIndex>) -> Self {
+    /// A service over these stores and this node's recent index, which the WAL of epoch `wal_epoch` feeds.
+    pub fn new(
+        stores: Stores,
+        clock: Arc<dyn Clock>,
+        index: Arc<RecentIndex>,
+        wal_epoch: WalEpoch,
+    ) -> Self {
         Self {
             stores,
             clock,
             index,
+            wal_epoch,
         }
     }
 

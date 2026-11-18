@@ -12,7 +12,9 @@
 //! - **Middleware**, outermost first: request id, security headers with the API's CSP, body limit, request
 //!   timeout on the `Env` clock. The request id and the other security headers also wrap the main listener's
 //!   other routes through [`common_layers`].
-//! - **Cursors** use a temporary unsigned encoding until `crucible-cursor` signs them (milestone 2).
+//! - **Cursors** are signed with the node's [`KeyRing`] (contract 12.4), bound to the request's project, list,
+//!   filters, sort and window, and expire 24 h after issue. A cursor that does not open is `cursor_invalid`,
+//!   checked with the other parameters before the store is asked.
 
 mod access;
 mod convert;
@@ -35,6 +37,7 @@ use axum::response::Response;
 use axum::routing::get;
 use crucible_api_types::ProblemCode;
 use crucible_auth::KeyVerifier;
+use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
 
@@ -50,25 +53,27 @@ use crate::access::ApiState;
 /// The base path of the API (contract 12.1).
 pub const BASE_PATH: &str = "/api/v1";
 
-/// The API over a query service, with its routes under [`BASE_PATH`]. Merge it into the main listener's
-/// router, then wrap that router in [`common_layers`].
+/// The API over a query service, with its routes under [`BASE_PATH`], signing cursors with `cursors`. Merge it
+/// into the main listener's router, then wrap that router in [`common_layers`].
 pub fn router(
     env: &Env,
     service: QueryService,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, Some(service), keys, settings)
+    build(env, Some(service), keys, settings, cursors)
 }
 
-/// The API before a telemetry store is configured: requests are authenticated and validated as usual, then
-/// answered with `telemetry_store_unavailable`.
+/// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
+/// included, then answered with `telemetry_store_unavailable`.
 pub fn router_without_store(
     env: &Env,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings)
+    build(env, None, keys, settings, cursors)
 }
 
 fn build(
@@ -76,12 +81,14 @@ fn build(
     service: Option<QueryService>,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
 ) -> Router {
     let state = ApiState {
         env: env.clone(),
         service,
         keys,
         settings,
+        cursors,
     };
     let api = Router::new()
         .route("/projects/{project_id}/traces", get(routes::list_traces))

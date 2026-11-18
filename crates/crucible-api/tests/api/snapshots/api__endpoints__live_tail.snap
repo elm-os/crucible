@@ -6,7 +6,7 @@ expression: tail.pretty()
   "data": [
     {
       "duration_us": 1000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 1,
@@ -28,7 +28,7 @@ expression: tail.pretty()
     },
     {
       "duration_us": 1000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 1,
@@ -50,7 +50,7 @@ expression: tail.pretty()
     }
   ],
   "has_more": false,
-  "head_cursor": "tmp1.h.AQEBAQEBAQEBAQEBAQEBAQAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAAAAAAAAAD",
+  "head_cursor": "v1.test.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgdmBmegAABmB1idLWAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAAw.MnWCX8n_aOk9XCw1Wy7ovQ",
   "meta": {
     "as_of": "2026-11-17T09:30:00.000000Z",
     "consistency": "strong",

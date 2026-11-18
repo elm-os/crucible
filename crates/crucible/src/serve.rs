@@ -36,6 +36,7 @@ use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyVerifier, StaticKeys};
+use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
 use crucible_env::{
     AssetSource, Counter, DiskPath, Env, Histogram, JoinHandle, Listener, MemoryRecorder, NetError,
@@ -262,10 +263,11 @@ struct App {
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
-/// With `closed`, ingest starts closed for that reason.
+/// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
 async fn open_app(
     env: &Env,
     keys: StaticKeys,
+    cursors: Arc<KeyRing>,
     config: WalConfig,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
@@ -294,6 +296,7 @@ async fn open_app(
             env,
             Arc::clone(&keys),
             Arc::new(StaticProjectSettings::default()),
+            cursors,
         ),
     });
     let app = App {
@@ -444,6 +447,7 @@ struct StoreTask {
     wal: Wal,
     report: RecoveryReport,
     keys: Arc<dyn KeyVerifier>,
+    cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
 }
@@ -522,6 +526,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         wal,
         report,
         keys,
+        cursors,
         gate,
         recent_max_bytes,
     } = task;
@@ -589,12 +594,13 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
-    let service = QueryService::new(stores, Arc::clone(&env.clock), index);
+    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
     gate.open(crucible_api::router(
         &env,
         service,
         keys,
         Arc::new(StaticProjectSettings::default()),
+        cursors,
     ));
     tracing::info!(
         watermark = %watermark,
@@ -733,10 +739,22 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
     }
     let key_count = keys.len();
     let clickhouse = clickhouse(&args)?;
+    let cursors = Arc::new(match &clickhouse {
+        Some(config) => crate::cursor_keys::derived(&config.master_key)?,
+        None => crate::cursor_keys::random(env)?,
+    });
+    let cursor_kid = cursors.active_kid().to_string();
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
-    let (app, report) = open_app(env, keys, WalConfig::default(), closed).await?;
+    let (app, report) = open_app(
+        env,
+        keys,
+        Arc::clone(&cursors),
+        WalConfig::default(),
+        closed,
+    )
+    .await?;
     let mode = if clickhouse.is_some() {
         "clickhouse"
     } else {
@@ -751,6 +769,7 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
                 wal: app.wal.clone(),
                 report,
                 keys: Arc::clone(&app.keys),
+                cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes: args
                     .recent_max_bytes
@@ -775,6 +794,7 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         ui = ui_source,
         ui_routes,
         keys = key_count,
+        cursor_kid,
         mode,
         "crucible is serving"
     );
@@ -825,9 +845,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::{Path, PathBuf};
 
+    use crucible_cursor::{Cursor, FilterHash, Position, Sort};
     use crucible_env_prod::WalBackend;
     use crucible_recent::{WalLocator, WalReadError, WalView as _};
-    use crucible_records::RequestId;
+    use crucible_records::{ProjectId, RequestId, TimeWindow, Timestamp, TraceId};
     use crucible_wal_codec::{Compression, ContentOrigin, PreparedFrame, Record, RecordType};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -868,13 +889,20 @@ mod tests {
         crucible_env_prod::build(tokio::runtime::Handle::current(), &config).unwrap()
     }
 
-    /// The WAL and ingest of a test server, with small segments.
+    /// A test server whose cursor key is random.
     async fn test_app(env: &Env, keys: StaticKeys) -> App {
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        test_app_with(env, keys, cursors).await
+    }
+
+    /// The WAL and ingest of a test server, with small segments, whose API signs and opens cursors with
+    /// `cursors`.
+    async fn test_app_with(env: &Env, keys: StaticKeys, cursors: Arc<KeyRing>) -> App {
         let config = WalConfig {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, config, None).await.unwrap().0
+        open_app(env, keys, cursors, config, None).await.unwrap().0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -1445,6 +1473,78 @@ mod tests {
             ..locator(0)
         };
         assert_eq!(view.read_span(project, missing).await, gone);
+    }
+
+    /// The API opens cursors with the key derived from the master key, before it finds that no store is up: a
+    /// cursor signed with the key that another node derives from the same master key passes and gets
+    /// `telemetry_store_unavailable`; one signed with any other key is `cursor_invalid`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_api_opens_cursors_signed_with_the_master_keys_cursor_key() {
+        const MASTER: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let master = MasterKey::parse(MASTER).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let cursors = crate::cursor_keys::derived(&master).unwrap();
+        assert_eq!(cursors.active_kid().as_str(), "master-0");
+        let app = test_app_with(env, keys, Arc::new(cursors)).await;
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addr = servers.addrs.api;
+        let bearer = format!("Bearer {}", secret());
+        let key = [("authorization", bearer.as_str())];
+        let (from, to) = ("2026-11-16T00:00:00Z", "2026-11-17T00:00:00Z");
+        let window = TimeWindow::new(
+            Timestamp::parse_rfc3339(from).unwrap(),
+            Timestamp::parse_rfc3339(to).unwrap(),
+        )
+        .unwrap();
+        // A page cursor of the trace list as the API issues it; the filter hash of the unfiltered list covers
+        // the empty canonical form.
+        let now = env.clock.wall_now();
+        let cursor = Cursor::new(
+            ProjectId::parse(PROJECT).unwrap(),
+            FilterHash::of(&[]),
+            Sort::NewestFirst,
+            Position::TracePage {
+                window,
+                as_of: now,
+                last: (window.from(), 0, TraceId::from_bytes([1; 16])),
+            },
+            now,
+        );
+        let page = |text: String| {
+            format!("/api/v1/projects/{PROJECT}/traces?from={from}&to={to}&cursor={text}")
+        };
+        let same = crate::cursor_keys::derived(&master).unwrap();
+        let (status, headers, body) = http(env, addr, "GET", &page(same.seal(&cursor)), &key).await;
+        assert_problem(
+            &status,
+            &headers,
+            &body,
+            "503 Service Unavailable",
+            "telemetry_store_unavailable",
+        );
+        let other = MasterKey::parse(&MASTER.replace("00", "ff")).unwrap();
+        for stranger in [
+            crate::cursor_keys::derived(&other).unwrap(),
+            crate::cursor_keys::random(env).unwrap(),
+        ] {
+            let uri = page(stranger.seal(&cursor));
+            let (status, headers, body) = http(env, addr, "GET", &uri, &key).await;
+            assert_problem(
+                &status,
+                &headers,
+                &body,
+                "400 Bad Request",
+                "cursor_invalid",
+            );
+        }
+
+        shut_down(&prod, servers).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
