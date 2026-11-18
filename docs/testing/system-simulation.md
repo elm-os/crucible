@@ -12,10 +12,11 @@ One simulated node, on one thread with a paused virtual clock and seeded random 
 
 | Piece | Real or model | What runs |
 |---|---|---|
-| Clients | Model | Seeded OTLP clients that build protobuf and JSON bodies and call the ingest router in process. Spans report a session, a user, an environment, a release, a model, usage, a provided cost and an error status from small domains. With `facts`, the clients also write scores, tag and flag edits and corrections |
+| Clients | Model | Seeded OTLP clients that build protobuf and JSON bodies and call the ingest router in process. Spans report a session, a user, an environment, a release, a model, usage, a provided cost and an error status from small domains. With `facts`, the clients also write scores, tag and flag edits and corrections. With `mcp`, requests also carry MCP operations: each is one simulated exchange, written as the keys that an SDK wrapper, the proxy or a server without either would send (contract 9.1) |
 | Ingest | Real | `crucible_ingest::Ingest::router()`: authentication, admission, the scan, the WAL append, the ack; and `Ingest::append_facts`, the entry point the fact routes will call |
 | WAL | Real | `crucible-wal` on `SimDisk`, the disk fault model of contract 2.4 |
-| Shipper | Real | `crucible-shipper`: stage A and B, the span tables, the rollups and the fact tables, seals, inserts, probes, pair and frame quarantine, checkpoints, garbage collection |
+| Shipper | Real | `crucible-shipper`: stage A and B, the span tables, the rollups, the five MCP tables and the fact tables, seals, inserts, probes, pair and frame quarantine, checkpoints, garbage collection |
+| Project salts | Model | One fixed salt per project behind the shipper's `ProjectSalts` hook; with `mcp_identity` a share of its reads fails, and without it the node has no control store |
 | Recent-span index | Real | `crucible-recent`, fed by stage B through `crucible_shipper::RecentHook` |
 | Query service | Real | `crucible_query::QueryService`: trace by id and the trace list |
 | ClickHouse | Model | `ChModel`: inserts, deduplication, probes, the typed-plan interpreter, merges, and seeded faults |
@@ -66,12 +67,18 @@ Configuration seed `c` gives the mask and the run seeds `c * 1000 + s`.
 
 | Kind | Dimensions |
 |---|---|
-| Workload | `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts`, `nested_usage` (spans form parent chains within a request, across requests with the child first, and under a span that a request sends again, so some have a descendant that carries usage) |
-| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize) |
+| Workload | `mcp` (MCP operations of both sides, in both eras, over stdio and HTTP, from all four capture sources), `mcp_double_capture` (an SDK and the proxy report one server call), `mcp_errors` (every class of the taxonomy, and annotated classes that the exchange does not warrant), `mcp_mrtr` (multi-round exchanges), `mcp_inventory` (tool lists that change), `mcp_deploys` (versions and deploy ids that change), `mcp_content` (opted-in arguments and results), `mcp_identity` (user subjects, a control store for the salts whose reads sometimes fail; without it the node is ingest-only), `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts`, `nested_usage` (spans form parent chains within a request, across requests with the child first, and under a span that a request sends again, so some have a descendant that carries usage) |
+| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize), `dir_sync_errors` (windows in which every directory sync fails) |
 | Config | `wal_compression_off`, `small_batches`, `week_partitions`, `tiny_recent`, `small_segments`, `clustered`, `one_connection`, `replay_retention`, `project_rate` (a per-project byte rate), `small_budget` (a `shipper.encoded_bytes` budget of 20 or 200 KiB) |
 
-That is 46 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
-draw, so a recorded mask and seed keep their meaning. With 200 configurations, any 6 chosen dimensions are all on in at least one of them with
+That is 55 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
+draw, so a recorded mask and seed keep their meaning.
+
+One combination is weighted. A quarter of the configurations get the profile `collection_under_repeats`
+(`ConfigMask::collection_under_repeats`), which sets the dimensions that let garbage collection run inside an
+unchecked batch that holds a repeat, with a restart after it. That is where stage B's rule that a restart decides
+as the process before it did is exercised, and fair coins alone set those dimensions so in fewer than one
+configuration in a hundred. With 200 configurations, any 6 chosen dimensions are all on in at least one of them with
 probability 95.7% (`1 - (1 - 2^-6)^200`).
 
 ## Tiers
@@ -86,10 +93,11 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 | Invariant | Continuous (after every ack and at every restart) | Quiescence |
 |---|---|---|
 | I1 | At every restart: every span of every acknowledged request is in `span_core` and `span_payload`, or in a durable frame above the recovered watermark, or in a quarantine copy: the frames of a quarantined pair, or the copy of a frame that does not normalize, which must hold the frame its manifest names. A frame quarantined as a frame has no row anywhere | The same after the drain, and the watermark has passed the last frame that warrants a seal |
-| I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
+| I2 | The model refuses a malformed block (one without its marker row, for instance) and records a second block of one (batch, table, partition); no (table, LSN, span) row twice, in the span tables, `mcp_ops` and `mcp_content`; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent. A restart keeps and flags the same spans of a frame in a sealed batch as the process before it did | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows. Without a quarantined pair: `mcp_ops` holds one row per `span_core` row of a span with an MCP side, and `mcp_content` one per operation with captured content |
 | I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain |
 | I5 | A refusal for load is a 429 or a 503 with `Retry-After`, a 429 only with `project_rate`; a fact write is refused only for load. The rows the shipper holds stay within `shipper.encoded_bytes` plus one frame | |
-| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. A span flagged `usage_aggregate` has a descendant that carries usage or cost in its frame or an earlier one, where a row of an earlier frame may stand in a later frame as a dropped exact repeat and pass the mark on to its parent; and a span with such a descendant among the kept spans of its own frame is always flagged (the set holds what the retained WAL prefix holds, so garbage collection and a restart forget earlier frames) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
+| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. Every `mcp_ops` row carries the fields of the wire contract as the exchange had them (side, capture source, era, transport, method, target, server, deploy, client, times, sizes, parent, multi-round state, session key, group key, the hashed subject or, without a control store, no identity) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. The `usage_aggregate` flag of every row is what the rule gives (see "Usage aggregates, exactly"). `mcp_tool_rollup`, merged by its key, equals the reference over `mcp_ops` (count, byte sums, both histograms, last seen), and counts per capture source what `mcp_ops` holds of that source, so rows of different sources are never summed; `mcp_deploys` equals the deploys of the server-side rows; `mcp_tool_inventory` equals the tools the listed operations sent, with the schema hash of their canonical JSON. One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
+| I8 | Every `mcp_ops` row has the status, error class, subclass, JSON-RPC code, HTTP status and caller-fault flag that `crucible_records::classify_mcp_error` gives for the exchange the client simulated: what happened (a result, `isError`, a code, an HTTP status, a cancellation, a deadline, a broken transport, an exception), the side, and the class an SDK annotated | The same after the drain |
 | I3 | A trace-by-id read through the query service after every ack, and from concurrent readers for requests of any incarnation. A response that omits an acknowledged span must carry `partial` or `consistency: lagging`. `not_found` for an acknowledged trace is a violation. A marker must be warranted by the configuration: `store_unavailable` only with `outages`, `long_outages`, `ch_read_errors` or `tiny_recent`; `quarantined` only with `ch_poison` or `frame_faults` | Every acknowledged request is read back, and the whole trace list of every project must hold every acknowledged trace that has a root span. No marker is accepted, except `quarantined` when a quarantine directory exists. Repeated after the last restart |
 | I6 | No trace-by-id response holds a span the project did not send, and no list holds a trace of another project (with `multi_project` the projects share trace ids) | The same |
 | I12 | The recovered log equals the uninterrupted reference recovery although crashes cut the real one | A restart after the drain sends no insert and leaves the store and the watermark as they were |
@@ -124,6 +132,18 @@ the two attempts equal, and I7 and the quiescence half of I2 check them in every
 
 Nine corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
 the rollups counted a repeat that `span_core` did not hold, or the reverse.
+
+### Usage aggregates, exactly
+
+The flag `usage_aggregate` is stage B state, and stage B holds what the retained prefix of the WAL holds. The
+oracle listens at the shipper's recent-index hook: for every frame that stage B admits it records all the spans
+stage A made of it (from the frame itself, so the exact repeats that stage B then drops are there too), whether
+each carries usage as the client sent it, and the first LSN the WAL retains at that moment. At quiescence it runs
+the rule of contract 5.3 itself: the set starts empty at the first retained LSN; in LSN order every span of a
+frame that carries usage or is in the set adds its parent, to a fixed point over all the spans of the frame; a
+span is an aggregate when it is in the set then. Every `span_core` row must carry exactly that flag, and two
+admissions of one frame above the watermark, before and after a restart, must give the same aggregates. So a
+mark taken after the duplicate drop, or a prefix that lost a frame an unchecked frame relied on, is a violation.
 
 ## Mutants
 

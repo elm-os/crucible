@@ -320,6 +320,12 @@ pub(crate) struct Admitted {
     pub(crate) frames: BTreeMap<u64, Vec<FrameSpan>>,
     /// (LSN, first retained LSN) of every admission above the watermark of its incarnation.
     pub(crate) admissions: BTreeSet<(u64, u64)>,
+    /// What the first admission of each frame above the watermark kept: the stage A ordinal of each remaining
+    /// span and whether it was flagged a usage aggregate.
+    pub(crate) kept: BTreeMap<u64, Vec<(u32, bool)>>,
+    /// For each frame above the watermark whose admission used an earlier frame, the LSN of that frame
+    /// (`Admission::relies_on`).
+    pub(crate) relying: BTreeMap<u64, u64>,
 }
 
 /// The usage aggregates of the frame at `lsn` when stage B holds what the frames from `floor` on give it

@@ -2023,6 +2023,9 @@ struct Observed {
     shared: Arc<Shared>,
     /// The watermark this incarnation recovered: frames at or below it only rebuild stage B.
     watermark: Lsn,
+    /// The last LSN of the sealed batches this incarnation recovered: pairs of those batches may have landed
+    /// before the restart.
+    sealed_through: u64,
 }
 
 impl std::fmt::Debug for Observed {
@@ -2075,6 +2078,31 @@ impl Observed {
     }
 }
 
+impl Observed {
+    /// Contract 5.3 and 4.7: the WAL keeps the frame that an admission relied on until the deciding frame is
+    /// checkpointed, so that a restart decides as this process did.
+    fn check_retained(&self) {
+        let watermark = self.wal.watermark().map_or(0, |w| w.last_lsn().get());
+        let Some(floor) = self.wal.segments().first().map(|s| s.first_lsn.get()) else {
+            return;
+        };
+        let mut ledger = self.shared.ledger();
+        ledger.admitted.relying = ledger.admitted.relying.split_off(&(watermark + 1));
+        let lost = ledger
+            .admitted
+            .relying
+            .iter()
+            .find(|(_, relied)| **relied < floor)
+            .map(|(lsn, relied)| (*lsn, *relied));
+        if let Some((lsn, relied)) = lost {
+            ledger.violate(Violation::DerivedMismatch(format!(
+                "the WAL starts at frame {floor} and no longer holds frame {relied}, which the admission \
+                 of frame {lsn} relied on; frame {lsn} is not checkpointed"
+            )));
+        }
+    }
+}
+
 impl StageBHook for Observed {
     fn applied(&self, source: &WalFrame, frame: &NormalizedFrame, admission: &Admission) {
         let lsn = source.lsn().get();
@@ -2092,12 +2120,36 @@ impl StageBHook for Observed {
             }
             if lsn > self.watermark.get() {
                 ledger.admitted.admissions.insert((lsn, floor));
+                if let Some(relied) = admission.relies_on {
+                    ledger.admitted.relying.insert(lsn, relied.get());
+                }
+                // I2: the pairs of a sealed batch hold the same spans whether they land before or after a
+                // restart, so this admission keeps and flags what the process before it did.
+                let kept: Vec<(u32, bool)> = admission
+                    .stage_a_ordinals
+                    .iter()
+                    .copied()
+                    .zip(frame.spans.iter().map(|span| span.core.usage_aggregate))
+                    .collect();
+                match ledger.admitted.kept.get(&lsn) {
+                    Some(before) if lsn <= self.sealed_through && *before != kept => {
+                        ledger.violate(Violation::DerivedMismatch(format!(
+                            "after a restart stage B keeps or flags other spans of frame {lsn}, which a                              sealed batch holds, than the process before it did"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => {
+                        ledger.admitted.kept.insert(lsn, kept);
+                    }
+                }
             }
         }
+        self.check_retained();
         self.inner.applied(source, frame, admission);
     }
 
     fn passed(&self, source: &WalFrame) {
+        self.check_retained();
         self.inner.passed(source);
     }
 
@@ -3337,6 +3389,12 @@ impl Run<'_> {
                 wal: wal.clone(),
                 shared: Arc::clone(&self.shared),
                 watermark,
+                sealed_through: report
+                    .unchecked_seals
+                    .iter()
+                    .map(|seal| seal.last_lsn.get())
+                    .max()
+                    .unwrap_or(0),
             }),
             salts,
         };

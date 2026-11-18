@@ -1461,9 +1461,19 @@ impl<'a> Eval<'a> {
         let attrs = &span.attributes;
         let text = |key: &str| get(attrs, key).and_then(Value::as_str);
         let error_type = text("error.type");
+        let http_status = match get(attrs, "http.response.status_code") {
+            Some(Value::Int(i)) => u16::try_from(*i).ok(),
+            _ => None,
+        };
+        // A numeric `error.type` that is the HTTP status is that status, not a JSON-RPC code.
         let jsonrpc_code = text("rpc.response.status_code")
             .and_then(|s| s.parse::<i32>().ok())
-            .or_else(|| error_type.and_then(|t| t.parse::<i32>().ok()));
+            .or_else(|| {
+                error_type
+                    .and_then(|t| t.parse::<i32>().ok())
+                    .filter(|code| http_status.is_none_or(|status| i32::from(status) != *code))
+            });
+        let explicit_class = text("crucible.mcp.error.class").and_then(ErrorClass::parse);
         let era = match self
             .registry
             .derive("era", span)
@@ -1487,22 +1497,21 @@ impl<'a> Eval<'a> {
             side,
             jsonrpc_code,
             is_error: error_type == Some("tool_error"),
-            http_status: match get(attrs, "http.response.status_code") {
-                Some(Value::Int(i)) => u16::try_from(*i).ok(),
-                _ => None,
-            },
+            http_status,
             cancel_source: text("crucible.mcp.cancel.source")
                 .and_then(CancelSource::parse)
                 .unwrap_or(CancelSource::None),
+            // Only the capture source can observe a deadline or a broken transport: its explicit class is
+            // that observation.
             timed_out: matches!(
                 get(attrs, "crucible.mcp.timed_out"),
                 Some(Value::Bool(true))
-            ),
-            transport_failure: false,
+            ) || explicit_class == Some(ErrorClass::Timeout),
+            transport_failure: explicit_class == Some(ErrorClass::Transport),
             unhandled_exception: error_type
                 .is_some_and(|t| t != "tool_error" && t.parse::<i64>().is_err()),
             annotations: McpErrorAnnotations {
-                explicit_class: text("crucible.mcp.error.class").and_then(ErrorClass::parse),
+                explicit_class,
                 subclass: text("crucible.mcp.error.subclass")
                     .and_then(ErrorSubclass::parse)
                     .unwrap_or(ErrorSubclass::None),

@@ -287,6 +287,23 @@ match no span), `checkpoints` (checkpoint name to the expectation ids whose span
 `forbidden_strings` (`{"label", "value"}` pairs that must not appear in any export). `common.json` holds the
 expectations the driver adds for the legacy handshake.
 
+### Records
+
+The driver runs every accepted export through the real normalizer (`crucible-normalize`, stage A and stage B, as
+a frame of the shipper would) and checks the records it makes:
+
+- the normalizer takes every export, and makes an MCP operation record of exactly the spans that carry
+  `mcp.method.name`;
+- every derived field of a golden or a registry rule is checked twice: against the registry's source list, and
+  against the field of the normalizer's record (`McpOpRecord` for the MCP fields, the span record for the
+  others);
+- the `outcome` of a golden is checked against the classification in the normalizer's `McpOpRecord`, and the
+  driver's own reading of the span's keys must classify the same.
+
+So a golden passes only when the normalizer makes of the SDK's spans what the contract says, and the registry,
+the driver and the normalizer cannot drift apart. A test of `crucible-normalize` checks the other direction: every
+key the projector reads is in `registry.json` with a type the projector takes.
+
 ### What the driver checks in every case
 
 - **Registry rules.** `registry.json` types every known key (unknown keys are allowed), lists the forbidden keys and
@@ -371,10 +388,16 @@ and adding an entry to the workflow's matrix.
 
 ## Readings of the contract
 
-- 9.1 names no wire key for a transport failure or for the `mark_validation` and `mark_not_found` annotations; the
-  driver reads annotations only through `crucible.mcp.error.class`, and no case covers a transport failure.
+- 9.1 names no wire key for the `mark_validation` and `mark_not_found` annotations; the driver reads annotations
+  only through `crucible.mcp.error.class`. No case covers a transport failure.
 - 9.4 says senders should send `mcp.session.id` hashed; the suite requires the hashed form.
-- 3.6 has no span keys for the tool inventory, so `tools/list` cases check the operation only.
+- 3.6 has no span keys for the tool inventory. The normalizer reads `crucible.mcp.tools`, the JSON text of the
+  tool list as the protocol sends it, and computes the schema hash itself; no SDK sends the key yet, so `tools/list`
+  cases check the operation only.
+- 9.1 names no key for a transport failure. The normalizer and the driver read an explicit
+  `crucible.mcp.error.class` of `transport` or `timeout` as the capture source's observation that the transport
+  failed or a deadline passed, and a numeric `error.type` equal to the HTTP status as that status, not as a
+  JSON-RPC code (the proxy reports HTTP failures so).
 - 9.1 and 9.2 do not spell out how span keys feed the classifier; the mapping under "What the driver checks in every
   case" is the driver's reading.
 - 9.1 says "senders must truncate IP addresses themselves"; the suite also forbids `network.peer.address`, which

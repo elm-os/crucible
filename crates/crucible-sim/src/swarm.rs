@@ -4,6 +4,9 @@
 //! A configuration is a bit mask with one bit per [`Dim`]. The mask is an input of a run, next to the seed: the
 //! mask decides which workload features, faults and config flags exist in the run, and the seed decides
 //! everything else. A run is replayed from the pair.
+//!
+//! The coins are fair, with one weighting: a quarter of the configurations get the profile
+//! [`ConfigMask::collection_under_repeats`], a combination of seven dimensions that fair coins rarely meet.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -128,10 +131,34 @@ impl ConfigMask {
     /// The mask with every dimension on.
     pub const FULL: Self = Self((1 << Dim::ALL.len()) - 1);
 
-    /// One independent fair coin per dimension, from the stream of `config_seed`.
+    /// One independent fair coin per dimension, from the stream of `config_seed`; then, for one configuration
+    /// in four, the profile [`ConfigMask::collection_under_repeats`].
     pub fn draw(config_seed: u64) -> Self {
         let rng = ChaChaRng::from_u64(config_seed).fork("swarm/config");
-        Self(rng.next_u64() & Self::FULL.0)
+        let fair = Self(rng.next_u64() & Self::FULL.0);
+        if rng.next_u64().is_multiple_of(4) {
+            fair.collection_under_repeats()
+        } else {
+            fair
+        }
+    }
+
+    /// The mask with the dimensions set that let garbage collection run inside an unchecked batch that holds
+    /// a repeat, and a restart follow it: clients send spans again (`client_retries`), segments are small and
+    /// fill fast (`small_segments`, `large_payloads`, `wal_compression_off`), a batch holds many frames and
+    /// nothing keeps collected segments (`small_batches` and `replay_retention` off), and recovery is
+    /// interrupted (`crash_in_recovery`). Fair coins set all seven as needed in one configuration of 128, which
+    /// the per-pull-request budget of 200 configurations meets once or twice; stage B's rule that a restart
+    /// decides as the process before it did (contract 5.3) is only exercised there.
+    #[must_use]
+    pub const fn collection_under_repeats(self) -> Self {
+        self.with(Dim::ClientRetries)
+            .with(Dim::SmallSegments)
+            .with(Dim::CrashInRecovery)
+            .with(Dim::LargePayloads)
+            .with(Dim::WalCompressionOff)
+            .without(Dim::SmallBatches)
+            .without(Dim::ReplayRetention)
     }
 
     /// Whether the coin of `dim` is heads.
@@ -456,6 +483,12 @@ mod tests {
             unseen &= mask.0;
         }
         assert_eq!((seen, unseen), (ConfigMask::FULL.0, 0));
+        // About a quarter of the configurations carry the weighted profile, which fair coins give one in 128.
+        let profiled = (0..400)
+            .map(ConfigMask::draw)
+            .filter(|mask| *mask == mask.collection_under_repeats())
+            .count();
+        assert!((70..=140).contains(&profiled), "{profiled} of 400");
         assert_eq!(Dim::ALL.len(), 55);
     }
 
