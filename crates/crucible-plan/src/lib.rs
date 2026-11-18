@@ -20,9 +20,10 @@ pub mod test_support;
 mod value;
 
 pub use build::{
-    DataBoundsPlans, SPAN_CHILDREN_DEFAULT_LIMIT, SPAN_CHILDREN_MAX_LIMIT, TRACE_INLINE_SPAN_LIMIT,
-    TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceBounds, TraceListRequest, data_bounds,
-    effective_window, span_children, trace_bounds_window, trace_list, trace_spans,
+    DataBoundsPlans, RetentionClamp, SPAN_CHILDREN_DEFAULT_LIMIT, SPAN_CHILDREN_MAX_LIMIT,
+    TRACE_INLINE_SPAN_LIMIT, TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TRACE_PAGED_SPAN_LIMIT,
+    TraceBounds, TraceListRequest, child_counts, data_bounds, effective_window, span_children,
+    spans_of_parents, trace_bounds_window, trace_list, trace_page_stats, trace_roots, trace_spans,
     trace_time_bounds,
 };
 pub use class::{

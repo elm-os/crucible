@@ -42,4 +42,15 @@ release in Docker, and ClickHouse Cloud. A mismatch means the model is fixed fir
 - Fuzz targets (cargo-fuzz) for every parser that sees untrusted bytes.
 - Playwright for the UI, covering the loading, success, error and empty state of every section.
 - A shared SDK conformance suite that all four SDKs and the proxy must pass.
-- Performance gates: interleaved A/B benchmarks on fixed containers; relative regressions block merges.
+- Performance gates: interleaved A/B benchmarks on fixed containers; relative regressions block merges
+  ([`perf.md`](perf.md)).
+
+## Boundaries and envelope notes (settled in code)
+
+- The ClickHouse adapter (`crucible-store-clickhouse`) is outside the simulated boundary: the `clickhouse` crate
+  spawns tasks, reads time and draws randomness internally. Simulation replaces the adapter with `ChModel`, and the
+  conformance suite pins the adapter against real servers.
+- Read bit flips in `SimDisk` are transient: never on two consecutive reads of one file. Persistent media corruption
+  is outside the realism envelope.
+- Perf A/B gating uses the exact one-sided Wilcoxon signed-rank test on per-pair differences (`perf.md`).
+

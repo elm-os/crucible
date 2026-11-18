@@ -120,12 +120,16 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types` |
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
 
-Crates of later milestones (control plane, API, proxy, MCP server and the rest of section 1.5's map) add their rows
-here before their first code lands.
+Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
+`crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
+`test-mutants`) only add constructors or hooks that stay inert unless a test harness configures them; release builds
+of the binary never enable them. Crates of later milestones (control plane, proxy, MCP server and the rest of section
+1.5's map) add their rows here before their first code lands.
 
 ### 1.6 Frozen enums
 
@@ -990,6 +994,10 @@ Payload codecs and checksum strength over whole payloads are covered by property
 | Caps | Field and list caps are enforced on encode and on decode |
 | Quarantine pairs | `table_id` is a `u16` that must name a known table; `partition_id` must parse as a partition id |
 | Classification order | The header CRC is checked first, so every other header error implies a valid header CRC. `payload_len` above `MAX_PAYLOAD` with a valid header CRC is `Corrupt`. A non-zero wrong magic with both CRCs valid is `Corrupt`. Fewer than four remaining bytes that are all zero are a clean end; otherwise a short header is a torn tail |
+| Recovery hardening | Each step is forced by the 2.4 fault model and proven necessary by a test that fails without it: the last segment is cut and re-extended at every recovery (stale frames can follow a clean end; readable zeros may not be durable); a torn tail or unreadable newest header is read twice before truncating or removing; a newest segment whose header was never completed and that holds nothing else is removed; `EPOCH`, the last segment's header and frames and the directory are rewritten and synced before appends resume (after a process stop, readable is not durable) |
+| Failed group | A failed append or `sync_data` fails the whole group and rewinds the LSN; the segment is abandoned and the log rotates; the WAL is `failed` until restart only if rotation also fails. The failed handle is never synced again |
+| Control records | `append` refuses a `BatchSeal` or `Checkpoint` whose range is above the durable LSN; recovery treats one as fatal |
+| `CHECKPOINT` hint | Rewritten by WAL GC, off the committer, not when the checkpoint frame becomes durable; `segment_no` names the segment that holds the checkpoint frame |
 | Kani obligation 4 | Discharged by four bounded proofs (every flip of a fixed header through the real encode and decode; every flip of the checksum field for any header; linearity of one CRC step; no single-bit difference cancels over 32 bytes) plus property tests on random headers and segments; the bitwise CRC model is tied to the production routine by a property test |
 
 ## 5. Insert protocol
@@ -1120,11 +1128,11 @@ data in `crucible-store-clickhouse` and its stability across versions is pinned 
 
 | Class | Signals | Action |
 |---|---|---|
-| Retry with backoff | Network error before the request was sent; 202 (too many queries); 252 (too many parts; also widens batches); 241 (memory; also halves concurrency); 243 (no space); 242 (read-only) | Same token, same bytes. Full jitter, 100 ms to 30 s, from `Clock` and `Rng` |
+| Retry with backoff | Network error before the request was sent; 202 (too many queries); 252 with the too-many-parts message (also widens batches); 241 (memory; also halves concurrency); 243 (no space); 242 (read-only) | Same token, same bytes. Full jitter, 100 ms to 30 s, from `Clock` and `Rng` |
 | Unknown outcome | Timeout, reset mid-request, 159, 319, 999, process crash | Probe; insert only if absent |
 | Fatal configuration | 516, 497, 60, 16 | Stop the shipper for that table, raise an operator alert, keep the WAL. Ingest continues until `wal.unshipped_bytes` hits its cap |
-| Poison data | 53, 27, 117 and similar data errors for one pair after 3 identical failures | Quarantine |
-| Read guardrails (SELECT only) | 158, 307, 396, 159, 241 | Never retried; mapped to `query_too_broad`, `query_timeout`, `query_memory_exceeded` |
+| Poison data | 53, 27, 117, the Native-format data errors 33, 271, 432, 376 and 43, and similar data errors for one pair after 3 identical failures; 252 with the multi-partition message at once (a routing bug) | Quarantine |
+| Read guardrails (SELECT only) | 158, 307, 396, 191, 159, 241 | Never retried; mapped to `query_too_broad`, `query_timeout`, `query_memory_exceeded` |
 
 **Quarantine.** The frames of the batch are copied to `quarantine/<quarantine_ref>/` with a manifest (identity,
 failing pairs, error), synced; a `Quarantine` frame is appended and synced; the failing pairs then count as
@@ -1149,8 +1157,9 @@ Before a node accepts ingest it must, through `TelemetryStore::detect` and `dedu
   text-search functions exist;
 - insert one block twice with one token into `dedup_selftest` and read back exactly one row;
 - confirm that each service identity sees a known row through its row policy (the "service identities see all rows
-  after access migrations" conformance row, also run at startup). This runs inside `detect` and is reported in
-  `StoreFacts`; a failure refuses ingest like a failed deduplication self-test.
+  after access migrations" conformance row, also run at startup). This runs inside `detect`: a canary row is
+  inserted as `crucible_ingest` and read back as every service identity, and a blind identity fails `detect` with
+  `StoreError::SelfTest` naming it, which refuses ingest like a failed deduplication self-test.
 
 Ingest is refused, loudly, when the version is below 26.3, the text index is unavailable, a required setting is
 missing, or either self-test fails. All behaviour-affecting settings are sent per query, so a Cloud service's
@@ -1722,7 +1731,7 @@ ClickHouse serves it.
 Response metadata on every telemetry list and detail response:
 
 ```text
-meta { as_of: Timestamp, partial: bool, partial_reason?: "store_unavailable" | "deadline",
+meta { as_of: Timestamp, partial: bool, partial_reason?: "store_unavailable" | "deadline" | "quarantined",
        consistency: "strong" | "lagging" }
 ```
 
@@ -1773,8 +1782,28 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - `dedup_selftest` is reachable only through `TelemetryStore::dedup_selftest`, never through a plan.
 - The closed measure set has no set merge yet, so no plan reads the `groupUniqArrayArray` columns; the measure is
   added when the session and user screens need them.
-- The retention clamp of 8.3 is applied when a plan is built (`effective_window`); the query layer makes it
-  structural before the first read endpoint ships.
+- The retention clamp of 8.3 is structural: every plan builder takes a `RetentionClamp` and returns `None` when the
+  window has fully expired; `QueryPlan::new` is private to `crucible-plan`.
+- `partial_reason: store_unavailable` takes precedence over the other reasons. `not_found` is returned only when the
+  response would be whole and strong; otherwise the answer is an empty trace carrying `partial` or `lagging`.
+- Sums in lists and paged detail (`span_count`, cost, tokens, `child_count`) are store sums plus index entries above
+  the watermark, so they can run ahead until the low watermark passes the spans; inline trace detail is exact.
+- Filtered lists read the store only, because the index keeps no tags, environment or release, and answer
+  `consistency: lagging` when unconfirmed index heads were left out. The index is consulted on every list page.
+- Heads of one trace with the same `(start_time, trace_hash, trace_id)` collapse to one row; a trace with several
+  roots at different start times appears once per root.
+- The read barrier must stay shorter than the visibility grace.
+- Live tail can miss a head that was durable but unapplied when the cursor was issued, or whose `received_at` equals
+  the cursor's `as_of`; the head cursor gains `wal_epoch` and LSN with a `>=` arrival bound when `crucible-cursor`
+  lands (milestone 2).
+- Zero-filled `TimeSeries` buckets need nullable output types; until they exist the adapter refuses `Fill::Zero`.
+- `TokenMode::Phrase` renders as all-tokens, because 26.3 has no phrase-match function; `Pred::TextMatch` is a
+  case-insensitive substring match.
+- `SemiJoin` enforces `max_ids` through `max_rows_in_set`, which applies to every set in the statement.
+- Mutation ids are the newest mutation of the table and partition; lifecycle work is leader-only and sequential.
+- `KILL QUERY` is sent to one node, not `ON CLUSTER`.
+- The window on `mcp_tool_inventory` and `mcp_deploys` applies after grouping (`max(last_seen) >= from` and
+  `min(first_seen) < to`), because their time columns are aggregated.
 
 ## 9. MCP
 
@@ -2053,6 +2082,18 @@ The first rule that yields a value wins:
 
 Mapping must be total (never panics), idempotent, and identical for the protobuf and JSON encodings of one request.
 
+### 10.5 Settled in code
+
+| Topic | Rule |
+|---|---|
+| Interface | The normalizer takes its own `IngestFrame` (section 1.5 forbids a dependency on the WAL codec) and returns a `Result`. `SpanMapper` and `McpProjector` live in `crucible-normalize`, because they take `SpanView` |
+| Dialect 0 sources | Only keys the contract or the semantic conventions name; fields with no named key (trace name, session, tags, metadata, public flag, environment, release, version, level, provided cost, prompt version) stay empty until milestone 2 names their keys |
+| Usage parts | `cache_read` and `cache_write` count inside input tokens and `reasoning` inside output tokens; pricing treats them as parts, not additions. Without a provided total, total is input plus output |
+| `row_digest` | Version 1: xxh3-64 over a canonical encoding of both tiers, excluding the ingestion group, `event_bytes` and `api_key_id`. `clock_skew` and forward-filled values are included, so a retry that crosses the 24-hour boundary or splits a trace differently is kept |
+| Residual JSON | Wire order, duplicates kept; integers as numbers; NaN and infinities as strings; bytes as lowercase hex; events capped at 128 and links at 32 (not listed in `truncated_fields`, because the JSON stays valid) |
+| Dropped in milestone 1 | Instrumentation-scope attributes (name and version are kept), link `trace_state`, span flags, dropped counts and schema URLs |
+| Stage B | A changed repeat moves its key to the newest position; the first-seen set is bounded at 4,000,000 traces; the provisional head is the first kept span, in wire order, of a trace first seen in a frame without its root; an out-of-order LSN is refused |
+
 ## 11. Control plane
 
 Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-control`, the adapter in
@@ -2276,8 +2317,12 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 - Request id: UUIDv7. An inbound `X-Request-Id` is kept only from a trusted proxy and only if it matches
   `[A-Za-z0-9_-]{1,64}`. It is echoed as `X-Request-Id` and in every problem body.
 - `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
-  `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots) and `--wal-backend`
-  (`auto`, `portable`, `uring`).
+  `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots), `--wal-backend`
+  (`auto`, `portable`, `uring`) and `--ui-dir` (serve a UI build from a directory instead of the embedded one).
+- UI serving: try-files ignores the query string; slashless routes serve the page directly; under `/api/`, `/v1/`,
+  `/mcp` and the health paths only the 404 fallback is replaced by a problem 404 (the UI's own pages under `/mcp/`
+  still resolve); the empty source answers `/` with 404 and a build hint. Each page's CSP carries its inline-script
+  hashes, `style-src-attr 'unsafe-inline'` and `img-src 'self' data:`.
 
 ### 12.2 Auth forms
 

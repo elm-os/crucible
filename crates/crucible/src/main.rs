@@ -51,6 +51,10 @@ struct ServeArgs {
     /// Disk backend for the WAL: `auto`, `portable` or `uring`.
     #[arg(long, default_value = "auto")]
     wal_backend: WalBackend,
+    /// Serve the UI from this directory (a built export such as `ui/out`) instead of the one compiled in.
+    /// The files are read once at startup.
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -93,6 +97,10 @@ mod tests {
         assert_eq!(args.metrics_listen.to_string(), "127.0.0.1:9464");
         assert_eq!(args.wal_backend, WalBackend::Auto);
         assert_eq!(args.keys_file, None);
+        assert_eq!(args.ui_dir, None);
         assert!(Cli::try_parse_from(["crucible", "serve", "--wal-backend", "floppy"]).is_err());
+        let Command::Serve(args) =
+            Cli::parse_from(["crucible", "serve", "--ui-dir", "ui/out"]).command;
+        assert_eq!(args.ui_dir, Some(PathBuf::from("ui/out")));
     }
 }

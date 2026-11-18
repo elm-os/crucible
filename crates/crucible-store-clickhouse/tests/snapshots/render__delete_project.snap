@@ -1,0 +1,8 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "render::delete(&project).unwrap().to_string()"
+---
+DELETE FROM crucible.span_core IN PARTITION ID {p0:String} WHERE project_id = {p1:UUID} AND start_time < {p2:DateTime64(6, 'UTC')}
+p0: String = "20261117"
+p1: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p2: DateTime64(6, 'UTC') = "1794873600.000000"

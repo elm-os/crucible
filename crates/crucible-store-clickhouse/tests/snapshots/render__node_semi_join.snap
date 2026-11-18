@@ -1,0 +1,18 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "rendered(&plan(QueryClass::List, Node::SemiJoin(join)))"
+---
+SELECT trace_id, name FROM crucible.trace_heads WHERE project_id = {p7:UUID} AND start_time >= {p8:DateTime64(6, 'UTC')} AND start_time < {p9:DateTime64(6, 'UTC')} AND trace_id IN (SELECT trace_id FROM (SELECT trace_id, argMax(op, (version, fact_id)) AS m0 FROM crucible.fact_tags WHERE project_id = {p0:UUID} AND target_time >= {p1:DateTime64(6, 'UTC')} AND target_time < {p2:DateTime64(6, 'UTC')} AND target_day >= {p3:Date} AND target_day <= {p4:Date} AND key = {p5:String} GROUP BY trace_id HAVING m0 = {p6:String})) ORDER BY start_time DESC, trace_hash DESC, trace_id DESC LIMIT {p10:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: Date = "2026-11-17"
+p4: Date = "2026-11-17"
+p5: String = "quality"
+p6: String = "add"
+p7: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p8: DateTime64(6, 'UTC') = "1794907800.000000"
+p9: DateTime64(6, 'UTC') = "1794911400.000001"
+p10: UInt64 = "50"
+setting max_rows_in_set = 10000
+setting set_overflow_mode = throw

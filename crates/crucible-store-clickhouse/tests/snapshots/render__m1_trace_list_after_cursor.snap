@@ -1,0 +1,14 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&next)
+---
+SELECT start_time, trace_hash, trace_id, span_id, head_kind, end_time, name, level, status_code, user_id, session_id, tags, environment, release, version, input_preview, output_preview, wal_epoch, batch_seq, lsn, received_at FROM crucible.trace_heads WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND received_at <= {p3:DateTime64(6, 'UTC')} AND environment = {p4:String} AND (start_time, trace_hash, trace_id) < ({p5:DateTime64(6, 'UTC')}, {p6:UInt32}, unhex({p7:String})) ORDER BY start_time DESC, trace_hash DESC, trace_id DESC LIMIT {p8:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime64(6, 'UTC') = "1794907860.000000"
+p4: String = "prod"
+p5: DateTime64(6, 'UTC') = "1794907800.000000"
+p6: UInt32 = "1524766824"
+p7: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+p8: UInt64 = "150"

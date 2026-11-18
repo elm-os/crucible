@@ -70,14 +70,17 @@ pub const AGENT_MAX_CONCURRENT_QUERIES: u32 = 16;
 /// The ceiling on `max_execution_time` for `crucible_ingest`, in seconds.
 pub const INGEST_MAX_EXECUTION_SECONDS: u32 = 60;
 
-/// The system tables `crucible_maint` reads.
-pub const MAINT_SYSTEM_TABLES: [&str; 6] = [
+/// The system tables `crucible_maint` reads. Startup detection reads the engine families from `tables` and the
+/// clustered server setting from `server_settings`.
+pub const MAINT_SYSTEM_TABLES: [&str; 8] = [
     "mutations",
     "parts",
     "settings",
+    "server_settings",
     "merge_tree_settings",
     "functions",
     "processes",
+    "tables",
 ];
 
 /// A password hash that is not 64 lowercase hex characters.
