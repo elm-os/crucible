@@ -4,7 +4,7 @@
 pub mod double;
 pub mod generate;
 
-use crucible_normalize::{IngestFrame, NormCtx, NormalizedFrame, normalize};
+use crucible_normalize::{IngestFrame, NormCtx, NormalizedFrame, PriceTable, normalize};
 use crucible_records::{ApiKeyId, Lsn, PayloadCaps, ProjectId, Timestamp, WalEpoch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
@@ -139,9 +139,14 @@ pub fn frame<'a>(otlp: &'a [u8], rejected: &'a [u8]) -> IngestFrame<'a> {
     }
 }
 
-/// The default caps and no price table.
-pub fn ctx() -> NormCtx {
-    NormCtx::new(0, PayloadCaps::DEFAULT)
+/// The bundled price table.
+pub fn prices() -> &'static PriceTable {
+    PriceTable::bundled().unwrap()
+}
+
+/// The default caps and the bundled prices.
+pub fn ctx() -> NormCtx<'static> {
+    NormCtx::new(prices(), PayloadCaps::DEFAULT)
 }
 
 /// Normalizes a body with no rejected spans and the default context.

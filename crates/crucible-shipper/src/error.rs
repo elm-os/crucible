@@ -1,5 +1,6 @@
 //! Why the shipper stops.
 
+use crucible_normalize::PriceTableError;
 use crucible_plan::PlanError;
 use crucible_records::{Lsn, TokenError};
 use crucible_wal::AppendError;
@@ -47,4 +48,7 @@ pub enum ShipError {
     /// A pair has no probe.
     #[error("no probe for the pair: {0}")]
     Probe(#[from] PlanError),
+    /// The bundled price table does not load. A test of `crucible-normalize` loads it, so no build reaches this.
+    #[error(transparent)]
+    Prices(#[from] PriceTableError),
 }

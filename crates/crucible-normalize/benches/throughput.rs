@@ -6,7 +6,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use crucible_normalize::{IngestFrame, NormCtx, normalize};
+use crucible_normalize::{IngestFrame, NormCtx, PriceTable, normalize};
 use crucible_records::{ApiKeyId, Lsn, PayloadCaps, ProjectId, Timestamp, WalEpoch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
@@ -142,7 +142,7 @@ fn stage_a_throughput() {
             rejected: &[],
             otlp: &body,
         };
-        let ctx = NormCtx::new(0, PayloadCaps::DEFAULT);
+        let ctx = NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT);
         let out = normalize(&frame, &ctx).unwrap();
         assert_eq!(out.spans.len() as u64, spans);
         let mean = body.len() as f64 / spans as f64;

@@ -344,7 +344,7 @@ pub(crate) fn canonical_row(record: &SpanRecord) -> Vec<u8> {
 mod tests {
     use bytes::Bytes;
     use crucible_records::{
-        ApiKeyId, Lsn, PayloadField, ProjectId, SpanId, TraceId, TracePublic, WalEpoch,
+        ApiKeyId, CostSource, Lsn, PayloadField, ProjectId, SpanId, TraceId, TracePublic, WalEpoch,
     };
     use xxhash_rust::xxh3::xxh3_64;
 
@@ -402,6 +402,30 @@ mod tests {
             |r| r.payload.usage_provided = vec![("input".into(), 1)],
             |r| r.payload.trace_state = Bytes::from_static(b"k=v"),
             |r| r.payload.truncated_fields.insert(PayloadField::Links),
+        ];
+        for (i, mutate) in mutations.into_iter().enumerate() {
+            let mut r = base.clone();
+            mutate(&mut r);
+            assert_ne!(row_digest(&r), digest, "mutation {i}");
+        }
+    }
+
+    /// The cost fields that calculated pricing sets are part of the digest.
+    #[test]
+    fn calculated_cost_fields_change_the_digest() {
+        let mut base = record();
+        base.core.usage = vec![UsageEntry {
+            key: "input".into(),
+            units: 1,
+            cost: NanoUsd::ZERO,
+        }];
+        let digest = row_digest(&base);
+        let mutations: [fn(&mut SpanRecord); 5] = [
+            |r| r.core.usage[0].cost = NanoUsd::from_nanos(1),
+            |r| r.core.total_cost_nusd = NanoUsd::from_nanos(1),
+            |r| r.core.cost_source = CostSource::Calculated,
+            |r| r.core.price_model_id = Some(Uuid::from_bytes([7; 16])),
+            |r| r.core.price_tier_id = Some(Uuid::from_bytes([7; 16])),
         ];
         for (i, mutate) in mutations.into_iter().enumerate() {
             let mut r = base.clone();

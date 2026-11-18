@@ -28,7 +28,8 @@ or newer, or ClickHouse Cloud. S3-compatible object storage is optional, for med
    write-ahead log. A group committer issues one append and one `fsync` per group.
 3. **Ack.** The client is acknowledged only after its frame is durable.
 4. **Normalize.** A versioned pure function maps each span to a `SpanRecord` and, for MCP operations, an
-   `McpOpRecord`. It computes cost from a versioned price table and never estimates tokens.
+   `McpOpRecord`. It computes cost from a versioned price table ([`price-table.md`](price-table.md)) and never
+   estimates tokens.
 5. **Index.** The in-memory recent-span index makes a span readable within about 100 ms of its ack.
 6. **Seal and ship.** The shipper seals a batch (`BatchSeal` in the WAL), encodes one Native block per table and
    partition, and inserts it with a deterministic deduplication token. Unknown outcomes are probed before any retry.

@@ -1,0 +1,2969 @@
+[
+  {
+    "name": "gpt-4o",
+    "match": "(openai/)?(gpt-4o)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4250000, "cache_read": 2125000, "output": 17000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2500000, "cache_read": 1250000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4o-2024-05-13",
+    "match": "(openai/)?(gpt-4o-2024-05-13)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 8750000, "output": 26250000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 5000000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-1106-preview",
+    "match": "(openai/)?(gpt-4-1106-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-turbo-vision",
+    "match": "(openai/)?(gpt-4(-\\d{4})?-vision-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-32k",
+    "match": "(openai/)?(gpt-4-32k)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 60000000, "output": 120000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-32k-0613",
+    "match": "(openai/)?(gpt-4-32k-0613)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 60000000, "output": 120000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-1106",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-1106)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1000000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-0613",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-0613)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1500000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-0613",
+    "match": "(openai/)?(gpt-4-0613)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 30000000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-instruct",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-instruct)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1500000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-ada-001",
+    "match": "(text-ada-001)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 4000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-babbage-001",
+    "match": "(text-babbage-001)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "text-curie-001",
+    "match": "(text-curie-001)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-davinci-001",
+    "match": "(text-davinci-001)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-davinci-002",
+    "match": "(text-davinci-002)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-davinci-003",
+    "match": "(text-davinci-003)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-embedding-ada-002-v2",
+    "match": "(openai/)?(text-embedding-ada-002-v2)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 100000 }
+      }
+    ]
+  },
+  {
+    "name": "text-embedding-ada-002",
+    "match": "(openai/)?(text-embedding-ada-002)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 100000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-16k-0613",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-16k-0613)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "output": 4000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-0301",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-0301)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2000000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-32k-0314",
+    "match": "(openai/)?(gpt-4-32k-0314)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 60000000, "output": 120000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-0314",
+    "match": "(openai/)?(gpt-4-0314)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 30000000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4",
+    "match": "(openai/)?(gpt-4)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 30000000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-instant-1.2",
+    "match": "(anthropic/)?(claude-instant-1.2)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1630000, "output": 5510000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-2.0",
+    "match": "(anthropic/)?(claude-2.0)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 8000000, "output": 24000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-2.1",
+    "match": "(anthropic/)?(claude-2.1)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 8000000, "output": 24000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-1.3",
+    "match": "(anthropic/)?(claude-1.3)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 8000000, "output": 24000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-1.2",
+    "match": "(anthropic/)?(claude-1.2)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 8000000, "output": 24000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-1.1",
+    "match": "(anthropic/)?(claude-1.1)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 8000000, "output": 24000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-instant-1",
+    "match": "(anthropic/)?(claude-instant-1)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1630000, "output": 5510000 }
+      }
+    ]
+  },
+  {
+    "name": "babbage-002",
+    "match": "(babbage-002)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 400000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "davinci-002",
+    "match": "(davinci-002)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2000000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "text-embedding-3-small",
+    "match": "(openai/)?(text-embedding-3-small)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 20000 }
+      }
+    ]
+  },
+  {
+    "name": "text-embedding-3-large",
+    "match": "(openai/)?(text-embedding-3-large)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 130000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-0125",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-0125)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 500000, "output": 1500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 500000, "output": 1500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-0125-preview",
+    "match": "(openai/)?(gpt-4-0125-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "ft:gpt-3.5-turbo-1106",
+    "match": "(ft:)(gpt-3.5-turbo-1106:)(.+)(:)(.*)(:)(.+)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "output": 6000000 }
+      }
+    ]
+  },
+  {
+    "name": "ft:gpt-3.5-turbo-0613",
+    "match": "(ft:)(gpt-3.5-turbo-0613:)(.+)(:)(.*)(:)(.+)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 12000000, "output": 16000000 }
+      }
+    ]
+  },
+  {
+    "name": "ft:davinci-002",
+    "match": "(ft:)(davinci-002:)(.+)(:)(.*)(:)(.+)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 12000000, "output": 12000000 }
+      }
+    ]
+  },
+  {
+    "name": "ft:babbage-002",
+    "match": "(ft:)(babbage-002:)(.+)(:)(.*)(:)(.+)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1600000, "output": 1600000 }
+      }
+    ]
+  },
+  {
+    "name": "chat-bison",
+    "match": "(chat-bison)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "codechat-bison-32k",
+    "match": "(codechat-bison-32k)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "codechat-bison",
+    "match": "(codechat-bison)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "text-bison-32k",
+    "match": "(text-bison-32k)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "chat-bison-32k",
+    "match": "(chat-bison-32k)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "text-unicorn",
+    "match": "(text-unicorn)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2500000, "output": 7500000 }
+      }
+    ]
+  },
+  {
+    "name": "text-bison",
+    "match": "(text-bison)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "textembedding-gecko",
+    "match": "(textembedding-gecko)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 100000 }
+      }
+    ]
+  },
+  {
+    "name": "textembedding-gecko-multilingual",
+    "match": "(textembedding-gecko-multilingual)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "total": 100000 }
+      }
+    ]
+  },
+  {
+    "name": "code-gecko",
+    "match": "(code-gecko)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "code-bison",
+    "match": "(code-bison)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "code-bison-32k",
+    "match": "(code-bison-32k)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-3.5-turbo-16k",
+    "match": "(openai/)?(gpt-)(35|3.5)(-turbo-16k)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 500000, "output": 1500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-turbo-preview",
+    "match": "(openai/)?(gpt-4-turbo-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3-opus-20240229",
+    "match": "(anthropic/)?(claude-3-opus-20240229|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-opus-20240229-v1:0|claude-3-opus@20240229)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "output": 75000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3-sonnet-20240229",
+    "match": "(anthropic/)?(claude-3-sonnet-20240229|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-sonnet-20240229-v1:0|claude-3-sonnet@20240229)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3-haiku-20240307",
+    "match": "(anthropic/)?(claude-3-haiku-20240307|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-haiku-20240307-v1:0|claude-3-haiku@20240307)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 1250000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-1.0-pro-latest",
+    "match": "(google(ai)?/)?(gemini-1.0-pro-latest)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-1.0-pro",
+    "match": "(google(ai)?/)?(gemini-1.0-pro)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 125000, "output": 375000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-1.0-pro-001",
+    "match": "(google(ai)?/)?(gemini-1.0-pro-001)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 125000, "output": 375000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-pro",
+    "match": "(google(ai)?/)?(gemini-pro)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 125000, "output": 375000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-1.5-pro-latest",
+    "match": "(google(ai)?/)?(gemini-1.5-pro-latest)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2500000, "output": 7500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-turbo-2024-04-09",
+    "match": "(openai/)?(gpt-4-turbo-2024-04-09)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-turbo",
+    "match": "(openai/)?(gpt-4-turbo)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4-preview",
+    "match": "(openai/)?(gpt-4-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3-5-sonnet-20240620",
+    "match": "(anthropic/)?(claude-3-5-sonnet-20240620|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-5-sonnet-20240620-v1:0|claude-3-5-sonnet@20240620)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4o-mini",
+    "match": "(openai/)?(gpt-4o-mini)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 250000, "cache_read": 125000, "output": 1000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 150000, "cache_read": 75000, "output": 600000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4o-mini-2024-07-18",
+    "match": "(openai/)?(gpt-4o-mini-2024-07-18)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 250000, "cache_read": 125000, "output": 1000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 150000, "cache_read": 75000, "output": 600000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4o-2024-08-06",
+    "match": "(openai/)?(gpt-4o-2024-08-06)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4250000, "cache_read": 2125000, "output": 17000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2500000, "cache_read": 1250000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-preview",
+    "match": "(openai/)?(o1-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 7500000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-preview-2024-09-12",
+    "match": "(openai/)?(o1-preview-2024-09-12)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 7500000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-mini",
+    "match": "(openai/)?(o1-mini)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1100000, "cache_read": 550000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-mini-2024-09-12",
+    "match": "(openai/)?(o1-mini-2024-09-12)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1100000, "cache_read": 550000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3.5-sonnet-20241022",
+    "match": "(anthropic/)?(claude-3-5-sonnet-20241022|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-5-sonnet-20241022-v2:0|claude-3-5-sonnet-V2@20241022)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3.5-sonnet-latest",
+    "match": "(anthropic/)?(claude-3-5-sonnet-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3-5-haiku-20241022",
+    "match": "(anthropic/)?(claude-3-5-haiku-20241022|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3-5-haiku-20241022-v1:0|claude-3-5-haiku-V1@20241022)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 800000, "cache_read": 80000, "cache_write": 1000000, "output": 4000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3.5-haiku-latest",
+    "match": "(anthropic/)?(claude-3-5-haiku-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 800000, "cache_read": 80000, "cache_write": 1000000, "output": 4000000 }
+      }
+    ]
+  },
+  {
+    "name": "chatgpt-4o-latest",
+    "match": "(chatgpt-4o-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 5000000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4o-2024-11-20",
+    "match": "(openai/)?(gpt-4o-2024-11-20)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4250000, "cache_read": 2125000, "output": 17000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2500000, "cache_read": 1250000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-audio-1.5",
+    "match": "(openai/)?(gpt-audio-1\\.5)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-audio",
+    "match": "(openai/)?(gpt-audio|gpt-audio-2025-08-28)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-audio-mini",
+    "match": "(openai/)?(gpt-audio-mini|gpt-audio-mini-2025-10-06|gpt-audio-mini-2025-12-15)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 600000, "output": 2400000 }
+      }
+    ]
+  },
+  {
+    "name": "o1",
+    "match": "(openai/)?(o1)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 7500000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-2024-12-17",
+    "match": "(openai/)?(o1-2024-12-17)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 7500000, "output": 60000000 }
+      }
+    ]
+  },
+  {
+    "name": "o3-mini",
+    "match": "(openai/)?(o3-mini)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1100000, "cache_read": 550000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "o3-mini-2025-01-31",
+    "match": "(openai/)?(o3-mini-2025-01-31)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1100000, "cache_read": 550000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.0-flash-001",
+    "match": "(google(ai)?/)?(gemini-2.0-flash-001)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 100000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.0-flash-lite-preview-02-05",
+    "match": "(google(ai)?/)?(gemini-2.0-flash-lite-preview-02-05)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 75000, "output": 300000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3.7-sonnet-20250219",
+    "match": "(anthropic/)?(claude-3.7-sonnet-20250219|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-3.7-sonnet-20250219-v1:0|claude-3-7-sonnet-V1@20250219)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-3.7-sonnet-latest",
+    "match": "(anthropic/)?(claude-3-7-sonnet-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.5-preview",
+    "match": "(openai/)?(gpt-4.5-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 75000000, "cache_read": 37500000, "output": 150000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.5-preview-2025-02-27",
+    "match": "(openai/)?(gpt-4.5-preview-2025-02-27)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 75000000, "cache_read": 37500000, "output": 150000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1",
+    "match": "(openai/)?(gpt-4.1)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 875000, "output": 14000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1-2025-04-14",
+    "match": "(openai/)?(gpt-4.1-2025-04-14)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 875000, "output": 14000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1-mini-2025-04-14",
+    "match": "(openai/)?(gpt-4.1-mini-2025-04-14)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 700000, "cache_read": 175000, "output": 2800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 400000, "cache_read": 100000, "output": 1600000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1-nano-2025-04-14",
+    "match": "(openai/)?(gpt-4.1-nano-2025-04-14)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 200000, "cache_read": 50000, "output": 800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 100000, "cache_read": 25000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "o3",
+    "match": "(openai/)?(o3)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 875000, "output": 14000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1000000, "cache_read": 250000, "output": 4000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      }
+    ]
+  },
+  {
+    "name": "o3-2025-04-16",
+    "match": "(openai/)?(o3-2025-04-16)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 875000, "output": 14000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1000000, "cache_read": 250000, "output": 4000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      }
+    ]
+  },
+  {
+    "name": "o4-mini",
+    "match": "(openai/)?(o4-mini)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 550000, "cache_read": 138000, "output": 2200000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1100000, "cache_read": 275000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "o4-mini-2025-04-16",
+    "match": "(openai/)?(o4-mini-2025-04-16)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2000000, "cache_read": 500000, "output": 8000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 550000, "cache_read": 138000, "output": 2200000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1100000, "cache_read": 275000, "output": 4400000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.0-flash",
+    "match": "(google(ai)?/)?(gemini-2.0-flash)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 100000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.0-flash-lite-preview",
+    "match": "(google(ai)?/)?(gemini-2.0-flash-lite-preview)(@[a-zA-Z0-9]+)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 75000, "output": 300000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1-nano",
+    "match": "(openai/)?(gpt-4.1-nano)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 200000, "cache_read": 50000, "output": 800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 100000, "cache_read": 25000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-4.1-mini",
+    "match": "(openai/)?(gpt-4.1-mini)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 700000, "cache_read": 175000, "output": 2800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 400000, "cache_read": 100000, "output": 1600000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-4-5-20250929",
+    "match": "(anthropic/)?(claude-sonnet-4-5(-20250929)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-sonnet-4-5(-20250929)?-v1(:0)?|claude-sonnet-4-5-V1(@20250929)?|claude-sonnet-4-5(@20250929)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-4-20250514",
+    "match": "(anthropic/)?(claude-sonnet-4(-20250514)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-sonnet-4(-20250514)?-v1(:0)?|claude-sonnet-4-V1(@20250514)?|claude-sonnet-4(@20250514)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-4-latest",
+    "match": "(anthropic/)?(claude-sonnet-4-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-20250514",
+    "match": "(anthropic/)?(claude-opus-4(-20250514)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4(-20250514)?-v1(:0)?|claude-opus-4(@20250514)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 1500000, "cache_write": 18750000, "output": 75000000 }
+      }
+    ]
+  },
+  {
+    "name": "o3-pro",
+    "match": "(openai/)?(o3-pro)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 20000000, "output": 80000000 }
+      }
+    ]
+  },
+  {
+    "name": "o3-pro-2025-06-10",
+    "match": "(openai/)?(o3-pro-2025-06-10)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 20000000, "output": 80000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-pro",
+    "match": "(openai/)?(o1-pro)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 150000000, "output": 600000000 }
+      }
+    ]
+  },
+  {
+    "name": "o1-pro-2025-03-19",
+    "match": "(openai/)?(o1-pro-2025-03-19)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 150000000, "output": 600000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.5-flash",
+    "match": "(google(ai)?/)?(gemini-2.5-flash)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 540000, "cache_read": 54000, "output": 4500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 300000, "cache_read": 30000, "output": 2500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.5-flash-lite",
+    "match": "(google(ai)?/)?(gemini-2.5-flash-lite)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 180000, "cache_read": 18000, "output": 720000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 100000, "cache_read": 10000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-1-20250805",
+    "match": "(anthropic/)?(claude-opus-4-1(-20250805)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-1(-20250805)?-v1(:0)?|claude-opus-4-1(@20250805)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "cache_read": 1500000, "cache_write": 18750000, "output": 75000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5",
+    "match": "(openai/)?(gpt-5)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 625000, "cache_read": 62500, "output": 5000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-2025-08-07",
+    "match": "(openai/)?(gpt-5-2025-08-07)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 625000, "cache_read": 62500, "output": 5000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-search-api",
+    "match": "(openai/)?(gpt-5-search-api)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-mini",
+    "match": "(openai/)?(gpt-5-mini)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 450000, "cache_read": 45000, "output": 3600000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 125000, "cache_read": 12500, "output": 1000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 250000, "cache_read": 25000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-mini-2025-08-07",
+    "match": "(openai/)?(gpt-5-mini-2025-08-07)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 450000, "cache_read": 45000, "output": 3600000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 125000, "cache_read": 12500, "output": 1000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 250000, "cache_read": 25000, "output": 2000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-nano",
+    "match": "(openai/)?(gpt-5-nano)",
+    "tiers": [
+      {
+        "name": "Flex",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 25000, "cache_read": 2500, "output": 200000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 50000, "cache_read": 5000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-nano-2025-08-07",
+    "match": "(openai/)?(gpt-5-nano-2025-08-07)",
+    "tiers": [
+      {
+        "name": "Flex",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 25000, "cache_read": 2500, "output": 200000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 50000, "cache_read": 5000, "output": 400000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-chat-latest",
+    "match": "(openai/)?(gpt-5-chat-latest)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-pro",
+    "match": "(openai/)?(gpt-5-pro)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "output": 120000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5-pro-2025-10-06",
+    "match": "(openai/)?(gpt-5-pro-2025-10-06)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 15000000, "output": 120000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-haiku-4-5-20251001",
+    "match": "(anthropic/)?(claude-haiku-4-5(-20251001)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-haiku-4-5-20251001-v1:0|claude-4-5-haiku@20251001)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 1000000, "cache_read": 100000, "cache_write": 1250000, "output": 5000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.1",
+    "match": "(openai/)?(gpt-5.1)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 625000, "cache_read": 62500, "output": 5000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.1-2025-11-13",
+    "match": "(openai/)?(gpt-5.1-2025-11-13)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 625000, "cache_read": 62500, "output": 5000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-5-20251101",
+    "match": "(anthropic/)?(claude-opus-4-5(-20251101)?|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-5(-20251101)?-v1(:0)?|claude-opus-4-5(@20251101)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-4-6",
+    "match": "(anthropic\\/)?(claude-sonnet-4-6|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-sonnet-4-6(-v1(:0)?)?|claude-sonnet-4-6)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 3000000, "cache_read": 300000, "cache_write": 3750000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-6",
+    "match": "(anthropic/)?(claude-opus-4-6|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-6-v1(:0)?|claude-opus-4-6)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-7",
+    "match": "(anthropic/)?(claude-opus-4-7|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-7-v1(:0)?|(eu\\.|us\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-7)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-4-8",
+    "match": "((anthropic/)?claude-opus-4-8|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-4-8(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "speed", "in": ["fast"] }],
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 50000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-fable-5",
+    "match": "((anthropic/)?claude-fable-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-fable-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 50000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-mythos-5",
+    "match": "((anthropic/)?claude-mythos-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-mythos-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 50000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-fable-5-1",
+    "match": "((anthropic/)?claude-fable-5-1|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-fable-5-1(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "cache_read": 250000, "cache_write": 12500000, "output": 50000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-mythos-5-1",
+    "match": "((anthropic/)?claude-mythos-5-1|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-mythos-5-1(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 10000000, "cache_read": 250000, "cache_write": 12500000, "output": 50000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-fable-5-2",
+    "match": "((anthropic/)?claude-fable-5-2|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-fable-5-2(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "speed", "in": ["fast"] }],
+        "prices": { "input": 16000000, "cache_read": 400000, "cache_write": 20000000, "output": 80000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 8000000, "cache_read": 200000, "cache_write": 10000000, "output": 40000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-mythos-5-2",
+    "match": "((anthropic/)?claude-mythos-5-2|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-mythos-5-2(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "speed", "in": ["fast"] }],
+        "prices": { "input": 16000000, "cache_read": 400000, "cache_write": 20000000, "output": 80000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 8000000, "cache_read": 200000, "cache_write": 10000000, "output": 40000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-5",
+    "match": "((anthropic\\/)?claude-sonnet-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-sonnet-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-sonnet-5-5",
+    "match": "((anthropic\\/)?claude-sonnet-5-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-sonnet-5-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 2000000, "cache_read": 100000, "cache_write": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-5",
+    "match": "((anthropic\\/)?claude-opus-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "speed", "in": ["fast"] }],
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 50000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-opus-5-5",
+    "match": "((anthropic\\/)?claude-opus-5-5|(eu\\.|us\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-opus-5-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "speed", "in": ["fast"] }],
+        "prices": { "input": 8000000, "cache_read": 400000, "cache_write": 10000000, "output": 40000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 4000000, "cache_read": 200000, "cache_write": 5000000, "output": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "claude-haiku-5-5",
+    "match": "((anthropic\\/)?claude-haiku-5-5|(eu\\.|us\\.|ca\\.|apac\\.|au\\.|jp\\.|global\\.)?anthropic\\.claude-haiku-5-5(-v1(:0)?)?)",
+    "tiers": [
+      {
+        "name": "Large Context (>100K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 100000 }],
+        "prices": { "input": 500000, "cache_read": 50000, "cache_write": 625000, "output": 2500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 100000, "cache_read": 10000, "cache_write": 125000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-2.5-pro",
+    "match": "(google(ai)?/)?(gemini-2.5-pro)",
+    "tiers": [
+      {
+        "name": "Priority Large Context",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }, { "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 4500000, "cache_read": 450000, "output": 27000000 }
+      },
+      {
+        "name": "Priority",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 2250000, "cache_read": 225000, "output": 18000000 }
+      },
+      {
+        "name": "Large Context",
+        "priority": 3,
+        "when": [{ "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 15000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 4,
+        "prices": { "input": 1250000, "cache_read": 125000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3-pro-preview",
+    "match": "(google(ai)?/)?(gemini-3-pro-preview)",
+    "tiers": [
+      {
+        "name": "Large Context",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 4000000, "cache_read": 400000, "output": 18000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2000000, "cache_read": 200000, "output": 12000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.1-pro-preview",
+    "match": "(google(ai)?/)?(gemini-3.1-pro-preview(-customtools)?)",
+    "tiers": [
+      {
+        "name": "Priority Large Context",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }, { "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 7200000, "cache_read": 720000, "output": 32400000 }
+      },
+      {
+        "name": "Priority",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 3600000, "cache_read": 360000, "output": 21600000 }
+      },
+      {
+        "name": "Flex Large Context",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }, { "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 2000000, "cache_read": 400000, "output": 9000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 1000000, "cache_read": 200000, "output": 6000000 }
+      },
+      {
+        "name": "Large Context",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 200000 }],
+        "prices": { "input": 4000000, "cache_read": 400000, "output": 18000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 2000000, "cache_read": 200000, "output": 12000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.2",
+    "match": "(openai/)?(gpt-5.2)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 350000, "output": 28000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 875000, "cache_read": 87500, "output": 7000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1750000, "cache_read": 175000, "output": 14000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.2-2025-12-11",
+    "match": "(openai/)?(gpt-5.2-2025-12-11)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 350000, "output": 28000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 875000, "cache_read": 87500, "output": 7000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1750000, "cache_read": 175000, "output": 14000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.2-pro",
+    "match": "(openai/)?(gpt-5.2-pro)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 21000000, "output": 168000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.2-pro-2025-12-11",
+    "match": "(openai/)?(gpt-5.2-pro-2025-12-11)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 21000000, "output": 168000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.3-codex",
+    "match": "(openai/)?(gpt-5.3-codex)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 3500000, "cache_read": 350000, "output": 28000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 1750000, "cache_read": 175000, "output": 14000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4",
+    "match": "(openai/)?(gpt-5.4)",
+    "tiers": [
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 11250000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 30000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1250000, "cache_read": 130000, "output": 7500000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 4,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 22500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 5,
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-pro",
+    "match": "(openai/)?(gpt-5.4-pro)",
+    "tiers": [
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 30000000, "output": 135000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 15000000, "output": 90000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 3,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 60000000, "output": 270000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 4,
+        "prices": { "input": 30000000, "output": 180000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-2026-03-05",
+    "match": "(openai/)?(gpt-5.4-2026-03-05)",
+    "tiers": [
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 11250000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 30000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1250000, "cache_read": 130000, "output": 7500000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 4,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 22500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 5,
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 15000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-pro-2026-03-05",
+    "match": "(openai/)?(gpt-5.4-pro-2026-03-05)",
+    "tiers": [
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 30000000, "output": 135000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 15000000, "output": 90000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 3,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 60000000, "output": 270000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 4,
+        "prices": { "input": 30000000, "output": 180000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-mini",
+    "match": "(openai\\/)?(gpt-5.4-mini)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 1500000, "cache_read": 150000, "output": 9000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 375000, "cache_read": 37500, "output": 2250000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 750000, "cache_read": 75000, "output": 4500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-mini-2026-03-17",
+    "match": "(openai\\/)?(gpt-5.4-mini-2026-03-17)",
+    "tiers": [
+      {
+        "name": "Fast mode",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 1500000, "cache_read": 150000, "output": 9000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 375000, "cache_read": 37500, "output": 2250000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 750000, "cache_read": 75000, "output": 4500000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-nano",
+    "match": "(openai\\/)?(gpt-5.4-nano)",
+    "tiers": [
+      {
+        "name": "Flex",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 100000, "cache_read": 10000, "output": 625000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 200000, "cache_read": 20000, "output": 1250000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.4-nano-2026-03-17",
+    "match": "(openai\\/)?(gpt-5.4-nano-2026-03-17)",
+    "tiers": [
+      {
+        "name": "Flex",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 100000, "cache_read": 10000, "output": 625000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 200000, "cache_read": 20000, "output": 1250000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.5-2026-04-23",
+    "match": "(openai/)?(gpt-5.5(-2026-04-23)?)",
+    "tiers": [
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 22500000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 12500000, "cache_read": 1250000, "output": 75000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 2500000, "cache_read": 250000, "output": 15000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 4,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 10000000, "cache_read": 1000000, "output": 45000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 5,
+        "prices": { "input": 5000000, "cache_read": 500000, "output": 30000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.5-pro-2026-04-23",
+    "match": "(openai/)?(gpt-5.5-pro(-2026-04-23)?)",
+    "tiers": [
+      {
+        "name": "Flex",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 15000000, "output": 90000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 2,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 60000000, "output": 270000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 30000000, "output": 180000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.6-sol",
+    "match": "(openai/)?(gpt-5.6-sol)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 16000000, "cache_read": 1600000, "cache_write": 20000000, "output": 60000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 15000000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 8000000, "cache_read": 800000, "cache_write": 10000000, "output": 40000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 10000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 8000000, "cache_read": 800000, "cache_write": 10000000, "output": 30000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 20000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.6-terra",
+    "match": "(openai/)?(gpt-5.6-terra)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 8000000, "cache_read": 800000, "cache_write": 10000000, "output": 36000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 9000000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 24000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1000000, "cache_read": 100000, "cache_write": 1250000, "output": 6000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 18000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 12000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.6-luna",
+    "match": "(openai/)?(gpt-5.6-luna)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 800000, "cache_read": 80000, "cache_write": 1000000, "output": 3600000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 200000, "cache_read": 20000, "cache_write": 250000, "output": 900000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 400000, "cache_read": 40000, "cache_write": 500000, "output": 2400000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 100000, "cache_read": 10000, "cache_write": 125000, "output": 600000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 400000, "cache_read": 40000, "cache_write": 500000, "output": 1800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 200000, "cache_read": 20000, "cache_write": 250000, "output": 1200000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-5.6-cyber",
+    "match": "(openai/)?(gpt-5.6-cyber)",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 25000000, "cache_read": 2500000, "cache_write": 31250000, "output": 112500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 12500000, "cache_read": 1250000, "cache_write": 15625000, "output": 75000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6-astra",
+    "match": "(openai/)?(gpt-6-astra)",
+    "tiers": [
+      {
+        "name": "Ultrafast · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["ultrafast"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 120000000, "cache_read": 12000000, "cache_write": 150000000, "output": 450000000 }
+      },
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 40000000, "cache_read": 4000000, "cache_write": 50000000, "output": 150000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 37500000 }
+      },
+      {
+        "name": "Ultrafast",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["ultrafast"] }],
+        "prices": { "input": 60000000, "cache_read": 6000000, "cache_write": 75000000, "output": 300000000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 5,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 20000000, "cache_read": 2000000, "cache_write": 25000000, "output": 100000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 6,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 5000000, "cache_read": 500000, "cache_write": 6250000, "output": 25000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 7,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 20000000, "cache_read": 2000000, "cache_write": 25000000, "output": 75000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 8,
+        "prices": { "input": 10000000, "cache_read": 1000000, "cache_write": 12500000, "output": 50000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6-cyber",
+    "match": "(openai/)?(gpt-6-cyber)",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 40000000, "cache_read": 4000000, "output": 150000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 20000000, "cache_read": 2000000, "cache_write": 25000000, "output": 100000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6-sol",
+    "match": "(openai/)?(gpt-6-sol)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 8000000, "cache_read": 800000, "cache_write": 10000000, "output": 30000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 7500000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1000000, "cache_read": 100000, "cache_write": 1250000, "output": 5000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4000000, "cache_read": 400000, "cache_write": 5000000, "output": 15000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 2000000, "cache_read": 200000, "cache_write": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6.1-sol",
+    "match": "(openai/)?(gpt-6.1-sol)",
+    "tiers": [
+      {
+        "name": "Ultrafast · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["ultrafast"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 24000000, "cache_read": 1200000, "cache_write": 30000000, "output": 90000000 }
+      },
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 8000000, "cache_read": 400000, "cache_write": 10000000, "output": 30000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2000000, "cache_read": 100000, "cache_write": 2500000, "output": 7500000 }
+      },
+      {
+        "name": "Ultrafast",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["ultrafast"] }],
+        "prices": { "input": 12000000, "cache_read": 600000, "cache_write": 15000000, "output": 60000000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 5,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 4000000, "cache_read": 200000, "cache_write": 5000000, "output": 20000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 6,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 1000000, "cache_read": 50000, "cache_write": 1250000, "output": 5000000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 7,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4000000, "cache_read": 200000, "cache_write": 5000000, "output": 15000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 8,
+        "prices": { "input": 2000000, "cache_read": 100000, "cache_write": 2500000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6.1-terra",
+    "match": "(openai/)?(gpt-6.1-terra)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4000000, "cache_read": 200000, "cache_write": 5000000, "output": 15000000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 1000000, "cache_read": 50000, "cache_write": 1250000, "output": 3750000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 2000000, "cache_read": 100000, "cache_write": 2500000, "output": 10000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 500000, "cache_read": 25000, "cache_write": 625000, "output": 2500000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 2000000, "cache_read": 100000, "cache_write": 2500000, "output": 7500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 1000000, "cache_read": 50000, "cache_write": 1250000, "output": 5000000 }
+      }
+    ]
+  },
+  {
+    "name": "gpt-6-luna",
+    "match": "(openai/)?(gpt-6-luna)",
+    "tiers": [
+      {
+        "name": "Fast mode · Large context (>272K)",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 400000, "cache_read": 40000, "cache_write": 500000, "output": 1500000 }
+      },
+      {
+        "name": "Flex · Large context (>272K)",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }, { "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 100000, "cache_read": 10000, "cache_write": 125000, "output": 375000 }
+      },
+      {
+        "name": "Fast mode",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["fast", "priority"] }],
+        "prices": { "input": 200000, "cache_read": 20000, "cache_write": 250000, "output": 1000000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 4,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 50000, "cache_read": 5000, "cache_write": 62500, "output": 250000 }
+      },
+      {
+        "name": "Large Context (>272K)",
+        "priority": 5,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 200000, "cache_read": 20000, "cache_write": 250000, "output": 750000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 6,
+        "prices": { "input": 100000, "cache_read": 10000, "cache_write": 125000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.5-flash",
+    "match": "(google(ai)?/)?(gemini-3.5-flash)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 2700000, "cache_read": 270000, "output": 16200000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 750000, "cache_read": 75000, "output": 4500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 1500000, "cache_read": 150000, "output": 9000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3-flash-preview",
+    "match": "(google(ai)?/)?(gemini-3-flash-preview)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 900000, "cache_read": 90000, "output": 5400000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 250000, "cache_read": 50000, "output": 1500000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 500000, "cache_read": 50000, "output": 3000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.1-flash-lite",
+    "match": "(google(ai)?/)?(gemini-3.1-flash-lite)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 450000, "cache_read": 45000, "output": 2700000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 125000, "cache_read": 12500, "output": 750000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 250000, "cache_read": 25000, "output": 1500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.1-flash-lite-preview",
+    "match": "(google(ai)?/)?(gemini-3.1-flash-lite-preview)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 250000, "cache_read": 25000, "output": 1500000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.6-flash",
+    "match": "(google(ai)?/)?(gemini-3.6-flash)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 1350000, "cache_read": 135000, "output": 6750000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 375000, "cache_read": 37500, "output": 1875000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 750000, "cache_read": 75000, "output": 3750000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.7-flash",
+    "match": "(google(ai)?/)?(gemini-3.7-flash)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 1350000, "cache_read": 135000, "output": 6750000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 375000, "cache_read": 37500, "output": 1875000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 750000, "cache_read": 75000, "output": 3750000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.8-flash",
+    "match": "(google(ai)?/)?(gemini-3.8-flash)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 1350000, "cache_read": 135000, "output": 6750000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex", "ON_DEMAND_FLEX"] }],
+        "prices": { "input": 375000, "cache_read": 37500, "output": 1875000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 3,
+        "prices": { "input": 750000, "cache_read": 75000, "output": 3750000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-4-argon",
+    "match": "(google(ai)?/)?(gemini-4-argon)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 3600000, "cache_read": 180000, "output": 18000000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2000000, "cache_read": 100000, "output": 10000000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-3.5-flash-lite",
+    "match": "(google(ai)?/)?(gemini-3.5-flash-lite)",
+    "tiers": [
+      {
+        "name": "Priority",
+        "priority": 1,
+        "when": [{ "param": "service_tier", "in": ["priority", "ON_DEMAND_PRIORITY"] }],
+        "prices": { "input": 540000, "cache_read": 50000, "output": 4500000 }
+      },
+      {
+        "name": "Flex",
+        "priority": 2,
+        "when": [{ "param": "service_tier", "in": ["flex"] }],
+        "prices": { "input": 150000, "cache_read": 20000, "output": 1250000 }
+      },
+      {
+        "name": "Flex (Vertex AI)",
+        "priority": 3,
+        "when": [{ "param": "service_tier", "in": ["ON_DEMAND_FLEX"] }],
+        "prices": { "input": 150000, "cache_read": 15000, "output": 1250000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 4,
+        "prices": { "input": 300000, "cache_read": 30000, "output": 2500000 }
+      }
+    ]
+  },
+  {
+    "name": "jev",
+    "match": "(~?typesafe(-ai)?\\/)?jev(-[0-9]+(\\.[0-9]+)*(-[0-9]{8})?|-latest|-preview)?",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 42000, "output": 0 }
+      }
+    ]
+  },
+  {
+    "name": "us.openai.gpt-5.6-luna",
+    "match": "us\\.openai\\.gpt-5\\.6-luna",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 440000, "cache_read": 44000, "cache_write": 550000, "output": 1980000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 220000, "cache_read": 22000, "cache_write": 275000, "output": 1320000 }
+      }
+    ]
+  },
+  {
+    "name": "us.openai.gpt-6-luna",
+    "match": "us\\.openai\\.gpt-6-luna",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 220000, "cache_read": 22000, "cache_write": 275000, "output": 825000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 110000, "cache_read": 11000, "cache_write": 137500, "output": 550000 }
+      }
+    ]
+  },
+  {
+    "name": "global.openai.gpt-6-luna",
+    "match": "global\\.openai\\.gpt-6-luna",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 200000, "cache_read": 20000, "cache_write": 250000, "output": 750000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 100000, "cache_read": 10000, "cache_write": 125000, "output": 500000 }
+      }
+    ]
+  },
+  {
+    "name": "us.openai.gpt-5.6-terra",
+    "match": "us\\.openai\\.gpt-5\\.6-terra",
+    "tiers": [
+      {
+        "name": "Large Context (>272K)",
+        "priority": 1,
+        "when": [{ "usage": "input", "op": "gt", "value": 272000 }],
+        "prices": { "input": 4400000, "cache_read": 440000, "cache_write": 5500000, "output": 19800000 }
+      },
+      {
+        "name": "Standard",
+        "priority": 2,
+        "prices": { "input": 2200000, "cache_read": 220000, "cache_write": 2750000, "output": 13200000 }
+      }
+    ]
+  },
+  {
+    "name": "cohere.embed-v4:0",
+    "match": "((us|eu)\\.)?cohere\\.embed-v4:0",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 120000 }
+      }
+    ]
+  },
+  {
+    "name": "gemini-decision-1",
+    "match": "(google(ai)?/)?(gemini-decision-1)",
+    "tiers": [
+      {
+        "name": "Standard",
+        "priority": 1,
+        "prices": { "input": 100000, "output": 0 }
+      }
+    ]
+  }
+]
