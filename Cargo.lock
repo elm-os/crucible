@@ -995,6 +995,7 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "proptest",
+ "sha2",
  "smallvec",
  "thiserror",
  "xxhash-rust",

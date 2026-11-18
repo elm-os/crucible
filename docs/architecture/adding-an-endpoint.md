@@ -17,6 +17,12 @@ endpoints share stays in the shared modules.
 | Trace by id | `trace_bounds.rs`, `trace_spans.rs` | `trace_detail.rs` | `trace_detail.rs` | `trace_detail.rs` |
 | Children of a span | `trace_bounds.rs`, `span_children.rs` | `span_children.rs` | `spans.rs` | `spans.rs` |
 | Data bounds | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` |
+| Sessions (plan builders only so far) | `sessions.rs` | | | |
+| Users (plan builders only so far) | `users.rs` | | | |
+| Span list (plan builder only so far) | `span_list.rs` | | | |
+| Search (plan builders only so far) | `search.rs` | | | |
+| Payload byte range (plan builder only so far) | `payload.rs` | | | |
+| Metrics query (plan builders only so far) | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | | | |
 | Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
 Each registry is a sorted list with one entry per endpoint; insert a new entry at its sorted place. Two slices whose

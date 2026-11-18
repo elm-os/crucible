@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&list(request(None)))
+---
+SELECT session_id, max(last_seen) AS m0, min(first_seen) AS m1, sum(trace_count) AS m2, sum(span_count) AS m3, sum(error_count) AS m4, sum(total_cost_nusd) AS m5, sum(input_tokens) AS m6, sum(output_tokens) AS m7, sum(total_tokens) AS m8, arraySlice(arraySort(groupUniqArrayArray(user_ids)), 1, 8) AS m9 FROM crucible.session_rollup WHERE project_id = {p0:UUID} AND day >= {p1:Date} AND day <= {p2:Date} GROUP BY session_id ORDER BY m0 DESC, session_id DESC LIMIT {p3:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: Date = "2026-11-17"
+p2: Date = "2026-11-17"
+p3: UInt64 = "51"

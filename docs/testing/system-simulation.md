@@ -27,9 +27,15 @@ The ClickHouse adapter (`crucible-store-clickhouse`) is outside the simulation: 
 tasks, reads time and draws randomness on its own. `ChModel` stands in for it behind `TelemetryStore`. What keeps
 the model honest is the conformance suite: `crucible-conformance` runs the same typed-plan reads against `ChModel`
 and against real ClickHouse (26.3, 26.8 and the latest release) and compares the rows. The model may be stricter
-than a server and is never more permissive, with one known exception: the model does not apply the query-class
-guardrails (`max_rows_to_read`, `max_execution_time`, `max_memory_usage`), so it answers a read that a server
-would refuse as too broad or too slow. The simulated data sets are far below those limits.
+than a server and is never more permissive. That holds for the query-class guardrails too (contract 8.4): a
+read runs under the limits its plan carries, and the model refuses it as `query_too_broad` above the rows or
+bytes to read, as `query_timeout` above the execution time and as `query_memory_exceeded` above the memory. The
+model has no parts index, so each figure is an upper bound of a server's: the rows and bytes of every row that
+ever landed in the tables the plan reads (less dropped partitions), that scan at 10,000,000 rows a second, and
+the bytes of every row that passed the plan's filters plus the buckets a zero fill adds. The conformance suite
+compares the row and byte refusals with a server; the time and memory refusals of a server are its C12 row, and
+those of the model are tested in `crates/crucible-conformance/tests/model_reads.rs`. The simulated data sets
+are far below the class limits.
 
 Also outside: the network (requests enter at the router, so HTTP framing and TLS are not simulated), Postgres and
 the control plane (later milestones), and several nodes (milestone 1 is one node).
