@@ -180,4 +180,8 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     `CRUCIBLE_*` variables only warn.
 83. **The control store is optional.** A node without Postgres still ingests, stores and serves telemetry; platform
     features (sessions, keys in Postgres, alerts, dashboards, the SQL workspace) require it.
+84. **OAuth and OIDC use the `oauth2` and `openidconnect` crates, with two advisories ignored and reviewed at every
+    release.** The rsa timing advisory concerns private-key operations, while Crucible only verifies ID-token
+    signatures with public keys; the chrono advisory reports it unmaintained, with no alternative yet. Hand-written
+    OIDC verification would be the larger risk.
 
