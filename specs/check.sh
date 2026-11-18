@@ -22,18 +22,19 @@ VERIFY_STEPS=${VERIFY_STEPS:-6}
 
 SAFETY="AckOnlyAfterSync NoAckedLoss NoDuplicateRows CheckpointMonotonic TruncateOnlyBelowCheckpoint
   BatchIdentityStable ReadYourAck"
-WITNESSES="reachedCheckpoint reachedTruncate reachedQuarantine reachedProbePresent reachedProbeAbsent
-  reachedDeduplicated reachedWindowExpire reachedReship reachedGap"
+WITNESSES="reachedCheckpoint reachedTruncate reachedQuarantine reachedQuarantineAfterProbe reachedProbePresent
+  reachedProbeAbsent reachedDeduplicated reachedWindowExpire reachedReship reachedGap"
 
 # module:property that must be violated:recorded seed
 MUTANTS="
-mutant_ack_before_sync:AckOnlyAfterSync:0x6e0e16290c7a6342
-mutant_send_before_seal:BatchIdentityStable:0x5e222faea438aabf
-mutant_drop_token:NoDuplicateRows:0xfc3ff7b7f569e714
-mutant_truncate_early:TruncateOnlyBelowCheckpoint:0x2aaa4c6f109fee59
-mutant_no_probe:NoDuplicateRows:0x9c79520373fc318d
-assumption_short_window:NoDuplicateRows:0x9626299bcef9648e
-ingest_small:ReadYourAckStrict:0x3c65ec97ca7ea887
+mutant_ack_before_sync:AckOnlyAfterSync:0xf065b0812afdd539
+mutant_send_before_seal:BatchIdentityStable:0x1a1d7df60a935215
+mutant_drop_token:NoDuplicateRows:0x638967c0beaae83f
+mutant_truncate_early:TruncateOnlyBelowCheckpoint:0x3ff63600c4665f76
+mutant_no_probe:NoDuplicateRows:0x90ad19381ccfba6f
+assumption_window_in_flight:NoDuplicateRows:0x7c521284f86d7c13
+assumption_window_before_resend:NoDuplicateRows:0x111f42d9b54c0377
+ingest_small:ReadYourAckStrict:0x5ed3cf7c62d92210
 "
 
 fail() {

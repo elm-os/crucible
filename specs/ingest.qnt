@@ -41,8 +41,10 @@ module ingest {
   pure val truncateEarly = MUTANT == "truncate-early"
   /// Mutant: a retry after an unknown outcome is sent without the existence probe.
   pure val noProbe = MUTANT == "no-probe-after-window-expiry"
-  /// Assumption lifted: the deduplication window may expire while an attempt of the same pair is under way.
-  pure val shortWindow = MUTANT == "short-window"
+  /// Assumption lifted: a deduplication log entry may expire while a copy of its insert is in flight.
+  pure val expiresInFlight = MUTANT == "window-expires-in-flight"
+  /// Assumption lifted: a deduplication log entry may expire between a probe that read "absent" and the resend.
+  pure val expiresBeforeResend = MUTANT == "window-expires-before-resend"
   /// Narrow reading of section 5.5: after a known rejection the shipper resends without a probe, even when an
   /// earlier attempt of the pair had an unknown outcome.
   pure val retryWithoutReprobe = MUTANT == "retry-without-reprobe"
@@ -176,12 +178,9 @@ module ingest {
   /// Assumption (contract 6.2, conformance C1 and C3): the deduplication window outlasts one attempt. An entry
   /// stays in the log while a copy of its insert is in flight and while the shipper holds a probe-absent
   /// decision for its pair.
-  def evictable(tok: Token): bool = or {
-    shortWindow,
-    and {
-      not(requests.exists(m => m.tok == tok)),
-      not(pst.keys().exists(k => k == tok.pair and pst.get(k) == Absent)),
-    },
+  def evictable(tok: Token): bool = and {
+    expiresInFlight or not(requests.exists(m => m.tok == tok)),
+    expiresBeforeResend or not(pst.keys().exists(k => k == tok.pair and pst.get(k) == Absent)),
   }
 
   def tableLog(t: int): Set[Token] = dedup.filter(tok => tok.pair.table == t)
@@ -415,16 +414,18 @@ module ingest {
   }
 
   /// Quarantine (section 5.6): the pair's frames are copied under the quarantine root and a `Quarantine`
-  /// frame is appended. The pair counts as resolved once that frame is durable.
+  /// frame is appended. The pair counts as resolved once that frame is durable. A pair with an attempt in
+  /// doubt is quarantined only after the probe read "absent".
   action QuarantinePair(k: Pair): bool = all {
     up, pst.keys().contains(k), isOpen(k),
-    pst.get(k) == Retry, fails.get(k) >= POISON_LIMIT,
+    pst.get(k) == Retry or pst.get(k) == Absent, fails.get(k) >= POISON_LIMIT,
     appendFrame(Quar(k)),
     quarantine' = quarantine.union(Set(k)),
     pst' = pst.set(k, Parked), fails' = fails,
     up' = up, frames' = frames, faults' = faults, wire' = wire,
     keepClient, keepIntake, keepBatches, keepRecent, keepStore, keepNet,
-    prevWatermark' = watermark, lastAction' = "QuarantinePair",
+    prevWatermark' = watermark,
+    lastAction' = if (pst.get(k) == Absent) "QuarantinePair.afterProbe" else "QuarantinePair",
   }
 
   /// An entry leaves the deduplication log (by age or by count).
@@ -697,6 +698,7 @@ module ingest {
   val reachedCheckpoint = watermark > 0
   val reachedTruncate = gcThrough > 0
   val reachedQuarantine = quarantine != Set()
+  val reachedQuarantineAfterProbe = lastAction == "QuarantinePair.afterProbe"
   val reachedProbePresent = lastAction == "ExistenceProbe.present"
   val reachedProbeAbsent = lastAction == "ExistenceProbe.absent"
   val reachedDeduplicated = lastAction == "ChApply.deduplicated"
@@ -763,12 +765,19 @@ module mutant_no_probe {
   ).*
 }
 
-// Not a protocol mutant: the deduplication-window assumption is lifted. Violates NoDuplicateRows, which shows
-// that the token alone does not cover a retry that outlives the window.
-module assumption_short_window {
+// Not protocol mutants: one half of the deduplication-window assumption is lifted. Each violates
+// NoDuplicateRows, which shows that the token does not cover an attempt that outlives the window.
+module assumption_window_in_flight {
   import ingest(
     SPANS = Set(1, 2, 3), TABLES = Set(1, 2), WINDOW = 2, SEG = 2, RECENT_CAP = 3, POISON_LIMIT = 1,
-    MAX_FRAMES = 4, MAX_FAULTS = 3, MUTANT = "short-window"
+    MAX_FRAMES = 4, MAX_FAULTS = 3, MUTANT = "window-expires-in-flight"
+  ).*
+}
+
+module assumption_window_before_resend {
+  import ingest(
+    SPANS = Set(1, 2, 3), TABLES = Set(1, 2), WINDOW = 2, SEG = 2, RECENT_CAP = 3, POISON_LIMIT = 1,
+    MAX_FRAMES = 4, MAX_FAULTS = 3, MUTANT = "window-expires-before-resend"
   ).*
 }
 

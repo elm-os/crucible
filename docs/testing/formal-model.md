@@ -48,15 +48,16 @@ One node with one `wal_epoch`, one ClickHouse store, and a client.
 
 Two assumptions about ClickHouse are stated in the model as the `evictable` predicate, and both rest on
 conformance rows C1 to C3: a token stays in the deduplication log while a copy of its insert is in flight, and
-while the shipper holds a probe-absent decision for its pair. The `assumption_short_window` instance lifts them
-and the model then finds a duplicate, so they are load-bearing.
+while the shipper holds a probe-absent decision for its pair. The instances `assumption_window_in_flight` and
+`assumption_window_before_resend` each lift one of them, and the model then finds a duplicate, so both are
+load-bearing.
 
 ## Actions and the code that implements them
 
 | Action | What it models | Crates | Contract |
 |---|---|---|---|
 | `Receive` | A request is admitted | `crucible-ingest`, `crucible-otlp`, `crucible-admission` | 4.8 |
-| `ClientRetry` | A client resends a span whose ack it did not see | SDKs; absorbed by `crucible-normalize` | 4.8, 5.3 |
+| `ClientRetry` | A client resends a span whose ack it did not see | SDKs and other OTLP clients | 4.8, 5.3 |
 | `Append` | The committer assigns the LSN and appends | `crucible-wal`, `crucible-wal-codec` | 4.3, 4.5 |
 | `Sync` | `Disk::sync_data` returns `Ok` for the group | `crucible-wal`, `crucible-env` | 4.5 |
 | `Ack` | The waiter completes and the response is sent | `crucible-wal`, `crucible-ingest` | 4.5 |
@@ -68,8 +69,8 @@ and the model then finds a duplicate, so they are load-bearing.
 | `ChAckDeliver` | The success response arrives | `crucible-store-clickhouse`, `crucible-shipper` | 5.6 |
 | `ChAckLost` | Timeout or reset: outcome unknown | `crucible-store-clickhouse`, `crucible-shipper` | 5.6 |
 | `ChReject` | A retryable or a data error | `crucible-store-clickhouse` (code table), `crucible-shipper` | 5.6 |
-| `QuarantinePair` | Copy, then the `Quarantine` frame | `crucible-shipper`, `crucible-wal` | 5.6 |
-| `WindowExpire` | A deduplication log entry expires | ClickHouse table settings in `crucible-schema` | 6.2 |
+| `QuarantinePair` | Copy, then the `Quarantine` frame. A pair with an attempt in doubt is quarantined only after a probe that read absent | `crucible-shipper`, `crucible-wal` | 5.6 |
+| `WindowExpire` | A deduplication log entry expires | ClickHouse, under the window settings of the table DDL | 6.2 |
 | `ExistenceProbe` | The `BatchProbe` plan | `crucible-shipper`, `crucible-plan`, `crucible-store-clickhouse` | 5.5 |
 | `AdvanceCheckpoint` | The `Checkpoint` frame | `crucible-shipper`, `crucible-wal` | 5.7 |
 | `TruncateWal` | Segment GC | `crucible-wal`, `crucible-recent` (references) | 4.7 |
@@ -113,7 +114,7 @@ is enabled.
 
 | Module | Spans | Tables | Frames | Faults | Window | Segment | Index cap | Poison limit | Used by |
 |---|---|---|---|---|---|---|---|---|---|
-| `ingest_ok`, `mutant_*`, `assumption_short_window` | 3 | 2 | 4 | 3 | 2 | 2 | 3 | 1 | Random simulation |
+| `ingest_ok`, `mutant_*`, `assumption_window_*` | 3 | 2 | 4 | 3 | 2 | 2 | 3 | 1 | Random simulation |
 | `ingest_small` | 2 | 1 | 2 | 2 | 1 | 2 | 2 | 1 | Apalache, bounded; simulation of `ReadYourAckStrict` |
 | `ingest_tiny`, `reading_retry_without_reprobe` | 1 | 1 | 1 | 3 | 1 | 1 | 1 | 1 | TLC, every reachable state |
 
@@ -134,7 +135,7 @@ docker run --rm --cpus=2 --memory=3g -v "$PWD":/work -w /work -v crucible-quint:
 | Mode | What runs | Passes when |
 |---|---|---|
 | `typecheck` | `quint typecheck` | No error |
-| `simulate` | `quint run` (Rust backend) on `ingest_ok`: 10,000 samples of 60 steps, the seven safety invariants and `NoStuckState` | No violation, and every witness (checkpoint, truncate, quarantine, probe present, probe absent, deduplicated insert, window expiry, re-ship after recovery, index gap) is reached in at least one trace |
+| `simulate` | `quint run` (Rust backend) on `ingest_ok`: 10,000 samples of 60 steps, the seven safety invariants and `NoStuckState` | No violation, and every witness (checkpoint, truncate, quarantine, quarantine after a probe, probe present, probe absent, deduplicated insert, window expiry, re-ship after recovery, index gap) is reached in at least one trace |
 | `mutants` | `quint run` on every row of the table below, 10,000 samples, checking only the named property | A violation is found |
 | `seeds` | `quint run --seed` with the recorded seed of every row | The violation reproduces |
 | `verify` | `quint verify` (Apalache) on `ingest_small`, `Safety`, 6 steps; and on `mutant_ack_before_sync` | No violation; a violation for the mutant |
@@ -145,7 +146,7 @@ directly with more output:
 
 ```sh
 quint run specs/ingest.qnt --main mutant_drop_token --invariant NoDuplicateRows --max-steps 60 \
-  --seed 0xfc3ff7b7f569e714 --verbosity 3
+  --seed 0x638967c0beaae83f --verbosity 3
 ```
 
 The `lastAction` variable in each state names the step that produced it.
@@ -160,11 +161,11 @@ changes (`specs/check.sh seeds` fails when one goes stale).
 
 | Module | Broken rule | Violated property | Seed |
 |---|---|---|---|
-| `mutant_ack_before_sync` | The ack is sent after the append, before `sync_data` | `AckOnlyAfterSync` | `0x6e0e16290c7a6342` |
-| `mutant_send_before_seal` | An insert is sent before the `BatchSeal` is durable | `BatchIdentityStable` | `0x5e222faea438aabf` |
-| `mutant_drop_token` | Every attempt carries a new deduplication identity | `NoDuplicateRows` | `0xfc3ff7b7f569e714` |
-| `mutant_truncate_early` | Segment GC ignores the checkpoint watermark | `TruncateOnlyBelowCheckpoint` | `0x2aaa4c6f109fee59` |
-| `mutant_no_probe` | A retry after an unknown outcome skips the probe (and the window has expired) | `NoDuplicateRows` | `0x9c79520373fc318d` |
+| `mutant_ack_before_sync` | The ack is sent after the append, before `sync_data` | `AckOnlyAfterSync` | `0xf065b0812afdd539` |
+| `mutant_send_before_seal` | An insert is sent before the `BatchSeal` is durable | `BatchIdentityStable` | `0x1a1d7df60a935215` |
+| `mutant_drop_token` | Every attempt carries a new deduplication identity | `NoDuplicateRows` | `0x638967c0beaae83f` |
+| `mutant_truncate_early` | Segment GC ignores the checkpoint watermark | `TruncateOnlyBelowCheckpoint` | `0x3ff63600c4665f76` |
+| `mutant_no_probe` | A retry after an unknown outcome skips the probe (and the window has expired) | `NoDuplicateRows` | `0x90ad19381ccfba6f` |
 
 How each one fails:
 
@@ -181,12 +182,13 @@ How each one fails:
 - **no-probe-after-window-expiry**: the insert lands, the ack is lost or the node crashes, the log entry
   expires, and the blind retry lands again.
 
-Three more rows are not protocol mutants. They record what the model found about the contract:
+Four more rows are not protocol mutants. They record what the model found about the contract:
 
 | Module | What is changed | Violated property | Seed or tool |
 |---|---|---|---|
-| `assumption_short_window` | A log entry may expire while an attempt of its pair is under way | `NoDuplicateRows` | `0x9626299bcef9648e` |
-| `ingest_small` | Nothing; `ReadYourAckStrict` is I3 without the quarantine exception | `ReadYourAckStrict` | `0x3c65ec97ca7ea887` |
+| `assumption_window_in_flight` | A log entry may expire while a copy of its insert is in flight | `NoDuplicateRows` | `0x7c521284f86d7c13` |
+| `assumption_window_before_resend` | A log entry may expire between a probe that read absent and the resend | `NoDuplicateRows` | `0x111f42d9b54c0377` |
+| `ingest_small` | Nothing; `ReadYourAckStrict` is I3 without the quarantine exception | `ReadYourAckStrict` | `0x5ed3cf7c62d92210` |
 | `reading_retry_without_reprobe` | After a rejection the shipper resends without a probe even when an earlier attempt of the pair had an unknown outcome | `NoDuplicateRows` | TLC; the shortest trace has 16 states |
 
 ## Findings
@@ -200,7 +202,8 @@ Three more rows are not protocol mutants. They record what the model found about
    Random simulation did not find this trace in 10,000 samples; TLC did.
 2. **The window must outlast a probe-absent decision.** Between a probe that reads absent and the resend, the
    first attempt can land and its log entry can expire. Section 6.2 says the window "only has to cover the
-   in-flight race"; the race includes the time from the probe to the resend.
+   in-flight race"; the race includes the time from the probe to the resend
+   (`assumption_window_before_resend`).
 3. **Read-your-ack and quarantine.** A span whose pair is quarantined is resolved for the watermark, so its
    index entry can be evicted, but it is not in ClickHouse until an operator requeues it. I3 lists only the
    gap and lagging exceptions. `ReadYourAck` in the model adds the quarantine exception; `ReadYourAckStrict`
@@ -210,10 +213,10 @@ Three more rows are not protocol mutants. They record what the model found about
 
 - The bounds are small. Random simulation samples the larger instance; Apalache covers `ingest_small` to 6
   steps, which reaches an ack but not a checkpoint; TLC covers every reachable state of `ingest_tiny` (one
-  span, one frame, three faults; 71,595 distinct states).
-- `ingest_small` is too large to finish under TLC in the dev container. One run with a 25 minute limit covered
-  31.8 million distinct states and reached search depth 25 without a violation of `Safety`. It is not part of
-  `check.sh`.
+  span, one frame, three faults; 85,614 distinct states).
+- `ingest_small` is too large to finish under TLC in the dev container. One run with a 25 minute limit, made
+  before quarantine after a probe was added to the model, covered 31.8 million distinct states and reached
+  search depth 25 without a violation of `Safety`. It is not part of `check.sh`.
 - Liveness is model-checked only on `ingest_tiny`. On larger instances it is supported by `NoStuckState`,
   which is weaker than a temporal proof.
 - The model says nothing about whether the Rust crates implement these actions. That link is the job of
