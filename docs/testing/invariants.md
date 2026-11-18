@@ -38,6 +38,8 @@ once, across retries, lost acks, crashes, restarts and normalizer upgrades. It f
 
 - each acked span that the duplicate window did not drop appears exactly once in `span_core` and once in
   `span_payload`, and each MCP operation exactly once in `mcp_ops`;
+- the window decides alike for every table: the pairs of one batch admit the same spans whether they land before
+  or after a restart (contract 4.6, step 6), so runs with repeated spans are checked like any other;
 - each accepted fact appears exactly once in its fact table;
 - every aggregating table (`trace_stats`, `session_rollup`, `user_rollup`, `span_metrics`, `mcp_tool_rollup`,
   `mcp_deploys`, `mcp_tool_inventory`) holds exactly one marker per pair, and its merged measures equal the
