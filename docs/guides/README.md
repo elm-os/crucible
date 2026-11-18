@@ -10,4 +10,7 @@ anything not there yet is marked as planned. To run a server first, follow the
 | [TypeScript SDK](sdk-typescript.md) | `@elm-os/crucible` for Node.js agents, MCP servers and MCP clients |
 | [Python SDK](sdk-python.md) | `crucible-sdk` for Python agents, MCP servers and MCP clients |
 | [Go SDK](sdk-go.md) | `github.com/elm-os/crucible/sdk/go` for Go agents, MCP servers and MCP clients |
+| [MCP proxy](mcp-proxy.md) | `crucible proxy`, which records an MCP server's operations without changing the server |
 | [REST API](../api/README.md) | Reading traces, spans, payloads and search results back: auth, errors, windows and cursors |
+
+The Rust SDK, crate `crucible-sdk` in `sdk/rust`, is described in [its README](../../sdk/rust/README.md).

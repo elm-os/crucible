@@ -289,9 +289,9 @@ content block counts and, in the legacy era, the session id hashed as `mcp.sessi
 `params._meta` makes the span a child of the caller's span.
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, and the MCP keys, with any captured content, stay among the span's attributes
-(the payload route's `attributes` field). Recording them as MCP operations, and the MCP analytics routes and
-pages that read them, are planned.
+tool error with status `error`, captured arguments and results become the span's input and output, and the other
+MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
+the MCP analytics routes and pages that read them, are planned.
 
 The MCP Go SDK does not pass middleware the JSON-RPC id of a request, so `Instrument` returns an `Instrumentation`
 whose `Transport` and `Handler` wrap what the server is connected over. With either, each request's span carries its
@@ -508,7 +508,7 @@ The MCP Go SDK hands middleware a method, its decoded params and a context, whic
 | Not observed | Why |
 |---|---|
 | `jsonrpc.request.id` without `Transport` or `Handler` | go-sdk v1.8.0 keeps the request id under an unexported context key |
-| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; the planned `crucible proxy` is designed to see them |
+| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; `crucible proxy` reads them on the wire ([MCP proxy](mcp-proxy.md)) |
 | HTTP status and transport failures | They happen in the HTTP handler and the transport, outside the middleware |
 | The resource template of `resources/read` | Only the concrete URI is visible, and a raw URI is not used as a target name |
 | Client IP prefix, response size, client capabilities hash | The SDK does not expose the peer address or the encoded response, and the contract fixes no algorithm for the capabilities hash |

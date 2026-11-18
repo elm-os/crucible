@@ -186,9 +186,9 @@ in a fixed order, `events`, `links`, `resource_attributes`, `attributes`, `tool_
   for a session or user id and 64 tags of 256 bytes each. [Contract 3.1](../architecture/contracts.md#31-spanrecord)
   lists every cap.
 - MCP arguments and results are captured only when an SDK is told to capture them, and the SDKs cut each at
-  16 KiB by default before they send it. On the server they are span attributes, under the caps above. The 8 MiB
-  cap of [contract 3.5](../architecture/contracts.md#35-mcpoprecord) will apply to them once MCP operations are
-  recorded, which is planned.
+  16 KiB by default before they send it. On the server they become the tool span's `input` and `output`, under the
+  caps above. The 8 MiB cap of [contract 3.5](../architecture/contracts.md#35-mcpoprecord) will apply to them once
+  MCP operations are recorded, which is planned.
 
 In one local run a span with a 9 MiB `crucible.input` was acknowledged with 200 and stored with its first
 8,388,608 bytes, its original size of 9,437,184 bytes and `input` in `truncated_fields`.
@@ -213,13 +213,15 @@ fills most fields with no change. Resource attributes are marked; every other ke
 | Status (`status_code`) | The span status | `unset`, `ok` or `error` |
 | Level (`level`) | `crucible.level` | `debug`, `default`, `warning` or `error`. Without it, a span whose status is error has level `error`, every other span `default`. The trace list's `error_count` counts spans of level `error` |
 | Model (`model`) | `gen_ai.response.model` | Only the model the response reports is shown. `gen_ai.request.model` prices a span that has no response model, but it is not shown |
-| Tokens (`input_tokens`, `output_tokens`, `total_tokens`) | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | The total is input plus output. `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.reasoning.output_tokens` are parts of the input and output counts, not additions |
+| Tokens (`input_tokens`, `output_tokens`, `total_tokens`) | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | The total is input plus output. `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.reasoning.output_tokens` are parts of the input and output counts, not additions. The trace list's totals leave out a span that has a descendant carrying usage or cost, because it repeats what its descendants report; every span still shows its own counts |
 | Cost (`total_cost_usd`) | `crucible.cost.total`, `crucible.cost.<usage key>` | USD as a decimal string or a double. A provided cost wins. Otherwise the server prices the token usage with its bundled price table (`crates/crucible-normalize/data/prices.json`), by the response model, else the request model; a model the table does not know costs 0 |
 | Session and user (`session_id`, `user_id` in the trace list) | `crucible.session.id`, `session.id`, `gen_ai.conversation.id`; `crucible.user.id`, `user.id` | Set them on every span at span start. Within one request, a span without a value takes the value of the request's root span for its trace, else of the earliest span that has one |
 | Environment (`environment` in the trace list) | `crucible.environment`, resource `deployment.environment.name`, resource `deployment.environment` | Default `default` |
 | Release (`release` in the trace list) | `crucible.release`, resource `service.version` | |
 | Trace tags (`tags` in the trace list) | `crucible.trace.tags`, a string array | |
-| Input and output (the payload route's `input` and `output`, search) | `gen_ai.input.messages`, `crucible.input`; `gen_ai.output.messages`, `crucible.output` | The messages are JSON (`io_shape: genai_messages`). A `crucible.*` string is kept as is, other JSON as JSON (`io_shape: raw`). Captured MCP arguments and results (`gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`) stay among the span's attributes; reading them as a tool span's input and output is planned |
+| Input and output (the payload route's `input` and `output`, search) | `crucible.input`, `gen_ai.input.messages`, `gen_ai.tool.call.arguments`; `crucible.output`, `gen_ai.output.messages`, `gen_ai.tool.call.result` | A `crucible.*` string is kept as is, other JSON as JSON (`io_shape: raw`). The messages are JSON (`io_shape: genai_messages`). A span that sends both a `crucible.*` key and messages keeps the `crucible.*` value, and the messages stay among its attributes. A tool span's captured MCP arguments and results become its input and output |
+| System instructions (the payload route's `system_instructions`) | `gen_ai.system_instructions` | JSON |
+| Tool definitions (the payload route's `tool_definitions`) | `gen_ai.tool.definitions` | JSON |
 | Metadata (search's `metadata` field) | `crucible.metadata.<key>` | Each key becomes one entry of the span's metadata, searchable as `key=value` |
 | Attributes (the payload route's `attributes` and `resource_attributes`) | Every other key | Keys that a field above consumed are not repeated there |
 
@@ -227,12 +229,16 @@ The trace list's `release` and `tags` fill in once the spans reach ClickHouse; u
 
 The server also reads and stores `crucible.tags` (span tags), `crucible.version`, `crucible.trace.metadata.<key>`,
 `crucible.trace.public`, `crucible.prompt.name`, `crucible.prompt.version`, `crucible.completion_start_time`,
-`crucible.model_parameters.<key>`, the `gen_ai.request.*` parameters, `gen_ai.provider.name` and
-`gen_ai.response.finish_reasons`. No route returns them yet; views that show them are planned. The full list of
-keys is in [contract 10.6](../architecture/contracts.md#106-source-keys-for-fields-without-a-semantic-convention).
+`crucible.model_parameters.<key>`, the `gen_ai.request.*` parameters, `gen_ai.provider.name` (or the deprecated
+`gen_ai.system`), `gen_ai.tool.name` and `gen_ai.response.finish_reasons`. No route returns them yet; views that show
+them are planned. The full list of keys is in [contract
+10.6](../architecture/contracts.md#106-source-keys-for-fields-without-a-semantic-convention).
 
 Spans that carry `mcp.method.name`, which the Crucible SDKs send with the keys of
 [contract 9.1](../architecture/contracts.md#91-wire-attribute-contract), are stored as spans like any other: a
 `tools/call` span is typed `tool`, a tool error that a Crucible SDK reports has status `error`, and the MCP keys stay
-among the span's `attributes`. Recording them as MCP operations, and the MCP analytics routes and pages that read
-those, are planned.
+among the span's `attributes`, while captured arguments and results become the span's `input` and `output`.
+Recording them as MCP operations, and the MCP analytics routes and pages that read those, are planned.
+
+Spans written with other instrumentation libraries' conventions are mapped too, by the dialect tables in
+`crates/crucible-compat`; this page covers the native keys.

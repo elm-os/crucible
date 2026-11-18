@@ -221,9 +221,9 @@ Never sent: `requestState` values, raw session ids, raw IP addresses, Authorizat
 Error messages and exception events of MCP spans are cut to 8,192 and 16,384 characters and scrubbed before export.
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, and the MCP keys, with any captured content, stay among the span's attributes
-(the payload route's `attributes` field). Recording them as MCP operations, and the MCP analytics routes and
-pages that read them, are planned.
+tool error with status `error`, captured arguments and results become the span's input and output, and the other
+MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
+the MCP analytics routes and pages that read them, are planned.
 
 ### Errors and identity in tool handlers
 

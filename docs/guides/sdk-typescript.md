@@ -11,7 +11,7 @@ points:
 
 It needs Node.js 24 or newer. The MCP entry points work with the 2.x line of the official TypeScript MCP SDK
 (`@modelcontextprotocol/server` and `@modelcontextprotocol/client`, from 2.0.0 up to but not including 3.0.0).
-Servers on the 1.x line are designed to use the Crucible proxy, which is planned.
+Servers on the 1.x line can use `crucible proxy` instead; see [MCP proxy](mcp-proxy.md).
 
 ## Install
 
@@ -270,9 +270,9 @@ the multi-round state hashes, the request size and user agent on HTTP, and the n
 type. A `traceparent` in `params._meta` makes the span a child of the caller's span; baggage is never read.
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
-tool error with status `error`, and the MCP keys, with any captured content, stay among the span's attributes
-(the payload route's `attributes` field). Recording them as MCP operations, and the MCP analytics routes and
-pages that read them, are planned.
+tool error with status `error`, captured arguments and results become the span's input and output, and the other
+MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
+the MCP analytics routes and pages that read them, are planned.
 
 | Option of `instrument` | Effect |
 |---|---|

@@ -18,3 +18,4 @@
 | Python SDK | [guides/sdk-python.md](guides/sdk-python.md) |
 | Go SDK | [guides/sdk-go.md](guides/sdk-go.md) |
 | REST API: auth, errors, windows, cursors | [api/README.md](api/README.md) |
+| MCP proxy | [guides/mcp-proxy.md](guides/mcp-proxy.md) |
