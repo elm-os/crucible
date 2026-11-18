@@ -86,5 +86,9 @@ mimalloc = { workspace = true }
 # The stdio proxy ends by the signal that ended its child: restores the default disposition and raises it.
 signal-hook = { version = "=0.3.18", default-features = false }
 
+# The one package cargo-dist releases (dist-workspace.toml); without this, `publish = false` hides it.
+[package.metadata.dist]
+dist = true
+
 [lints]
 workspace = true
