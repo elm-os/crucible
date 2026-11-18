@@ -188,7 +188,8 @@ impl QueryService {
     /// The index is read when the barrier resolves and before any store read, so an entry cannot be evicted
     /// between the two: a span this node acknowledged is in the response, or the response says why it may not
     /// be (`partial`, or `consistency: lagging`). A trace that neither source knows is `not_found` only when
-    /// the project has no open gap and no quarantined pair; otherwise the response is empty and partial.
+    /// the response would be whole and strong: with an open gap, a quarantined pair or an expired barrier the
+    /// answer is an empty trace that carries the marker, because the trace may exist.
     pub async fn trace_by_id(
         &self,
         ctx: &ReadContext,
@@ -242,7 +243,7 @@ impl QueryService {
             &SPAN_TABLES,
             !entries.is_empty(),
         )?;
-        if spans.is_empty() && !meta.partial {
+        if spans.is_empty() && meta.is_whole() {
             return Err(QueryServiceError::NotFound);
         }
         Ok(TraceDetail {
@@ -308,7 +309,7 @@ impl QueryService {
         read.count_children(bounds, &mut data, &entries, state)
             .await?;
         let meta = read.finish(read.now, consistency, state, &SPAN_TABLES, known)?;
-        if bounds.is_none() && !known && !meta.partial {
+        if bounds.is_none() && !known && meta.is_whole() {
             return Err(QueryServiceError::NotFound);
         }
         let next_cursor = match data.last() {

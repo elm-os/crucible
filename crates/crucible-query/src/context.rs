@@ -69,6 +69,12 @@ pub struct Meta {
 }
 
 impl Meta {
+    /// Whether the response is neither partial nor lagging: only then does "nothing found" mean "does not
+    /// exist".
+    pub(crate) fn is_whole(&self) -> bool {
+        !self.partial && self.consistency == Consistency::Strong
+    }
+
     /// The meta of a read that used `tables`: partial when the store was down, when the project has an open
     /// gap, or when it has rows in a quarantined pair of one of the tables.
     pub(crate) fn new(

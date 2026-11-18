@@ -127,14 +127,30 @@ fn recent_head(span: &RecentSpan) -> Option<Candidate> {
 }
 
 /// Orders candidates newest first and keeps one per sort tuple: the keyset cursor cannot tell two heads with
-/// one tuple apart, so they are one row. The store's row wins over the index's, and a root over a provisional.
+/// one tuple apart, so they are one row. A root wins over a provisional head (which the root hides anyway), and
+/// then the store's row over the index's.
 fn newest_first(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
     candidates.sort_by(|a, b| {
-        let rank = |c: &Candidate| (c.recent, c.head.head_kind != HeadKind::Root);
+        let rank = |c: &Candidate| (c.head.head_kind != HeadKind::Root, c.recent);
         (b.head.key().cmp(&a.head.key())).then(rank(a).cmp(&rank(b)))
     });
     candidates.dedup_by(|later, first| later.head.key() == first.head.key());
     candidates
+}
+
+/// Cuts a full read back to the last sort tuple it is known to hold completely. Two heads of one trace can
+/// share a tuple (a provisional head and a root that start in the same microsecond), and the scan may have
+/// stopped between them; resuming strictly after the tuple would then skip the root for good. The rows of the
+/// last tuple are dropped here and read again by the next scan, which resumes after the tuple before it.
+fn trim_boundary(chunk: &mut Vec<Candidate>) {
+    let Some(last) = chunk.last().map(|c| c.head.key()) else {
+        return;
+    };
+    let whole = chunk.iter().take_while(|c| c.head.key() != last).count();
+    // A read that holds one tuple only cannot be cut; it stays, so that paging still moves on.
+    if whole > 0 {
+        chunk.truncate(whole);
+    }
 }
 
 fn page_limit(limit: Option<u32>) -> Result<u32, QueryServiceError> {
@@ -305,6 +321,9 @@ impl QueryService {
             };
             let mut chunk = read.store_heads(query.window, request).await?;
             exhausted = chunk.len() < over_read;
+            if !exhausted {
+                trim_boundary(&mut chunk);
+            }
             position = chunk.last().map(|c| c.head.key()).or(position);
             // The index heads that sort at or before the last store row read belong to this chunk; with the
             // store exhausted, all of them do.
