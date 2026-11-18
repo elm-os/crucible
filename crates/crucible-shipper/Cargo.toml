@@ -16,6 +16,7 @@ crucible-wal-codec = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-normalize = { workspace = true }
+crucible-plan = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
