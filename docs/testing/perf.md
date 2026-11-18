@@ -267,6 +267,9 @@ significant digits.
 
 ## Measurements
 
+This section covers the probe and the generator on their own. The first end-to-end baseline of `crucible serve`
+is in [`perf-baseline.md`](perf-baseline.md).
+
 Measured on 2026-11-17, on a laptop, not reference hardware: Windows 11, Docker Desktop with the WSL2 VM (24
 CPUs, 16 GB, kernel 6.18.58.1-microsoft-standard-WSL2), dev image `crucible-dev:1`, one release build, one pass.
 Other jobs shared the VM during the pass. Among them were another track's conformance containers, which used the
