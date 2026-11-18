@@ -134,11 +134,13 @@ pub enum Mutant {
     DropFactOnRetry,
     /// `crucible-shipper` quarantines a frame that does not normalize without copying it.
     FrameQuarantineWithoutCopy,
+    /// `crucible-shipper` counts the tokens and cost of a span that repeats the usage of a descendant.
+    CountAggregateUsage,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -148,6 +150,7 @@ impl Mutant {
         Self::DoubleCountRollup,
         Self::DropFactOnRetry,
         Self::FrameQuarantineWithoutCopy,
+        Self::CountAggregateUsage,
     ];
 
     /// The name used on the command line.
@@ -162,6 +165,7 @@ impl Mutant {
             Self::DoubleCountRollup => "double-count-rollup",
             Self::DropFactOnRetry => "drop-fact-on-retry",
             Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
+            Self::CountAggregateUsage => "count-aggregate-usage",
         }
     }
 
@@ -690,6 +694,9 @@ impl Plan {
                 Some(Mutant::FrameQuarantineWithoutCopy) => {
                     Some(crucible_shipper::Mutant::FrameQuarantineWithoutCopy)
                 }
+                Some(Mutant::CountAggregateUsage) => {
+                    Some(crucible_shipper::Mutant::CountAggregateUsage)
+                }
                 _ => None,
             },
             ..ShipperConfig::default()
@@ -952,10 +959,12 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let mut wire = Vec::new();
     // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
     // window still holds it, which shifts the spans after it in the frame.
+    // A span that repeats the usage of a descendant is not sent again alone: without its descendants it would
+    // not be an aggregate, so it would be another row and not a repeat.
     let again = state
         .spans
         .iter()
-        .filter(|sent| sent.project == project)
+        .filter(|sent| sent.project == project && !sent.info.sent.aggregate)
         .nth(pick(rng, 4) as usize)
         .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
         .cloned();
@@ -965,6 +974,10 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         wire.push(sent.wire);
     }
     let session = (pick(rng, 3) > 0).then(|| format!("session-{}", pick(rng, 3)));
+    // The spans this request adds, each with the position in `spans` of its parent when that is one of them.
+    let first_new = spans.len();
+    let mut parents: Vec<Option<usize>> = Vec::new();
+    let mut sent_now: Vec<SentSpan> = Vec::new();
     for ordinal in 0..count {
         let other = traces.len() > 1 && pick(rng, 5) == 0;
         let trace = if other {
@@ -976,6 +989,19 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         let root = !other && !rootless;
         // One root per trace.
         rootless = true;
+        // With nested usage, half of the spans below the root hang under the latest span of their trace in this
+        // request, so chains form.
+        let parent = (has(Dim::NestedUsage) && !root && coin(rng))
+            .then(|| {
+                spans
+                    .iter()
+                    .enumerate()
+                    .skip(first_new)
+                    .rev()
+                    .find(|(_, earlier)| earlier.trace == trace)
+                    .map(|(at, _)| at)
+            })
+            .flatten();
         let day = if has(Dim::MultiDay) { pick(rng, 3) } else { 1 };
         let start_micros =
             START_BASE_MICROS + (day * 86_400_000_000 + pick(rng, 3_600_000_000)) as i64;
@@ -1034,6 +1060,11 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
                     "crucible.completion_start_time",
                     int(start_nanos + 1_000 * pick(rng, 900)),
                 ));
+            } else if has(Dim::NestedUsage) && coin(rng) {
+                attributes.push(attribute(
+                    "gen_ai.operation.name",
+                    text("embeddings".to_owned()),
+                ));
             }
             if coin(rng) {
                 // A provided cost in whole micro-dollars, as a decimal string of USD.
@@ -1055,7 +1086,11 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         let span = Span {
             trace_id: trace.to_vec(),
             span_id: span.to_vec(),
-            parent_span_id: if root { Vec::new() } else { vec![7; 8] },
+            parent_span_id: match parent.and_then(|at| spans.get(at)) {
+                Some(parent) => parent.span.to_vec(),
+                None if root => Vec::new(),
+                None => vec![7; 8],
+            },
             name,
             kind: 1,
             start_time_unix_nano: start_nanos,
@@ -1067,16 +1102,37 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             }),
             ..Span::default()
         };
-        state.spans.push(SentSpan {
+        sent_now.push(SentSpan {
             project,
             info,
             wire: span.clone(),
         });
+        parents.push(parent);
+        spans.push(info);
+        wire.push(span);
+    }
+    // A span that reports usage is a usage aggregate when a descendant of it in this request reports usage
+    // too. A parent always comes before its children here, so one pass from the last span up marks them all.
+    let carries = |info: &SpanInfo| info.sent.input > 0 || info.sent.output > 0;
+    let mut below = vec![false; spans.len()];
+    for at in (first_new..spans.len()).rev() {
+        let Some(parent) = parents.get(at - first_new).copied().flatten() else {
+            continue;
+        };
+        let usage_here = below[at] || spans.get(at).is_some_and(carries);
+        if let Some(mark) = below.get_mut(parent) {
+            *mark |= usage_here;
+        }
+    }
+    for (at, mut sent) in (first_new..).zip(sent_now) {
+        if let Some(info) = spans.get_mut(at) {
+            info.sent.aggregate = below[at] && carries(info);
+            sent.info = *info;
+        }
+        state.spans.push(sent);
         if state.spans.len() > 16 {
             state.spans.remove(0);
         }
-        spans.push(info);
-        wire.push(span);
     }
     let otlp = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {

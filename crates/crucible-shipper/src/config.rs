@@ -48,6 +48,9 @@ pub enum Mutant {
     /// Quarantine a frame that does not normalize without copying it to the quarantine root.
     #[cfg(feature = "test-mutants")]
     FrameQuarantineWithoutCopy,
+    /// Count the tokens and cost of a span that repeats the usage of a descendant in the rollup sums.
+    #[cfg(feature = "test-mutants")]
+    CountAggregateUsage,
 }
 
 /// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
@@ -199,4 +202,5 @@ mutant_flags! {
     double_counts_rollups => DoubleCountRollup,
     drops_fact_on_retry => DropFactOnRetry,
     quarantines_frames_without_copy => FrameQuarantineWithoutCopy,
+    counts_aggregate_usage => CountAggregateUsage,
 }

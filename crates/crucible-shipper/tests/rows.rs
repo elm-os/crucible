@@ -160,6 +160,7 @@ fn span_core_puts_every_field_in_its_column() {
         expected.push((name, s(name)));
     }
     expected.extend(ingestion_columns());
+    expected.push(("usage_aggregate", Value::U8(0)));
     assert_columns(TableId::SpanCore, &span_core_row(&distinct()), &expected);
 }
 
@@ -381,6 +382,88 @@ fn the_rollups_put_every_measure_in_its_column() {
     assert!(span_metrics(&child).ttft_hist.is_empty());
 }
 
+/// Token and cost sums take a generation or an embedding that does not repeat the usage of a descendant, and
+/// nothing else. Every span is still counted, and its own row keeps its usage.
+#[test]
+fn sums_count_generations_and_embeddings_that_are_not_usage_aggregates() {
+    use crucible_records::{NanoUsd, ObservationType as T};
+    for (kind, aggregate, counted) in [
+        (T::Generation, false, true),
+        (T::Embedding, false, true),
+        (T::Generation, true, false),
+        (T::Embedding, true, false),
+        (T::Span, false, false),
+        (T::Agent, false, false),
+        (T::Tool, true, false),
+    ] {
+        let mut record = distinct();
+        record.core.observation_type = kind;
+        record.core.usage_aggregate = aggregate;
+        let c = &record.core;
+        assert_eq!(c.counts_usage(), counted);
+        let expected = if counted {
+            (
+                c.input_tokens,
+                c.output_tokens,
+                c.total_tokens,
+                c.total_cost_nusd,
+            )
+        } else {
+            (0, 0, 0, NanoUsd::ZERO)
+        };
+        assert!(c.input_tokens > 0 && c.total_cost_nusd > NanoUsd::ZERO);
+        let stats = trace_stats(&record, true);
+        let session = session_rollup(&record).unwrap();
+        let user = user_rollup(&record).unwrap();
+        let metrics = span_metrics(&record);
+        let sums = [
+            (
+                stats.input_tokens,
+                stats.output_tokens,
+                stats.total_tokens,
+                stats.total_cost_nusd,
+            ),
+            (
+                session.input_tokens,
+                session.output_tokens,
+                session.total_tokens,
+                session.total_cost_nusd,
+            ),
+            (
+                user.input_tokens,
+                user.output_tokens,
+                user.total_tokens,
+                user.total_cost_nusd,
+            ),
+            (
+                metrics.input_tokens,
+                metrics.output_tokens,
+                metrics.total_tokens,
+                metrics.total_cost_nusd,
+            ),
+        ];
+        assert_eq!(sums, [expected; 4], "{kind} aggregate={aggregate}");
+        assert_eq!(
+            (
+                stats.span_count,
+                session.span_count,
+                user.span_count,
+                metrics.count
+            ),
+            (1, 1, 1, 1)
+        );
+        let def = table(TableId::SpanCore);
+        let cells = span_core_row(&record);
+        let cell = |name: &str| &cells[column_index(def, name)];
+        assert_eq!(*cell("input_tokens"), Value::U64(c.input_tokens));
+        assert_eq!(
+            *cell("total_cost_nusd"),
+            Value::I64(c.total_cost_nusd.nanos())
+        );
+        assert_eq!(*cell("usage_aggregate"), Value::U8(u8::from(aggregate)));
+    }
+}
+
 fn fact(body: FactBody) -> Fact {
     Fact {
         envelope: FactEnvelope {
@@ -578,7 +661,9 @@ proptest! {
             for span in &frame.spans {
                 in_sessions += u64::from(!span.core.session_id.is_empty());
                 of_users += u64::from(!span.core.user_id.is_empty());
-                tokens += span.core.input_tokens;
+                if span.core.counts_usage() {
+                    tokens += span.core.input_tokens;
+                }
             }
             for routed in derive(&frame, &admission, Granularity::Day).unwrap() {
                 let RoutedRow { table, partition, row } = routed;
@@ -636,7 +721,8 @@ proptest! {
             }
         }
         prop_assert_eq!(core_rows, spans);
-        // Every span is counted once in the trace stats and once in the metrics, with its tokens; the session
+        // Every span is counted once in the trace stats and once in the metrics, and the tokens of the spans
+        // that count usage (generations and embeddings that are not usage aggregates) are summed; the session
         // and user rollups count the spans that name one.
         let of = |table| counted.get(&table).copied().unwrap_or_default();
         prop_assert_eq!(of(TableId::TraceStats), (spans, tokens));

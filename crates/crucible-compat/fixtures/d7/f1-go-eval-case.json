@@ -1,0 +1,225 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "braintrust-sdk-go commit 31a87dafd05438bdf81aabdb8b548d58af21ee52 eval/eval_test.go lines 105-215",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others"
+  },
+  "request": {
+    "path": "/otel/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {},
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "eval",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.parent",
+                    "value": {
+                      "stringValue": "experiment_id:exp-0a1b2c3d"
+                    }
+                  },
+                  {
+                    "key": "braintrust.tags",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "nightly"
+                          },
+                          {
+                            "stringValue": "regression"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "braintrust.input_json",
+                    "value": {
+                      "stringValue": "{\"question\":\"q1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.output_json",
+                    "value": {
+                      "stringValue": "{\"answer\":\"a1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.expected",
+                    "value": {
+                      "stringValue": "{\"answer\":\"gold1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metadata",
+                    "value": {
+                      "stringValue": "{\"suite\":\"core\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"eval\"}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000002",
+                "name": "task",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.parent",
+                    "value": {
+                      "stringValue": "experiment_id:exp-0a1b2c3d"
+                    }
+                  },
+                  {
+                    "key": "braintrust.input_json",
+                    "value": {
+                      "stringValue": "{\"question\":\"q1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.expected",
+                    "value": {
+                      "stringValue": "{\"answer\":\"gold1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.output_json",
+                    "value": {
+                      "stringValue": "{\"answer\":\"a1\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"task\"}"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000001"
+              },
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000003",
+                "name": "exactness",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.parent",
+                    "value": {
+                      "stringValue": "experiment_id:exp-0a1b2c3d"
+                    }
+                  },
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"name\":\"exactness\",\"purpose\":\"scorer\",\"type\":\"score\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.input_json",
+                    "value": {
+                      "stringValue": "{\"expected\":{\"answer\":\"gold1\"},\"input\":{\"question\":\"q1\"},\"output\":{\"answer\":\"a1\"}}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.scores",
+                    "value": {
+                      "stringValue": "{\"exactness\":0.5}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metadata",
+                    "value": {
+                      "stringValue": "{\"note\":\"partial\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.output",
+                    "value": {
+                      "stringValue": "{\"score\":0.5}"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000001"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "source_format": "compat",
+      "observation_type": "chain",
+      "tags": [
+        "nightly",
+        "regression"
+      ],
+      "metadata": {
+        "suite": "core"
+      },
+      "input": "{\"question\":\"q1\"}",
+      "output": "{\"answer\":\"a1\"}",
+      "io_shape": "raw",
+      "is_root": true,
+      "residual": [
+        "braintrust.parent",
+        "braintrust.expected",
+        "braintrust.span_attributes"
+      ]
+    },
+    "0000000000000002": {
+      "compat_dialect": 7,
+      "observation_type": "span",
+      "input": "{\"question\":\"q1\"}",
+      "output": "{\"answer\":\"a1\"}",
+      "io_shape": "raw",
+      "is_root": false,
+      "residual": [
+        "braintrust.parent",
+        "braintrust.expected",
+        "braintrust.span_attributes"
+      ]
+    },
+    "0000000000000003": {
+      "compat_dialect": 7,
+      "observation_type": "evaluator",
+      "metadata": {
+        "note": "partial"
+      },
+      "input": "{\"expected\":{\"answer\":\"gold1\"},\"input\":{\"question\":\"q1\"},\"output\":{\"answer\":\"a1\"}}",
+      "output": "{\"score\":0.5}",
+      "io_shape": "raw",
+      "residual": [
+        "braintrust.parent",
+        "braintrust.span_attributes",
+        "braintrust.scores"
+      ]
+    }
+  }
+}

@@ -5,7 +5,9 @@
 #   scripts/conformance.sh cluster [tag ...]   1 shard x 2 replicas with Keeper
 #
 # The statements applied are the committed golden snapshots under tests/snapshots (the rendered migration
-# steps), so the servers see exactly what the renderer emits. The outputs land under
+# steps), so the servers see exactly what the renderer emits. The base schema creates the tables in their
+# current shape, so before a later schema step is applied the column it adds is dropped: the step must then
+# bring the table back to the shape the base schema creates, which is what SHOW CREATE TABLE records. The outputs land under
 # tests/conformance/expected/<tag>/ and are committed; tests/conformance.rs compares them with the TableDefs
 # and the routers, so CI needs no ClickHouse. Rerun this script when a snapshot changes.
 #
@@ -72,6 +74,16 @@ apply() {
   local container=$1 name=$2
   shift 2
   snapshot "$name" | client "$container" "$ADMIN" --multiquery "$@"
+}
+
+# later_steps <container> <variant> <on cluster clause> [clickhouse-client args]: the schema steps after the
+# base schema, each from the shape before it, each twice (they must be idempotent).
+later_steps() {
+  local container=$1 variant=$2 on_cluster=$3
+  shift 3
+  client "$container" "$ADMIN" "$@" -q "ALTER TABLE crucible.span_core$on_cluster DROP COLUMN usage_aggregate"
+  apply "$container" "step__${variant}__0004_schema_span_usage_aggregate" "$@"
+  apply "$container" "step__${variant}__0004_schema_span_usage_aggregate" "$@"
 }
 
 start() {
@@ -195,13 +207,16 @@ single() {
   client "$name" "$ADMIN" -q "SELECT version()" >"$out/version.txt"
   # The Cloud rendering must at least parse and apply on an open-source server.
   apply "$name" step__cloud__day__0001_schema_base
+  later_steps "$name" cloud ""
   client "$name" "$ADMIN" -q "DROP DATABASE crucible SYNC"
   apply "$name" step__single__week__0001_schema_base
+  later_steps "$name" single ""
   show_creates "$name" >"$out/single_week.sql"
   partition_ids "$name" week >"$out/partition_ids.tsv"
   client "$name" "$ADMIN" -q "DROP DATABASE crucible SYNC"
   apply "$name" step__single__day__0001_schema_base
   apply "$name" step__single__day__0001_schema_base
+  later_steps "$name" single ""
   show_creates "$name" >"$out/single_day.sql"
   partition_ids "$name" day >>"$out/partition_ids.tsv"
   access_checks "$name" permissive "$out"
@@ -211,6 +226,7 @@ single() {
   switch_config "$config" false
   start "$name" "$tag" "$config"
   apply "$name" step__single__day__0001_schema_base
+  apply "$name" step__single__0004_schema_span_usage_aggregate
   access_checks "$name" strict "$out"
   docker rm -f "$name" >/dev/null
   echo "single $tag: $(cat "$out/version.txt")"
@@ -272,6 +288,7 @@ cluster() {
   {
     apply crucible-conf-r1 step__cluster__day__0001_schema_base $settings >/dev/null
     apply crucible-conf-r1 step__cluster__day__0001_schema_base $settings >/dev/null
+    later_steps crucible-conf-r1 cluster " ON CLUSTER crucible" $settings >/dev/null
     apply crucible-conf-r1 step__cluster__0002_access_service $settings >/dev/null
     apply crucible-conf-r1 step__cluster__0002_access_service $settings >/dev/null
   }

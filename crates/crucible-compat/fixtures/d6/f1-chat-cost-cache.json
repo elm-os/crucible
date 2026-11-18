@@ -1,0 +1,271 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "pydantic/pydantic-ai v2.70.0 tests/models/test_instrumented.py lines 90-131 and 177-319",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD6, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The two cache counts under the details prefix repeat the first-class cache keys and are ignored. The tool calls are derived from the tool-call parts of the output messages."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pydantic-ai",
+              "version": "2.70.0"
+            },
+            "spans": [
+              {
+                "traceId": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+                "spanId": "0000000000000001",
+                "name": "chat nw-chat-small",
+                "kind": 3,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "chat"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.provider.name",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "server.address",
+                    "value": {
+                      "stringValue": "api.northwind.example"
+                    }
+                  },
+                  {
+                    "key": "server.port",
+                    "value": {
+                      "intValue": "8443"
+                    }
+                  },
+                  {
+                    "key": "model_request_parameters",
+                    "value": {
+                      "stringValue": "{\"function_tools\":[],\"native_tools\":[],\"output_mode\":\"text\",\"output_object\":null,\"output_tools\":[],\"allow_text_output\":true}"
+                    }
+                  },
+                  {
+                    "key": "logfire.json_schema",
+                    "value": {
+                      "stringValue": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.temperature",
+                    "value": {
+                      "intValue": "1"
+                    }
+                  },
+                  {
+                    "key": "logfire.msg",
+                    "value": {
+                      "stringValue": "chat nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.input.messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"be terse\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"add 2 and 3\"},{\"type\":\"tool_call_response\",\"id\":\"call_3\",\"name\":\"tool3\",\"result\":\"ok\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.output.messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"working\"},{\"type\":\"tool_call\",\"id\":\"call_1\",\"name\":\"tool1\",\"arguments\":\"raw-args\"},{\"type\":\"tool_call\",\"id\":\"call_2\",\"name\":\"tool2\",\"arguments\":{\"n\":3}},{\"type\":\"text\",\"content\":\"done\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "logfire.span_type",
+                    "value": {
+                      "stringValue": "span"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "nw-chat-small-0301"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.id",
+                    "value": {
+                      "stringValue": "response-01"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.system_instructions",
+                    "value": {
+                      "stringValue": "[{\"type\":\"text\",\"content\":\"be terse\"}]"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.cache_creation.input_tokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.cache_read.input_tokens",
+                    "value": {
+                      "intValue": "24"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.reasoning_tokens",
+                    "value": {
+                      "intValue": "36"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.cache_write_tokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.cache_read_tokens",
+                    "value": {
+                      "intValue": "24"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.input_audio_tokens",
+                    "value": {
+                      "intValue": "8"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.cache_audio_read_tokens",
+                    "value": {
+                      "intValue": "4"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.details.output_audio_tokens",
+                    "value": {
+                      "intValue": "16"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "120"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "240"
+                    }
+                  },
+                  {
+                    "key": "operation.cost",
+                    "value": {
+                      "doubleValue": 0.00375
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 6,
+      "source_format": "compat",
+      "observation_type": "generation",
+      "model_requested": "nw-chat-small",
+      "model_response": "nw-chat-small-0301",
+      "provider": "northwind",
+      "usage_provided": {
+        "input": 120,
+        "output": 240,
+        "cache_read": 24,
+        "cache_write": 12,
+        "reasoning": 36,
+        "input_audio_tokens": 8,
+        "cache_audio_read_tokens": 4,
+        "output_audio_tokens": 16
+      },
+      "total_tokens": 360,
+      "cost_provided": {
+        "total": 3750000
+      },
+      "total_cost_nusd": 3750000,
+      "cost_source": "provided",
+      "io_shape": "genai_messages",
+      "input": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"be terse\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"add 2 and 3\"},{\"type\":\"tool_call_response\",\"id\":\"call_3\",\"name\":\"tool3\",\"result\":\"ok\"}]}]",
+      "output": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"working\"},{\"type\":\"tool_call\",\"id\":\"call_1\",\"name\":\"tool1\",\"arguments\":\"raw-args\"},{\"type\":\"tool_call\",\"id\":\"call_2\",\"name\":\"tool2\",\"arguments\":{\"n\":3}},{\"type\":\"text\",\"content\":\"done\"}]}]",
+      "system_instructions": [
+        {
+          "type": "text",
+          "content": "be terse"
+        }
+      ],
+      "model_parameters": {
+        "temperature": 1
+      },
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "name": "tool1",
+          "arguments": "raw-args"
+        },
+        {
+          "id": "call_2",
+          "name": "tool2",
+          "arguments": {
+            "n": 3
+          }
+        }
+      ],
+      "tool_names": [
+        "tool1",
+        "tool2"
+      ],
+      "tool_call_count": 2,
+      "residual": [
+        "gen_ai.operation.name",
+        "gen_ai.system",
+        "server.address",
+        "server.port",
+        "model_request_parameters",
+        "logfire.json_schema",
+        "logfire.msg",
+        "logfire.span_type",
+        "gen_ai.response.id",
+        "gen_ai.usage.details.cache_write_tokens",
+        "gen_ai.usage.details.cache_read_tokens"
+      ]
+    }
+  }
+}

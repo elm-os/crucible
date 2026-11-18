@@ -1,0 +1,132 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: the usage object of langfuse/langfuse v4.82.0 (disjoint buckets, provider detail objects, cache-creation breakdown)",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD1, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "Span 1: disjoint buckets are converted, so input is 8 + 9. Span 2: a details object marks the counts inclusive. Span 3: the two cache-creation keys sum to cache_write and are not added twice."
+  },
+  "request": {
+    "path": "/api/public/otel/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "langfuse-sdk",
+              "version": "5.1.0"
+            },
+            "spans": [
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000001",
+                "name": "generation-1",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.usage_details",
+                    "value": {
+                      "stringValue": "{\"input\":8,\"output\":3,\"total\":20,\"input_cached_tokens\":9}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000002",
+                "name": "generation-2",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.usage_details",
+                    "value": {
+                      "stringValue": "{\"prompt_tokens\":14,\"completion_tokens\":2,\"total_tokens\":16,\"prompt_tokens_details\":{\"cached_tokens\":5,\"audio_tokens\":0}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+                "spanId": "0000000000000003",
+                "name": "generation-3",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "langfuse.observation.type",
+                    "value": {
+                      "stringValue": "generation"
+                    }
+                  },
+                  {
+                    "key": "langfuse.observation.usage_details",
+                    "value": {
+                      "stringValue": "{\"input\":12,\"output\":7,\"input_cached_tokens\":30,\"input_cache_creation_5m\":45,\"input_cache_creation_1h\":55}"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 1,
+      "observation_type": "generation",
+      "usage_provided": {
+        "input": 17,
+        "output": 3,
+        "total": 20,
+        "cache_read": 9
+      },
+      "residual": []
+    },
+    "0000000000000002": {
+      "observation_type": "generation",
+      "usage_provided": {
+        "input": 14,
+        "output": 2,
+        "total": 16,
+        "cache_read": 5,
+        "input_audio_tokens": 0
+      },
+      "residual": []
+    },
+    "0000000000000003": {
+      "observation_type": "generation",
+      "usage_provided": {
+        "input": 142,
+        "output": 7,
+        "cache_read": 30,
+        "cache_write": 100,
+        "input_cache_creation_5m": 45,
+        "input_cache_creation_1h": 55
+      },
+      "total_tokens": 149,
+      "residual": []
+    }
+  }
+}

@@ -30,7 +30,7 @@ use crucible_plan::profile_caps;
 use crucible_records::{BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, WalEpoch};
 use crucible_schema::{
     AccessParams, Granularity, Ident, PasswordHash, ServiceIdentity, Variant, access_service,
-    route, schema_base,
+    route, schema_base, schema_span_usage_aggregate,
 };
 use crucible_sim::ch_model::ChModel;
 use crucible_store_clickhouse::render::Statement;
@@ -162,11 +162,12 @@ impl Ctx {
         })
     }
 
-    /// Applies the base schema and access step A1, each twice: the steps are idempotent.
+    /// Applies the base schema, access step A1 and the later schema steps, each twice: the steps are idempotent.
     pub(crate) async fn migrate(&self) -> Result<()> {
         let schema = schema_base(&self.variant, Granularity::Day);
         let access = access_service(&self.variant, &self.access_params()?);
-        for step in [&schema, &schema, &access, &access] {
+        let column = schema_span_usage_aggregate(&self.variant);
+        for step in [&schema, &schema, &access, &access, &column, &column] {
             self.store
                 .apply_migration(step)
                 .await

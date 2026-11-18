@@ -6,9 +6,9 @@
 //!   generation counter, so nothing is stored. The info string is
 //!   `crucible/clickhouse-identity/v1/<name>/<generation>` and the password is the 32 output bytes as lowercase
 //!   hex.
-//! - `--migrate` applies schema step `0001_schema_base` and access step `0002_access_service` for a single-node
-//!   server. Both are idempotent, and [`MigrationLedger`] is where the Postgres ledger of contract 6.6 will plug
-//!   in.
+//! - `--migrate` applies schema step `0001_schema_base`, access step `0002_access_service` and schema step
+//!   `0004_schema_span_usage_aggregate` for a single-node server. All are idempotent, and [`MigrationLedger`] is
+//!   where the Postgres ledger of contract 6.6 will plug in.
 //! - [`bring_up`] is everything that must hold before ingest is accepted.
 
 use std::path::Path;
@@ -21,7 +21,7 @@ use crucible_env::{
 use crucible_plan::profile_caps;
 use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PasswordHash, ServiceIdentity, TABLES,
-    Variant, access_service, schema_base,
+    Variant, access_service, schema_base, schema_span_usage_aggregate,
 };
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
 use hkdf::Hkdf;
@@ -157,11 +157,12 @@ impl ClickHouse {
     }
 
     /// The steps `--migrate` applies, in ledger order, for a single-node server.
-    fn steps(&self) -> anyhow::Result<[MigrationStep; 2]> {
+    fn steps(&self) -> anyhow::Result<[MigrationStep; 3]> {
         let variant = Variant::SingleNode;
         Ok([
             schema_base(&variant, Granularity::Day),
             access_service(&variant, &self.access_params()?),
+            schema_span_usage_aggregate(&variant),
         ])
     }
 }
@@ -359,7 +360,8 @@ mod tests {
             steps.each_ref().map(|step| step.id),
             [
                 crucible_schema::SCHEMA_BASE,
-                crucible_schema::ACCESS_SERVICE
+                crucible_schema::ACCESS_SERVICE,
+                crucible_schema::SCHEMA_SPAN_USAGE_AGGREGATE
             ]
         );
         let sql = steps[1].statements.join("\n");

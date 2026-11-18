@@ -548,7 +548,16 @@ impl<'a> Mapping<'_, 'a> {
         let found = match self.parsed.iter().position(|(i, _)| *i == at) {
             Some(found) => found,
             None => {
-                self.parsed.push((at, Val::View(value).container()));
+                // Any JSON text is kept: a string literal that itself holds JSON text is read through by the
+                // path.
+                let node = match value {
+                    AnyValueView::String(s) => Node::parse(s),
+                    AnyValueView::Array(_) | AnyValueView::KvList(_) => {
+                        Some(Node::from_view(value.clone()))
+                    }
+                    _ => None,
+                };
+                self.parsed.push((at, node));
                 self.parsed.len() - 1
             }
         };

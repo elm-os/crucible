@@ -1,5 +1,6 @@
 //! The reference side of the system simulation's oracle for the tables of milestone 2: the reference
-//! aggregation that the rollups must equal exactly (invariant I7) and the fact rows with their reference
+//! aggregation that the rollups must equal exactly (invariant I7; token and cost sums count only the generations
+//! and embeddings that are not usage aggregates) and the fact rows with their reference
 //! resolution (invariants I2 and I4). Everything is read from the parts of [`ChModel`], as the store holds
 //! them.
 
@@ -21,14 +22,17 @@ pub(crate) struct Sent {
     /// The provided cost; zero when the span reports none.
     pub(crate) cost_nusd: i64,
     pub(crate) error: bool,
+    /// Whether the span reports usage and a descendant of it in the same request reports usage too.
+    pub(crate) aggregate: bool,
 }
 
 const STATUS_ERROR: i8 = 2;
 const LEVEL_ERROR: i8 = 3;
 const GENERATION: i8 = 1;
+const EMBEDDING: i8 = 3;
 
-/// Whether a `span_core` row carries exactly what its span reported: tokens, cost in nano-USD and the error
-/// status (I7 at the core tier).
+/// Whether a `span_core` row carries exactly what its span reported: tokens, cost in nano-USD, the error
+/// status, and whether it repeats the usage of a descendant (I7 at the core tier).
 pub(crate) fn span_matches(block: &DecodedBlock, row: usize, sent: &Sent) -> bool {
     let error = i8_at(block, "status_code", row) == Some(STATUS_ERROR)
         || i8_at(block, "level", row) == Some(LEVEL_ERROR);
@@ -36,6 +40,7 @@ pub(crate) fn span_matches(block: &DecodedBlock, row: usize, sent: &Sent) -> boo
         && u64_at(block, "output_tokens", row) == Some(sent.output)
         && u64_at(block, "total_tokens", row) == Some(sent.input + sent.output)
         && i64_at(block, "total_cost_nusd", row) == Some(sent.cost_nusd)
+        && u8_at(block, "usage_aggregate", row) == Some(u8::from(sent.aggregate))
         && error == sent.error
 }
 
@@ -128,13 +133,23 @@ fn reference(model: &ChModel) -> Option<BTreeMap<TableId, Aggs>> {
             let end = i64_at(block, "end_time", row)?;
             let error = i8_at(block, "status_code", row)? == STATUS_ERROR
                 || i8_at(block, "level", row)? == LEVEL_ERROR;
+            let kind = i8_at(block, "observation_type", row)?;
+            // Token and cost sums count generations and embeddings only, and not one that repeats the usage
+            // of a descendant: the leaf carries it.
+            let counted = matches!(kind, GENERATION | EMBEDDING)
+                && u8_at(block, "usage_aggregate", row)? == 0;
+            let of = |value: u64| if counted { value } else { 0 };
             let sums = Agg {
                 spans: 1,
                 errors: u64::from(error),
-                input: u64_at(block, "input_tokens", row)?,
-                output: u64_at(block, "output_tokens", row)?,
-                total: u64_at(block, "total_tokens", row)?,
-                cost: i64_at(block, "total_cost_nusd", row)?,
+                input: of(u64_at(block, "input_tokens", row)?),
+                output: of(u64_at(block, "output_tokens", row)?),
+                total: of(u64_at(block, "total_tokens", row)?),
+                cost: if counted {
+                    i64_at(block, "total_cost_nusd", row)?
+                } else {
+                    0
+                },
                 ..Agg::default()
             };
             let day = (start.div_euclid(86_400_000_000) as u16).to_be_bytes();
@@ -171,7 +186,6 @@ fn reference(model: &ChModel) -> Option<BTreeMap<TableId, Aggs>> {
                 );
             }
 
-            let kind = i8_at(block, "observation_type", row)?;
             let level = i8_at(block, "level", row)?;
             let minute = ((start.div_euclid(60_000_000) * 60) as u32).to_be_bytes();
             let mut metrics = sums;

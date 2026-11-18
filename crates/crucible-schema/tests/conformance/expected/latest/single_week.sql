@@ -76,6 +76,7 @@ CREATE TABLE crucible.span_core
     `batch_seq` UInt64 CODEC(T64, ZSTD(1)),
     `lsn` UInt64 CODEC(T64, ZSTD(1)),
     `received_at` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    `usage_aggregate` UInt8 CODEC(ZSTD(1)),
     INDEX idx_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_user_id user_id TYPE bloom_filter(0.01) GRANULARITY 2,
     INDEX idx_session_id session_id TYPE bloom_filter(0.01) GRANULARITY 2,

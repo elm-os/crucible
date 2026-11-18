@@ -475,10 +475,16 @@ mod tests {
             if def.id == TableId::DedupSelftest {
                 continue;
             }
-            let last4: Vec<&str> = def.columns[def.columns.len() - 4..]
-                .iter()
-                .map(|c| c.name)
-                .collect();
+            // The columns a later schema step added follow the ingestion columns, because `ADD COLUMN` appends.
+            let added: &[&str] = if def.id == TableId::SpanCore {
+                &["usage_aggregate"]
+            } else {
+                &[]
+            };
+            let (base, later) = def.columns.split_at(def.columns.len() - added.len());
+            let later: Vec<&str> = later.iter().map(|c| c.name).collect();
+            assert_eq!(later, added);
+            let last4: Vec<&str> = base[base.len() - 4..].iter().map(|c| c.name).collect();
             assert_eq!(last4, ["wal_epoch", "batch_seq", "lsn", "received_at"]);
             assert_eq!(
                 def.column("received_at").map(|c| c.ty),

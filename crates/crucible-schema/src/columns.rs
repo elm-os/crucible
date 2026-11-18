@@ -159,6 +159,7 @@ columns! { SpanCore, SpanCoreCol, SPAN_CORE, scoped;
     BatchSeq "batch_seq": U64;
     Lsn "lsn": U64;
     ReceivedAt "received_at": DT64;
+    UsageAggregate "usage_aggregate": U8;
 }
 
 columns! { SpanPayload, SpanPayloadCol, SPAN_PAYLOAD, scoped;
