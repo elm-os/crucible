@@ -1,0 +1,47 @@
+name: ci-sdk-ts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/typescript/**"
+      - ".github/workflows/ci-sdk-ts.yml"
+  pull_request:
+    paths:
+      - "sdk/typescript/**"
+      - ".github/workflows/ci-sdk-ts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-sdk-ts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Format (Biome)
+        run: pnpm exec biome format sdk/typescript
+      - name: Lint (Oxlint)
+        run: pnpm exec oxlint --deny-warnings sdk/typescript
+      - name: Private member scan
+        run: pnpm --filter @elm-os/crucible run check:private
+      - name: Typecheck
+        run: pnpm --filter @elm-os/crucible run typecheck
+      - name: Build
+        run: pnpm --filter @elm-os/crucible run build
+      - name: Test (Vitest)
+        run: pnpm --filter @elm-os/crucible test

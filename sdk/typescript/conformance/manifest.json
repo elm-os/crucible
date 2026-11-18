@@ -1,0 +1,12 @@
+{
+  "schema": "crucible.conformance.manifest/v1",
+  "sdk": "typescript",
+  "language": "typescript",
+  "sdk_version": "0.0.0",
+  "runner": ["node", "sdk/typescript/conformance/runner.ts"],
+  "kinds": ["agent", "mcp"],
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "throw_outcome": "tool_error",
+  "progress_count": "observed",
+  "skips": []
+}
