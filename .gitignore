@@ -12,6 +12,9 @@ node_modules/
 *.tsbuildinfo
 .pnpm-store/
 
+# TypeScript SDK build output
+/sdk/typescript/dist/
+
 # Python
 __pycache__/
 *.pyc
