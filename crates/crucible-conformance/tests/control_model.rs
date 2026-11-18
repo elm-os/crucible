@@ -4,6 +4,8 @@
 //! `pg-conformance` workflow) requires real Postgres 15 and 18 to produce the same transcripts, so these
 //! snapshots are also what the production adapter answers.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::sync::Arc;
 
 use crucible_conformance::control::{ACQUIRE_TIMEOUT, Ctl, MAIN_POOL, SCRIPTS, run_script};
