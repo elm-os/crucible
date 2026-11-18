@@ -572,7 +572,8 @@ character boundary.
 - A client retry that re-sends a span produces new LSNs for one span key. The normalizer's duplicate window (section
   5.3) drops a repeat whose `row_digest` equals the remembered one; a repeat with a different digest is kept. Trace
   detail de-duplicates by `span_id` in the Rust tier (greatest `lsn` wins). Aggregates accept the rare duplicate
-  outside the window.
+  outside the window, which holds only what the retained prefix of the WAL holds (section 5.3): a repeat whose
+  earlier sighting was collected is kept, in every table alike.
 
 ### 3.2 Normalizer interface
 
@@ -943,7 +944,10 @@ bounded by the retained WAL size.
    (sealed-but-unchecked batches), `Quarantine` frames, and tombstones. A seal stays unchecked until a `Checkpoint`
    covers it. A `Quarantine` frame resolves only the pairs it lists; every other pair of that batch is still
    probed and shipped in step 8.
-6. Rebuild the duplicate window and the first-seen set by replaying the retained prefix in LSN order.
+6. Rebuild the duplicate window, the first-seen set and the usage descendant set by replaying the retained prefix
+   in LSN order. The rebuilt state equals the state the previous process held, because stage B never remembers
+   more than the retained prefix holds (section 5.3), so a re-normalized batch admits exactly the spans its first
+   attempt admitted.
 7. Rebuild the recent-span index from every frame above the watermark plus frames at or below it that are younger
    than the visibility grace (section 8.6).
 8. Re-ship each sealed-but-unchecked batch with its recorded boundaries: re-normalize the range with the seal's
@@ -961,8 +965,13 @@ bounded by the retained WAL size.
 | Quarantine retention | 24 h | Unless an operator pins a quarantine (a documented exception to the deletion SLA) |
 
 A segment is removable when all of these hold: every frame in it has an LSN at or below the checkpoint watermark; it
-is outside replay retention (by age, or by the byte budget); no recent-index entry references it; it is not the
-current segment. Removal is `remove` then `sync_dir`. The WAL must never be truncated or removed above the
+is outside replay retention (by age, or by the byte budget); no recent-index entry references it; no frame above
+the watermark relies on a sighting in it (`Admission::relies_on`, section 5.3); no batch that recovery found is
+still waiting for its frames; it is not the current segment. Removal is `remove` then `sync_dir`. After each
+collection stage B forgets every key last sighted below the first retained LSN. If a collection fails, a removal
+may or may not be durable, so no frame is admitted until a later collection succeeds; ingest keeps acknowledging
+into the WAL meanwhile. The frames an unchecked frame relies on stay on disk during a store outage, so the
+high-water 503 can come sooner, by at most the replay retention budget. The WAL must never be truncated or removed above the
 watermark, and never because an insert outcome is unknown.
 
 Replay of retained, already checkpointed segments (operator command) consults the deletion requests in Postgres
@@ -1093,8 +1102,8 @@ every table, base and derived, is written by this protocol.
 | Batch boundaries | `BatchSeal`, durable before any send |
 | Normalizer version | Recorded in the seal. If the binary changed, the new version is used; safe because routing is frozen and pairs land wholesale |
 | Price table | `price_table_version` in the seal records the table the first attempt used; versions are immutable. As with the normalizer version, a replay after a binary change prices with the current bundled table; pairs land wholesale, so costs never mix inside a pair. A batch whose pairs straddle a crash and an upgrade can carry two table versions across its tables, which I7 states as an exception |
-| Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys, oldest LSN evicted first |
-| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream, bounded to 4,000,000 entries (oldest LSN evicted first) and rebuilt from the retained prefix like the duplicate window |
+| Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys. Every sighting of a key, a dropped repeat included, moves it to the newest position; the key last sighted longest ago is evicted first, and every key last sighted below the first retained LSN is forgotten after each collection, so the live state always equals a rebuild from the retained prefix. An admission records the oldest earlier LSN its decisions used (`relies_on`), and the WAL keeps that frame until the deciding frame is checkpointed (section 4.7) |
+| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream, bounded to 4,000,000 entries and held to the retained prefix exactly like the duplicate window (eviction by last sighting, forgetting after each collection, `relies_on` for a marking that used an earlier frame), so a descendant whose frame was collected no longer marks its ancestor (the known limit of 3.1) |
 | Tombstones | A replay may drop more rows, never fewer. The deletion executor acts only after the node's checkpoint passes the tombstone (section 13.3) |
 | Partition routing | Section 5.2 |
 | Marker and ingestion columns | Computed from the seal and the frames (`received_at` of the batch's last frame for `marker_at`) |
@@ -2899,3 +2908,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-17 | Clarification from the ingest model: probe once in doubt, probe results expire, quarantine only after an absent probe, quarantined pairs are read gaps (5.5, 5.6, 6.2, I3) |
 | v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums leave out spans with `usage_aggregate = true` (an observed usage-bearing descendant); a Basic public key that does not match the secret key's row is refused with 401 |
 | v2 | 2026-11-18 | Settled in code by the read IR (8.9): model guardrails, zero fill and its empty values, UTC buckets, compiled sources, filter hash binding, metadata conjuncts, rollup pages without `as_of`, set merge |
+| v2 | 2026-11-18 | Changes behaviour (I7 fix): stage B holds only what the retained prefix holds, evicting by last sighting and forgetting after each collection; admissions record `relies_on` and garbage collection keeps those frames; a failed collection pauses admission until one succeeds (3.1, 4.6, 4.7, 5.3) |

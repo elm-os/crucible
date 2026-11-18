@@ -546,6 +546,87 @@ fn a_restart_drops_the_repeats_that_the_first_attempt_dropped() {
     });
 }
 
+/// A garbage collection that fails holds the admission of frames: the hint cannot be replaced, so the
+/// collection after a checkpoint fails before it removes anything. A request acknowledged meanwhile stays in
+/// the log. The collection of the next tail poll after the disk heals succeeds, and the request lands.
+#[test]
+fn a_collection_that_cannot_write_the_hint_holds_admission_until_one_succeeds() {
+    directed(|rig| async move {
+        let (node, _) = rig.boot().await;
+        node.ingest(1, 3).await;
+        node.sleep(100).await;
+        assert_eq!(rig.rows(TableId::SpanCore), 3);
+
+        rig.disk.fail_renames(true);
+        let checked = node.ingest(2, 3).await;
+        node.sleep(100).await;
+        // The batch is checkpointed; the collection that follows its checkpoint is the one that fails.
+        assert!(node.watermark() >= checked.get());
+        assert_eq!(rig.rows(TableId::SpanCore), 6);
+        let held = node.ingest(3, 3).await;
+        node.sleep(200).await;
+        assert_eq!(node.ended(), None);
+        assert_eq!(rig.rows(TableId::SpanCore), 6);
+        assert!(node.watermark() < held.get());
+
+        rig.disk.fail_renames(false);
+        node.sleep(100).await;
+        assert_eq!(rig.rows(TableId::SpanCore), 9);
+        assert_eq!(rig.rows(TableId::SpanPayload), 9);
+        assert!(node.watermark() >= held.get());
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        node.host.stop().await;
+    });
+}
+
+/// The same for a removal that is not durable: the segment is unlinked and the directory sync fails, so a
+/// restart may or may not find the segment, and stage B cannot say what a restart would remember. No frame
+/// is admitted until the removal is durable.
+#[test]
+fn a_removal_that_is_not_durable_holds_admission_until_it_is() {
+    directed(|rig| async move {
+        let retention = Duration::from_secs(60);
+        let (node, _) = rig.boot_retaining(retention).await;
+        let mut tag = 10;
+        while node.wal.segments().len() < 3 {
+            node.ingest(tag, 250).await;
+            tag += 1;
+        }
+        node.sleep(500).await;
+        let segments = node.wal.segments();
+        assert!(segments[1].first_lsn.get() <= node.watermark());
+        let oldest = segments[0].segment_no;
+        let shipped = rig.rows(TableId::SpanCore);
+
+        // Replay retention ends while directory syncs fail: the oldest segment is unlinked, not durably.
+        rig.disk.fail_dir_syncs(true);
+        node.sleep(retention.as_millis() as u64 + 1_000).await;
+        assert_eq!(node.wal.segments()[0].segment_no, oldest);
+        let held = node.ingest(1, 3).await;
+        node.sleep(200).await;
+        assert_eq!(node.ended(), None);
+        assert_eq!(rig.rows(TableId::SpanCore), shipped);
+        assert!(node.watermark() < held.get());
+
+        rig.disk.fail_dir_syncs(false);
+        node.sleep(100).await;
+        assert!(node.wal.segments()[0].segment_no > oldest);
+        assert_eq!(rig.rows(TableId::SpanCore), shipped + 3);
+        assert_eq!(rig.rows(TableId::SpanPayload), shipped + 3);
+        assert!(node.watermark() >= held.get());
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        node.host.stop().await;
+    });
+}
+
 #[test]
 fn a_poison_pair_is_quarantined_after_three_identical_failures() {
     directed(|rig| async move {

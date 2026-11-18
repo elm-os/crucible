@@ -11,4 +11,4 @@
 | UI surfaces by state (Playwright and axe) | [testing/ui-surfaces.md](testing/ui-surfaces.md) |
 | Control store: the Postgres differential and the lease simulation | [testing/control-store.md](testing/control-store.md) |
 | Development setup | [development.md](development.md) |
-| Self-hosting (planned) | [self-hosting/README.md](self-hosting/README.md) |
+| Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |
