@@ -766,13 +766,18 @@ dependencies = [
 name = "crucible-normalize"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "crucible-compat",
  "crucible-otlp",
  "crucible-records",
  "insta",
+ "opentelemetry-proto",
  "proptest",
+ "prost",
  "regex",
+ "serde",
  "serde_json",
+ "sha2",
  "smallvec",
  "thiserror",
  "xxhash-rust",
@@ -812,12 +817,16 @@ dependencies = [
 name = "crucible-query"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "crucible-auth",
+ "crucible-chfmt",
  "crucible-env",
  "crucible-plan",
  "crucible-recent",
  "crucible-records",
  "crucible-schema",
  "futures",
+ "proptest",
  "thiserror",
 ]
 
@@ -825,6 +834,7 @@ dependencies = [
 name = "crucible-recent"
 version = "0.0.0"
 dependencies = [
+ "crucible-auth",
  "crucible-env",
  "crucible-plan",
  "crucible-records",
@@ -881,11 +891,13 @@ name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "bytes",
  "crucible-admission",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
+ "crucible-env-prod",
  "crucible-ingest",
  "crucible-normalize",
  "crucible-otlp",
@@ -903,6 +915,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "shuttle",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

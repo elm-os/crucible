@@ -109,6 +109,87 @@ pub mod registry {
         labels: &["listener"],
     };
 
+    /// Frames the WAL committer appended.
+    pub static WAL_APPENDED_FRAMES: CounterDef = CounterDef {
+        name: "crucible_wal_appended_frames_total",
+        help: "Frames appended to the WAL.",
+        labels: &[],
+    };
+
+    /// Frame bytes the WAL committer appended, headers included.
+    pub static WAL_APPENDED_BYTES: CounterDef = CounterDef {
+        name: "crucible_wal_appended_bytes_total",
+        help: "Frame bytes appended to the WAL.",
+        labels: &[],
+    };
+
+    /// Commit groups, or timed syncs, whose append or sync failed.
+    pub static WAL_GROUP_FAILURES: CounterDef = CounterDef {
+        name: "crucible_wal_group_failures_total",
+        help: "WAL commit groups whose append or sync failed.",
+        labels: &[],
+    };
+
+    /// Duration of each WAL `sync_data`.
+    pub static WAL_SYNC_DURATION: HistogramDef = HistogramDef {
+        name: "crucible_wal_sync_duration_microseconds",
+        help: "Duration of each WAL sync, in microseconds.",
+        labels: &[],
+        buckets: &[
+            50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000,
+            1_000_000, 5_000_000,
+        ],
+    };
+
+    /// The last durable LSN.
+    pub static WAL_DURABLE_LSN: GaugeDef = GaugeDef {
+        name: "crucible_wal_durable_lsn",
+        help: "Last durable WAL LSN.",
+        labels: &[],
+    };
+
+    /// The checkpoint watermark.
+    pub static WAL_CHECKPOINT_LSN: GaugeDef = GaugeDef {
+        name: "crucible_wal_checkpoint_lsn",
+        help: "WAL checkpoint watermark: every frame at or below it is resolved.",
+        labels: &[],
+    };
+
+    /// Total bytes of the retained WAL segments.
+    pub static WAL_SEGMENT_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_wal_segment_bytes",
+        help: "Total bytes of the retained WAL segments.",
+        labels: &[],
+    };
+
+    /// Bytes of the WAL segments that hold a frame above the checkpoint watermark.
+    pub static WAL_UNSHIPPED_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_wal_unshipped_bytes",
+        help: "Bytes of the WAL segments that hold a frame above the checkpoint watermark.",
+        labels: &[],
+    };
+
+    /// Free bytes on the WAL root at the last reading.
+    pub static WAL_FREE_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_wal_free_bytes",
+        help: "Free bytes on the WAL root at the last reading.",
+        labels: &[],
+    };
+
+    /// 1 while the WAL is in the failed state, otherwise 0.
+    pub static WAL_FAILED: GaugeDef = GaugeDef {
+        name: "crucible_wal_failed",
+        help: "1 while the WAL is in the failed state and ingest is refused, otherwise 0.",
+        labels: &[],
+    };
+
+    /// WAL segments removed by garbage collection.
+    pub static WAL_GC_REMOVED_SEGMENTS: CounterDef = CounterDef {
+        name: "crucible_wal_gc_removed_segments_total",
+        help: "WAL segments removed by garbage collection.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -121,6 +202,25 @@ pub mod registry {
                 HTTP_REQUEST_DURATION.buckets,
             ),
             (NET_ACCEPT_ERRORS.name, NET_ACCEPT_ERRORS.labels, &[]),
+            (WAL_APPENDED_FRAMES.name, WAL_APPENDED_FRAMES.labels, &[]),
+            (WAL_APPENDED_BYTES.name, WAL_APPENDED_BYTES.labels, &[]),
+            (WAL_GROUP_FAILURES.name, WAL_GROUP_FAILURES.labels, &[]),
+            (
+                WAL_SYNC_DURATION.name,
+                WAL_SYNC_DURATION.labels,
+                WAL_SYNC_DURATION.buckets,
+            ),
+            (WAL_DURABLE_LSN.name, WAL_DURABLE_LSN.labels, &[]),
+            (WAL_CHECKPOINT_LSN.name, WAL_CHECKPOINT_LSN.labels, &[]),
+            (WAL_SEGMENT_BYTES.name, WAL_SEGMENT_BYTES.labels, &[]),
+            (WAL_UNSHIPPED_BYTES.name, WAL_UNSHIPPED_BYTES.labels, &[]),
+            (WAL_FREE_BYTES.name, WAL_FREE_BYTES.labels, &[]),
+            (WAL_FAILED.name, WAL_FAILED.labels, &[]),
+            (
+                WAL_GC_REMOVED_SEGMENTS.name,
+                WAL_GC_REMOVED_SEGMENTS.labels,
+                &[],
+            ),
         ]
     }
 }

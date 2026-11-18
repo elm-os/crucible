@@ -12,7 +12,9 @@ publish.workspace = true
 crucible-records = { workspace = true }
 crucible-otlp = { workspace = true }
 crucible-compat = { workspace = true }
+bytes = { workspace = true }
 regex = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +23,9 @@ xxhash-rust = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 insta = { workspace = true }
+prost = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

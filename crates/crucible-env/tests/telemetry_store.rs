@@ -17,15 +17,17 @@ use crucible_env::{
 };
 use crucible_plan::test_support::batch_probe;
 use crucible_plan::{
-    Aggregate, BatchProbe, Caller, DeletePlan, Measure, Node, Pred, QueryPlan, Row, RowBlock,
-    ShapeError, TraceBounds, TraceListRequest, Value, data_bounds, span_children, trace_list,
-    trace_spans, trace_time_bounds,
+    Aggregate, BatchProbe, Caller, DeletePlan, Measure, Node, Pred, QueryPlan, RetentionClamp, Row,
+    RowBlock, ShapeError, TraceBounds, TraceListRequest, Value, data_bounds, span_children,
+    trace_list, trace_spans, trace_time_bounds,
 };
 use crucible_records::{
     BatchToken, CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow,
     Timestamp, TraceId, Uuid, WalEpoch,
 };
-use crucible_schema::{ColumnRef, MigrationStep, SCHEMA_BASE, StepKind, TABLES, Ty};
+use crucible_schema::{
+    ColumnRef, MigrationStep, RetentionSettings, SCHEMA_BASE, StepKind, TABLES, Ty,
+};
 use futures::StreamExt;
 use futures::executor::block_on;
 
@@ -280,26 +282,44 @@ fn m1_plans() -> Vec<(&'static str, QueryPlan)> {
         as_of: to,
         since: None,
     };
-    let bounds = data_bounds(project(), window, Caller::Session).unwrap();
+    // A project that keeps its data forever: the clamp leaves every window as it is.
+    let keep = RetentionClamp::new(RetentionSettings::default(), to);
+    let bounds = data_bounds(project(), window, &keep, Caller::Session).unwrap();
     vec![
         (
             "trace bounds",
-            trace_time_bounds(project(), window, Caller::Session, trace_id).unwrap(),
+            trace_time_bounds(project(), window, &keep, Caller::Session, trace_id)
+                .unwrap()
+                .unwrap(),
         ),
         (
             "trace spans",
-            trace_spans(project(), from, to, Caller::Agent, trace_id).unwrap(),
+            trace_spans(project(), from, to, &keep, Caller::Agent, trace_id)
+                .unwrap()
+                .unwrap(),
         ),
         (
             "trace list",
-            trace_list(project(), window, Caller::Session, list).unwrap(),
+            trace_list(project(), window, &keep, Caller::Session, list)
+                .unwrap()
+                .unwrap(),
         ),
         (
             "span children",
-            span_children(project(), trace, Caller::Session, SpanId::ZERO, None, None).unwrap(),
+            span_children(
+                project(),
+                trace,
+                &keep,
+                Caller::Session,
+                SpanId::ZERO,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap(),
         ),
-        ("data bounds, spans", bounds.spans),
-        ("data bounds, mcp", bounds.mcp),
+        ("data bounds, spans", bounds.spans.unwrap()),
+        ("data bounds, mcp", bounds.mcp.unwrap()),
     ]
 }
 
@@ -372,7 +392,10 @@ fn the_fakes_rows_follow_the_output_schema_of_every_m1_plan() {
 fn rows_of_the_wrong_shape_are_refused() {
     let (_, _, window) = window();
     let trace_id = TraceId::from_bytes([3; 16]);
-    let plan = trace_time_bounds(project(), window, Caller::Session, trace_id).unwrap();
+    let keep = RetentionClamp::new(RetentionSettings::default(), window.to());
+    let plan = trace_time_bounds(project(), window, &keep, Caller::Session, trace_id)
+        .unwrap()
+        .unwrap();
     let output = plan.output();
     let good = fake_rows(plan.root()).remove(0);
     assert_eq!(output.check_row(&good), Ok(()));
