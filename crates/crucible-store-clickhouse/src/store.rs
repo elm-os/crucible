@@ -15,7 +15,7 @@ use crucible_env::{
     TelemetryStore, TlsRoots,
 };
 use crucible_plan::{
-    BatchProbe, CLASS_FIXED_SETTINGS, DeletePlan, OutputSchema, QueryPlan, RowBlock,
+    BatchProbe, CLASS_FIXED_SETTINGS, DeletePlan, OutputSchema, QueryClass, QueryPlan, RowBlock,
 };
 use crucible_records::{
     BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
@@ -74,6 +74,35 @@ pub const TABLE_SETTINGS: [&str; 5] = [
 
 /// The text-search functions the renderer uses.
 pub const TEXT_SEARCH_FUNCTIONS: [&str; 2] = ["hasAllTokens", "hasAnyTokens"];
+
+/// The settings of a lightweight delete: it returns once the rows are masked on every replica, so they are hidden
+/// from reads at once, and it never takes the lightweight-update path (contract 6).
+const DELETE_SETTINGS: [(&str, &str); 2] = [
+    ("lightweight_deletes_sync", "2"),
+    ("lightweight_delete_mode", "alter_update"),
+];
+
+/// The settings every read of a class carries: its limits and the fixed settings (contracts 8.4 and 8.5).
+fn class_settings(class: QueryClass) -> Vec<(&'static str, String)> {
+    let limits = class.limits();
+    let mut settings = vec![
+        (
+            "max_execution_time",
+            limits.max_execution_time_secs.to_string(),
+        ),
+        ("max_memory_usage", limits.max_memory_usage.to_string()),
+        ("max_threads", limits.max_threads.to_string()),
+    ];
+    if let Some(rows) = limits.max_rows_to_read {
+        settings.push(("max_rows_to_read", rows.to_string()));
+    }
+    settings.extend(
+        CLASS_FIXED_SETTINGS
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned())),
+    );
+    settings
+}
 
 /// The user and password of one identity.
 #[derive(Clone, PartialEq, Eq)]
@@ -533,6 +562,8 @@ impl ClickHouseStore {
         let mut missing_settings = self.missing("settings", &session).await?;
         missing_settings.extend(self.missing("merge_tree_settings", &TABLE_SETTINGS).await?);
         missing_settings.sort_unstable();
+        // `max_execution_time` is both a per-insert setting and a query setting.
+        missing_settings.dedup();
 
         let text_search_functions = self
             .missing("functions", &TEXT_SEARCH_FUNCTIONS)
@@ -782,23 +813,7 @@ impl TelemetryStore for ClickHouseStore {
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
         let statement =
             render::plan(&plan).map_err(|error| QueryError::Internal(error.to_string()))?;
-        let limits = plan.class().limits();
-        let mut settings = vec![
-            (
-                "max_execution_time",
-                limits.max_execution_time_secs.to_string(),
-            ),
-            ("max_memory_usage", limits.max_memory_usage.to_string()),
-            ("max_threads", limits.max_threads.to_string()),
-        ];
-        if let Some(rows) = limits.max_rows_to_read {
-            settings.push(("max_rows_to_read", rows.to_string()));
-        }
-        settings.extend(
-            CLASS_FIXED_SETTINGS
-                .iter()
-                .map(|(name, value)| (*name, (*value).to_owned())),
-        );
+        let settings = class_settings(plan.class());
         let (query_id, reading) = self.read(
             plan.identity(),
             &statement,
@@ -820,11 +835,7 @@ impl TelemetryStore for ClickHouseStore {
     async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
         let statement =
             render::delete(&plan).map_err(|error| StoreError::Internal(error.to_string()))?;
-        // The delete returns once the rows are masked on every replica, so they are hidden from reads at once.
-        let settings = [
-            ("lightweight_deletes_sync", "2".to_owned()),
-            ("lightweight_delete_mode", "alter_update".to_owned()),
-        ];
+        let settings = DELETE_SETTINGS.map(|(name, value)| (name, value.to_owned()));
         self.change(&statement, &settings).await?;
         self.latest_mutation(plan.table()).await
     }
@@ -1013,5 +1024,85 @@ impl TelemetryStore for ClickHouseStore {
                 reason: failure.into_store().to_string(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_schema::{Ident, Variant};
+
+    use super::*;
+
+    #[test]
+    fn detection_checks_every_setting_the_store_sends() {
+        let mut sent: Vec<&str> = Vec::new();
+        for class in QueryClass::ALL {
+            sent.extend(class_settings(class).iter().map(|(name, _)| *name));
+        }
+        sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
+        // The semi-join id cap, the mask application and the partition drop.
+        sent.extend([
+            "max_rows_in_set",
+            "set_overflow_mode",
+            "mutations_sync",
+            "alter_sync",
+        ]);
+        let cluster = Variant::Clustered {
+            cluster: Ident::new("crucible").unwrap(),
+        };
+        for variant in [Variant::SingleNode, cluster, Variant::Cloud] {
+            sent.extend(variant.ddl_settings().iter().map(|(name, _)| *name));
+        }
+        for name in sent {
+            // `wait_end_of_query` is a parameter of the HTTP interface, not a setting.
+            assert!(
+                QUERY_SETTINGS.contains(&name) || name == "wait_end_of_query",
+                "{name} is sent and not checked by detect"
+            );
+        }
+    }
+
+    #[test]
+    fn versions_and_engines_are_read_from_the_server_answers() {
+        assert_eq!(
+            version(
+                "26.3.66.4
+"
+            ),
+            Some(StoreVersion {
+                major: 26,
+                minor: 3
+            })
+        );
+        assert_eq!(version("26"), None);
+        assert_eq!(engine_family("SharedMergeTree"), EngineFamily::Shared);
+        assert_eq!(
+            engine_family("ReplicatedAggregatingMergeTree"),
+            EngineFamily::Replicated
+        );
+        assert_eq!(
+            engine_family("AggregatingMergeTree"),
+            EngineFamily::MergeTree
+        );
+    }
+
+    #[test]
+    fn the_selftest_block_follows_the_table() {
+        let block = selftest_block(
+            Uuid::from_bytes([1; 16]),
+            WalEpoch::from_bytes([2; 16]),
+            Timestamp::from_micros(7),
+        )
+        .unwrap();
+        assert_eq!(block.rows(), 1);
+    }
+
+    #[test]
+    fn credentials_do_not_print_their_password() {
+        let credentials = Credentials {
+            user: "crucible_ingest".to_owned(),
+            password: "hunter2".to_owned(),
+        };
+        assert!(!format!("{credentials:?}").contains("hunter2"));
     }
 }
