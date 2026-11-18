@@ -193,3 +193,46 @@ export async function statelessScenario(
 export function inMemoryPair(): [InMemoryTransport, InMemoryTransport] {
   return InMemoryTransport.createLinkedPair();
 }
+
+/** A real modern `tools/call echo` request, as the official client sends it, for hand-built exchanges. */
+export interface Template {
+  url: string;
+  headers: Headers;
+  body: string;
+}
+
+export async function modernTemplate(): Promise<Template> {
+  let template: Template | undefined;
+  const handler = createMcpHandler(buildServer);
+  const server = await host(async (request) => {
+    if (request.method === "POST" && template === undefined) {
+      const body = await request.clone().text();
+      if (body.includes('"tools/call"')) {
+        template = { url: request.url, headers: new Headers(request.headers), body };
+      }
+    }
+    return handler.fetch(request);
+  });
+  const client = newClient("auto");
+  await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+  await client.callTool({ name: "echo", arguments: { text: "hello" } });
+  await client.close();
+  await server.close();
+  await handler.close();
+  if (template === undefined) {
+    throw new Error("no modern tools/call request was captured");
+  }
+  return template;
+}
+
+/** A request built from `template` after `mutate` edits its body and headers. */
+export function fromTemplate(
+  template: Template,
+  mutate: (body: Record<string, unknown>, headers: Headers) => void,
+): Request {
+  const body = JSON.parse(template.body) as Record<string, unknown>;
+  const headers = new Headers(template.headers);
+  headers.delete("content-length");
+  mutate(body, headers);
+  return new Request(template.url, { method: "POST", headers, body: JSON.stringify(body) });
+}
