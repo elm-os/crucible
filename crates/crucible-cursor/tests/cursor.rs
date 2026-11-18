@@ -69,6 +69,18 @@ fn position() -> impl Strategy<Value = Position> {
                 parent: SpanId::from_bytes(parent),
                 last: (start, SpanId::from_bytes(span)),
             }),
+        (
+            window(),
+            any_time(),
+            any_time(),
+            any::<u32>(),
+            any::<[u8; 8]>()
+        )
+            .prop_map(|(window, as_of, minute, hash, span)| Position::SearchPage {
+                window,
+                as_of,
+                last: (minute, hash, SpanId::from_bytes(span)),
+            }),
         (window(), any_time(), any_time(), any::<[u8; 8]>()).prop_map(
             |(window, as_of, start, span)| Position::SpanPage {
                 window,
@@ -94,9 +106,10 @@ fn position() -> impl Strategy<Value = Position> {
     ]
 }
 
-const ROUTES: [Route; 6] = [
+const ROUTES: [Route; 7] = [
     Route::TraceList,
     Route::SpanChildren,
+    Route::Search,
     Route::SpanList,
     Route::SessionList,
     Route::UserList,
@@ -304,7 +317,7 @@ fn golden_ring() -> KeyRing {
 const ISSUED: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
 const MINUTE: i64 = 60_000_000;
 
-fn golden_cursors() -> [Cursor; 5] {
+fn golden_cursors() -> [Cursor; 6] {
     let window = TimeWindow::new(
         ISSUED.saturating_add_micros(-24 * 60 * MINUTE),
         ISSUED.saturating_add_micros(60 * MINUTE),
@@ -353,6 +366,18 @@ fn golden_cursors() -> [Cursor; 5] {
         ),
         issue(
             Sort::NewestFirst,
+            Position::SearchPage {
+                window,
+                as_of: ISSUED,
+                last: (
+                    ISSUED.saturating_add_micros(-MINUTE),
+                    0xdead_beef,
+                    SpanId::from_bytes(12u64.to_be_bytes()),
+                ),
+            },
+        ),
+        issue(
+            Sort::NewestFirst,
             Position::SpanPage {
                 window,
                 as_of: ISSUED,
@@ -385,6 +410,7 @@ fn the_text_form_matches_a_separate_encoder_of_the_layout() {
         "v1.k1.AQEBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-76WlpaWlpaWlAAAAAAAAAAc.6HzZu5Q6KvE6HcQo5nszEw",
         "v1.k1.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAKg.FdfBQUrJd_OltJZsDIsjFg",
         "v1.k1.AQECAgEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AKWlpaWlpaWlAAAAAAAAAAcAAAAAAAAACgAGYHWGTpFAAAAAAAAAAAs.Fd_lH4ykLaXgVRq4aiiLsQ",
+        "v1.k1.AQEDAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-7wAAAAAAAAAM.O-1AhOlK8y1UTtCXRFcUlA",
         "v1.k1.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08AAAAAAAAAAAw.T8VL5iOpZ_DFL7zjqHEMqA",
         "v1.k1.AQEFAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1hj9PAAAKc2Vzc2lvbi3DpA.tDP91Un0C9wt5e6M-QE0OQ",
     ];
@@ -493,10 +519,18 @@ fn text_that_is_not_a_v1_cursor_is_malformed() {
 
 #[test]
 fn decoding_refuses_what_encoding_cannot_produce() {
-    let [page, head, child, spans, ids] = golden_cursors().map(|c| c.encode().as_bytes().to_vec());
+    let [page, head, child, search, spans, ids] =
+        golden_cursors().map(|c| c.encode().as_bytes().to_vec());
     assert_eq!(
-        (page.len(), head.len(), child.len(), spans.len(), ids.len()),
-        (104, 100, 92, 92, 88)
+        (
+            page.len(),
+            head.len(),
+            child.len(),
+            search.len(),
+            spans.len(),
+            ids.len()
+        ),
+        (104, 100, 92, 96, 92, 88)
     );
     let with = |bytes: &[u8], at: usize, value: u8| {
         let mut bytes = bytes.to_vec();
@@ -516,9 +550,12 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     for route in 2..=7 {
         assert_eq!(with(&head, 2, route), Err(DecodeError::Value), "{route}");
     }
-    // A page of span children read as a trace page runs out of bytes; the reverse has bytes left over.
+    // A page of span children or of search read as a trace page runs out of bytes; the reverse has bytes left
+    // over.
     assert_eq!(with(&child, 2, 1), Err(DecodeError::Length));
     assert_eq!(with(&page, 2, 2), Err(DecodeError::Length));
+    assert_eq!(with(&search, 2, 1), Err(DecodeError::Length));
+    assert_eq!(with(&page, 2, 3), Err(DecodeError::Length));
     // The window must be `from < to`: write `to = from`.
     let mut empty = page.clone();
     let from: [u8; 8] = page[52..60].try_into().unwrap();
@@ -540,7 +577,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     let decoded = Cursor::decode(&longest).unwrap();
     assert_eq!(decoded.encode().as_bytes(), &longest[..]);
     assert_eq!(CursorId::new(&[b'x'; MAX_ID_LEN + 1]), None);
-    for bytes in [&page, &head, &child, &spans, &ids] {
+    for bytes in [&page, &head, &child, &search, &spans, &ids] {
         assert_eq!(
             Cursor::decode(&bytes[..bytes.len() - 1]),
             Err(DecodeError::Length)

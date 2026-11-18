@@ -75,7 +75,8 @@ impl Params {
         values.into_iter().next()
     }
 
-    fn required(&mut self, name: &str) -> Option<String> {
+    /// Takes the value of a required parameter.
+    pub(crate) fn required(&mut self, name: &str) -> Option<String> {
         let value = self.optional(name);
         if value.is_none() {
             self.error(name, "required", "the parameter is required");
@@ -84,7 +85,7 @@ impl Params {
     }
 
     /// A required RFC 3339 time inside the valid range of contract 1.2.
-    fn time(&mut self, name: &str) -> Option<Timestamp> {
+    pub(crate) fn time(&mut self, name: &str) -> Option<Timestamp> {
         let text = self.required(name)?;
         self.parse_time(name, &text)
     }

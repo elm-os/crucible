@@ -43,7 +43,9 @@ pnpm --filter crucible-ui exec playwright test
 | Session and user: links | Not applicable | Not applicable | Not applicable | No session or user in the URL points back to its list and requests nothing |
 | Trace: summary | Skeleton lines after 300 ms | Name, status as icon and label, start, duration, cost, tokens, span count; the partial or lagging notice from `meta`; on a paged trace, that totals cover the loaded spans | The page title and trace id stay; the spans section carries the one error card for the trace | Not applicable: a trace with no spans shows the spans section's empty state |
 | Trace: spans (timeline) | Eight skeleton rows after 300 ms, announced | The span tree as a virtualized UI SDK waterfall: type, name, error marker, bar on the shared axis and duration; unpaged traces open fully | In-pane card with a retry that refetches only the trace; a missing trace uses the not-found copy, without a retry | "This trace has no spans to show yet." with "Check again", distinct from not found |
-| Trace: span panel | Skeleton while the trace loads | Status, level, start and offset, duration, model, tokens, cost, child count, ids; a planned note for input, output, attributes and events | Not shown while the trace has failed | "Select a span."; an invalid span link; a span not in the trace; on a paged trace, a span not loaded yet |
+| Trace: span panel | Skeleton while the trace loads | Tabs: Overview (status, level, start and offset, duration, model, tokens, cost, child count, ids), then Input, Output, Attributes and Events, each the payload viewer; the tab is kept in `tab=` | Not shown while the trace has failed | "Select a span."; an invalid span link; a span not in the trace; on a paged trace, a span not loaded yet |
+| Trace: payload (a tab of the span panel) | The open tab asks for the field's first kibibyte only, busy and announced ("Loading the input") | The first kibibyte at once, with the field's size; up to 256 KiB the rest loads by itself, larger fields on "Load 4.2 MB", by byte ranges with a progress bar and Cancel; parsed in a Web Worker into a virtualized tree whose branches open in place, or for `genai_messages` and `indexed_messages` spans a message list first with the JSON a choice away; text, and JSON cut at the size limit, as text | The section card with "Retry input"; when the rest fails, "Couldn't load the full input. The preview above is intact." with its own retry | "No input was recorded." for an empty field; "This span's input isn't stored." when the payload expired or was never stored |
+| Search: results | The results section busy and announced, with skeleton rows after 300 ms | Each hit's span name (a link to the trace with the span selected), type and start, then each matching field's snippet with the matches marked; "Load more results" while there are more; a phrase page without hits reads on by itself | In-section card with the mapped copy, reference id and "Retry results"; a failed further page keeps the hits and offers its own retry | Before a query: "Type what to find." and nothing is asked; no match: "No spans match ..." with "Search the last 30 days"; incomplete when `meta` is partial or lagging |
 | Trace: child spans (paged traces) | A "Loading child spans" row, busy, when a span opens | The page's spans under their parent; a "Show more child spans" row while the cursor has more | A "Couldn't load child spans" row whose activation refetches only that page (or restarts the span's pages after `cursor_invalid`) | A span whose count ran ahead shows no row once its page comes back empty |
 | Trace: agent graph | The layout library loads only for the graph, behind a skeleton after 300 ms | Agents, tools and models as nodes with spans and errors; each node describes its calls; choosing a node filters the timeline | The section card with "Retry agent graph" when the layout library can't load, and the retry works | "This trace has no agents, tools or model calls." with "Show the timeline"; on a paged trace, none among the loaded spans |
 | Trace: links | Not applicable | Not applicable | Not applicable | No trace in the URL, or an id that isn't 32 hex characters, points back to the list and requests nothing |
@@ -67,8 +69,10 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: child spans | `trace.spec.ts` "child spans": loading then success, more, error with retry, empty, unloaded deep link (5) | `trace-tree.test.ts`, `child-pages.test.ts`, `trace-detail.test.tsx` |
 | Trace: agent graph | `trace.spec.ts` "agent graph": loading, success, keyboard and filter, error with retry, empty, paged (6) | `agent-graph.test.ts`, `trace-detail.test.tsx` |
 | Trace: links | `trace.spec.ts` "links" (2) | `trace-detail.test.tsx` |
+| Trace: payload | `trace.spec.ts` "payload": loading, success (tree), success (messages), large field by ranges, error with retry, empty and not stored (6) | `payload-viewer.test.tsx`, `payload-model.test.ts` |
+| Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
-| Phone | `phone.spec.ts` (4) | |
+| Phone | `phone.spec.ts` (5) | |
 
 ## Keyboard paths
 
@@ -79,18 +83,20 @@ pnpm --filter crucible-ui exec playwright test
   "Show span details" opens it again.
 - **Agent graph.** The graph is one tab stop (an APG listbox). Arrows step through every node in flow order, Home
   and End go to the ends, typing jumps by name, Enter or Space chooses, and + and - zoom the canvas.
+- **Payload tree.** The tree is one tab stop (UI SDK Tree). Down and Up move between rows, Right opens a branch
+  and loads its children from the worker, Left closes it; only the rows in view are mounted.
 - **Connect dialog.** Enter opens it with focus in the project id field; Escape closes it and focus returns to
   its trigger.
 
 ## Phone width
 
 At 390 px each page reads without the page scrolling sideways: the traces table scrolls inside its frame, the
-waterfall drops to name, bar and duration, and the span panel becomes a bottom sheet.
+waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap.
 
 ## Not covered yet
 
-- Full input and output payloads, attributes and events need the span detail and payload endpoints (contract
-  12.6), which do not exist yet; the span panel shows the core fields and says the rest is planned.
+- The span panel's metadata and MCP tabs wait for the payload route's `metadata`, `mcp_args` and `mcp_result`
+  selectors (contract 12.6), which it does not serve yet.
 - A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
   `ancestors_of` (contract 8.8); the panel says how to find it.
 - Home's sections will fetch once the data-bounds and metrics screens land; their four states will join this

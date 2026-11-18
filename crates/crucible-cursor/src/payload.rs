@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | payload version, 1 |
 //! | 1 | kind: 1 `page`, 2 `head` |
-//! | 2 | route: 1 trace list, 2 span children, 4 span list, 5 session list, 6 user list, 7 a user's sessions |
+//! | 2 | route: 1 trace list, 2 span children, 3 search, 4 span list, 5 session list, 6 user list, 7 a user's sessions |
 //! | 3 | sort: 1 newest first, 2 oldest first |
 //! | 4..20 | project id |
 //! | 20..36 | filter hash |
@@ -18,6 +18,7 @@
 //! | page, trace list | window `from` and `to`, `as_of`, then the last row's `start_time`, `trace_hash` (`u32`) and `trace_id` | 104 |
 //! | head, trace list | window `from` and `to`, `as_of`, `wal_epoch`, LSN (`u64`) | 100 |
 //! | page, span children | `trace_id`, parent `span_id`, then the last child's `start_time` and `span_id` | 92 |
+//! | page, search | window `from` and `to`, `as_of`, then the last hit's `start_minute`, `trace_hash` (`u32`) and `span_id` | 96 |
 //! | page, span list | window `from` and `to`, `as_of`, then the last row's `start_time` and `span_id` | 92 |
 //! | page, session list, user list or a user's sessions | window `from` and `to`, the last row's `last_seen`, then its id: length (`u16`) and bytes | 78 to 590 |
 //!
@@ -87,6 +88,8 @@ pub enum Route {
     TraceList,
     /// `GET projects/{id}/traces/{trace_id}/spans`.
     SpanChildren,
+    /// `POST projects/{id}/search`.
+    Search,
     /// `GET projects/{id}/spans`.
     SpanList,
     /// `GET projects/{id}/sessions`.
@@ -102,6 +105,7 @@ impl Route {
         match self {
             Self::TraceList => 1,
             Self::SpanChildren => 2,
+            Self::Search => 3,
             Self::SpanList => 4,
             Self::SessionList => 5,
             Self::UserList => 6,
@@ -113,6 +117,7 @@ impl Route {
         match code {
             1 => Some(Self::TraceList),
             2 => Some(Self::SpanChildren),
+            3 => Some(Self::Search),
             4 => Some(Self::SpanList),
             5 => Some(Self::SessionList),
             6 => Some(Self::UserList),
@@ -271,6 +276,15 @@ pub enum Position {
         /// The sort tuple `(start_time, span_id)` of the last child.
         last: (Timestamp, SpanId),
     },
+    /// The next page of a search.
+    SearchPage {
+        /// The window of the search.
+        window: TimeWindow,
+        /// Fixed by the first page; later pages read only rows that arrived by then.
+        as_of: Timestamp,
+        /// The key `(start_minute, trace_hash, span_id)` of the last hit.
+        last: (Timestamp, u32, SpanId),
+    },
     /// The next page of the span list.
     SpanPage {
         /// The window of the list.
@@ -297,6 +311,7 @@ impl Position {
         match self {
             Self::TracePage { .. }
             | Self::ChildPage { .. }
+            | Self::SearchPage { .. }
             | Self::SpanPage { .. }
             | Self::IdPage { .. } => Kind::Page,
             Self::TraceHead { .. } => Kind::Head,
@@ -308,6 +323,7 @@ impl Position {
         match self {
             Self::TracePage { .. } | Self::TraceHead { .. } => Route::TraceList,
             Self::ChildPage { .. } => Route::SpanChildren,
+            Self::SearchPage { .. } => Route::Search,
             Self::SpanPage { .. } => Route::SpanList,
             Self::IdPage { list, .. } => list.route(),
         }
@@ -318,6 +334,7 @@ impl Position {
         match self {
             Self::TracePage { window, .. }
             | Self::TraceHead { window, .. }
+            | Self::SearchPage { window, .. }
             | Self::SpanPage { window, .. }
             | Self::IdPage { window, .. } => Some(*window),
             Self::ChildPage { .. } => None,
@@ -436,6 +453,17 @@ impl Cursor {
                 w.time(start);
                 w.put(span.as_bytes());
             }
+            Position::SearchPage {
+                window,
+                as_of,
+                last: (minute, hash, span),
+            } => {
+                w.window(window);
+                w.time(as_of);
+                w.time(minute);
+                w.put(&hash.to_be_bytes());
+                w.put(span.as_bytes());
+            }
             Position::SpanPage {
                 window,
                 as_of,
@@ -498,6 +526,15 @@ impl Cursor {
                 parent: SpanId::from_bytes(r.array()?),
                 last: (r.time()?, SpanId::from_bytes(r.array()?)),
             },
+            (Kind::Page, Route::Search) => Position::SearchPage {
+                window: r.window()?,
+                as_of: r.time()?,
+                last: (
+                    r.time()?,
+                    u32::from_be_bytes(r.array()?),
+                    SpanId::from_bytes(r.array()?),
+                ),
+            },
             (Kind::Page, Route::SpanList) => Position::SpanPage {
                 window: r.window()?,
                 as_of: r.time()?,
@@ -509,6 +546,7 @@ impl Cursor {
             (
                 Kind::Head,
                 Route::SpanChildren
+                | Route::Search
                 | Route::SpanList
                 | Route::SessionList
                 | Route::UserList

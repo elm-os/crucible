@@ -1,6 +1,10 @@
 import { type Connection, connectionKey } from "@/lib/connection";
 import { fromHttpFailure, networkError, type UiError } from "./errors";
 import type { EntityParams } from "./generated/EntityParams";
+import type { PayloadField } from "./generated/PayloadField";
+import type { PayloadParams } from "./generated/PayloadParams";
+import type { SearchPage } from "./generated/SearchPage";
+import type { SearchRequest } from "./generated/SearchRequest";
 import type { SessionDetail } from "./generated/SessionDetail";
 import type { SessionListParams } from "./generated/SessionListParams";
 import type { SessionPage } from "./generated/SessionPage";
@@ -194,6 +198,90 @@ export function listSpanChildren(
     query,
     signal,
   );
+}
+
+async function send(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { credentials: "same-origin", ...init });
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    throw networkError();
+  }
+}
+
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await send(`${BASE}${path}`, {
+    method: "POST",
+    signal,
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...authorization(connectionKey()),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await failure(response);
+  if (!isJson(response)) throw await failure(response, false);
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw await failure(response, false);
+  }
+}
+
+export function searchSpans(
+  project: string,
+  request: SearchRequest,
+  signal?: AbortSignal,
+): Promise<SearchPage> {
+  return apiPost(projectPath(project, "/search"), request, signal);
+}
+
+export interface PayloadSpan {
+  traceId: string;
+  spanId: string;
+  startTime: string;
+}
+
+export interface PayloadBytes {
+  bytes: Uint8Array;
+  // The length of the whole field.
+  total: number;
+}
+
+// The field's length from `Content-Range: bytes <first>-<last>/<length>` or `bytes */<length>`.
+function rangeTotal(response: Response): number | null {
+  const match = /\/(\d+)\s*$/.exec(response.headers.get("content-range") ?? "");
+  return match ? Number(match[1]) : null;
+}
+
+// Bytes `first` to `last` (inclusive; to the end when null) of one payload field. The server sends an
+// empty field whole, and answers a range past the end with its length only.
+export async function getPayloadRange(
+  project: string,
+  span: PayloadSpan,
+  field: PayloadField,
+  first: number,
+  last: number | null,
+  signal?: AbortSignal,
+): Promise<PayloadBytes> {
+  const query: PayloadParams = { field, start_time: span.startTime };
+  const path = projectPath(
+    project,
+    `/spans/${encodeURIComponent(span.traceId)}/${encodeURIComponent(span.spanId)}/payload`,
+  );
+  const params = new URLSearchParams({ field: query.field, start_time: query.start_time });
+  const response = await send(`${BASE}${path}?${params}`, {
+    signal,
+    headers: { Range: `bytes=${first}-${last ?? ""}`, ...authorization(connectionKey()) },
+  });
+  if (response.status === 416) {
+    return { bytes: new Uint8Array(0), total: rangeTotal(response) ?? 0 };
+  }
+  if (!response.ok) throw await failure(response);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const total = response.status === 206 ? (rangeTotal(response) ?? bytes.length) : bytes.length;
+  return { bytes, total };
 }
 
 async function failure(response: Response, readBody = true): Promise<UiError> {

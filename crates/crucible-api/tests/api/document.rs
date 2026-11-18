@@ -28,6 +28,7 @@ fn concrete(path: &str) -> String {
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
         .replace("{session_id}", "s1")
         .replace("{user_id}", "u1")
+        .replace("{span_id}", "0000000000000001")
 }
 
 #[test]
@@ -58,6 +59,6 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        assert_eq!(operations, 10);
+        assert_eq!(operations, 12);
     });
 }

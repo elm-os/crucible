@@ -5,7 +5,9 @@
 #![cfg(test)]
 
 mod list;
+mod payload;
 mod properties;
+mod search;
 mod sessions;
 mod span_list;
 mod store;

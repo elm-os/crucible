@@ -40,6 +40,9 @@ const HOUR: i64 = 3_600 * SECOND;
 const DAY: i64 = 24 * HOUR;
 /// The third payload input: a token far enough in that its snippet does not start at the field's first byte.
 const FILLER: usize = 100;
+/// The second payload input: a phrase this far after the first occurrence of its first token, beyond a snippet
+/// anchored on that token.
+const PHRASE_GAP: usize = 1_000;
 
 fn at(micros: i64) -> Timestamp {
     T0.saturating_add_micros(micros)
@@ -107,6 +110,7 @@ const OUTPUTS: [&str; 4] = ["the answer is foo", "", "world", ""];
 
 fn input(row: usize) -> String {
     match row {
+        1 => format!("Rate {} RATE limit exceeded", "y".repeat(PHRASE_GAP)),
         2 => format!("{}{}", "x".repeat(FILLER), INPUTS[2]),
         _ => INPUTS[row].to_owned(),
     }
@@ -754,6 +758,8 @@ async fn search_and_payload(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         fields: fields.to_vec(),
         filter,
         limit: 10,
+        cursor: None,
+        as_of: T0,
     };
     let both = [SearchField::Input, SearchField::Output];
     let hits = async |request: &SearchRequest| -> Result<Vec<Vec<Value>>> {
@@ -814,6 +820,61 @@ async fn search_and_payload(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         &found,
         &vec![vec![id8(SALT, 0)], vec![id8(SALT, 2)]],
     )?;
+    plans += 3;
+
+    // A phrase far from the first occurrence of its first token: the snippet is anchored on the phrase, so the
+    // phrase is inside it, and the first token alone is not.
+    let phrase = input(1);
+    let position = phrase
+        .to_ascii_lowercase()
+        .find("rate limit exceeded")
+        .unwrap_or(0)
+        + 1;
+    let found = hits(&request(
+        &["rate", "LIMIT", "exceeded"],
+        TokenMode::Phrase,
+        &[SearchField::Input],
+        Filter::all(),
+    ))
+    .await?;
+    same(
+        "a phrase search anchors its snippet on the phrase",
+        &found,
+        &vec![vec![
+            id8(SALT, 1),
+            Value::UInt(position as u64),
+            text(&phrase[position - 1 - 80..]),
+        ]],
+    )?;
+    plans += 1;
+
+    // Pages: the hits newest first along the key, one more than the page, then the rest after the cursor; and
+    // nothing that arrived after `as_of`. The fixture's payloads share their minute and trace, so the key
+    // orders them by span id.
+    let page = |limit, cursor, as_of| SearchRequest {
+        limit,
+        cursor,
+        as_of,
+        ..request(&["world"], TokenMode::Any, &both, Filter::all())
+    };
+    let keys = async |request: SearchRequest| -> Result<Vec<Value>> {
+        let plan = live(search(scope, f.window, &clamp(), session, &request)?)?;
+        Ok(column(&rows(ctx, plan.hits).await?, 2))
+    };
+    let mut newest = [0, 2].map(span_id);
+    newest.sort_by(|a, b| b.as_bytes().cmp(a.as_bytes()));
+    let id = |span: &SpanId| Value::Bytes(span.as_bytes().to_vec());
+    let first = keys(page(1, None, T0)).await?;
+    same(
+        "the first page of hits, newest first",
+        &first,
+        &newest.iter().map(id).collect(),
+    )?;
+    let cursor = Some((T0.floor_minute(), f.trace.trace_hash(), newest[0]));
+    let second = keys(page(1, cursor, T0)).await?;
+    same("the page after the cursor", &second, &vec![id(&newest[1])])?;
+    let early = keys(page(10, None, T0.saturating_add_micros(-1))).await?;
+    same("no hit arrived by an earlier as_of", &early, &Vec::new())?;
     plans += 3;
 
     // A filter whose payload conjuncts restrict the hits and whose rest restricts the core rows.

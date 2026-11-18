@@ -4,22 +4,26 @@
 //!
 //! Canonical filter forms, which the filter hash covers: the trace list and the span list hash the canonical
 //! bytes of their list filter (`Filter::canonical_bytes`, empty without a filter); the children of a span are
-//! selected by the trace and the parent span, so their 24 raw bytes are the form; the session and user lists
-//! take no filter, so their form is empty; the sessions of a user are selected by the user, so the bytes of
-//! its id are the form.
+//! selected by the trace and the parent span, so their 24 raw bytes are the form; a search is selected by its
+//! mode, fields and tokens (`SearchQuery::canonical`); the session and user lists take no filter, so their
+//! form is empty; the sessions of a user are selected by the user, so the bytes of its id are the form.
 
 use crucible_cursor::{
     Binding, Cursor, CursorError, CursorId, FilterHash, IdList, KeyRing, Kind, Position, Route,
     Sort,
 };
 use crucible_plan::Filter;
-use crucible_query::{ChildCursor, HeadCursor, IdCursor, PageCursor, SpanListCursor};
+use crucible_query::{
+    ChildCursor, HeadCursor, IdCursor, PageCursor, SearchCursor, SearchQuery, SpanListCursor,
+};
 use crucible_records::{ProjectId, SpanId, TimeWindow, Timestamp, TraceId};
 
 /// The order of the trace list, the span list and the lists keyed by a text id.
 const TRACE_SORT: Sort = Sort::NewestFirst;
 /// The order of the children of a span.
 const CHILD_SORT: Sort = Sort::OldestFirst;
+/// The order of search hits.
+const SEARCH_SORT: Sort = Sort::NewestFirst;
 
 fn list_filters(filter: &Filter) -> FilterHash {
     FilterHash::from_bytes(filter.hash())
@@ -133,6 +137,41 @@ impl Cursors<'_> {
             last,
         };
         self.seal(child_filters(trace_id, parent), CHILD_SORT, position)
+    }
+
+    /// A search cursor, bound to the search's mode, fields and tokens.
+    pub(crate) fn seal_search(&self, cursor: &SearchCursor, query: &SearchQuery) -> String {
+        let (_, window, as_of, last) = cursor.parts();
+        let position = Position::SearchPage {
+            window,
+            as_of,
+            last,
+        };
+        self.seal(FilterHash::of(&query.canonical()), SEARCH_SORT, position)
+    }
+
+    /// The cursor of `query`, whose window it must share.
+    pub(crate) fn open_search(
+        &self,
+        text: &str,
+        query: &SearchQuery,
+    ) -> Result<SearchCursor, CursorError> {
+        let list = (Route::Search, Kind::Page);
+        let filters = FilterHash::of(&query.canonical());
+        let cursor = self.open(text, list, filters, SEARCH_SORT, Some(query.window))?;
+        match cursor.position {
+            Position::SearchPage {
+                window,
+                as_of,
+                last,
+            } => Ok(SearchCursor::from_parts(
+                cursor.project_id,
+                window,
+                as_of,
+                last,
+            )),
+            _ => Err(CursorError::WrongKind),
+        }
     }
 
     /// The page cursor of a trace-list request over `window` with `filter`.

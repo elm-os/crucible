@@ -16,7 +16,9 @@
 mod data_bounds;
 mod enums;
 mod meta;
+mod payload;
 mod problem;
+mod search;
 mod sessions;
 mod span_list;
 mod spans;
@@ -26,9 +28,15 @@ mod users;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
-pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
+pub use enums::{
+    Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason, StatusCode,
+};
 pub use meta::Meta;
+pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use search::{
+    SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
+};
 pub use sessions::{EntityParams, SessionDetail, SessionItem, SessionListParams, SessionPage};
 pub use span_list::{SpanListItem, SpanListPage, SpanListParams};
 pub use spans::{SpanPage, SpanPageParams};
@@ -43,7 +51,10 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<DataBounds>();
     visitor.visit::<EntityParams>();
+    visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
+    visitor.visit::<SearchPage>();
+    visitor.visit::<SearchRequest>();
     visitor.visit::<SessionDetail>();
     visitor.visit::<SessionListParams>();
     visitor.visit::<SessionPage>();

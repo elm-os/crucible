@@ -35,8 +35,9 @@ impl Modify for ProjectKey {
     ),
     modifiers(&ProjectKey),
     tags(
+        (name = "search", description = "Full-text search over the spans' inputs, outputs and metadata."),
         (name = "sessions", description = "Sessions: the spans that share a session id, aggregated."),
-        (name = "traces", description = "Traces, their spans and the project's data bounds."),
+        (name = "traces", description = "Traces, their spans and their payloads, and the project's data bounds."),
         (name = "users", description = "Users: the spans that share a user id, aggregated, and their sessions."),
     ),
 )]
