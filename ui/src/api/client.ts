@@ -1,3 +1,4 @@
+import { type Connection, connectionKey } from "@/lib/connection";
 import { fromHttpFailure, networkError, type UiError } from "./errors";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
@@ -19,7 +20,7 @@ export async function apiGet<T>(path: string, query: Query, signal?: AbortSignal
     response = await fetch(`${BASE}${path}${search}`, {
       signal,
       credentials: "same-origin",
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...authorization(connectionKey()) },
     });
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -32,6 +33,28 @@ export async function apiGet<T>(path: string, query: Query, signal?: AbortSignal
     return (await response.json()) as T;
   } catch {
     throw await failure(response, false);
+  }
+}
+
+// Temporary (milestone 1): the Connect dialog's key stands in for a session.
+function authorization(key: string | null): Record<string, string> {
+  return key === null ? {} : { Authorization: `Bearer ${key}` };
+}
+
+export type ConnectionCheck = "ok" | "rejected" | "wrong_project" | "unreachable";
+
+// Asks the server whether it accepts the key for the project. Any answer past authentication counts
+// as accepted, including a store that is down: the sections then say so themselves.
+export async function checkConnection(connection: Connection): Promise<ConnectionCheck> {
+  try {
+    const response = await fetch(`${BASE}${projectPath(connection.project, "/data-bounds")}`, {
+      headers: { Accept: "application/json", ...authorization(connection.key) },
+    });
+    if (response.status === 401) return "rejected";
+    if (response.status === 404) return "wrong_project";
+    return "ok";
+  } catch {
+    return "unreachable";
   }
 }
 

@@ -59,9 +59,10 @@ const COPY: Record<UiErrorKind, Copy> = {
     action: "reset_list",
     autoRetries: 0,
   },
+  // Milestone 1 has no sessions: the Connect dialog's key stands in for signing in.
   unauthenticated: {
-    title: "Your session has ended.",
-    detail: "Sign in again to continue.",
+    title: "Connect to a project to see this.",
+    detail: "This development preview has no sign-in yet. Connect with a project id and its key.",
     action: "sign_in",
     autoRetries: 0,
   },

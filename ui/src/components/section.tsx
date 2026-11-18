@@ -5,6 +5,7 @@ import { Button } from "@ui-sdk/react/button";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { asUiError, type UiError } from "@/api/errors";
 import { AlertIcon } from "./icons";
+import { ConnectTrigger } from "./shell/connect-dialog";
 
 type LoadingPhase = "hidden" | "skeleton" | "slow";
 
@@ -138,6 +139,7 @@ function ErrorCard({
       <p className="text-data text-ink-soft">{error.detail}</p>
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
         {error.action === "retry" ? <Button onClick={onRetry}>Retry {label}</Button> : null}
+        {error.action === "sign_in" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
         <Reference id={error.requestId} />
       </div>
     </div>

@@ -1176,7 +1176,8 @@ fn window_clause(id: TableId, window: TimeWindow) -> (String, String, Vec<String
     let def = table(id);
     let time = def.retention.time_column;
     let last = window.to().saturating_add_micros(-1);
-    let minute = |t: Timestamp| (t.floor_minute().micros() / 1_000_000).to_string();
+    // Ten digits: the server takes a shorter `DateTime` parameter for a broken date.
+    let minute = |t: Timestamp| format!("{:010}", t.floor_minute().micros() / 1_000_000);
     let date = |t: Timestamp| t.date().to_string();
     let (mut filter, mut having, mut values) = (String::new(), String::new(), Vec::new());
     match def.column(time).unwrap().ty {

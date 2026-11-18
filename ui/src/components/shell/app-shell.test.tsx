@@ -1,6 +1,8 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createAgent } from "@ui-sdk/react/agent";
 import { beforeEach, expect, test, vi } from "vitest";
+import { createQueryClient } from "@/components/providers";
 import { rangeStorageKey } from "@/lib/time-range";
 import { AppShell } from "./app-shell";
 
@@ -14,9 +16,11 @@ beforeEach(() => {
 
 function renderShell() {
   return render(
-    <AppShell>
-      <p>Page body</p>
-    </AppShell>,
+    <QueryClientProvider client={createQueryClient()}>
+      <AppShell>
+        <p>Page body</p>
+      </AppShell>
+    </QueryClientProvider>,
   );
 }
 
@@ -29,7 +33,7 @@ test("an agent finds every shell control by name and can change the time range",
     expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
   }
   const labels = components.map((entry) => entry.label);
-  for (const label of ["Pages", "Project", "Time range"]) {
+  for (const label of ["Pages", "Project", "Connect", "Time range"]) {
     expect(labels, `${label} is missing from the snapshot`).toContain(label);
   }
 
