@@ -1836,8 +1836,6 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - Trace detail reads spans in `[min_start, max_end + 1 µs)`, so a span that starts exactly at the trace's end is
   included.
 - `dedup_selftest` is reachable only through `TelemetryStore::dedup_selftest`, never through a plan.
-- The closed measure set has no set merge yet, so no plan reads the `groupUniqArrayArray` columns; the measure is
-  added when the session and user screens need them.
 - The retention clamp of 8.3 is structural: every plan builder takes a `RetentionClamp` and returns `None` when the
   window has fully expired; `QueryPlan::new` is private to `crucible-plan`.
 - `partial_reason: store_unavailable` takes precedence over the other reasons. `not_found` is returned only when the
@@ -1857,21 +1855,33 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   the quarantine root (the `Quarantine` frames may have been collected), with reach `All`.
 - `WalLocator.ordinal` is the span's stage A position in the frame (`Admission::stage_a_ordinals`), which is what a
   payload re-read of the frame sees.
-- `ChModel` does not yet apply query-class guardrails, so it is more permissive than ClickHouse there (milestone 2).
+- `ChModel` applies the query-class guardrails (rows, bytes, time and a memory estimate) and refuses as `TooBroad`
+  like the server. It charges every landed row and byte of the table across all projects, so it refuses earlier than
+  a server would, never later.
 - Live tail: a head cursor carries the issuing node's `wal_epoch` and applied LSN. The store is read with
   `(wal_epoch = E AND (lsn > L OR received_at > as_of)) OR (wal_epoch != E AND received_at >= as_of)`, and the recent
   index by LSN only for a cursor from this node's WAL, so a head that was durable but unapplied when the cursor was
   issued, or that shares the cursor's microsecond, is not missed. The `OR` stops the `received_at` skip index from
   pruning the tail scan (a performance follow-up). A head applied while a page is being built can appear on that page
   and on the next tail, which only inflates `new_count`.
-- Zero-filled `TimeSeries` buckets need nullable output types; until they exist the adapter refuses `Fill::Zero`.
+- `Fill::Zero` is supported. A zero-filled histogram bucket is `([], [])` and a zero-filled set merge is `[]`, not
+  null, because the floor version has no nullable tuple or array; `sum` in a filled bucket is 0, including a bucket
+  whose values are all null.
+- `MetricsQuery.timezone` is accepted but not yet compiled: buckets are UTC. Only the `spans` source over
+  `span_metrics` is compiled; the `analytics_raw` fallback and the `mcp_ops` and `traces` sources come with their
+  slices.
+- A filter's canonical form and its 16-byte hash (`Filter::hash`) are what cursors bind to (`FilterHash`). A span-list
+  metadata condition must be a top-level conjunct; any other placement is refused as `UnsupportedFilter`.
+- Session and user list pages are not snapshots: the rollups carry no `as_of`, so a later page can reflect newer
+  rows.
 - `TokenMode::Phrase` renders as all-tokens, because 26.3 has no phrase-match function; `Pred::TextMatch` is a
   case-insensitive substring match.
 - `SemiJoin` enforces `max_ids` through `max_rows_in_set`, which applies to every set in the statement.
 - Mutation ids are the newest mutation of the table and partition; lifecycle work is leader-only and sequential.
 - Output columns are nullable wherever a value can be absent: zero-filled `TimeSeries` buckets (for `min`, `max`,
-  `uniq`, histogram and pick measures) and `uniq` over a nullable column. The closed measure set gains `set_merge`
-  for the `groupUniqArrayArray` columns, returning an array. One IR change carries both (milestone 2.1).
+  `uniq` and pick measures) and `uniq` over a nullable column. The closed measure set has `set_merge` for the
+  `groupUniqArrayArray` columns, returning an array. A set merge above the column bound is not compared with a server
+  in the differential suite, because which elements a merged partial keeps is the server's choice.
 - `TextSearch` tokens are lowered by the caller; the server lowers the column only. `Pred::TextMatch` is
   case-insensitive for ASCII. A histogram merge carries no zero-count keys (`sumMap` drops them). A block resent after
   its partition was dropped lands again.
@@ -2888,3 +2898,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-17 | Additive: `TelemetryStore` final shape with `probe(BatchProbe)`, typed result rows and `Stores` (2, 2.6, 8.1, 8.5) |
 | v2 | 2026-11-17 | Clarification from the ingest model: probe once in doubt, probe results expire, quarantine only after an absent probe, quarantined pairs are read gaps (5.5, 5.6, 6.2, I3) |
 | v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums leave out spans with `usage_aggregate = true` (an observed usage-bearing descendant); a Basic public key that does not match the secret key's row is refused with 401 |
+| v2 | 2026-11-18 | Settled in code by the read IR (8.9): model guardrails, zero fill and its empty values, UTC buckets, compiled sources, filter hash binding, metadata conjuncts, rollup pages without `as_of`, set merge |
