@@ -25,6 +25,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
 use crucible_auth::{KeyVerifier, SecretKey, StaticKey, StaticKeys};
+use crucible_cursor::{KeyRing, Kid, SigningKey};
 use crucible_env::Env;
 use crucible_records::{ApiKeyId, Timestamp};
 use http_body_util::BodyExt as _;
@@ -67,14 +68,21 @@ fn settings() -> Arc<dyn ProjectSettingsSource> {
     Arc::new(StaticProjectSettings::default())
 }
 
+/// The node's cursor-signing key, `test`.
+pub(crate) fn cursor_keys() -> Arc<KeyRing> {
+    let key = SigningKey::new(Kid::new("test").unwrap(), [9; 32]);
+    Arc::new(KeyRing::new(key))
+}
+
 /// The API over the world's query service.
 pub(crate) fn api(env: &Env, world: &World) -> Router {
-    crucible_api::router(env, world.service.clone(), keys(env), settings())
+    let service = world.service.clone();
+    crucible_api::router(env, service, keys(env), settings(), cursor_keys())
 }
 
 /// The API before a telemetry store is configured.
 pub(crate) fn api_without_store(env: &Env) -> Router {
-    crucible_api::router_without_store(env, keys(env), settings())
+    crucible_api::router_without_store(env, keys(env), settings(), cursor_keys())
 }
 
 /// A response, its body parsed as JSON (`Null` when it is not JSON).

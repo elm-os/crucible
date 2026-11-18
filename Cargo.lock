@@ -644,6 +644,7 @@ dependencies = [
  "crucible-api",
  "crucible-api-types",
  "crucible-auth",
+ "crucible-cursor",
  "crucible-env",
  "crucible-env-prod",
  "crucible-ingest",
@@ -694,6 +695,7 @@ dependencies = [
  "crucible-api-types",
  "crucible-auth",
  "crucible-chfmt",
+ "crucible-cursor",
  "crucible-env",
  "crucible-plan",
  "crucible-query",
@@ -775,6 +777,18 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "crucible-cursor"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "crucible-records",
+ "hmac",
+ "proptest",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

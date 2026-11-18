@@ -6,7 +6,7 @@ use crucible_api_types::{Saturation, usd_from_nanos};
 use crucible_query as query;
 use crucible_records::{SpanId, Timestamp};
 
-use crate::cursor;
+use crate::cursor::Cursors;
 
 fn micros_between(start: Timestamp, end: Timestamp) -> u64 {
     u64::try_from(end.micros().saturating_sub(start.micros())).unwrap_or(0)
@@ -55,23 +55,26 @@ fn list_item(item: &query::TraceListItem) -> wire::TraceListItem {
     }
 }
 
-pub(crate) fn trace_list(page: &query::TraceListPage) -> wire::TraceListPage {
+pub(crate) fn trace_list(
+    page: &query::TraceListPage,
+    cursors: &Cursors<'_>,
+) -> wire::TraceListPage {
     wire::TraceListPage {
         data: page.data.iter().map(list_item).collect(),
-        next_cursor: page.next_cursor.as_ref().map(cursor::encode_page),
+        next_cursor: page.next_cursor.as_ref().map(|c| cursors.seal_page(c)),
         has_more: page.has_more,
-        head_cursor: page.head_cursor.as_ref().map(cursor::encode_head),
+        head_cursor: page.head_cursor.as_ref().map(|c| cursors.seal_head(c)),
         new_count: None,
         meta: meta(&page.meta),
     }
 }
 
-pub(crate) fn trace_tail(tail: &query::TraceTail) -> wire::TraceListPage {
+pub(crate) fn trace_tail(tail: &query::TraceTail, cursors: &Cursors<'_>) -> wire::TraceListPage {
     wire::TraceListPage {
         data: tail.data.iter().map(list_item).collect(),
         next_cursor: None,
         has_more: tail.has_more,
-        head_cursor: Some(cursor::encode_head(&tail.head_cursor)),
+        head_cursor: Some(cursors.seal_head(&tail.head_cursor)),
         new_count: Some(tail.new_count),
         meta: meta(&tail.meta),
     }
@@ -113,10 +116,10 @@ pub(crate) fn trace_detail(detail: &query::TraceDetail) -> wire::TraceDetail {
     }
 }
 
-pub(crate) fn span_page(page: &query::SpanChildrenPage) -> wire::SpanPage {
+pub(crate) fn span_page(page: &query::SpanChildrenPage, cursors: &Cursors<'_>) -> wire::SpanPage {
     wire::SpanPage {
         data: page.data.iter().map(span).collect(),
-        next_cursor: page.next_cursor.as_ref().map(cursor::encode_child),
+        next_cursor: page.next_cursor.as_ref().map(|c| cursors.seal_child(c)),
         has_more: page.has_more,
         meta: meta(&page.meta),
     }

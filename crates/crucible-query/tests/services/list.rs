@@ -9,11 +9,11 @@ use crucible_query::{
     TraceListItem, TraceListPage, TraceListQuery, TraceTail, TraceTailQuery,
 };
 use crucible_recent::SpanEntry;
-use crucible_records::{HeadKind, Lsn, TableId, TimeWindow, Timestamp, TraceId};
+use crucible_records::{HeadKind, Lsn, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
 use crucible_schema::TraceHeadsCol;
 
 use crate::store::stored_row;
-use crate::world::{DAY, NOW, World, ctx, project, run, span, trace};
+use crate::world::{DAY, EPOCH, NOW, World, ctx, project, run, span, trace};
 
 const MS: i64 = 1_000;
 
@@ -169,10 +169,8 @@ fn live_tail_returns_what_arrived_after_the_head_cursor() {
     let quiet = tail(&world, cursor);
     assert!(quiet.data.is_empty() && quiet.new_count == 0 && !quiet.has_more);
 
-    // Two traces arrive; one backdated before trace 1, one after it. The clock moves first: the store side of
-    // the tail is `received_at > as_of`, so a head accepted in the very microsecond of the cursor's `as_of`
-    // is served by the index's LSN map only, and is missed once it leaves the index (reported as a gap).
-    world.clock.advance(Duration::from_millis(5));
+    // Two traces arrive; one backdated before trace 1, one after it. They arrive in the very microsecond of the
+    // cursor's `as_of`, and their LSNs tell that they are new, from the index and later from the store.
     world.ack(vec![span(2, 20, 0, at(-60))]);
     world.ack(vec![span(3, 30, 0, at(-5)), span(1, 11, 10, at(-4))]);
     let fresh = tail(&world, cursor);
@@ -192,6 +190,76 @@ fn live_tail_returns_what_arrived_after_the_head_cursor() {
         traces(&page(&world, 10, None).data),
         [trace(3), trace(1), trace(2)]
     );
+}
+
+#[test]
+fn live_tail_finds_a_head_that_was_durable_but_unapplied_when_the_cursor_was_issued() {
+    let mut world = World::new(100);
+    world.ack(vec![span(1, 10, 0, at(-30))]);
+    world.settle();
+    // Trace 2 is acknowledged before the first page, and stage B applies it only after that page is served, so
+    // it arrived before the cursor's `as_of` and the page did not show it.
+    world.ack_only(vec![span(2, 20, 0, at(-20))]);
+    world.clock.advance(Duration::from_millis(5));
+    let first = page(&world, 10, None);
+    assert_eq!(traces(&first.data), [trace(1)]);
+    let cursor = first.head_cursor.unwrap();
+    world.apply_pending();
+    // The store serves it and the index forgets it before the next poll: its LSN alone says it is new.
+    world.settle();
+    let fresh = tail(&world, cursor);
+    assert_eq!(traces(&fresh.data), [trace(2)]);
+    assert!(!fresh.data[0].recent);
+}
+
+#[test]
+fn live_tail_finds_a_head_that_arrived_after_the_cursors_as_of_below_its_lsn() {
+    // A head that arrived after the cursor's `as_of` but whose LSN is not above the cursor's: its page left it
+    // out by arrival. The service reads the applied LSN before the clock, so on one clock this takes a wall clock
+    // that stepped back; the cursor is built by hand.
+    let mut world = World::new(100);
+    world.clock.advance(Duration::from_millis(5));
+    let lsn = world.ack(vec![span(1, 10, 0, at(-30))]);
+    let cursor = HeadCursor::from_parts(project(1), window(), NOW, EPOCH, lsn);
+    world.settle();
+    assert_eq!(traces(&tail(&world, cursor).data), [trace(1)]);
+}
+
+#[test]
+fn live_tail_does_not_repeat_a_head_that_arrived_in_the_cursors_microsecond() {
+    let mut world = World::new(100);
+    // Trace 1 arrives at the instant the first page is served, which shows it.
+    world.ack(vec![span(1, 10, 0, at(-30))]);
+    let first = page(&world, 10, None);
+    assert_eq!(traces(&first.data), [trace(1)]);
+    assert_eq!(first.meta.as_of, NOW);
+    let cursor = first.head_cursor.unwrap();
+    assert!(tail(&world, cursor).data.is_empty());
+    world.settle();
+    assert!(tail(&world, cursor).data.is_empty());
+}
+
+#[test]
+fn a_head_cursor_of_another_wal_is_read_by_arrival() {
+    let mut world = World::new(100);
+    world.ack(vec![span(1, 10, 0, at(-30))]);
+    world.clock.advance(Duration::from_millis(5));
+    let first = page(&world, 10, None);
+    let (project_id, window, as_of, _, _) = first.head_cursor.unwrap().parts();
+    // The position of another node, whose LSNs run far ahead of this node's.
+    let foreign = HeadCursor::from_parts(
+        project_id,
+        window,
+        as_of,
+        WalEpoch::from_bytes([7; 16]),
+        Lsn::new(1_000),
+    );
+    world.clock.advance(Duration::from_millis(5));
+    world.ack(vec![span(2, 20, 0, at(-20))]);
+    // By LSN nothing here is above 1,000; by arrival trace 2 is new and trace 1 is not.
+    assert_eq!(traces(&tail(&world, foreign).data), [trace(2)]);
+    world.settle();
+    assert_eq!(traces(&tail(&world, foreign).data), [trace(2)]);
 }
 
 #[test]
@@ -256,7 +324,7 @@ fn cursors_are_bound_to_their_project_and_window() {
     assert_eq!(last, first.data[1].head.key());
     assert_eq!(
         head.parts(),
-        (project(1), window(), as_of, world.index.applied())
+        (project(1), window(), as_of, EPOCH, world.index.applied())
     );
 
     let other_window = TimeWindow::new(window().from(), NOW).unwrap();
@@ -289,7 +357,7 @@ fn cursors_are_bound_to_their_project_and_window() {
         };
         run(world.service.trace_list_since(&ctx(1), query))
     };
-    let foreign = HeadCursor::from_parts(project(2), window(), as_of, Lsn::ZERO);
+    let foreign = HeadCursor::from_parts(project(2), window(), as_of, EPOCH, Lsn::ZERO);
     assert_eq!(
         since(foreign, window()),
         Err(QueryServiceError::CursorInvalid)

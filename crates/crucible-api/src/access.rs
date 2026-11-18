@@ -10,11 +10,13 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use crucible_api_types::ProblemCode;
 use crucible_auth::KeyVerifier;
+use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
 use crucible_records::{ProjectId, RequestId};
 
+use crate::cursor::Cursors;
 use crate::problem::{ApiError, request_id};
 use crate::settings::{ProjectSettings, ProjectSettingsSource};
 
@@ -27,9 +29,20 @@ pub(crate) struct ApiState {
     pub(crate) service: Option<QueryService>,
     pub(crate) keys: Arc<dyn KeyVerifier>,
     pub(crate) settings: Arc<dyn ProjectSettingsSource>,
+    /// The cursor-signing keys.
+    pub(crate) cursors: Arc<KeyRing>,
 }
 
 impl ApiState {
+    /// The cursors of a request of `project`, served now.
+    pub(crate) fn cursors(&self, project: &Project) -> Cursors<'_> {
+        Cursors {
+            ring: &self.cursors,
+            project_id: project.ctx.scope().project_id(),
+            now: self.env.clock.wall_now(),
+        }
+    }
+
     /// The query service, or the problem that says why there is none.
     pub(crate) fn service(&self, request_id: RequestId) -> Result<&QueryService, ApiError> {
         self.service.as_ref().ok_or_else(|| {

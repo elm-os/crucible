@@ -4,10 +4,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crucible_plan::{
-    Pred, TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, trace_list,
+    CmpOp, Pred, TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, trace_list,
 };
 use crucible_recent::{Consistency, ReadState, RecentSpan};
-use crucible_records::{HeadKind, TableId, TimeWindow, TraceId};
+use crucible_records::{HeadKind, Lsn, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
+use crucible_schema::TraceHeadsCol;
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::cursor::{HeadCursor, HeadKey, PageCursor};
@@ -285,6 +286,9 @@ impl QueryService {
         ctx: &ReadContext,
         query: TraceListQuery,
     ) -> Result<TraceListPage, QueryServiceError> {
+        // The applied LSN is read before the clock, so every frame at or below it was stamped by `as_of`: a head
+        // this page leaves out for arriving after `as_of` is above the head cursor's LSN.
+        let applied = self.index.applied();
         let mut read = self.read(ctx);
         let scope = ctx.scope;
         let limit = page_limit(query.limit)?;
@@ -296,7 +300,6 @@ impl QueryService {
             None => (read.now, None),
         };
         let base = self.consistency();
-        let applied = self.index.applied();
         let (entries, state) = match read.clamp.window(TableId::TraceHeads, query.window)? {
             Some(window) => self.index.heads(scope, window),
             None => (Vec::new(), self.index.read_state(scope)),
@@ -361,42 +364,53 @@ impl QueryService {
             next_cursor: next
                 .map(|last| PageCursor::from_parts(project_id, query.window, as_of, last)),
             has_more,
-            head_cursor: query
-                .cursor
-                .is_none()
-                .then(|| HeadCursor::from_parts(project_id, query.window, as_of, applied)),
+            head_cursor: query.cursor.is_none().then(|| {
+                HeadCursor::from_parts(project_id, query.window, as_of, self.wal_epoch, applied)
+            }),
             meta,
         })
     }
 
-    /// Live tail (contract 8.8): the traces whose head arrived after a head cursor, newest first. The store is
-    /// read with the arrival bound `received_at > as_of` of the cursor, the recent index through its
-    /// (project, lsn) map from the cursor's LSN.
+    /// Live tail (contract 8.8): the traces whose head the response that issued a head cursor did not reflect,
+    /// newest first. Heads of the issuing node's WAL are told by LSN: those above the cursor's are new, whenever
+    /// they arrived, so a head that was durable but not yet applied when the cursor was issued is not missed;
+    /// so are those that arrived after its `as_of`. Heads of any other WAL are told by arrival: those with
+    /// `received_at >= as_of` are new. The store is read with exactly that predicate; the recent index through
+    /// its (project, lsn) map from the cursor's LSN when it holds the issuing node's WAL, else by arrival.
     pub async fn trace_list_since(
         &self,
         ctx: &ReadContext,
         query: TraceTailQuery,
     ) -> Result<TraceTail, QueryServiceError> {
+        // Before the clock, as in `trace_list`, for the head cursor of this response.
+        let applied = self.index.applied();
         let mut read = self.read(ctx);
         let scope = ctx.scope;
         let limit = page_limit(query.limit)?;
-        let (since, since_lsn) = query.since.check(scope, query.window)?;
+        let (since, epoch, since_lsn) = query.since.check(scope, query.window)?;
         let base = self.consistency();
-        let applied = self.index.applied();
         let window = read.clamp.window(TableId::TraceHeads, query.window)?;
-        let (entries, state) = self.index.since(scope, since_lsn);
+        let issued_here = epoch == self.wal_epoch;
+        let after = if issued_here { since_lsn } else { Lsn::ZERO };
+        let (entries, state) = self.index.since(scope, after);
         let mut recent = read.recent_heads(entries, state, &query.filter, |span| {
             window.is_some_and(|window| window.contains(span.summary.start_time))
+                && (issued_here || span.received_at >= since)
         })?;
 
         // Enough heads to tell whether `new_count` saturates, in one read.
         let scan_limit = limit.max(NEW_COUNT_MAX);
+        let unseen = unseen_heads(epoch, since_lsn, since);
         let request = TraceListRequest {
-            filter: query.filter.clone(),
+            filter: if query.filter == Pred::all() {
+                unseen
+            } else {
+                Pred::And(vec![query.filter.clone(), unseen])
+            },
             limit: scan_limit,
             cursor: None,
             as_of: read.now,
-            since: Some(since),
+            since: None,
         };
         let mut chunk = read.store_heads(query.window, request).await?;
         let truncated = chunk.len() >= (scan_limit * TRACE_LIST_OVER_READ) as usize;
@@ -422,9 +436,31 @@ impl QueryService {
                 scope.project_id(),
                 query.window,
                 read.now,
+                self.wal_epoch,
                 applied,
             ),
             meta,
         })
     }
+}
+
+/// The `trace_heads` rows that a head cursor of WAL `epoch` at `lsn` and `as_of` had not reflected. Of that WAL:
+/// the rows above `lsn`, whenever they arrived, and the rows that arrived after `as_of`, which its response left
+/// out (on one clock they are above `lsn` too; this keeps them when the wall clock stepped back). Of any other
+/// WAL: the rows that arrived at or after `as_of`, since those can only be told apart by arrival.
+fn unseen_heads(epoch: WalEpoch, lsn: Lsn, as_of: Timestamp) -> Pred {
+    use TraceHeadsCol as C;
+    Pred::Or(vec![
+        Pred::And(vec![
+            Pred::eq(C::WalEpoch, epoch.uuid()),
+            Pred::Or(vec![
+                Pred::cmp(C::Lsn, CmpOp::Gt, lsn.get()),
+                Pred::cmp(C::ReceivedAt, CmpOp::Gt, as_of),
+            ]),
+        ]),
+        Pred::And(vec![
+            Pred::cmp(C::WalEpoch, CmpOp::Ne, epoch.uuid()),
+            Pred::cmp(C::ReceivedAt, CmpOp::Ge, as_of),
+        ]),
+    ])
 }
