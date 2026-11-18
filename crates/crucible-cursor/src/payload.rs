@@ -235,6 +235,11 @@ impl FilterHash {
 }
 
 /// Where a cursor resumes, with the parts of its binding that only some lists have.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an id page holds its id inline so that a cursor stays a fixed-size `Copy` value for the codec \
+              and its proofs; a cursor lives for one request"
+)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Position {
     /// The next page of the trace list.

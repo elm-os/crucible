@@ -49,7 +49,7 @@ pub(crate) fn list_filter(params: &mut Params) -> Filter {
         Some(levels) if !levels.is_empty() => conditions.push(Filter::Level(levels)),
         Some(_) => {}
         None => {
-            let message = format!("expected one of {}", names(&Level::ALL, Level::as_str));
+            let message = format!("expected one of {}", names(Level::ALL, Level::as_str));
             params.error("level", "invalid_value", &message);
         }
     }
@@ -62,7 +62,7 @@ pub(crate) fn list_filter(params: &mut Params) -> Filter {
         Some(types) if !types.is_empty() => conditions.push(Filter::ObservationType(types)),
         Some(_) => {}
         None => {
-            let all = names(&ObservationType::ALL, ObservationType::as_str);
+            let all = names(ObservationType::ALL, ObservationType::as_str);
             params.error(
                 "observation_type",
                 "invalid_value",
