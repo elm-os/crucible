@@ -4,12 +4,13 @@
 //!   ChaCha20 stream with labelled forks, and hosts that can be crashed at any await point.
 //! - [`SimDisk`]: the `Disk` fault model of contract section 2.4.
 //! - [`wal_sim`]: the WAL workload and the oracle for invariants I1, I12, I13 and I14.
-//! - [`ch_model`]: the insert, deduplication and probe side of the simulated ClickHouse.
+//! - [`ch_model`]: the simulated ClickHouse: inserts, deduplication, the probe, the typed-plan interpreter,
+//!   merges, deletes and partition drops.
 //! - [`ship_sim`]: the real shipper over the WAL and the store model, with crashes at its barriers, and
 //!   the oracle for invariants I1, I2, I12 and I13.
 //!
-//! The network (turmoil hosts), the read side of the store model, the Postgres model and the ingest
-//! invariants join in a later wave and reuse these pieces.
+//! The network (turmoil hosts), the Postgres model and the ingest invariants join in a later wave and reuse
+//! these pieces.
 //!
 //! This crate implements the `Env` traits over tokio, so the determinism lints are switched off for it:
 //! what makes a run deterministic here is the paused clock, the single thread and the seeded streams.
@@ -18,6 +19,7 @@
 
 mod boot;
 pub mod ch_model;
+mod ch_read;
 mod disk;
 mod runtime;
 pub mod ship_sim;

@@ -86,7 +86,9 @@ async fn load(ctx: &Ctx) -> Result<Fixture> {
     let mut insert = async |rows: Rows, time: Timestamp| -> Result<()> {
         seq += 1;
         let table = rows.table();
-        ctx.insert(&rows, ctx.token(epoch, seq, table, time)?)
+        // The same block goes to the server and to the store model, with the identity of its batch.
+        let rows = crate::differential::stamped(rows, epoch, seq);
+        crate::differential::insert(ctx, rows, ctx.token(epoch, seq, table, time)?)
             .await
             .with_context(|| format!("fixture rows of {}", table.name()))
     };
@@ -218,9 +220,9 @@ fn live(plan: Option<QueryPlan>) -> Result<QueryPlan> {
     plan.context("the builder returned no plan: the window has expired")
 }
 
+/// Every read also runs on the store model, and the two answers must agree.
 async fn rows(ctx: &Ctx, plan: QueryPlan) -> Result<Vec<Row>> {
-    let stream = ctx.store.execute(plan).await?;
-    Ok(stream.rows().await?)
+    crate::differential::rows(ctx, plan).await
 }
 
 fn values(rows: &[Row]) -> Vec<Vec<Value>> {
@@ -673,10 +675,12 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             vec![hour(HOUR), Value::UInt(5)],
         ],
     )?;
-    let refused = ctx.store.execute(series(Fill::Zero)?).await;
-    expect(matches!(refused, Err(QueryError::Internal(_))), || {
-        "a zero-filled series was not refused".to_owned()
-    })?;
+    for store in [&ctx.store as &dyn TelemetryStore, &ctx.model] {
+        let refused = store.execute(series(Fill::Zero)?).await;
+        expect(matches!(refused, Err(QueryError::Internal(_))), || {
+            "a zero-filled series was not refused".to_owned()
+        })?;
+    }
 
     // TextSearch over the payload's text index.
     let search = async |mode: TokenMode, tokens: &[&str]| -> Result<usize> {
@@ -972,6 +976,17 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let shapes = shape_plans(ctx, &fixture)
         .await
         .context("statement shapes")?;
+    // Once more after the store model merged every partition down to one part: its answers must not move.
+    ctx.model.merge_all();
+    endpoint_plans(ctx, &fixture)
+        .await
+        .context("endpoint plans over merged model parts")?;
+    node_plans(ctx, &fixture)
+        .await
+        .context("node plans over merged model parts")?;
+    shape_plans(ctx, &fixture)
+        .await
+        .context("statement shapes over merged model parts")?;
     Ok(format!(
         "{endpoints} reads of the endpoint builders (trace bounds, trace spans, trace list, span children, \
          data bounds), {nodes} reads over every node kind and predicate form and {shapes} reads over every \
