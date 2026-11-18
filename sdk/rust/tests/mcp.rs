@@ -166,10 +166,8 @@ async fn legacy_operations_carry_the_wire_keys() {
         .await
         .unwrap_err();
     assert!(thrown.to_string().contains("exploded"), "{thrown}");
-    let panicked = ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(call(
-        "panic",
-        json!({}),
-    )));
+    let panicked =
+        ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(call("panic", json!({}))));
     let options = PeerRequestOptions::with_timeout(Duration::from_millis(500));
     let no_answer = client
         .send_request_with_option(panicked, options)
