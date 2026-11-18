@@ -35,9 +35,13 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
       every M1 crate's dependencies wired once, internal dependency edges in contracts 1.5
       -> verify: clippy clean with the bans; 26 tests pass; `cargo deny` passes; a planted `ProjectScope::mint` call in
       `crucible-plan` is rejected; Kani, cargo-fuzz and Quint smoke runs pass on the workspace.
-- [ ] `crucible-env` and `crucible-env-prod`; `clippy.toml` bans with the allow-attribute grep
-      -> verify: a banned call fails CI; the hello-world app serves `/healthz` on the real runtime.
-- [ ] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
+- [x] `crucible-env` and `crucible-env-prod`; `clippy.toml` bans with the allow-attribute grep
+      -> verify: a banned call fails CI; the hello-world app serves `/healthz` on the real runtime. Done in #5: the
+      `bans` workflow proves all 52 bans fire; `crucible serve` answered `/healthz`, `/readyz` and `/metrics` and
+      shut down cleanly on SIGTERM.
+- [x] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
+      Done in #6: 10 Kani harnesses (obligation 4 by bounded lemmas, contracts 4.10), 1M frames in 5.6 s, fuzzing
+      found nothing in 24M executions.
 - [ ] Portable WAL with group commit, recovery and GC -> verify: torn-tail and fsync-lie DST seeds keep I1.
 - [ ] Minimal OTLP HTTP ingest, admission, normalizer stub -> verify: proto and JSON inputs map identically.
 - [ ] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
