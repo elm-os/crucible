@@ -1,5 +1,6 @@
 //! The Crucible server binary. Subcommands are wired as their crates land.
 
+mod keys;
 mod serve;
 
 use std::net::SocketAddr;
@@ -34,6 +35,13 @@ struct ServeArgs {
     /// Address of the main listener (API, UI, ingest and health paths).
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen: SocketAddr,
+    /// Address of the OTLP/HTTP ingest listener.
+    #[arg(long, default_value = "0.0.0.0:4318")]
+    ingest_listen: SocketAddr,
+    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id` and
+    /// `secret`. Without it, every ingest request is refused.
+    #[arg(long)]
+    keys_file: Option<PathBuf>,
     /// Address of the Prometheus metrics listener.
     #[arg(long, default_value = "127.0.0.1:9464")]
     metrics_listen: SocketAddr,
@@ -81,8 +89,10 @@ mod tests {
     fn serve_defaults_match_the_contract_ports() {
         let Command::Serve(args) = Cli::parse_from(["crucible", "serve"]).command;
         assert_eq!(args.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(args.ingest_listen.to_string(), "0.0.0.0:4318");
         assert_eq!(args.metrics_listen.to_string(), "127.0.0.1:9464");
         assert_eq!(args.wal_backend, WalBackend::Auto);
+        assert_eq!(args.keys_file, None);
         assert!(Cli::try_parse_from(["crucible", "serve", "--wal-backend", "floppy"]).is_err());
     }
 }

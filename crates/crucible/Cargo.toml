@@ -12,17 +12,26 @@ publish.workspace = true
 wal-uring = ["crucible-env-prod/wal-uring"]
 
 [dependencies]
+crucible-auth = { workspace = true }
 crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
+crucible-ingest = { workspace = true }
 crucible-records = { workspace = true }
+crucible-wal = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
 clap = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync"] }
+# The `--keys-file` parser; reading only.
+toml = { version = "=1.2.1", default-features = false, features = ["std", "serde", "parse"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+crucible-otlp = { workspace = true }
+crucible-wal-codec = { workspace = true }
+tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["io-util"] }
 
 [target.'cfg(not(windows))'.dependencies]

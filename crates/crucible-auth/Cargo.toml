@@ -1,6 +1,6 @@
 [package]
 name = "crucible-auth"
-description = "Authentication and authorization; in M1 only ProjectScope minting."
+description = "Authentication and authorization; in M1 project keys from configuration and ProjectScope minting."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,15 @@ publish.workspace = true
 test-support = []
 
 [dependencies]
+crucible-env = { workspace = true }
 crucible-records = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+# Constant-time comparison of key hashes.
+subtle = { version = "=2.6.1", default-features = false }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

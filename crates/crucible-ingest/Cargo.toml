@@ -22,10 +22,22 @@ flate2 = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tower = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-env-prod = { workspace = true }
+crucible-sim = { path = "../crucible-sim" }
+# The seeded ack-before-sync defect, which the durability test must catch.
+crucible-wal = { workspace = true, features = ["test-mutants"] }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
+proptest = { workspace = true }
+prost = { workspace = true }
+tempfile = "=3.27.0"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

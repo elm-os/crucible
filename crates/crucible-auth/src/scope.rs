@@ -7,7 +7,6 @@ use crucible_records::{NilProjectId, ProjectId, ProjectScope};
 
 /// Mints a scope for a project id that an authentication path has verified.
 #[allow(clippy::disallowed_methods)] // The sanctioned call site of ProjectScope::mint.
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))] // Credential checks call this later.
 pub(crate) fn mint(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> {
     ProjectScope::mint(project_id)
 }
