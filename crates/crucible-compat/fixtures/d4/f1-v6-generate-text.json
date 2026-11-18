@@ -1,0 +1,598 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "vercel/ai tag ai@6.0.333 packages/ai/src/generate-text/__snapshots__/generate-text.test.ts.snap lines 1977-2070",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD4, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The operation root repeats the usage of its model call, so it is a usage aggregate and token and cost sums count the model call only. On the model-call span the semantic-convention keys outrank the dialect 4 keys, which stay residual; the total comes from the dialect 4 key."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "ai"
+            },
+            "spans": [
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000001",
+                "name": "ai.generateText",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "ai.model.id",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "ai.model.provider",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "ai.operationId",
+                    "value": {
+                      "stringValue": "ai.generateText"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt",
+                    "value": {
+                      "stringValue": "{\"prompt\":\"Summarize ticket 7\"}"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.user-agent",
+                    "value": {
+                      "stringValue": "ai/6.0.0"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.x-request-source",
+                    "value": {
+                      "stringValue": "batch"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.x-tenant",
+                    "value": {
+                      "stringValue": "t1"
+                    }
+                  },
+                  {
+                    "key": "ai.response.finishReason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "ai.response.providerMetadata",
+                    "value": {
+                      "stringValue": "{\"demoProvider\":{\"cacheHit\":true}}"
+                    }
+                  },
+                  {
+                    "key": "ai.response.text",
+                    "value": {
+                      "stringValue": "Ticket summarized."
+                    }
+                  },
+                  {
+                    "key": "ai.settings.frequencyPenalty",
+                    "value": {
+                      "doubleValue": 0.1
+                    }
+                  },
+                  {
+                    "key": "ai.settings.maxRetries",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.presencePenalty",
+                    "value": {
+                      "doubleValue": 0.2
+                    }
+                  },
+                  {
+                    "key": "ai.settings.stopSequences",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "END"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "ai.settings.temperature",
+                    "value": {
+                      "doubleValue": 0.4
+                    }
+                  },
+                  {
+                    "key": "ai.settings.topK",
+                    "value": {
+                      "intValue": "40"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.topP",
+                    "value": {
+                      "doubleValue": 0.9
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.functionId",
+                    "value": {
+                      "stringValue": "summarize-ticket"
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.metadata.team",
+                    "value": {
+                      "stringValue": "support"
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.metadata.beta",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokenDetails.noCacheTokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokenDetails.textTokens",
+                    "value": {
+                      "intValue": "30"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokens",
+                    "value": {
+                      "intValue": "30"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.totalTokens",
+                    "value": {
+                      "intValue": "42"
+                    }
+                  },
+                  {
+                    "key": "operation.name",
+                    "value": {
+                      "stringValue": "ai.generateText summarize-ticket"
+                    }
+                  },
+                  {
+                    "key": "resource.name",
+                    "value": {
+                      "stringValue": "summarize-ticket"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000002",
+                "name": "ai.generateText.doGenerate",
+                "kind": 1,
+                "startTimeUnixNano": "1100000000",
+                "endTimeUnixNano": "1900000000",
+                "attributes": [
+                  {
+                    "key": "ai.model.id",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "ai.model.provider",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "ai.operationId",
+                    "value": {
+                      "stringValue": "ai.generateText.doGenerate"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt.messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize ticket 7\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.user-agent",
+                    "value": {
+                      "stringValue": "ai/6.0.0"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.x-request-source",
+                    "value": {
+                      "stringValue": "batch"
+                    }
+                  },
+                  {
+                    "key": "ai.request.headers.x-tenant",
+                    "value": {
+                      "stringValue": "t1"
+                    }
+                  },
+                  {
+                    "key": "ai.response.finishReason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "ai.response.id",
+                    "value": {
+                      "stringValue": "resp-001"
+                    }
+                  },
+                  {
+                    "key": "ai.response.model",
+                    "value": {
+                      "stringValue": "demo-model-2026-02"
+                    }
+                  },
+                  {
+                    "key": "ai.response.providerMetadata",
+                    "value": {
+                      "stringValue": "{\"demoProvider\":{\"cacheHit\":true}}"
+                    }
+                  },
+                  {
+                    "key": "ai.response.text",
+                    "value": {
+                      "stringValue": "Ticket summarized."
+                    }
+                  },
+                  {
+                    "key": "ai.response.timestamp",
+                    "value": {
+                      "stringValue": "2026-02-03T04:05:06.000Z"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.frequencyPenalty",
+                    "value": {
+                      "doubleValue": 0.1
+                    }
+                  },
+                  {
+                    "key": "ai.settings.maxRetries",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.presencePenalty",
+                    "value": {
+                      "doubleValue": 0.2
+                    }
+                  },
+                  {
+                    "key": "ai.settings.stopSequences",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "END"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "ai.settings.temperature",
+                    "value": {
+                      "doubleValue": 0.4
+                    }
+                  },
+                  {
+                    "key": "ai.settings.topK",
+                    "value": {
+                      "intValue": "40"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.topP",
+                    "value": {
+                      "doubleValue": 0.9
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.functionId",
+                    "value": {
+                      "stringValue": "summarize-ticket"
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.metadata.team",
+                    "value": {
+                      "stringValue": "support"
+                    }
+                  },
+                  {
+                    "key": "ai.telemetry.metadata.beta",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokenDetails.noCacheTokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokenDetails.textTokens",
+                    "value": {
+                      "intValue": "30"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokens",
+                    "value": {
+                      "intValue": "30"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.totalTokens",
+                    "value": {
+                      "intValue": "42"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.frequency_penalty",
+                    "value": {
+                      "doubleValue": 0.1
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.presence_penalty",
+                    "value": {
+                      "doubleValue": 0.2
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.stop_sequences",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "END"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.temperature",
+                    "value": {
+                      "doubleValue": 0.4
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.top_k",
+                    "value": {
+                      "intValue": "40"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.top_p",
+                    "value": {
+                      "doubleValue": 0.9
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.finish_reasons",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "stop"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.id",
+                    "value": {
+                      "stringValue": "resp-001"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "demo-model-2026-02"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.system",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "30"
+                    }
+                  },
+                  {
+                    "key": "operation.name",
+                    "value": {
+                      "stringValue": "ai.generateText.doGenerate summarize-ticket"
+                    }
+                  },
+                  {
+                    "key": "resource.name",
+                    "value": {
+                      "stringValue": "summarize-ticket"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000001"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 4,
+      "source_format": "compat",
+      "observation_type": "agent",
+      "model_requested": "demo-model",
+      "provider": "demo-provider",
+      "trace_name": "summarize-ticket",
+      "metadata": {
+        "team": "support",
+        "beta": false
+      },
+      "model_parameters": {
+        "frequency_penalty": 0.1,
+        "max_retries": 2,
+        "presence_penalty": 0.2,
+        "stop_sequences": [
+          "END"
+        ],
+        "temperature": 0.4,
+        "top_k": 40,
+        "top_p": 0.9
+      },
+      "input": "{\"prompt\":\"Summarize ticket 7\"}",
+      "output": "Ticket summarized.",
+      "io_shape": "raw",
+      "finish_reasons": [
+        "stop"
+      ],
+      "usage_provided": {
+        "input": 12,
+        "output": 30,
+        "total": 42
+      },
+      "usage_aggregate": true,
+      "residual": [
+        "ai.operationId",
+        "ai.request.headers.user-agent",
+        "ai.request.headers.x-request-source",
+        "ai.request.headers.x-tenant",
+        "ai.response.providerMetadata",
+        "ai.usage.inputTokenDetails.noCacheTokens",
+        "ai.usage.outputTokenDetails.textTokens",
+        "operation.name",
+        "resource.name"
+      ]
+    },
+    "0000000000000002": {
+      "compat_dialect": 4,
+      "observation_type": "generation",
+      "model_requested": "demo-model",
+      "model_response": "demo-model-2026-02",
+      "provider": "demo-provider",
+      "finish_reasons": [
+        "stop"
+      ],
+      "usage_provided": {
+        "input": 12,
+        "output": 30,
+        "total": 42
+      },
+      "usage_aggregate": false,
+      "input": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize ticket 7\"}]}]",
+      "output": "Ticket summarized.",
+      "io_shape": "raw",
+      "model_parameters": {
+        "frequency_penalty": 0.1,
+        "max_retries": 2,
+        "presence_penalty": 0.2,
+        "stop_sequences": [
+          "END"
+        ],
+        "temperature": 0.4,
+        "top_k": 40,
+        "top_p": 0.9
+      },
+      "trace_name": "summarize-ticket",
+      "residual": [
+        "ai.model.id",
+        "ai.model.provider",
+        "ai.operationId",
+        "ai.request.headers.user-agent",
+        "ai.request.headers.x-request-source",
+        "ai.request.headers.x-tenant",
+        "ai.response.finishReason",
+        "ai.response.id",
+        "ai.response.model",
+        "ai.response.providerMetadata",
+        "ai.response.timestamp",
+        "ai.settings.frequencyPenalty",
+        "ai.settings.presencePenalty",
+        "ai.settings.stopSequences",
+        "ai.settings.temperature",
+        "ai.settings.topK",
+        "ai.settings.topP",
+        "ai.usage.inputTokenDetails.noCacheTokens",
+        "ai.usage.inputTokens",
+        "ai.usage.outputTokenDetails.textTokens",
+        "ai.usage.outputTokens",
+        "gen_ai.response.id",
+        "operation.name",
+        "resource.name"
+      ]
+    }
+  }
+}

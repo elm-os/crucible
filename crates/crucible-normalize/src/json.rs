@@ -82,7 +82,7 @@ pub(crate) fn push_u64(out: &mut Vec<u8>, mut value: u64) {
     out.extend_from_slice(&digits[at..]);
 }
 
-fn push_f64(out: &mut Vec<u8>, value: f64) {
+pub(crate) fn push_f64(out: &mut Vec<u8>, value: f64) {
     if value.is_nan() {
         push_str(out, "NaN");
     } else if value.is_infinite() {

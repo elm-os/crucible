@@ -6,6 +6,7 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+mod child;
 mod clock;
 mod disk;
 mod net;
@@ -19,6 +20,9 @@ use std::sync::Arc;
 use crucible_env::metrics::registry;
 use crucible_env::{DiskError, Env, MemoryRecorder, Metrics, Root};
 
+#[cfg(unix)]
+pub use child::parent_death_trampoline;
+pub use child::{PathStyle, TokioChildProcess, resolve_program};
 pub use clock::SystemClock;
 pub use disk::{
     BackendChoice, BackendUnavailable, DiskBackend, PortableDisk, WalBackend, select_backend,

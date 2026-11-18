@@ -4,6 +4,7 @@ mod control;
 mod cursor_keys;
 mod identity;
 mod keys;
+mod proxy;
 mod recent;
 mod serve;
 mod store;
@@ -49,6 +50,8 @@ enum Command {
         #[command(subcommand)]
         command: AdminCommand,
     },
+    /// Run the MCP proxy in front of an MCP server. It starts no server subsystem.
+    Proxy(proxy::ProxyArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -307,6 +310,7 @@ async fn migrate(config: Config) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Proxy(args) => proxy::run(args),
         Command::Serve(args) => {
             let config = args.config.load_for_run()?;
             runtime()?.block_on(serve::run(config, args.migrate))

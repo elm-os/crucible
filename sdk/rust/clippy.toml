@@ -1,0 +1,7 @@
+# The SDK is a client library: it reads the clock, spawns its export thread and talks to the network, so the
+# server workspace's determinism bans (the clippy.toml at the repository root, which clippy would otherwise find
+# by walking up) do not apply here.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true

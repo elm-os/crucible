@@ -1,0 +1,54 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: a span that carries only a key the dialect 7 exporters stamp on every span they forward",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "A key that an exporter stamps on every span is not a detection rule."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "my.app"
+            },
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "work",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.parent",
+                    "value": {
+                      "stringValue": "experiment_id:exp-0a1b2c3d"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 0,
+      "source_format": "otel",
+      "observation_type": "span",
+      "residual": [
+        "braintrust.parent"
+      ]
+    }
+  }
+}
