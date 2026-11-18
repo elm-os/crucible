@@ -1,23 +1,38 @@
 // Scrub rules, content capture and the keyed hashes, as pure functions.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { captured, decide, glob } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
-import { cutUtf8, scrub, scrubVectors } from "../src/scrub.ts";
+import packaged from "../src/scrub-rules.json" with { type: "json" };
+import { cutUtf8, scrub, scrubWithRule } from "../src/scrub.ts";
+
+const shared = JSON.parse(
+  readFileSync(new URL("../../../conformance/scrub-rules.json", import.meta.url), "utf8"),
+) as typeof packaged;
 
 describe("scrub rules", () => {
-  test.each(scrubVectors.map((vector) => [vector.input, vector.output]))(
-    "vector %#",
+  test("the packaged rules are the shared conformance rules", () => {
+    expect(packaged).toEqual(shared);
+  });
+
+  for (const rule of shared.rules) {
+    test(`${rule.name}: its positive inputs change and its negative inputs do not`, () => {
+      for (const input of rule.positive) {
+        expect(scrubWithRule(rule.name, input)).not.toBe(input);
+      }
+      for (const input of rule.negative) {
+        expect(scrubWithRule(rule.name, input)).toBe(input);
+      }
+    });
+  }
+
+  test.each(shared.examples.map((example) => [example.input, example.output]))(
+    "example %#: the whole list",
     (input, output) => {
       expect(scrub(input)).toBe(output);
     },
   );
-
-  test("scrubbing is idempotent on every vector", () => {
-    for (const { output } of scrubVectors) {
-      expect(scrub(output)).toBe(output);
-    }
-  });
 
   test("16 KiB of text without a match scrubs in linear time", () => {
     const words = "lorem ipsum 0123456789abcdef dolor@ sit-amet 12:34 a.b.c ".repeat(300);
@@ -93,7 +108,7 @@ describe("capture", () => {
     const result = captured({ note: `${padding} ${token}` }, 16_384);
     expect(result?.cut).toBe(true);
     expect(result?.text).not.toContain("eyJ");
-    expect(result?.text.endsWith("[redacted:jwt]")).toBe(true);
+    expect(result?.text).toBe(`{"note":"${padding} `);
   });
 
   test("a value that does not serialize is not captured", () => {

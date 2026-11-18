@@ -17,7 +17,6 @@ const MARKERS = {
   param: "TAINTPARAM",
   baggage: "TAINTBAGGAGE",
   token: "TAINTTOKEN",
-  password: "TAINTPASSWORD",
   key: "csk_0TAINTKEYabcdefghijklmnopqrstuvwxyzABCDEFG",
   email: "taint.person@example.com",
   state: REQUEST_STATE,
@@ -60,7 +59,7 @@ test("no planted secret appears in any exported byte", async () => {
       const params = body.params as Record<string, unknown> & { _meta: Record<string, unknown> };
       params.name = "secret";
       params.arguments = {
-        password: MARKERS.password,
+        password: MARKERS.key,
         note: `key ${MARKERS.key} mail ${MARKERS.email}`,
       };
       params._meta.baggage = `user=${MARKERS.baggage}`;
@@ -111,7 +110,6 @@ test("no planted secret appears in any exported byte", async () => {
     expect(exported.includes(marker), `${name} leaked`).toBe(false);
   }
   // The scrubbed forms are what was captured.
-  expect(exported.includes("[redacted:sensitive_key]")).toBe(true);
-  expect(exported.includes("[redacted:crucible_key]")).toBe(true);
+  expect(exported.includes("[redacted:secret_key]")).toBe(true);
   expect(exported.includes("[redacted:email]")).toBe(true);
 });

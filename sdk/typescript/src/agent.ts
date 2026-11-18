@@ -48,10 +48,18 @@ export interface PromptRef {
 }
 
 export interface ObservationUpdate {
+  /** `crucible.trace.name`: the trace's name; the root span's value wins (contract 3.3). */
+  traceName?: string;
   /** `crucible.input`: a string as is, anything else as JSON. */
   input?: unknown;
   /** `crucible.output`: a string as is, anything else as JSON. */
   output?: unknown;
+  /** `gen_ai.input.messages`: a generation's input messages, sent as JSON. */
+  inputMessages?: unknown[];
+  /** `gen_ai.output.messages`: a generation's output messages, sent as JSON. */
+  outputMessages?: unknown[];
+  /** `gen_ai.response.finish_reasons`. */
+  finishReasons?: string[];
   /** `gen_ai.request.model`. */
   model?: string;
   /** `gen_ai.response.model`. */
@@ -71,7 +79,7 @@ export interface ObservationUpdate {
 export interface Observation {
   /** The underlying OpenTelemetry span. */
   readonly span: Span;
-  /** Sets input, output, model, usage, cost or prompt fields on the span. */
+  /** Sets trace name, input, output, messages, model, usage, cost or prompt fields on the span. */
   update(fields: ObservationUpdate): void;
 }
 
@@ -154,6 +162,18 @@ export function observe<T>(
 
 function updateAttributes(fields: ObservationUpdate): Attributes {
   const attributes: Attributes = {};
+  if (fields.traceName !== undefined) {
+    attributes["crucible.trace.name"] = fields.traceName;
+  }
+  if (fields.inputMessages !== undefined) {
+    attributes["gen_ai.input.messages"] = JSON.stringify(fields.inputMessages);
+  }
+  if (fields.outputMessages !== undefined) {
+    attributes["gen_ai.output.messages"] = JSON.stringify(fields.outputMessages);
+  }
+  if (fields.finishReasons !== undefined) {
+    attributes["gen_ai.response.finish_reasons"] = fields.finishReasons;
+  }
   if (fields.input !== undefined) {
     attributes["crucible.input"] = body(fields.input);
   }

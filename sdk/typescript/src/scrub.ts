@@ -1,50 +1,73 @@
-// Scrubbing of captured MCP content, error messages and handle ids (contract 9.10). The rules are data in
-// `scrub-rules.json`, with test vectors.
+// Scrubbing of captured MCP content, error messages and handle ids (contract 9.10), with the shared rules of
+// `conformance/scrub-rules.json`. `scrub-rules.json` here holds the same rules, so the package carries them; a test
+// keeps the two equal.
 
 import rules from "./scrub-rules.json" with { type: "json" };
 
-interface Pattern {
-  readonly rule: string;
-  readonly literal: string | undefined;
-  readonly luhn: boolean;
+interface Rule {
+  readonly name: string;
   readonly regex: RegExp;
+  readonly replacement: string;
+  readonly luhn: boolean;
 }
 
-/** A JSON member `"key": value` whose value is a string (possibly cut short) or a scalar. */
-const MEMBER =
-  /"((?:[^"\\]|\\.){1,128})"(\s{0,16}:\s{0,16})(?:"(?:[^"\\]|\\.)*"?|-?\d[\d.eE+-]{0,64}|true|false|null)/g;
-
-const sensitiveNames: readonly string[] = rules.keys.names;
-const patterns: readonly Pattern[] = rules.patterns.map((pattern) => ({
-  rule: pattern.rule,
-  literal: "literal" in pattern ? pattern.literal : undefined,
-  luhn: "check" in pattern && pattern.check === "luhn",
-  regex: new RegExp(pattern.regex, "g"),
+const compiled: readonly Rule[] = rules.rules.map((rule) => ({
+  name: rule.name,
+  regex: new RegExp(rule.pattern, "g"),
+  replacement: rule.replacement,
+  luhn: "validator" in rule && rule.validator === "luhn",
 }));
 
-function marker(rule: string): string {
-  return rules.replacement.replace("{rule}", rule);
-}
-
-/** Replaces every match of the scrub rules in `text`. */
+/** Applies every rule, in file order, to `text`. */
 export function scrub(text: string): string {
-  let out = text.replace(MEMBER, (match: string, key: string, separator: string) =>
-    sensitive(key) ? `"${key}"${separator}"${marker(rules.keys.rule)}"` : match,
-  );
-  for (const pattern of patterns) {
-    if (pattern.literal !== undefined && !out.includes(pattern.literal)) {
-      continue;
-    }
-    out = out.replace(pattern.regex, (match: string) =>
-      pattern.luhn && !luhn(match) ? match : marker(pattern.rule),
-    );
+  let out = text;
+  for (const rule of compiled) {
+    out = apply(rule, out);
   }
   return out;
 }
 
-function sensitive(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return sensitiveNames.some((name) => normalized.endsWith(name));
+/** Applies the one rule named `name`, for the rule vectors. */
+export function scrubWithRule(name: string, text: string): string {
+  const rule = compiled.find((candidate) => candidate.name === name);
+  if (rule === undefined) {
+    throw new Error(`no scrub rule named ${name}`);
+  }
+  return apply(rule, text);
+}
+
+/**
+ * Replaces every non-overlapping match, leftmost first. After a match its validator rejects, the search resumes
+ * after the match's first character that is neither an ASCII letter nor a digit, or after the match when it has
+ * none, so a rejected run of digit groups cannot hide a card that starts at a later group.
+ */
+function apply(rule: Rule, text: string): string {
+  const { regex } = rule;
+  let out = "";
+  let copied = 0;
+  let from = 0;
+  while (from <= text.length) {
+    regex.lastIndex = from;
+    const match = regex.exec(text);
+    if (match === null) {
+      break;
+    }
+    const start = match.index;
+    const end = start + match[0].length;
+    if (end === start) {
+      from = start + 1;
+      continue;
+    }
+    if (rule.luhn && !luhn(match[0])) {
+      const offset = match[0].search(/[^A-Za-z0-9]/);
+      from = offset === -1 ? end : start + offset + 1;
+      continue;
+    }
+    out += text.slice(copied, start) + rule.replacement;
+    copied = end;
+    from = end;
+  }
+  return out + text.slice(copied);
 }
 
 function luhn(candidate: string): boolean {
@@ -62,10 +85,6 @@ function luhn(candidate: string): boolean {
   }
   return sum % 10 === 0;
 }
-
-/** The scrub rule vectors, for tests. */
-export const scrubVectors: readonly { readonly input: string; readonly output: string }[] =
-  rules.vectors;
 
 const encoder = new TextEncoder();
 

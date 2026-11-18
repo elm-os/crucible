@@ -82,7 +82,8 @@ await withContext(
   every span started inside it, across `await`. Nested scopes add tags and override the other values.
 - `observe(name, options?, fn)` runs `fn` in a new span and ends it when `fn` returns or its promise settles. A
   throw or rejection marks the span as an error and is passed on. `type` is sent as `crucible.observation.type`.
-- `update` sets `crucible.input` and `crucible.output` (strings as they are, other values as JSON),
+- `update` sets `crucible.trace.name`, `crucible.input` and `crucible.output` (strings as they are, other
+  values as JSON), `gen_ai.input.messages` and `gen_ai.output.messages` (as JSON), `gen_ai.response.finish_reasons`,
   `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, the `gen_ai.usage.*` token counts,
   provided cost as `crucible.cost.<usage key>` in USD, and the prompt reference `crucible.prompt.name` and
   `crucible.prompt.version`.
@@ -139,10 +140,11 @@ identify({ userId, tenant, handleId }); // merges into the operation's identity
 
 Content capture is off by default. A tool call matching a `capture` rule is sampled (`sampleRate`, default 1)
 before its arguments are read; arguments and results are sent as `gen_ai.tool.call.arguments` and
-`gen_ai.tool.call.result`, scrubbed, and cut at `maxBytes` (default 16 KiB) on a character boundary. The scrub
-rules are data in `src/scrub-rules.json`, with test vectors: emails, phone numbers, card numbers (Luhn-checked),
-Bearer tokens, JWTs, Crucible and other secret key formats, IP addresses, PEM private keys, and the values of keys
-such as `password` or `token`. A `requestState` is never sent, in any form other than its keyed hash.
+`gen_ai.tool.call.result`, scrubbed, and cut at `maxBytes` (default 16 KiB) on a character boundary; a cut never
+keeps the prefix of a token it splits. Scrubbing applies the shared rules of `conformance/scrub-rules.json`
+(packaged as `src/scrub-rules.json`, which a test keeps equal): PEM blocks, JWTs, Bearer tokens, Crucible secret
+keys, card numbers (Luhn-checked), emails, IP addresses and phone numbers. Error messages and handle ids are
+scrubbed too. A `requestState` is never sent, in any form other than its keyed hash.
 
 ## MCP clients
 
@@ -170,8 +172,21 @@ child, so the agent's trace and the server's operation link up.
   not recorded.
 - Not observed: the client IP prefix, response sizes, the client capabilities hash, server-to-client requests and
   task results. Resource reads send the requested URI, not the registered template.
+- The shared scrub rules match value patterns only; a secret under a key such as `password` is sent unless its
+  value matches a rule.
 - The test suite passes on Node.js 24 with MCP SDK 2.0.0 and 2.4.0; the seam spike also covered 2.1.0 to 2.3.1.
   Other runtimes are untested.
+
+## Conformance
+
+`conformance/runner.ts` is this SDK's runner for the shared SDK conformance suite
+(`docs/testing/sdk-conformance.md`), and `conformance/manifest.json` its capability manifest: a thrown handler
+error is a tool error, and progress is observed. `conformance/server.ts` is the suite's reference server. From the
+repository root, after `cargo build -p crucible-fake-collector`:
+
+```sh
+target/debug/crucible-sdk-driver run --manifest sdk/typescript/conformance/manifest.json
+```
 
 ## Development
 

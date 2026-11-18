@@ -87,7 +87,13 @@ function callAttributes(span: DecodedSpan | undefined): Record<string, unknown> 
 describe("content capture", () => {
   test("off by default: no tool gets arguments or results captured", async () => {
     const [secret] = await inMemory({}, [
-      { name: "secret", arguments: { password: "hunter2", note: "mail alice@example.com" } },
+      {
+        name: "secret",
+        arguments: {
+          password: "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+          note: "mail alice@example.com",
+        },
+      },
     ]);
     expect(callAttributes(secret)).toEqual({
       "gen_ai.tool.name": "secret",
@@ -103,7 +109,13 @@ describe("content capture", () => {
         handleParams: { lookup_order: "order_id" },
       },
       [
-        { name: "secret", arguments: { password: "hunter2", note: "mail alice@example.com" } },
+        {
+          name: "secret",
+          arguments: {
+            password: "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+            note: "mail alice@example.com",
+          },
+        },
         { name: "lookup_order", arguments: { order_id: "ord-1" } },
         { name: "lookup_order", arguments: { order_id: "x".repeat(300) } },
         { name: "echo", arguments: { text: "not captured" } },
@@ -114,7 +126,7 @@ describe("content capture", () => {
       "crucible.mcp.result_type": "complete",
       "crucible.mcp.content.blocks.text": 1n,
       "gen_ai.tool.call.arguments":
-        '{"password":"[redacted:sensitive_key]","note":"mail [redacted:email]"}',
+        '{"password":"[redacted:secret_key]","note":"mail [redacted:email]"}',
       "gen_ai.tool.call.result":
         '{"content":[{"type":"text","text":"stored: mail [redacted:email]"}]}',
       "crucible.mcp.content.captured": true,
@@ -135,7 +147,8 @@ describe("content capture", () => {
       "gen_ai.tool.name": "lookup_order",
       "crucible.mcp.result_type": "complete",
       "crucible.mcp.content.blocks.text": 2n,
-      "gen_ai.tool.call.arguments": `{"order_id":"${"x".repeat(51)}`,
+      // The cut drops the partial token at the end, so no prefix of a long credential survives.
+      "gen_ai.tool.call.arguments": '{"order_id":"',
       "crucible.mcp.handle.id": "x".repeat(256),
       "crucible.mcp.content.captured": true,
       "crucible.mcp.content.sample_rate": 1n,

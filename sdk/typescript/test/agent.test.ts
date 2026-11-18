@@ -60,8 +60,12 @@ describe("observe", () => {
   test("a generation carries model, usage, provided cost and a prompt reference", async () => {
     observe("chat", { type: "generation" }, (generation) => {
       generation.update({
+        traceName: "support-chat",
         input: [{ role: "user", content: "hi" }],
         output: "hello",
+        inputMessages: [{ role: "user", parts: [{ type: "text", content: "hi" }] }],
+        outputMessages: [{ role: "assistant", parts: [{ type: "text", content: "hello" }] }],
+        finishReasons: ["stop"],
         model: "model-large",
         responseModel: "model-large-2026-11-01",
         provider: "acme",
@@ -72,8 +76,13 @@ describe("observe", () => {
     });
     expect((await spans()).get("chat")?.attributes).toEqual({
       "crucible.observation.type": "generation",
+      "crucible.trace.name": "support-chat",
       "crucible.input": '[{"role":"user","content":"hi"}]',
       "crucible.output": "hello",
+      "gen_ai.input.messages": '[{"role":"user","parts":[{"type":"text","content":"hi"}]}]',
+      "gen_ai.output.messages":
+        '[{"role":"assistant","parts":[{"type":"text","content":"hello"}]}]',
+      "gen_ai.response.finish_reasons": ["stop"],
       "gen_ai.request.model": "model-large",
       "gen_ai.response.model": "model-large-2026-11-01",
       "gen_ai.provider.name": "acme",

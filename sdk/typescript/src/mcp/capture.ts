@@ -27,6 +27,9 @@ export interface CaptureDecision {
 /** Room past the cap that scrubbing sees, so a secret that straddles the cap is still matched whole. */
 const SCRUB_MARGIN = 1_024;
 
+/** Characters of tokens, keys and encoded blobs. */
+const TOKEN = /[A-Za-z0-9._~+/=-]/;
+
 /** Whether to capture one call, decided before any argument is read. */
 export function decide(
   rules: readonly CaptureRule[] | undefined,
@@ -64,8 +67,18 @@ export function captured(
   }
   const window = json.slice(0, maxBytes + SCRUB_MARGIN);
   const scrubbed = scrub(window);
-  const text = cutUtf8(scrubbed, maxBytes);
-  return { text, cut: window.length < json.length || text.length < scrubbed.length };
+  let text = cutUtf8(scrubbed, maxBytes);
+  const cut = window.length < json.length || text.length < scrubbed.length;
+  if (cut) {
+    // A credential longer than the margin can straddle the cap and no longer match its rule; drop the partial
+    // token run at the end instead of keeping its prefix.
+    let end = text.length;
+    while (end > 0 && TOKEN.test(text.charAt(end - 1))) {
+      end -= 1;
+    }
+    text = text.slice(0, end);
+  }
+  return { text, cut };
 }
 
 /** Glob match with `*` and `?`, in time linear in the product of the lengths at worst. */
