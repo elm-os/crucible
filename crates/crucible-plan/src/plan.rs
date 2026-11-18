@@ -7,6 +7,7 @@ use crate::class::QueryClass;
 use crate::error::PlanError;
 use crate::node::Node;
 use crate::pred::Pred;
+use crate::value::{self, OutputSchema};
 
 /// A telemetry read. It cannot be built without a scope and a window: the renderer turns the scope into
 /// `project_id = {scope}` on every table reference and the window into the sort-key and partition predicates.
@@ -58,6 +59,31 @@ impl QueryPlan {
     pub const fn identity(&self) -> ServiceIdentity {
         self.class.limits().identity
     }
+
+    /// The ordered output columns that every row of this plan follows, whichever store runs it. This is the
+    /// single definition of the result shape: the ClickHouse adapter and the simulation model must both return
+    /// rows that pass [`OutputSchema::check_row`].
+    ///
+    /// | Root | Output columns |
+    /// |---|---|
+    /// | `Scan`, `PointLookup` | the node's columns, in the order given |
+    /// | `Aggregate` | the group dimensions, then one column per measure, in the order given |
+    /// | `SemiJoin` | the columns of the left scan |
+    /// | `TextSearch` | the table's key columns (`TableDef::key_columns`) |
+    /// | `TimeSeries` | `bucket` (the bucket's first instant, `DateTime('UTC')`), then the aggregate's output |
+    /// | `FieldRange` | the field; the bytes of the range follow the `String` rule of [`crate::Value`] |
+    ///
+    /// Measures: `count` and `uniq` are `UInt64`; `sum` is `UInt64`, `Int64` or `Float64` by the column's
+    /// signedness; `min`, `max`, the pick merge and latest-by-version have the column's result type; a histogram
+    /// merge is the `(keys, counts)` tuple with keys ascending and unique.
+    ///
+    /// Rows: a node with an order returns rows in that order, and rows that tie on it in no defined order; a
+    /// node without one returns rows in no defined order. A grouped read returns one row per group that has at
+    /// least one matching row. An `Aggregate` with no group dimensions is one group: it returns one row when at
+    /// least one row matches and **no row** otherwise, never a row of defaults.
+    pub fn output(&self) -> OutputSchema {
+        value::output(&self.root)
+    }
 }
 
 /// How a block's presence is probed (contract section 5.5).
@@ -70,10 +96,13 @@ pub enum ProbeKind {
 }
 
 /// The existence probe of the insert protocol: the one read rendered without a project predicate. It returns
-/// only a boolean, runs as `crucible_ingest`, and is not a [`Node`], so no scoped plan can contain it.
+/// only a boolean, runs as `crucible_ingest` through `TelemetryStore::probe`, and is not a [`Node`], so no
+/// scoped plan can contain it.
 ///
-/// Only `crucible-shipper` may build one. The restriction is a `clippy.toml` disallowed-method entry for
-/// [`BatchProbe::for_shipper`], like the one for `ProjectScope::mint`.
+/// Only `crucible-shipper` may build one. [`BatchProbe::for_shipper`] is a disallowed method in `clippy.toml`,
+/// like `ProjectScope::mint`, and the CI allow-attribute guard permits the allow in exactly one file,
+/// `crates/crucible-shipper/src/probe.rs`. Tests of stores obtain probes from `crucible_plan::test_support`
+/// (feature `test-support`, which product builds never enable).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BatchProbe {
     table: TableId,
@@ -86,6 +115,16 @@ impl BatchProbe {
     /// A probe for the block of one (batch, table, partition) pair. `sql_probe` is never shipped and
     /// `dedup_selftest` is probed by its own self-test.
     pub fn for_shipper(
+        table_id: TableId,
+        partition: PartitionId,
+        epoch: WalEpoch,
+        batch_seq: Lsn,
+    ) -> Result<Self, PlanError> {
+        Self::checked(table_id, partition, epoch, batch_seq)
+    }
+
+    /// The checked constructor behind [`BatchProbe::for_shipper`] and `test_support::batch_probe`.
+    pub(crate) fn checked(
         table_id: TableId,
         partition: PartitionId,
         epoch: WalEpoch,

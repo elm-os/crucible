@@ -679,7 +679,11 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
+ "crucible-auth",
+ "crucible-chfmt",
+ "crucible-plan",
  "crucible-records",
+ "crucible-schema",
  "futures",
  "http",
  "proptest",
@@ -791,6 +795,7 @@ name = "crucible-plan"
 version = "0.0.0"
 dependencies = [
  "crucible-auth",
+ "crucible-plan",
  "crucible-records",
  "crucible-schema",
  "proptest",

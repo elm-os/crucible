@@ -53,6 +53,7 @@ pub fn hashbrown_map_with_capacity() { let _ = hashbrown::HashMap::<u8, u8>::wit
 pub fn hashbrown_set_new() { let _ = hashbrown::HashSet::<u8>::new(); } // ban-method: hashbrown::HashSet::new
 pub fn hashbrown_set_with_capacity() { let _ = hashbrown::HashSet::<u8>::with_capacity(1); } // ban-method: hashbrown::HashSet::with_capacity
 pub fn scope_mint(id: crucible_records::ProjectId) { let _ = crucible_records::ProjectScope::mint(id); } // ban-method: crucible_records::ProjectScope::mint
+pub fn batch_probe(t: crucible_records::TableId, p: crucible_records::PartitionId, e: crucible_records::WalEpoch, l: crucible_records::Lsn) { let _ = crucible_plan::BatchProbe::for_shipper(t, p, e, l); } // ban-method: crucible_plan::BatchProbe::for_shipper
 
 pub fn std_hash_map(_: &std::collections::HashMap<u8, u8>) {} // ban-type: std::collections::HashMap
 pub fn std_hash_set(_: &std::collections::HashSet<u8>) {} // ban-type: std::collections::HashSet

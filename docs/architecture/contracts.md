@@ -170,13 +170,24 @@ variants append.
 
 ## 2. Env traits
 
-Product crates take an `Env` and never touch ambient time, randomness, task spawning, the filesystem, the network or
-the process environment. `Env` is a cloneable struct of `Arc<dyn Trait>` handles, built once in `main` (production,
-from `crucible-env-prod`) or by the simulation harness (`crucible-sim`). The same compiled product code runs in
-both. The only cargo features that change product behaviour are `wal-uring` (an extra `Disk` backend) and `embed-ui`
-(the `AssetSource`).
+Product crates take an `Env`, and the `Stores` they need, and never touch ambient time, randomness, task spawning,
+the filesystem, the network or the process environment. Both are cloneable structs of `Arc<dyn Trait>` handles,
+built once in `main` (production, from `crucible-env-prod` and the store adapters) or by the simulation harness
+(`crucible-sim`). The same compiled product code runs in both. The only cargo features that change product
+behaviour are `wal-uring` (an extra `Disk` backend) and `embed-ui` (the `AssetSource`).
 
-Retry, backoff, batching and error classification sit above these traits, so that simulation exercises them.
+Construction has two phases, because a store runs over the primitives:
+
+1. The core `Env`: `Clock`, `Rng`, `Spawner`, `Disk`, `Net`, `Metrics` and the id generator.
+2. `Stores`, each store built over that `Env`: it connects through `env.net`, takes deadlines from `env.clock` and
+   mints query ids with `env.new_id()`. `Stores` holds `telemetry: Arc<dyn TelemetryStore>`; `ControlStore` and the
+   later stores join it as their traits land. In simulation the stores are in-memory models over the same `Env`.
+
+Components then receive the `Env` and the `Stores`. Stores are not fields of `Env`.
+
+Retry, backoff, batching and the action taken on each error class sit above these traits, so that simulation
+exercises them. A store only maps its backend's failures to the typed errors below (for ClickHouse, the code table
+of section 5.6).
 
 Signatures below are Rust-like sketches; `async` methods return futures that must be cancel-safe unless stated.
 
@@ -265,24 +276,39 @@ two resolutions).
 ### 2.6 TelemetryStore
 
 The only way product code reaches ClickHouse, apart from `SqlWorkspaceStore`. Argument types: `TableId`,
-`PartitionId`, `BatchToken` and `ProjectScope` from `crucible-records`; `EncodedBlock` from `crucible-chfmt`;
-`QueryPlan` and `DeletePlan` from `crucible-plan`; `MigrationStep` and `TableDef` from `crucible-schema`.
+`PartitionId`, `BatchToken`, `ProjectId` and `Uuid` from `crucible-records`; `EncodedBlock` from `crucible-chfmt`;
+`QueryPlan`, `BatchProbe` and `DeletePlan` from `crucible-plan`; `MigrationStep` from `crucible-schema`. The other
+types are defined with the trait in `crucible-env`.
 
 | Method | Identity (section 7) | Semantics |
 |---|---|---|
-| `insert_block(table: TableId, partition: PartitionId, token: BatchToken, block: EncodedBlock, settings: InsertSettings) -> Result<(), InsertError>` | `crucible_ingest` | One Native block, section 5. `InsertError` carries the class from section 5.6 |
-| `execute(plan: QueryPlan) -> Result<RowStream, QueryError>` | by query class (section 8.4) | Typed plans only; `BatchProbe` plans run as `crucible_ingest` |
-| `delete(plan: DeletePlan) -> MutationId` | `crucible_maint` | Lightweight `DELETE ... IN PARTITION` with a typed predicate; always carries a project predicate or the marker predicate |
-| `drop_partition(table, partition)` | `crucible_maint` | |
-| `apply_deleted_mask(table, partition) -> MutationId` | `crucible_maint` | |
-| `mutation_status(id) -> Pending or Done or Failed(code)` | `crucible_maint` | |
-| `partition_projects(table, partition) -> Vec<ProjectId>` | `crucible_maint` | Distinct projects with rows in a partition, excluding the nil marker project. Markers never keep a partition alive: a partition drop removes them too |
-| `masked_parts(table, partition) -> u64` | `crucible_maint` | Parts that still carry a delete mask |
-| `apply_migration(step: MigrationStep) -> Result<()>` | `crucible_admin` | Schema or access step; idempotent |
-| `detect() -> StoreFacts` | `crucible_maint` | Version, flavour, engine family, presence of every setting sent, text-search functions |
-| `dedup_selftest() -> Result<()>` | `crucible_ingest` | Section 5.8 |
-| `kill(query_id)` | `crucible_maint` | `KILL QUERY` by id |
-| `health() -> StoreHealth` | `crucible_maint` | |
+| `insert_block(block: EncodedBlock, settings: InsertSettings) -> Result<(), InsertError>` | `crucible_ingest` | One Native block, section 5. The table and the partition are those of `settings.token()`, so they cannot disagree with the token. A dropped call is an unknown outcome |
+| `execute(plan: QueryPlan) -> Result<RowStream, QueryError>` | by query class (section 8.4) | Typed plans only. Rows follow `QueryPlan::output()` (section 8.1) |
+| `probe(probe: BatchProbe) -> Result<bool, StoreError>` | `crucible_ingest` | The existence probe of section 5.5: the one read without a project predicate; it returns only the boolean |
+| `delete(plan: DeletePlan) -> Result<MutationId, StoreError>` | `crucible_maint` | Lightweight `DELETE ... IN PARTITION` with a typed predicate; always carries a project predicate or the marker predicate. The rows are hidden from reads on return |
+| `drop_partition(table, partition) -> Result<(), StoreError>` | `crucible_maint` | Dropping a partition that does not exist succeeds |
+| `apply_deleted_mask(table, partition) -> Result<MutationId, StoreError>` | `crucible_maint` | |
+| `mutation_status(id: &MutationId) -> Result<MutationStatus, StoreError>` | `crucible_maint` | `Pending`, `Done` or `Failed { code, reason }`. A mutation the store no longer lists is `Done` |
+| `partition_projects(table, partition) -> Result<Vec<ProjectId>, StoreError>` | `crucible_maint` | Distinct projects with visible rows in a partition, ascending, excluding the nil marker project. Markers never keep a partition alive: a partition drop removes them too |
+| `masked_parts(table, partition) -> Result<u64, StoreError>` | `crucible_maint` | Parts that still carry a delete mask |
+| `apply_migration(step: &MigrationStep) -> Result<(), StoreError>` | `crucible_admin` | Schema or access step; idempotent |
+| `detect() -> Result<StoreFacts, StoreError>` | `crucible_maint` | Section 5.8 |
+| `dedup_selftest() -> Result<(), StoreError>` | `crucible_ingest` | Section 5.8; anything but exactly one row is `StoreError::SelfTest` |
+| `kill(query_id: Uuid) -> Result<(), StoreError>` | `crucible_maint` | `KILL QUERY` by id; killing a query that has ended succeeds |
+| `health() -> StoreHealth` | `crucible_maint` | `Healthy` or `Unavailable { reason }`; never fails |
+
+No method takes SQL text and returns rows, and no method reads across projects: rows leave the store only through
+`execute`, whose plan carries a `ProjectScope`.
+
+| Type | Definition |
+|---|---|
+| `InsertSettings` | Built by `InsertSettings::new(token: BatchToken, flavour: StoreFlavour)`. `pairs()` is the exact name and value list of section 5.4, in that order; `insert_quorum = auto` is present for the clustered flavour only |
+| `InsertError` | One variant per class of section 5.6: `Retry { reason, message }` with `reason` one of `NotSent`, `TooManyQueries` (202), `TooManyParts` (252), `Memory` (241), `NoSpace` (243), `ReadOnly` (242); `UnknownOutcome { code?, message }`; `FatalConfig { code, message }`; `Poison { code, message }`. A failure that fits no class is `UnknownOutcome`, because probing is always safe. Two poison failures are identical when their codes are equal; the shipper counts them |
+| `QueryError` | `Timeout`, `MemoryExceeded`, `TooBroad`, `Unavailable`, `Internal`, mapping one-to-one to the problem codes `query_timeout`, `query_memory_exceeded`, `query_too_broad`, `telemetry_store_unavailable`, `internal_error` (section 12.3) through `problem_code()` |
+| `StoreError` | `Unavailable` (also a timeout; for a statement that changes data the outcome is unknown and the idempotent call is repeated), `Rejected { code, message }`, `SelfTest`, `Internal`. `problem_code()` gives `telemetry_store_unavailable` for the first and `internal_error` for the rest |
+| `MutationId` | The table plus the store's own name for the mutation; opaque to callers |
+| `StoreFacts` | `version` (major, minor; the minimum is 26.3), `flavour` (`SingleNode`, `Clustered`, `Cloud`), `engines` (the engine family, `MergeTree`, `Replicated` or `Shared`, of every Crucible table that exists), `missing_settings` (settings Crucible sends that the server does not know; empty when all are present), `text_search_functions`, `text_index`, and `ddl_initial_user_and_roles` (the server setting `distributed_ddl_use_initial_user_and_roles`; clustered flavour only) |
+| `RowStream` | A boxed stream of `Result<RowBlock, QueryError>` that also exposes `query_id()`. Every block holds 1 to 65,536 rows; the result is the concatenation of the blocks and an empty result has no block; block boundaries carry no meaning and may differ between stores. The first error is terminal. Dropping the stream cancels the query (section 8.5) |
 
 `ChModel` (simulation) must model:
 - tables loaded from the production `TableDef`s in `crucible-schema`; parts per partition;
@@ -1507,8 +1533,9 @@ concurrent run per user, 4 per project, 30 runs per minute per user.
 
 ### 8.1 Typed query-plan IR
 
-Owner: `crucible-plan`. Every telemetry read is a `QueryPlan`; `crucible-store-clickhouse` renders it to SQL and
-`ChModel` interprets it. The SQL workspace (section 7.4) is the only exception.
+Owner: `crucible-plan`. Every telemetry read of project data is a `QueryPlan`; `crucible-store-clickhouse` renders
+it to SQL and `ChModel` interprets it. The SQL workspace (section 7.4) and the existence probe below are the only
+exceptions.
 
 ```text
 QueryPlan { scope: ProjectScope, window: TimeWindow, class: QueryClass, root: Node }
@@ -1525,15 +1552,48 @@ A plan cannot be constructed without a scope and a window.
 | `TextSearch` | Payload table, fields, token query (`all`, `any`, `phrase`), `Pred`, limit |
 | `TimeSeries` | An `Aggregate` bucketed by a granularity, with gap fill |
 | `FieldRange` | Point lookup of one payload field with a byte range |
-| `BatchProbe` | Internal to `crucible-shipper`; table, partition, epoch, `batch_seq`; returns a boolean (section 5.5) |
 
 `Pred` is a closed AST: `And`, `Or`, `Not`, comparisons (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) between a column from
 the table's column enum and a typed literal, `In`, `StartsWith`, array `HasAny`, `MetadataEq(key, value)` and
 `TextMatch` on `name`. **`Pred` has no project variant.** The renderer adds `project_id = {scope}` to every table
 reference itself, and adds `project_id != nil` nowhere because a scope can never be nil.
 
+`BatchProbe { table, partition, epoch, batch_seq }` (section 5.5) is deliberately **not a `Node`**: it is the one
+read without a project predicate, so it is a separate type that no `QueryPlan` can contain, and it runs through
+`TelemetryStore::probe`, which returns only a boolean. Its constructor `BatchProbe::for_shipper` is a disallowed
+method in `clippy.toml`, and the CI allow-attribute guard permits the allow in exactly one file,
+`crates/crucible-shipper/src/probe.rs`. Tests of stores obtain probes from `crucible_plan::test_support` (feature
+`test-support`, which product builds never enable).
+
 `DeletePlan { scope or marker purge, table, partition, pred }` is the separate typed form used by
 `crucible-lifecycle`.
+
+**Output schema.** `QueryPlan::output()` returns the ordered output columns (label and type) that every row of the
+plan follows. It is the single definition of a result's shape: the adapter and `ChModel` must both return rows that
+pass `OutputSchema::check_row`, and a store reports a result that does not as `internal_error`.
+
+| Root | Output columns |
+|---|---|
+| `Scan`, `PointLookup` | The node's columns, in the order given |
+| `Aggregate` | The group dimensions, then one column per measure, in the order given |
+| `SemiJoin` | The columns of the left scan |
+| `TextSearch` | The table's key columns (its `ORDER BY` columns after `project_id`) |
+| `TimeSeries` | `bucket` (the first instant of the bucket, `DateTime('UTC')`), then the aggregate's output |
+| `FieldRange` | The field |
+
+- Output types are result types, never storage wrappers: `SimpleAggregateFunction(f, T)` is `T` and
+  `LowCardinality(String)` is `String`. `count` and `uniq` are `UInt64`; `sum` is `UInt64`, `Int64` or `Float64` by
+  the column's signedness; the other measures have their column's result type; a histogram merge is the
+  `(keys, counts)` tuple with keys ascending and unique.
+- Each datum has one representation as a `Value`: `UInt`, `Int`, `Float`, `String`, `Bytes`, `Uuid`, `Date`,
+  `Time`, `Enum` (the stored value), `Array`, `Tuple2`, and `Null` only under `Nullable`. A `String` is
+  `Value::String` when its bytes are valid UTF-8 and `Value::Bytes` otherwise (a `FieldRange` may cut a character);
+  a `FixedString` is always `Value::Bytes`.
+- Columns are identified by position; labels are for diagnostics.
+- A node with an order returns rows in that order; rows that tie on it, and the rows of a node without an order,
+  come in no defined order.
+- A grouped read returns one row per group with at least one matching row. An `Aggregate` without group dimensions
+  is one group: it returns one row when at least one row matches and no row otherwise, never a row of defaults.
 
 ### 8.2 Post-operators
 
@@ -1578,10 +1638,12 @@ and `query_memory_exceeded`.
 
 ### 8.5 Cancellation
 
-Read classes set `cancel_http_readonly_queries_on_client_close = 1` explicitly. On the Rust deadline or on client
-disconnect the adapter also drops the connection and issues `KILL QUERY` by `query_id` through `crucible_maint`.
-Whether cancel-on-close fires for POSTed SELECTs is pinned by conformance C13; the `KILL QUERY` path must work
-regardless.
+Read classes set `cancel_http_readonly_queries_on_client_close = 1` explicitly. A caller cancels a read by dropping
+its `RowStream`; a client disconnect drops it. On that drop, or on the Rust deadline (which ends the stream with
+`query_timeout`), the adapter drops the connection and issues `KILL QUERY` by `query_id` through `crucible_maint`.
+`TelemetryStore::kill(query_id)` with `RowStream::query_id()` is the same path for a caller that cannot drop the
+stream. Whether cancel-on-close fires for POSTed SELECTs is pinned by conformance C13; the `KILL QUERY` path must
+work regardless.
 
 ### 8.6 Recent-span index
 

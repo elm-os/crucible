@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Probes for tests of stores. Product builds never enable it.
+test-support = []
+
 [dependencies]
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }
@@ -16,6 +20,7 @@ xxhash-rust = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+crucible-plan = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
 
