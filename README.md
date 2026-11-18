@@ -60,7 +60,7 @@ and coding agents will query Crucible through its MCP server.
 - [Architecture overview](docs/architecture/overview.md)
 - [Testing methodology](docs/testing/methodology.md)
 - [Development](docs/development.md)
-- [Self-hosting](docs/self-hosting/README.md) (planned)
+- [Self-hosting](docs/self-hosting/README.md) (development preview)
 
 ## License
 
