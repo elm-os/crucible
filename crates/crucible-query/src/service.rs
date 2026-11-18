@@ -304,8 +304,9 @@ pub struct TraceSummary {
     pub max_end: Timestamp,
     /// Whether a root span has been seen.
     pub has_root: bool,
-    /// Spans. During the visibility grace this can run ahead by the spans of a batch that is in the store but
-    /// not yet checkpointed.
+    /// Spans. The store's sum plus the recent entries above the checkpoint watermark, so this and the other
+    /// sums run ahead by the spans that are in the store while the watermark has not passed them yet (the
+    /// watermark is a low watermark: one unresolved earlier batch holds it back).
     pub span_count: u64,
     /// Spans of level `error`.
     pub error_count: u64,

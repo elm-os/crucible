@@ -50,8 +50,9 @@ impl TraceSpan {
 pub struct TraceDetail {
     /// The trace.
     pub trace_id: TraceId,
-    /// The number of spans. Exact when `paged` is false; on a paged response it is the store's count plus the
-    /// recent entries above the checkpoint watermark.
+    /// The number of spans. Exact when `paged` is false. On a paged response it is the store's count plus the
+    /// recent entries above the checkpoint watermark, so it runs ahead by the spans that are in the store
+    /// while the watermark has not passed them yet.
     pub span_count: u64,
     /// False: `spans` holds every span. True (above `TRACE_INLINE_SPAN_LIMIT`): `spans` holds the root spans
     /// and their direct children, at most `TRACE_PAGED_SPAN_LIMIT`, and each carries `child_count`.
@@ -217,7 +218,10 @@ impl QueryService {
         let stored_count = trace.as_ref().map_or(0, |trace| trace.span_count);
         let inline_limit = u64::from(TRACE_INLINE_SPAN_LIMIT);
         let mut inline = None;
-        if stored_count.saturating_add(unconfirmed) <= inline_limit {
+        // The store's count alone decides whether to try the whole trace: adding the unconfirmed entries would
+        // count a span twice while it is in the store and its checkpoint is still to come. The de-duplicated
+        // merge then gives the exact count.
+        if stored_count <= inline_limit {
             let rows = match &trace {
                 Some(StoredTrace { bounds, .. }) => {
                     let (from, to) = (bounds.min_start, bounds.max_end);

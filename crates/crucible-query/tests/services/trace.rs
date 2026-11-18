@@ -131,6 +131,22 @@ fn a_span_in_both_the_index_and_the_store_is_returned_once() {
     assert!(whole(&found));
 }
 
+/// A large trace that is in the store and still unconfirmed in the index is counted once: it stays below the
+/// inline limit and is returned whole.
+#[test]
+fn a_shipped_trace_awaiting_its_checkpoint_is_not_counted_twice() {
+    let mut world = World::new(10_000);
+    let mut spans = vec![span(1, 1, 0, NOW)];
+    spans.extend((2..=3_000u64).map(|n| span(1, n, 1, NOW.saturating_add_micros(n as i64))));
+    let lsn = world.ack(spans);
+    world.ship(lsn);
+    assert_eq!(world.index.stats().entries, 3_000);
+    let found = detail(&world, 1).unwrap();
+    assert!(!found.paged && whole(&found));
+    assert_eq!((found.span_count, found.spans.len()), (3_000, 3_000));
+    assert!(found.spans.iter().all(from_store));
+}
+
 #[test]
 fn a_dropped_span_makes_the_read_partial_until_the_store_serves_it() {
     // Room for two entries, and the store is down, so nothing ships and nothing is evictable.

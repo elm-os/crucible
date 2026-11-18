@@ -169,7 +169,9 @@ fn live_tail_returns_what_arrived_after_the_head_cursor() {
     let quiet = tail(&world, cursor);
     assert!(quiet.data.is_empty() && quiet.new_count == 0 && !quiet.has_more);
 
-    // Two traces arrive; one backdated before trace 1, one after it.
+    // Two traces arrive; one backdated before trace 1, one after it. The clock moves first: the store side of
+    // the tail is `received_at > as_of`, so a head accepted in the very microsecond of the cursor's `as_of`
+    // is served by the index's LSN map only, and is missed once it leaves the index (reported as a gap).
     world.clock.advance(Duration::from_millis(5));
     world.ack(vec![span(2, 20, 0, at(-60))]);
     world.ack(vec![span(3, 30, 0, at(-5)), span(1, 11, 10, at(-4))]);
