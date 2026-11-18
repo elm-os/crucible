@@ -5,11 +5,11 @@
 
 use crucible_auth::test_support;
 use crucible_plan::{
-    AggOutput, Aggregate, BatchProbe, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Having,
-    Literal, MAX_LIST, Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass,
-    QueryPlan, Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest, data_bounds,
-    effective_window, pad_in_list, padded_in_len, span_children, trace_bounds_window, trace_hash,
-    trace_list, trace_spans, trace_time_bounds,
+    AggOutput, Aggregate, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Having, Literal,
+    MAX_LIST, Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass, QueryPlan,
+    Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest, data_bounds,
+    effective_window, pad_in_list, padded_in_len, span_children, trace_bounds_window, trace_list,
+    trace_spans, trace_time_bounds,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -105,10 +105,16 @@ fn literal_strategy() -> impl Strategy<Value = Literal> {
 /// The reference for `Literal::fits`, written from the type strings rather than the type enum.
 fn fits_by_type_string(literal: &Literal, ty: &Ty) -> bool {
     let wire = ty.wire().to_string();
+    // A partial is compared as its underlying type: `SimpleAggregateFunction(f, T)` is `T`.
+    let wire = wire
+        .strip_prefix("SimpleAggregateFunction(")
+        .and_then(|rest| rest.split_once(", "))
+        .and_then(|(_, inner)| inner.strip_suffix(')'))
+        .unwrap_or(&wire);
     let wire = wire
         .strip_prefix("Nullable(")
         .and_then(|inner| inner.strip_suffix(')'))
-        .unwrap_or(&wire);
+        .unwrap_or(wire);
     match literal {
         Literal::Uuid(_) => wire == "UUID",
         Literal::Bytes(b) => wire == format!("FixedString({})", b.len()),
@@ -442,7 +448,8 @@ fn probes_and_deletes_are_typed() {
     let month = PartitionId::parse("202611").unwrap();
     let all = PartitionId::UNPARTITIONED;
     let probe = |table_id, partition| {
-        BatchProbe::for_shipper(table_id, partition, epoch, Lsn::new(7)).map(|p| p.kind())
+        crucible_plan::test_support::batch_probe(table_id, partition, epoch, Lsn::new(7))
+            .map(|p| p.kind())
     };
     assert_eq!(probe(TableId::SpanCore, day), Ok(ProbeKind::BatchSeq));
     assert_eq!(probe(TableId::TraceStats, day), Ok(ProbeKind::Marker));
@@ -496,11 +503,11 @@ fn trace_hash_is_the_low_half_of_xxh3() {
     assert_eq!(xxhash_rust::xxh3::xxh3_64(&[]), 0x2D06_8005_38D3_94C2);
     // Known answers for the shipper to match: sixteen zero bytes, and the bytes 0x00 to 0x0f.
     let counting = TraceId::from_bytes(core::array::from_fn(|i| i as u8));
-    assert_eq!(trace_hash(TraceId::ZERO), HASH_ZERO);
-    assert_eq!(trace_hash(counting), HASH_COUNTING);
+    assert_eq!(TraceId::ZERO.trace_hash(), HASH_ZERO);
+    assert_eq!(counting.trace_hash(), HASH_COUNTING);
     for id in [TraceId::ZERO, counting] {
         let full = xxhash_rust::xxh3::xxh3_64(id.as_bytes());
-        assert_eq!(u64::from(trace_hash(id)), full & 0xffff_ffff);
+        assert_eq!(u64::from(id.trace_hash()), full & 0xffff_ffff);
     }
 }
 
@@ -652,7 +659,7 @@ proptest! {
     ) {
         let trace_id = TraceId::from_bytes(trace);
         let parent = SpanId::from_bytes(parent);
-        let hash = Pred::Cmp(SpanCoreCol::TraceHash.into(), CmpOp::Eq, trace_hash(trace_id).into());
+        let hash = Pred::Cmp(SpanCoreCol::TraceHash.into(), CmpOp::Eq, trace_id.trace_hash().into());
 
         let bounds = trace_time_bounds(scope, window, caller, trace_id).unwrap();
         assert_scoped(&bounds, scope, window, caller, QueryClass::Point, TableId::TraceStats)?;

@@ -110,8 +110,8 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// The type as it travels in a Native block (contract section 5.2): `LowCardinality(String)` is sent as
-    /// `String`, and a `SimpleAggregateFunction` as its underlying type.
+    /// The type string of a Native block header (contract section 5.2): the `TableDef` type verbatim, except
+    /// that every `LowCardinality(String)` is sent as `String`. `SimpleAggregateFunction` wrappers are kept.
     pub fn wire(&self) -> WireTy<'_> {
         WireTy(self)
     }
@@ -177,7 +177,6 @@ impl Ty {
                 b.write(f, wire)?;
                 f.write_str(")")
             }
-            Self::Saf(_, inner) if wire => inner.write(f, wire),
             Self::Saf(func, inner) => {
                 write!(f, "SimpleAggregateFunction({func}, ")?;
                 inner.write(f, wire)?;

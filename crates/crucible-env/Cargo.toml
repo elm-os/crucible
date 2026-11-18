@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 crucible-records = { workspace = true }
+crucible-plan = { workspace = true }
+crucible-schema = { workspace = true }
+crucible-chfmt = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
@@ -21,6 +24,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-plan = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 

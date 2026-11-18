@@ -566,11 +566,19 @@ mod tests {
             HIST.to_string(),
             "SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64)))"
         );
+        assert_eq!(HIST.wire().to_string(), HIST.to_string());
         assert_eq!(
-            HIST.wire().to_string(),
-            "Tuple(Array(UInt16), Array(UInt64))"
+            MARKER_AT.wire().to_string(),
+            "SimpleAggregateFunction(max, DateTime('UTC'))"
         );
-        assert_eq!(MARKER_AT.wire().to_string(), "DateTime('UTC')");
+        let uniq_lc = Ty::Saf(
+            crate::AggFn::GroupUniqArrayArray(8),
+            &Ty::Array(&Ty::LowCardinalityString),
+        );
+        assert_eq!(
+            uniq_lc.wire().to_string(),
+            "SimpleAggregateFunction(groupUniqArrayArray(8), Array(String))"
+        );
         assert_eq!(
             Ty::Enum8(EnumKind::StatusCode).to_string(),
             "Enum8('unset' = 0, 'ok' = 1, 'error' = 2)"
