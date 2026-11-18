@@ -171,4 +171,8 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     fact winner.
 80. **Replays after an upgrade use the current price table and normalizer**, with a stated I7 exception for batches
     that straddle the upgrade.
+81. **Security never at the cost of a smooth self-hosted default (contracts 1.7).** Protections that cost nothing are
+    always on; friction-adding hardening (Secure-only cookies, private-network egress bans, fail-closed sessions
+    during a Postgres outage, a mandatory public URL) is an operator switch. Set after the owner asked that security
+    not degrade the experience.
 
