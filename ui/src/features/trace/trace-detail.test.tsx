@@ -94,6 +94,7 @@ function detail(fields: Partial<TraceDetailBody> = {}): TraceDetailBody {
     span_count: SPANS.length,
     paged: false,
     spans: SPANS,
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
     saturated: false,
     ...fields,

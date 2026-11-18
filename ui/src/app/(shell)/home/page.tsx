@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { PageHeader } from "@/components/page-header";
 import { HomeOverview } from "@/features/home/home-overview";
 
@@ -9,9 +10,11 @@ export default function HomePage() {
     <>
       <PageHeader
         title="Home"
-        description="Setup progress and headline numbers for this project."
+        description="Headline numbers for the selected time range, and setup progress."
       />
-      <HomeOverview />
+      <Suspense fallback={null}>
+        <HomeOverview />
+      </Suspense>
     </>
   );
 }

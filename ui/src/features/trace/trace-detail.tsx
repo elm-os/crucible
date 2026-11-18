@@ -30,6 +30,7 @@ import { formatCost, formatCount, formatDuration, formatTime } from "@/lib/forma
 import { parseSpanId, parseTraceId } from "@/lib/ids";
 import { useProject } from "@/lib/project";
 import { useUrlParam } from "@/lib/url-state";
+import { TraceFactsSection } from "./trace-facts";
 import {
   childPagesKey,
   type PageRequests,
@@ -254,6 +255,9 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
             {panel ?? <SpanPanelSkeleton loading={query.isPending} />}
           </SectionFrame>
         ) : null}
+      </div>
+      <div className="mt-6">
+        <TraceFactsSection project={project} trace={trace} query={query} />
       </div>
       {panel && detail && detail.spans.length > 0 ? (
         <Drawer side="bottom" open={sheetOpen} onOpenChange={setSheetOpen}>
