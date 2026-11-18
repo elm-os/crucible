@@ -14,12 +14,17 @@
 //! and identical tokens, every pair probed first; pairs named by a `Quarantine` frame stay resolved; the unsealed
 //! tail is sealed with fresh boundaries.
 //!
+//! A `FactBatch` frame yields one row per fact in its fact table. A durable frame that this binary cannot decode
+//! or normalize does not stop shipping: it is copied to the quarantine root by itself, alerted and counted, and
+//! then passes as a frame without rows (contract 5.6, frame quarantine).
+//!
 //! The row builders ([`value`]) are generic over `TableDef`: a table needs one function from its record to a row
-//! of cells ([`tables`] has those of milestone 1: `span_core`, `span_payload`, `trace_heads`, `trace_stats`).
+//! of cells ([`tables`] has those of the span tables, the span rollups and the fact tables).
 
 mod batch;
 mod config;
 mod error;
+mod frames;
 mod hooks;
 mod limits;
 mod pair;
@@ -31,10 +36,14 @@ pub mod tables;
 pub mod value;
 
 pub use batch::{BatchId, OpenBatch, Pair, pair_block, pair_token};
-pub use config::{Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig};
+pub use config::{
+    DEFAULT_ENCODED_BYTES, FrameFault, Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
+};
 pub use error::ShipError;
 pub use hooks::{Barrier, Barriers, NoBarriers, NoRecent, RecentIndex};
 pub use limits::SealLimits;
-pub use quarantine::{FRAMES_FILE, MANIFEST_FILE, quarantine_ref};
+pub use quarantine::{
+    FRAMES_FILE, FrameManifest, MANIFEST_FILE, frame_quarantine_ref, quarantine_ref,
+};
 pub use recent_hook::RecentHook;
 pub use shipper::{Hooks, Shipper, ShipperStats, StatsSnapshot};

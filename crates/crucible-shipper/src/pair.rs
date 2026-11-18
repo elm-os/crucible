@@ -2,11 +2,10 @@
 //! (contract sections 5.5 and 5.6, and the rules the ingest model found, `docs/testing/formal-model.md`).
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use crucible_chfmt::EncodedBlock;
 use crucible_env::{ClockExt, InsertError, InsertSettings, RetryReason};
-use crucible_records::{BatchToken, WalEpoch};
+use crucible_records::{BatchToken, TableId, WalEpoch};
 
 use crate::batch::BatchId;
 use crate::error::ShipError;
@@ -67,7 +66,7 @@ async fn probe(ctx: &Ctx, token: &BatchToken) -> Result<bool, ShipError> {
     loop {
         let answer = {
             let _connection = ctx.gate.acquire().await;
-            ctx.stats.probes.fetch_add(1, Ordering::Relaxed);
+            ctx.stats.probes.add(1);
             ctx.stores.telemetry.probe(probe).await
         };
         match answer {
@@ -100,7 +99,14 @@ pub(crate) async fn ship_pair(
     let mut attempt: u32 = 0;
     let mut poison: Option<Poison> = None;
     let mut reason = String::new();
+    let fact_table = matches!(
+        pair.0,
+        TableId::FactScores | TableId::FactTags | TableId::FactFlags | TableId::FactCorrections
+    );
     loop {
+        if attempt > 0 && fact_table && ctx.config.drops_fact_on_retry() {
+            return Ok(PairEnd::Confirmed);
+        }
         let poisoned = poison.filter(|p| p.count >= ctx.config.poison_limit);
         if let Some(p) = poisoned
             && ctx.config.quarantines_without_probe()
@@ -112,7 +118,7 @@ pub(crate) async fn ship_pair(
         if in_doubt {
             let issued = ctx.env.clock.now();
             if probe(ctx, &job.token).await? {
-                ctx.stats.probes_present.fetch_add(1, Ordering::Relaxed);
+                ctx.stats.probes_present.add(1);
                 return Ok(PairEnd::Confirmed);
             }
             probed_at = Some(issued);
@@ -131,7 +137,7 @@ pub(crate) async fn ship_pair(
             .is_some_and(|at| now.saturating_duration_since(at) >= ctx.config.probe_valid_for)
         {
             // The wait for a connection outlived the probe's answer.
-            ctx.stats.probes_expired.fetch_add(1, Ordering::Relaxed);
+            ctx.stats.probes_expired.add(1);
             continue;
         }
         let token = if ctx.config.drops_token() {
@@ -141,7 +147,7 @@ pub(crate) async fn ship_pair(
             job.token
         };
         let settings = InsertSettings::new(token, ctx.config.flavour);
-        ctx.stats.inserts.fetch_add(1, Ordering::Relaxed);
+        ctx.stats.inserts.add(1);
         let outcome = ctx
             .env
             .clock
@@ -173,7 +179,7 @@ pub(crate) async fn ship_pair(
             }
             // A timeout, a dropped call or an unclassified failure: the block may have landed.
             Err(_) | Ok(Err(InsertError::UnknownOutcome { .. })) => {
-                ctx.stats.unknown_outcomes.fetch_add(1, Ordering::Relaxed);
+                ctx.stats.unknown_outcomes.add(1);
                 if !ctx.config.skips_probe_after_unknown() {
                     in_doubt = true;
                 }

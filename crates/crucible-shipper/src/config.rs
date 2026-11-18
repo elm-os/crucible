@@ -39,7 +39,48 @@ pub enum Mutant {
     /// that the ingest model refuted).
     #[cfg(feature = "test-mutants")]
     RejectionClearsDoubt,
+    /// Count one row of every rollup block twice.
+    #[cfg(feature = "test-mutants")]
+    DoubleCountRollup,
+    /// Count a pair of a fact table as landed when its insert is retried, without sending it again.
+    #[cfg(feature = "test-mutants")]
+    DropFactOnRetry,
+    /// Quarantine a frame that does not normalize without copying it to the quarantine root.
+    #[cfg(feature = "test-mutants")]
+    FrameQuarantineWithoutCopy,
 }
+
+/// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
+/// frame that a binary cannot read would. The choice is a function of the frame's LSN and the salt alone, so
+/// every replay of a frame decides the same (contract 5.6).
+///
+/// Without the cargo feature `test-mutants` this type cannot be built, so [`ShipperConfig::frame_fault`] is
+/// always `None`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FrameFault {
+    salt: u64,
+    ppm: u32,
+}
+
+impl FrameFault {
+    /// A fault that fails `ppm` frames in a million, chosen by `salt`.
+    #[cfg(feature = "test-mutants")]
+    pub const fn new(salt: u64, ppm: u32) -> Self {
+        Self { salt, ppm }
+    }
+
+    /// Whether the frame at `lsn` fails (SplitMix64 of the LSN and the salt).
+    pub(crate) const fn fails(&self, lsn: u64) -> bool {
+        let mut z = (lsn ^ self.salt).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        z % 1_000_000 < self.ppm as u64
+    }
+}
+
+/// Default `shipper.encoded_bytes` (default; revisit): several times the rows of the largest frame.
+pub const DEFAULT_ENCODED_BYTES: u64 = 1 << 30;
 
 /// The settings of one shipper.
 #[derive(Clone, Debug)]
@@ -86,6 +127,15 @@ pub struct ShipperConfig {
     pub duplicate_window_keys: usize,
     /// Traces of the first-seen set.
     pub first_seen_traces: usize,
+    /// `shipper.encoded_bytes`: the budget for the rows the shipper holds, from a frame's placement in a batch
+    /// until the batch's pairs are resolved. Rows are charged at their estimated size ([`crate::value::Row`]),
+    /// and the encoded blocks that replace them at the seal keep that charge. While the budget is exhausted
+    /// the shipper reads no further frame: the open batch seals and the next frame waits for a batch in flight
+    /// to resolve. Frames are never split, so one frame whose rows alone exceed the budget is taken by itself;
+    /// a batch that recovery found keeps its recorded boundaries whatever its size.
+    pub encoded_bytes: u64,
+    /// A seeded normalizer fault; `None` outside the simulation suite.
+    pub frame_fault: Option<FrameFault>,
     /// A seeded defect; `None` outside the simulation suite.
     pub mutant: Option<Mutant>,
 }
@@ -114,6 +164,8 @@ impl Default for ShipperConfig {
             gc_interval: Duration::from_secs(1),
             duplicate_window_keys: DUPLICATE_WINDOW_KEYS,
             first_seen_traces: FIRST_SEEN_TRACES,
+            encoded_bytes: DEFAULT_ENCODED_BYTES,
+            frame_fault: None,
             mutant: None,
         }
     }
@@ -143,4 +195,7 @@ mutant_flags! {
     checkpoints_before_resolution => CheckpointBeforeResolution,
     quarantines_without_probe => QuarantineWithoutProbe,
     rejection_clears_doubt => RejectionClearsDoubt,
+    double_counts_rollups => DoubleCountRollup,
+    drops_fact_on_retry => DropFactOnRetry,
+    quarantines_frames_without_copy => FrameQuarantineWithoutCopy,
 }

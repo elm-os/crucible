@@ -3,7 +3,7 @@
 //! **Stage A** ([`normalize`]) is a pure function of one WAL frame and a [`NormCtx`]: no clock, randomness or IO,
 //! so frames may be normalized in parallel and a replay gives byte-identical records. It re-scans the canonical
 //! OTLP body, skips the spans the envelope marks as rejected, maps each span through its dialect's
-//! [`SpanMapper`] (dialect 0 only in milestone 1), forward-fills trace-level attributes within the request, applies
+//! [`SpanMapper`] (dialect 0 only in this build), forward-fills trace-level attributes within the request, applies
 //! the time rules, defaults, cost, payload caps and the row digest.
 //!
 //! **Stage B** ([`StageB`]) is sequential in LSN order: the duplicate window drops exact repeats and the first-seen
@@ -49,7 +49,10 @@ pub use stage_b::{Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrde
 /// - 1: the first version; cost was provided or `none`.
 /// - 2: usage without a provided cost is priced from the price tables (`cost_source = calculated`, per-key costs,
 ///   `total_cost_nusd` and the price row and tier ids).
-pub const NORMALIZER_VERSION: u32 = 2;
+/// - 3: dialect 0 reads the source keys of contract 10.6 (trace name, session, user, environment, release,
+///   version, tags, metadata, level, trace tags, trace metadata, the public flag, `crucible.input` and
+///   `crucible.output`, the prompt reference, provided cost, `completion_start_time` and the model parameters).
+pub const NORMALIZER_VERSION: u32 = 3;
 
 /// One `IngestRequest` WAL frame as the normalizer reads it: the frame header values and the envelope (contracts
 /// 4.3 and 4.4), borrowing the payload. The shipper fills it from the decoded frame; this crate does not depend on

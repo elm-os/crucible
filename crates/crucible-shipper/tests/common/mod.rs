@@ -15,6 +15,7 @@ use crucible_records::{
 use crucible_schema::TableDef;
 use crucible_shipper::value::Value;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
 use prost::Message;
 
@@ -224,7 +225,16 @@ pub fn column_index(def: &TableDef, name: &str) -> usize {
 /// One generated span: (trace, span, has a parent, day offset, minute offset, duration in ms).
 pub type SpanDesc = (u8, u8, bool, u8, u16, u16);
 
-/// An OTLP request with the described spans.
+fn attribute(key: &str, value: any_value::Value) -> KeyValue {
+    KeyValue {
+        key: key.to_owned(),
+        value: Some(AnyValue { value: Some(value) }),
+        ..KeyValue::default()
+    }
+}
+
+/// An OTLP request with the described spans. Spans of odd traces name one of two sessions, every third span
+/// names a user, and every span reports usage, so that the rollups have something to sum.
 pub fn otlp(spans: &[SpanDesc]) -> Vec<u8> {
     let wire = spans
         .iter()
@@ -240,6 +250,23 @@ pub fn otlp(spans: &[SpanDesc]) -> Vec<u8> {
                 kind: 1,
                 start_time_unix_nano: start,
                 end_time_unix_nano: start + u64::from(millis) * 1_000_000,
+                attributes: [
+                    (trace % 2 == 1).then(|| {
+                        let session = format!("session-{}", span % 2);
+                        attribute("session.id", any_value::Value::StringValue(session))
+                    }),
+                    (span % 3 == 0).then(|| {
+                        let user = format!("user-{}", trace % 3);
+                        attribute("user.id", any_value::Value::StringValue(user))
+                    }),
+                    Some(attribute(
+                        "gen_ai.usage.input_tokens",
+                        any_value::Value::IntValue(i64::from(span) + 1),
+                    )),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
                 ..Span::default()
             }
         })
