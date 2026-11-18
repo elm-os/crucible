@@ -1,0 +1,27 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"key_feed\")"
+---
+empty snapshot: (0, 0)
+key insert: ()
+key insert 2: ()
+key same id: error UniqueViolation("api_keys_pkey")
+key same public key: error UniqueViolation("api_keys_public_key_key")
+key without project: error ForeignKeyViolation("api_keys_project_id_fkey")
+key change at 1: true
+key change at 1 again: false
+key expiry edit: true
+key revoke: true
+key last used: true
+key last used, unknown key: false
+key get: Some(ApiKey { id: ApiKeyId(01a3185c-5002-7000-8000-000000000002), project_id: ProjectId(01a3185c-5014-7000-8000-000000000014), public_key: "cpk_0000000000000000000000000000000000000000002", scopes: [Ingest, Read, Write], import: false, note: "key 2", expires_at: Some(Timestamp(2027-01-16T08:00:00.000000Z)), last_used_at: None, revoked_at: Some(Timestamp(2027-01-15T08:00:50.000000Z)), version: 3, .. })
+keys of the project: [("key 1, ingest only", 2, Some(Timestamp(2027-01-15T08:00:55.000000Z))), ("key 2", 3, None)]
+feed from the start: [("key 1, ingest only", Created, 1, 2), ("key 2", Created, 1, 3), ("key 1, ingest only", Changed, 2, 2), ("key 2", ExpiryEdited, 2, 3), ("key 2", Revoked, 3, 3)]
+feed after the last row, no overlap: 0
+feed after the last row, wide overlap: [("key 1, ingest only", Created, 1, 2), ("key 2", Created, 1, 3), ("key 1, ingest only", Changed, 2, 2), ("key 2", ExpiryEdited, 2, 3), ("key 2", Revoked, 3, 3)]
+snapshot: [("key 1, ingest only", 2, None), ("key 2", 3, Some(Timestamp(2027-01-15T08:00:50.000000Z)))]
+poll while the older number is uncommitted: [("key 6", Created, 1, 1)]
+poll after the cursor, no overlap: []
+rows under the cursor found by the overlap: [("key 5", Created, 1, 1)]
+the rollback left a gap: true
+feed at the end: [("key 1, ingest only", Created, 1, 2), ("key 2", Created, 1, 3), ("key 1, ingest only", Changed, 2, 2), ("key 2", ExpiryEdited, 2, 3), ("key 2", Revoked, 3, 3), ("key 5", Created, 1, 1), ("key 6", Created, 1, 1), ("key 8", Created, 1, 1)]

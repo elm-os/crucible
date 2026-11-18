@@ -175,21 +175,28 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     always on; friction-adding hardening (Secure-only cookies, private-network egress bans, fail-closed sessions
     during a Postgres outage, a mandatory public URL) is an operator switch. Set after the owner asked that security
     not degrade the experience.
-82. **Dialect tables are layers in the contracts 10.3 order, and every span is mapped with all of them.** The
+82. **Configuration loads TOML, then `CRUCIBLE_*` variables, then flags, in `crucible-config` alone.** Unknown file
+    keys are errors naming the nearest key, every problem is reported in one run, and secrets never print. Unknown
+    `CRUCIBLE_*` variables only warn.
+83. **The control store is optional.** A node without Postgres still ingests, stores and serves telemetry; platform
+    features (sessions, keys in Postgres, alerts, dashboards, the SQL workspace) require it.
+85. **Dialect tables are layers in the contracts 10.3 order, and every span is mapped with all of them.** The
     chosen dialect decides only `compat_dialect`, which bare-key (`own`) sources are live, and the value
     encoding. This is what the field priority already described; it needs no duplicated rows and stops the data
     loss on spans that one dialect's exporter forwards for another. One key-to-sources index is built at start-up
     so the hot path stays flat.
-83. **A request hint is a detection at confidence 60, not an override.** A span that another dialect's own scope
+86. **A request hint is a detection at confidence 60, not an override.** A span that another dialect's own scope
     name or exclusive key identifies keeps that dialect on a hinted path, so its bare keys still map and it is
     labelled with the dialect that produced it. Namespaced keys map either way, because of the layers.
-84. **Token and cost sums count only `generation` and `embedding` spans whose `usage_aggregate` is false
-    (contracts 3.1).** Several instrumentations repeat their children's usage on a parent span, which no
-    per-span rule can detect. Stage A flags a span when a descendant of it in the same request also carries
-    usage, so the leaves, which carry the model used for pricing, are what is counted. The span still stores and
-    shows its own usage. The column arrives by a forward-only schema step; the shipper's rollup functions, the
-    I7 oracle and the fixtures' goldens follow, and fixtures that pinned a double count pin the corrected totals.
-85. **Compat fixtures hold invented values in the exact wire shape of their source.** Same keys, encodings,
+87. **Token and cost sums leave out only spans whose usage repeats their descendants' (contracts 3.1).** Several
+    instrumentations repeat their children's usage on a parent span. A span is marked `usage_aggregate` when a
+    descendant that carries usage or cost has been observed, in the same request or earlier in the LSN stream:
+    stage B keeps, per trace, the span ids that have such a descendant (children are exported no later than their
+    parents), bounded and rebuilt from the WAL like the duplicate window. There is no rule by observation type, so a
+    hand-instrumented span of any type that carries a provided cost is never dropped from totals. The span still
+    stores and shows its own usage. Known limit: a descendant that arrives after its ancestor, or after the window
+    forgot the trace, is counted twice; the I7 oracle models the same rule.
+88. **Compat fixtures hold invented values in the exact wire shape of their source.** Same keys, encodings,
     nesting and wire order; no third-party content is carried. Each fixture's `provenance` cites the repository,
     tag, file and lines its shape comes from, the goldens follow the invented values, and `THIRD_PARTY_NOTICES`
     does not change.

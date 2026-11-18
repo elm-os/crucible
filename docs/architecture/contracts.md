@@ -112,7 +112,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-normalize` | `crucible-records`, `crucible-otlp`, `crucible-compat` |
 | `crucible-env` | `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-chfmt`, `crucible-control` (the `ControlStore` trait lives in `crucible-control`; `Stores` holds it) |
 | `crucible-env-prod` | `crucible-env`, `crucible-records` |
-| `crucible-auth` | `crucible-records`, `crucible-env` |
+| `crucible-auth` | `crucible-records`, `crucible-env`, `crucible-control` (identity repositories) |
 | `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
 | `crucible-recent` | `crucible-env`, `crucible-records`, `crucible-plan` |
 | `crucible-query` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-recent`, `crucible-schema` |
@@ -122,11 +122,11 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-ui-assets` | `crucible-env` |
 | `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
 | `crucible-cursor` | `crucible-records` |
-| `crucible-config` | `crucible-records` (the only crate that reads the process environment) |
-| `crucible-control` | `crucible-env`, `crucible-records` |
+| `crucible-config` | none (the only crate that reads the process environment) |
+| `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
 | `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
 | `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
@@ -349,7 +349,7 @@ Repository-shaped access to Postgres. One repository per aggregate in section 11
 
 | Method | Semantics |
 |---|---|
-| `transaction(f) -> Result<T, TxError>` | Runs `f` in one transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `CommitUnknown` (connection lost during commit) and `Unavailable` |
+| `transaction(f) -> Result<T, TxError>` | Runs `f` in one repeatable-read transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `ForeignKeyViolation(constraint)`, `CommitUnknown` (connection lost during commit), `Fenced` (a lease's fencing token was superseded), `Invalid` (the request broke a model rule) and `Unavailable` |
 | `key_feed().poll(after_seq, overlap) -> Vec<KeyChange>` | Section 11.8 |
 | `key_feed().snapshot() -> KeySnapshot` | Full reconcile |
 | `leases().acquire(name, holder, ttl) -> Option<Lease { fencing_token, expires_at }>`, `renew(lease)`, `release(lease)` | Section 11.7. Expiry uses the database clock |
@@ -366,6 +366,11 @@ and a reserved pool of 2 connections for the key feed, leases and session lookup
 constraints; commit-unknown on connection loss; pool exhaustion; failover (brief unavailability, then a
 stale-free reconnect); lease rows; claims; key-feed sequence numbers that can commit out of order; and a database
 clock with skew against node clocks.
+
+Settled in code: the store sits in `Stores.control` as an `Option`, so `crucible serve` without Postgres keeps
+working as an ingest and telemetry node. The pool is `deadpool` with a custom manager over `connect_raw` on `Net`
+(`deadpool-postgres` spawns on the ambient runtime, which the `Env` rule forbids). Migrations are `refinery`,
+forward-only, numbered `V<n>__<name>.sql` in `crates/crucible-control-pg/migrations`.
 
 ### 2.8 ChildProcess
 
@@ -492,7 +497,7 @@ character boundary.
 | | `total_cost_nusd` | i64 nano-USD | Section 3.4 |
 | | `cost_source` | `CostSource` | Provided wins over calculated |
 | | `price_model_id`, `price_tier_id` | UUID, optional | The price row used |
-| | `usage_aggregate` | bool | Set by stage A on a span that carries usage when a descendant of it in the same request also carries usage. The span stores and shows its own usage; token and cost sums leave it out (the sums rule below) |
+| | `usage_aggregate` | bool | Set by normalizer stage B on a span with an observed descendant that carries usage or cost (or is itself marked), seen in the same request or earlier in the LSN stream (the usage descendant set of section 5.3). The span stores and shows its own usage; token and cost sums leave it out (the sums rule below) |
 | Prompt | `prompt_name`, `prompt_version` | string | 256 and 64 bytes; reference only in v0 |
 | Tools | `tool_names` | list of string | 128 items, 256 bytes each |
 | | `tool_call_count` | u32 | |
@@ -556,11 +561,14 @@ character boundary.
 **Other rules**
 
 - There is no server-side token estimation. `usage` is computed only from provided usage.
-- **Sums rule.** Trace, session, user and metrics token and cost sums count only spans whose `observation_type`
-  is `generation` or `embedding` and whose `usage_aggregate` is false. A span with `usage_aggregate = true`
-  repeats usage that its descendants report, so the leaves, which carry the model used for pricing, are what is
-  counted. The rule applies to token and cost sums only: span, error and other counts include every span, and
-  every span still stores and shows its own usage and cost.
+- **Sums rule.** Trace, session, user and metrics token and cost sums count every span whose `usage_aggregate` is
+  false, whatever its observation type. A span with `usage_aggregate = true` repeats usage that its descendants
+  report, so the descendants, which carry the model used for pricing, are what is counted; a hand-instrumented span
+  of any type that carries usage or a provided cost and has no usage-bearing descendant counts. The rule applies to
+  token and cost sums only: span, error and other counts include every span, and every span still stores and shows
+  its own usage and cost. Known limit: a usage-bearing descendant that arrives after its ancestor, or after the
+  descendant set forgot the trace, leaves the ancestor counted as well (a double count); the I7 oracle models the
+  same rule.
 - A client retry that re-sends a span produces new LSNs for one span key. The normalizer's duplicate window (section
   5.3) drops a repeat whose `row_digest` equals the remembered one; a repeat with a different digest is kept. Trace
   detail de-duplicates by `span_id` in the Rust tier (greatest `lsn` wins). Aggregates accept the rare duplicate
@@ -707,7 +715,8 @@ rows with `side = server`. It backs `mcp/deploys` and `mcp/compare` (section 9.9
 Facts resolve by one comparator, `crucible_records::fact_order`: `version` first, then `fact_id` in RFC 9562 byte
 order (time order for UUIDv7). No SQL ordering of UUIDs ever picks a winner, because ClickHouse compares UUIDs by
 their second half first: plans fetch candidate facts, and the Rust fold, `ChModel` and the differential check use
-the same comparator.
+the same comparator. A fact write larger than one frame is split across frames; if it fails after some frames are
+durable, a retry writes new facts that win, so writes are at-least-once with latest-wins resolution.
 
 Facts are later-written, append-only, versioned rows. They are never updated or deleted in place; a retraction is a
 new row. Facts written through the API go through the WAL (`FactBatch`) and are acknowledged after the fsync.
@@ -773,7 +782,7 @@ new row. Facts written through the API go through the WAL (`FactBatch`) and are 
 | `min_head_start` | min | Earliest head `start_time` |
 | `max_level` | max | |
 | `span_count`, `error_count`, `generation_count`, `tool_count`, `mcp_count` | sum | |
-| `total_cost_nusd`, `input_tokens`, `output_tokens`, `total_tokens` | sum | Under the sums rule of 3.1: only `generation` and `embedding` spans with `usage_aggregate = false` contribute |
+| `total_cost_nusd`, `input_tokens`, `output_tokens`, `total_tokens` | sum | Under the sums rule of 3.1: every span with `usage_aggregate = false` contributes |
 | `environments` | groupUniqArrayArray, at most 16 | |
 | `trace_name_pick`, `user_id_pick`, `session_id_pick` | max | Rank-prefixed picks (3.3) |
 
@@ -1085,6 +1094,7 @@ every table, base and derived, is written by this protocol.
 | Normalizer version | Recorded in the seal. If the binary changed, the new version is used; safe because routing is frozen and pairs land wholesale |
 | Price table | `price_table_version` in the seal records the table the first attempt used; versions are immutable. As with the normalizer version, a replay after a binary change prices with the current bundled table; pairs land wholesale, so costs never mix inside a pair. A batch whose pairs straddle a crash and an upgrade can carry two table versions across its tables, which I7 states as an exception |
 | Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys, oldest LSN evicted first |
+| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream, bounded to 4,000,000 entries (oldest LSN evicted first) and rebuilt from the retained prefix like the duplicate window |
 | Tombstones | A replay may drop more rows, never fewer. The deletion executor acts only after the node's checkpoint passes the tombstone (section 13.3) |
 | Partition routing | Section 5.2 |
 | Marker and ingestion columns | Computed from the seal and the frames (`received_at` of the batch's last frame for `marker_at`) |
@@ -1476,6 +1486,14 @@ report(b) = lower(b) + width(b) / 2          (integer division)
   shipper's rollup functions, the system simulation's I7 oracle and the fixtures' goldens apply the sums rule of
   3.1 from the change that starts writing the column.
 
+Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
+Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
+`migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
+(steps are idempotent, so a crash between apply and record only repeats the step). A step that outlives the lease is
+not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step (for
+example after a master-key change) makes the step reapply, with a warning. Without Postgres, `--migrate` applies the
+ClickHouse steps on every start.
+
 ### 6.7 Settled in code
 
 Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper cluster.
@@ -1827,9 +1845,9 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - Sums in lists and paged detail (`span_count`, cost, tokens, `child_count`) are store sums plus index entries above
   the watermark, so they can run ahead until the low watermark passes the spans; inline trace detail is exact.
 - Token and cost sums follow the sums rule of 3.1 on every read path: store sums, the index entries above the
-  watermark and sums computed at read time over `span_core` (inline trace detail included) leave out spans that are
-  not `generation` or `embedding` and spans with `usage_aggregate = true`. Counts are not filtered.
-- Filtered lists read the store only, because the index keeps no tags, environment or release, and answer
+  watermark and sums computed at read time over `span_core` (inline trace detail included) leave out spans with
+  `usage_aggregate = true`. Counts are not filtered.
+- Filtered lists read the store only, because the index keeps no tags or release (it keeps each span's environment), and answer
   `consistency: lagging` when unconfirmed index heads were left out. The index is consulted on every list page.
 - Heads of one trace with the same `(start_time, trace_hash, trace_id)` collapse to one row; a trace with several
   roots at different start times appears once per root.
@@ -1837,12 +1855,15 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - The shipper feeds the index through `RecentHook`: `applied(frame, normalized, admission)` for ingest frames and
   `passed(frame)` for every other frame. After a restart the host restores quarantine marks from the manifests under
   the quarantine root (the `Quarantine` frames may have been collected), with reach `All`.
-- `WalLocator.ordinal` is the span's position among the spans stage B admitted from the frame; a payload re-read must
-  apply the same admission (open: the binary's re-read path uses stage A positions, fixed in milestone 2).
+- `WalLocator.ordinal` is the span's stage A position in the frame (`Admission::stage_a_ordinals`), which is what a
+  payload re-read of the frame sees.
 - `ChModel` does not yet apply query-class guardrails, so it is more permissive than ClickHouse there (milestone 2).
-- Live tail can miss a head that was durable but unapplied when the cursor was issued, or whose `received_at` equals
-  the cursor's `as_of`; the head cursor gains `wal_epoch` and LSN with a `>=` arrival bound when `crucible-cursor`
-  lands (milestone 2).
+- Live tail: a head cursor carries the issuing node's `wal_epoch` and applied LSN. The store is read with
+  `(wal_epoch = E AND (lsn > L OR received_at > as_of)) OR (wal_epoch != E AND received_at >= as_of)`, and the recent
+  index by LSN only for a cursor from this node's WAL, so a head that was durable but unapplied when the cursor was
+  issued, or that shares the cursor's microsecond, is not missed. The `OR` stops the `received_at` skip index from
+  pruning the tail scan (a performance follow-up). A head applied while a page is being built can appear on that page
+  and on the next tail, which only inflates `new_count`.
 - Zero-filled `TimeSeries` buckets need nullable output types; until they exist the adapter refuses `Fill::Zero`.
 - `TokenMode::Phrase` renders as all-tokens, because 26.3 has no phrase-match function; `Pred::TextMatch` is a
   case-insensitive substring match.
@@ -2262,7 +2283,9 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 A 32-byte master key comes from `CRUCIBLE_MASTER_KEY` or its `_FILE` form, with a ring of at most two keys for
 rotation. HKDF-SHA256 gives one subkey per purpose. Secrets are sealed with XChaCha20-Poly1305 and a random nonce
 from `Rng`. Cursor-signing keys are random, stored sealed, rotated every 30 days, and kept `verify_only` for 24 h
-(the cursor lifetime).
+(the cursor lifetime). Until the `signing_keys` rows and their rotation job exist (milestone 4), the cursor key is the
+master-key subkey with HKDF info `crucible/cursor-signing/v1/0` and key id `master-0`; a node without a master key
+(ingest-only mode) uses a random per-process key, so its cursors reset on restart and clients restart from page one.
 
 ### 11.3 API keys
 
@@ -2548,8 +2571,10 @@ shows server text. Guardrail errors are never retried by the server.
   (default 30 days); a wider request is `query_too_broad` with `limit`.
 - Telemetry lists paginate only when sorted by time.
 - Cursor format: `v1.<kid>.<payload>.<mac>`. `kid` names a `signing_keys` row of purpose `cursor`. `payload` is
-  the base64url (no padding) encoding of: cursor kind (`page` or `head`), project id, route id, filter hash, sort,
-  window, the sort tuple of the last row, `as_of`, and an expiry 24 h after issue. `mac` is the base64url of
+  the base64url (no padding) encoding of a version byte, the cursor kind (`page`, `head` or span children), route
+  id, sort, project id, filter hash, issue time and an expiry 24 h after issue, then the position: for trace-list
+  pages the window, `as_of` and the sort tuple of the last row; for heads the window, `as_of`, `wal_epoch` and LSN;
+  for span children the trace, the parent and the last sort tuple. `mac` is the base64url of
   HMAC-SHA256 over `v1.<kid>.<payload>`, truncated to 16 bytes. Codec: `crucible-cursor` (pure, Kani-checked).
 - A cursor that fails the MAC, is expired, or does not match the request's project, route, filters, sort or window
   is `cursor_invalid`. Clients treat that as "restart from the first page".
@@ -2862,4 +2887,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-17 | Additive: internal dependency edges, `ProjectScope` minting by lint, settled-in-code tables (2.14, 3.11, 4.10, 6.7, 8.9), pico-USD prices, frozen MCP duration bounds, real-server grants |
 | v2 | 2026-11-17 | Additive: `TelemetryStore` final shape with `probe(BatchProbe)`, typed result rows and `Stores` (2, 2.6, 8.1, 8.5) |
 | v2 | 2026-11-17 | Clarification from the ingest model: probe once in doubt, probe results expire, quarantine only after an absent probe, quarantined pairs are read gaps (5.5, 5.6, 6.2, I3) |
-| v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums count only `generation` and `embedding` spans with `usage_aggregate = false`; a Basic public key that does not match the secret key's row is refused with 401 |
+| v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums leave out spans with `usage_aggregate = true` (an observed usage-bearing descendant); a Basic public key that does not match the secret key's row is refused with 401 |
