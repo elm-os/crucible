@@ -100,39 +100,70 @@ impl BatchToken {
         self.partition
     }
 
-    /// The canonical text, built without allocation.
+    /// The canonical text, built without allocation: the fields of the token's key, in order, joined by the
+    /// separators, with the numbers in unpadded decimal.
     pub fn text(&self) -> TokenText {
+        let key = self.key();
         let mut text = TokenText {
             bytes: [0; MAX_TOKEN_LEN],
             len: 0,
         };
+        text.extend(&key.epoch);
+        text.push(b':');
+        text.push_decimal(key.first_lsn);
+        text.push(b'-');
+        text.push_decimal(key.last_lsn);
+        text.push(b':');
+        text.push_decimal(u64::from(key.table));
+        text.push(b':');
+        text.extend(key.partition.get(..key.partition_len).unwrap_or_default());
+        text
+    }
+
+    /// The fixed-width fields that [`BatchToken::text`] writes: the epoch's text, the LSNs and the table id as
+    /// numbers, and the partition id's text with its length. The injectivity proof is stated on this form.
+    fn key(&self) -> TokenKey {
+        let mut epoch = [0u8; 36];
+        let mut at = 0;
+        let mut put = |byte: u8| {
+            if let Some(slot) = epoch.get_mut(at) {
+                *slot = byte;
+                at += 1;
+            }
+        };
         for (i, byte) in self.wal_epoch.to_bytes().into_iter().enumerate() {
             if matches!(i, 4 | 6 | 8 | 10) {
-                text.push(b'-');
+                put(b'-');
             }
-            text.push(HEX[usize::from(byte >> 4)]);
-            text.push(HEX[usize::from(byte & 0xf)]);
+            put(HEX[usize::from(byte >> 4)]);
+            put(HEX[usize::from(byte & 0xf)]);
         }
-        text.push(b':');
-        text.push_decimal(self.first_lsn.get());
-        text.push(b'-');
-        text.push_decimal(self.last_lsn.get());
-        text.push(b':');
-        text.push_decimal(u64::from(self.table.id()));
-        text.push(b':');
-        match (self.partition.as_date(), self.partition.as_month()) {
+        let mut partition = [0u8; 8];
+        let partition_len = match (self.partition.as_date(), self.partition.as_month()) {
             (Some(date), _) => {
-                text.push_padded::<4>(date.year());
-                text.push_padded::<2>(i32::from(date.month()));
-                text.push_padded::<2>(i32::from(date.day()));
+                write_padded(&mut partition[0..4], date.year());
+                write_padded(&mut partition[4..6], i32::from(date.month()));
+                write_padded(&mut partition[6..8], i32::from(date.day()));
+                8
             }
             (None, Some((year, month))) => {
-                text.push_padded::<4>(year);
-                text.push_padded::<2>(i32::from(month));
+                write_padded(&mut partition[0..4], year);
+                write_padded(&mut partition[4..6], i32::from(month));
+                6
             }
-            (None, None) => b"all".iter().for_each(|&b| text.push(b)),
+            (None, None) => {
+                partition[0..3].copy_from_slice(b"all");
+                3
+            }
+        };
+        TokenKey {
+            epoch,
+            first_lsn: self.first_lsn.get(),
+            last_lsn: self.last_lsn.get(),
+            table: self.table.id(),
+            partition,
+            partition_len,
         }
-        text
     }
 
     /// Parses canonical token text.
@@ -169,6 +200,26 @@ pub const MAX_TOKEN_LEN: usize = 90;
 
 const HEX: [u8; 16] = *b"0123456789abcdef";
 
+/// See [`BatchToken::key`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct TokenKey {
+    epoch: [u8; 36],
+    first_lsn: u64,
+    last_lsn: u64,
+    table: u8,
+    partition: [u8; 8],
+    partition_len: usize,
+}
+
+/// Writes `value` as exactly `out.len()` digits, zero-padded; [`BatchToken::new`] guarantees it fits.
+fn write_padded(out: &mut [u8], value: i32) {
+    let mut rest = value.unsigned_abs();
+    for slot in out.iter_mut().rev() {
+        *slot = b'0' + (rest % 10) as u8;
+        rest /= 10;
+    }
+}
+
 /// The canonical text of a [`BatchToken`], built without allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TokenText {
@@ -195,6 +246,10 @@ impl TokenText {
         }
     }
 
+    fn extend(&mut self, bytes: &[u8]) {
+        bytes.iter().for_each(|&b| self.push(b));
+    }
+
     /// Unpadded decimal.
     fn push_decimal(&mut self, value: u64) {
         // Least significant digit first; a u64 has at most 20 digits.
@@ -212,17 +267,6 @@ impl TokenText {
         for &digit in digits.get(..count).unwrap_or_default().iter().rev() {
             self.push(digit);
         }
-    }
-
-    /// Exactly `N` digits, zero-padded; [`BatchToken::new`] guarantees the value fits.
-    fn push_padded<const N: usize>(&mut self, value: i32) {
-        let mut digits = [0u8; N];
-        let mut rest = value.unsigned_abs();
-        for slot in digits.iter_mut().rev() {
-            *slot = b'0' + (rest % 10) as u8;
-            rest /= 10;
-        }
-        digits.into_iter().for_each(|digit| self.push(digit));
     }
 }
 
@@ -364,34 +408,34 @@ mod tests {
 
 #[cfg(kani)]
 mod proofs {
-    //! Injectivity of the batch token (contract 4.9), proved on the canonical text that `Display` writes.
+    //! Injectivity of the batch token (contract 4.9), proved on the token's key ([`BatchToken::key`]): the
+    //! fixed-width fields that `text`, and so `Display`, writes in order. They are the epoch's 36-character text,
+    //! the two LSNs and the table id as numbers, and the partition id's own text with its length.
     //!
-    //! `token_text_is_injective` takes two tokens and shows that equal texts imply equal tokens. The epoch, the
-    //! table and the partition are unconstrained: any 16 epoch bytes, any table, any four-digit year with any
-    //! two-digit month and day (a superset of the valid dates, built without the calendar check), or `all`. Both
-    //! LSNs range over `u16`, which covers one- to five-digit decimals and so every way the variable-length
-    //! fields and the separators can line up. The partition collision described in the module documentation is
-    //! the kind of defect this proof rules out.
+    //! `token_key_is_injective` takes two tokens that [`BatchToken::new`] accepts and shows that equal keys imply
+    //! equal tokens. Nothing else is constrained: any epoch, any `u64` LSNs, any table, and a month or date
+    //! partition of any `i32` year with any month from 1 to 12 and day from 1 to 31 (a superset of the valid
+    //! dates, built without the calendar check), or `all`. Because the key holds the partition's text rather
+    //! than its variant, the collision described in the module documentation is a counterexample whenever
+    //! `new` admits it: removing the year check from `new` makes this proof fail.
     //!
-    //! Decimal formatting of full-range `u64` LSNs is left to the property tests (`round_trips`,
-    //! `lsns_of_every_length_round_trip`): `parse(text(t)) == t` there, which implies injectivity on every
-    //! tested token. Two full-range decimal conversions did not finish within 12 minutes of solver time, which
-    //! the shared Kani CI job cannot afford.
+    //! What the key leaves out is how `text` renders the numbers and joins the fields: unpadded decimals, which
+    //! hold only digits, between `:` and `-` separators that no field's text contains. The property tests
+    //! `round_trips` and `lsns_of_every_length_round_trip` check `parse(text(t)) == t` for that part. A proof on
+    //! the joined text was tried and is out of reach for the shared Kani CI job: the solver did not finish two
+    //! full-range `u64` decimal conversions in 12 minutes, and with 16-bit LSNs the joined text (every byte after
+    //! a variable-length field sits at a symbolic offset) was still unfinished after 6 minutes.
 
     use super::*;
     use crate::time::CivilDate;
 
     fn any_token() -> BatchToken {
-        let first = u64::from(kani::any::<u16>());
-        let last = u64::from(kani::any::<u16>());
         let table: u8 = kani::any();
         kani::assume((1..=18).contains(&table));
         let year: i32 = kani::any();
         let month: u8 = kani::any();
         let day: u8 = kani::any();
-        kani::assume(
-            (0..=9999).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day),
-        );
+        kani::assume((1..=12).contains(&month) && (1..=31).contains(&day));
         let partition = match kani::any::<u8>() {
             0 => PartitionId::UNPARTITIONED,
             1 => PartitionId::month(year, month).unwrap_or(PartitionId::UNPARTITIONED),
@@ -399,8 +443,8 @@ mod proofs {
         };
         let token = BatchToken::new(
             WalEpoch::from_bytes(kani::any()),
-            Lsn::new(first),
-            Lsn::new(last),
+            Lsn::new(kani::any()),
+            Lsn::new(kani::any()),
             TableId::from_id(table).unwrap_or(TableId::SpanCore),
             partition,
         );
@@ -409,11 +453,11 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::unwind(21)]
-    fn token_text_is_injective() {
+    #[kani::unwind(37)]
+    fn token_key_is_injective() {
         let a = any_token();
         let b = any_token();
-        if a.text() == b.text() {
+        if a.key() == b.key() {
             assert!(a == b);
         }
     }
