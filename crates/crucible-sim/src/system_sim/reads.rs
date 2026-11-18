@@ -5,8 +5,8 @@
 //!   reference fold of `system_oracle::resolve` picks over the store's rows: the same winning fact for every
 //!   key, and no value for a retracted key.
 //! - **I7** without a quarantine, the metrics query over the window of the run's spans returns, per project,
-//!   the span count, the error count, the token sums and the cost sum of the project's `span_core` rows, and the
-//!   `traces` source counts the root heads of `trace_heads`.
+//!   the span count, the error count, the token sums and the cost sum of the project's `span_core` rows (the
+//!   sums without the usage aggregates), and the `traces` source counts the root heads of `trace_heads`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +18,7 @@ use crucible_records::{FactId, ProjectId, SpanId, TableId, TimeWindow, Timestamp
 use crucible_schema::RetentionSettings;
 
 use super::{Node, START_BASE_MICROS, Shared, Violation};
-use crate::ch_model::{ChModel, i8_at, i64_at, u64_at, uuid_at};
+use crate::ch_model::{ChModel, i8_at, i64_at, u8_at, u64_at, uuid_at};
 use crate::runtime::SIM_EPOCH_MICROS;
 use crate::system_oracle::{self, FactRow};
 
@@ -124,8 +124,11 @@ fn reference(model: &ChModel, window: TimeWindow) -> Option<BTreeMap<[u8; 16], T
             let totals = out.entry(uuid_at(block, "project_id", row)?).or_default();
             totals.spans += 1;
             totals.errors += u64::from(i8_at(block, "level", row)? == LEVEL_ERROR);
-            totals.input_tokens += u64_at(block, "input_tokens", row)?;
-            totals.cost += i64_at(block, "total_cost_nusd", row)?;
+            // Token and cost sums leave out the usage aggregates, as the rollups do (contract 3.1).
+            if u8_at(block, "usage_aggregate", row)? == 0 {
+                totals.input_tokens += u64_at(block, "input_tokens", row)?;
+                totals.cost += i64_at(block, "total_cost_nusd", row)?;
+            }
         }
     }
     for part in model.parts(TableId::TraceHeads) {

@@ -3,7 +3,8 @@
 //! The contract fixes the hash and the excluded group but not the bytes that are hashed; this module fixes them as
 //! encoding version [`DIGEST_ENCODING`]. The row is both tiers of the [`SpanRecord`], so two spans that differ only
 //! in a payload body digest differently. The excluded ingestion group is `wal_epoch`, `lsn`, `batch_seq`,
-//! `received_at`, `api_key_id`, `row_digest` itself and `event_bytes`.
+//! `received_at`, `api_key_id`, `row_digest` itself and `event_bytes`. `usage_aggregate` is excluded too: stage B
+//! sets it from the LSN stream after the digest is taken, so a re-sent span keeps its digest.
 //!
 //! The encoding is the version byte, then every other field in declaration order, core tier first: integers
 //! little-endian at their own width; `bool` and enums one byte (the stored value); timestamps as `i64`
@@ -162,6 +163,8 @@ fn encode<S: Sink>(record: &SpanRecord, sink: &mut S) {
         cost_source,
         price_model_id,
         price_tier_id,
+        // Set by stage B from the LSN stream, after the digest is taken.
+        usage_aggregate: _,
         prompt_name,
         prompt_version,
         tool_names,
@@ -363,7 +366,7 @@ mod tests {
     fn the_ingestion_group_does_not_change_the_digest() {
         let base = record();
         let digest = row_digest(&base);
-        let mutations: [fn(&mut SpanRecord); 7] = [
+        let mutations: [fn(&mut SpanRecord); 8] = [
             |r| r.core.ingestion.wal_epoch = WalEpoch::from_bytes([9; 16]),
             |r| r.core.ingestion.lsn = Lsn::new(77),
             |r| r.core.ingestion.batch_seq = Lsn::new(70),
@@ -371,6 +374,7 @@ mod tests {
             |r| r.core.api_key_id = ApiKeyId::from_bytes([8; 16]),
             |r| r.core.row_digest = 12345,
             |r| r.core.event_bytes = 999,
+            |r| r.core.usage_aggregate = true,
         ];
         for mutate in mutations {
             let mut r = base.clone();

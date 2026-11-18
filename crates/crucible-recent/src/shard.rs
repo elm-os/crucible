@@ -106,6 +106,7 @@ impl Shard {
             input_tokens: s.input_tokens,
             output_tokens: s.output_tokens,
             total_tokens: s.total_tokens,
+            usage_aggregate: s.usage_aggregate,
             locator: span.locator,
             strings,
             observation_type: s.observation_type,
@@ -267,6 +268,7 @@ impl Shard {
                 input_tokens: entry.input_tokens,
                 output_tokens: entry.output_tokens,
                 total_tokens: entry.total_tokens,
+                usage_aggregate: entry.usage_aggregate,
             },
             head: entry.head,
             locator: entry.locator,
@@ -420,6 +422,7 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
                 total_tokens: 3,
+                usage_aggregate: false,
             },
             head,
             locator: WalLocator {

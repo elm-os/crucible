@@ -62,6 +62,9 @@ pub struct SpanSummary {
     pub output_tokens: u64,
     /// Total tokens.
     pub total_tokens: u64,
+    /// The span has a descendant that carries usage or cost, so token and cost sums leave it out (the sums rule
+    /// of contract 3.1). The span still shows its own usage.
+    pub usage_aggregate: bool,
 }
 
 impl SpanSummary {
@@ -87,6 +90,7 @@ impl SpanSummary {
             input_tokens: core.input_tokens,
             output_tokens: core.output_tokens,
             total_tokens: core.total_tokens,
+            usage_aggregate: core.usage_aggregate,
         }
     }
 }
@@ -132,6 +136,7 @@ pub(crate) struct Entry {
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
     pub(crate) total_tokens: u64,
+    pub(crate) usage_aggregate: bool,
     pub(crate) locator: WalLocator,
     pub(crate) strings: [u32; 6],
     pub(crate) observation_type: ObservationType,

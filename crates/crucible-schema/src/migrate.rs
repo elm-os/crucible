@@ -1,15 +1,21 @@
 //! Migration steps as data (contract sections 6.6 and 7.3).
 //!
 //! The ledger order is fixed: the base schema, then access step A1 (service identities and one `USING 1` policy
-//! per base table), then access step A2 (the SQL workspace). A1 precedes every workspace step, so no workspace
-//! policy can exist on a table before the service policy does. A later schema step that adds a base table must
-//! include [`crate::service_policy`] for it.
+//! per base table), then access step A2 (the SQL workspace), then the later schema steps in the order they were
+//! added. A1 precedes every workspace step, so no workspace policy can exist on a table before the service policy
+//! does. A later schema step that adds a base table must include [`crate::service_policy`] for it.
+//!
+//! The base schema always creates the tables as [`TABLES`] describes them now. A later schema step brings a
+//! database that an older base schema created to the same shape, and changes nothing on a new one.
 
 use crucible_records::TableId;
 
 use crate::access::{AccessParams, service_statements};
 use crate::ddl::{DATABASE, Granularity, SQL_DATABASE, Variant, create_database, create_table};
-use crate::tables::TABLES;
+use crate::tables::{TABLES, table};
+
+/// The column that [`schema_span_usage_aggregate`] adds.
+const USAGE_AGGREGATE: &str = "usage_aggregate";
 
 /// Schema step or access step.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -27,11 +33,15 @@ pub const ACCESS_SERVICE: &str = "0002_access_service";
 /// The stable ledger id of access step A2.
 pub const ACCESS_WORKSPACE: &str = "0003_access_workspace";
 
+/// The stable ledger id of the schema step that adds `span_core.usage_aggregate`.
+pub const SCHEMA_SPAN_USAGE_AGGREGATE: &str = "0004_span_usage_aggregate";
+
 /// Every step id in ledger order.
-pub const LEDGER_ORDER: [(&str, StepKind); 3] = [
+pub const LEDGER_ORDER: [(&str, StepKind); 4] = [
     (SCHEMA_BASE, StepKind::Schema),
     (ACCESS_SERVICE, StepKind::Access),
     (ACCESS_WORKSPACE, StepKind::Access),
+    (SCHEMA_SPAN_USAGE_AGGREGATE, StepKind::Schema),
 ];
 
 /// One forward-only, idempotent migration step. `id` is the key of the Postgres `schema_migrations` ledger.
@@ -61,6 +71,36 @@ pub fn schema_base(variant: &Variant, granularity: Granularity) -> MigrationStep
     );
     MigrationStep {
         id: SCHEMA_BASE,
+        kind: StepKind::Schema,
+        statements,
+        settings: variant.ddl_settings(),
+    }
+}
+
+/// Adds the column `usage_aggregate` to `span_core`, after `row_digest` (contracts 3.1 and 6.6): set on a span
+/// with a descendant that carries usage or cost, which token and cost sums leave out. A migrated table and a new
+/// one have the same shape. Rows written before the step read 0.
+pub fn schema_span_usage_aggregate(variant: &Variant) -> MigrationStep {
+    let def = table(TableId::SpanCore);
+    let statements = def
+        .columns
+        .windows(2)
+        .find(|pair| pair[1].name == USAGE_AGGREGATE)
+        .map(|pair| {
+            format!(
+                "ALTER TABLE {DATABASE}.{}{} ADD COLUMN IF NOT EXISTS `{}` {} CODEC({}) AFTER `{}`",
+                def.name(),
+                variant.on_cluster(),
+                pair[1].name,
+                pair[1].ty,
+                pair[1].codec,
+                pair[0].name
+            )
+        })
+        .into_iter()
+        .collect();
+    MigrationStep {
+        id: SCHEMA_SPAN_USAGE_AGGREGATE,
         kind: StepKind::Schema,
         statements,
         settings: variant.ddl_settings(),
@@ -173,7 +213,15 @@ mod tests {
     #[test]
     fn the_service_step_precedes_every_workspace_step() {
         let ids: Vec<&str> = LEDGER_ORDER.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids, [SCHEMA_BASE, ACCESS_SERVICE, ACCESS_WORKSPACE]);
+        assert_eq!(
+            ids,
+            [
+                SCHEMA_BASE,
+                ACCESS_SERVICE,
+                ACCESS_WORKSPACE,
+                SCHEMA_SPAN_USAGE_AGGREGATE
+            ]
+        );
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, ids, "ids sort in ledger order");
@@ -194,7 +242,14 @@ mod tests {
             let schema = schema_base(&variant, Granularity::Week);
             assert_eq!(schema.statements.len(), 2 + TABLES.len());
             let access = access_service(&variant, &params());
-            for statement in schema.statements.iter().chain(&access.statements) {
+            let column = schema_span_usage_aggregate(&variant);
+            assert_eq!(column.statements.len(), 1);
+            for statement in schema
+                .statements
+                .iter()
+                .chain(&access.statements)
+                .chain(&column.statements)
+            {
                 assert!(
                     statement.starts_with("GRANT") || statement.contains(" IF NOT EXISTS "),
                     "{statement}"
@@ -204,6 +259,38 @@ mod tests {
                 assert_eq!(statement.contains(" ON CLUSTER crucible"), clustered);
             }
         }
+    }
+
+    /// The step adds the column after `row_digest`, with the type and codec the table definition gives it, so a
+    /// table the step migrated has the shape of a table the base schema creates.
+    #[test]
+    fn the_usage_aggregate_step_adds_the_column_after_the_row_digest() {
+        let def = table(TableId::SpanCore);
+        let at = def
+            .columns
+            .iter()
+            .position(|c| c.name == "usage_aggregate")
+            .unwrap();
+        assert_eq!(def.columns[at - 1].name, "row_digest");
+        let column = &def.columns[at];
+        let step = schema_span_usage_aggregate(&Variant::SingleNode);
+        assert_eq!(
+            (step.id, step.kind),
+            ("0004_span_usage_aggregate", StepKind::Schema)
+        );
+        assert_eq!(
+            step.statements,
+            [format!(
+                "ALTER TABLE crucible.span_core ADD COLUMN IF NOT EXISTS `usage_aggregate` {} CODEC({}) AFTER `row_digest`",
+                column.ty, column.codec
+            )]
+        );
+        let base = schema_base(&Variant::SingleNode, Granularity::Day);
+        assert!(
+            base.statements
+                .iter()
+                .any(|s| s.contains("`usage_aggregate`"))
+        );
     }
 
     #[test]

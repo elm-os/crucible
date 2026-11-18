@@ -97,6 +97,7 @@ pub fn distinct() -> SpanRecord {
             cost_source: CostSource::Provided,
             price_model_id: Some(Uuid::from_bytes([5; 16])),
             price_tier_id: Some(Uuid::from_bytes([6; 16])),
+            usage_aggregate: false,
             prompt_name: text("prompt_name"),
             prompt_version: text("prompt_version"),
             tool_names: texts(&["tool_a", "tool_b", "tool_c"]),

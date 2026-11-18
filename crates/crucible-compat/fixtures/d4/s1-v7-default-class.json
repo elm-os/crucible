@@ -1,0 +1,84 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: a model-call span of the default telemetry class of vercel/ai tag ai@7.0.176, which follows the OpenTelemetry GenAI semantic conventions",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD4, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "No operation-id key and a generic scope name: the span is native by design."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "gen_ai"
+            },
+            "spans": [
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000001",
+                "name": "chat demo-model",
+                "kind": 3,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "chat"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.provider.name",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 0,
+      "source_format": "otel",
+      "observation_type": "generation",
+      "model_requested": "demo-model",
+      "provider": "demo-provider",
+      "usage_provided": {
+        "input": 5,
+        "output": 9
+      },
+      "residual": [
+        "gen_ai.operation.name"
+      ]
+    }
+  }
+}

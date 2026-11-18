@@ -48,6 +48,9 @@ pub enum Mutant {
     /// Quarantine a frame that does not normalize without copying it to the quarantine root.
     #[cfg(feature = "test-mutants")]
     FrameQuarantineWithoutCopy,
+    /// Count the tokens and cost of a usage aggregate (a span with a descendant that carries usage) in the sums.
+    #[cfg(feature = "test-mutants")]
+    CountAggregateUsage,
     /// Collect garbage without regard for what the admission of an unchecked frame relied on.
     #[cfg(feature = "test-mutants")]
     CollectWhatFramesRelyOn,
@@ -202,5 +205,6 @@ mutant_flags! {
     double_counts_rollups => DoubleCountRollup,
     drops_fact_on_retry => DropFactOnRetry,
     quarantines_frames_without_copy => FrameQuarantineWithoutCopy,
+    counts_aggregate_usage => CountAggregateUsage,
     collects_what_frames_rely_on => CollectWhatFramesRelyOn,
 }

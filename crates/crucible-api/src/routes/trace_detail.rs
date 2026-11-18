@@ -119,6 +119,7 @@ mod tests {
                 input_tokens: tokens,
                 output_tokens: 0,
                 total_tokens: tokens,
+                usage_aggregate: false,
             },
             source: SpanSource::Recent(WalLocator {
                 segment: 1,

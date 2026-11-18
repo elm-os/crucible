@@ -26,7 +26,7 @@ use crate::hooks::{Barrier, Barriers, NoBarriers, NoRecent, RecentIndex};
 use crate::limits::{DrainRate, Gate, SealLimits, backoff};
 use crate::pair::{PairEnd, PairJob, ship_pair};
 use crate::quarantine::quarantine_frame;
-use crate::tables::{RoutedRow, derive, derive_facts};
+use crate::tables::{RoutedRow, derive_facts, derive_rows};
 
 /// What the shipper takes besides `Env`, `Stores` and the WAL.
 #[derive(Clone, Debug)]
@@ -535,7 +535,10 @@ impl Shipper {
         match &mut held.rows {
             Unplaced::Spans(frame, admission) => {
                 frame.stamp_batch_seq(batch_seq);
-                derive(frame, admission, granularity)
+                {
+                    let count_aggregates = self.ctx.config.counts_aggregate_usage();
+                    derive_rows(frame, admission, granularity, count_aggregates)
+                }
             }
             Unplaced::Facts(facts) => {
                 for fact in facts.iter_mut() {

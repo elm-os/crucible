@@ -1,0 +1,80 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "braintrust-sdk-javascript commit 4c1d334f707d13a01ed1815ee7a0194c079c1e30 e2e/scenarios/otel-span-processor-export/scenario.ts lines 10-38 and scenario.test.ts lines 16-51",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The parent span is not exported. The model and the provider come from members of the metadata object; the member path does not consume the object, which fills the metadata field."
+  },
+  "request": {
+    "path": "/otel/v1/traces",
+    "headers": {
+      "content-type": "application/json",
+      "x-bt-parent": "project_name:demo"
+    }
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "app-tracer"
+            },
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "gen_ai.completion",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "gen_ai.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metadata",
+                    "value": {
+                      "stringValue": "{\"model\":\"demo-model\",\"provider\":\"northwind\",\"requested_service_tier\":\"flex\",\"served_service_tier\":\"default\"}"
+                    }
+                  },
+                  {
+                    "key": "braintrust.context_json",
+                    "value": {
+                      "stringValue": "{\"span_origin\":{\"name\":\"braintrust.sdk.javascript\",\"version\":\"1.0.0\",\"instrumentation\":{\"name\":\"braintrust-otel-js\"}}}"
+                    }
+                  }
+                ],
+                "parentSpanId": "00000000000000aa"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "source_format": "compat",
+      "observation_type": "span",
+      "model_requested": "demo-model",
+      "provider": "northwind",
+      "metadata": {
+        "model": "demo-model",
+        "provider": "northwind",
+        "requested_service_tier": "flex",
+        "served_service_tier": "default"
+      },
+      "is_root": false,
+      "residual": [
+        "gen_ai.system",
+        "braintrust.context_json"
+      ]
+    }
+  }
+}

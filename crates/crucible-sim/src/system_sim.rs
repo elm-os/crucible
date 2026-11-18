@@ -136,13 +136,16 @@ pub enum Mutant {
     DropFactOnRetry,
     /// `crucible-shipper` quarantines a frame that does not normalize without copying it.
     FrameQuarantineWithoutCopy,
+    /// `crucible-shipper` counts the tokens and cost of a usage aggregate, a span with a descendant that carries
+    /// usage or cost.
+    CountAggregateUsage,
     /// `crucible-shipper` collects the segments that the admission of an unchecked frame relied on.
     CollectWhatFramesRelyOn,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -152,6 +155,7 @@ impl Mutant {
         Self::DoubleCountRollup,
         Self::DropFactOnRetry,
         Self::FrameQuarantineWithoutCopy,
+        Self::CountAggregateUsage,
         Self::CollectWhatFramesRelyOn,
     ];
 
@@ -167,6 +171,7 @@ impl Mutant {
             Self::DoubleCountRollup => "double-count-rollup",
             Self::DropFactOnRetry => "drop-fact-on-retry",
             Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
+            Self::CountAggregateUsage => "count-aggregate-usage",
             Self::CollectWhatFramesRelyOn => "collect-what-frames-rely-on",
         }
     }
@@ -696,6 +701,9 @@ impl Plan {
                 Some(Mutant::FrameQuarantineWithoutCopy) => {
                     Some(crucible_shipper::Mutant::FrameQuarantineWithoutCopy)
                 }
+                Some(Mutant::CountAggregateUsage) => {
+                    Some(crucible_shipper::Mutant::CountAggregateUsage)
+                }
                 Some(Mutant::CollectWhatFramesRelyOn) => {
                     Some(crucible_shipper::Mutant::CollectWhatFramesRelyOn)
                 }
@@ -930,6 +938,8 @@ struct ClientState {
     traces: Vec<[u8; 16]>,
     /// Recent spans, which later requests send again beside their own.
     spans: Vec<SentSpan>,
+    /// Parent ids that sent spans name and no request has sent yet, as (project, trace, span id).
+    awaited: Vec<(usize, [u8; 16], [u8; 8])>,
 }
 
 /// Builds one request: a few spans, mostly of one new or recent trace. Spans report a session, a user, an
@@ -961,19 +971,41 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let mut wire = Vec::new();
     // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
     // window still holds it, which shifts the spans after it in the frame.
-    let again = state
-        .spans
-        .iter()
-        .filter(|sent| sent.project == project)
-        .nth(pick(rng, 4) as usize)
-        .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
-        .cloned();
+    // With nested usage, half of the time it is a span whose parent no request has sent yet, so that the parent
+    // arrives after a frame that held the repeat.
+    let nth = pick(rng, 4) as usize;
+    let waiting = has(Dim::NestedUsage) && coin(rng);
+    let awaited = &state.awaited;
+    let mut candidates = state.spans.iter().filter(|sent| {
+        sent.project == project
+            && (!waiting
+                || awaited.iter().any(|(p, trace, parent)| {
+                    *p == project
+                        && *trace == sent.info.trace
+                        && parent[..] == sent.wire.parent_span_id[..]
+                }))
+    });
+    let again = if waiting {
+        candidates.next()
+    } else {
+        candidates.nth(nth)
+    }
+    .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
+    .cloned();
     let partial_repeat = again.is_some();
+    // The parent that the repeat waits for: this request may send it beside the repeat.
+    let repeat_parent: Option<([u8; 16], Vec<u8>)> = again
+        .as_ref()
+        .filter(|_| waiting)
+        .map(|sent| (sent.info.trace, sent.wire.parent_span_id.clone()));
     if let Some(sent) = again {
         spans.push(sent.info);
         wire.push(sent.wire);
     }
     let session = (pick(rng, 3) > 0).then(|| format!("session-{}", pick(rng, 3)));
+    // The position in `spans` of the first span this request adds.
+    let first_new = spans.len();
+    let mut sent_now: Vec<SentSpan> = Vec::new();
     for ordinal in 0..count {
         let other = traces.len() > 1 && pick(rng, 5) == 0;
         let trace = if other {
@@ -981,10 +1013,65 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         } else {
             main
         };
-        let span = random::<8>(rng);
-        let root = !other && !rootless;
-        // One root per trace.
-        rootless = true;
+        // With nested usage, a span may be the parent that an earlier request of this client named for one of its
+        // spans: the child was exported first, as a child that ends before its parent is.
+        let awaited = (has(Dim::NestedUsage) && pick(rng, 3) == 0)
+            .then(|| {
+                let at = state.awaited.iter().position(|(p, trace, id)| {
+                    *p == project
+                        && repeat_parent
+                            .as_ref()
+                            .is_none_or(|(t, parent)| trace == t && id[..] == parent[..])
+                })?;
+                Some(state.awaited.remove(at))
+            })
+            .flatten();
+        // Or it hangs under the span of an earlier request that this request sends again: stage B drops the
+        // repeat, which still passes the mark of its new child on to its own parent.
+        let under_repeat = spans
+            .first()
+            .filter(|_| has(Dim::NestedUsage) && partial_repeat && awaited.is_none() && coin(rng))
+            .map(|repeat| repeat.trace);
+        // A span of the repeat's trace reports no trace-level attribute: the forward fill would hand it to the
+        // repeat, which would then be a changed row and no exact repeat.
+        let bare = under_repeat.is_some() || (awaited.is_some() && repeat_parent.is_some());
+        let (trace, span, root) = match (awaited, under_repeat) {
+            (Some((_, trace, span)), _) => (trace, span, false),
+            (None, Some(trace)) => (trace, random::<8>(rng), false),
+            (None, None) => {
+                let root = !other && !rootless;
+                // One root per trace.
+                rootless = true;
+                (trace, random::<8>(rng), root)
+            }
+        };
+        // With nested usage, half of the spans below the root hang under the latest span of their trace in this
+        // request, so chains form.
+        let parent = if under_repeat.is_some() {
+            Some(0)
+        } else {
+            (has(Dim::NestedUsage) && !root && coin(rng))
+                .then(|| {
+                    spans
+                        .iter()
+                        .enumerate()
+                        .skip(first_new)
+                        .rev()
+                        .find(|(_, earlier)| earlier.trace == trace)
+                        .map(|(at, _)| at)
+                })
+                .flatten()
+        };
+        // Or it names a parent that a later request will send.
+        let later_parent =
+            (has(Dim::NestedUsage) && !root && parent.is_none() && pick(rng, 3) == 0)
+                .then(|| random::<8>(rng));
+        if let Some(id) = later_parent {
+            state.awaited.push((project, trace, id));
+            if state.awaited.len() > 8 {
+                state.awaited.remove(0);
+            }
+        }
         let day = if has(Dim::MultiDay) { pick(rng, 3) } else { 1 };
         let start_micros =
             START_BASE_MICROS + (day * 86_400_000_000 + pick(rng, 3_600_000_000)) as i64;
@@ -1011,20 +1098,20 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             name.push_str("BADUTF8!");
             attributes.push(attribute("sim.text", text("a BADUTF8! b".to_owned())));
         }
-        if let Some(session) = &session {
+        if let Some(session) = session.as_ref().filter(|_| !bare) {
             attributes.push(attribute("crucible.session.id", text(session.clone())));
         }
-        if coin(rng) {
+        if coin(rng) && !bare {
             attributes.push(attribute("user.id", text(format!("user-{}", pick(rng, 3)))));
         }
-        if pick(rng, 3) == 0 {
+        if pick(rng, 3) == 0 && !bare {
             let environment = ["prod", "staging"][pick(rng, 2) as usize];
             attributes.push(attribute(
                 "crucible.environment",
                 text(environment.to_owned()),
             ));
         }
-        if pick(rng, 4) == 0 {
+        if pick(rng, 4) == 0 && !bare {
             attributes.push(attribute("crucible.release", text("r1".to_owned())));
         }
         let mut sent = system_oracle::Sent::default();
@@ -1064,7 +1151,11 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         let span = Span {
             trace_id: trace.to_vec(),
             span_id: span.to_vec(),
-            parent_span_id: if root { Vec::new() } else { vec![7; 8] },
+            parent_span_id: match parent.and_then(|at| spans.get(at)) {
+                Some(parent) => parent.span.to_vec(),
+                None if root => Vec::new(),
+                None => later_parent.map_or_else(|| vec![7; 8], |id| id.to_vec()),
+            },
             name,
             kind: 1,
             start_time_unix_nano: start_nanos,
@@ -1076,16 +1167,19 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             }),
             ..Span::default()
         };
-        state.spans.push(SentSpan {
+        sent_now.push(SentSpan {
             project,
             info,
             wire: span.clone(),
         });
+        spans.push(info);
+        wire.push(span);
+    }
+    for sent in sent_now {
+        state.spans.push(sent);
         if state.spans.len() > 16 {
             state.spans.remove(0);
         }
-        spans.push(info);
-        wire.push(span);
     }
     let otlp = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {

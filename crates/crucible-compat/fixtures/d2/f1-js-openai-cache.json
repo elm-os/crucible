@@ -1,0 +1,213 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "Arize-ai/openinference tag python-openinference-semantic-conventions-v0.1.46 js/packages/openinference-instrumentation-openai/test/openai.test.ts lines 216-282",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD2, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The snapshot lists attributes in alphabetical order, which is the wire order used here. The message lists outrank the raw input and output values, which stay residual."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "@arizeai/openinference-instrumentation-openai",
+              "version": "4.2.0"
+            },
+            "spans": [
+              {
+                "traceId": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+                "spanId": "0000000000000001",
+                "name": "OpenAI Chat Completions",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "input.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "input.value",
+                    "value": {
+                      "stringValue": "{\"messages\":[{\"role\":\"user\",\"content\":\"Count to two\"}],\"model\":\"nw-chat-small\"}"
+                    }
+                  },
+                  {
+                    "key": "llm.finish_reason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.content",
+                    "value": {
+                      "stringValue": "Count to two"
+                    }
+                  },
+                  {
+                    "key": "llm.input_messages.0.message.role",
+                    "value": {
+                      "stringValue": "user"
+                    }
+                  },
+                  {
+                    "key": "llm.invocation_parameters",
+                    "value": {
+                      "stringValue": "{\"model\":\"nw-chat-small\"}"
+                    }
+                  },
+                  {
+                    "key": "llm.model_name",
+                    "value": {
+                      "stringValue": "nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.content",
+                    "value": {
+                      "stringValue": "One, two."
+                    }
+                  },
+                  {
+                    "key": "llm.output_messages.0.message.role",
+                    "value": {
+                      "stringValue": "assistant"
+                    }
+                  },
+                  {
+                    "key": "llm.provider",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "llm.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.completion",
+                    "value": {
+                      "intValue": "4"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.prompt",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.prompt_details.cache_read",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.prompt_details.cache_write",
+                    "value": {
+                      "intValue": "3"
+                    }
+                  },
+                  {
+                    "key": "llm.token_count.total",
+                    "value": {
+                      "intValue": "13"
+                    }
+                  },
+                  {
+                    "key": "openinference.span.kind",
+                    "value": {
+                      "stringValue": "LLM"
+                    }
+                  },
+                  {
+                    "key": "output.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "output.value",
+                    "value": {
+                      "stringValue": "{\"id\":\"chatcmpl-invented01\",\"object\":\"chat.completion\",\"created\":1770000000,\"model\":\"nw-chat-small\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"One, two.\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":2,\"cache_write_tokens\":3}}}"
+                    }
+                  },
+                  {
+                    "key": "server.address",
+                    "value": {
+                      "stringValue": "api.northwind.example"
+                    }
+                  },
+                  {
+                    "key": "server.port",
+                    "value": {
+                      "intValue": "443"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 2,
+      "source_format": "compat",
+      "observation_type": "generation",
+      "input_json": [
+        {
+          "content": "Count to two",
+          "role": "user"
+        }
+      ],
+      "output_json": [
+        {
+          "content": "One, two.",
+          "role": "assistant"
+        }
+      ],
+      "input": "[{\"content\":\"Count to two\",\"role\":\"user\"}]",
+      "io_shape": "indexed_messages",
+      "model_response": "nw-chat-small",
+      "provider": "northwind",
+      "finish_reasons": [
+        "stop"
+      ],
+      "model_parameters": {
+        "model": "nw-chat-small"
+      },
+      "usage_provided": {
+        "input": 9,
+        "output": 4,
+        "total": 13,
+        "cache_read": 2,
+        "cache_write": 3
+      },
+      "residual": [
+        "input.mime_type",
+        "input.value",
+        "llm.system",
+        "output.mime_type",
+        "output.value",
+        "server.address",
+        "server.port"
+      ]
+    }
+  }
+}

@@ -31,17 +31,18 @@ const SMOKE_CONFIGS: u64 = 40;
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports. No run of
 /// the budget catches `CollectWhatFramesRelyOn` (it needs a repeat, a collection and a crash inside one
 /// unchecked batch); its run is the first line of the regression corpus that does.
-const MUTANTS: [(Mutant, u64, &str); 10] = [
+const MUTANTS: [(Mutant, u64, &str); 11] = [
     (Mutant::SkipWalSync, 0, "I3"),
-    (Mutant::DropToken, 0, "I2"),
+    (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 1001, "I12"),
-    (Mutant::SilentEviction, 17001, "I3"),
-    (Mutant::SkipProbeAfterUnknown, 0, "I2"),
+    (Mutant::SilentEviction, 5000, "I3"),
+    (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
     (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 0, "I7"),
     (Mutant::DropFactOnRetry, 3000, "I1"),
     (Mutant::FrameQuarantineWithoutCopy, 0, "I1"),
-    (Mutant::CollectWhatFramesRelyOn, 44_393_171_719_000, "I7"),
+    (Mutant::CountAggregateUsage, 1002, "I7"),
+    (Mutant::CollectWhatFramesRelyOn, 910_904_000, "I7"),
 ];
 
 fn replay(outcome: &Outcome) -> String {
