@@ -44,8 +44,11 @@ struct ServeArgs {
     /// Address of the OTLP/HTTP ingest listener.
     #[arg(long, default_value = "0.0.0.0:4318")]
     ingest_listen: SocketAddr,
-    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id` and
-    /// `secret`. Without it, every ingest request is refused.
+    /// Address of the OTLP/gRPC ingest listener.
+    #[arg(long, default_value = "0.0.0.0:4317")]
+    grpc_listen: SocketAddr,
+    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id`,
+    /// `public_key` and `secret`. Without it, every ingest request is refused.
     #[arg(long)]
     keys_file: Option<PathBuf>,
     /// Address of the Prometheus metrics listener.
@@ -139,6 +142,7 @@ mod tests {
         let args = serve_args(&["crucible", "serve"]);
         assert_eq!(args.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(args.ingest_listen.to_string(), "0.0.0.0:4318");
+        assert_eq!(args.grpc_listen.to_string(), "0.0.0.0:4317");
         assert_eq!(args.metrics_listen.to_string(), "127.0.0.1:9464");
         assert_eq!(args.wal_backend, WalBackend::Auto);
         assert_eq!(args.keys_file, None);

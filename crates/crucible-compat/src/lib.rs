@@ -13,6 +13,8 @@
 //!
 //! This crate is pure: no `Env`, no IO.
 
+pub mod routes;
+
 use crucible_records::{IoShape, ObservationType, UsageEntry};
 
 /// One registered dialect (contract 10.1). Ids are stable and never reused; a new dialect appends an id.
