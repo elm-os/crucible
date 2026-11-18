@@ -1,5 +1,6 @@
 //! The read plans of milestone 2 on the real server and on the store model (contract sections 8.1, 8.7, 8.8 and
-//! 8.4): the session and user lists and details, the span list under every filter field, search with snippets,
+//! 8.4): the session and user lists and details, the sessions of a user, the span list under every filter
+//! field, the trace list under conditions on its spans, search with snippets,
 //! the payload byte range, the metrics query, zero-filled time series, the set merge, a distinct count of a
 //! nullable column, and the query-class guardrails.
 //!
@@ -14,16 +15,17 @@ use crucible_plan::{
     Aggregate, Aggregation, Caller, DimensionId, Fill, Filter, Granularity, Measure, MeasureId,
     MetricsQuery, Node, PayloadField, PayloadRangeRequest, Pred, QueryClass, QueryPlan,
     RetentionClamp, Row, SearchField, SearchRequest, SessionListRequest, Source, SpanListRequest,
-    Step, TextField, TimeSeries, TokenMode, UserListRequest, Value, metrics_keys, metrics_other,
-    metrics_ranking, metrics_series, metrics_shape, payload_range, search, search_spans,
-    session_detail, session_list, span_list, user_detail, user_list, user_session_counts,
+    Step, TextField, TimeSeries, TokenMode, TraceListRequest, UserListRequest, UserSessionsRequest,
+    Value, filtered_trace_list, metrics_keys, metrics_other, metrics_ranking, metrics_series,
+    metrics_shape, payload_range, search, search_spans, session_detail, session_list, span_list,
+    user_detail, user_list, user_session_counts, user_sessions,
 };
 use crucible_records::{
     Level, ObservationType, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
 };
 use crucible_schema::{
     Column, FactTagsCol, McpOpsCol, RetentionSettings, SessionRollupCol, SpanCoreCol,
-    SpanMetricsCol, TraceStatsCol,
+    SpanMetricsCol, TraceHeadsCol, TraceStatsCol,
 };
 
 use crate::blocks::Rows;
@@ -197,6 +199,16 @@ pub(crate) async fn load(ctx: &Ctx) -> Result<Fixture> {
         .each("user_id", |row| text(["u0", "u0", "u0", "u1"][row]))
         .each("session_id", |row| text(["s0", "s1", "", "s0"][row]));
     put(heads, T0).await?;
+    // The head of the trace that the six spans belong to, so that conditions on spans select a head.
+    let head = Rows::new(TableId::TraceHeads, 1)
+        .all("project_id", uuid(project.uuid()))
+        .all("start_time", Value::Time(start(0)))
+        .all("received_at", Value::Time(T0))
+        .all("trace_id", trace_bytes.clone())
+        .all("trace_hash", Value::UInt(u64::from(trace.trace_hash())))
+        .all("user_id", text("u2"))
+        .all("session_id", text("s9"));
+    put(head, T0).await?;
 
     // Session partials in three blocks over two days. `s0` has rows in each, `s1` and `s2` tie on their last
     // instant, and `s3` exists on the earlier day only.
@@ -644,6 +656,92 @@ async fn lists(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         )?;
         plans += 1;
     }
+
+    // The trace list under conditions on its spans: a semi-join into the trace ids of `span_core` or of
+    // `span_payload`, beside conditions on the heads.
+    let trace_at = TraceHeadsCol::ALL
+        .iter()
+        .position(|c| *c == TraceHeadsCol::TraceId)
+        .context("a column of trace_heads")?;
+    let traced = |n: u8| Value::Bytes(vec![n; 16]);
+    let traces = async |filter: Filter| -> Result<Vec<Value>> {
+        let request = TraceListRequest {
+            filter: Pred::all(),
+            limit: 10,
+            cursor: None,
+            as_of: at(HOUR),
+            since: None,
+        };
+        let plan = filtered_trace_list(scope, f.window, &clamp(), session, request, &filter)?;
+        Ok(column(&rows(ctx, live(plan)?).await?, trace_at))
+    };
+    let trace_filters: Vec<(&str, Filter, Vec<Value>)> = vec![
+        (
+            "a tool span",
+            Filter::ObservationType(vec![ObservationType::Tool]),
+            vec![traced(0xd0)],
+        ),
+        (
+            "an agent span",
+            Filter::ObservationType(vec![ObservationType::Agent]),
+            Vec::new(),
+        ),
+        ("a metadata entry", metadata.clone(), vec![traced(0xd0)]),
+        (
+            "a metadata entry no span has",
+            Filter::Metadata {
+                key: "k".to_owned(),
+                value: "x".to_owned(),
+            },
+            Vec::new(),
+        ),
+        (
+            "a head user",
+            Filter::Text(TextField::UserId, strings(&["u0"])),
+            vec![traced(0xd3), traced(0xd2), traced(0xd1)],
+        ),
+        (
+            "a head user and a span type",
+            Filter::And(vec![
+                Filter::Text(TextField::UserId, strings(&["u2"])),
+                Filter::ObservationType(vec![ObservationType::Embedding]),
+            ]),
+            vec![traced(0xd0)],
+        ),
+    ];
+    for (what, filter, expected) in trace_filters {
+        same(
+            &format!("trace list with {what}"),
+            &traces(filter).await?,
+            &expected,
+        )?;
+        plans += 1;
+    }
+
+    // The sessions of a user, from its trace heads: latest head first, then the page after the cursor.
+    let theirs = async |cursor: Option<(Timestamp, String)>| -> Result<Vec<Vec<Value>>> {
+        let request = UserSessionsRequest {
+            user_id: "u0".to_owned(),
+            limit: 1,
+            cursor,
+        };
+        let plan = user_sessions(scope, f.window, &clamp(), session, request)?;
+        Ok(values(&rows(ctx, live(plan)?).await?))
+    };
+    same(
+        "sessions of a user, first page",
+        &theirs(None).await?,
+        &vec![
+            vec![text("s1"), time(SECOND), time(SECOND), Value::UInt(1)],
+            vec![text("s0"), time(0), time(0), Value::UInt(1)],
+        ],
+    )?;
+    same(
+        "sessions of a user after the cursor",
+        &theirs(Some((at(SECOND), "s1".to_owned()))).await?,
+        &vec![vec![text("s0"), time(0), time(0), Value::UInt(1)]],
+    )?;
+    plans += 2;
     Ok(plans)
 }
 

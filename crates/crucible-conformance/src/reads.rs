@@ -1020,7 +1020,8 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
         "{endpoints} reads of the endpoint builders (trace bounds, trace spans, trace list, span children, \
          data bounds), {nodes} reads over every node kind and predicate form and {shapes} reads over every \
          rollup table and time-series step and {m2} reads of the milestone 2 builders (session and user lists and \
-         details, user session counts, the span list under every filter field, search with snippets, the \
+         details, user session counts, the sessions of a user, the span list under every filter field, the trace \
+         list under conditions on its spans, search with snippets, the \
          payload range, the metrics ranking, series and other series) with zero-filled series, set merges, \
          nullable outputs and the row and byte guardrails returned the expected rows, each block valid under \
          the plan's output schema"
