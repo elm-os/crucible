@@ -1,0 +1,1 @@
+SELECT * FROM values('enum8 Enum8(\'none\' = 0, \'protocol\' = 1, \'validation\' = 2, \'not_found\' = 3, \'tool_execution\' = 4, \'auth\' = 5, \'rate_limit\' = 6, \'timeout\' = 7, \'transport\' = 8, \'cancelled\' = 9, \'internal\' = 10)', 'none', 'protocol', 'validation', 'not_found', 'tool_execution', 'rate_limit', 'cancelled', 'internal') FORMAT Native

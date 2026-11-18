@@ -1,0 +1,147 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: script(&step)
+---
+CREATE SETTINGS PROFILE IF NOT EXISTS crucible_ingest_profile ON CLUSTER crucible SETTINGS max_execution_time = 60 MIN 1 MAX 60;
+
+CREATE SETTINGS PROFILE IF NOT EXISTS crucible_read_ui_profile ON CLUSTER crucible SETTINGS readonly = 2, max_execution_time = 300 MIN 1 MAX 300, max_memory_usage = 8589934592 MIN 1 MAX 8589934592, max_threads = 8 MIN 1 MAX 8;
+
+CREATE SETTINGS PROFILE IF NOT EXISTS crucible_read_agent_profile ON CLUSTER crucible SETTINGS readonly = 2, max_execution_time = 5 MIN 1 MAX 5, max_memory_usage = 1073741824 MIN 1 MAX 1073741824, max_rows_to_read = 100000000 MIN 1 MAX 100000000, max_threads = 4 MIN 1 MAX 4, max_concurrent_queries_for_user = 16 CONST;
+
+CREATE SETTINGS PROFILE IF NOT EXISTS crucible_maint_profile ON CLUSTER crucible;
+
+CREATE USER IF NOT EXISTS crucible_ingest ON CLUSTER crucible IDENTIFIED WITH sha256_hash BY '83295f7e2b82d963d8371e5958a3e05668348542af0fbcfe1aca55571add4956' SETTINGS PROFILE 'crucible_ingest_profile';
+
+CREATE USER IF NOT EXISTS crucible_read_ui ON CLUSTER crucible IDENTIFIED WITH sha256_hash BY '10048572f301b66b8003db9cd3ddd62a04a66a1e886fbf812c88cb568cdabf3a' SETTINGS PROFILE 'crucible_read_ui_profile';
+
+CREATE USER IF NOT EXISTS crucible_read_agent ON CLUSTER crucible IDENTIFIED WITH sha256_hash BY 'cf70a3095e02a18eba9677a6d7a97b4ee1595ed64aa58a9c5b2b893e6fe837aa' SETTINGS PROFILE 'crucible_read_agent_profile';
+
+CREATE USER IF NOT EXISTS crucible_maint ON CLUSTER crucible IDENTIFIED WITH sha256_hash BY '256f3bb0b9ea13afea3f7a133dc363b24c59ff7aaec95dcd0021357e02fddf73' SETTINGS PROFILE 'crucible_maint_profile';
+
+CREATE QUOTA IF NOT EXISTS crucible_agent_quota ON CLUSTER crucible FOR INTERVAL 1 hour MAX queries = 100000, execution_time = 7200 TO crucible_read_agent;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.span_core TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.span_payload TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.mcp_ops TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.mcp_content TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.mcp_tool_inventory TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.fact_scores TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.fact_tags TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.fact_flags TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.fact_corrections TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, wal_epoch, batch_seq, _partition_id) ON crucible.trace_heads TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.trace_stats TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.session_rollup TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.user_rollup TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.span_metrics TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.mcp_tool_rollup TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.mcp_deploys TO crucible_ingest;
+
+GRANT ON CLUSTER crucible INSERT, SELECT(id, wal_epoch, batch_seq) ON crucible.dedup_selftest TO crucible_ingest;
+
+GRANT ON CLUSTER crucible SELECT ON crucible.* TO crucible_read_ui;
+
+GRANT ON CLUSTER crucible SELECT ON crucible.* TO crucible_read_agent;
+
+GRANT ON CLUSTER crucible SELECT, ALTER DELETE ON crucible.* TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.span_core TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.span_payload TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_ops TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_content TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_tool_inventory TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.fact_scores TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.fact_tags TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.fact_flags TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.fact_corrections TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.trace_heads TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.trace_stats TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.session_rollup TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.user_rollup TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.span_metrics TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_tool_rollup TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_deploys TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.dedup_selftest TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.sql_probe TO crucible_maint;
+
+GRANT ON CLUSTER crucible KILL QUERY ON *.* TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.mutations TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.parts TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.settings TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.merge_tree_settings TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.functions TO crucible_maint;
+
+GRANT ON CLUSTER crucible SELECT ON system.processes TO crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_span_core ON CLUSTER crucible ON crucible.span_core AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_span_payload ON CLUSTER crucible ON crucible.span_payload AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_ops ON CLUSTER crucible ON crucible.mcp_ops AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_content ON CLUSTER crucible ON crucible.mcp_content AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_tool_inventory ON CLUSTER crucible ON crucible.mcp_tool_inventory AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_fact_scores ON CLUSTER crucible ON crucible.fact_scores AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_fact_tags ON CLUSTER crucible ON crucible.fact_tags AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_fact_flags ON CLUSTER crucible ON crucible.fact_flags AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_fact_corrections ON CLUSTER crucible ON crucible.fact_corrections AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_trace_heads ON CLUSTER crucible ON crucible.trace_heads AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_trace_stats ON CLUSTER crucible ON crucible.trace_stats AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_session_rollup ON CLUSTER crucible ON crucible.session_rollup AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_user_rollup ON CLUSTER crucible ON crucible.user_rollup AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_span_metrics ON CLUSTER crucible ON crucible.span_metrics AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_tool_rollup ON CLUSTER crucible ON crucible.mcp_tool_rollup AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_deploys ON CLUSTER crucible ON crucible.mcp_deploys AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_dedup_selftest ON CLUSTER crucible ON crucible.dedup_selftest AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_sql_probe ON CLUSTER crucible ON crucible.sql_probe AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;

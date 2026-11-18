@@ -1,0 +1,15 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.dedup_selftest ON CLUSTER crucible
+(
+    `id` UUID CODEC(ZSTD(1)),
+    `wal_epoch` UUID CODEC(ZSTD(1)),
+    `batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `created_at` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1))
+)
+ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')
+PRIMARY KEY id
+ORDER BY id
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200

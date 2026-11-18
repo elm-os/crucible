@@ -35,25 +35,41 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
       every M1 crate's dependencies wired once, internal dependency edges in contracts 1.5
       -> verify: clippy clean with the bans; 26 tests pass; `cargo deny` passes; a planted `ProjectScope::mint` call in
       `crucible-plan` is rejected; Kani, cargo-fuzz and Quint smoke runs pass on the workspace.
-- [ ] `crucible-env` and `crucible-env-prod`; `clippy.toml` bans with the allow-attribute grep
-      -> verify: a banned call fails CI; the hello-world app serves `/healthz` on the real runtime.
-- [ ] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
+- [x] `crucible-env` and `crucible-env-prod`; `clippy.toml` bans with the allow-attribute grep
+      -> verify: a banned call fails CI; the hello-world app serves `/healthz` on the real runtime. Done in #5: the
+      `bans` workflow proves all 52 bans fire; `crucible serve` answered `/healthz`, `/readyz` and `/metrics` and
+      shut down cleanly on SIGTERM.
+- [x] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
+      Done in #6: 10 Kani harnesses (obligation 4 by bounded lemmas, contracts 4.10), 1M frames in 5.6 s, fuzzing
+      found nothing in 24M executions.
 - [ ] Portable WAL with group commit, recovery and GC -> verify: torn-tail and fsync-lie DST seeds keep I1.
 - [ ] Minimal OTLP HTTP ingest, admission, normalizer stub -> verify: proto and JSON inputs map identically.
 - [ ] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
       -> verify: the same token three times yields one copy on single node and replicated; a two-partition block is
          rejected.
-- [ ] `crucible-schema` DDL-as-data for `span_core`, `span_payload`, `trace_heads`, `trace_stats`
-      -> verify: golden SQL for three variants; `SHOW CREATE TABLE` matches on 26.3, 26.8, latest.
-- [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST.
+- [x] `crucible-schema` DDL-as-data for `span_core`, `span_payload`, `trace_heads`, `trace_stats`
+      -> verify: golden SQL for three variants; `SHOW CREATE TABLE` matches on 26.3, 26.8, latest. Done in #8 for all
+      18 tables, plus access step A1 and the service-identity row under both server switch values and on a cluster.
+- [x] `crucible-records` record types and kernels (histogram, MCP error classifier, batch token) with Kani proofs (#10).
+- [x] `crucible-chfmt` Native encoder and framing, byte-identical to ClickHouse 26.3, 26.8 and 26.10 output (#9).
+- [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST. (Plan IR
+      and builders done in #8; the recent index and query layer remain.)
 - [ ] Simulation harness (turmoil, SimDisk, ChModel, oracle, I1-I3, I12-I14) and the swarm config generator
       -> verify: seeded mutants (skip sync, drop token, truncate early) caught within 200 configs; same seed, same
          trace hash.
 - [ ] Quint spec of the ingest protocol -> verify: safety properties hold; an ack-before-sync variant is caught.
 - [ ] Conformance C1-C4, startup dedup self-test, single-block rows -> verify: green on 26.3, 26.8, latest.
 - [ ] fsync-honesty probe and load generator baseline -> verify: probe classification recorded.
+- [x] UI scaffold in `ui/`: pinned Next 16.4.6 static export, tokens and fonts, shell with UI SDK navigation, project
+      placeholder and the one global time range -> verify: typecheck, Oxlint, Biome and `next build` green; `ui/out`
+      has one `index.html` per route.
+- [x] UI data layer: typed `/api/v1` client, problem+json mapper, TanStack Query provider, four-state `Section`
+      -> verify: Vitest green (mapper rows, range hook, no-backend shapes, loading ladder, agent test); headless
+      Chrome shows the designed error state on `/traces/` with no backend.
 - [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract.
-- [ ] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback.
+- [x] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback. All five pass on SDK
+      2.0.0 to 2.4.0 (#3); decision in `docs/architecture/mcp-typescript-seam.md`.
+- [x] CI for the UI (`ci-ui`: install, Biome, Oxlint, typecheck, Vitest, static export) -> verify: green on its PR.
 
 ## M2: core observability
 

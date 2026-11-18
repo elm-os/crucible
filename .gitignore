@@ -31,6 +31,8 @@ __pycache__/
 graphify-out/
 .DS_Store
 Thumbs.db
+# The ban self-test resolves its own (exactly pinned) dependencies; a committed lock would pin crucible-records' tree.
+/tools/ban-selftest/Cargo.lock
 
 # Formal tools
 _apalache-out/

@@ -1,0 +1,28 @@
+# Self-test of the determinism bans in the root clippy.toml. Not a member of the root workspace: it exists
+# only to be linted. Its dependencies are chosen so that every disallowed path resolves here, including the
+# ones the product workspace does not link (they carry `allow-invalid` in clippy.toml).
+[package]
+name = "ban-selftest"
+description = "Plants one use of every disallowed method and type so CI can prove clippy reports each."
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+crucible-records = { path = "../../crates/crucible-records" }
+getrandom = "=0.4.3"
+getrandom02 = { package = "getrandom", version = "=0.2.17" }
+hashbrown = "=0.17.1"
+rand = "=0.10.4"
+rand08 = { package = "rand", version = "=0.8.8" }
+tokio = { version = "=1.54.1", features = ["full"] }
+uuid = { version = "=1.29.3", features = ["v4", "v7"] }
+
+[lints.clippy]
+# Warnings, not errors: the checker needs clippy to finish and report every planted use.
+disallowed_methods = "warn"
+disallowed_types = "warn"

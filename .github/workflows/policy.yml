@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` re-checks the title and body when someone changes them after the PR opens.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read

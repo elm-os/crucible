@@ -1,0 +1,1 @@
+SELECT * FROM values('uuid UUID', '00000000-0000-0000-0000-000000000000', '00112233-4455-6677-8899-aabbccddeeff', '0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b', 'ffffffff-ffff-ffff-ffff-ffffffffffff', '01234567-89ab-cdef-0123-456789abcdef', '80000000-0000-0000-0000-000000000001', 'fedcba98-7654-3210-fedc-ba9876543210', '0d0a0d0a-0d0a-0d0a-0d0a-0d0a0d0a0d0a') FORMAT Native
