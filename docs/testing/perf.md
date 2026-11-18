@@ -268,18 +268,21 @@ significant digits.
 ## Measurements
 
 Measured on 2026-11-17, on a laptop, not reference hardware: Windows 11, Docker Desktop with the WSL2 VM (24
-CPUs, 16 GB, kernel 6.18.58.1-microsoft-standard-WSL2), dev image `crucible-dev:1`, release build. Other jobs
-shared the VM during these runs.
+CPUs, 16 GB, kernel 6.18.58.1-microsoft-standard-WSL2), dev image `crucible-dev:1`, one release build, one pass.
+Other jobs shared the VM during the pass. Among them were another track's conformance containers, which used the
+same virtual disk as the named volume.
 
 ### Probe
 
 | Volume | Verdict | Hop p50 | 4 KiB sync p50 (p99) | 8 MiB sync p50 | Directory sync p50 | Checks (net ns: small write, scaling, directory) |
 |---|---|---|---|---|---|---|
-| Named Docker volume (ext4 on the VM's virtual disk) | `honest` | 21 µs | 1.08 ms (1.83 ms) | 3.96 ms | 0.95 ms | 1,056,319; 2,880,082; 932,905 |
-| tmpfs (`--tmpfs /probe:size=512m`) | `suspicious` | 35 µs | 36 µs (72 µs) | 38 µs | 21 µs | 1,258; 1,222; -14,576 |
+| Named Docker volume (ext4 on the VM's virtual disk) | `honest` | 46 µs | 8.07 ms (12.75 ms) | 19.18 ms | 7.62 ms | 8,028,454; 11,106,822; 7,573,872 |
+| tmpfs (`--tmpfs /probe:size=512m`) | `suspicious` | 23 µs | 20 µs (47 µs) | 32 µs | 22 µs | -3,126; 12,754; -998 |
 
 On tmpfs every sync costs about the hop, so all three checks fail. The named volume passes all three, which
-suggests that flushes reach the host's disk through the virtualization layer. Neither result describes reference
+suggests that flushes reach the host's disk through the virtualization layer. Its latency depends on what else
+is writing to the shared disk: two earlier passes the same day, with the same probe code and less disk traffic,
+measured a 4 KiB sync p50 of 1.08 ms and 1.22 ms and gave the same verdicts. Neither result describes reference
 hardware.
 
 ### Generator accuracy
@@ -291,22 +294,21 @@ connections. Latency columns are in microseconds and give p50 / p99 / p99.9 (max
 
 | Lane | Target req/s | Achieved req/s | Acked | Send lag | Service time | Latency | CPU µs per request |
 |---|---|---|---|---|---|---|---|
-| uncompressed | 1,000 | 1,000.0 | 20,000 of 20,000 | 2 / 20 / 1,584 | 78 / 200 / 555 | 80 / 224 / 593 | 1,283 |
-| uncompressed | 10,000 | 10,000.0 | 200,000 of 200,000 | 1 / 52 / 1,783 | 52 / 154 / 433 | 54 / 222 / 546 | 133 |
-| uncompressed | 50,000 | 50,000.0 | 1,000,000 of 1,000,000 | 0 / 681 / 6,095 | 47 / 357 / 4,379 | 49 / 1,861 / 4,983 | 30 |
-| gzip | 1,000 | 1,000.0 | 20,000 of 20,000 | 2 / 28 / 6,287 | 112 / 238 / 1,310 | 115 / 277 / 1,312 | 1,307 |
-| gzip | 10,000 | 10,000.0 | 200,000 of 200,000 | 2 / 199 / 5,347 | 122 / 2,077 / 5,447 | 136 / 2,435 / 5,603 | 184 |
+| uncompressed | 1,000 | 1,000.0 | 20,000 of 20,000 | 2 / 20 / 582 | 72 / 180 / 380 | 75 / 210 / 414 | 1,270 |
+| uncompressed | 10,000 | 10,000.0 | 200,000 of 200,000 | 1 / 43 / 555 | 45 / 109 / 243 | 46 / 165 / 329 | 129 |
+| uncompressed | 50,000 | 49,999.9 | 1,000,000 of 1,000,000 | 0 / 52 / 1,338 | 43 / 117 / 279 | 44 / 167 / 379 | 29 |
+| gzip | 1,000 | 1,000.0 | 20,000 of 20,000 | 2 / 21 / 3,811 | 97 / 206 / 396 | 100 / 226 / 503 | 1,280 |
+| gzip | 10,000 | 10,000.0 | 200,000 of 200,000 | 1 / 60 / 4,899 | 70 / 176 / 348 | 78 / 218 / 428 | 153 |
 
 - Every run had zero errors and every status was 200.
-- In both lanes the achieved rate matched the target to better than one part in a million, and the median send
-  lag stayed at or below 2 µs.
-- In the uncompressed lane the generator used 1.3 to 1.5 cores at every rate, and in the gzip lane at 10,000
-  req/s it used 1.8. About one core is the pacer, which also runs other tasks in the gaps between due times, so
-  CPU per request falls as the rate rises.
+- Achieved rates were within 0.0002% of the target, and the median send lag stayed at or below 2 µs.
+- In the uncompressed lane the generator used 1.3 to 1.5 cores at every rate, and in the gzip lane 1.3 and 1.5.
+  About one core is the pacer, which also runs other tasks in the gaps between due times, so CPU per request
+  falls as the rate rises.
 - An earlier build that waited on the millisecond timer alone, with no pacer, cost 55, 21 and 12 µs per request
   at the three rates, but sent up to 2.5 ms late (p50 0.65 to 1.05 ms).
-- Gzip bodies were 3.2 times smaller (about 3,217 bytes).
-- At 50,000 req/s the gzip lane fell behind: the generator achieved 36,739 req/s, and latency grew with the
-  backlog to a p50 of 3.1 s. Generator and stub then compete for the same 6 CPUs: the generator compresses every
-  body, and the stub inflates and decodes every body. So that run measures neither side cleanly, and it is left
-  out of the table. In the rig, the generator gets its own 6 CPUs.
+- Gzip bodies were 3.2 times smaller (about 3,220 bytes).
+- At 50,000 req/s the gzip lane fell slightly behind and is left out of the table. It achieved 49,144 req/s, the
+  backlog pushed latency to a p50 of 78 ms and a maximum of 365 ms, and service time rose to a p50 of 1.2 ms.
+  The generator used 2.9 of its 4 cores. The stub inflates and decodes every body on its 2 threads, so the
+  shared 6 CPUs set the limit, not the generator alone. In the rig, the generator gets its own 6 CPUs.
