@@ -209,6 +209,7 @@ link up.
 | Progress sent through the peer directly | Only `notify_progress` counts |
 | The resource template of `resources/read` | Only the concrete URI is visible, and a raw URI is not used as a target name |
 | Server-to-client requests, batches | Requests the server sends (elicitation, sampling, roots) are not recorded as operations; batches were removed from the protocol |
+| What rmcp changes after the handler returns | rmcp turns an `input_required` result for a peer below 2026-07-28 into an error, answers modern peers' -32002 as -32602, and turns a task result for a client that did not declare tasks into an error; the span records what the handler returned |
 
 The span of an `initialize` request carries the version the handshake settles on, computed by rmcp's negotiation
 rule from the requested version, the handler's offer and `supported_protocol_versions`.

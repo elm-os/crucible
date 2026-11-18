@@ -111,6 +111,14 @@ impl Collector {
             .clone()
     }
 
+    /// Whether any export body holds `needle`: protobuf carries strings as their UTF-8 bytes.
+    pub fn wire_contains(&self, needle: &str) -> bool {
+        let needle = needle.as_bytes();
+        self.exports()
+            .iter()
+            .any(|e| e.body.windows(needle.len()).any(|w| w == needle))
+    }
+
     /// Every span of every export, in arrival order.
     pub fn spans(&self) -> Vec<Span> {
         let mut spans = Vec::new();

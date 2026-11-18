@@ -111,6 +111,9 @@ async fn spans_carry_the_context_and_the_agent_keys() {
         let agent = export.headers["user-agent"].to_str().unwrap();
         assert!(agent.starts_with("crucible-sdk-rust/"), "{agent}");
     }
+    // The key travels in the header only, never in a body.
+    assert!(collector.wire_contains("conv-42"));
+    assert!(!collector.wire_contains(SECRET_KEY));
     crucible_sdk::shutdown().await.unwrap();
 }
 

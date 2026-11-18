@@ -244,6 +244,8 @@ async fn legacy_operations_carry_the_wire_keys() {
     assert_eq!(panic.attr("crucible.mcp.error.class"), json!("internal"));
     assert_eq!(panic.attr("rpc.response.status_code"), json!(null));
     assert_eq!(panic.status_code, 2);
+    assert!(collector.wire_contains("exploded holding"));
+    assert!(!collector.wire_contains("csk_7Hq2"));
     crucible_sdk::shutdown().await.unwrap();
 }
 
@@ -389,7 +391,9 @@ async fn trace_context_cancellation_and_identity() {
     );
     // The hook's handle id wins over the handle_params argument.
     assert_eq!(echo.attr("crucible.mcp.handle.id"), json!("cart-9"));
-    assert!(!format!("{:?}", collector.exports()).contains("user=ada"));
+    // Baggage is never read, so it never reaches the wire.
+    assert!(collector.wire_contains("tools/call echo"));
+    assert!(!collector.wire_contains("user=ada"));
 
     let slow = &spans["tools/call slow"];
     assert_eq!(
@@ -472,7 +476,11 @@ async fn captured_content_is_sampled_scrubbed_and_capped() {
     let fail = &spans["tools/call fail"];
     assert_eq!(fail.attr("crucible.mcp.content.captured"), json!(null));
     assert_eq!(fail.attr("gen_ai.tool.call.arguments"), json!(null));
-    assert!(!format!("{:?}", collector.exports()).contains("s3cret"));
+    // Neither the uncaptured argument nor anything the hook replaced or dropped reaches the wire.
+    assert!(collector.wire_contains("[account]"));
+    assert!(!collector.wire_contains("s3cret"));
+    assert!(!collector.wire_contains("acct-1042"));
+    assert!(!collector.wire_contains("ada@example.com"));
     crucible_sdk::shutdown().await.unwrap();
 }
 
