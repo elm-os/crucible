@@ -1,0 +1,22 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "agent-tool",
+  "spans": [
+    {
+      "id": "assist",
+      "select": { "name": "assist" },
+      "parent": null,
+      "fields": { "observation_type": "agent" }
+    },
+    {
+      "id": "lookup-weather",
+      "select": { "name": "lookup-weather" },
+      "parent": "assist",
+      "fields": { "observation_type": "tool" },
+      "attributes": {
+        "crucible.input": { "json": { "city": "Lisbon" } },
+        "crucible.output": { "json": { "forecast": "sunny", "high_c": 24 } }
+      }
+    }
+  ]
+}

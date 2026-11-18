@@ -1,0 +1,20 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-lookup-order",
+  "spans": [
+    {
+      "id": "lookup",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "gen_ai.tool.name": "lookup_order", "crucible.mcp.handle.id": "ord_1042" }
+    },
+    {
+      "id": "echo",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "3" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "gen_ai.tool.name": "echo" }
+    }
+  ]
+}
