@@ -468,6 +468,40 @@ fn superseded_frames_after_a_failed_group_are_ignored() {
 }
 
 #[test]
+fn a_tailing_replay_follows_the_log_and_never_sees_a_superseded_frame() {
+    run(18, |sim| async move {
+        let disk = sim.disk("disk");
+        let node = start(&sim, &disk, "a", &config(SEGMENT)).await;
+        let mut replay = node.wal.replay(Lsn::FIRST);
+        assert_eq!(replay.next().await, Ok(None));
+        node.fill(1..=2).await;
+        let mut seen = Vec::new();
+        while let Some(frame) = replay.next().await.unwrap() {
+            seen.push((frame.lsn().get(), frame.stored_payload()[0]));
+        }
+        assert_eq!(seen, [(1, 1), (2, 2)]);
+        assert_eq!(replay.position(), Lsn::new(3));
+
+        // More frames in the segment the cursor already read to its end, then a failed group whose
+        // frame stays in that segment with LSN 4, then the frame that really is LSN 4, one segment on.
+        node.fill(3..=3).await;
+        disk.fail_next_syncs(1);
+        assert_eq!(
+            node.wal.append(data(90)).await,
+            Err(AppendError::Unavailable)
+        );
+        assert_eq!(replay.next().await.unwrap().unwrap().lsn(), Lsn::new(3));
+        assert_eq!(replay.next().await, Ok(None));
+        node.fill(4..=9).await;
+        while let Some(frame) = replay.next().await.unwrap() {
+            seen.push((frame.lsn().get(), frame.stored_payload()[0]));
+        }
+        assert_eq!(seen[2..], [(4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]);
+        node.stop().await;
+    });
+}
+
+#[test]
 fn a_failed_group_whose_rotation_also_fails_puts_the_wal_in_the_failed_state() {
     run(7, |sim| async move {
         let disk = sim.disk("disk");

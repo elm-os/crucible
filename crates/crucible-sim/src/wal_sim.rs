@@ -19,8 +19,8 @@ use std::time::Duration;
 use crucible_env::{DiskPath, Env, Rng, Root};
 use crucible_records::Lsn;
 use crucible_wal::{
-    AppendError, GcReport, Mutant, RecoveryError, RecoveryReport, SegmentMeta, Wal, WalConfig,
-    WalFrame,
+    AppendError, GcReport, Mutant, RecoveryError, RecoveryReport, ReplayError, SegmentMeta, Wal,
+    WalConfig, WalFrame,
 };
 use crucible_wal_codec::{
     BatchSeal, Checkpoint, Compression, FRAME_HEADER_LEN, FRAME_MAGIC, PreparedFrame, Record,
@@ -102,6 +102,12 @@ pub enum Violation {
         segment_no: u64,
         /// Offset of the stale frame.
         offset: u64,
+    },
+    /// I1: a replay of the running log returned a frame that was never submitted, differs from what was
+    /// acknowledged at its LSN, or is out of order.
+    ReadWrong {
+        /// The frame's LSN.
+        lsn: u64,
     },
     /// I1: the recovered watermark is below an acknowledged checkpoint or above every submitted one.
     WatermarkWrong {
@@ -187,6 +193,7 @@ struct Plan {
     /// Some incarnations crash within a few operations of their recovery.
     crash_loops: bool,
     pin_recent: bool,
+    tail_reader: bool,
     crash_in_recovery: bool,
     double_recovery: bool,
     wall_offset_micros: i64,
@@ -252,6 +259,7 @@ impl Plan {
             bursts: coin(rng),
             crash_loops,
             pin_recent: coin(rng),
+            tail_reader: coin(rng),
             crash_in_recovery: coin(rng),
             double_recovery: coin(rng),
             wall_offset_micros: pick(rng, 600_000_000) as i64 - 300_000_000,
@@ -360,6 +368,26 @@ impl Oracle {
                 Record::Checkpoint(checkpoint) => Some(Entry::Checkpoint(checkpoint)),
                 _ => None,
             },
+        }
+    }
+
+    /// Checks one frame that a replay of the running log returned.
+    fn check_read(&mut self, expected_lsn: u64, frame: &WalFrame) {
+        let lsn = frame.lsn().get();
+        let entry = self.classify(frame);
+        let owned = match entry {
+            Some(Entry::Data(id)) => {
+                let boot = self.submissions.get(&id).map(|s| s.boot);
+                lsn <= self.stable_last || boot == Some(self.boot)
+            }
+            Some(control) => {
+                lsn <= self.stable_last || self.controls.contains(&(self.boot, control))
+            }
+            None => false,
+        };
+        let acked = self.acked.get(&lsn);
+        if lsn != expected_lsn || !owned || acked.is_some_and(|acked| Some(*acked) != entry) {
+            self.violations.push(Violation::ReadWrong { lsn });
         }
     }
 
@@ -652,6 +680,28 @@ async fn shipper(shared: Shared, env: Env, wal: Wal, rng: Arc<dyn Rng>, mut seal
     }
 }
 
+/// Tails the log through the replay API while it is written, rotated and collected. Read errors are
+/// expected under faults; a wrong frame never is.
+async fn reader(shared: Shared, env: Env, wal: Wal, rng: Arc<dyn Rng>, from: Lsn) {
+    let mut replay = wal.replay(from);
+    loop {
+        let position = replay.position();
+        match replay.next().await {
+            Ok(Some(frame)) => shared.oracle().check_read(position.get(), &frame),
+            Ok(None) => {
+                env.clock
+                    .sleep(Duration::from_micros(200 + pick(rng.as_ref(), 4_000)))
+                    .await;
+            }
+            Err(ReplayError::Reclaimed { oldest, .. }) => replay = wal.replay(oldest),
+            Err(_) => {
+                env.clock.sleep(Duration::from_millis(1)).await;
+                replay = wal.replay(position);
+            }
+        }
+    }
+}
+
 struct Run<'a> {
     sim: &'a Sim,
     disk: SimDisk,
@@ -861,6 +911,17 @@ impl Run<'_> {
             report.sealed_through().get(),
         );
         drop(host.env.spawn("shipper", task));
+        if self.plan().tail_reader {
+            let label = format!("wal-sim/reader-{}", self.boots);
+            let task = reader(
+                self.shared.clone(),
+                host.env.clone(),
+                wal.clone(),
+                self.sim.rng(&label),
+                report.first_retained_lsn(),
+            );
+            drop(host.env.spawn("reader", task));
+        }
 
         // The crash point: a seeded number of disk operations from now, or a seeded virtual time,
         // whichever comes first.
