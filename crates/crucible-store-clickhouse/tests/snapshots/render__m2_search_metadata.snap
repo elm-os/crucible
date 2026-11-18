@@ -1,0 +1,13 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&entries.hits)
+---
+SELECT start_minute, trace_hash, span_id FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND received_at <= {p6:DateTime64(6, 'UTC')} AND (hasAnyTokens(metadata_kv, [{p5:String}])) ORDER BY start_minute DESC, trace_hash DESC, span_id DESC LIMIT {p7:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911400"
+p5: String = "tenant=Acme"
+p6: DateTime64(6, 'UTC') = "1794911400.000000"
+p7: UInt64 = "21"

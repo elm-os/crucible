@@ -210,6 +210,9 @@ fn node_names<'a>(node: &'a Node, columns: &mut Vec<ColumnRef>, preds: &mut Vec<
         }
         Node::TextSearch(search) => {
             columns.extend_from_slice(search.fields());
+            if let Some(order) = search.order() {
+                columns.extend_from_slice(order.columns());
+            }
             walk_preds(search.pred(), preds);
         }
         Node::FieldRange(range) => {
@@ -833,9 +836,11 @@ proptest! {
         let request = SearchRequest {
             tokens: vec![user.clone(), "X".to_owned()],
             mode: TokenMode::All,
-            fields: vec![SearchField::Input, SearchField::Output, SearchField::Metadata],
+            fields: vec![SearchField::Input, SearchField::Output],
             filter: Filter::And(vec![metadata, by_user, Filter::Name(user.clone())]),
             limit,
+            cursor: Some((as_of.floor_minute(), trace_id.trace_hash(), parent)),
+            as_of,
         };
         if !user.is_empty() {
             let found = search(scope, window, &keep(), caller, &request).unwrap().unwrap();
@@ -920,6 +925,8 @@ proptest! {
             fields: vec![SearchField::Input],
             filter: Filter::all(),
             limit,
+            cursor: None,
+            as_of: Timestamp::EPOCH,
         };
         prop_assert_eq!(search(scope, window, &keep(), Caller::Session, &request), Err(PlanError::Limit));
         let trace = TraceBounds {
@@ -1057,6 +1064,8 @@ proptest! {
             fields: vec![SearchField::Input],
             filter: Filter::all(),
             limit: 10,
+            cursor: None,
+            as_of: now,
         };
         let spans = SpanListRequest { filter: Filter::all(), limit: 10, cursor: None, as_of: now };
         let plans = [

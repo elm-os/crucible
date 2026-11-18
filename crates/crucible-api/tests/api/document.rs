@@ -28,6 +28,7 @@ fn the_document_matches_the_committed_file() {
 pub(crate) fn concrete(path: &str) -> String {
     path.replace("{project_id}", "01010101-0101-0101-0101-010101010101")
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
+        .replace("{span_id}", "0000000000000001")
         .replace("{key_id}", "02020202-0202-0202-0202-020202020202")
         .replace("{user_id}", "03030303-0303-0303-0303-030303030303")
         .replace("{invitation_id}", "04040404-0404-0404-0404-040404040404")

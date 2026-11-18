@@ -17,14 +17,18 @@ mod data_bounds;
 mod enums;
 mod identity;
 mod meta;
+mod payload;
 mod problem;
+mod search;
 mod spans;
 mod trace_detail;
 mod traces;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
-pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
+pub use enums::{
+    Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason, StatusCode,
+};
 pub use identity::{
     Account, AccountPatch, ApiKey, ApiKeyCreate, ApiKeyCreated, ApiKeyList, ApiKeyPatch,
     AuthMethod, AuthProvider, AuthProviderCreate, AuthProviderList, AuthProviderPatch,
@@ -37,7 +41,11 @@ pub use identity::{
     SessionTimes, SessionUser, SetupRequest, SignInOptions, TransferOwnership, UserStatus,
 };
 pub use meta::Meta;
+pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use search::{
+    SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
+};
 pub use spans::{SpanPage, SpanPageParams};
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
@@ -69,6 +77,7 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<PasswordChange>();
     visitor.visit::<PasswordResetConfirm>();
     visitor.visit::<PasswordResetRequest>();
+    visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
     visitor.visit::<ProjectCreate>();
     visitor.visit::<ProjectList>();
@@ -76,6 +85,8 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<ProjectMemberList>();
     visitor.visit::<ProjectMemberPatch>();
     visitor.visit::<ProjectPatch>();
+    visitor.visit::<SearchPage>();
+    visitor.visit::<SearchRequest>();
     visitor.visit::<SessionInfo>();
     visitor.visit::<SetupRequest>();
     visitor.visit::<SignInOptions>();

@@ -1993,6 +1993,316 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search span payloads",
+        "description": "The spans that started in the window whose input, output or metadata hold the query, newest first, each\nwith the matching part of its fields. Search reads the store only: a span acknowledged moments ago may be\nmissing, and the page then says `consistency: lagging`.",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "One page of hits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is above 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/payload": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Read a span's payload field",
+        "description": "The field's bytes as stored: JSON or text, cut at the size cap when the span named it in\n`truncated_fields`, so possibly no longer valid JSON. A `Range: bytes=<first>-[<last>]` header asks for part\nof it; other forms of the header are answered with the whole field. A span the store does not serve yet is\nread from the write-ahead log.",
+        "operationId": "get_span_payload",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "The trace id (32 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "path",
+            "description": "The span id (16 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "`bytes=<first>-[<last>]`: one byte range of the field.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "field",
+            "in": "query",
+            "description": "The field to read.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PayloadField"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "The span's start time as the API returned it (RFC 3339): it locates the span's payload.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "`1` sends the field as a download (`Content-Disposition: attachment`).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 1,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole field.",
+            "headers": {
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`bytes`."
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "The field's length in bytes."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The same for every range of the field."
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The range of the field that `Range` asked for.",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`bytes <first>-<last>/<length of the field>`."
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such payload (it expired under the payload retention, or the span was never stored), or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The range starts past the end of the field: `Content-Range: bytes */<length>`."
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`, also while the span may not be readable yet.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/traces": {
       "get": {
         "tags": [
@@ -3044,6 +3354,15 @@
           }
         }
       },
+      "IoShape": {
+        "type": "string",
+        "description": "How a span's input and output are structured, which tells a viewer how to show them.",
+        "enum": [
+          "raw",
+          "genai_messages",
+          "indexed_messages"
+        ]
+      },
       "KeyScope": {
         "type": "string",
         "description": "An API key scope (contract 11.3).",
@@ -3761,6 +4080,197 @@
         "maximum": 9007199254740991,
         "minimum": 0
       },
+      "SearchField": {
+        "type": "string",
+        "description": "A field that search covers.",
+        "enum": [
+          "input",
+          "output",
+          "metadata"
+        ]
+      },
+      "SearchFragment": {
+        "type": "object",
+        "description": "A run of a snippet's text.",
+        "required": [
+          "text",
+          "highlighted"
+        ],
+        "properties": {
+          "highlighted": {
+            "type": "boolean",
+            "description": "Whether it matched: a token of the query, or in a phrase search the phrase."
+          },
+          "text": {
+            "type": "string",
+            "description": "The text."
+          }
+        }
+      },
+      "SearchHit": {
+        "type": "object",
+        "description": "One hit: a span and where it matched.",
+        "required": [
+          "trace_id",
+          "span",
+          "matches"
+        ],
+        "properties": {
+          "matches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchMatch"
+            },
+            "description": "The fields with a match to show. Empty when the matches lie past the snippets."
+          },
+          "span": {
+            "$ref": "#/components/schemas/Span",
+            "description": "The span."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "The span's trace: 32 lowercase hex characters."
+          }
+        }
+      },
+      "SearchMatch": {
+        "type": "object",
+        "description": "Where a hit matched.",
+        "required": [
+          "field",
+          "fragments",
+          "cut_before",
+          "cut_after"
+        ],
+        "properties": {
+          "cut_after": {
+            "type": "boolean",
+            "description": "Whether the field may go on after the snippet."
+          },
+          "cut_before": {
+            "type": "boolean",
+            "description": "Whether the field goes on before the snippet."
+          },
+          "field": {
+            "$ref": "#/components/schemas/SearchField",
+            "description": "The field."
+          },
+          "fragments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchFragment"
+            },
+            "description": "The snippet around the field's first match, as fragments in order: at most 240 bytes. Empty for\n`metadata`, whose matching entries are the query's terms."
+          }
+        }
+      },
+      "SearchMode": {
+        "type": "string",
+        "description": "How the tokens of a query combine.",
+        "enum": [
+          "all",
+          "any",
+          "phrase"
+        ]
+      },
+      "SearchPage": {
+        "type": "object",
+        "description": "One page of hits, newest first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
+            "description": "The hits. A page can hold fewer hits than its size, even none, while `has_more` is true: phrase\ncandidates whose snippets lack the phrase are left out."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is. Search reads the store only, so spans acknowledged moments\nago may be missing, and the page then says `lagging`."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/search`.",
+        "required": [
+          "query",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `next_cursor` of the previous page, with the same query, mode, fields and window."
+          },
+          "fields": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SearchField"
+            },
+            "description": "The fields to search, each once; default `input` and `output`."
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window over the spans' start times, inclusive (RFC 3339)."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Page size: 1 to 200, default 50.",
+            "maximum": 200,
+            "minimum": 1
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SearchMode",
+                "description": "How the tokens combine; default `all`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "type": "string",
+            "description": "What to find, at most 1,024 bytes. For `input` and `output` it is split into tokens as those fields\nare; for `metadata` its whitespace-separated terms are `key=value` entries. At most 64 tokens."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days)."
+          }
+        },
+        "additionalProperties": false
+      },
       "ServerInfo": {
         "type": "object",
         "description": "The server.",
@@ -4019,6 +4529,7 @@
           "output_tokens",
           "total_tokens",
           "child_count",
+          "io_shape",
           "saturated"
         ],
         "properties": {
@@ -4045,6 +4556,17 @@
           "input_tokens": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Input tokens."
+          },
+          "io_shape": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IoShape",
+                "description": "How the span's input and output are structured; null for a span the store does not serve yet."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "level": {
             "$ref": "#/components/schemas/Level",
@@ -4423,8 +4945,12 @@
       "description": "Projects, project members and API keys."
     },
     {
+      "name": "search",
+      "description": "Full-text search over the spans' inputs, outputs and metadata."
+    },
+    {
       "name": "traces",
-      "description": "Traces, their spans and the project's data bounds."
+      "description": "Traces, their spans and their payloads, and the project's data bounds."
     }
   ]
 }

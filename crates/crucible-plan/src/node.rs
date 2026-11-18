@@ -640,7 +640,8 @@ pub struct Snippet {
 }
 
 /// A full-text search over text-indexed fields of a payload table; it returns row keys and, when asked, a
-/// snippet of each searched string field.
+/// snippet of each searched string field. Like a scan, it can be ordered by the table's key, resumed from a
+/// keyset cursor and bounded by arrival time, which is how search pages.
 #[derive(Clone, PartialEq, Debug)]
 pub struct TextSearch {
     table: TableId,
@@ -650,6 +651,9 @@ pub struct TextSearch {
     pred: Pred,
     limit: u32,
     snippet: Option<Snippet>,
+    order: Option<Order>,
+    cursor: Option<Vec<Literal>>,
+    arrival: ArrivalBounds,
 }
 
 impl TextSearch {
@@ -689,17 +693,47 @@ impl TextSearch {
             pred,
             limit,
             snippet: None,
+            order: None,
+            cursor: None,
+            arrival: ArrivalBounds::default(),
         })
     }
 
+    /// Orders the hits by the table's key columns ([`Order::key`]) in `direction`.
+    pub fn ordered(mut self, direction: Direction) -> Self {
+        self.order = Some(Order::key(self.table, direction));
+        self
+    }
+
+    /// Resumes strictly after the hit whose key columns hold `after`. Requires an order.
+    pub fn after(mut self, after: Vec<Literal>) -> Result<Self, PlanError> {
+        match &self.order {
+            Some(order) if fits(&order.by, &after) => {
+                self.cursor = Some(after);
+                Ok(self)
+            }
+            _ => Err(PlanError::Cursor),
+        }
+    }
+
+    /// Bounds the rows by arrival time.
+    pub fn arrived(mut self, arrival: ArrivalBounds) -> Result<Self, PlanError> {
+        if table(self.table).column("received_at").is_none() {
+            return Err(PlanError::NoArrivalTime(self.table));
+        }
+        self.arrival = arrival;
+        Ok(self)
+    }
+
     /// Also returns, for each searched `String` field in field order, two columns: `<field>_match`, the byte
-    /// position (from 1) of the first occurrence of any token in the field as a substring, compared without
-    /// regard to ASCII case, or 0 when no token occurs; and `<field>_snippet`, at most `snippet.len` bytes of
-    /// the field starting `snippet.before` bytes before that position (at the field's first byte when the
-    /// position is 0 or closer to the start). The snippet's first byte is byte
-    /// `max(match, before + 1) - before` of the field. A hit is decided by tokens and the position by
-    /// substrings, so a field can hold a position without being the field that matched; an array field has no
-    /// snippet.
+    /// position (from 1) of the first occurrence of a needle in the field as a substring, compared without
+    /// regard to ASCII case, or 0 when none occurs; and `<field>_snippet`, at most `snippet.len` bytes of the
+    /// field starting `snippet.before` bytes before that position (at the field's first byte when the position
+    /// is 0 or closer to the start). The snippet's first byte is byte `max(match, before + 1) - before` of the
+    /// field. The needles are the tokens, except in [`TokenMode::Phrase`], where the one needle is the tokens
+    /// joined by single spaces ([`TextSearch::needles`]), so that a phrase found later in a long field is
+    /// inside its snippet. A hit is decided by tokens and the position by substrings, so a field can hold a
+    /// position without being the field that matched; an array field has no snippet.
     pub fn with_snippets(mut self, snippet: Snippet) -> Result<Self, PlanError> {
         if snippet.len == 0 {
             return Err(PlanError::Limit);
@@ -727,6 +761,30 @@ impl TextSearch {
     /// The snippet returned for each searched string field, if any.
     pub const fn snippet(&self) -> Option<Snippet> {
         self.snippet
+    }
+
+    /// What the snippet positions look for: the tokens, or in [`TokenMode::Phrase`] the one phrase of the
+    /// tokens joined by single spaces.
+    pub fn needles(&self) -> Vec<String> {
+        match self.mode {
+            TokenMode::Phrase => vec![self.tokens.join(" ")],
+            TokenMode::All | TokenMode::Any => self.tokens.clone(),
+        }
+    }
+
+    /// The order of the hits, if any: the table's key columns.
+    pub const fn order(&self) -> Option<&Order> {
+        self.order.as_ref()
+    }
+
+    /// The keyset cursor: the key of the last hit already returned.
+    pub fn cursor(&self) -> Option<&[Literal]> {
+        self.cursor.as_deref()
+    }
+
+    /// The arrival bounds.
+    pub const fn arrival(&self) -> ArrivalBounds {
+        self.arrival
     }
 
     /// The table.

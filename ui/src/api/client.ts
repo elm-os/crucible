@@ -17,8 +17,12 @@ import type { OrgMemberList } from "./generated/OrgMemberList";
 import type { OrgMemberPatch } from "./generated/OrgMemberPatch";
 import type { PasswordResetConfirm } from "./generated/PasswordResetConfirm";
 import type { PasswordResetRequest } from "./generated/PasswordResetRequest";
+import type { PayloadField } from "./generated/PayloadField";
+import type { PayloadParams } from "./generated/PayloadParams";
 import type { Project } from "./generated/Project";
 import type { ProjectCreate } from "./generated/ProjectCreate";
+import type { SearchPage } from "./generated/SearchPage";
+import type { SearchRequest } from "./generated/SearchRequest";
 import type { SessionInfo } from "./generated/SessionInfo";
 import type { SetupRequest } from "./generated/SetupRequest";
 import type { SignInOptions } from "./generated/SignInOptions";
@@ -43,6 +47,9 @@ interface Init {
   query?: Query;
   body?: unknown;
   version?: number;
+  headers?: Record<string, string>;
+  // A status the caller reads itself, returned instead of thrown.
+  passStatus?: number;
   signal?: AbortSignal;
 }
 
@@ -59,6 +66,7 @@ async function call(path: string, sender: Sender, init: Init = {}): Promise<Resp
   if (method !== "GET" && csrf !== null) headers["X-Crucible-CSRF"] = csrf;
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
   if (init.version !== undefined) headers["If-Match"] = `"${init.version}"`;
+  Object.assign(headers, init.headers);
 
   let response: Response;
   try {
@@ -73,7 +81,7 @@ async function call(path: string, sender: Sender, init: Init = {}): Promise<Resp
     if (init.signal?.aborted) throw error;
     throw networkError();
   }
-  if (response.ok) return response;
+  if (response.ok || response.status === init.passStatus) return response;
 
   const error = await failure(response);
   const withSession = sender === "session" || (sender === "telemetry" && auth.mode === "session");
@@ -169,6 +177,65 @@ export function listSpanChildren(
     query,
     signal,
   );
+}
+
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return read<T>(await call(path, "telemetry", { method: "POST", body, signal }));
+}
+
+export function searchSpans(
+  project: string,
+  request: SearchRequest,
+  signal?: AbortSignal,
+): Promise<SearchPage> {
+  return apiPost(projectPath(project, "/search"), request, signal);
+}
+
+export interface PayloadSpan {
+  traceId: string;
+  spanId: string;
+  startTime: string;
+}
+
+export interface PayloadBytes {
+  bytes: Uint8Array;
+  // The length of the whole field.
+  total: number;
+}
+
+// The field's length from `Content-Range: bytes <first>-<last>/<length>` or `bytes */<length>`.
+function rangeTotal(response: Response): number | null {
+  const match = /\/(\d+)\s*$/.exec(response.headers.get("content-range") ?? "");
+  return match ? Number(match[1]) : null;
+}
+
+// Bytes `first` to `last` (inclusive; to the end when null) of one payload field. The server sends an
+// empty field whole, and answers a range past the end with its length only.
+export async function getPayloadRange(
+  project: string,
+  span: PayloadSpan,
+  field: PayloadField,
+  first: number,
+  last: number | null,
+  signal?: AbortSignal,
+): Promise<PayloadBytes> {
+  const query: PayloadParams = { field, start_time: span.startTime };
+  const path = projectPath(
+    project,
+    `/spans/${encodeURIComponent(span.traceId)}/${encodeURIComponent(span.spanId)}/payload`,
+  );
+  const response = await call(path, "telemetry", {
+    query,
+    headers: { Accept: "*/*", Range: `bytes=${first}-${last ?? ""}` },
+    passStatus: 416,
+    signal,
+  });
+  if (response.status === 416) {
+    return { bytes: new Uint8Array(0), total: rangeTotal(response) ?? 0 };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const total = response.status === 206 ? (rangeTotal(response) ?? bytes.length) : bytes.length;
+  return { bytes, total };
 }
 
 export type SignInMode = { mode: "keys" } | { mode: "session"; options: SignInOptions };

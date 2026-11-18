@@ -43,7 +43,8 @@ impl Modify for ProjectKey {
         (name = "auth", description = "Sign-in, sessions and the signed-in user's account."),
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),
         (name = "projects", description = "Projects, project members and API keys."),
-        (name = "traces", description = "Traces, their spans and the project's data bounds."),
+        (name = "search", description = "Full-text search over the spans' inputs, outputs and metadata."),
+        (name = "traces", description = "Traces, their spans and their payloads, and the project's data bounds."),
     ),
 )]
 struct ApiDoc;

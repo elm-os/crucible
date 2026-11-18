@@ -69,6 +69,18 @@ fn position() -> impl Strategy<Value = Position> {
                 parent: SpanId::from_bytes(parent),
                 last: (start, SpanId::from_bytes(span)),
             }),
+        (
+            window(),
+            any_time(),
+            any_time(),
+            any::<u32>(),
+            any::<[u8; 8]>()
+        )
+            .prop_map(|(window, as_of, minute, hash, span)| Position::SearchPage {
+                window,
+                as_of,
+                last: (minute, hash, SpanId::from_bytes(span)),
+            }),
     ]
 }
 
@@ -205,7 +217,8 @@ proptest! {
         }
         let route = match b.route {
             Route::TraceList => Route::SpanChildren,
-            Route::SpanChildren => Route::TraceList,
+            Route::SpanChildren => Route::Search,
+            Route::Search => Route::TraceList,
         };
         prop_assert_eq!(open(Binding { route, ..b }), Err(CursorError::WrongRoute));
         let kind = match b.kind {
@@ -275,7 +288,7 @@ fn golden_ring() -> KeyRing {
 const ISSUED: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
 const MINUTE: i64 = 60_000_000;
 
-fn golden_cursors() -> [Cursor; 3] {
+fn golden_cursors() -> [Cursor; 4] {
     let window = TimeWindow::new(
         ISSUED.saturating_add_micros(-24 * 60 * MINUTE),
         ISSUED.saturating_add_micros(60 * MINUTE),
@@ -322,6 +335,18 @@ fn golden_cursors() -> [Cursor; 3] {
                 ),
             },
         ),
+        issue(
+            Sort::NewestFirst,
+            Position::SearchPage {
+                window,
+                as_of: ISSUED,
+                last: (
+                    ISSUED.saturating_add_micros(-MINUTE),
+                    0xdead_beef,
+                    SpanId::from_bytes(12u64.to_be_bytes()),
+                ),
+            },
+        ),
     ]
 }
 
@@ -334,6 +359,7 @@ fn the_text_form_matches_a_separate_encoder_of_the_layout() {
         "v1.k1.AQEBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-76WlpaWlpaWlAAAAAAAAAAc.6HzZu5Q6KvE6HcQo5nszEw",
         "v1.k1.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAKg.FdfBQUrJd_OltJZsDIsjFg",
         "v1.k1.AQECAgEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AKWlpaWlpaWlAAAAAAAAAAcAAAAAAAAACgAGYHWGTpFAAAAAAAAAAAs.Fd_lH4ykLaXgVRq4aiiLsQ",
+        "v1.k1.AQEDAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-7wAAAAAAAAAM.O-1AhOlK8y1UTtCXRFcUlA",
     ];
     for (cursor, expected) in golden_cursors().iter().zip(expected) {
         assert_eq!(ring.seal(cursor), expected);
@@ -440,10 +466,10 @@ fn text_that_is_not_a_v1_cursor_is_malformed() {
 
 #[test]
 fn decoding_refuses_what_encoding_cannot_produce() {
-    let [page, head, child] = golden_cursors().map(|c| c.encode().as_bytes().to_vec());
+    let [page, head, child, search] = golden_cursors().map(|c| c.encode().as_bytes().to_vec());
     assert_eq!(
-        (page.len(), head.len(), child.len()),
-        (MAX_PAYLOAD_LEN, 100, 92)
+        (page.len(), head.len(), child.len(), search.len()),
+        (MAX_PAYLOAD_LEN, 100, 92, 96)
     );
     let with = |bytes: &[u8], at: usize, value: u8| {
         let mut bytes = bytes.to_vec();
@@ -452,24 +478,28 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     };
     assert_eq!(with(&page, 0, 2), Err(DecodeError::Version(2)));
     assert_eq!(with(&page, 0, 0), Err(DecodeError::Version(0)));
-    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 3), (3, 0), (3, 3)] {
+    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 4), (3, 0), (3, 3)] {
         assert_eq!(
             with(&page, at, value),
             Err(DecodeError::Value),
             "{at} {value}"
         );
     }
-    // Head and span children is no kind of cursor.
+    // Head and span children, and head and search, are no kind of cursor.
     assert_eq!(with(&head, 2, 2), Err(DecodeError::Value));
-    // A page of span children read as a trace page runs out of bytes; the reverse has bytes left over.
+    assert_eq!(with(&head, 2, 3), Err(DecodeError::Value));
+    // A page of span children or of search read as a trace page runs out of bytes; the reverse has bytes left
+    // over.
     assert_eq!(with(&child, 2, 1), Err(DecodeError::Length));
     assert_eq!(with(&page, 2, 2), Err(DecodeError::Length));
+    assert_eq!(with(&search, 2, 1), Err(DecodeError::Length));
+    assert_eq!(with(&page, 2, 3), Err(DecodeError::Length));
     // The window must be `from < to`: write `to = from`.
     let mut empty = page.clone();
     let from: [u8; 8] = page[52..60].try_into().unwrap();
     empty[60..68].copy_from_slice(&from);
     assert_eq!(Cursor::decode(&empty), Err(DecodeError::Value));
-    for bytes in [&page, &head, &child] {
+    for bytes in [&page, &head, &child, &search] {
         assert_eq!(
             Cursor::decode(&bytes[..bytes.len() - 1]),
             Err(DecodeError::Length)

@@ -174,6 +174,16 @@ pub const ROUTES: &[RouteAccess] = &[
         Project(ProjectPermission::Manage),
     ),
     route(
+        "POST",
+        "/api/v1/projects/{project_id}/search",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/payload",
+        Project(ProjectPermission::Read),
+    ),
+    route(
         "GET",
         "/api/v1/projects/{project_id}/traces",
         Project(ProjectPermission::Read),

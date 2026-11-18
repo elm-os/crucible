@@ -43,6 +43,7 @@ export function span(
     output_tokens: 0,
     total_tokens: 0,
     child_count: null,
+    io_shape: null,
     saturated: false,
     ...fields,
   };

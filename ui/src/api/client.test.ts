@@ -6,6 +6,7 @@ import {
   acceptInvitation,
   confirmPasswordReset,
   createInvitation,
+  getPayloadRange,
   getSession,
   getSignInMode,
   listTraces,
@@ -14,6 +15,7 @@ import {
   removeOrgMember,
   requestPasswordReset,
   revokeApiKey,
+  searchSpans,
   setupOwner,
 } from "./client";
 import { UiError } from "./errors";
@@ -69,6 +71,51 @@ describe("who a request says it comes from", () => {
     expect(sent().headers.get("authorization")).toBeNull();
     expect(sent().init.credentials).toBe("same-origin");
     expect(sent().init.method).toBe("GET");
+  });
+
+  test("signed in, a search is a POST: it carries the CSRF token and never a key", async () => {
+    localStorage.setItem("crucible.connection.key", KEY);
+    signIn();
+    fetchMock.mockResolvedValue(json({ data: [], next_cursor: null, has_more: false }));
+    await searchSpans("p1", { query: "refund", ...WINDOW });
+    expect(sent().url).toBe("/api/v1/projects/p1/search");
+    expect(sent().init.method).toBe("POST");
+    expect(sent().headers.get("x-crucible-csrf")).toBe("csrf-1");
+    expect(sent().headers.get("authorization")).toBeNull();
+    expect(JSON.parse(String(sent().init.body))).toEqual({ query: "refund", ...WINDOW });
+  });
+
+  test("without a control plane, a search sends the key and no CSRF token", async () => {
+    localStorage.setItem("crucible.connection.key", KEY);
+    fetchMock.mockResolvedValue(json({ data: [], next_cursor: null, has_more: false }));
+    await searchSpans("p1", { query: "refund", ...WINDOW });
+    expect(sent().headers.get("authorization")).toBe(`Bearer ${KEY}`);
+    expect(sent().headers.get("x-crucible-csrf")).toBeNull();
+  });
+
+  test("signed in, a payload range goes with the cookie, and a range past the end gives the length", async () => {
+    localStorage.setItem("crucible.connection.key", KEY);
+    signIn();
+    const span = { traceId: "t1", spanId: "s1", startTime: "2026-11-17T10:00:00Z" };
+    fetchMock.mockResolvedValueOnce(
+      new Response("ab", { status: 206, headers: { "content-range": "bytes 0-1/5" } }),
+    );
+    const head = await getPayloadRange("p1", span, "input", 0, 1);
+    expect(sent().url).toBe(
+      "/api/v1/projects/p1/spans/t1/s1/payload?field=input&start_time=2026-11-17T10%3A00%3A00Z",
+    );
+    expect(sent().headers.get("range")).toBe("bytes=0-1");
+    expect(sent().headers.get("authorization")).toBeNull();
+    expect([...head.bytes]).toEqual([97, 98]);
+    expect(head.total).toBe(5);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 416, headers: { "content-range": "bytes */5" } }),
+    );
+    const past = await getPayloadRange("p1", span, "input", 9, null);
+    expect([...past.bytes]).toEqual([]);
+    expect(past.total).toBe(5);
+    expect(sent(1).headers.get("range")).toBe("bytes=9-");
   });
 
   test("session writes carry the session's CSRF token and never a key", async () => {
