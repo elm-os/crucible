@@ -1,0 +1,21 @@
+[package]
+name = "crucible-sdk-conformance"
+version = "0.0.0"
+edition = "2024"
+description = "The Rust SDK's runner for the shared SDK conformance suite (docs/testing/sdk-conformance.md)."
+license = "MIT"
+publish = false
+
+[dependencies]
+bytes = "=1.12.2"
+crucible-sdk = { path = "../..", features = ["mcp"] }
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.12.0", features = ["client", "http1", "server"] }
+hyper-util = { version = "=0.1.21", features = ["server", "service", "tokio"] }
+opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace"] }
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+tokio = { version = "=1.54.1", features = ["full"] }
+tokio-util = "=0.7.20"

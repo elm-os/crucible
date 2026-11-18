@@ -24,6 +24,7 @@
 //! extension traits that box. Async methods are cancel-safe unless their documentation says otherwise.
 
 mod asset;
+mod child;
 mod clock;
 mod disk;
 mod id;
@@ -40,6 +41,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use asset::{Asset, AssetManifest, AssetSource, Encodings};
+pub use child::{
+    Child, ChildControl, ChildError, ChildInput, ChildOutput, ChildProcess, ChildSignal, ChildSpec,
+    ExitStatus, StderrMode,
+};
 pub use clock::{Clock, ClockExt, Elapsed, Instant, Interval, MissedTicks};
 pub use crucible_control::ControlStore;
 pub use disk::{Disk, DiskError, DiskPath, Entry, File, FileOps, OpenMode, Root};

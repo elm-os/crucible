@@ -3,6 +3,7 @@
 mod control;
 mod cursor_keys;
 mod keys;
+mod proxy;
 mod recent;
 mod serve;
 mod store;
@@ -43,6 +44,8 @@ enum Command {
     },
     /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
     Openapi,
+    /// Run the MCP proxy in front of an MCP server. It starts no server subsystem.
+    Proxy(proxy::ProxyArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -226,6 +229,7 @@ async fn migrate(config: Config) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Proxy(args) => proxy::run(args),
         Command::Serve(args) => {
             let config = args.config.load_for_run()?;
             runtime()?.block_on(serve::run(config, args.migrate))

@@ -30,7 +30,8 @@ pub use ddl::{
 };
 pub use migrate::{
     ACCESS_SERVICE, ACCESS_WORKSPACE, LEDGER_ORDER, MigrationStep, PolicyForm, SCHEMA_BASE,
-    StepKind, WorkspaceAction, access_service, access_workspace_shape, schema_base,
+    SCHEMA_SPAN_USAGE_AGGREGATE, StepKind, WorkspaceAction, access_service, access_workspace_shape,
+    schema_base, schema_span_usage_aggregate,
 };
 pub use partition::{
     CutoffDay, DAY_COUNT, OutOfRange, PartitionFate, PartitionRule, RetentionSettings, clamp_from,
