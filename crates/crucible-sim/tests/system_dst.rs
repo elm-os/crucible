@@ -70,13 +70,13 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
         let outcome = run_system_sim(seed, Options::realistic(mask));
         assert_holds(&outcome);
         targets.extend(outcome.stats.targets());
-        reads += outcome.stats.trace_reads;
-        whole += outcome.stats.reads_whole;
+        reads += outcome.stats.live_reads;
+        whole += outcome.stats.live_whole;
         acked += outcome.stats.acked;
     }
-    println!("{acked} requests acknowledged, {reads} trace reads, {whole} whole and strong");
-    println!("targets: {targets:#?}");
-    // The oracle accepts a marker in place of a span, so most reads must need none.
+    println!("{acked} requests acknowledged; {whole} of {reads} live trace reads whole and strong");
+    // The oracle accepts a marker in place of a span while the workload runs, and `lagging` always, so most
+    // live reads must need none.
     assert!(acked > 500 && whole * 2 > reads, "{whole} of {reads} reads");
     for target in [
         "json request acknowledged",
@@ -97,6 +97,8 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
         "insert deduplicated",
         "insert landed late",
         "deduplication entry expired early",
+        "parts merged in the store",
+        "store read fault",
     ] {
         assert!(targets.contains(target), "no smoke run reached: {target}");
     }
@@ -108,6 +110,33 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
             >= 4,
         "crashes at fewer than four of the shipper's barriers"
     );
+}
+
+/// `lagging` is always accepted while the workload runs. Without the store faults that stall the shipper or
+/// drop index entries, a live read has little reason to carry any marker.
+#[test]
+fn live_reads_are_whole_without_store_stalls() {
+    let stalls = [
+        Dim::Outages,
+        Dim::LongOutages,
+        Dim::ChReadErrors,
+        Dim::TinyRecent,
+        Dim::ChTimeouts,
+        Dim::ChHangOverload,
+        Dim::ChPoison,
+        Dim::ChRejects,
+        Dim::ChServerErrors,
+    ];
+    let (mut reads, mut whole) = (0, 0);
+    for (mask, seed) in budget(0, 12, 1) {
+        let calm = stalls.iter().fold(mask, |mask, &dim| mask.without(dim));
+        let outcome = run_system_sim(seed, Options::realistic(calm));
+        assert_holds(&outcome);
+        reads += outcome.stats.live_reads;
+        whole += outcome.stats.live_whole;
+    }
+    println!("{whole} of {reads} live trace reads whole and strong");
+    assert!(reads > 500 && whole * 10 > reads * 9, "{whole} of {reads}");
 }
 
 #[test]

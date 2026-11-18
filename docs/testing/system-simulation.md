@@ -27,7 +27,9 @@ The ClickHouse adapter (`crucible-store-clickhouse`) is outside the simulation: 
 tasks, reads time and draws randomness on its own. `ChModel` stands in for it behind `TelemetryStore`. What keeps
 the model honest is the conformance suite: `crucible-conformance` runs the same typed-plan reads against `ChModel`
 and against real ClickHouse (26.3, 26.8 and the latest release) and compares the rows. The model may be stricter
-than a server and is never more permissive.
+than a server and is never more permissive, with one known exception: the model does not apply the query-class
+guardrails (`max_rows_to_read`, `max_execution_time`, `max_memory_usage`), so it answers a read that a server
+would refuse as too broad or too slow. The simulated data sets are far below those limits.
 
 Also outside: the network (requests enter at the router, so HTTP framing and TLS are not simulated), Postgres and
 the control plane (later milestones), and several nodes (milestone 1 is one node).
@@ -82,8 +84,11 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 | I13 | | No segment wholly at or below the watermark is left, and the index is empty once the grace has passed |
 | I14 | | The trace hash covers every event of the run, read results included. The same seed, mask and tier give the same hash and outcome (`system_dst.rs`, on every pull request) |
 
-Because a marker excuses a missing span, the suite also requires that most reads need none: over the smoke
-budget more than half of the trace reads return every span, whole and strong.
+While the workload runs, a marker excuses a missing span, and `consistency: lagging` is always accepted there:
+the oracle cannot tell from outside whether stage B had a reason to trail. So the suite also requires that live
+reads mostly need no marker: over the smoke budget more than half of the live trace reads return every span,
+whole and strong, and in configurations with the store faults switched off (outages, read faults, insert
+faults, poison pairs, the tiny index bound) more than 90% do (measured: 541 of 549).
 
 ## Mutants
 

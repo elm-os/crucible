@@ -310,6 +310,10 @@ pub struct Stats {
     pub trace_reads: u64,
     /// Of those, reads that returned every acknowledged span, whole and strong.
     pub reads_whole: u64,
+    /// Trace-by-id reads while the workload ran, where a marker may stand in for a span.
+    pub live_reads: u64,
+    /// Of those, reads that returned every acknowledged span, whole and strong.
+    pub live_whole: u64,
     /// Acknowledged spans that a read returned from the recent-span index.
     pub spans_from_index: u64,
     /// Acknowledged spans that a read returned from the store.
@@ -374,6 +378,8 @@ impl Stats {
             (self.store.deduplicated, "insert deduplicated"),
             (self.store.late, "insert landed late"),
             (self.store.expired, "deduplication entry expired early"),
+            (self.store.merges, "parts merged in the store"),
+            (self.store.read_errors, "store read fault"),
         ];
         for (count, name) in simple {
             if count > 0 {
@@ -1063,8 +1069,10 @@ async fn read_back(shared: &Shared, node: &Node, index: usize, permitted: Permit
                         request: index,
                     });
                 }
+                ledger.stats.live_reads += u64::from(permitted.lagging);
                 if !missing && whole {
                     ledger.stats.reads_whole += 1;
+                    ledger.stats.live_whole += u64::from(permitted.lagging);
                 }
                 for span in &detail.spans {
                     match span.source {
