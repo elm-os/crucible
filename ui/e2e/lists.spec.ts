@@ -202,7 +202,10 @@ test.describe("spans: list and filters", () => {
     await expect(section).toHaveAttribute("aria-busy", "true");
     release();
     const link = section.getByRole("link", { name: "send_reply" });
-    await expect(link).toHaveAttribute("href", /trace\/?\?project=.*&trace=.*&span=a000000000000008/);
+    await expect(link).toHaveAttribute(
+      "href",
+      /trace\/?\?project=.*&trace=.*&span=a000000000000008/,
+    );
     await expect(page.getByRole("button", { name: "Remove filter Level: error" })).toBeVisible();
     await expectAccessible(page, "spans success");
 
@@ -228,7 +231,9 @@ test.describe("spans: list and filters", () => {
     await expectAccessible(page, "spans error");
     api.on(SPANS_PATH, json(listPage([])));
     await page.reload();
-    await expect(page.getByText("No spans match these filters in the last 24 hours.")).toBeVisible();
+    await expect(
+      page.getByText("No spans match these filters in the last 24 hours."),
+    ).toBeVisible();
     await page
       .getByRole("region", { name: "Spans" })
       .getByRole("button", { name: "Clear filters" })
@@ -256,7 +261,9 @@ test.describe("traces: filters and live tail", () => {
     await page.getByRole("textbox", { name: "Value" }).fill("staging");
     await page.getByRole("button", { name: "Add filter" }).click();
     await expect(page).toHaveURL(/environment=staging/);
-    await expect(page.getByText("No traces match these filters in the last 24 hours.")).toBeVisible();
+    await expect(
+      page.getByText("No traces match these filters in the last 24 hours."),
+    ).toBeVisible();
     await expectAccessible(page, "traces filtered empty");
     await page
       .getByRole("region", { name: "Recent traces" })
@@ -288,9 +295,7 @@ test.describe("traces: filters and live tail", () => {
     await page.goto(`/traces/?project=${PROJECT}`);
     const show = page.getByRole("button", { name: "Show 4 new traces" });
     await expect(show).toBeVisible();
-    const tail = new URL(
-      `http://localhost${api.calls.find((call) => call.includes("since="))}`,
-    );
+    const tail = new URL(`http://localhost${api.calls.find((call) => call.includes("since="))}`);
     expect(tail.searchParams.get("since")).toBe("h-1");
     await expectAccessible(page, "traces live tail");
     await show.click();
