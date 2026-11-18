@@ -1,0 +1,35 @@
+# Release binaries with cargo-dist: `crucible` for seven targets, as archives with checksums plus shell and
+# PowerShell installers, on the GitHub release of a version tag. `dist generate` writes
+# .github/workflows/release.yml from this file; never edit that workflow by hand. The `dist` workflow runs
+# `dist plan` on pull requests. See docs/self-hosting/README.md.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.34.0"
+ci = "github"
+# The server on its own with the UI embedded, as the image builds it: a workspace build would add test-only
+# features of other crates.
+precise-builds = true
+features = ["embed-ui"]
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+]
+installers = ["shell", "powershell"]
+include = ["THIRD_PARTY_NOTICES"]
+# Builds the UI and its compressed variants before each binary build.
+github-build-setup = "../build-setup.yml"
+# Release runs start only from a tag.
+pr-run-mode = "skip"
+
+# The actions the generated workflow uses, pinned by commit like every other workflow here.
+[dist.github-action-commits]
+"actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2

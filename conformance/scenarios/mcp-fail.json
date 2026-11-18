@@ -1,0 +1,13 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-fail",
+  "kind": "mcp",
+  "title": "A tool result with isError: true and an upstream error annotation",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "fail",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "fail", "arguments": { "reason": "upstream refused the order" } } }
+    }
+  ]
+}

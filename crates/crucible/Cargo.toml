@@ -24,6 +24,8 @@ crucible-control = { workspace = true }
 crucible-control-pg = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-cursor = { workspace = true }
+# The compat ingest routes that the ingest listeners serve (contract 12.1).
+crucible-compat = { workspace = true }
 crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-ingest = { workspace = true }
@@ -54,11 +56,19 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# Basic credentials for the compat route sends.
+base64 = { workspace = true }
 # The end-to-end test (tests/e2e.rs) drives the load generator as a library and reads ClickHouse directly.
 crucible-loadgen = { path = "../crucible-loadgen" }
 crucible-otlp = { workspace = true }
+# The gRPC sends: the generated OTLP client over tonic's HTTP/2 channel.
+opentelemetry-proto = { workspace = true, features = ["gen-tonic", "trace"] }
+prost = { workspace = true }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "gzip"] }
 crucible-sim = { path = "../crucible-sim" }
 crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
+# The gzip body of the compat route send.
+flate2 = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
@@ -66,6 +76,10 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 
 [target.'cfg(not(windows))'.dependencies]
 mimalloc = { workspace = true }
+
+# The one package cargo-dist releases (dist-workspace.toml); without this, `publish = false` hides it.
+[package.metadata.dist]
+dist = true
 
 [lints]
 workspace = true

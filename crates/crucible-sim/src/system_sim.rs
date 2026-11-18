@@ -41,7 +41,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
-use crucible_auth::{SecretKey, StaticKey, StaticKeys};
+use crucible_auth::{PublicKey, SecretKey, StaticKey, StaticKeys};
 use crucible_chfmt::Compression;
 use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
 use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
@@ -134,11 +134,13 @@ pub enum Mutant {
     DropFactOnRetry,
     /// `crucible-shipper` quarantines a frame that does not normalize without copying it.
     FrameQuarantineWithoutCopy,
+    /// `crucible-shipper` collects the segments that the admission of an unchecked frame relied on.
+    CollectWhatFramesRelyOn,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -148,6 +150,7 @@ impl Mutant {
         Self::DoubleCountRollup,
         Self::DropFactOnRetry,
         Self::FrameQuarantineWithoutCopy,
+        Self::CollectWhatFramesRelyOn,
     ];
 
     /// The name used on the command line.
@@ -162,6 +165,7 @@ impl Mutant {
             Self::DoubleCountRollup => "double-count-rollup",
             Self::DropFactOnRetry => "drop-fact-on-retry",
             Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
+            Self::CollectWhatFramesRelyOn => "collect-what-frames-rely-on",
         }
     }
 
@@ -689,6 +693,9 @@ impl Plan {
                 Some(Mutant::DropFactOnRetry) => Some(crucible_shipper::Mutant::DropFactOnRetry),
                 Some(Mutant::FrameQuarantineWithoutCopy) => {
                     Some(crucible_shipper::Mutant::FrameQuarantineWithoutCopy)
+                }
+                Some(Mutant::CollectWhatFramesRelyOn) => {
+                    Some(crucible_shipper::Mutant::CollectWhatFramesRelyOn)
                 }
                 _ => None,
             },
@@ -2172,9 +2179,9 @@ impl Run<'_> {
                     stats_spans += u64_at(block, "span_count", row).unwrap_or(0);
                 }
             }
-            // Repeats and quarantines make the derived tables depend on what each restart remembered; without
-            // them the tables must agree exactly.
-            let exact = ledger.repeats == 0 && directories == 0;
+            // A quarantined pair is missing from its table alone; without one the tables must agree exactly,
+            // also about repeats: a restart drops the repeats that the process before it dropped.
+            let exact = directories == 0;
             if exact {
                 for &(lsn, span) in &core_roots {
                     if !heads.contains(&(lsn, span, 1)) {
@@ -2607,6 +2614,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
             Some(StaticKey {
                 id: ApiKeyId::from_bytes([project as u8 + 0x40; 16]),
                 project_id: project_id(project),
+                public_key: PublicKey::parse(&secret(project).replace("csk_", "cpk_")).ok()?,
                 secret: SecretKey::parse(&secret(project)).ok()?,
             })
         })

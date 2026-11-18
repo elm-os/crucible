@@ -1,0 +1,13 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-throw",
+  "kind": "mcp",
+  "title": "A tool handler that raises an exception",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "throw",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "throw", "arguments": { "message": "handler exploded" } } }
+    }
+  ]
+}
