@@ -71,7 +71,12 @@ fn an_http_status_without_a_json_rpc_answer_classifies_the_operation() {
         tap.open(StreamId(stream), view(None), at(0));
         request(&tap, stream, stream, 1);
         tap.head(StreamId(stream), status, BodyKind::Json, None, at(5));
-        tap.forward(StreamId(stream), S2C, Bytes::from_static(b"{\"error\":\"no\"}"), at(6));
+        tap.forward(
+            StreamId(stream),
+            S2C,
+            Bytes::from_static(b"{\"error\":\"no\"}"),
+            at(6),
+        );
         tap.close(StreamId(stream), EndReason::Complete, at(7));
         let ops = ops(&mut core);
         assert_eq!(ops.len(), 1);
@@ -91,15 +96,35 @@ fn an_http_status_without_a_json_rpc_answer_classifies_the_operation() {
 fn how_an_exchange_ends_decides_what_becomes_of_a_pending_request() {
     let (mut core, tap) = http_core(|_| {});
     let cases = [
-        (EndReason::Complete, McpStatus::TransportError, ErrorClass::Transport, CancelSource::None),
-        (EndReason::UpstreamFailed, McpStatus::TransportError, ErrorClass::Transport, CancelSource::None),
-        (EndReason::ClientClosed, McpStatus::Cancelled, ErrorClass::Cancelled, CancelSource::StreamClose),
+        (
+            EndReason::Complete,
+            McpStatus::TransportError,
+            ErrorClass::Transport,
+            CancelSource::None,
+        ),
+        (
+            EndReason::UpstreamFailed,
+            McpStatus::TransportError,
+            ErrorClass::Transport,
+            CancelSource::None,
+        ),
+        (
+            EndReason::ClientClosed,
+            McpStatus::Cancelled,
+            ErrorClass::Cancelled,
+            CancelSource::StreamClose,
+        ),
     ];
     for (stream, (reason, status, class, cancel)) in (1..).zip(cases) {
         tap.open(StreamId(stream), view(None), at(0));
         request(&tap, stream, 1, 1);
         tap.head(StreamId(stream), 200, BodyKind::Sse, None, at(2));
-        tap.forward(StreamId(stream), S2C, Bytes::from_static(b": keep-alive\n\n"), at(3));
+        tap.forward(
+            StreamId(stream),
+            S2C,
+            Bytes::from_static(b": keep-alive\n\n"),
+            at(3),
+        );
         tap.close(StreamId(stream), reason, at(4));
         let ops = ops(&mut core);
         assert_eq!(ops.len(), 1, "{reason:?}");
@@ -124,12 +149,21 @@ fn in_a_legacy_session_an_answer_may_arrive_on_another_stream() {
     core.drain();
     assert_eq!(core.pending(), 1, "the request waits for its answer");
     // The same id in another session is another request.
-    tap.open(StreamId(3), view(Some("ffffffffffffffffffffffffffffffff")), at(14));
+    tap.open(
+        StreamId(3),
+        view(Some("ffffffffffffffffffffffffffffffff")),
+        at(14),
+    );
     tap.head(StreamId(3), 200, BodyKind::Sse, None, at(15));
-    let answer = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[]}}\n\n";
+    let answer =
+        "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[]}}\n\n";
     tap.forward(StreamId(3), S2C, Bytes::from(answer), at(16));
     core.drain();
-    assert_eq!(core.pending(), 1, "an answer in another session does not match");
+    assert_eq!(
+        core.pending(),
+        1,
+        "an answer in another session does not match"
+    );
     tap.forward(StreamId(1), S2C, Bytes::from(answer), at(40));
     let ops = ops(&mut core);
     assert_eq!(ops.len(), 1);
@@ -150,17 +184,37 @@ fn a_body_that_cannot_be_read_is_reported_from_its_headers() {
         ..view(None)
     };
     tap.open(StreamId(1), compressed, at(0));
-    tap.forward(StreamId(1), C2S, Bytes::from_static(&[0x1f, 0x8b, 8, 0, 1, 2, 3]), at(1));
+    tap.forward(
+        StreamId(1),
+        C2S,
+        Bytes::from_static(&[0x1f, 0x8b, 8, 0, 1, 2, 3]),
+        at(1),
+    );
     tap.head(StreamId(1), 200, BodyKind::Opaque, None, at(8));
-    tap.forward(StreamId(1), S2C, Bytes::from_static(&[0x1f, 0x8b, 8, 0, 9]), at(9));
+    tap.forward(
+        StreamId(1),
+        S2C,
+        Bytes::from_static(&[0x1f, 0x8b, 8, 0, 9]),
+        at(9),
+    );
     tap.close(StreamId(1), EndReason::Complete, at(10));
     // The same without the headers: nothing to report.
-    tap.open(StreamId(2), HeaderView { body_readable: false, ..view(None) }, at(11));
+    tap.open(
+        StreamId(2),
+        HeaderView {
+            body_readable: false,
+            ..view(None)
+        },
+        at(11),
+    );
     tap.close(StreamId(2), EndReason::Complete, at(12));
     let ops = ops(&mut core);
     assert_eq!(ops.len(), 1);
     let op = &ops[0];
-    assert_eq!((op.method.as_str(), op.target.as_str()), ("tools/call", "echo"));
+    assert_eq!(
+        (op.method.as_str(), op.target.as_str()),
+        ("tools/call", "echo")
+    );
     assert_eq!(op.jsonrpc_id, None);
     assert!(!op.is_notification);
     assert_eq!(op.http_status, Some(200));
@@ -187,7 +241,10 @@ fn the_export_buffer_drops_its_oldest_and_the_drops_are_reported_once() {
     let now = Instant::from_nanos(10_000_000_000);
     let batch = core.next_export(now, false).unwrap();
     let methods: Vec<&str> = batch.ops.iter().map(|op| op.method.as_str()).collect();
-    assert_eq!(methods, ["notifications/n2", "notifications/n3", "notifications/n4"]);
+    assert_eq!(
+        methods,
+        ["notifications/n2", "notifications/n3", "notifications/n4"]
+    );
     // While one export is in flight no other starts.
     assert!(core.next_export(now, true).is_none());
     assert_eq!(core.export_done(batch, ExportResult::Delivered, now), 2);
@@ -202,7 +259,9 @@ fn failed_exports_back_off_and_keep_the_batch_and_refusals_drop_it() {
         tap.forward(
             StreamId(1),
             C2S,
-            Bytes::from(format!("{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/n{id}\"}}\n")),
+            Bytes::from(format!(
+                "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/n{id}\"}}\n"
+            )),
             at(0),
         );
         tap.close(StreamId(1), EndReason::Complete, at(0));
@@ -218,7 +277,10 @@ fn failed_exports_back_off_and_keep_the_batch_and_refusals_drop_it() {
         assert_eq!(batch.ops.len(), 2);
         assert_eq!(core.export_done(batch, ExportResult::Retry, now), 0);
         assert_eq!(core.buffered(), 3, "a failed batch returns to the buffer");
-        assert!(core.next_export(now, true).is_none(), "even a flush waits for the backoff");
+        assert!(
+            core.next_export(now, true).is_none(),
+            "even a flush waits for the backoff"
+        );
         let next = core.next_export_at().unwrap();
         waits.push(next.saturating_duration_since(now).as_secs());
         now = next;
