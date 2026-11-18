@@ -55,7 +55,7 @@ pub struct IdentityConfig {
     pub public_url: Option<String>,
     /// `auth.session_outage_grace`: how long cached sessions stay valid while Postgres is unreachable.
     pub session_outage_grace: Duration,
-    /// `security.require_https`: refuse sign-in over plain HTTP.
+    /// `security.require_https`: refuse sign-in unless the public URL is HTTPS.
     pub require_https: bool,
     /// Argon2id costs.
     pub hash_cost: HashCost,
@@ -212,6 +212,17 @@ impl Identity {
     /// The organization, or `None` before first-owner setup.
     pub async fn org(&self) -> Result<Option<Org>, AuthError> {
         Ok(self.store.org().get().await?)
+    }
+
+    /// Refuses sign-in over plain HTTP when `security.require_https` is on (contract 11.4).
+    fn https_required(&self) -> Result<(), AuthError> {
+        if self.config.require_https && !self.config.origins.public_is_https() {
+            return Err(AuthError::Forbidden(
+                "sign-in needs HTTPS on this server: open it at its https:// address (server.public_url)"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn now(&self) -> crucible_records::Timestamp {

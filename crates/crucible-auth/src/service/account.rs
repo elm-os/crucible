@@ -62,6 +62,7 @@ impl Identity {
         user_id: UserId,
         method: AuthMethod,
     ) -> Result<NewSession, AuthError> {
+        self.https_required()?;
         let token = Token::new(self.env.rng.as_ref());
         let csrf = Token::new(self.env.rng.as_ref());
         let absolute = self.later(SESSION_ABSOLUTE);
@@ -90,6 +91,7 @@ impl Identity {
         email_text: &str,
         password_text: &str,
     ) -> Result<NewSession, AuthError> {
+        self.https_required()?;
         let Some(org) = self.org().await? else {
             return Err(AuthError::Forbidden(
                 "no owner exists yet; finish the first-run setup at /setup/".to_owned(),
@@ -259,6 +261,7 @@ impl Identity {
         name: &str,
         password_text: &str,
     ) -> Result<NewSession, AuthError> {
+        self.https_required()?;
         let user_id = self
             .create_owner(Some(token), org_name, email_text, name, password_text)
             .await?;
@@ -285,6 +288,7 @@ impl Identity {
         name: &str,
         password_text: &str,
     ) -> Result<NewSession, AuthError> {
+        self.https_required()?;
         let name = display_name("name", name)?;
         password("password", password_text)?;
         if !token::well_formed(token) {

@@ -75,7 +75,9 @@ impl Loaded {
                 "\"<redacted>\"".to_owned()
             } else if setting.key == "postgres.url" {
                 quoted(&without_password(value))
-            } else if NUMBERS.contains(&setting.key) && value.parse::<u64>().is_ok() {
+            } else if (NUMBERS.contains(&setting.key) && value.parse::<u64>().is_ok())
+                || (setting.key == "security.require_https" && value.parse::<bool>().is_ok())
+            {
                 value.clone()
             } else {
                 quoted(value)
@@ -187,9 +189,10 @@ fn read_file_layer(name: &str, text: &str, values: &mut Values, errors: &mut Vec
         let text = match value {
             toml::Value::String(text) => text.clone(),
             toml::Value::Integer(number) => number.to_string(),
+            toml::Value::Boolean(flag) => flag.to_string(),
             _ => {
                 errors.push(format!(
-                    "{name}: `{key}` must be a string or a whole number"
+                    "{name}: `{key}` must be a string, a whole number or true or false"
                 ));
                 return;
             }
@@ -416,6 +419,32 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             None
         }
     };
+    let require_https = match t.text("security.require_https") {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        other => {
+            if let (Some(value), Some((_, source))) =
+                (other, t.values.get("security.require_https"))
+            {
+                t.errors.push(format!(
+                    "`security.require_https` = {} is not true or false ({source})",
+                    quoted(value)
+                ));
+            }
+            None
+        }
+    };
+    if require_https == Some(true)
+        && !t
+            .text("server.public_url")
+            .is_some_and(|url| url.starts_with("https://"))
+    {
+        t.errors.push(
+            "`security.require_https` = true needs `server.public_url` to be an https:// URL; set it, or set \
+             `security.require_https` to false"
+                .to_owned(),
+        );
+    }
     let fail_open_max = t.parsed::<u64>("auth.fail_open_max", "a whole number of seconds");
     let fail_open_ok = t.text("auth.fail_open_max").is_none() || fail_open_max.is_some();
     let session_outage_grace =
@@ -473,6 +502,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             pg_outage_mode: pg_outage_mode?,
             fail_open_max,
             session_outage_grace: session_outage_grace?,
+            require_https: require_https?,
         },
     })
 }
@@ -747,7 +777,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [clickhouse], [postgres], [auth].",
+                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [clickhouse], [postgres], [security], [auth].",
             ]
         );
     }
@@ -792,7 +822,7 @@ directory_of_everything = "x"
         let ConfigErrors(errors) = load(Some("[server]\nlisten = [1, 2]\n"), &[], &[]).unwrap_err();
         assert_eq!(
             errors,
-            ["crucible.toml: `server.listen` must be a string or a whole number"]
+            ["crucible.toml: `server.listen` must be a string, a whole number or true or false"]
         );
     }
 
@@ -916,7 +946,17 @@ directory_of_everything = "x"
                 pg_outage_mode: PgOutageMode::FailClosed,
                 fail_open_max: Some(120),
                 session_outage_grace: 0,
+                require_https: false,
             }
+        );
+        let https = env(&[
+            ("CRUCIBLE_SECURITY_REQUIRE_HTTPS", "true"),
+            ("CRUCIBLE_SERVER_PUBLIC_URL", "http://crucible.internal"),
+        ]);
+        let ConfigErrors(errors) = load(None, &https, &[]).unwrap_err();
+        assert!(
+            errors[0].contains("needs `server.public_url` to be an https://"),
+            "{errors:?}"
         );
         let bad = env(&[
             ("CRUCIBLE_AUTH_PG_OUTAGE_MODE", "sometimes"),
@@ -925,6 +965,7 @@ directory_of_everything = "x"
         ]);
         let ConfigErrors(errors) = load(None, &bad, &[]).unwrap_err();
         assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(!load(None, &[], &[]).unwrap().config.auth.require_https);
         let defaults = load(None, &[], &[]).unwrap().config.auth;
         assert_eq!(defaults.pg_outage_mode, PgOutageMode::FailOpen);
         assert_eq!(defaults.session_outage_grace, 600);
@@ -969,6 +1010,9 @@ password_file = "/run/secrets/clickhouse"  # env CRUCIBLE_CLICKHOUSE_PASSWORD_FI
 [postgres]
 url = "postgres://crucible:<redacted>@postgres:5432/crucible?sslmode=require"  # file
 pool_size = 8  # default
+
+[security]
+require_https = false  # default
 
 [auth]
 pg_outage_mode = "fail_open"  # default

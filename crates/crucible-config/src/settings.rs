@@ -128,6 +128,11 @@ pub const SETTINGS: &[Setting] = &[
         "connections of the main Postgres pool (a reserved pool of 2 is added)",
     ),
     plain(
+        "security.require_https",
+        Some("false"),
+        "refuse sign-in unless server.public_url is an https URL (plain HTTP works by default)",
+    ),
+    plain(
         "auth.pg_outage_mode",
         Some("fail_open"),
         "API keys during a Postgres outage: fail_open keeps known keys working for ingest, fail_closed refuses \

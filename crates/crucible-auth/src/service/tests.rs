@@ -231,6 +231,27 @@ fn sessions_expire_idle_and_absolute_and_survive_an_outage_within_the_grace() {
 }
 
 #[test]
+fn require_https_refuses_sign_in_over_plain_http() {
+    sim(8, async |env, model| {
+        let mut plain = identity(&env, &model, OUTAGE_GRACE);
+        plain.config.require_https = true;
+        let link = plain.issue_setup_token().await.unwrap().unwrap();
+        assert!(matches!(
+            plain
+                .setup(link.token.as_str(), "Acme", "o@example.com", "O", PASSWORD)
+                .await,
+            Err(AuthError::Forbidden(_))
+        ));
+        assert!(matches!(
+            plain.login("o@example.com", PASSWORD).await,
+            Err(AuthError::Forbidden(_))
+        ));
+        // Nothing was created by the refused setup.
+        assert!(plain.setup_required().await.unwrap());
+    });
+}
+
+#[test]
 fn a_zero_grace_fails_closed() {
     sim(3, async |env, model| {
         let identity = identity(&env, &model, Duration::ZERO);

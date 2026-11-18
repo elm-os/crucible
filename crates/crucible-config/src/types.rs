@@ -116,6 +116,8 @@ pub struct Auth {
     pub fail_open_max: Option<u64>,
     /// Seconds that cached sessions stay valid during a Postgres outage.
     pub session_outage_grace: u64,
+    /// `security.require_https`: refuse sign-in unless the public URL is HTTPS.
+    pub require_https: bool,
 }
 
 /// The `[data]` section.
