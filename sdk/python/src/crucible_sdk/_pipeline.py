@@ -38,6 +38,10 @@ BATCH_SIZE = 512
 EXPORT_TIMEOUT = 10.0
 
 SCRUBBER = Scrubber.builtin()
+# Error text of MCP spans is cut before it is scrubbed, which bounds the scrubbing work (contract 3.1 keeps 8 KiB of a
+# status message).
+STATUS_CHARS = 8192
+EVENT_CHARS = 16384
 
 
 @dataclass(frozen=True)
@@ -189,7 +193,7 @@ class Pipeline:
         status, events = span.status, span.events
         if is_mcp:
             if status.description:
-                status = Status(status.status_code, SCRUBBER.text(status.description))
+                status = Status(status.status_code, SCRUBBER.bounded_text(status.description, STATUS_CHARS))
             events = tuple(_scrub_event(event) for event in events)
         return ReadableSpan(
             name=span.name,
@@ -222,7 +226,9 @@ class Pipeline:
 def _scrub_event(event: Event) -> Event:
     if event.name != "exception" or not event.attributes:
         return event
-    attributes = {k: SCRUBBER.text(v) if isinstance(v, str) else v for k, v in event.attributes.items()}
+    attributes = {
+        k: SCRUBBER.bounded_text(v, EVENT_CHARS) if isinstance(v, str) else v for k, v in event.attributes.items()
+    }
     return Event(event.name, attributes, event.timestamp)
 
 

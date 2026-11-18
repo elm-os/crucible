@@ -1,104 +1,89 @@
 {
-  "schema": "crucible.scrub-rules/v1",
-  "comment": "Content scrubbing rules (contract 9.10). Patterns use the RE2 syntax subset, are matched with ASCII classes, and keep every repetition bounded so a backtracking matcher stays linear. Rules apply in order. key_names are compared after lowercasing and removing '-', '_' and '.'; the value under a matching JSON key is replaced whole.",
-  "patterns": [
+  "schema": "crucible.conformance.scrub/v1",
+  "contract": "9.10",
+  "semantics": [
+    "Rules run in file order over the captured text (arguments and results after the size cap, and error messages). Each rule replaces every non-overlapping match, leftmost first, with its replacement, and the next rule runs on the result.",
+    "A rule with a validator replaces a match only when the validator accepts it. luhn: the match's digits, separators removed, pass the Luhn checksum.",
+    "Patterns use a subset that matches identically and in linear time in RE2, Go regexp, the Rust regex crate, ECMAScript and Python re: literal characters, escaped punctuation, bracket classes of explicit ASCII characters and ranges, (?:...) groups, alternation, and the quantifiers ?, *, +, {n}, {n,} and {n,m} with counts up to 1000. Not allowed: ., \\d, \\w, \\s, \\b and their negations, anchors, inline flags, lookaround, backreferences, named or capturing groups, POSIX and Unicode classes, lazy or possessive quantifiers, and an unbounded quantifier on a group that itself holds an unbounded quantifier.",
+    "positive inputs are changed by the rule alone; negative inputs are left unchanged by it. Each example is the output of the whole rule list."
+  ],
+  "rules": [
     {
       "name": "pem",
-      "pattern": "-----BEGIN [A-Z0-9 ]{1,64}-----[A-Za-z0-9+/=\\t\\n\\r]{0,65536}(?:-----END [A-Z0-9 ]{1,64}-----)?",
-      "replacement": "[REDACTED:pem]"
+      "pattern": "-----BEGIN [A-Z0-9 ]+-----[^-]*-----END [A-Z0-9 ]+-----",
+      "replacement": "[redacted:pem]",
+      "positive": [
+        "-----BEGIN PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END PRIVATE KEY-----",
+        "cert: -----BEGIN CERTIFICATE-----\\nMIIBszCCAVmgAwIBAgIUJ0cY\\n-----END CERTIFICATE-----"
+      ],
+      "negative": ["-----BEGIN PRIVATE KEY----- cut off here", "a ----- divider -----"]
     },
     {
       "name": "jwt",
-      "pattern": "eyJ[A-Za-z0-9_-]{2,8192}\\.eyJ[A-Za-z0-9_-]{2,16384}\\.[A-Za-z0-9_-]{0,8192}",
-      "replacement": "[REDACTED:jwt]"
+      "pattern": "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*",
+      "replacement": "[redacted:jwt]",
+      "positive": ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl", "id_token=eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0."],
+      "negative": ["eyJhbGciOiJIUzI1NiJ9", "the eye.of.storm"]
     },
     {
-      "name": "authorization",
-      "pattern": "(?i)\\b(?:bearer|basic)[\\t ]{1,8}[A-Za-z0-9._~+/=-]{8,8192}",
-      "replacement": "[REDACTED:authorization]"
-    },
-    {
-      "name": "crucible_key",
-      "pattern": "\\b(?:csk|cpk)_[0-9A-Za-z]{43}\\b",
-      "replacement": "[REDACTED:key]"
+      "name": "bearer",
+      "pattern": "[Bb][Ee][Aa][Rr][Ee][Rr][ \t]+[A-Za-z0-9._~+/-]{16,}=*",
+      "replacement": "[redacted:bearer]",
+      "positive": ["Authorization: Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0", "bearer abcdefghijklmnop.qrstuv~wxyz+/=="],
+      "negative": ["the bearer of bad news", "Bearer short"]
     },
     {
       "name": "secret_key",
-      "pattern": "\\b(?:sk|rk|pk)[-_](?:[A-Za-z0-9]{2,16}[-_]){0,2}[A-Za-z0-9]{20,256}\\b",
-      "replacement": "[REDACTED:key]"
-    },
-    {
-      "name": "access_key",
-      "pattern": "\\b(?:AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,250}|gh[pousr]_[A-Za-z0-9]{30,250})\\b",
-      "replacement": "[REDACTED:key]"
-    },
-    {
-      "name": "email",
-      "pattern": "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){1,8}",
-      "replacement": "[REDACTED:email]"
-    },
-    {
-      "name": "ipv6",
-      "pattern": "\\b(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})\\b",
-      "replacement": "[REDACTED:ip]"
-    },
-    {
-      "name": "ipv4",
-      "pattern": "\\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\b",
-      "replacement": "[REDACTED:ip]"
+      "pattern": "csk_[0-9A-Za-z]{8,}",
+      "replacement": "[redacted:secret_key]",
+      "positive": ["csk_conformance00000000000000000000000000000000", "key=csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo"],
+      "negative": ["cpk_conformance00000000000000000000000000000000", "csk_short"]
     },
     {
       "name": "card",
-      "pattern": "\\b(?:[0-9]{13,19}|[0-9]{4}(?:[ -][0-9]{4}){2,3}|[0-9]{4}[ -][0-9]{6}[ -][0-9]{5})\\b",
-      "check": "luhn",
-      "replacement": "[REDACTED:card]"
+      "pattern": "[0-9](?:[ -]?[0-9]){12,18}",
+      "validator": "luhn",
+      "replacement": "[redacted:card]",
+      "positive": ["4111 1111 1111 1111", "pay with 5500-0000-0000-0004 today", "378282246310005"],
+      "negative": ["4111 1111 1111 1112", "order 1042"]
+    },
+    {
+      "name": "email",
+      "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,63}",
+      "replacement": "[redacted:email]",
+      "positive": ["ada.lovelace@example.com", "write to ops+alerts@mail.example.co.uk"],
+      "negative": ["user at example dot com", "@handle"]
+    },
+    {
+      "name": "ipv6",
+      "pattern": "(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){1,5}",
+      "replacement": "[redacted:ip]",
+      "positive": ["2001:db8::8a2e:370:7334", "peer fe80:0:0:0:200:f8ff:fe21:67cf"],
+      "negative": ["12:30:45", "std::vec::Vec"]
+    },
+    {
+      "name": "ipv4",
+      "pattern": "(?:[0-9]{1,3}\\.){3}[0-9]{1,3}",
+      "replacement": "[redacted:ip]",
+      "positive": ["203.0.113.42", "client 10.0.0.1 connected"],
+      "negative": ["version 1.2.3", "2026-11-18"]
     },
     {
       "name": "phone",
-      "pattern": "(?:\\+[0-9]{1,3}(?:[ .-]?[0-9]{2,4}){2,4}|(?:\\([0-9]{2,4}\\)[ .-]?|\\b[0-9]{2,4}[ .-])[0-9]{3,4}[ .-][0-9]{3,4})\\b",
-      "replacement": "[REDACTED:phone]"
+      "pattern": "\\+[0-9]{1,3}(?:[ .-][0-9]{2,4}){2,4}|\\(?[0-9]{3}\\)?[ .-][0-9]{3}[ .-][0-9]{4}",
+      "replacement": "[redacted:phone]",
+      "positive": ["+1 415 555 0134", "call (415) 555-0134", "+44 20 7946 0958"],
+      "negative": ["2026-11-18", "order 1042"]
     }
   ],
-  "key_names": [
-    "accesstoken",
-    "apikey",
-    "apitoken",
-    "authorization",
-    "authtoken",
-    "clientsecret",
-    "cookie",
-    "idtoken",
-    "passphrase",
-    "passwd",
-    "password",
-    "privatekey",
-    "proxyauthorization",
-    "pwd",
-    "refreshtoken",
-    "requeststate",
-    "secret",
-    "secretkey",
-    "sessiontoken",
-    "setcookie",
-    "token",
-    "xapikey"
-  ],
-  "key_replacement": "[REDACTED]",
-  "vectors": [
-    {"input": "mail jane.doe@example.com now", "output": "mail [REDACTED:email] now"},
-    {"input": "call +1 415 555 0100 today", "output": "call [REDACTED:phone] today"},
-    {"input": "call (415) 555-0100 today", "output": "call [REDACTED:phone] today"},
-    {"input": "card 4111 1111 1111 1111 ok", "output": "card [REDACTED:card] ok"},
-    {"input": "card 4111111111111111 ok", "output": "card [REDACTED:card] ok"},
-    {"input": "not a card 4111111111111112", "output": "not a card 4111111111111112"},
-    {"input": "Authorization: Bearer abc.def-ghi_jkl", "output": "Authorization: [REDACTED:authorization]"},
-    {"input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl end", "output": "token [REDACTED:jwt] end"},
-    {"input": "key csk_conformance00000000000000000000000000000000 end", "output": "key [REDACTED:key] end"},
-    {"input": "key sk-proj-AbCdEfGhIjKlMnOpQrStUvWx end", "output": "key [REDACTED:key] end"},
-    {"input": "from 203.0.113.42 port 8080", "output": "from [REDACTED:ip] port 8080"},
-    {"input": "from 2001:db8::8a2e:370:7334 now", "output": "from [REDACTED:ip] now"},
-    {"input": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7\n-----END PRIVATE KEY-----", "output": "[REDACTED:pem]"},
-    {"input": "at 2026-11-18 10:30:45 order 1234567 shipped", "output": "at 2026-11-18 10:30:45 order 1234567 shipped"},
-    {"input": "std::vector and v1.2", "output": "std::vector and v1.2"}
+  "examples": [
+    {
+      "input": "Reach ada.lovelace@example.com or +1 415 555 0134; card 4111 1111 1111 1111; header Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0; token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl; key csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo; host 203.0.113.42 and 2001:db8::8a2e:370:7334; -----BEGIN PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END PRIVATE KEY-----",
+      "output": "Reach [redacted:email] or [redacted:phone]; card [redacted:card]; header [redacted:bearer]; token [redacted:jwt]; key [redacted:secret_key]; host [redacted:ip] and [redacted:ip]; [redacted:pem]"
+    },
+    {
+      "input": "Order 1042 shipped on 2026-11-18 at 12:30:45 by build 1.2.3, card 4111 1111 1111 1112",
+      "output": "Order 1042 shipped on 2026-11-18 at 12:30:45 by build 1.2.3, card 4111 1111 1111 1112"
+    }
   ]
 }

@@ -1,7 +1,7 @@
 """Content scrubbing with the shared rules (contract 9.10).
 
-The rules are data (`scrub_rules.json`). Text rules are regular expressions in the RE2 syntax subset; `key_names`
-replace the whole value under a matching JSON object key. Captured content is encoded under a byte budget, so the
+`scrub_rules.json` is a copy of the suite's `conformance/scrub-rules.json`: regular expressions in a subset that every
+SDK's engine matches identically, applied in file order. Captured content is encoded under a byte budget, so the
 scrubbing work is bounded by the cap however large the input is.
 """
 
@@ -14,18 +14,18 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
-# Constructs outside the RE2 subset. A backtracking matcher can take exponential time on them, so a rule that uses
-# one is refused at load.
-_NON_RE2 = re.compile(r"\(\?[=!>]|\(\?<[=!]|\(\?P=|\\[1-9]|[*+?}]\+")
+SCHEMA = "crucible.conformance.scrub/v1"
 
-# Keys whose values are never emitted, whatever the rules file says (contract 3.5).
-_ALWAYS_DENIED_KEYS = frozenset({"authorization", "proxyauthorization", "cookie", "setcookie", "requeststate"})
+# Values under these JSON object keys are never emitted (contract 3.5); keys compare lowercased, without '-', '_'
+# and '.'.
+_DENIED_KEYS = frozenset({"authorization", "proxyauthorization", "cookie", "setcookie", "requeststate"})
+_REDACTED = "[redacted]"
 
 # Nesting deeper than this is cut, like the byte cap.
 _MAX_DEPTH = 64
-# A string is cut this many characters past the remaining budget before it is scrubbed, so a secret that straddles
-# the cap is still matched whole.
-_MARGIN = 1024
+# A string is cut this many characters past what is still needed before it is scrubbed, so a secret that straddles
+# the cut (a PEM key, which must end in its END line to match) is still matched whole.
+_MARGIN = 4096
 
 
 def _normalize_key(key: str) -> str:
@@ -40,6 +40,68 @@ def _luhn(text: str) -> bool:
             digit = digit * 2 - 9 if digit > 4 else digit * 2
         total += digit
     return total % 10 == 0
+
+
+def outside_subset(pattern: str) -> str | None:
+    """What in `pattern` the shared subset does not allow, or None.
+
+    The subset (from the rules file): literals, escaped punctuation, bracket classes, `(?:...)` groups, alternation
+    and greedy quantifiers; no `.`, class escapes, anchors, inline flags, lookaround, backreferences, other groups,
+    lazy or possessive quantifiers, or an unbounded quantifier on a group that holds one.
+    """
+    groups: list[bool] = []  # per open group: whether it holds an unbounded quantifier
+    closed_unbounded = False  # the group that just closed held one
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            escaped = pattern[i + 1 : i + 2]
+            if escaped.isalnum():
+                return f"the escape \\{escaped}"
+            i += 2
+        elif c == "[":
+            end = pattern.find("]", i + 2 if pattern[i + 1 : i + 2] in "^]" else i + 1)
+            if end < 0:
+                return "an unclosed bracket class"
+            body = pattern[i + 1 : end]
+            if re.search(r"\\[A-Za-z0-9]|\[:", body):
+                return "a class escape or POSIX class inside brackets"
+            i = end + 1
+        elif c == ".":
+            return "'.'"
+        elif c in "^$":
+            return f"the anchor {c!r}"
+        elif c == "(":
+            if pattern[i + 1 : i + 3] != "?:":
+                return "a group other than (?:...)"
+            groups.append(False)
+            i += 3
+            continue
+        elif c == ")":
+            if not groups:
+                return "an unbalanced ')'"
+            closed_unbounded = groups.pop()
+            if closed_unbounded and groups:
+                groups[-1] = True
+            i += 1
+            continue
+        elif c in "*+?{":
+            end = pattern.find("}", i) if c == "{" else i
+            if end < 0:
+                return "an unclosed '{'"
+            unbounded = c in "*+" or (c == "{" and pattern[end - 1] == ",")
+            if pattern[end + 1 : end + 2] in ("?", "+"):
+                return "a lazy or possessive quantifier"
+            if unbounded and pattern[i - 1 : i] == ")" and closed_unbounded:
+                return "an unbounded quantifier on a group that holds one"
+            if unbounded and groups:
+                groups[-1] = True
+            i = end + 1
+            continue
+        else:
+            i += 1
+        closed_unbounded = False
+    return None
 
 
 @dataclass(frozen=True)
@@ -59,23 +121,19 @@ class Scrubber:
     """Applies one rules document to text and to JSON values."""
 
     def __init__(self, document: Mapping[str, Any]) -> None:
-        if document.get("schema") != "crucible.scrub-rules/v1":
-            raise ValueError("scrub rules: 'schema' must be 'crucible.scrub-rules/v1'")
+        if document.get("schema") != SCHEMA:
+            raise ValueError(f"scrub rules: 'schema' must be {SCHEMA!r}")
         rules: list[_Rule] = []
-        for entry in document.get("patterns", ()):
+        for entry in document.get("rules", ()):
             name, pattern = str(entry["name"]), str(entry["pattern"])
-            if _NON_RE2.search(pattern):
-                raise ValueError(
-                    f"scrub rule {name!r}: lookaround, backreferences and possessive quantifiers are not allowed"
-                )
-            check = entry.get("check")
-            if check not in (None, "luhn"):
-                raise ValueError(f"scrub rule {name!r}: unknown check {check!r}; use 'luhn' or leave it out")
-            rules.append(_Rule(name, re.compile(pattern, re.ASCII), str(entry["replacement"]), check == "luhn"))
-        self._rules = tuple(rules)
-        names: Sequence[str] = document.get("key_names", ())
-        self._denied = _ALWAYS_DENIED_KEYS | {_normalize_key(str(n)) for n in names}
-        self.key_replacement = str(document.get("key_replacement", "[REDACTED]"))
+            problem = outside_subset(pattern)
+            if problem is not None:
+                raise ValueError(f"scrub rule {name!r}: {problem} is outside the shared pattern subset")
+            validator = entry.get("validator")
+            if validator not in (None, "luhn"):
+                raise ValueError(f"scrub rule {name!r}: unknown validator {validator!r}; use 'luhn' or leave it out")
+            rules.append(_Rule(name, re.compile(pattern), str(entry["replacement"]), validator == "luhn"))
+        self.rules = tuple(rules)
 
     @classmethod
     def builtin(cls) -> Scrubber:
@@ -85,13 +143,20 @@ class Scrubber:
 
     def text(self, value: str) -> str:
         """`value` with every rule applied in order."""
-        for rule in self._rules:
+        for rule in self.rules:
             value = rule.apply(value)
         return value
 
-    def is_denied_key(self, key: str) -> bool:
+    def bounded_text(self, value: str, max_chars: int) -> str:
+        """`value` cut to `max_chars` characters and scrubbed, matching across the cut first."""
+        if len(value) <= max_chars:
+            return self.text(value)
+        return self.text(value[: max_chars + _MARGIN])[:max_chars]
+
+    @staticmethod
+    def is_denied_key(key: str) -> bool:
         """Whether the value under this JSON object key is replaced whole."""
-        return _normalize_key(key) in self._denied
+        return _normalize_key(key) in _DENIED_KEYS
 
     def capped_json(self, value: object, max_bytes: int) -> tuple[str, bool]:
         """`value` as scrubbed JSON text of at most `max_bytes` UTF-8 bytes, and whether it was cut.
@@ -154,8 +219,8 @@ class _CappedJson:
                 return False
             if not self._emit(json.dumps(self._scrubber.text(name), ensure_ascii=False) + ":"):
                 return False
-            if self._scrubber.is_denied_key(name):
-                if not self._emit(json.dumps(self._scrubber.key_replacement)):
+            if Scrubber.is_denied_key(name):
+                if not self._emit(json.dumps(_REDACTED)):
                     return False
             elif not self.value(item, depth + 1):
                 return False

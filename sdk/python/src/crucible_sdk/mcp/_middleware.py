@@ -313,7 +313,7 @@ class CrucibleMiddleware:
         value = arguments.get(name)
         if not isinstance(value, str) or not value:
             return {}
-        return {_keys.HANDLE_ID: _cut(_pipeline.SCRUBBER.text(value), HANDLE_ID_BYTES)}
+        return {_keys.HANDLE_ID: _cut(_pipeline.SCRUBBER.bounded_text(value, HANDLE_ID_BYTES), HANDLE_ID_BYTES)}
 
     def _capture_for(self, tool: str, span: Span) -> Capture | None:
         if tool not in self._capture_by_tool:

@@ -162,12 +162,14 @@ anything is copied. The value is encoded as JSON under a byte cap (16 KiB per fi
 is encoded, so the work is bounded by the cap however large the value is. A cut value is marked
 `crucible.mcp.content.truncation = cap_exceeded`. Only a result's content is captured, never its envelope.
 
-The rules are data, in `crucible_sdk/scrub_rules.json`, with test vectors. They replace email addresses, phone
-numbers, card numbers (Luhn checked), bearer and basic credentials, JWTs, Crucible and other API keys, IPv4 and IPv6
-addresses and PEM blocks, and the value under any key named like `password`, `token`, `api_key`, `authorization`,
-`cookie` or `requestState`. The patterns use the RE2 syntax subset and bounded repetition, so a backtracking matcher
-stays linear on them; a test runs every rule over adversarial 16 KiB inputs. Error messages and exception events of
-MCP spans are scrubbed with the same rules before export.
+The rules are data: `crucible_sdk/scrub_rules.json` is a copy of the SDK conformance suite's shared rules, with
+their examples. They replace PEM blocks, JWTs, bearer tokens, Crucible secret keys, card numbers (Luhn checked),
+email addresses, IPv6 and IPv4 addresses and phone numbers, in that order. In captured JSON the value under an
+`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` or `requestState` key is replaced whole. The loader
+refuses any pattern outside the shared subset (no lookaround, backreferences, anchors, class escapes or nested
+unbounded repetition). One shared rule, the email local part, is unbounded: in Python's backtracking matcher it costs
+about 0.15 s on a 16 KiB run of letters and digits with no `@`, which the capture cap bounds. Error messages and
+exception events of MCP spans are cut (8 KiB and 16 KiB) and scrubbed with the same rules before export.
 
 ## Instrument an MCP client
 

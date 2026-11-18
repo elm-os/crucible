@@ -152,8 +152,8 @@ async def test_secret_content_is_captured_scrubbed(sdk: Collector, mode: str) ->
     assert a["crucible.mcp.content.captured"] is True
     assert a["crucible.mcp.content.sample_rate"] == 1.0
     assert "crucible.mcp.content.truncation" not in a
-    assert "[REDACTED:email]" in a["gen_ai.tool.call.arguments"]
-    assert "[REDACTED:card]" in a["gen_ai.tool.call.result"]
+    assert "[redacted:email]" in a["gen_ai.tool.call.arguments"]
+    assert "[redacted:card]" in a["gen_ai.tool.call.result"]
     raw = sdk.raw()
     for planted in (b"jane.doe@example.com", b"4111 1111 1111 1111", SECRET_KEY.encode()):
         assert planted not in raw
@@ -240,7 +240,7 @@ async def test_an_unhandled_exception_is_internal_and_its_text_is_scrubbed(sdk: 
     [call] = mcp_spans(sdk, "tools/call")
     assert call.attributes["crucible.mcp.error.class"] == "internal"
     assert call.attributes["error.type"] == "RuntimeError"
-    assert "[REDACTED:email]" in call.status_message
+    assert "[redacted:email]" in call.status_message
     assert any(name == "exception" for name, _ in call.events)
     raw = sdk.raw()
     assert b"jane.doe@example.com" not in raw
