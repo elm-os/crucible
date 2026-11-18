@@ -1,0 +1,1 @@
+SELECT * FROM values('fixed_string_8 FixedString(8)', unhex('0000000000000000'), unhex('ffffffffffffffff'), unhex('0011223344556677'), unhex('6162636465666768'), unhex('0d0a0d0a0d0a0d0a'), unhex('0102030405060708'), unhex('8000000000000001'), unhex('a3c1f0e92b7d4e58')) FORMAT Native

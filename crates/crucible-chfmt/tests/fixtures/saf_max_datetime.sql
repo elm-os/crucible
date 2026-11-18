@@ -1,0 +1,1 @@
+SELECT * FROM values('saf_max_datetime SimpleAggregateFunction(max, DateTime(\'UTC\'))', 0, 1, 951827696, 1794907800, 2147483647, 2147483648, 4294967294, 4294967295) FORMAT Native

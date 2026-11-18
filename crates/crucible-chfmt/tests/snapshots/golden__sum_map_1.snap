@@ -1,0 +1,6 @@
+---
+source: crates/crucible-chfmt/tests/golden.rs
+expression: "rollup_block(&first, Compression::Lz4)"
+extension: lz4
+snapshot_kind: binary
+---
