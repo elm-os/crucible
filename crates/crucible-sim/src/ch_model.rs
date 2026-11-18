@@ -1,4 +1,5 @@
-//! The insert, deduplication and probe side of the simulated ClickHouse (contract section 2.6, `ChModel`).
+//! The simulated ClickHouse behind `TelemetryStore` (contract section 2.6, `ChModel`): inserts, deduplication
+//! and the existence probe here, the plan interpreter, merges, deletes and partition drops in `ch_read.rs`.
 //!
 //! - Tables are the production `TableDef`s of `crucible-schema`. A block is decoded from its `EncodedBlock` and
 //!   checked against its table: column names and header types, at least one row, one partition, the batch
@@ -16,8 +17,12 @@
 //!   concurrency rejections, an overload that sheds inserts after a timeout, a hang, an outage that lasts
 //!   minutes, and poison pairs.
 //!
-//! The model may be stricter than the real system and is never more permissive. The plan interpreter, merges,
-//! deletes and partition drops join with the read-side simulation; until then those methods answer `Internal`.
+//! - Reads and maintenance calls go through the store's own view of the landed parts (`ch_read.rs`). The landed
+//!   parts themselves stay as an append-only ledger: [`ChModel::parts`], [`ChModel::digest`] and the checks of
+//!   the write-side oracles read it, whatever merges, deletes and drops did to the view. During an outage a
+//!   read or a maintenance call answers `Unavailable`; `read_error_ppm` makes single calls fail the same way.
+//!
+//! The model may be stricter than the real system and is never more permissive.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -33,12 +38,16 @@ use crucible_env::{
     Rng, RowStream, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
     TelemetryStore,
 };
-use crucible_plan::{BatchProbe, DeletePlan, QueryPlan};
+use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, RowBlock};
 use crucible_records::{BatchToken, PartitionId, ProjectId, TableId, Timestamp, Uuid};
 use crucible_schema::{
     DEDUP_WINDOW, DEDUP_WINDOW_SECONDS, Granularity, MigrationStep, PROJECT_ID, TableDef,
     TableKind, Ty, route, table,
 };
+use futures::StreamExt;
+
+pub use crate::ch_read::Answer;
+use crate::ch_read::{ReadSide, interpret};
 
 /// The seeded faults of the store. Rates are parts per million of the calls they apply to.
 #[derive(Clone, Debug, Default)]
@@ -76,6 +85,8 @@ pub struct ChFaults {
     pub latency_micros: (u64, u64),
     /// How long an insert in flight takes to land, drawn uniformly from this range.
     pub late_apply_micros: (u64, u64),
+    /// A read or a maintenance call fails with `Unavailable` and changes nothing.
+    pub read_error_ppm: u32,
 }
 
 /// The batch identity a block carries in its rows.
@@ -145,6 +156,12 @@ pub struct ChStats {
     pub probes_present: u64,
     /// Deduplication log entries that expired by the fault.
     pub expired: u64,
+    /// Plans executed.
+    pub reads: u64,
+    /// Reads and maintenance calls that failed with `Unavailable`.
+    pub read_errors: u64,
+    /// Merges of stored parts.
+    pub merges: u64,
 }
 
 /// One call the store received, for directed tests.
@@ -199,6 +216,8 @@ struct DedupEntry {
 struct TableState {
     parts: Vec<Part>,
     dedup: VecDeque<DedupEntry>,
+    /// Per dropped partition, how many parts had landed when it was last dropped: those are gone.
+    dropped: BTreeMap<PartitionId, usize>,
 }
 
 #[derive(Debug)]
@@ -229,6 +248,8 @@ struct State {
     script: Option<Script>,
     /// The calls received since a script was set.
     calls: Vec<Call>,
+    /// The store's view of the landed parts: what reads and maintenance calls work on.
+    read: ReadSide,
 }
 
 /// The simulated store. Clones share one state, which outlives every simulated host.
@@ -245,6 +266,9 @@ pub struct ChModel {
     latency_rng: Arc<dyn Rng>,
     expire_rng: Arc<dyn Rng>,
     probe_rng: Arc<dyn Rng>,
+    /// Read faults, read latency and mutation delays: its own stream, so reads never shift an insert's draws.
+    read_rng: Arc<dyn Rng>,
+    merge_rng: Arc<dyn Rng>,
 }
 
 fn ppm(rng: &dyn Rng, rate: u32) -> bool {
@@ -448,9 +472,12 @@ impl State {
             self.stats.deduplicated += 1;
             return;
         }
+        // A part that a partition drop removed is gone: a block that lands after the drop is the only copy.
+        let gone = state.dropped.get(&token.partition()).copied().unwrap_or(0);
         let twice = state
             .parts
             .iter()
+            .skip(gone)
             .any(|p| p.partition == token.partition() && p.id == id);
         state.parts.push(Part {
             partition: token.partition(),
@@ -500,6 +527,7 @@ impl ChModel {
                 stats: ChStats::default(),
                 script: None,
                 calls: Vec::new(),
+                read: ReadSide::default(),
             })),
             origin: tokio::time::Instant::now(),
             flavour,
@@ -510,6 +538,8 @@ impl ChModel {
             latency_rng: rng.fork("ch/latency"),
             expire_rng: rng.fork("ch/expire"),
             probe_rng: rng.fork("ch/probe"),
+            read_rng: rng.fork("ch/read"),
+            merge_rng: rng.fork("ch/merge"),
         }
     }
 
@@ -637,7 +667,11 @@ impl ChModel {
 
     /// The counters.
     pub fn stats(&self) -> ChStats {
-        self.settled().stats
+        let state = self.settled();
+        ChStats {
+            merges: state.read.merges,
+            ..state.stats
+        }
     }
 
     /// Whether the store ever accepted a block of the pair, and its last answer about the pair.
@@ -703,6 +737,93 @@ impl ChModel {
     }
 }
 
+/// The longest a mutation stays pending, in microseconds.
+const MUTATION_MICROS: u64 = 50_000;
+
+impl ChModel {
+    /// Brings the store's view up to the landed parts; merges follow on the seeded schedule.
+    fn sync(&self, state: &mut State) {
+        let State {
+            tables,
+            read,
+            violations,
+            ..
+        } = state;
+        for (id, landed) in tables.iter() {
+            let unreadable = read.sync(*id, &landed.parts, self.merge_rng.as_ref());
+            if let Some(what) = unreadable
+                && violations.len() < 16
+            {
+                violations.push(what);
+            }
+        }
+    }
+
+    /// Whether this read or maintenance call fails, and the latency of its answer.
+    fn read_fault(&self, state: &mut State) -> (Option<String>, u64) {
+        let rng = self.read_rng.as_ref();
+        let latency = between(rng, state.faults.latency_micros);
+        let failed = if self.now() < state.outage_until {
+            Some("outage")
+        } else if ppm(rng, state.faults.read_error_ppm) {
+            Some("no answer")
+        } else {
+            None
+        };
+        if failed.is_some() {
+            state.stats.read_errors += 1;
+        }
+        (failed.map(str::to_owned), latency)
+    }
+
+    /// One maintenance call: it fails as a read does, and otherwise runs `change` on the synced view with the
+    /// model time at which a mutation it starts is done.
+    async fn maintain<T>(
+        &self,
+        change: impl FnOnce(&mut State, u64) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let (result, latency) = {
+            let mut state = self.settled();
+            let (failed, latency) = self.read_fault(&mut state);
+            let result = match failed {
+                Some(reason) => Err(StoreError::Unavailable(reason)),
+                None => {
+                    self.sync(&mut state);
+                    let done_at = self
+                        .now()
+                        .saturating_add(between(self.read_rng.as_ref(), (0, MUTATION_MICROS)));
+                    change(&mut state, done_at)
+                }
+            };
+            (result, latency)
+        };
+        tokio::time::sleep(Duration::from_micros(latency)).await;
+        result
+    }
+
+    /// Runs a plan against what the store holds now, without faults and without latency. The answer keeps
+    /// the rows that tie on the plan's order apart from those whose order is defined, which is what a
+    /// comparison with another store needs.
+    pub fn read(&self, plan: &QueryPlan) -> Result<Answer, QueryError> {
+        let mut state = self.settled();
+        self.sync(&mut state);
+        interpret(&state.read, plan)
+    }
+
+    /// How often, per million, a merge follows newly landed parts (300,000 unless set; 0 for never).
+    pub fn set_merge_ppm(&self, ppm: u32) {
+        self.settled().read.merge_ppm = ppm;
+    }
+
+    /// Merges every partition of every table down to one part, as `OPTIMIZE ... FINAL` would.
+    pub fn merge_all(&self) {
+        let mut state = self.settled();
+        self.sync(&mut state);
+        let now = self.now();
+        state.read.merge_all(now);
+    }
+}
+
 /// What the store does with one insert.
 enum Outcome {
     Ack,
@@ -718,12 +839,6 @@ fn unknown(message: &str) -> InsertError {
         code: None,
         message: message.to_owned(),
     }
-}
-
-fn internal<T>() -> Result<T, StoreError> {
-    Err(StoreError::Internal(
-        "the store model has no read or maintenance side yet".to_owned(),
-    ))
 }
 
 #[async_trait]
@@ -877,9 +992,28 @@ impl TelemetryStore for ChModel {
         reply
     }
 
-    async fn execute(&self, _plan: QueryPlan) -> Result<RowStream, QueryError> {
-        Err(QueryError::Internal(
-            "the store model has no plan interpreter yet".to_owned(),
+    async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        let (result, latency, query_id) = {
+            let mut state = self.settled();
+            state.stats.reads += 1;
+            let (failed, latency) = self.read_fault(&mut state);
+            let mut id = [0u8; 16];
+            self.read_rng.fill_bytes(&mut id);
+            let result = match failed {
+                Some(reason) => Err(QueryError::Unavailable(reason)),
+                None => {
+                    self.sync(&mut state);
+                    interpret(&state.read, &plan).map(Answer::into_rows)
+                }
+            };
+            (result, latency, Uuid::from_bytes(id))
+        };
+        // The answer is the store's state when the statement started; it arrives after the latency.
+        tokio::time::sleep(Duration::from_micros(latency)).await;
+        let blocks = RowBlock::split(result?);
+        Ok(RowStream::new(
+            query_id,
+            futures::stream::iter(blocks).map(Ok),
         ))
     }
 
@@ -903,23 +1037,40 @@ impl TelemetryStore for ChModel {
                 };
                 // The scan a server runs: the rows of plain tables, the marker rows of aggregating ones.
                 let aggregating = table(probe.table()).kind == TableKind::Aggregating;
-                let present = state.tables.get(&probe.table()).is_some_and(|t| {
-                    t.parts
-                        .iter()
-                        .filter(|p| p.partition == probe.partition())
-                        .any(|p| {
-                            (0..p.block.rows).any(|row| {
-                                if aggregating {
-                                    uuid_at(&p.block, PROJECT_ID, row) == Some([0; 16])
-                                        && uuid_at(&p.block, "marker_epoch", row) == Some(id.epoch)
-                                        && u64_at(&p.block, "marker_batch_seq", row)
-                                            == Some(id.batch_seq)
-                                } else {
-                                    uuid_at(&p.block, "wal_epoch", row) == Some(id.epoch)
-                                        && u64_at(&p.block, "batch_seq", row) == Some(id.batch_seq)
-                                }
+                // Once a delete or a partition drop changed the table, the scan runs over what is left.
+                let touched = state.read.touched(probe.table());
+                if touched {
+                    self.sync(&mut state);
+                }
+                let left = touched.then(|| {
+                    state.read.probe(
+                        probe.table(),
+                        probe.partition(),
+                        probe.epoch().uuid(),
+                        id.batch_seq,
+                    )
+                });
+                let present = left.unwrap_or_else(|| {
+                    state.tables.get(&probe.table()).is_some_and(|t| {
+                        t.parts
+                            .iter()
+                            .filter(|p| p.partition == probe.partition())
+                            .any(|p| {
+                                (0..p.block.rows).any(|row| {
+                                    if aggregating {
+                                        uuid_at(&p.block, PROJECT_ID, row) == Some([0; 16])
+                                            && uuid_at(&p.block, "marker_epoch", row)
+                                                == Some(id.epoch)
+                                            && u64_at(&p.block, "marker_batch_seq", row)
+                                                == Some(id.batch_seq)
+                                    } else {
+                                        uuid_at(&p.block, "wal_epoch", row) == Some(id.epoch)
+                                            && u64_at(&p.block, "batch_seq", row)
+                                                == Some(id.batch_seq)
+                                    }
+                                })
                             })
-                        })
+                    })
                 });
                 let key = (probe.table(), probe.partition(), id.batch_seq);
                 if state.script.is_some() {
@@ -939,48 +1090,80 @@ impl TelemetryStore for ChModel {
         reply
     }
 
-    async fn delete(&self, _plan: DeletePlan) -> Result<MutationId, StoreError> {
-        internal()
+    async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
+        self.maintain(|state, done_at| {
+            state
+                .read
+                .delete(&plan, done_at)
+                .map_err(|error| StoreError::Internal(error.to_string()))
+        })
+        .await
     }
 
     async fn drop_partition(
         &self,
-        _table: TableId,
-        _partition: PartitionId,
+        table: TableId,
+        partition: PartitionId,
     ) -> Result<(), StoreError> {
-        internal()
+        self.maintain(|state, _| {
+            state.read.drop_partition(table, partition);
+            // The parts of the partition that landed so far are gone, and the server forgets the
+            // deduplication entries of the parts it drops.
+            if let Some(landed) = state.tables.get_mut(&table) {
+                landed.dropped.insert(partition, landed.parts.len());
+                landed.dedup.retain(|entry| {
+                    !BatchToken::parse(&entry.token)
+                        .is_ok_and(|token| token.partition() == partition)
+                });
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn apply_deleted_mask(
         &self,
-        _table: TableId,
-        _partition: PartitionId,
+        table: TableId,
+        partition: PartitionId,
     ) -> Result<MutationId, StoreError> {
-        internal()
+        self.maintain(|state, done_at| Ok(state.read.apply_deleted_mask(table, partition, done_at)))
+            .await
     }
 
-    async fn mutation_status(&self, _id: &MutationId) -> Result<MutationStatus, StoreError> {
-        internal()
+    async fn mutation_status(&self, id: &MutationId) -> Result<MutationStatus, StoreError> {
+        let now = self.now();
+        self.maintain(|state, _| Ok(state.read.mutation_status(id, now)))
+            .await
     }
 
     async fn partition_projects(
         &self,
-        _table: TableId,
-        _partition: PartitionId,
+        table_id: TableId,
+        partition: PartitionId,
     ) -> Result<Vec<ProjectId>, StoreError> {
-        internal()
+        if !table(table_id).is_scoped() {
+            return Err(StoreError::Internal(format!(
+                "{} has no project column",
+                table_id.name()
+            )));
+        }
+        self.maintain(|state, _| Ok(state.read.partition_projects(table_id, partition)))
+            .await
     }
 
     async fn masked_parts(
         &self,
-        _table: TableId,
-        _partition: PartitionId,
+        table: TableId,
+        partition: PartitionId,
     ) -> Result<u64, StoreError> {
-        internal()
+        let now = self.now();
+        self.maintain(|state, _| Ok(state.read.masked_parts(table, partition, now)))
+            .await
     }
 
     async fn apply_migration(&self, _step: &MigrationStep) -> Result<(), StoreError> {
-        internal()
+        // The tables are the production `TableDef`s from the start: a schema or access step changes nothing.
+        self.maintain(|_, _| Ok(())).await
     }
 
     async fn detect(&self) -> Result<StoreFacts, StoreError> {

@@ -279,6 +279,7 @@ impl ShipPlan {
             } else {
                 (1_000_000, 120_000_000)
             },
+            read_error_ppm: 0,
         };
         Self {
             wal,

@@ -5,18 +5,23 @@
 //! `crucible_store_clickhouse::ClickHouseStore`, the adapter product code uses. Scratch tables, fault setups and
 //! reads of system tables go through the adapter's `test-support` statements, as `crucible_admin`.
 //!
+//! The suite is also the differential check of the simulation's store model (`crucible_sim::ch_model::ChModel`):
+//! the typed-plan reads insert their blocks into the model too and compare every answer ([`differential`]).
+//!
 //! The binary of this crate runs the suite against the ClickHouse URL it is given; `scripts/conformance.sh`
 //! starts ClickHouse 26.3, 26.8 and latest in Docker and runs it against each.
 
 pub mod blocks;
 mod cancel;
 mod codes;
+mod differential;
 mod inserts;
 mod maintenance;
 mod reads;
 mod startup;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -27,6 +32,7 @@ use crucible_schema::{
     AccessParams, Granularity, Ident, PasswordHash, ServiceIdentity, Variant, access_service,
     route, schema_base,
 };
+use crucible_sim::ch_model::ChModel;
 use crucible_store_clickhouse::render::Statement;
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
 use sha2::{Digest, Sha256};
@@ -63,6 +69,10 @@ pub(crate) struct Ctx {
     pub config: StoreConfig,
     pub flavour: StoreFlavour,
     pub variant: Variant,
+    /// The simulation's store model, which the differential rows feed the same blocks and plans.
+    pub model: ChModel,
+    /// Plans whose answers were compared between the server and the model.
+    pub compared: AtomicU64,
 }
 
 pub(crate) fn statement(sql: impl Into<String>) -> Statement {
@@ -129,6 +139,13 @@ impl Ctx {
             config,
             flavour,
             variant,
+            model: ChModel::new(
+                env.rng.as_ref(),
+                flavour,
+                Granularity::Day,
+                Duration::from_secs(60),
+            ),
+            compared: AtomicU64::new(0),
         })
     }
 
@@ -298,6 +315,24 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         reads::reads(&ctx)
     );
     row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
+    row!("ChModel differential: typed plans (2.6, 8.1)", async {
+        let extra = differential::extra(&ctx).await?;
+        let violations = ctx.model.violations();
+        expect(violations.is_empty(), || {
+            format!("the model recorded {violations:?}")
+        })?;
+        Ok(format!(
+            "{} plans returned the same rows on the server and on the store model (order-insensitive where the \
+             plan leaves the order undefined), {extra} of them reads of null handling, the UUID order, text \
+             tokens, ties under a limit, window edges and the semi-join cap, run before and after the model \
+             merged its parts",
+            ctx.compared.load(Ordering::Relaxed)
+        ))
+    });
+    row!(
+        "ChModel differential: maintenance (2.6)",
+        differential::maintenance(&ctx)
+    );
     if single {
         row!(
             "Service identities see all rows (7.3)",
