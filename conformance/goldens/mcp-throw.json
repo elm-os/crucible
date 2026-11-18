@@ -1,0 +1,34 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-throw",
+  "spans": [
+    {
+      "id": "throw-tool-error",
+      "when": { "throw_outcome": "tool_error" },
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "throw",
+        "error.type": "tool_error",
+        "rpc.response.status_code": { "absent": true },
+        "crucible.mcp.error.subclass": { "optional": "none" }
+      },
+      "outcome": { "status": "tool_error", "error_class": "tool_execution", "error_subclass": "none", "caller_fault": false }
+    },
+    {
+      "id": "throw-internal",
+      "when": { "throw_outcome": "internal" },
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "throw",
+        "error.type": "-32603",
+        "rpc.response.status_code": "-32603",
+        "crucible.mcp.error.subclass": { "optional": "none" }
+      },
+      "outcome": { "status": "protocol_error", "error_class": "internal", "error_subclass": "none", "caller_fault": false }
+    }
+  ]
+}
