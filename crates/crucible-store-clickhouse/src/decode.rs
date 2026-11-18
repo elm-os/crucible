@@ -270,11 +270,12 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use crucible_auth::test_support::scope;
+    use crucible_plan::test_support::query_plan;
     use crucible_plan::{
-        Aggregate, Caller, Measure, Node, Pred, QueryClass, QueryPlan, data_bounds,
+        Aggregate, Caller, Measure, Node, Pred, QueryClass, RetentionClamp, data_bounds,
     };
     use crucible_records::{ProjectId, TableId, TimeWindow};
-    use crucible_schema::{Column, SpanMetricsCol};
+    use crucible_schema::{Column, RetentionSettings, SpanMetricsCol};
     use proptest::prelude::*;
 
     use super::*;
@@ -293,6 +294,7 @@ mod tests {
         let plans = data_bounds(
             scope(ProjectId::from_bytes([1; 16])).unwrap(),
             window(),
+            &RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH),
             Caller::Session,
         )
         .unwrap();
@@ -305,7 +307,7 @@ mod tests {
             bytes.extend_from_slice(&a.to_le_bytes());
             bytes.extend_from_slice(&b.to_le_bytes());
         }
-        (plans.spans.output(), bytes)
+        (plans.spans.unwrap().output(), bytes)
     }
 
     #[test]
@@ -437,7 +439,7 @@ mod tests {
 
     #[test]
     fn enum_and_low_cardinality_columns_decode_under_the_plan_schema() {
-        let plan = QueryPlan::new(
+        let plan = query_plan(
             scope(ProjectId::from_bytes([1; 16])).unwrap(),
             window(),
             QueryClass::Analytics,

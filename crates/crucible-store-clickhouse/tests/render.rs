@@ -8,12 +8,13 @@
 #![cfg(test)]
 
 use crucible_auth::test_support::scope;
-use crucible_plan::test_support::batch_probe;
+use crucible_plan::test_support::{batch_probe, query_plan};
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, Caller, CmpOp, DeletePlan, Direction, FieldRange, Fill,
-    Having, Literal, Measure, Node, Order, PointLookup, Pred, QueryClass, QueryPlan, Scan,
-    SemiJoin, Step, TextSearch, TimeSeries, TokenMode, TraceBounds, TraceListRequest, data_bounds,
-    span_children, trace_list, trace_spans, trace_time_bounds,
+    Having, Literal, Measure, Node, Order, PlanError, PointLookup, Pred, QueryClass, QueryPlan,
+    RetentionClamp, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode, TraceBounds,
+    TraceListRequest, child_counts, data_bounds, span_children, spans_of_parents, trace_list,
+    trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -21,8 +22,8 @@ use crucible_records::{
 };
 use crucible_schema::{
     Column, ColumnRef, FactTagsCol, McpDeploysCol, McpToolInventoryCol, McpToolRollupCol,
-    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol,
-    Ty, UserRollupCol, table,
+    RetentionSettings, SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol,
+    TraceHeadsCol, TraceStatsCol, Ty, UserRollupCol, table,
 };
 use crucible_store_clickhouse::render::{self, RenderError, Statement};
 use proptest::prelude::*;
@@ -51,7 +52,17 @@ fn span(n: u8) -> SpanId {
 }
 
 fn plan(class: QueryClass, root: Node) -> QueryPlan {
-    QueryPlan::new(project(), window(), class, root)
+    query_plan(project(), window(), class, root)
+}
+
+/// A clamp that expires nothing: the window a builder is given is the window its plan carries.
+fn clamp() -> RetentionClamp {
+    RetentionClamp::new(RetentionSettings::default(), T0)
+}
+
+/// The plan of a builder whose window has not expired.
+fn live(plan: Result<Option<QueryPlan>, PlanError>) -> QueryPlan {
+    plan.unwrap().unwrap()
 }
 
 fn rendered(plan: &QueryPlan) -> String {
@@ -63,20 +74,26 @@ fn rendered(plan: &QueryPlan) -> String {
 
 #[test]
 fn m1_trace_bounds() {
-    let plan = trace_time_bounds(project(), window(), Caller::Session, trace()).unwrap();
+    let plan = live(trace_time_bounds(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        trace(),
+    ));
     insta::assert_snapshot!(rendered(&plan));
 }
 
 #[test]
 fn m1_trace_spans() {
-    let plan = trace_spans(
+    let plan = live(trace_spans(
         project(),
         T0,
         T0.saturating_add_micros(9_000),
+        &clamp(),
         Caller::Agent,
         trace(),
-    )
-    .unwrap();
+    ));
     insta::assert_snapshot!(rendered(&plan));
 }
 
@@ -89,23 +106,20 @@ fn m1_trace_list() {
         as_of: T0.saturating_add_micros(60_000_000),
         since,
     };
-    let first = trace_list(project(), window(), Caller::Session, request(None, None)).unwrap();
+    let list = |request| {
+        live(trace_list(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            request,
+        ))
+    };
+    let first = list(request(None, None));
     insta::assert_snapshot!("m1_trace_list_first_page", rendered(&first));
-    let next = trace_list(
-        project(),
-        window(),
-        Caller::Session,
-        request(Some((T0, trace().trace_hash(), trace())), None),
-    )
-    .unwrap();
+    let next = list(request(Some((T0, trace().trace_hash(), trace())), None));
     insta::assert_snapshot!("m1_trace_list_after_cursor", rendered(&next));
-    let tail = trace_list(
-        project(),
-        window(),
-        Caller::Session,
-        request(None, Some(T0)),
-    )
-    .unwrap();
+    let tail = list(request(None, Some(T0)));
     insta::assert_snapshot!("m1_trace_list_since", rendered(&tail));
 }
 
@@ -116,25 +130,92 @@ fn m1_span_children() {
         min_start: T0,
         max_end: T0.saturating_add_micros(9_000),
     };
-    let first = span_children(project(), bounds, Caller::Session, span(1), None, None).unwrap();
-    insta::assert_snapshot!("m1_span_children_first_page", rendered(&first));
-    let next = span_children(
+    let first = live(span_children(
         project(),
         bounds,
+        &clamp(),
+        Caller::Session,
+        span(1),
+        None,
+        None,
+    ));
+    insta::assert_snapshot!("m1_span_children_first_page", rendered(&first));
+    let next = live(span_children(
+        project(),
+        bounds,
+        &clamp(),
         Caller::Session,
         span(1),
         Some((T0, span(2))),
         Some(100),
-    )
-    .unwrap();
+    ));
     insta::assert_snapshot!("m1_span_children_after_cursor", rendered(&next));
 }
 
 #[test]
 fn m1_data_bounds() {
-    let plans = data_bounds(project(), window(), Caller::Session).unwrap();
-    insta::assert_snapshot!("m1_data_bounds_spans", rendered(&plans.spans));
-    insta::assert_snapshot!("m1_data_bounds_mcp", rendered(&plans.mcp));
+    let plans = data_bounds(project(), window(), &clamp(), Caller::Session).unwrap();
+    insta::assert_snapshot!("m1_data_bounds_spans", rendered(&plans.spans.unwrap()));
+    insta::assert_snapshot!("m1_data_bounds_mcp", rendered(&plans.mcp.unwrap()));
+}
+
+#[test]
+fn m1_trace_page_stats() {
+    let traces = [
+        trace(),
+        TraceId::from_bytes([0xa2; 16]),
+        TraceId::from_bytes([0xa3; 16]),
+    ];
+    let plan = live(trace_page_stats(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        &traces,
+    ));
+    insta::assert_snapshot!(rendered(&plan));
+}
+
+#[test]
+fn m1_paged_trace() {
+    let bounds = TraceBounds {
+        trace_id: trace(),
+        min_start: T0,
+        max_end: T0.saturating_add_micros(9_000),
+    };
+    let roots = live(trace_roots(project(), bounds, &clamp(), Caller::Session));
+    insta::assert_snapshot!("m1_trace_roots", rendered(&roots));
+    let parents = [span(1), span(2), span(3)];
+    let children = live(spans_of_parents(
+        project(),
+        bounds,
+        &clamp(),
+        Caller::Session,
+        &parents,
+        500,
+    ));
+    insta::assert_snapshot!("m1_spans_of_parents", rendered(&children));
+    let counts = live(child_counts(
+        project(),
+        bounds,
+        &clamp(),
+        Caller::Agent,
+        &parents,
+    ));
+    insta::assert_snapshot!("m1_child_counts", rendered(&counts));
+}
+
+#[test]
+fn an_expired_window_has_no_plan_to_render() {
+    let expired = RetentionClamp::new(
+        RetentionSettings {
+            retention_days: Some(1),
+            ..RetentionSettings::default()
+        },
+        T0.saturating_add_micros(10 * 86_400_000_000),
+    );
+    let plan = trace_time_bounds(project(), window(), &expired, Caller::Session, trace()).unwrap();
+    assert_eq!(plan, None);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -842,7 +923,7 @@ fn rollup(index: usize) -> (TableId, ColumnRef, Vec<Measure>) {
 fn build(shape: &Shape, seed: u64) -> QueryPlan {
     let v = &mut Values(seed);
     let (scope, window) = (v.scope(), v.window());
-    let plan = |class, root| QueryPlan::new(scope, window, class, root);
+    let plan = |class, root| query_plan(scope, window, class, root);
     match shape {
         Shape::Scan {
             pred: p,
@@ -1054,7 +1135,13 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                 as_of: v.time(),
                 since: since.then(|| v.time()),
             };
-            trace_list(scope, window, Caller::Session, request).unwrap()
+            live(trace_list(
+                scope,
+                window,
+                &clamp(),
+                Caller::Session,
+                request,
+            ))
         }
     }
 }

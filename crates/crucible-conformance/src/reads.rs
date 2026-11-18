@@ -6,19 +6,22 @@
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_env::{QueryError, TelemetryStore};
+use crucible_plan::test_support::query_plan;
 use crucible_plan::{
     AggOutput, Aggregate, Caller, CmpOp, Direction, FieldRange, Fill, Having, Literal, Measure,
-    Node, PointLookup, Pred, QueryClass, QueryPlan, Row, Scan, SemiJoin, Step, TextSearch,
-    TimeSeries, TokenMode, TraceBounds, TraceListRequest, Value, data_bounds, span_children,
-    trace_list, trace_spans, trace_time_bounds,
+    Node, PointLookup, Pred, QueryClass, QueryPlan, RetentionClamp, Row, Scan, SemiJoin, Step,
+    TextSearch, TimeSeries, TokenMode, TraceBounds, TraceListRequest, Value, child_counts,
+    data_bounds, span_children, spans_of_parents, trace_list, trace_page_stats, trace_roots,
+    trace_spans, trace_time_bounds,
 };
 use crucible_records::{
     CivilDate, McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId,
     Uuid, WalEpoch,
 };
 use crucible_schema::{
-    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpToolInventoryCol, SessionRollupCol,
-    SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol, UserRollupCol,
+    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpToolInventoryCol, RetentionSettings,
+    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol,
+    UserRollupCol,
 };
 
 use crate::blocks::Rows;
@@ -205,6 +208,16 @@ async fn load(ctx: &Ctx) -> Result<Fixture> {
     })
 }
 
+/// A clamp that expires nothing.
+fn clamp() -> RetentionClamp {
+    RetentionClamp::new(RetentionSettings::default(), T0)
+}
+
+/// The plan of a builder whose window has not expired.
+fn live(plan: Option<QueryPlan>) -> Result<QueryPlan> {
+    plan.context("the builder returned no plan: the window has expired")
+}
+
 async fn rows(ctx: &Ctx, plan: QueryPlan) -> Result<Vec<Row>> {
     let stream = ctx.store.execute(plan).await?;
     Ok(stream.rows().await?)
@@ -225,7 +238,17 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     let session = Caller::Session;
 
     for caller in [session, Caller::Agent] {
-        let bounds = rows(ctx, trace_time_bounds(scope, window, caller, trace(0))?).await?;
+        let bounds = rows(
+            ctx,
+            live(trace_time_bounds(
+                scope,
+                window,
+                &clamp(),
+                caller,
+                trace(0),
+            )?)?,
+        )
+        .await?;
         same(
             "trace bounds",
             &values(&bounds),
@@ -239,10 +262,31 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             ]],
         )?;
     }
-    let missing = rows(ctx, trace_time_bounds(scope, window, session, trace(9))?).await?;
+    let missing = rows(
+        ctx,
+        live(trace_time_bounds(
+            scope,
+            window,
+            &clamp(),
+            session,
+            trace(9),
+        )?)?,
+    )
+    .await?;
     same("bounds of an unknown trace", &missing.len(), &0)?;
 
-    let spans = rows(ctx, trace_spans(scope, T0, at(9_000), session, trace(0))?).await?;
+    let spans = rows(
+        ctx,
+        live(trace_spans(
+            scope,
+            T0,
+            at(9_000),
+            &clamp(),
+            session,
+            trace(0),
+        )?)?,
+    )
+    .await?;
     same("trace spans", &spans.len(), &6)?;
     let start = SpanCoreCol::ALL
         .iter()
@@ -269,18 +313,14 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         rows.iter().map(|r| r.values()[at].clone()).collect()
     };
     let list = |cursor, as_of: Timestamp, since| {
-        trace_list(
-            scope,
-            window,
-            session,
-            TraceListRequest {
-                filter: Pred::all(),
-                limit: 2,
-                cursor,
-                as_of,
-                since,
-            },
-        )
+        let request = TraceListRequest {
+            filter: Pred::all(),
+            limit: 2,
+            cursor,
+            as_of,
+            since,
+        };
+        live(trace_list(scope, window, &clamp(), session, request)?)
     };
     let newest_first = rows(ctx, list(None, at(10_000_000), None)?).await?;
     same(
@@ -315,14 +355,30 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     };
     let children = rows(
         ctx,
-        span_children(scope, bounds, session, span_id(0), None, None)?,
+        live(span_children(
+            scope,
+            bounds,
+            &clamp(),
+            session,
+            span_id(0),
+            None,
+            None,
+        )?)?,
     )
     .await?;
     same("children of the root", &children.len(), &3)?;
     let after = Some((at(1_000), span_id(1)));
     let more = rows(
         ctx,
-        span_children(scope, bounds, session, span_id(0), after, Some(1))?,
+        live(span_children(
+            scope,
+            bounds,
+            &clamp(),
+            session,
+            span_id(0),
+            after,
+            Some(1),
+        )?)?,
     )
     .await?;
     same(
@@ -331,8 +387,54 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         &2,
     )?;
 
-    let plans = data_bounds(scope, window, session)?;
-    let span_bounds = rows(ctx, plans.spans).await?;
+    // The paged trace: the roots, the children of a set of parents and the child counts.
+    let stats = live(trace_page_stats(
+        scope,
+        window,
+        &clamp(),
+        session,
+        &[trace(0), trace(9)],
+    )?)?;
+    let stats = values(&rows(ctx, stats).await?);
+    same("page stats, one row per known trace", &stats.len(), &1)?;
+    same(
+        "page stats, the merged bounds and span count",
+        &stats[0][..6].to_vec(),
+        &vec![
+            trace_bytes(0),
+            Value::Time(T0),
+            Value::Time(at(9_000)),
+            Value::UInt(1),
+            Value::Time(T0),
+            Value::UInt(6),
+        ],
+    )?;
+    let roots = rows(ctx, live(trace_roots(scope, bounds, &clamp(), session)?)?).await?;
+    same("trace roots", &roots.len(), &1)?;
+    let parents = [span_id(0), span_id(1), span_id(5)];
+    let below = live(spans_of_parents(
+        scope,
+        bounds,
+        &clamp(),
+        session,
+        &parents,
+        100,
+    )?)?;
+    same("spans of parents", &rows(ctx, below).await?.len(), &5)?;
+    let counts = live(child_counts(scope, bounds, &clamp(), session, &parents)?)?;
+    let mut counts = values(&rows(ctx, counts).await?);
+    counts.sort_by_key(|row| format!("{row:?}"));
+    same(
+        "child counts",
+        &counts,
+        &vec![
+            vec![id8(SALT, 0), Value::UInt(3)],
+            vec![id8(SALT, 1), Value::UInt(2)],
+        ],
+    )?;
+
+    let plans = data_bounds(scope, window, &clamp(), session)?;
+    let span_bounds = rows(ctx, live(plans.spans)?).await?;
     same(
         "span data bounds",
         &values(&span_bounds),
@@ -341,7 +443,7 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             Value::Time(at(HOUR).floor_minute()),
         ]],
     )?;
-    let mut mcp_bounds = values(&rows(ctx, plans.mcp).await?);
+    let mut mcp_bounds = values(&rows(ctx, live(plans.mcp)?).await?);
     mcp_bounds.sort_by_key(|row| format!("{row:?}"));
     same(
         "mcp data bounds per side",
@@ -361,23 +463,23 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     )?;
     // An aggregate without group dimensions returns no row when nothing matches.
     let other = crucible_auth::test_support::scope(ctx.project()).map_err(|e| anyhow!("{e}"))?;
-    let empty = data_bounds(other, window, session)?;
+    let empty = data_bounds(other, window, &clamp(), session)?;
     same(
         "bounds of a project without data",
-        &rows(ctx, empty.spans).await?.len(),
+        &rows(ctx, live(empty.spans)?).await?.len(),
         &0,
     )?;
     same(
         "mcp bounds of a project without data",
-        &rows(ctx, empty.mcp).await?.len(),
+        &rows(ctx, live(empty.mcp)?).await?.len(),
         &0,
     )?;
-    Ok(14)
+    Ok(18)
 }
 
 async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     let (scope, window) = (f.scope, f.window);
-    let plan = |class: QueryClass, root: Node| QueryPlan::new(scope, window, class, root);
+    let plan = |class: QueryClass, root: Node| query_plan(scope, window, class, root);
     let names = async |pred: Pred| -> Result<Vec<Value>> {
         let scan = Scan::new(TableId::SpanCore, [SpanCoreCol::Name], pred)?.ordered(
             crucible_plan::Order::by([SpanCoreCol::StartTime], Direction::Asc),
@@ -765,7 +867,7 @@ async fn shape_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     for (table, key, measure) in rollups {
         for group in [vec![key], Vec::new()] {
             let aggregate = Aggregate::new(table, Pred::all(), group, vec![measure])?;
-            let plan = QueryPlan::new(
+            let plan = query_plan(
                 scope,
                 f.window,
                 QueryClass::Analytics,
@@ -790,7 +892,7 @@ async fn shape_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             vec![Measure::Max(McpToolInventoryCol::LastSeen.column_ref())],
         )?;
         let window = TimeWindow::new(at(from), at(to)).map_err(|e| anyhow!("{e}"))?;
-        let plan = QueryPlan::new(
+        let plan = query_plan(
             scope,
             window,
             QueryClass::Analytics,
@@ -837,7 +939,7 @@ async fn shape_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             vec![Measure::Sum(SpanMetricsCol::Count.column_ref())],
         )?;
         let series = TimeSeries::new(counts, SpanMetricsCol::Minute, step, Fill::None)?;
-        let plan = QueryPlan::new(
+        let plan = query_plan(
             scope,
             f.window,
             QueryClass::Analytics,
