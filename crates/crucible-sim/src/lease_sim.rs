@@ -182,10 +182,7 @@ impl Ledger {
             ));
         }
         self.max_acked = self.max_acked.max(lease.fencing_token);
-        if let Some(other) = self
-            .owner
-            .insert(lease.fencing_token, lease.holder.clone())
-        {
+        if let Some(other) = self.owner.insert(lease.fencing_token, lease.holder.clone()) {
             self.violations.push(format!(
                 "token {} was acknowledged to {other} and to {}",
                 lease.fencing_token, lease.holder
@@ -245,7 +242,9 @@ impl Node {
                 None => {
                     held = self.acquire().await;
                     if held.is_none() {
-                        self.clock.sleep(millis(self.rng.as_ref(), 500, 4_000)).await;
+                        self.clock
+                            .sleep(millis(self.rng.as_ref(), 500, 4_000))
+                            .await;
                     }
                 }
                 Some((lease, renewed_at)) => held = self.lead(lease, renewed_at).await,
@@ -439,9 +438,9 @@ async fn audit(store: &PgModel, ledger: &mut Ledger) {
                         lease.fencing_token == old.fencing_token + 1
                     };
                     if !ok {
-                        ledger.violations.push(format!(
-                            "the lease row went from {old:?} to {lease:?}"
-                        ));
+                        ledger
+                            .violations
+                            .push(format!("the lease row went from {old:?} to {lease:?}"));
                     }
                 }
                 row = Some(lease);
@@ -463,9 +462,9 @@ async fn audit(store: &PgModel, ledger: &mut Ledger) {
     }
     for cursor in &ledger.acked_cursors {
         if !cursors.contains(cursor) {
-            ledger
-                .violations
-                .push(format!("the acknowledged cursor {cursor} was never committed"));
+            ledger.violations.push(format!(
+                "the acknowledged cursor {cursor} was never committed"
+            ));
         }
     }
     let rows = match store.migrations().applied().await {
@@ -487,7 +486,8 @@ async fn audit(store: &PgModel, ledger: &mut Ledger) {
     }
     for written in rows.iter().chain(&cursors) {
         match parse(written) {
-            Some((token, holder)) if ledger.owner.get(&token).map(String::as_str) == Some(holder) => {}
+            Some((token, holder))
+                if ledger.owner.get(&token).map(String::as_str) == Some(holder) => {}
             _ => ledger.violations.push(format!(
                 "{written} was committed under a token that was never acknowledged to its writer"
             )),

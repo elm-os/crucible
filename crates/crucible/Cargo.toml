@@ -18,6 +18,10 @@ embed-ui = ["crucible-ui-assets/embed-ui"]
 crucible-api = { workspace = true }
 crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
+# Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
+crucible-config = { path = "../crucible-config" }
+crucible-control = { path = "../crucible-control" }
+crucible-control-pg = { path = "../crucible-control-pg" }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-cursor = { workspace = true }
 crucible-env = { workspace = true }
