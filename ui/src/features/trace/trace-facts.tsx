@@ -2,11 +2,11 @@
 
 import { type UseQueryResult, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui-sdk/react/button";
-import { Field, FieldError, FieldLabel } from "@ui-sdk/react/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@ui-sdk/react/field";
 import { Input } from "@ui-sdk/react/input";
 import { Textarea } from "@ui-sdk/react/textarea";
 import { Toggle } from "@ui-sdk/react/toggle";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { newIdempotencyKey, writeFeedback, writeFlag, writeTag } from "@/api/client";
 import { asUiError } from "@/api/errors";
 import type { FlagName } from "@/api/generated/FlagName";
@@ -18,6 +18,24 @@ import { AlertIcon, CheckIcon } from "@/components/icons";
 import { SectionFrame, useLoadingPhase } from "@/components/section";
 
 const TAG_BYTES = 256;
+const COMMENT_BYTES = 4_096;
+
+const bytes = (text: string) => new TextEncoder().encode(text).length;
+
+function tagProblem(text: string): string | null {
+  const tag = text.trim();
+  if (tag === "") return "Enter a tag.";
+  return bytes(tag) > TAG_BYTES ? "A tag is at most 256 bytes." : null;
+}
+
+function valueProblem(text: string): string | undefined {
+  return parseScoreValue(text) === null ? "Enter a number, true or false, or a word." : undefined;
+}
+
+function nameProblem(text: string): string | null {
+  const name = text.trim();
+  return name === "" || name.includes("#") ? "Enter a name without #." : null;
+}
 
 /** What this page wrote and the server acknowledged, kept until a refetch shows it. */
 interface Acked {
@@ -193,16 +211,17 @@ function TagsEditor({
 }) {
   const [draft, setDraft] = useState("");
   const [invalid, setInvalid] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const tag = draft.trim();
-    if (tag === "") return setInvalid("Enter a tag.");
-    if (new TextEncoder().encode(tag).length > TAG_BYTES) {
-      return setInvalid("A tag is at most 256 bytes.");
+    const problem = tagProblem(draft);
+    setInvalid(problem);
+    if (problem !== null) {
+      input.current?.focus();
+      return;
     }
-    setInvalid(null);
     setDraft("");
-    onEdit(tag, "add");
+    onEdit(draft.trim(), "add");
   };
   return (
     <div className="flex flex-col gap-2">
@@ -233,8 +252,18 @@ function TagsEditor({
       )}
       <form onSubmit={submit} className="flex flex-wrap items-end gap-2" noValidate>
         <Field name="tag" invalid={invalid !== null ? true : undefined}>
-          <FieldLabel className="text-label">Add a tag</FieldLabel>
-          <Input value={draft} onValueChange={(value) => setDraft(value)} className="text-data" />
+          <FieldLabel className="text-label">New tag</FieldLabel>
+          <Input
+            ref={input}
+            value={draft}
+            onValueChange={(value) => {
+              setDraft(value);
+              // Once an error shows, it clears the moment the value is fixed.
+              if (invalid !== null) setInvalid(tagProblem(value));
+            }}
+            className="text-data"
+          />
+          <FieldDescription className="text-label text-ink-soft">Up to 256 bytes.</FieldDescription>
           {invalid ? <FieldError match>{invalid}</FieldError> : null}
         </Field>
         <Button type="submit" disabled={pending !== undefined}>
@@ -263,6 +292,8 @@ function Scores({
   const [value, setValue] = useState("");
   const [comment, setComment] = useState("");
   const [invalid, setInvalid] = useState<{ name?: string; value?: string }>({});
+  const nameInput = useRef<HTMLInputElement>(null);
+  const valueInput = useRef<HTMLInputElement>(null);
   const write = useMutation({
     mutationFn: (v: { name: string; value: ScoreValue; comment: string; key: string }) =>
       writeFeedback(
@@ -300,11 +331,10 @@ function Scores({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const parsed = parseScoreValue(value);
-    const problems = {
-      name: name.trim() === "" || name.includes("#") ? "Enter a name without #." : undefined,
-      value: parsed === null ? "Enter a number, true or false, or a word." : undefined,
-    };
+    const problems = { name: nameProblem(name) ?? undefined, value: valueProblem(value) };
     setInvalid(problems);
+    if (problems.name) nameInput.current?.focus();
+    else if (problems.value) valueInput.current?.focus();
     if (problems.name || problems.value || parsed === null) return;
     write.mutate({
       name: name.trim(),
@@ -342,23 +372,47 @@ function Scores({
         noValidate
       >
         <Field name="score-name" invalid={invalid.name ? true : undefined}>
-          <FieldLabel className="text-label">Name</FieldLabel>
-          <Input value={name} onValueChange={(next) => setName(next)} className="text-data" />
+          <FieldLabel className="text-label">Score name</FieldLabel>
+          <Input
+            ref={nameInput}
+            value={name}
+            onValueChange={(next) => {
+              setName(next);
+              if (invalid.name) setInvalid((i) => ({ ...i, name: nameProblem(next) ?? undefined }));
+            }}
+            className="text-data"
+          />
           {invalid.name ? <FieldError match>{invalid.name}</FieldError> : null}
         </Field>
         <Field name="score-value" invalid={invalid.value ? true : undefined}>
-          <FieldLabel className="text-label">Value</FieldLabel>
-          <Input value={value} onValueChange={(next) => setValue(next)} className="text-data" />
+          <FieldLabel className="text-label">Score value</FieldLabel>
+          <Input
+            ref={valueInput}
+            value={value}
+            onValueChange={(next) => {
+              setValue(next);
+              if (invalid.value) setInvalid((i) => ({ ...i, value: valueProblem(next) }));
+            }}
+            className="text-data"
+          />
+          <FieldDescription className="text-label text-ink-soft">
+            A number, true or false, or a word.
+          </FieldDescription>
           {invalid.value ? <FieldError match>{invalid.value}</FieldError> : null}
         </Field>
         <Field name="score-comment">
-          <FieldLabel className="text-label">Comment</FieldLabel>
+          <FieldLabel className="text-label">Score comment</FieldLabel>
           <Textarea
             value={comment}
             onValueChange={(next) => setComment(next)}
             rows={1}
             className="text-data"
           />
+          {bytes(comment) > COMMENT_BYTES - 500 ? (
+            <FieldDescription className="text-label text-ink-soft">
+              {`${Math.max(0, COMMENT_BYTES - bytes(comment))} bytes left.`}
+            </FieldDescription>
+          ) : null}
         </Field>
         <Button type="submit" disabled={write.isPending}>
           {write.isPending ? "Adding score" : "Add score"}

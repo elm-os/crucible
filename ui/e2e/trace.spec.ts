@@ -631,7 +631,7 @@ test.describe("trace detail: facts", () => {
       "true",
     );
     await expect(frame.locator("[data-score=helpful]")).toContainText("thanks");
-    await frame.getByRole("textbox", { name: "Add a tag" }).fill("urgent");
+    await frame.getByRole("textbox", { name: "New tag" }).fill("urgent");
     await frame.getByRole("button", { name: "Add tag" }).click();
     await expect(frame.getByRole("button", { name: "Remove tag urgent" })).toBeVisible();
     expect(api.count(/\/tags$/)).toBe(1);

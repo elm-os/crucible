@@ -123,13 +123,14 @@ both entries.
    and `pnpm --filter crucible-ui test`, `pnpm --filter crucible-ui run typecheck`, `pnpm lint`,
    `pnpm format:check` and `pnpm --filter crucible-ui build` pass, as the `ci-ui` workflow runs them.
 
-   Playwright surface row (planned): milestone 2 is designed to close on a Playwright surface table with one row
-   per section, each driving the section's loading, success, error and empty states in a browser. The table does
-   not exist yet. Until it does, the Vitest test carries the four states, and `tools/e2e/ui-traces.mjs`, which the
-   end-to-end test runs, is the only browser check.
+   Playwright surface row: the section's row in [`../testing/ui-surfaces.md`](../testing/ui-surfaces.md) says what
+   renders in each state, and a test in `ui/e2e/` drives each state in a browser (`pnpm --filter crucible-ui exec
+   playwright test` after a build).
 
 8. **An invariant in the system simulation, where the slice adds data.** A slice that adds data (a table, a fact
-   kind, a derived row) adds its check to `crates/crucible-sim/src/system_sim.rs`. The read goes through the real
+   kind, a derived row) adds its check in a new file under `crates/crucible-sim/src/system_sim/`, a child module
+   that sees the run's ledger and node, registered with its `mod` line and one call in `read_everything` (the
+   facts and metrics checks are `system_sim/reads.rs`). The read goes through the real
    `QueryService` after acknowledgements and at quiescence (`read_everything`) and is compared with the oracle's
    ledger, and a failure is a `Violation` mapped to its invariant in
    [`../testing/invariants.md`](../testing/invariants.md), for example I4 for facts or I7 for aggregates. The
@@ -145,7 +146,7 @@ never edits another endpoint's. Insertions can still meet: when two names sort n
 conflict that is resolved by keeping both entries. These places are still one list for every endpoint, or a line
 that every endpoint of a kind changes; each is a follow-up:
 
-- `assert_eq!(operations, 4)` and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
+- `assert_eq!(operations, ..)` and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
   a route changes the count.
 - The builder calls of `every_built_plan_carries_its_scope_and_window`, and the `plans` and `tables` arrays of
   `every_builder_clamps_its_window_to_retention`, in `crates/crucible-plan/tests/properties.rs`.
@@ -155,8 +156,8 @@ that every endpoint of a kind changes; each is a follow-up:
 - The `tags(...)` list of the document in `crates/crucible-api/src/openapi.rs`: a group with a new tag adds to it.
 - The `Route` and `Position` enums in `crates/crucible-cursor/src/payload.rs` and the cursor methods in
   `crates/crucible-api/src/cursor.rs`: every paged endpoint adds to each.
-- The `Allow: GET, HEAD` header that `unknown_method` sends in `crates/crucible-api/src/lib.rs`: the first route with
-  another method (for example `POST search`) changes it.
+- The `Allow` header of a wrong method: a group with a POST route lists its paths in `POST_PATHS`, which
+  `routes::allowed_methods` in `crates/crucible-api/src/routes.rs` reads.
 - `ui/src/api/client.ts`, which holds every request function.
 - `crates/crucible-sim/src/system_sim.rs`, the one oracle.
 

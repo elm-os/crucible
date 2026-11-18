@@ -1,5 +1,6 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getTrace } from "@/api/client";
 import type { Score } from "@/api/generated/Score";
@@ -136,7 +137,7 @@ describe("the facts of a trace", () => {
     renderFacts();
     expect(await screen.findByText("No tags yet.")).toBeTruthy();
     expect(screen.getByText("No scores or feedback yet.")).toBeTruthy();
-    const input = screen.getByRole("textbox", { name: "Add a tag" });
+    const input = screen.getByRole("textbox", { name: "New tag" });
     fireEvent.input(input, { target: { value: "urgent" } });
     await act(async () => screen.getByRole("button", { name: "Add tag" }).click());
     expect(await screen.findByRole("button", { name: "Remove tag urgent" })).toBeTruthy();
@@ -180,5 +181,33 @@ describe("the facts of a trace", () => {
     const row = await screen.findByText("helpful");
     expect(within(row.closest("li") as HTMLElement).getByText("No")).toBeTruthy();
     expect(screen.getByText("thanks")).toBeTruthy();
+  });
+
+  test("an agent finds every control by name and can add a tag", async () => {
+    fetchMock.mockImplementation(async (_url, init) => {
+      if (init?.method === "POST") return json(written, 201);
+      return json(detail(facts({ tags: ["seen"] })));
+    });
+    renderFacts();
+    await screen.findByText("seen");
+    const agent = createAgent();
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    const labels = components.map((entry) => entry.label);
+    for (const label of ["Bookmark", "Public", "New tag", "Add tag", "Score name", "Add score"]) {
+      expect(labels, `${label} is missing from the snapshot`).toContain(label);
+    }
+    const result = await agent.act({
+      steps: [
+        { ref: "New tag", action: "setValue", args: ["agent-tag"] },
+        { ref: "Add tag", action: "press" },
+      ],
+    });
+    expect(result.ok, result.error?.message).toBe(true);
+    expect(await screen.findByRole("button", { name: "Remove tag agent-tag" })).toBeTruthy();
   });
 });

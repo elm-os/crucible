@@ -206,14 +206,21 @@ function MetricsSection({
       skeleton={skeleton}
       // No data counts as empty only when the answer is whole; otherwise spans may exist unseen.
       isEmpty={(response) => noData(response, which) && isWhole(response.meta)}
-      empty={<NoData range={range} onWiden={onWiden} compact={compact} />}
+      empty={<NoData title={title} range={range} onWiden={onWiden} compact={compact} />}
     >
       {(response) =>
         noData(response, which) ? (
           <EmptyState
             kind="incomplete"
             title="No data to show yet."
-            action={<Button onClick={() => query.refetch()}>Check again</Button>}
+            action={
+              <Button
+                aria-label={`Check again: ${title.toLowerCase()}`}
+                onClick={() => query.refetch()}
+              >
+                Check again
+              </Button>
+            }
           >
             {compact ? null : "Spans may still be arriving, or part of the data couldn't be read."}
           </EmptyState>
@@ -229,10 +236,12 @@ function MetricsSection({
 }
 
 function NoData({
+  title,
   range,
   onWiden,
   compact,
 }: {
+  title: string;
   range: Range;
   onWiden: () => void;
   compact: boolean;
@@ -250,7 +259,11 @@ function NoData({
     <EmptyState
       kind="filtered"
       title={`No data in ${RANGE_PHRASE[range]}.`}
-      action={<Button onClick={onWiden}>Show last 30 days</Button>}
+      action={
+        <Button aria-label={`Show last 30 days: ${title.toLowerCase()}`} onClick={onWiden}>
+          Show last 30 days
+        </Button>
+      }
     />
   );
 }
@@ -283,6 +296,23 @@ function Headline({
           <path d={path} fill="none" stroke="var(--color-series-1)" strokeWidth={1.5} />
         </svg>
       ) : null}
+    </div>
+  );
+}
+
+/** What the page shows before it can read the URL: every frame, holding its place. */
+export function HomeSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {["Traces", "Error rate", "Latency", "Cost", "Tokens"].map((title) => (
+          <SectionFrame key={title} title={title} busy>
+            <div aria-hidden="true" className="invisible">
+              <TileSkeleton />
+            </div>
+          </SectionFrame>
+        ))}
+      </div>
     </div>
   );
 }

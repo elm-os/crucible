@@ -146,7 +146,7 @@ fn live_reads_are_whole_without_store_stalls() {
         Dim::SmallBudget,
     ];
     let (mut reads, mut whole) = (0, 0);
-    for (mask, seed) in budget(0, 16, 1) {
+    for (mask, seed) in budget(0, 20, 1) {
         let calm = stalls.iter().fold(mask, |mask, &dim| mask.without(dim));
         let outcome = run_system_sim(seed, Options::realistic(calm));
         assert_holds(&outcome);

@@ -66,7 +66,12 @@ export function TimeSeriesChart({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         {shown.length > 1 ? <Legend series={shown} family={family} /> : <span />}
-        <Toggle pressed={table} onPressedChange={setTable} className="text-label">
+        <Toggle
+          pressed={table}
+          onPressedChange={setTable}
+          aria-label={`View as table: ${title.toLowerCase()}`}
+          className="text-label"
+        >
           View as table
         </Toggle>
       </div>
@@ -96,7 +101,7 @@ export function TimeSeriesChart({
                     y={tick.position}
                     textAnchor="end"
                     dominantBaseline="middle"
-                    className="fill-ink-soft text-[11px]"
+                    className="fill-ink-soft text-label"
                   >
                     {format(tick.value)}
                   </text>
@@ -108,7 +113,7 @@ export function TimeSeriesChart({
                   x={tick.position}
                   y={LAYOUT.height - 6}
                   textAnchor="middle"
-                  className="fill-ink-soft text-[11px]"
+                  className="fill-ink-soft text-label"
                 >
                   {tickFormat.format(tick.value)}
                 </text>

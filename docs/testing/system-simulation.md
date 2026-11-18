@@ -100,8 +100,9 @@ While the workload runs, a marker excuses a missing span, and `consistency: lagg
 the oracle cannot tell from outside whether stage B had a reason to trail. So the suite also requires that live
 reads mostly need no marker: over the smoke budget more than half of the live trace reads return every span,
 whole and strong, and in configurations with the store faults switched off (outages, read faults, insert
-faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 504
-of 512 over 16 configurations; every trace read also reads the trace's facts, so fewer reads fit a run). The smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
+faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 586
+of 594 over 20 configurations; every trace read also reads the trace's facts, so fewer reads fit a run). The
+smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
 every later read of its project, and a small row budget holds stage B behind the batches in flight.
 
 ## Mutants

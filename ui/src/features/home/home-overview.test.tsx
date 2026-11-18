@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
+import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MetricsResponse } from "@/api/generated/MetricsResponse";
 import type { MetricsSeries } from "@/api/generated/MetricsSeries";
@@ -110,7 +111,7 @@ describe("the home tiles and charts", () => {
     expect(within(latency).getByText("p50")).toBeTruthy();
     expect(within(latency).getByText("p95")).toBeTruthy();
     // Every chart has a table view.
-    const toggle = within(latency).getByRole("button", { name: "View as table" });
+    const toggle = within(latency).getByRole("button", { name: /^View as table/ });
     await act(async () => toggle.click());
     expect(within(latency).getByRole("table")).toBeTruthy();
   });
@@ -143,7 +144,9 @@ describe("the home tiles and charts", () => {
     );
     renderHome();
     expect(await within(section("Cost")).findByText("No data in the last 24 hours.")).toBeTruthy();
-    expect(within(section("Cost")).getByRole("button", { name: "Show last 30 days" })).toBeTruthy();
+    expect(
+      within(section("Cost")).getByRole("button", { name: "Show last 30 days: cost" }),
+    ).toBeTruthy();
     expect(await within(section("Traces")).findByText("No data to show yet.")).toBeTruthy();
   });
 
@@ -151,5 +154,27 @@ describe("the home tiles and charts", () => {
     fetchMock.mockImplementation(() => new Promise(() => {}));
     renderHome();
     expect(section("Traces").getAttribute("aria-busy")).toBe("true");
+  });
+
+  test("an agent finds every control by name and can open a chart's table", async () => {
+    answer((measures) =>
+      json(response(measures.map((m) => series(m, m === "duration" ? "p50" : "sum", [1, 2])))),
+    );
+    renderHome();
+    const agent = createAgent();
+    await within(section("Latency percentiles")).findByRole("slider");
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    const labels = components.map((entry) => entry.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    const result = await agent.act({
+      steps: [{ ref: "View as table: span latency percentiles per bucket", action: "toggle" }],
+    });
+    expect(result.ok, result.error?.message).toBe(true);
+    expect(within(section("Latency percentiles")).getByRole("table")).toBeTruthy();
   });
 });
