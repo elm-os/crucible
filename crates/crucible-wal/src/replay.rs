@@ -77,11 +77,14 @@ impl Replay {
             if self.reader.is_none() {
                 self.open_segment().await?;
             }
-            let superseded = self
-                .shared
-                .next_first_lsn(self.segment_no)
-                .is_some_and(|first| first.get() <= self.next_lsn);
-            let Some(reader) = self.reader.as_mut().filter(|_| !superseded) else {
+            // The cursor leaves its segment when the next frame belongs to a successor, and also when
+            // garbage collection removed the segment: the file may still be readable, but nothing says
+            // any more which of its frames a successor superseded.
+            let leave = match self.shared.successor_first_lsn(self.segment_no) {
+                Some(successor) => successor.is_some_and(|first| first.get() <= self.next_lsn),
+                None => true,
+            };
+            let Some(reader) = self.reader.as_mut().filter(|_| !leave) else {
                 self.reader = None;
                 continue;
             };

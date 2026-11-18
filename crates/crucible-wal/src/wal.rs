@@ -170,12 +170,12 @@ impl Shared {
         self.publish_sizes();
     }
 
-    /// First LSN of the segment after `segment_no`, when there is one.
-    pub(crate) fn next_first_lsn(&self, segment_no: u64) -> Option<Lsn> {
-        lock(&self.segments)
-            .iter()
-            .find(|s| s.segment_no > segment_no)
-            .map(|s| s.first_lsn)
+    /// The first LSN of the segment after `segment_no`, when it has a successor. `None` when the segment
+    /// itself is no longer retained: its successor, which says where its valid frames end, may be gone too.
+    pub(crate) fn successor_first_lsn(&self, segment_no: u64) -> Option<Option<Lsn>> {
+        let segments = lock(&self.segments);
+        let index = segments.iter().position(|s| s.segment_no == segment_no)?;
+        Some(segments.get(index + 1).map(|s| s.first_lsn))
     }
 
     pub(crate) async fn refresh_free_bytes(&self) {

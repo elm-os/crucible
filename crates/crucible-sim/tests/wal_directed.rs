@@ -502,6 +502,44 @@ fn a_tailing_replay_follows_the_log_and_never_sees_a_superseded_frame() {
 }
 
 #[test]
+fn a_replay_whose_segment_was_collected_reports_it_and_never_reads_a_superseded_frame() {
+    run(20, |sim| async move {
+        let disk = sim.disk("disk");
+        let settings = WalConfig {
+            replay_retention: Duration::ZERO,
+            ..config(SEGMENT)
+        };
+        let node = start(&sim, &disk, "a", &settings).await;
+        node.fill(1..=3).await;
+        let mut replay = node.wal.replay(Lsn::FIRST);
+        for lsn in 1..=3 {
+            assert_eq!(replay.next().await.unwrap().unwrap().lsn(), Lsn::new(lsn));
+        }
+        // A failed group leaves a frame with LSN 4 in segment 1; the real LSN 4 is in segment 2.
+        disk.fail_next_syncs(1);
+        assert_eq!(
+            node.wal.append(data(90)).await,
+            Err(AppendError::Unavailable)
+        );
+        node.fill(4..=8).await;
+        assert_eq!(node.append(&Record::BatchSeal(seal(1, 7))).await, 9);
+        assert_eq!(node.append(&Record::Checkpoint(checkpoint(7))).await, 10);
+        // Segments 1 and 2 go, and with segment 2 the first LSN that superseded the failed frame. The
+        // cursor still holds segment 1 open and must not take the frame it finds there for LSN 4.
+        let collected = node.wal.gc(None).await.unwrap();
+        assert_eq!(collected.removed.len(), 2);
+        assert_eq!(
+            replay.next().await,
+            Err(ReplayError::Reclaimed {
+                lsn: Lsn::new(4),
+                oldest: Lsn::new(8)
+            })
+        );
+        node.stop().await;
+    });
+}
+
+#[test]
 fn a_failed_group_whose_rotation_also_fails_puts_the_wal_in_the_failed_state() {
     run(7, |sim| async move {
         let disk = sim.disk("disk");

@@ -34,7 +34,7 @@ use crate::scan::{SegmentReader, Step, WalFrame};
 
 const HEADER_LEN: u64 = SEGMENT_HEADER_LEN as u64;
 
-/// The tail of the last segment that recovery zeroed.
+/// Data that recovery found after the valid prefix of the last segment, and zeroed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TailRepair {
     /// The segment.
@@ -87,7 +87,8 @@ pub struct RecoveryReport {
     pub tombstones: Vec<WalFrame>,
     /// The retained segments, oldest first.
     pub segments: Vec<SegmentMeta>,
-    /// The tail of the last segment that was zeroed.
+    /// Set when bytes after the valid prefix of the last segment held data (a torn frame, or frames of an
+    /// earlier incarnation) that was zeroed.
     pub tail_repair: Option<TailRepair>,
     /// A newest segment whose creation never finished and that was removed.
     pub removed_unfinished_segment: Option<u64>,
