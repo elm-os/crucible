@@ -22,7 +22,7 @@
 use std::ops::Range;
 
 use crucible_shipper::Mutant;
-use crucible_sim::ship_sim::{Options, Outcome, Stats, run_ship_sim};
+use crucible_sim::ship_sim::{Options, Outcome, Stats, Violation, run_ship_sim};
 
 const REPLAY: &str =
     "cargo nextest run -p crucible-sim --test ship_dst replay_seed --run-ignored all --no-capture";
@@ -117,25 +117,47 @@ realistic_shards! {
     ship_seeds_400: 400..500,
 }
 
-fn first_catching_seed(mutant: Mutant, seeds: Range<u64>) -> Option<Outcome> {
-    seeds
-        .map(|seed| {
-            run_ship_sim(
-                seed,
-                Options {
-                    mutant: Some(mutant),
-                },
-            )
-        })
-        .find(|outcome| !outcome.violations.is_empty())
+/// What a mutant's defect must show up as: the invariant it breaks, not a side effect.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Evidence {
+    /// I2: a block or a row landed twice.
+    Duplicate,
+    /// I2: two batch identities over the same frames were sent.
+    IdentityOverlap,
+    /// I1: an acknowledged span below the watermark is nowhere.
+    Lost,
+    /// Contract 5.6: a pair in doubt was quarantined without a probe.
+    QuarantinedInDoubt,
+    /// Anything else.
+    Other,
+}
+
+fn evidence(violation: &Violation) -> Evidence {
+    match violation {
+        Violation::DuplicateRow { .. } => Evidence::Duplicate,
+        Violation::Store(what) if what.starts_with("I2") => Evidence::Duplicate,
+        Violation::IdentityOverlap { .. } => Evidence::IdentityOverlap,
+        Violation::AckedSpanLost { .. } => Evidence::Lost,
+        Violation::QuarantinedInDoubt { .. } => Evidence::QuarantinedInDoubt,
+        _ => Evidence::Other,
+    }
+}
+
+fn run_mutant(mutant: Mutant, seed: u64) -> Outcome {
+    run_ship_sim(
+        seed,
+        Options {
+            mutant: Some(mutant),
+        },
+    )
 }
 
 /// The per-pull-request seed budget within which every mutant must be caught.
 const MUTANT_BUDGET: Range<u64> = 0..500;
 
-/// Each mutant must be caught inside the budget, and its first catching seed is recorded here. A change to the
-/// workload, the fault model or the product moves these seeds: update them from the failure message, which
-/// prints the new first catching seed.
+/// Each mutant must be caught inside the budget through the invariant it breaks, and the first seed that does so
+/// is recorded here. A change to the workload, the fault model or the product moves these seeds: update them
+/// from the failure message, which prints the new first catching seed.
 const CAUGHT_SKIP_PROBE_AFTER_UNKNOWN: u64 = 0;
 const CAUGHT_SEND_BEFORE_SEAL: u64 = 0;
 const CAUGHT_DROP_TOKEN: u64 = 0;
@@ -143,50 +165,81 @@ const CAUGHT_CHECKPOINT_BEFORE_RESOLUTION: u64 = 0;
 const CAUGHT_QUARANTINE_WITHOUT_PROBE: u64 = 0;
 const CAUGHT_REJECTION_CLEARS_DOUBT: u64 = 0;
 
-fn assert_caught(mutant: Mutant, recorded: u64) {
-    let caught = first_catching_seed(mutant, MUTANT_BUDGET);
+fn assert_caught(mutant: Mutant, by: Evidence, recorded: u64) {
+    // The recorded seed first: when nothing moved, one run settles it.
+    let shows = |outcome: &Outcome| outcome.violations.iter().any(|v| evidence(v) == by);
+    let at_recorded = run_mutant(mutant, recorded);
+    let earlier = (MUTANT_BUDGET.start..recorded.min(MUTANT_BUDGET.end))
+        .map(|seed| run_mutant(mutant, seed))
+        .find(shows);
+    let caught = match earlier {
+        Some(outcome) => Some(outcome),
+        None if shows(&at_recorded) => Some(at_recorded),
+        None => (recorded + 1..MUTANT_BUDGET.end)
+            .map(|seed| run_mutant(mutant, seed))
+            .find(shows),
+    };
     let Some(outcome) = caught else {
-        panic!("{mutant:?} survived seeds {MUTANT_BUDGET:?}");
+        panic!("{mutant:?} was not caught as {by:?} by seeds {MUTANT_BUDGET:?}");
     };
     println!("{mutant:?}: seed {} {:?}", outcome.seed, outcome.violations);
     assert_eq!(
         outcome.seed, recorded,
-        "{mutant:?} is now first caught by seed {} ({:?}); update the recorded seed",
+        "{mutant:?} is now first caught as {by:?} by seed {} ({:?}); update the recorded seed",
         outcome.seed, outcome.violations
     );
 }
 
 #[test]
 fn mutant_skip_probe_after_unknown_is_caught() {
-    assert_caught(Mutant::SkipProbeAfterUnknown, CAUGHT_SKIP_PROBE_AFTER_UNKNOWN);
+    assert_caught(
+        Mutant::SkipProbeAfterUnknown,
+        Evidence::Duplicate,
+        CAUGHT_SKIP_PROBE_AFTER_UNKNOWN,
+    );
 }
 
 #[test]
 fn mutant_send_before_seal_is_caught() {
-    assert_caught(Mutant::SendBeforeSeal, CAUGHT_SEND_BEFORE_SEAL);
+    assert_caught(
+        Mutant::SendBeforeSeal,
+        Evidence::IdentityOverlap,
+        CAUGHT_SEND_BEFORE_SEAL,
+    );
 }
 
 #[test]
 fn mutant_drop_token_is_caught() {
-    assert_caught(Mutant::DropToken, CAUGHT_DROP_TOKEN);
+    assert_caught(Mutant::DropToken, Evidence::Duplicate, CAUGHT_DROP_TOKEN);
 }
 
 #[test]
 fn mutant_checkpoint_before_resolution_is_caught() {
     assert_caught(
         Mutant::CheckpointBeforeResolution,
+        Evidence::Lost,
         CAUGHT_CHECKPOINT_BEFORE_RESOLUTION,
     );
 }
 
 #[test]
 fn mutant_quarantine_without_probe_is_caught() {
-    assert_caught(Mutant::QuarantineWithoutProbe, CAUGHT_QUARANTINE_WITHOUT_PROBE);
+    assert_caught(
+        Mutant::QuarantineWithoutProbe,
+        Evidence::QuarantinedInDoubt,
+        CAUGHT_QUARANTINE_WITHOUT_PROBE,
+    );
 }
 
+/// The finding of the ingest model (`docs/testing/formal-model.md`): a rejection after an unknown outcome must
+/// leave the pair in doubt, or a block lands twice once its window entry has expired.
 #[test]
 fn mutant_rejection_clears_doubt_is_caught() {
-    assert_caught(Mutant::RejectionClearsDoubt, CAUGHT_REJECTION_CLEARS_DOUBT);
+    assert_caught(
+        Mutant::RejectionClearsDoubt,
+        Evidence::Duplicate,
+        CAUGHT_REJECTION_CLEARS_DOUBT,
+    );
 }
 
 /// I14: one seed gives one outcome and one trace hash, and different seeds give different hashes.
@@ -202,32 +255,34 @@ fn same_seed_same_trace_hash() {
     assert_eq!(hashes.len(), 12, "two seeds share a trace hash");
 }
 
-/// Prints every seed of the budget that catches each mutant.
+/// Prints, for each mutant, how many seeds of the budget show each kind of evidence, and the first seeds.
+/// `CRUCIBLE_SIM_MUTANT` limits it to one mutant.
 #[test]
 #[ignore = "census tool: lists the catching seeds of every mutant"]
 fn mutant_census() {
+    let only = std::env::var("CRUCIBLE_SIM_MUTANT").ok();
     for (name, mutant) in MUTANTS {
-        let mut caught = Vec::new();
-        let mut kinds = std::collections::BTreeSet::new();
+        if only.as_deref().is_some_and(|only| only != name) {
+            continue;
+        }
+        let mut caught: std::collections::BTreeMap<Evidence, Vec<u64>> = Default::default();
         for seed in MUTANT_BUDGET {
-            let outcome = run_ship_sim(
-                seed,
-                Options {
-                    mutant: Some(mutant),
-                },
-            );
-            if let Some(first) = outcome.violations.first() {
-                caught.push(seed);
-                let text = format!("{first:?}");
-                kinds.insert(text.split([' ', '(', '{']).next().unwrap_or("").to_owned());
+            let outcome = run_mutant(mutant, seed);
+            let kinds: std::collections::BTreeSet<Evidence> =
+                outcome.violations.iter().map(evidence).collect();
+            for kind in kinds {
+                caught.entry(kind).or_default().push(seed);
             }
         }
-        println!(
-            "{name}: {} of {} seeds, first {:?}, as {kinds:?}",
-            caught.len(),
-            MUTANT_BUDGET.end,
-            caught.iter().take(12).collect::<Vec<_>>()
-        );
+        println!("{name}:");
+        for (kind, seeds) in caught {
+            println!(
+                "  {kind:?}: {} of {} seeds, first {:?}",
+                seeds.len(),
+                MUTANT_BUDGET.end,
+                seeds.iter().take(8).collect::<Vec<_>>()
+            );
+        }
     }
 }
 

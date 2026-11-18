@@ -13,7 +13,8 @@
 //!   rows C1 to C3 pin on real servers.
 //! - Outcome faults: timeout before apply, timeout with the insert still in flight (it lands later, also
 //!   after the node crashed), applied with the ack lost, a server error, too many parts, memory and
-//!   concurrency rejections, a hang, an outage that lasts minutes, and poison pairs.
+//!   concurrency rejections, an overload that sheds inserts after a timeout, a hang, an outage that lasts
+//!   minutes, and poison pairs.
 //!
 //! The model may be stricter than the real system and is never more permissive. The plan interpreter, merges,
 //! deletes and partition drops join with the read-side simulation; until then those methods answer `Internal`.
@@ -56,6 +57,11 @@ pub struct ChFaults {
     pub too_many_queries_ppm: u32,
     /// Of the unknown outcomes, how many never answer at all, so that the caller's timeout fires.
     pub hang_ppm: u32,
+    /// An insert that timed out in flight is the first sign of an overload: for a time drawn from
+    /// `overload_micros` the store then sheds every insert with code 252, while probes still answer.
+    pub overload_ppm: u32,
+    /// How long an overload lasts, drawn uniformly from this range.
+    pub overload_micros: (u64, u64),
     /// A probe fails.
     pub probe_error_ppm: u32,
     /// A pair is poison: the store refuses its block as a data error.
@@ -164,6 +170,7 @@ struct State {
     tables: BTreeMap<TableId, TableState>,
     pending: Vec<Pending>,
     outage_until: u64,
+    overload_until: u64,
     faults: ChFaults,
     /// The last absent probe of each pair, for the expiry guard.
     absent_probes: BTreeMap<PairKey, u64>,
@@ -435,6 +442,7 @@ impl ChModel {
                 tables: BTreeMap::new(),
                 pending: Vec::new(),
                 outage_until: 0,
+                overload_until: 0,
                 faults: ChFaults::default(),
                 absent_probes: BTreeMap::new(),
                 accepted: BTreeSet::new(),
@@ -537,9 +545,11 @@ impl ChModel {
         self.settled().outage_until = until;
     }
 
-    /// Ends an outage.
+    /// Ends an outage and an overload.
     pub fn end_outage(&self) {
-        self.settled().outage_until = 0;
+        let mut state = self.settled();
+        state.outage_until = 0;
+        state.overload_until = 0;
     }
 
     /// When the last insert in flight lands, in virtual microseconds; zero when none is in flight.
@@ -678,6 +688,8 @@ impl TelemetryStore for ChModel {
                 } else {
                     Outcome::Retry(RetryReason::NotSent)
                 }
+            } else if now < state.overload_until {
+                Outcome::Retry(RetryReason::TooManyParts)
             } else if self.is_poison(&key, faults.poison_pair_ppm) {
                 if attempt == 1 && ppm(rng, faults.poison_first_in_flight_ppm) {
                     Outcome::Late(between(rng, faults.late_apply_micros))
@@ -742,6 +754,10 @@ impl TelemetryStore for ChModel {
                     (Err(unknown("connection reset")), LastAnswer::InsertUnknown)
                 }
                 (Outcome::Late(delay), Some((id, block))) => {
+                    if ppm(rng, faults.overload_ppm) {
+                        state.overload_until =
+                            now.saturating_add(between(rng, faults.overload_micros));
+                    }
                     state.accepted.insert(key);
                     state.pending.push(Pending {
                         due: now.saturating_add(delay),

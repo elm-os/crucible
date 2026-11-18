@@ -247,6 +247,8 @@ impl ShipPlan {
             memory_ppm: fault(coin(rng), 30_000),
             too_many_queries_ppm: fault(coin(rng), 30_000),
             hang_ppm: fault(coin(rng), 150_000),
+            overload_ppm: fault(coin(rng), 500_000),
+            overload_micros: (1_000_000, 90_000_000),
             probe_error_ppm: fault(coin(rng), 50_000),
             poison_pair_ppm: fault(coin(rng), 60_000),
             poison_first_in_flight_ppm: 500_000,
