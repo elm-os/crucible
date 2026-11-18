@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b16c9d3d1694c8ae036199d41fc7b11b755fb570e45d7fac0843bc97a9c4b8df # shrinks to frames = [[(0, 0, false, 0, 0, 0)]], weekly = false
+cc 32cfa6bd7f9f4d70f4fb59c8eda8dc2d4f61f2856dbc9e52cf0cb6b9bf5d5e10 # shrinks to frames = [[(0, 0, false, 0, 0, 0)]], zstd = false

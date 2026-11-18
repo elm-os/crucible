@@ -45,7 +45,10 @@ pub use enums::{
     IoShape, Level, McpSide, McpStatus, McpTargetKind, ObservationType, ResultType, ScoreDataType,
     ScoreSource, SourceFormat, SpanKind, StatusCode, TagOp, TracePublic, Transport, Truncation,
 };
-pub use fact::{CorrectionBody, Fact, FactBody, FactEnvelope, FlagBody, ScoreBody, TagBody};
+pub use fact::{
+    CorrectionBody, Fact, FactBody, FactEnvelope, FactTarget, FactVersion, FlagBody, ScoreBody,
+    TagBody, effective_tags, fact_order, fold_facts,
+};
 pub use histogram::{
     Bucket, BucketCounts, Histogram, MCP_SEMCONV_DURATION_BOUNDS, SemconvHistogram, semconv_bucket,
 };

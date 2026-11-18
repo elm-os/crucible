@@ -6,7 +6,7 @@ expression: list.pretty()
   "data": [
     {
       "duration_us": 1001000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 2,
@@ -28,7 +28,7 @@ expression: list.pretty()
     },
     {
       "duration_us": 3001000,
-      "environment": "prod",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 4,

@@ -133,5 +133,5 @@ impl McpProjector for TableMapper {
     }
 }
 
-/// The native mapper (dialect 0), the only production mapper in milestone 1.
+/// The native mapper (dialect 0), the only production mapper in this build.
 pub static NATIVE: TableMapper = TableMapper::new(&DIALECT_0);

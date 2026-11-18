@@ -6,7 +6,7 @@ expression: tail.pretty()
   "data": [
     {
       "duration_us": 1000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 1,
@@ -28,7 +28,7 @@ expression: tail.pretty()
     },
     {
       "duration_us": 1000,
-      "environment": "",
+      "environment": "default",
       "error_count": 0,
       "head_kind": "root",
       "input_tokens": 1,

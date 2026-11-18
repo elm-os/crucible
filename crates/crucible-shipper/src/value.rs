@@ -89,6 +89,22 @@ impl Value {
         Self::U8(b as u8)
     }
 
+    /// The estimated bytes the cell holds in memory and in an uncompressed block: the width of a fixed-size
+    /// value, the length of a string plus its length prefix, and the sum over the elements of an array or a
+    /// tuple.
+    pub fn size(&self) -> u64 {
+        match self {
+            Self::Null | Self::U8(_) | Self::I8(_) => 1,
+            Self::U16(_) => 2,
+            Self::U32(_) | Self::I32(_) | Self::F32(_) => 4,
+            Self::U64(_) | Self::I64(_) | Self::F64(_) => 8,
+            Self::Uuid(_) => 16,
+            Self::Bytes(bytes) => bytes.len() as u64 + 8,
+            Self::Array(items) => 8 + items.iter().map(Self::size).sum::<u64>(),
+            Self::Tuple(pair) => pair.0.size() + pair.1.size(),
+        }
+    }
+
     const fn rank(&self) -> u8 {
         match self {
             Self::Null => 0,
@@ -235,6 +251,13 @@ pub struct Row {
     pub lsn: Lsn,
     /// Position of the row's span in its frame.
     pub ordinal: u32,
+}
+
+impl Row {
+    /// The estimated bytes of the row, which the `shipper.encoded_bytes` budget charges.
+    pub fn size(&self) -> u64 {
+        self.cells.iter().map(Value::size).sum()
+    }
 }
 
 /// Why a block could not be built. Each is a defect of the row derivation, never of the data.

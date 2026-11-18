@@ -685,6 +685,13 @@ impl Quarantined {
             .iter()
             .any(|payload| has(payload, trace) && has(payload, span))
     }
+
+    /// Whether a copied frame carries these bytes: the id of a fact.
+    pub(crate) fn holds_id(&self, id: &[u8]) -> bool {
+        self.payloads
+            .iter()
+            .any(|payload| payload.windows(id.len()).any(|w| w == id))
+    }
 }
 
 pub(crate) fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
@@ -697,10 +704,14 @@ pub(crate) fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.probes_present += s.probes_present;
     total.probes_expired += s.probes_expired;
     total.quarantined += s.quarantined;
+    total.quarantined_frames += s.quarantined_frames;
+    total.mixed_version_batches += s.mixed_version_batches;
+    total.encoded_bytes_peak = total.encoded_bytes_peak.max(s.encoded_bytes_peak);
+    total.largest_frame_bytes = total.largest_frame_bytes.max(s.largest_frame_bytes);
 }
 
 /// The payloads of a frames file, when it holds exactly the frames `first..=last`, in order and intact.
-fn copied_payloads(bytes: &[u8], first: u64, last: u64) -> Option<Vec<Vec<u8>>> {
+pub(crate) fn copied_payloads(bytes: &[u8], first: u64, last: u64) -> Option<Vec<Vec<u8>>> {
     let mut at = 0;
     let mut next = first;
     let mut payloads = Vec::new();
@@ -1151,7 +1162,10 @@ impl Run<'_> {
                 // The rarest barrier: it needs a pair that is being quarantined.
                 shipping.barriers.arm(Some(QUARANTINE_COPIED), 1);
             } else {
-                let only = pick(rng, BARRIERS.len() as u64);
+                // A batch has to resolve every pair before its checkpoint, so the two checkpoint barriers
+                // are reached least often in an incarnation: they get a double share of the draws.
+                let last = BARRIERS.len() as u64 - 1;
+                let only = [0, 1, 2, 3, 4, last - 1, last, last - 1, last][pick(rng, 9) as usize];
                 shipping.barriers.arm(Some(only), 1 + pick(rng, 3));
             }
         }

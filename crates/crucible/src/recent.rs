@@ -1,9 +1,9 @@
 //! The node's WAL as the recent-span index reads it (contract 8.6): the durable LSN for the read barrier, and
 //! the re-read of one span by its locator through `Wal::read_at` and the normalizer.
 //!
-//! The record is stage A's. A locator's ordinal is the span's position among the spans stage B admitted from
-//! its frame, so when stage B dropped a repeat earlier in the same frame the position is off by the repeats
-//! before it. No route of milestone 1 re-reads a span; the ordinal is settled before one does.
+//! The record is stage A's, and a locator's ordinal is the span's position in stage A's output: stage B hands
+//! the position on when it admits a span (`Admission::stage_a_ordinals`), so a repeat that stage B dropped
+//! earlier in the same frame does not shift the spans after it.
 
 use crucible_normalize::{IngestFrame, NormCtx, normalize};
 use crucible_recent::{SpanRead, WalLocator, WalReadError, WalView};
