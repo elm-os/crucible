@@ -10,7 +10,9 @@ import {
   SERVER_TEXT,
   span,
   TRACE,
+  TRACE_PATH,
   test,
+  traceDetail,
 } from "./fixtures";
 
 const SEARCH_PATH = new RegExp(`/projects/${PROJECT}/search$`);
@@ -104,9 +106,15 @@ test.describe("search: results", () => {
     await browser.getByRole("button", { name: "Load more results" }).click();
     await expect(browser.getByRole("link", { name: "send_reply" })).toBeVisible();
     await expect(browser.getByRole("button", { name: "Load more results" })).toHaveCount(0);
+    // The link opens the trace with the span selected.
+    api.on(TRACE_PATH, json(traceDetail()));
     await browser.getByRole("link", { name: "plan reply" }).click();
     await expect(browser).toHaveURL(
       new RegExp(`/trace/\\?project=${PROJECT}&trace=${TRACE}&span=a000000000000002`),
+    );
+    await expect(browser.getByRole("row", { name: /plan reply/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
   });
 
