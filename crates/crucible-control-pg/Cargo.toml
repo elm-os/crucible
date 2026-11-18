@@ -24,11 +24,11 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 # Exact versions until the root [workspace.dependencies] table lists them.
-tokio-postgres = { version = "=0.7.18", default-features = false }
+tokio-postgres = { workspace = true }
 # The pool that deadpool-postgres is built on, with a manager that connects through `Net` and runs the
 # connection task on the `Env` spawner (deadpool-postgres 0.14.2 itself requires `tokio::spawn`).
-deadpool = { version = "=0.13.1", default-features = false, features = ["managed"] }
-refinery = { version = "=0.10.0", default-features = false, features = ["tokio-postgres"] }
+deadpool = { workspace = true, features = ["managed"] }
+refinery = { workspace = true, features = ["tokio-postgres"] }
 
 [lints]
 workspace = true

@@ -122,11 +122,11 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-ui-assets` | `crucible-env` |
 | `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
 | `crucible-cursor` | `crucible-records` |
-| `crucible-config` | `crucible-records` (the only crate that reads the process environment) |
-| `crucible-control` | `crucible-env`, `crucible-records` |
+| `crucible-config` | none (the only crate that reads the process environment) |
+| `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
 | `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
 | `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
@@ -349,7 +349,7 @@ Repository-shaped access to Postgres. One repository per aggregate in section 11
 
 | Method | Semantics |
 |---|---|
-| `transaction(f) -> Result<T, TxError>` | Runs `f` in one transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `CommitUnknown` (connection lost during commit) and `Unavailable` |
+| `transaction(f) -> Result<T, TxError>` | Runs `f` in one repeatable-read transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `ForeignKeyViolation(constraint)`, `CommitUnknown` (connection lost during commit), `Fenced` (a lease's fencing token was superseded), `Invalid` (the request broke a model rule) and `Unavailable` |
 | `key_feed().poll(after_seq, overlap) -> Vec<KeyChange>` | Section 11.8 |
 | `key_feed().snapshot() -> KeySnapshot` | Full reconcile |
 | `leases().acquire(name, holder, ttl) -> Option<Lease { fencing_token, expires_at }>`, `renew(lease)`, `release(lease)` | Section 11.7. Expiry uses the database clock |
@@ -366,6 +366,11 @@ and a reserved pool of 2 connections for the key feed, leases and session lookup
 constraints; commit-unknown on connection loss; pool exhaustion; failover (brief unavailability, then a
 stale-free reconnect); lease rows; claims; key-feed sequence numbers that can commit out of order; and a database
 clock with skew against node clocks.
+
+Settled in code: the store sits in `Stores.control` as an `Option`, so `crucible serve` without Postgres keeps
+working as an ingest and telemetry node. The pool is `deadpool` with a custom manager over `connect_raw` on `Net`
+(`deadpool-postgres` spawns on the ambient runtime, which the `Env` rule forbids). Migrations are `refinery`,
+forward-only, numbered `V<n>__<name>.sql` in `crates/crucible-control-pg/migrations`.
 
 ### 2.8 ChildProcess
 
@@ -1463,6 +1468,14 @@ report(b) = lower(b) + width(b) / 2          (integer division)
 - A change to a sort key or partition expression means a new table and a backfill job, never a dual write.
 - A schema step that creates a base table must, in that same step, create the table's service-identity row policy
   (section 7.3).
+
+Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
+Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
+`migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
+(steps are idempotent, so a crash between apply and record only repeats the step). A step that outlives the lease is
+not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step (for
+example after a master-key change) makes the step reapply, with a warning. Without Postgres, `--migrate` applies the
+ClickHouse steps on every start.
 
 ### 6.7 Settled in code
 
