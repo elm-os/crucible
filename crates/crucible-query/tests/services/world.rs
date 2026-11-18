@@ -245,6 +245,86 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
         .collect()
 }
 
+/// The `session_rollup` or `user_rollup` partials of one frame: one row per (day, id) of the spans that name
+/// an id, as the shipper writes them (contract 3.10). `id` reads the session or the user of a span.
+pub fn rollup_rows(
+    table_id: TableId,
+    spans: &[SpanEntry],
+    lsn: Lsn,
+    id: fn(&SpanSummary) -> &str,
+) -> Vec<Vec<Value>> {
+    let mut groups: BTreeMap<(ProjectId, i64, String), Vec<&SpanSummary>> = BTreeMap::new();
+    for entry in spans {
+        let s = &entry.summary;
+        if !id(s).is_empty() {
+            let key = (
+                entry.project_id,
+                s.start_time.day_number(),
+                id(s).to_owned(),
+            );
+            groups.entry(key).or_default().push(s);
+        }
+    }
+    let column = if table_id == TableId::SessionRollup {
+        "session_id"
+    } else {
+        "user_id"
+    };
+    groups
+        .into_iter()
+        .map(|((project_id, _, key), members)| {
+            let sum = |f: &dyn Fn(&SpanSummary) -> u64| members.iter().map(|s| f(s)).sum::<u64>();
+            let mut cells = vec![
+                ("project_id", Value::Uuid(project_id.uuid())),
+                ("day", Value::Date(members[0].start_time.date())),
+                (column, text(&key)),
+                ("marker_batch_seq", Value::UInt(lsn.get())),
+                (
+                    "first_seen",
+                    Value::Time(members.iter().map(|s| s.start_time).min().unwrap()),
+                ),
+                (
+                    "last_seen",
+                    Value::Time(members.iter().map(|s| s.end_time).max().unwrap()),
+                ),
+                ("trace_count", Value::UInt(sum(&|s| u64::from(s.is_root)))),
+                ("span_count", Value::UInt(members.len() as u64)),
+                (
+                    "error_count",
+                    Value::UInt(sum(&|s| {
+                        u64::from(s.level == Level::Error || s.status_code == StatusCode::Error)
+                    })),
+                ),
+                ("input_tokens", Value::UInt(sum(&|s| s.input_tokens))),
+                ("output_tokens", Value::UInt(sum(&|s| s.output_tokens))),
+                ("total_tokens", Value::UInt(sum(&|s| s.total_tokens))),
+                (
+                    "total_cost_nusd",
+                    Value::Int(members.iter().map(|s| s.total_cost_nusd.nanos()).sum()),
+                ),
+            ];
+            if table_id == TableId::SessionRollup {
+                let users: std::collections::BTreeSet<&str> = members
+                    .iter()
+                    .filter(|s| !s.user_id.is_empty())
+                    .map(|s| &*s.user_id)
+                    .collect();
+                let users = users.into_iter().map(text).collect();
+                cells.push(("user_ids", Value::Array(users)));
+            }
+            stored_row(table_id, &cells)
+        })
+        .collect()
+}
+
+fn session_of(s: &SpanSummary) -> &str {
+    &s.session_id
+}
+
+fn user_of(s: &SpanSummary) -> &str {
+    &s.user_id
+}
+
 /// One accepted frame of the WAL.
 #[derive(Clone, Debug)]
 struct Logged {
@@ -358,6 +438,17 @@ impl World {
             }
             for row in trace_stats_rows(spans, *lsn) {
                 self.store.insert(TableId::TraceStats, row);
+            }
+            for (table_id, id) in [
+                (
+                    TableId::SessionRollup,
+                    session_of as fn(&SpanSummary) -> &str,
+                ),
+                (TableId::UserRollup, user_of),
+            ] {
+                for row in rollup_rows(table_id, spans, *lsn, id) {
+                    self.store.insert(table_id, row);
+                }
             }
         }
     }

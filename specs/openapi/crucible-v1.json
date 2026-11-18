@@ -97,13 +97,543 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/sessions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "List sessions",
+        "description": "The sessions whose spans fall on the window's UTC days, last seen first, each with its spans aggregated\nover those days. Pages are computed when they are read, so a session seen again between two pages can\nmove up.",
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window (RFC 3339). Sessions are counted by UTC day, so the window selects every day it\ntouches.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same window.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Get a session",
+        "description": "One session's spans on the window's UTC days, aggregated. Its traces are the trace list with\n`session_id`.",
+        "operationId": "get_session",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The session id, 1 to 512 bytes, percent-encoded.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window (RFC 3339); every UTC day it touches is counted.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session, or null with `meta` saying why the answer may be incomplete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no span of the session in the window, or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/spans": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "List spans",
+        "description": "The spans that started in the window, newest first, under the filter parameters, each of which tests the\nspan's own value. A cursor works only with the window and filters it was issued for.",
+        "operationId": "list_spans",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window over the spans' start times, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same window and filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "description": "Keep spans whose environment is one of these. Repeat the parameter for several values; different\nparameters must all hold.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "release",
+            "in": "query",
+            "description": "Keep spans whose release is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "Keep spans whose version is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Keep spans whose level is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Level"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "observation_type",
+            "in": "query",
+            "description": "Keep spans of one of these types.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ObservationType"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Keep spans that name one of these users.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Keep spans that name one of these sessions.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Keep spans that carry at least one of these tags.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "metadata",
+            "in": "query",
+            "description": "Keep spans whose metadata holds every `key=value` given (split at the first `=`).",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Keep spans whose name contains this text, without regard to ASCII case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of spans.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpanListPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/traces": {
       "get": {
         "tags": [
           "traces"
         ],
         "summary": "List traces",
-        "description": "The traces whose head (the root span, or the earliest span while the root has not arrived) started in the\nwindow, newest first. With `since`, the traces whose head arrived after that head cursor instead.",
+        "description": "The traces whose head (the root span, or the earliest span while the root has not arrived) started in the\nwindow, newest first. With `since`, the traces whose head arrived after that head cursor instead. The\nfilter parameters test the head span's values, except `observation_type` and `metadata`, which keep the\ntraces with a matching span in the window; a cursor works only with the filters it was issued for.",
         "operationId": "list_traces",
         "parameters": [
           {
@@ -159,7 +689,142 @@
           {
             "name": "since",
             "in": "query",
-            "description": "Live tail: the `head_cursor` of a first page or of the previous live-tail response, with the same\nwindow. Not combined with `cursor`.",
+            "description": "Live tail: the `head_cursor` of a first page or of the previous live-tail response, with the same\nwindow and filters. Not combined with `cursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "description": "Keep traces whose head span's environment is one of these. Repeat the parameter for several values;\ndifferent parameters must all hold.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "release",
+            "in": "query",
+            "description": "Keep traces whose head span's release is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "Keep traces whose head span's version is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Keep traces whose head span's level is one of these.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Level"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "observation_type",
+            "in": "query",
+            "description": "Keep traces with at least one span in the window of one of these types. Cannot be combined with\n`metadata`.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ObservationType"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Keep traces whose head span names one of these users.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Keep traces whose head span names one of these sessions.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Keep traces whose head span carries at least one of these tags.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "metadata",
+            "in": "query",
+            "description": "Keep traces with at least one span in the window whose metadata holds every `key=value` given (split\nat the first `=`). Cannot be combined with `observation_type`.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Keep traces whose head span's name contains this text, without regard to ASCII case.",
             "required": false,
             "schema": {
               "type": "string"
@@ -443,6 +1108,410 @@
           },
           "404": {
             "description": "`not_found`: no such trace, or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List users",
+        "description": "The users whose spans fall on the window's UTC days, last seen first, each with its spans aggregated over\nthose days and its distinct session count in the window. Pages are computed when they are read, so a user\nseen again between two pages can move up.",
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window (RFC 3339). Users are counted by UTC day, so the window selects every day it\ntouches; session counts and a user's sessions use the window as given.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same window.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/users/{user_id}": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Get a user",
+        "description": "One user's spans on the window's UTC days, aggregated, with the distinct session count in the window. The\nuser's sessions are `GET .../users/{user_id}/sessions`; its traces are the trace list with `user_id`.",
+        "operationId": "get_user",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id, 1 to 512 bytes, percent-encoded.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window (RFC 3339); every UTC day it touches is counted.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user, or null with `meta` saying why the answer may be incomplete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no span of the user in the window, or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/users/{user_id}/sessions": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List the sessions of a user",
+        "description": "The sessions that the user's traces in the window name, latest trace first, from the head span of each\ntrace. Session totals are `GET .../sessions/{session_id}`.",
+        "operationId": "list_user_sessions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id, 1 to 512 bytes, percent-encoded.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window (RFC 3339). Users are counted by UTC day, so the window selects every day it\ntouches; session counts and a user's sessions use the window as given.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same window.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the user's sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSessionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -786,6 +1855,139 @@
         "maximum": 9007199254740991,
         "minimum": 0
       },
+      "SessionDetail": {
+        "type": "object",
+        "description": "One session. A session without spans in the window is `not_found`, unless the answer may be incomplete:\nthen `session` is null and `meta` says why.",
+        "required": [
+          "session",
+          "meta"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionItem",
+                "description": "The session, or null when the answer may be incomplete."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SessionItem": {
+        "type": "object",
+        "description": "One session: its spans in the window's days, aggregated.",
+        "required": [
+          "session_id",
+          "first_seen",
+          "last_seen",
+          "trace_count",
+          "span_count",
+          "error_count",
+          "total_cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "user_ids",
+          "saturated"
+        ],
+        "properties": {
+          "error_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans with an error."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The earliest span start."
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Input tokens."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The latest span end; the list's sort key."
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Output tokens."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session id, as the spans name it."
+          },
+          "span_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The total cost in USD."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens."
+          },
+          "trace_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Traces: the session's root spans."
+          },
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The users the session's spans name, ascending; at most 8 are kept."
+          }
+        }
+      },
+      "SessionPage": {
+        "type": "object",
+        "description": "One page of the session list, last seen first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionItem"
+            },
+            "description": "The sessions."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
       "Span": {
         "type": "object",
         "description": "One span of a trace.",
@@ -884,6 +2086,133 @@
           "total_tokens": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Total tokens."
+          }
+        }
+      },
+      "SpanListItem": {
+        "type": "object",
+        "description": "One span of the list.",
+        "required": [
+          "trace_id",
+          "span_id",
+          "parent_span_id",
+          "name",
+          "observation_type",
+          "start_time",
+          "duration_us",
+          "status_code",
+          "level",
+          "model",
+          "environment",
+          "user_id",
+          "session_id",
+          "total_cost_usd",
+          "total_tokens",
+          "saturated"
+        ],
+        "properties": {
+          "duration_us": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "`end_time - start_time` in microseconds."
+          },
+          "environment": {
+            "type": "string",
+            "description": "The span's environment."
+          },
+          "level": {
+            "$ref": "#/components/schemas/Level",
+            "description": "The span's level."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model the provider reported; empty for spans without one."
+          },
+          "name": {
+            "type": "string",
+            "description": "The span name."
+          },
+          "observation_type": {
+            "$ref": "#/components/schemas/ObservationType",
+            "description": "What the span observes."
+          },
+          "parent_span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The parent span, or null for a root span."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session the span names; empty when none."
+          },
+          "span_id": {
+            "type": "string",
+            "description": "16 lowercase hex characters."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The span start, the list's sort key."
+          },
+          "status_code": {
+            "$ref": "#/components/schemas/StatusCode",
+            "description": "The span's status."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The span's cost in USD."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "32 lowercase hex characters."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user the span names; empty when none."
+          }
+        }
+      },
+      "SpanListPage": {
+        "type": "object",
+        "description": "One page of the span list, newest first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpanListItem"
+            },
+            "description": "The spans."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
           }
         }
       },
@@ -1157,6 +2486,205 @@
             "description": "The cursor of the next page; null on the last page and on live-tail responses."
           }
         }
+      },
+      "UserDetail": {
+        "type": "object",
+        "description": "One user. A user without spans in the window is `not_found`, unless the answer may be incomplete: then\n`user` is null and `meta` says why.",
+        "required": [
+          "user",
+          "meta"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UserItem",
+                "description": "The user, or null when the answer may be incomplete."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "UserItem": {
+        "type": "object",
+        "description": "One user: the spans that name the user in the window's days, aggregated.",
+        "required": [
+          "user_id",
+          "first_seen",
+          "last_seen",
+          "trace_count",
+          "session_count",
+          "span_count",
+          "error_count",
+          "total_cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "saturated"
+        ],
+        "properties": {
+          "error_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans with an error."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The earliest span start."
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Input tokens."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The latest span end; the list's sort key."
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Output tokens."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The distinct sessions that the user's traces in the window name."
+          },
+          "span_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The total cost in USD."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens."
+          },
+          "trace_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Traces: the user's root spans."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user id, as the spans name it."
+          }
+        }
+      },
+      "UserPage": {
+        "type": "object",
+        "description": "One page of the user list, last seen first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserItem"
+            },
+            "description": "The users."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "UserSessionItem": {
+        "type": "object",
+        "description": "One session of a user, from the user's traces in the window.",
+        "required": [
+          "session_id",
+          "first_trace_at",
+          "last_trace_at",
+          "trace_count",
+          "saturated"
+        ],
+        "properties": {
+          "first_trace_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of the session's earliest trace of the user in the window."
+          },
+          "last_trace_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of the latest one; the list's sort key."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session id."
+          },
+          "trace_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The user's traces in the session."
+          }
+        }
+      },
+      "UserSessionPage": {
+        "type": "object",
+        "description": "One page of the sessions of a user, latest trace first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserSessionItem"
+            },
+            "description": "The sessions."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -1169,8 +2697,16 @@
   },
   "tags": [
     {
+      "name": "sessions",
+      "description": "Sessions: the spans that share a session id, aggregated."
+    },
+    {
       "name": "traces",
       "description": "Traces, their spans and the project's data bounds."
+    },
+    {
+      "name": "users",
+      "description": "Users: the spans that share a user id, aggregated, and their sessions."
     }
   ]
 }

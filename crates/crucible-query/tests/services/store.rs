@@ -14,11 +14,11 @@ use crucible_env::{
     StoreFacts, StoreHealth, TelemetryStore,
 };
 use crucible_plan::{
-    Aggregate, BatchProbe, CmpOp, DeletePlan, Direction, Literal, Measure, Node, Pred, QueryPlan,
-    Row, RowBlock, Scan, Value,
+    AggOutput, Aggregate, BatchProbe, CmpOp, DeletePlan, Direction, Literal, Measure, Node, Pred,
+    QueryPlan, Row, RowBlock, Scan, SemiJoin, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
-use crucible_schema::{ColumnRef, MigrationStep, Ty, table};
+use crucible_schema::{AggFn, ColumnRef, MigrationStep, Ty, table};
 
 const DAY_MICROS: i64 = 86_400_000_000;
 
@@ -99,6 +99,59 @@ fn cell<'a>(row: &'a StoredRow, column: &ColumnRef) -> &'a Value {
     &row[position(column.table(), column.name())]
 }
 
+fn to_literal(value: &Value) -> Literal {
+    match value {
+        Value::Uuid(v) => Literal::Uuid(*v),
+        Value::Bytes(v) => Literal::Bytes(v.clone()),
+        Value::String(v) => Literal::String(v.clone()),
+        Value::UInt(v) => Literal::UInt(*v),
+        Value::Int(v) => Literal::Int(*v),
+        Value::Time(v) => Literal::Time(*v),
+        Value::Date(v) => Literal::Date(*v),
+        Value::Enum(v) => Literal::Enum(*v),
+        other => panic!("the fake store cannot make a literal of {other:?}"),
+    }
+}
+
+/// The groups of an aggregate in its order, after its keyset cursor, cut to its limit.
+fn ordered_groups(aggregate: &Aggregate, mut groups: Vec<Row>) -> Vec<Row> {
+    let order = aggregate.order();
+    if order.is_empty() {
+        assert!(aggregate.cursor().is_none() && aggregate.limit().is_none());
+        return groups;
+    }
+    let dimensions = aggregate.group().len();
+    let key = |row: &Row| -> Vec<Value> {
+        order
+            .iter()
+            .map(|(output, _)| match output {
+                AggOutput::Group(i) => row.values()[*i].clone(),
+                AggOutput::Measure(i) => row.values()[dimensions + *i].clone(),
+            })
+            .collect()
+    };
+    let compare_keys = |a: &[Value], b: &[Value]| {
+        a.iter()
+            .zip(b)
+            .zip(order)
+            .map(|((a, b), (_, direction))| match direction {
+                Direction::Asc => compare(a, b),
+                Direction::Desc => compare(a, b).reverse(),
+            })
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal)
+    };
+    groups.sort_by(|a, b| compare_keys(&key(a), &key(b)));
+    if let Some(cursor) = aggregate.cursor() {
+        let cursor: Vec<Value> = cursor.iter().map(literal).collect();
+        groups.retain(|row| compare_keys(&key(row), &cursor).is_gt());
+    }
+    if let Some(limit) = aggregate.limit() {
+        groups.truncate(limit as usize);
+    }
+    groups
+}
+
 fn literal(literal: &Literal) -> Value {
     match literal {
         Literal::Uuid(v) => Value::Uuid(*v),
@@ -161,8 +214,43 @@ fn holds(pred: &Pred, row: &StoredRow) -> bool {
         Pred::In(column, values) => values
             .iter()
             .any(|value| compare(cell(row, column), &literal(value)).is_eq()),
-        other => panic!("the fake store does not interpret {other:?}"),
+        Pred::HasAny(column, values) => match cell(row, column) {
+            Value::Array(items) => values.iter().any(|value| {
+                items
+                    .iter()
+                    .any(|item| compare(item, &literal(value)).is_eq())
+            }),
+            other => panic!("{other:?} is not an array"),
+        },
+        Pred::StartsWith(column, prefix) => match cell(row, column) {
+            Value::String(text) => text.starts_with(prefix.as_str()),
+            other => panic!("{other:?} is not a string"),
+        },
+        Pred::TextMatch(needle) => match &row[position(evaluating(), "name")] {
+            Value::String(name) => name
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase()),
+            other => panic!("name is {other:?}"),
+        },
+        Pred::MetadataEq { key, value } => {
+            let entry = Value::String(format!("{key}={value}"));
+            match &row[position(TableId::SpanPayload, "metadata_kv")] {
+                Value::Array(items) => items.contains(&entry),
+                other => panic!("metadata_kv is {other:?}"),
+            }
+        }
     }
+}
+
+thread_local! {
+    /// The table whose rows `holds` evaluates, for the predicates that name no column.
+    static EVALUATING: std::cell::Cell<Option<TableId>> = const { std::cell::Cell::new(None) };
+}
+
+fn evaluating() -> TableId {
+    EVALUATING
+        .with(std::cell::Cell::get)
+        .expect("a predicate is evaluated inside a read of one table")
 }
 
 /// Whether a row is inside the plan's window, by the column the table is windowed on (contract 8.3).
@@ -174,6 +262,7 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
     match table_id {
         TableId::SpanCore | TableId::TraceHeads => window.contains(time("start_time")),
         TableId::SpanMetrics | TableId::McpToolRollup => window.contains(time("minute")),
+        TableId::SpanPayload => window.contains(time("start_time")),
         TableId::TraceStats => match &row[position(table_id, "row_day")] {
             // A day's partial is read when the day overlaps the window.
             Value::Date(day) => {
@@ -181,6 +270,14 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
                 start < window.to().micros() && start + DAY_MICROS > window.from().micros()
             }
             other => panic!("row_day is {other:?}"),
+        },
+        // The rollups select every UTC day the window touches.
+        TableId::SessionRollup | TableId::UserRollup => match &row[position(table_id, "day")] {
+            Value::Date(day) => {
+                let last = window.to().saturating_add_micros(-1).date();
+                window.from().date() <= *day && *day <= last
+            }
+            other => panic!("day is {other:?}"),
         },
         other => panic!("the fake store has no window rule for {other:?}"),
     }
@@ -219,12 +316,56 @@ impl FakeStore {
         let project = Value::Uuid(plan.scope().project_id().uuid());
         let state = self.state();
         let rows = state.tables.get(&table_id).map_or(&[][..], Vec::as_slice);
-        rows.iter()
+        EVALUATING.with(|cell| cell.set(Some(table_id)));
+        let visible = rows
+            .iter()
             .filter(|row| row[0] == project)
             .filter(|row| in_window(table_id, row, plan.window()))
             .filter(|row| holds(pred, row))
             .cloned()
-            .collect()
+            .collect();
+        EVALUATING.with(|cell| cell.set(None));
+        visible
+    }
+
+    /// A semi-join: the left scan, restricted to the rows whose `on` column is among the right node's ids.
+    fn semi_join(&self, plan: &QueryPlan, join: &SemiJoin) -> Vec<Row> {
+        let ids: Vec<Value> = match join.right() {
+            Node::Scan(scan) => self.scan(plan, scan),
+            Node::Aggregate(aggregate) => self.aggregate(plan, aggregate),
+            other => panic!("the fake store does not semi-join {other:?}"),
+        }
+        .into_iter()
+        .map(|row| row.values()[0].clone())
+        .collect();
+        assert!(
+            ids.len() <= join.max_ids() as usize,
+            "the ids exceed max_ids"
+        );
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let left = join.left();
+        let mut scan = Scan::new(
+            left.table(),
+            left.columns().iter().copied(),
+            Pred::And(vec![
+                left.pred().clone(),
+                Pred::In(join.on(), ids.iter().map(to_literal).collect()),
+            ]),
+        )
+        .unwrap();
+        if let Some(order) = left.order() {
+            scan = scan.ordered(order.clone()).unwrap();
+        }
+        if let Some(cursor) = left.cursor() {
+            scan = scan.after(cursor.to_vec()).unwrap();
+        }
+        if let Some(limit) = left.limit() {
+            scan = scan.limited(limit).unwrap();
+        }
+        let scan = scan.arrived(left.arrival()).unwrap();
+        self.scan(plan, &scan)
     }
 
     fn scan(&self, plan: &QueryPlan, scan: &Scan) -> Vec<Row> {
@@ -277,8 +418,7 @@ impl FakeStore {
     }
 
     fn aggregate(&self, plan: &QueryPlan, aggregate: &Aggregate) -> Vec<Row> {
-        assert!(aggregate.having_conditions().is_empty() && aggregate.order().is_empty());
-        assert!(aggregate.limit().is_none());
+        assert!(aggregate.having_conditions().is_empty());
         let rows = self.visible(plan, aggregate.table(), aggregate.pred());
         let key = |row: &StoredRow| -> Vec<Value> {
             aggregate
@@ -298,7 +438,7 @@ impl FakeStore {
                 None => groups.push((key, vec![row])),
             }
         }
-        groups
+        let groups: Vec<Row> = groups
             .into_iter()
             .map(|(mut values, members)| {
                 let column = |c: &ColumnRef| -> std::vec::IntoIter<Value> {
@@ -320,12 +460,38 @@ impl FakeStore {
                         Measure::Max(c) | Measure::PickMerge(c) => {
                             column(c).max_by(compare).unwrap()
                         }
+                        Measure::Uniq(c) => {
+                            let mut seen: Vec<Value> = Vec::new();
+                            for value in column(c) {
+                                if !seen.iter().any(|v| compare(v, &value).is_eq()) {
+                                    seen.push(value);
+                                }
+                            }
+                            Value::UInt(seen.len() as u64)
+                        }
+                        Measure::SetMerge(c) => {
+                            let Some(AggFn::GroupUniqArrayArray(bound)) = c.ty().agg_fn() else {
+                                panic!("{} is not a set partial", c.name())
+                            };
+                            let mut set: Vec<Value> = Vec::new();
+                            for value in column(c) {
+                                let Value::Array(items) = value else {
+                                    panic!("{} is not an array", c.name())
+                                };
+                                set.extend(items);
+                            }
+                            set.sort_by(compare);
+                            set.dedup_by(|a, b| compare(a, b).is_eq());
+                            set.truncate(usize::from(bound));
+                            Value::Array(set)
+                        }
                         other => panic!("the fake store does not compute {other:?}"),
                     }
                 }));
                 Row::new(values)
             })
-            .collect()
+            .collect();
+        ordered_groups(aggregate, groups)
     }
 }
 
@@ -350,6 +516,7 @@ impl TelemetryStore for FakeStore {
         let rows = match plan.root() {
             Node::Scan(scan) => self.scan(&plan, scan),
             Node::Aggregate(aggregate) => self.aggregate(&plan, aggregate),
+            Node::SemiJoin(join) => self.semi_join(&plan, join),
             other => panic!("the fake store does not run {other:?}"),
         };
         let hook = self.during_read.lock().unwrap().take();

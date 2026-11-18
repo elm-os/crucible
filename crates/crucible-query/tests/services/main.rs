@@ -6,6 +6,8 @@
 
 mod list;
 mod properties;
+mod sessions;
+mod span_list;
 mod store;
 mod trace;
 mod world;
