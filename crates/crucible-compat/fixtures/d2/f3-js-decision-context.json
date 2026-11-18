@@ -1,0 +1,184 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "Arize-ai/openinference tag python-openinference-semantic-conventions-v0.1.46 js/packages/openinference-instrumentation-openai/test/openai.decisions.test.ts lines 72-101 and 396-422",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD2, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others"
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "@arizeai/openinference-instrumentation-openai",
+              "version": "4.2.0"
+            },
+            "spans": [
+              {
+                "traceId": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+                "spanId": "0000000000000001",
+                "name": "OpenAI Decisions",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "decision.model_name",
+                    "value": {
+                      "stringValue": "nw-decide-2026-05-01"
+                    }
+                  },
+                  {
+                    "key": "decision.provider",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "decision.request.model_name",
+                    "value": {
+                      "stringValue": "nw-decide"
+                    }
+                  },
+                  {
+                    "key": "decision.response.model_name",
+                    "value": {
+                      "stringValue": "nw-decide-2026-05-01"
+                    }
+                  },
+                  {
+                    "key": "decision.system",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "decision.token_count.input",
+                    "value": {
+                      "intValue": "31"
+                    }
+                  },
+                  {
+                    "key": "decision.token_count.output",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "input.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "input.value",
+                    "value": {
+                      "stringValue": "{\"model\":\"nw-decide\",\"input\":\"The parcel arrived damaged and I want my money back.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"wants_refund\",\"instructions\":\"Does the customer want a refund?\"}]}"
+                    }
+                  },
+                  {
+                    "key": "openinference.span.kind",
+                    "value": {
+                      "stringValue": "DECISION"
+                    }
+                  },
+                  {
+                    "key": "output.mime_type",
+                    "value": {
+                      "stringValue": "application/json"
+                    }
+                  },
+                  {
+                    "key": "output.value",
+                    "value": {
+                      "stringValue": "{\"model\":\"nw-decide-2026-05-01\",\"answers\":[{\"type\":\"predicate\",\"name\":\"wants_refund\",\"probability\":0.91}],\"usage\":{\"input_tokens\":31,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens\":2,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":33}}"
+                    }
+                  },
+                  {
+                    "key": "server.address",
+                    "value": {
+                      "stringValue": "api.northwind.example"
+                    }
+                  },
+                  {
+                    "key": "server.port",
+                    "value": {
+                      "intValue": "443"
+                    }
+                  },
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "session-id-7"
+                    }
+                  },
+                  {
+                    "key": "user.id",
+                    "value": {
+                      "stringValue": "user-id-7"
+                    }
+                  },
+                  {
+                    "key": "metadata",
+                    "value": {
+                      "stringValue": "{\"region\":\"eu\",\"attempt\":3}"
+                    }
+                  },
+                  {
+                    "key": "tag.tags",
+                    "value": {
+                      "stringValue": "[\"billing\",\"urgent\"]"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 2,
+      "observation_type": "generation",
+      "model_requested": "nw-decide",
+      "model_response": "nw-decide-2026-05-01",
+      "provider": "northwind",
+      "usage_provided": {
+        "input": 31,
+        "output": 2
+      },
+      "total_tokens": 33,
+      "input": "{\"model\":\"nw-decide\",\"input\":\"The parcel arrived damaged and I want my money back.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"wants_refund\",\"instructions\":\"Does the customer want a refund?\"}]}",
+      "output": "{\"model\":\"nw-decide-2026-05-01\",\"answers\":[{\"type\":\"predicate\",\"name\":\"wants_refund\",\"probability\":0.91}],\"usage\":{\"input_tokens\":31,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens\":2,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":33}}",
+      "io_shape": "raw",
+      "session_id": "session-id-7",
+      "user_id": "user-id-7",
+      "metadata": {
+        "region": "eu",
+        "attempt": 3
+      },
+      "tags": [
+        "billing",
+        "urgent"
+      ],
+      "residual": [
+        "decision.model_name",
+        "decision.system",
+        "input.mime_type",
+        "output.mime_type",
+        "server.address",
+        "server.port"
+      ]
+    }
+  }
+}

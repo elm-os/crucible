@@ -49,6 +49,7 @@ turmoil = { workspace = true }
 mad-turmoil = { workspace = true }
 
 [dev-dependencies]
+crucible-compat = { workspace = true }
 crucible-env-prod = { workspace = true }
 proptest = { workspace = true }
 tempfile = "=3.27.0"
