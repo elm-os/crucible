@@ -1,0 +1,4 @@
+# Golden fixtures and encoder snapshots are raw bytes; never normalize their line endings.
+*.native binary
+*.lz4 binary
+*.zstd binary

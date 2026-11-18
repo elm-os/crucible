@@ -155,3 +155,12 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     the frozen enums and the deterministic collections. The batch-token injectivity proof moves there with the type.
 72. **Hash collections use a fixed hasher (`DetMap`, `DetSet`).** Randomly seeded constructors are banned in
     `clippy.toml`, because iteration order would differ between runs.
+73. **The simulated `Env` lives in `crucible-sim` and shares `crucible-env-prod`'s exemption from the determinism
+    lints.** Both crates implement the traits over real primitives; product crates never get the exemption.
+74. **I1 is guaranteed on Linux and macOS; Windows is a development platform.** Windows has no directory sync
+    barrier through the standard library, and `unsafe` is denied.
+75. **Prices are pico-USD per unit.** Whole nano-USD per unit cannot express common fractional prices; cost stays
+    exact nano-USD with half-even rounding.
+76. **Native block headers keep `SimpleAggregateFunction` wrappers.** ClickHouse accepts both forms; sending the
+    column's own type means the server converts nothing.
+

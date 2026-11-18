@@ -1,0 +1,42 @@
+ord	UInt32	-	-
+uint8	UInt8	uint8	uint8
+uint16	UInt16	uint16	uint16
+uint32	UInt32	uint32	uint32
+uint64	UInt64	uint64	uint64
+int64	Int64	int64	int64
+float32	Float32	float32	float32
+float64	Float64	float64	float64
+uuid	UUID	uuid	uuid
+string	String	string	string
+fixed_string_8	FixedString(8)	fixed_string_8	fixed_string_8
+fixed_string_16	FixedString(16)	fixed_string_16	fixed_string_16
+fixed_string_32	FixedString(32)	fixed_string_32	fixed_string_32
+date	Date	date	date
+datetime	DateTime('UTC')	datetime	datetime
+datetime64	DateTime64(6, 'UTC')	datetime64	datetime64
+enum8	Enum8('none' = 0, 'protocol' = 1, 'validation' = 2, 'not_found' = 3, 'tool_execution' = 4, 'auth' = 5, 'rate_limit' = 6, 'timeout' = 7, 'transport' = 8, 'cancelled' = 9, 'internal' = 10)	enum8	enum8
+nullable_datetime64	Nullable(DateTime64(6, 'UTC'))	nullable_datetime64	nullable_datetime64
+nullable_uint32	Nullable(UInt32)	nullable_uint32	nullable_uint32
+nullable_int32	Nullable(Int32)	nullable_int32	nullable_int32
+nullable_uint16	Nullable(UInt16)	nullable_uint16	nullable_uint16
+array_string	Array(String)	array_string	array_string
+array_uint8	Array(UInt8)	array_uint8	array_uint8
+array_uint32	Array(UInt32)	array_uint32	array_uint32
+array_uint64	Array(UInt64)	array_uint64	array_uint64
+array_int64	Array(Int64)	array_int64	array_int64
+tuple_u16_u64	Tuple(Array(UInt16), Array(UInt64))	tuple_u16_u64	tuple_u16_u64
+tuple_u8_u64	Tuple(Array(UInt8), Array(UInt64))	tuple_u8_u64	tuple_u8_u64
+saf_max_datetime	SimpleAggregateFunction(max, DateTime('UTC'))	saf_max_datetime	saf_max_datetime
+saf_min_datetime64	SimpleAggregateFunction(min, DateTime64(6, 'UTC'))	saf_min_datetime64	saf_min_datetime64
+saf_max_datetime64	SimpleAggregateFunction(max, DateTime64(6, 'UTC'))	saf_max_datetime64	saf_max_datetime64
+saf_max_uint8	SimpleAggregateFunction(max, UInt8)	saf_max_uint8	saf_max_uint8
+saf_sum_uint64	SimpleAggregateFunction(sum, UInt64)	saf_sum_uint64	saf_sum_uint64
+saf_sum_int64	SimpleAggregateFunction(sum, Int64)	saf_sum_int64	saf_sum_int64
+saf_max_string	SimpleAggregateFunction(max, String)	saf_max_string	saf_max_string
+saf_group_uniq_array_string_16	SimpleAggregateFunction(groupUniqArrayArray(16), Array(String))	saf_group_uniq_array_string_16	saf_group_uniq_array_string_16
+saf_group_uniq_array_string_8	SimpleAggregateFunction(groupUniqArrayArray(8), Array(String))	saf_group_uniq_array_string_8	saf_group_uniq_array_string_8
+saf_group_uniq_array_uint8_4	SimpleAggregateFunction(groupUniqArrayArray(4), Array(UInt8))	saf_group_uniq_array_uint8_4	saf_group_uniq_array_uint8_4
+saf_sum_map_u16	SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64)))	saf_sum_map_u16	saf_sum_map_u16
+saf_sum_map_u8	SimpleAggregateFunction(sumMap, Tuple(Array(UInt8), Array(UInt64)))	saf_sum_map_u8	saf_sum_map_u8
+lc_string	LowCardinality(String)	CAST(lc_string AS String) AS string	string
+array_lc_string	Array(LowCardinality(String))	CAST(array_lc_string AS Array(String)) AS array_string	array_string

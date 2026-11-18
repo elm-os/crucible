@@ -1,0 +1,1 @@
+SELECT * FROM values('uint16 UInt16', 0, 1, 255, 256, 32767, 32768, 65534, 65535) FORMAT Native

@@ -1,0 +1,1 @@
+SELECT * FROM values('saf_sum_map_u16 SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64)))', ([], []), ([0], [1]), ([5, 975], [2, 18446744073709551615]), ([16, 17, 18], [1, 1, 1]), ([], []), ([975], [1]), ([0, 1, 2, 3], [4, 3, 2, 1]), ([100], [1000000])) FORMAT Native

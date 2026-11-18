@@ -2,6 +2,7 @@
 //! half-open. Calendar arithmetic is integer-only (days from civil and back), so it is exact and total.
 
 use core::fmt;
+use core::str::FromStr;
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const MICROS_PER_MINUTE: i64 = 60 * MICROS_PER_SECOND;
@@ -83,6 +84,114 @@ impl Timestamp {
             None => None,
         }
     }
+
+    /// `start_minute` (contract 6.1): the start of the minute containing this instant, as `DateTime('UTC')`
+    /// seconds. Instants outside the `u32` second range saturate.
+    pub const fn start_minute(self) -> u32 {
+        let secs = self.0.div_euclid(MICROS_PER_SECOND);
+        let minute = secs - secs.rem_euclid(60);
+        if minute < 0 {
+            0
+        } else if minute > u32::MAX as i64 {
+            u32::MAX
+        } else {
+            minute as u32
+        }
+    }
+
+    /// Parses an RFC 3339 date-time (`YYYY-MM-DDTHH:MM:SS[.fraction](Z|+HH:MM|-HH:MM)`, with `t` and `z` accepted
+    /// in lower case) and normalizes it to UTC microseconds. Any offset and any number of fraction digits are
+    /// accepted; digits beyond microseconds truncate the instant toward zero. A leap second (`:60`) counts as the
+    /// first second of the next minute. Any other text is rejected.
+    pub fn parse_rfc3339(s: &str) -> Result<Self, TimestampParseError> {
+        parse_rfc3339(s.as_bytes()).ok_or(TimestampParseError)
+    }
+}
+
+/// Text that is not an RFC 3339 date-time. Maps to `validation_failed` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid RFC 3339 timestamp")]
+pub struct TimestampParseError;
+
+impl FromStr for Timestamp {
+    type Err = TimestampParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_rfc3339(s)
+    }
+}
+
+/// The value of `N` ASCII digits starting at `at`.
+fn digits<const N: usize>(b: &[u8], at: usize) -> Option<i64> {
+    let field = b.get(at..at + N)?;
+    field.iter().try_fold(0i64, |acc, &c| {
+        c.is_ascii_digit().then(|| acc * 10 + i64::from(c - b'0'))
+    })
+}
+
+fn parse_rfc3339(b: &[u8]) -> Option<Timestamp> {
+    // full-date "T" partial-time: the first 19 bytes have a fixed layout.
+    let separators = [(4, b'-'), (7, b'-'), (13, b':'), (16, b':')];
+    if separators.iter().any(|&(at, c)| b.get(at) != Some(&c))
+        || !matches!(b.get(10), Some(b'T' | b't'))
+    {
+        return None;
+    }
+    let year = i32::try_from(digits::<4>(b, 0)?).ok()?;
+    let month = u8::try_from(digits::<2>(b, 5)?).ok()?;
+    let day = u8::try_from(digits::<2>(b, 8)?).ok()?;
+    let (hour, minute, second) = (
+        digits::<2>(b, 11)?,
+        digits::<2>(b, 14)?,
+        digits::<2>(b, 17)?,
+    );
+    let date = CivilDate::new(year, month, day)?;
+    if hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut at = 19;
+    let (mut micros, mut beyond_micros) = (0i64, false);
+    if b.get(at) == Some(&b'.') {
+        at += 1;
+        let start = at;
+        while let Some(&c) = b.get(at).filter(|c| c.is_ascii_digit()) {
+            let d = i64::from(c - b'0');
+            match at - start {
+                0..6 => micros = micros * 10 + d,
+                _ => beyond_micros |= d != 0,
+            }
+            at += 1;
+        }
+        let count = at - start;
+        if count == 0 {
+            return None;
+        }
+        // Scale a short fraction up to microseconds.
+        for _ in count..6 {
+            micros *= 10;
+        }
+    }
+    let offset_secs = match (b.get(at), b.get(at + 1..)) {
+        (Some(b'Z' | b'z'), Some([])) => 0,
+        (Some(&sign @ (b'+' | b'-')), Some(rest))
+            if rest.len() == 5 && rest.get(2) == Some(&b':') =>
+        {
+            let (oh, om) = (digits::<2>(rest, 0)?, digits::<2>(rest, 3)?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let secs = oh * 3600 + om * 60;
+            if sign == b'-' { -secs } else { secs }
+        }
+        _ => return None,
+    };
+    let secs = date.day_number() * 86_400 + hour * 3600 + minute * 60 + second - offset_secs;
+    let mut t = secs * MICROS_PER_SECOND + micros;
+    if t < 0 && beyond_micros {
+        // The exact instant lies just above `t`; truncating toward zero moves up.
+        t += 1;
+    }
+    Some(Timestamp(t))
 }
 
 /// RFC 3339 UTC with exactly six fractional digits and a `Z` suffix, the wire form.
@@ -130,6 +239,12 @@ impl CivilDate {
         } else {
             None
         }
+    }
+
+    /// A date from its fields without the calendar check, for proofs that range over every field combination.
+    #[cfg(kani)]
+    pub(crate) const fn from_fields_unchecked(year: i32, month: u8, day: u8) -> Self {
+        Self { year, month, day }
     }
 
     /// The date `days` days after 1970-01-01. Total over the range of `i64` days that fit an `i32` year.
@@ -332,6 +447,108 @@ mod tests {
             let t = Timestamp::from_micros(us);
             prop_assert!(t.floor_minute() <= t && t.floor_day() <= t.floor_minute());
             prop_assert_eq!(t.floor_day(), t.date().start());
+            prop_assert_eq!(i64::from(t.start_minute()) * 1_000_000, t.floor_minute().micros());
         }
+
+        #[test]
+        fn parse_inverts_display(us in FOUR_DIGIT_YEARS) {
+            let t = Timestamp::from_micros(us);
+            prop_assert_eq!(Timestamp::parse_rfc3339(&t.to_string()), Ok(t));
+            prop_assert_eq!(t.to_string().to_uppercase().parse::<Timestamp>(), Ok(t));
+            prop_assert_eq!(t.to_string().to_lowercase().parse::<Timestamp>(), Ok(t));
+        }
+
+        #[test]
+        fn offsets_normalize_to_utc(
+            us in 0i64..Timestamp::MAX_EXCLUSIVE.micros(),
+            offset_min in -1_439i64..=1_439,
+        ) {
+            let local = Timestamp::from_micros(us + offset_min * 60_000_000).to_string();
+            let sign = if offset_min < 0 { '-' } else { '+' };
+            let (h, m) = (offset_min.abs() / 60, offset_min.abs() % 60);
+            let text = format!("{}{sign}{h:02}:{m:02}", &local[..local.len() - 1]);
+            prop_assert_eq!(Timestamp::parse_rfc3339(&text), Ok(Timestamp::from_micros(us)));
+        }
+
+        #[test]
+        fn other_precisions_normalize(us in FOUR_DIGIT_YEARS, keep in 0u32..6, extra in "[0-9]{1,6}") {
+            let text = Timestamp::from_micros(us).to_string();
+            // Without the `Z`, the text ends in `.ffffff`.
+            let head = &text[..text.len() - 1];
+            let cut = head.len() - 6 + keep as usize - usize::from(keep == 0);
+            let unit = 10i64.pow(6 - keep);
+            let short = format!("{}Z", &head[..cut]);
+            prop_assert_eq!(
+                Timestamp::parse_rfc3339(&short),
+                Ok(Timestamp::from_micros(us - us.rem_euclid(unit)))
+            );
+            // Nanosecond digits truncate toward zero.
+            let long = format!("{head}{extra}Z");
+            let toward_zero = if us < 0 && extra.bytes().any(|b| b != b'0') { us + 1 } else { us };
+            prop_assert_eq!(Timestamp::parse_rfc3339(&long), Ok(Timestamp::from_micros(toward_zero)));
+        }
+    }
+
+    /// Instants whose year has four digits, the years RFC 3339 can write.
+    const FOUR_DIGIT_YEARS: core::ops::Range<i64> =
+        -62_167_219_200_000_000..253_402_300_800_000_000;
+
+    #[test]
+    fn parses_rfc3339_forms() {
+        let t = |s: &str| Timestamp::parse_rfc3339(s).map(Timestamp::micros);
+        let base = 1_794_907_800_000_000;
+        assert_eq!(t("2026-11-17T09:30:00.000000Z"), Ok(base));
+        assert_eq!(t("2026-11-17T09:30:00Z"), Ok(base));
+        assert_eq!(t("2026-11-17t09:30:00z"), Ok(base));
+        assert_eq!(t("2026-11-17T11:30:00+02:00"), Ok(base));
+        assert_eq!(t("2026-11-17T04:00:00-05:30"), Ok(base));
+        assert_eq!(t("2026-11-17T09:30:00-00:00"), Ok(base));
+        assert_eq!(t("2026-11-17T09:30:00.5Z"), Ok(base + 500_000));
+        assert_eq!(t("2026-11-17T09:30:00.123456789Z"), Ok(base + 123_456));
+        assert_eq!(t("1969-12-31T23:59:59.999999Z"), Ok(-1));
+        assert_eq!(t("1969-12-31T23:59:59.9999995Z"), Ok(0));
+        assert_eq!(t("2016-12-31T23:59:60Z"), t("2017-01-01T00:00:00Z"));
+        assert_eq!(t("2024-02-29T00:00:00Z"), Ok(1_709_164_800_000_000));
+        assert_eq!(t("0000-01-01T00:00:00Z"), Ok(FOUR_DIGIT_YEARS.start));
+        for bad in [
+            "",
+            "2026-11-17",
+            "2026-11-17T09:30Z",
+            "2026-11-17T09:30:00",
+            "2026-11-17 09:30:00Z",
+            "2026-11-17T09:30:00.Z",
+            "2026-11-17T09:30:00,5Z",
+            "2026-11-17T09:30:00+0200",
+            "2026-11-17T09:30:00+02",
+            "2026-11-17T09:30:00+24:00",
+            "2026-11-17T09:30:00+02:60",
+            "2026-11-17T24:00:00Z",
+            "2026-11-17T09:60:00Z",
+            "2026-11-17T09:30:61Z",
+            "2026-02-29T09:30:00Z",
+            "2026-13-17T09:30:00Z",
+            "2026-00-17T09:30:00Z",
+            "2026-11-00T09:30:00Z",
+            "+2026-11-17T09:30:00Z",
+            "20261-11-17T09:30:00Z",
+            "2026-11-17T09:30:00Z ",
+            " 2026-11-17T09:30:00Z",
+            "2026-11-17T09:30:00ZZ",
+            "2026-11-17T09:30:00.12a4Z",
+            "2026-1\u{ff11}-17T09:30:00Z",
+            "2026-11-17X09:30:00Z",
+        ] {
+            assert_eq!(t(bad), Err(TimestampParseError), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn start_minute_is_datetime_seconds() {
+        assert_eq!(
+            Timestamp::from_micros(1_794_907_859_999_999).start_minute(),
+            1_794_907_800
+        );
+        assert_eq!(Timestamp::from_micros(-1).start_minute(), 0);
+        assert_eq!(Timestamp::from_micros(i64::MAX).start_minute(), u32::MAX);
     }
 }
