@@ -9,7 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-test-support = []
+# Test helpers for other crates; product builds never enable it. The fake sign-in provider serves HTTP.
+test-support = ["hyper/server", "tokio/io-util"]
 
 [dependencies]
 crucible-control = { workspace = true }
@@ -40,12 +41,16 @@ chacha20poly1305 = { version = "=0.11.0", default-features = false, features = [
 # OAuth 2.0 and OpenID Connect clients (contract 11.4), without their bundled HTTP clients: requests go through `Net`.
 oauth2 = { version = "=5.0.0", default-features = false }
 openidconnect = { version = "=4.1.0", default-features = false }
+# The time type of openidconnect's ID-token checks, fed from the `Env` clock; the version openidconnect locks.
+chrono = { version = "=0.4.45", default-features = false }
 
 [dev-dependencies]
 # The simulated `Env` and `PgModel`. The cycle through crucible-sim's own dependency on this crate is the one
 # cargo permits for dev-dependencies; tests here never pass this crate's types through it.
 crucible-sim = { path = "../crucible-sim" }
+hyper = { workspace = true, features = ["server"] }
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true

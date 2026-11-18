@@ -10,8 +10,10 @@ mod scope;
 // The control plane (milestone 4).
 pub mod cookie;
 pub mod csrf;
+pub mod http;
 mod mint;
 mod next_path;
+pub mod oauth;
 pub mod password;
 pub mod roles;
 mod seal;
