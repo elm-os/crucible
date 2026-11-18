@@ -16,8 +16,8 @@ use super::{AuthError, CACHE_FOR, Identity, SESSION_IDLE, TOUCH_EVERY};
 use crate::roles::{Denied, ProjectPermission, effective_project_role};
 use crate::token;
 
-/// A signed-in user, as one request sees them.
-#[derive(Clone, Debug)]
+/// A signed-in user, as one request sees them. `Debug` leaves out the token hash.
+#[derive(Clone)]
 pub struct SessionPrincipal {
     /// The hash of the session token.
     pub token_hash: TokenHash,
@@ -31,6 +31,17 @@ pub struct SessionPrincipal {
     pub org_role: OrgRole,
     /// The projects the user can see, with the effective role on each.
     pub projects: BTreeMap<ProjectId, (Project, ProjectRole)>,
+}
+
+impl std::fmt::Debug for SessionPrincipal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionPrincipal")
+            .field("session", &self.session)
+            .field("user", &self.user.id)
+            .field("org_role", &self.org_role)
+            .field("projects", &self.projects.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl SessionPrincipal {

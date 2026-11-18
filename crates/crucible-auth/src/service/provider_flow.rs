@@ -17,8 +17,7 @@ use crate::next_path::safe_next;
 use crate::oauth::{FlowSecrets, ProviderConfig, authorize_url, identify};
 use crate::token::{self, Token};
 
-/// Where the start redirect goes, with the flow cookie's value.
-#[derive(Debug)]
+/// Where the start redirect goes, with the flow cookie's value. `Debug` shows neither: both carry the state.
 pub struct FlowStart {
     /// The provider's authorization URL.
     pub location: String,
@@ -26,8 +25,14 @@ pub struct FlowStart {
     pub flow_cookie: Token,
 }
 
-/// What the callback's query carries.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+impl std::fmt::Debug for FlowStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FlowStart(..)")
+    }
+}
+
+/// What the callback's query carries. `Debug` shows only the provider's error.
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct CallbackQuery {
     /// The authorization code.
     pub code: Option<String>,
@@ -35,6 +40,14 @@ pub struct CallbackQuery {
     pub state: Option<String>,
     /// The provider's error, when the person declined.
     pub error: Option<String>,
+}
+
+impl std::fmt::Debug for CallbackQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackQuery")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A finished provider sign-in.

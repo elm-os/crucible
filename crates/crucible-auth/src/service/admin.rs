@@ -88,13 +88,20 @@ impl std::fmt::Debug for ProviderChange {
     }
 }
 
-/// A new key with its secret, shown once.
-#[derive(Debug)]
+/// A new key with its secret, shown once. `Debug` never shows the secret.
 pub struct KeyCreated {
     /// The stored key.
     pub key: ApiKey,
     /// The secret key.
     pub secret: String,
+}
+
+impl std::fmt::Debug for KeyCreated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyCreated")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The fields of `PATCH projects/{id}/api-keys/{key_id}`.
