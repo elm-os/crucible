@@ -14,6 +14,8 @@
 //!
 //! - [`pg_model`]: the simulated Postgres behind `ControlStore`: snapshot transactions, constraints, leases,
 //!   claims, the key feed and its fault model.
+//! - [`lease_sim`]: leader election with leases over `pg_model` under its faults, and the oracle for the
+//!   fencing rules of contract 11.7.
 //!
 //! The network (turmoil hosts) joins in a later wave and reuses these pieces.
 //!
@@ -26,6 +28,7 @@ mod boot;
 pub mod ch_model;
 mod ch_read;
 mod disk;
+pub mod lease_sim;
 pub mod pg_model;
 mod runtime;
 pub mod ship_sim;
