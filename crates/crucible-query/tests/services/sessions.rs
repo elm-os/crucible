@@ -285,3 +285,31 @@ fn the_sessions_of_a_user_come_from_its_trace_heads_latest_first() {
     let whole = run(world.service.user_sessions(&ctx(1), bob)).unwrap();
     assert_eq!(whole.meta.consistency, Consistency::Strong);
 }
+
+#[test]
+fn stage_b_trailing_the_acknowledged_frames_makes_rollup_reads_lagging() {
+    let mut world = three_sessions();
+    // Durable and acknowledged, not applied: the index cannot say what it holds.
+    world.ack_only(vec![of(span(7, 70, 0, at(-1)), "s7", "zoe")]);
+    assert_eq!(
+        sessions(&world, 10, None).meta.consistency,
+        Consistency::Lagging
+    );
+    assert_eq!(
+        users(&world, 10, None).meta.consistency,
+        Consistency::Lagging
+    );
+    let query = UserSessionsQuery {
+        window: window(),
+        user_id: "bob".to_owned(),
+        limit: None,
+        cursor: None,
+    };
+    let theirs = run(world.service.user_sessions(&ctx(1), query)).unwrap();
+    assert_eq!(theirs.meta.consistency, Consistency::Lagging);
+    world.apply_pending();
+    world.settle();
+    let listed = sessions(&world, 10, None);
+    assert_eq!(listed.meta.consistency, Consistency::Strong);
+    assert_eq!(listed.data.len(), 4);
+}

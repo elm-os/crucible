@@ -4,16 +4,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crucible_plan::{Filter, TextField, Value};
+use crucible_plan::{Caller, Filter, TextField, Value};
 use crucible_query::{
-    Consistency, PartialReason, QueryServiceError, SpanListCursor, SpanListPage, SpanListQuery,
-    TraceListQuery,
+    Consistency, PartialReason, QueryServiceError, ReadContext, RetentionSettings, SpanListCursor,
+    SpanListPage, SpanListQuery, TraceListQuery,
 };
-use crucible_recent::SpanEntry;
-use crucible_records::{Level, ObservationType, SpanId, TableId, TimeWindow, Timestamp, TraceId};
+use crucible_recent::{Frame, QuarantineReach, QuarantinedPair, SpanEntry};
+use crucible_records::{
+    Level, Lsn, ObservationType, PartitionId, SpanId, TableId, TimeWindow, Timestamp, TraceId,
+};
 
 use crate::store::stored_row;
-use crate::world::{DAY, NOW, World, ctx, project, run, span, span_id, trace};
+use crate::world::{DAY, NOW, World, ctx, project, run, scoped, span, span_id, trace};
 
 const MS: i64 = 1_000;
 
@@ -234,4 +236,78 @@ fn trace_list_filters_on_span_fields_keep_traces_with_a_matching_span() {
         refused,
         Err(QueryServiceError::Validation("observation_type"))
     );
+}
+
+#[test]
+fn a_quarantined_span_pair_marks_only_the_lists_that_read_spans() {
+    let mut world = World::new(100);
+    let lsn = world.ack(vec![
+        span(1, 10, 0, at(-30)),
+        typed(span(1, 11, 10, at(-29)), ObservationType::Tool),
+    ]);
+    world.ship(lsn);
+    world.checkpoint(lsn);
+    // A later batch's `span_core` pair is quarantined for the project.
+    world.writer.apply(Frame::Quarantine {
+        lsn: Lsn::new(lsn.get() + 100),
+        pairs: vec![QuarantinedPair {
+            batch_seq: Lsn::new(lsn.get() + 50),
+            table: TableId::SpanCore,
+            partition: PartitionId::date(at(-30).date()),
+            reach: QuarantineReach::Projects(vec![project(1)]),
+        }],
+    });
+    world.wal.set_durable(world.index.applied());
+    let marked = |filter: Filter| {
+        let query = TraceListQuery {
+            window: window(),
+            filter,
+            limit: None,
+            cursor: None,
+        };
+        run(world.service.trace_list(&ctx(1), query))
+            .unwrap()
+            .meta
+            .partial_reason
+    };
+    // Heads and stats are whole; a list that reads `span_core` for its span conditions is not.
+    assert_eq!(marked(Filter::all()), None);
+    let tool = Filter::ObservationType(vec![ObservationType::Tool]);
+    assert_eq!(marked(tool), Some(PartialReason::Quarantined));
+    assert_eq!(
+        spans(&world, Filter::all(), 10, None).meta.partial_reason,
+        Some(PartialReason::Quarantined)
+    );
+}
+
+#[test]
+fn retention_hides_expired_spans_from_the_store_and_the_index() {
+    let mut world = World::new(100);
+    let old = NOW.saturating_add_micros(-3 * DAY);
+    world.ack(vec![span(1, 10, 0, old)]);
+    world.ack(vec![span(2, 20, 0, at(-10))]);
+    let wide = TimeWindow::new(NOW.saturating_add_micros(-5 * DAY), NOW).unwrap();
+    let keep_one_day = ReadContext::new(
+        scoped(1),
+        RetentionSettings {
+            retention_days: Some(1),
+            ..RetentionSettings::default()
+        },
+        Caller::Session,
+    );
+    for settled in [false, true] {
+        if settled {
+            world.settle();
+        }
+        let query = || SpanListQuery {
+            window: wide,
+            filter: Filter::all(),
+            limit: None,
+            cursor: None,
+        };
+        let all = run(world.service.span_list(&ctx(1), query())).unwrap();
+        assert_eq!(ids(&all), [span_id(20), span_id(10)], "settled: {settled}");
+        let kept = run(world.service.span_list(&keep_one_day, query())).unwrap();
+        assert_eq!(ids(&kept), [span_id(20)], "settled: {settled}");
+    }
 }

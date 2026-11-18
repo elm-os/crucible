@@ -50,7 +50,7 @@ function listPage(data: TraceListItem[], head: string): TraceListPage {
 }
 
 // The list answers with head cursor `h-<n>` on its n-th read; live tail answers `newCount`.
-function serve(newCount: () => number) {
+function serve(newCount: () => number, empty = false) {
   let reads = 0;
   fetchMock.mockImplementation(async (input) => {
     const url = new URL(String(input), "http://localhost");
@@ -65,7 +65,7 @@ function serve(newCount: () => number) {
       });
     }
     reads += 1;
-    return json(listPage([item(String(reads))], `h-${reads}`));
+    return json(listPage(empty ? [] : [item(String(reads))], `h-${reads}`));
   });
 }
 
@@ -88,6 +88,15 @@ describe("live tail", () => {
     await act(async () => show.click());
     expect(await screen.findByRole("link", { name: "trace 2" })).toBeTruthy();
     expect(listReads()).toHaveLength(2);
+  });
+
+  test("an empty list counts the first traces too", async () => {
+    serve(() => 2, true);
+    renderWithClient(<TracesSection />);
+    expect(
+      await screen.findByText("No traces match these filters in the last 24 hours."),
+    ).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Show 2 new traces" })).toBeTruthy();
   });
 
   test("nothing new shows nothing", async () => {

@@ -52,6 +52,17 @@ export function TracesSection() {
         conflicts={TRACE_CONFLICTS}
         noun="traces"
       />
+      {/* Outside the section, so it also counts traces arriving into an empty list. */}
+      {query.data?.page.head_cursor ? (
+        <NewTraces
+          key={query.data.page.head_cursor}
+          project={project}
+          filters={filters}
+          window={query.data.window}
+          head={query.data.page.head_cursor}
+          onShow={() => query.refetch()}
+        />
+      ) : null}
       <Section
         title="Recent traces"
         query={query}
@@ -72,18 +83,8 @@ export function TracesSection() {
           )
         }
       >
-        {({ page, window }) => (
+        {({ page }) => (
           <>
-            {page.head_cursor ? (
-              <NewTraces
-                key={page.head_cursor}
-                project={project}
-                filters={filters}
-                window={window}
-                head={page.head_cursor}
-                onShow={() => query.refetch()}
-              />
-            ) : null}
             {page.data.length === 0 ? (
               <EmptyState
                 kind="incomplete"

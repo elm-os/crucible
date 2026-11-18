@@ -272,6 +272,20 @@ test.describe("traces: filters and live tail", () => {
     await expect(page.getByRole("link", { name: "support agent" })).toBeVisible();
   });
 
+  test("live tail: an empty list counts the first traces as they arrive", async ({ page, api }) => {
+    api.on(LIST_PATH, (route, requestUrl) =>
+      route.fulfill(
+        requestUrl.searchParams.has("since")
+          ? json({ ...tracePage([]), head_cursor: "h-tail", new_count: 1 })
+          : json(tracePage([], { head_cursor: "h-1" })),
+      ),
+    );
+    await page.goto(`/traces/?project=${PROJECT}`);
+    await expect(page.getByText("No traces in the last 24 hours.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Show 1 new trace" })).toBeVisible();
+    await expectAccessible(page, "traces empty with live tail");
+  });
+
   test("live tail: new traces after the head cursor show as a button that refreshes the list", async ({
     page,
     api,

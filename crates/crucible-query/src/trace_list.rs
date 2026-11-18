@@ -5,7 +5,7 @@ use crucible_records::{TableId, TimeWindow};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::cursor::{HeadCursor, HeadKey, PageCursor};
-use crate::heads::{Candidate, LIST_TABLES, TraceListItem, consistency, newest_first, page_limit};
+use crate::heads::{Candidate, TraceListItem, consistency, list_tables, newest_first, page_limit};
 use crate::service::QueryService;
 
 /// A page reads the store at most this many times. Past it, a page of mostly hidden provisional heads comes
@@ -140,7 +140,7 @@ impl QueryService {
             as_of,
             consistency(base, &recent),
             recent.state,
-            &LIST_TABLES,
+            &list_tables(&query.filter),
             recent.used,
         )?;
         let project_id = scope.project_id();

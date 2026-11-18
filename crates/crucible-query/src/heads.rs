@@ -5,7 +5,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crucible_plan::{Filter, TRACE_LIST_MAX_LIMIT, TraceListRequest, filtered_trace_list};
+use crucible_plan::{
+    Filter, FilterTarget, TRACE_LIST_MAX_LIMIT, TraceListRequest, filtered_trace_list,
+};
 use crucible_recent::{Consistency, ReadState, RecentSpan};
 use crucible_records::{HeadKind, TableId, TimeWindow, TraceId};
 
@@ -18,6 +20,21 @@ pub const TRACE_LIST_DEFAULT_LIMIT: u32 = 50;
 
 /// The tables the trace list depends on, for the quarantine rule.
 pub(crate) const LIST_TABLES: [TableId; 2] = [TableId::TraceHeads, TableId::TraceStats];
+
+/// The tables a trace list under `filter` depends on: [`LIST_TABLES`], and the span table its conditions on
+/// spans are evaluated on (`crucible_plan::filtered_trace_list`), whose quarantined pairs can hide traces too.
+pub(crate) fn list_tables(filter: &Filter) -> Vec<TableId> {
+    let mut tables = LIST_TABLES.to_vec();
+    let (_, on_spans) = filter.split(FilterTarget::TraceHeads);
+    if !on_spans.is_all() {
+        tables.push(if on_spans.unsupported(FilterTarget::SpanCore).is_none() {
+            TableId::SpanCore
+        } else {
+            TableId::SpanPayload
+        });
+    }
+    tables
+}
 
 /// One trace of the list.
 #[derive(Clone, PartialEq, Eq, Debug)]

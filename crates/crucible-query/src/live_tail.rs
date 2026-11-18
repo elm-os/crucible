@@ -6,7 +6,7 @@ use crucible_schema::TraceHeadsCol;
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::cursor::HeadCursor;
-use crate::heads::{LIST_TABLES, TraceListItem, consistency, newest_first, page_limit};
+use crate::heads::{TraceListItem, consistency, list_tables, newest_first, page_limit};
 use crate::service::QueryService;
 
 /// `new_count` of a live-tail response saturates here.
@@ -93,7 +93,7 @@ impl QueryService {
             read.now,
             consistency(base, &recent),
             recent.state,
-            &LIST_TABLES,
+            &list_tables(&query.filter),
             recent.used,
         )?;
         Ok(TraceTail {
