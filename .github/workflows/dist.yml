@@ -1,0 +1,57 @@
+name: dist
+
+# Pull request check of the release pipeline: `dist plan` with the pinned cargo-dist. It lists what a version tag
+# would build (dist-workspace.toml: seven targets, archives and installers) and fails when
+# .github/workflows/release.yml differs from what `dist generate` writes for the current configuration.
+
+on:
+  pull_request:
+    paths:
+      - dist-workspace.toml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/crucible/Cargo.toml
+      - rust-toolchain.toml
+      - .github/build-setup.yml
+      - .github/workflows/release.yml
+      - .github/workflows/dist.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dist-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The version in dist-workspace.toml, and the sha256 of its x86_64-unknown-linux-gnu archive.
+  DIST_VERSION: 0.34.0
+  DIST_SHA256: 7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The pinned cargo-dist is the configured one
+        run: |
+          configured=$(sed -n 's/^cargo-dist-version = "\(.*\)"$/\1/p' dist-workspace.toml)
+          if [ "$configured" != "$DIST_VERSION" ]; then
+            echo "dist-workspace.toml pins cargo-dist $configured; set DIST_VERSION and DIST_SHA256 in this workflow to match"
+            exit 1
+          fi
+      - name: Install cargo-dist
+        run: |
+          archive=cargo-dist-x86_64-unknown-linux-gnu.tar.xz
+          curl --proto '=https' --tlsv1.2 -fsSLO "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/${archive}"
+          echo "${DIST_SHA256}  ${archive}" | sha256sum --check
+          tar -xJf "$archive"
+          install -m 0755 cargo-dist-x86_64-unknown-linux-gnu/dist "$HOME/.cargo/bin/dist"
+          dist --version
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: dist plan
+        run: dist plan
