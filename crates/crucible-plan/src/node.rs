@@ -81,7 +81,18 @@ fn own(table_id: TableId, columns: &[ColumnRef]) -> Result<(), PlanError> {
     }
 }
 
+/// Only project tables can be read through a plan: the renderer adds `project_id = {scope}` to every table
+/// reference, and `dedup_selftest` has no such column.
+fn scoped(table_id: TableId) -> Result<(), PlanError> {
+    if table(table_id).is_scoped() {
+        Ok(())
+    } else {
+        Err(PlanError::Table(table_id))
+    }
+}
+
 fn plain(table_id: TableId) -> Result<(), PlanError> {
+    scoped(table_id)?;
     match table(table_id).kind {
         TableKind::Plain => Ok(()),
         TableKind::Aggregating => Err(PlanError::AggregatingTable(table_id)),
@@ -390,6 +401,7 @@ impl Aggregate {
         measures: Vec<Measure>,
     ) -> Result<Self, PlanError> {
         let group = refs(group);
+        scoped(table_id)?;
         own(table_id, &group)?;
         pred.check(table_id)?;
         let aggregating = table(table_id).kind == TableKind::Aggregating;
@@ -414,10 +426,36 @@ impl Aggregate {
         })
     }
 
-    /// Keeps the groups whose measures satisfy every condition.
+    /// Keeps the groups whose measures satisfy every condition. A condition's value must have the type of its
+    /// measure: unsigned for a count, a distinct count or an unsigned sum, the column's type for a minimum,
+    /// maximum or latest value. Histogram and pick merges cannot be compared.
     pub fn having(mut self, having: Vec<Having>) -> Result<Self, PlanError> {
-        if having.iter().any(|h| h.measure >= self.measures.len()) {
-            return Err(PlanError::OutputIndex);
+        for condition in &having {
+            let measure = self
+                .measures
+                .get(condition.measure)
+                .ok_or(PlanError::OutputIndex)?;
+            let fits = match measure {
+                Measure::Count | Measure::Uniq(_) => matches!(condition.value, Literal::UInt(_)),
+                Measure::Sum(c) => matches!(
+                    (c.ty().scalar(), &condition.value),
+                    (Ty::Int32 | Ty::Int64, Literal::Int(_))
+                        | (Ty::Float32 | Ty::Float64, Literal::Float(_))
+                        | (
+                            Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64,
+                            Literal::UInt(_)
+                        )
+                ),
+                Measure::Min(c) | Measure::Max(c) | Measure::LatestByVersion(c) => {
+                    condition.value.fits(c.ty())
+                }
+                Measure::HistogramMerge(_) | Measure::PickMerge(_) => false,
+            };
+            if !fits {
+                return Err(PlanError::LiteralType(
+                    measure.column().map_or("count", |c| c.name()),
+                ));
+            }
         }
         self.having = having;
         Ok(self)

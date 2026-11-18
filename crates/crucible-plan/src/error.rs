@@ -57,7 +57,10 @@ pub enum PlanError {
     /// A partition id of the wrong kind for the table.
     #[error("partition does not belong to table {0:?}")]
     Partition(TableId),
-    /// The table is not one the operation applies to.
+    /// Trace bounds whose end is before their start, or outside the representable range.
+    #[error("trace bounds are not a time range")]
+    Bounds,
+    /// The table is not one the operation applies to: for a read, a table without `project_id`.
     #[error("table {0:?} is not valid here")]
     Table(TableId),
 }

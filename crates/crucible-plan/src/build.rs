@@ -47,6 +47,18 @@ pub fn effective_window(
     })
 }
 
+/// The window that holds every span of a trace whose merged `trace_stats` row gives `min_start` and `max_end`.
+/// A span starts no later than the trace ends, so the window is `[min_start, max_end]` made half-open by one
+/// microsecond: a span that starts exactly at `max_end` (a zero-duration span, or a trace of one instant) is
+/// inside it.
+pub fn trace_bounds_window(
+    min_start: Timestamp,
+    max_end: Timestamp,
+) -> Result<TimeWindow, PlanError> {
+    let to = max_end.checked_add_micros(1).ok_or(PlanError::Bounds)?;
+    TimeWindow::new(min_start, to).map_err(|_| PlanError::Bounds)
+}
+
 fn in_trace(trace_id: TraceId) -> [Pred; 2] {
     [
         Pred::eq(SpanCoreCol::TraceHash, trace_hash(trace_id)),
@@ -84,13 +96,16 @@ pub fn trace_time_bounds(
 }
 
 /// Trace by id, step 2: the trace's spans from `span_core`, read by key inside the time bounds that step 1
-/// returned (`bounds`), in `(start_time, span_id)` order, at most [`TRACE_INLINE_SPAN_LIMIT`] rows.
+/// returned (`min_start`, `max_end`), in `(start_time, span_id)` order, at most [`TRACE_INLINE_SPAN_LIMIT`]
+/// rows. The plan's window is [`trace_bounds_window`].
 pub fn trace_spans(
     scope: ProjectScope,
-    bounds: TimeWindow,
+    min_start: Timestamp,
+    max_end: Timestamp,
     caller: Caller,
     trace_id: TraceId,
 ) -> Result<QueryPlan, PlanError> {
+    let bounds = trace_bounds_window(min_start, max_end)?;
     let scan = Scan::new(
         TableId::SpanCore,
         SpanCoreCol::ALL.iter().copied(),
@@ -157,18 +172,30 @@ pub fn trace_list(
     ))
 }
 
-/// One page of the direct children of a span, in `(start_time, span_id)` order, inside the trace's time bounds.
-/// `limit` defaults to [`SPAN_CHILDREN_DEFAULT_LIMIT`]; the scan reads one row more than the page, which tells
-/// the caller whether another page exists.
+/// The trace a page of span children belongs to, with the time bounds from its merged `trace_stats` row.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TraceBounds {
+    /// The trace.
+    pub trace_id: TraceId,
+    /// `min(min_start)`.
+    pub min_start: Timestamp,
+    /// `max(max_end)`.
+    pub max_end: Timestamp,
+}
+
+/// One page of the direct children of a span, in `(start_time, span_id)` order, inside the trace's time bounds
+/// ([`trace_bounds_window`]). `limit` defaults to [`SPAN_CHILDREN_DEFAULT_LIMIT`]; the scan reads one row more
+/// than the page, which tells the caller whether another page exists.
 pub fn span_children(
     scope: ProjectScope,
-    bounds: TimeWindow,
+    trace: TraceBounds,
     caller: Caller,
-    trace_id: TraceId,
     parent: SpanId,
     cursor: Option<(Timestamp, SpanId)>,
     limit: Option<u32>,
 ) -> Result<QueryPlan, PlanError> {
+    let bounds = trace_bounds_window(trace.min_start, trace.max_end)?;
+    let trace_id = trace.trace_id;
     let limit = limit.unwrap_or(SPAN_CHILDREN_DEFAULT_LIMIT);
     if limit == 0 || limit > SPAN_CHILDREN_MAX_LIMIT {
         return Err(PlanError::Limit);

@@ -5,10 +5,11 @@
 
 use crucible_auth::test_support;
 use crucible_plan::{
-    Aggregate, BatchProbe, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Literal, MAX_LIST,
-    Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass, QueryPlan, Scan,
-    SemiJoin, TRACE_LIST_MAX_LIMIT, TraceListRequest, data_bounds, effective_window, pad_in_list,
-    padded_in_len, span_children, trace_hash, trace_list, trace_spans, trace_time_bounds,
+    AggOutput, Aggregate, BatchProbe, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Having,
+    Literal, MAX_LIST, Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass,
+    QueryPlan, Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest, data_bounds,
+    effective_window, pad_in_list, padded_in_len, span_children, trace_bounds_window, trace_hash,
+    trace_list, trace_spans, trace_time_bounds,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -22,6 +23,11 @@ use crucible_schema::{
     UserRollupCol, table,
 };
 use proptest::prelude::*;
+
+/// `trace_hash` of sixteen zero bytes.
+const HASH_ZERO: u32 = 3_344_075_112;
+/// `trace_hash` of the bytes 0x00 to 0x0f.
+const HASH_COUNTING: u32 = 4_128_731_355;
 
 fn refs<C: Column>() -> Vec<ColumnRef> {
     C::ALL.iter().map(|c| c.column_ref()).collect()
@@ -247,6 +253,16 @@ fn scans_and_lookups_refuse_aggregating_tables() {
             vec![vec![Literal::UInt(0)]],
             columns.clone(),
         );
+        if !def.is_scoped() {
+            // No project column, so no project predicate: not readable through a plan at all.
+            let unscoped = PlanError::Table(def.id);
+            assert_eq!(def.id, TableId::DedupSelftest);
+            assert_eq!(scan, Err(unscoped.clone()));
+            assert_eq!(lookup, Err(unscoped.clone()));
+            let aggregate = Aggregate::new(def.id, Pred::all(), [columns[0]], vec![Measure::Count]);
+            assert_eq!(aggregate, Err(unscoped));
+            continue;
+        }
         match def.kind {
             TableKind::Plain => assert!(scan.is_ok(), "{}", def.name()),
             TableKind::Aggregating => {
@@ -476,13 +492,95 @@ fn probes_and_deletes_are_typed() {
 
 #[test]
 fn trace_hash_is_the_low_half_of_xxh3() {
-    // Reference values of XXH3-64: the low 32 bits for sixteen zero bytes and for the bytes 0x00 to 0x0f.
+    // The published XXH3-64 value of the empty input anchors the hash function itself.
+    assert_eq!(xxhash_rust::xxh3::xxh3_64(&[]), 0x2D06_8005_38D3_94C2);
+    // Known answers for the shipper to match: sixteen zero bytes, and the bytes 0x00 to 0x0f.
     let counting = TraceId::from_bytes(core::array::from_fn(|i| i as u8));
-    let full = |id: TraceId| xxhash_rust::xxh3::xxh3_64(id.as_bytes());
+    assert_eq!(trace_hash(TraceId::ZERO), HASH_ZERO);
+    assert_eq!(trace_hash(counting), HASH_COUNTING);
     for id in [TraceId::ZERO, counting] {
-        assert_eq!(u64::from(trace_hash(id)), full(id) & 0xffff_ffff);
+        let full = xxhash_rust::xxh3::xxh3_64(id.as_bytes());
+        assert_eq!(u64::from(trace_hash(id)), full & 0xffff_ffff);
     }
-    assert_ne!(trace_hash(TraceId::ZERO), trace_hash(counting));
+}
+
+#[test]
+fn trace_bounds_include_a_span_that_starts_at_the_end() {
+    let (start, end) = (Timestamp::from_micros(1_000), Timestamp::from_micros(5_000));
+    let window = trace_bounds_window(start, end).unwrap();
+    assert!(window.contains(start) && window.contains(end));
+    assert!(!window.contains(Timestamp::from_micros(5_001)));
+    // A trace of one instantaneous span still has a window.
+    let instant = trace_bounds_window(start, start).unwrap();
+    assert!(instant.contains(start));
+    assert_eq!(instant.len_micros(), 1);
+    assert_eq!(trace_bounds_window(end, start), Err(PlanError::Bounds));
+    let max = Timestamp::from_micros(i64::MAX);
+    assert_eq!(trace_bounds_window(start, max), Err(PlanError::Bounds));
+
+    let scope = test_support::scope(ProjectId::from_bytes([9; 16])).unwrap();
+    let trace_id = TraceId::from_bytes([3; 16]);
+    let plan = trace_spans(scope, start, start, Caller::Session, trace_id).unwrap();
+    assert_eq!(plan.window(), instant);
+    let reversed = trace_spans(scope, end, start, Caller::Session, trace_id);
+    assert_eq!(reversed, Err(PlanError::Bounds));
+    let trace = TraceBounds {
+        trace_id,
+        min_start: start,
+        max_end: end,
+    };
+    let children = span_children(scope, trace, Caller::Agent, SpanId::ZERO, None, None).unwrap();
+    assert_eq!(children.window(), window);
+}
+
+#[test]
+fn having_values_are_typed_by_their_measure() {
+    let aggregate = || {
+        Aggregate::new(
+            TableId::TraceStats,
+            Pred::all(),
+            [TraceStatsCol::TraceId],
+            vec![
+                Measure::Sum(TraceStatsCol::TotalCostNusd.column_ref()),
+                Measure::Sum(TraceStatsCol::ErrorCount.column_ref()),
+                Measure::Max(TraceStatsCol::MaxEnd.column_ref()),
+                Measure::PickMerge(TraceStatsCol::UserIdPick.column_ref()),
+            ],
+        )
+        .unwrap()
+    };
+    let having = |measure, value| {
+        aggregate().having(vec![Having {
+            measure,
+            op: CmpOp::Gt,
+            value,
+        }])
+    };
+    assert!(having(0, Literal::Int(5)).is_ok());
+    assert!(having(1, Literal::UInt(0)).is_ok());
+    assert!(having(2, Literal::Time(Timestamp::EPOCH)).is_ok());
+    assert_eq!(
+        having(0, Literal::UInt(5)),
+        Err(PlanError::LiteralType("total_cost_nusd"))
+    );
+    assert_eq!(
+        having(1, Literal::String("x".into())),
+        Err(PlanError::LiteralType("error_count"))
+    );
+    assert_eq!(
+        having(2, Literal::UInt(1)),
+        Err(PlanError::LiteralType("max_end"))
+    );
+    assert_eq!(
+        having(3, Literal::String("x".into())),
+        Err(PlanError::LiteralType("user_id_pick"))
+    );
+    assert_eq!(having(4, Literal::UInt(1)), Err(PlanError::OutputIndex));
+    let ordered = |output| aggregate().ordered(vec![(output, Direction::Desc)]);
+    assert!(ordered(AggOutput::Measure(3)).is_ok());
+    assert!(ordered(AggOutput::Group(0)).is_ok());
+    assert_eq!(ordered(AggOutput::Group(1)), Err(PlanError::OutputIndex));
+    assert_eq!(aggregate().limited(0), Err(PlanError::Limit));
 }
 
 #[test]
@@ -561,7 +659,9 @@ proptest! {
         let (_, preds) = names(bounds.root());
         prop_assert!(preds.contains(&&Pred::eq(TraceStatsCol::TraceId, trace_id)));
 
-        let spans = trace_spans(scope, window, caller, trace_id).unwrap();
+        // The bounds of a trace whose last span starts at the last instant of the window.
+        let last = Timestamp::from_micros(window.to().micros() - 1);
+        let spans = trace_spans(scope, window.from(), last, caller, trace_id).unwrap();
         assert_scoped(&spans, scope, window, caller, QueryClass::Point, TableId::SpanCore)?;
         let (_, preds) = names(spans.root());
         prop_assert!(preds.contains(&&Pred::eq(SpanCoreCol::TraceId, trace_id)));
@@ -587,8 +687,9 @@ proptest! {
         prop_assert_eq!(scan.cursor().is_some(), cursor.is_some());
 
         let child_cursor = child_cursor.map(|(t, id)| (t, SpanId::from_bytes(id)));
+        let trace_bounds = TraceBounds { trace_id, min_start: window.from(), max_end: last };
         let children =
-            span_children(scope, window, caller, trace_id, parent, child_cursor, child_limit).unwrap();
+            span_children(scope, trace_bounds, caller, parent, child_cursor, child_limit).unwrap();
         assert_scoped(&children, scope, window, caller, QueryClass::Point, TableId::SpanCore)?;
         let Node::Scan(scan) = children.root() else { panic!("a scan") };
         prop_assert_eq!(scan.limit(), Some(child_limit.unwrap_or(500) + 1));
@@ -618,9 +719,13 @@ proptest! {
             since: None,
         };
         prop_assert_eq!(trace_list(scope, window, Caller::Session, request), Err(PlanError::Limit));
-        let children = span_children(
-            scope, window, Caller::Session, TraceId::ZERO, SpanId::ZERO, None, Some(child_limit),
-        );
+        let trace = TraceBounds {
+            trace_id: TraceId::ZERO,
+            min_start: window.from(),
+            max_end: window.from(),
+        };
+        let children =
+            span_children(scope, trace, Caller::Session, SpanId::ZERO, None, Some(child_limit));
         prop_assert_eq!(children, Err(PlanError::Limit));
     }
 
@@ -634,7 +739,7 @@ proptest! {
         let fits = !composite && fits_by_type_string(&literal, column.ty());
         prop_assert_eq!(literal.fits(column.ty()), fits);
         let def = table(column.table());
-        let expected = fits && column.ty().agg_fn().is_none();
+        let expected = fits && column.ty().agg_fn().is_none() && def.is_scoped();
         let accepts = |pred: Pred| match def.kind {
             TableKind::Plain => Scan::new(def.id, [column], pred).is_ok(),
             TableKind::Aggregating => {
@@ -652,7 +757,7 @@ proptest! {
         let columns = all_columns();
         let (own, other) = (columns[a.index(columns.len())], columns[b.index(columns.len())]);
         prop_assume!(own.table() != other.table());
-        prop_assume!(table(own.table()).kind == TableKind::Plain);
+        prop_assume!(table(own.table()).kind == TableKind::Plain && table(own.table()).is_scoped());
         let foreign = PlanError::ForeignColumn { table: own.table(), column: other.name() };
         prop_assert_eq!(Scan::new(own.table(), [own, other], Pred::all()), Err(foreign.clone()));
         let pred = Pred::Not(Box::new(Pred::Or(vec![Pred::StartsWith(other, "x".into())])));
