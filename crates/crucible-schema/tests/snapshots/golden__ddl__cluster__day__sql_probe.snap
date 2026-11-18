@@ -1,0 +1,15 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.sql_probe ON CLUSTER crucible
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `id` UInt32 CODEC(T64, ZSTD(1)),
+    `canary` String CODEC(ZSTD(1)),
+    `start_time` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1))
+)
+ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')
+PRIMARY KEY project_id
+ORDER BY (project_id, id)
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200

@@ -155,3 +155,8 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     the frozen enums and the deterministic collections. The batch-token injectivity proof moves there with the type.
 72. **Hash collections use a fixed hasher (`DetMap`, `DetSet`).** Randomly seeded constructors are banned in
     `clippy.toml`, because iteration order would differ between runs.
+73. **The simulated `Env` lives in `crucible-sim` and shares `crucible-env-prod`'s exemption from the determinism
+    lints.** Both crates implement the traits over real primitives; product crates never get the exemption.
+74. **I1 is guaranteed on Linux and macOS; Windows is a development platform.** Windows has no directory sync
+    barrier through the standard library, and `unsafe` is denied.
+

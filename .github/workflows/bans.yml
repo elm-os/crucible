@@ -1,0 +1,39 @@
+name: bans
+
+# Proves that the determinism bans are live: every disallowed method and type in clippy.toml is planted in
+# tools/ban-selftest and must be reported by clippy, and the allow-attribute guard of ci-rust.yml must flag
+# a fixture that switches a determinism lint off outside the allowlist.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bans-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  bans:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/ban-selftest
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Every planted disallowed use is reported
+        run: python3 tools/ban-selftest/check.py bans
+      - name: The allow-attribute guard flags a fixture outside the allowlist
+        run: python3 tools/ban-selftest/check.py guard

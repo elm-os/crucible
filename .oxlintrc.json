@@ -5,5 +5,13 @@
     "correctness": "error",
     "suspicious": "warn"
   },
-  "ignorePatterns": ["**/generated/**", "ui/out/**", "ui/.next/**", "**/node_modules/**"]
+  "ignorePatterns": ["**/generated/**", "ui/out/**", "ui/.next/**", "**/node_modules/**"],
+  "overrides": [
+    {
+      "files": ["ui/**"],
+      "rules": {
+        "react/react-in-jsx-scope": "off"
+      }
+    }
+  ]
 }

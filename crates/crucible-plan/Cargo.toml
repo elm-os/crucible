@@ -12,6 +12,7 @@ publish.workspace = true
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }
 smallvec = { workspace = true }
+xxhash-rust = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

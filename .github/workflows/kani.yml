@@ -1,0 +1,51 @@
+name: kani
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kani-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Discover crates with proofs
+        id: discover
+        run: |
+          crates=$(grep -rl "kani::proof" crates/*/src | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)
+          echo "crates: ${crates:-none}"
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+      - name: Toolchain (from rust-toolchain.toml)
+        if: steps.discover.outputs.crates != ''
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install Kani 0.68.0
+        if: steps.discover.outputs.crates != ''
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          kani-version: "0.68.0"
+          args: --version
+      - name: Verify each crate
+        if: steps.discover.outputs.crates != ''
+        env:
+          CRATES: ${{ steps.discover.outputs.crates }}
+        run: |
+          for crate in $CRATES; do
+            echo "::group::cargo kani -p $crate"
+            cargo kani -p "$crate"
+            echo "::endgroup::"
+          done

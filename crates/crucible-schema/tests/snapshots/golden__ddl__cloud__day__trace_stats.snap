@@ -1,0 +1,36 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.trace_stats
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `trace_id` FixedString(16) CODEC(ZSTD(1)),
+    `row_day` Date CODEC(ZSTD(1)),
+    `marker_epoch` UUID CODEC(ZSTD(1)),
+    `marker_batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `marker_at` SimpleAggregateFunction(max, DateTime('UTC')) CODEC(ZSTD(1)),
+    `min_start` SimpleAggregateFunction(min, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1)),
+    `max_end` SimpleAggregateFunction(max, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1)),
+    `has_root` SimpleAggregateFunction(max, UInt8) CODEC(ZSTD(1)),
+    `min_head_start` SimpleAggregateFunction(min, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1)),
+    `max_level` SimpleAggregateFunction(max, UInt8) CODEC(ZSTD(1)),
+    `span_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `error_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `generation_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `tool_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `mcp_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `input_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `output_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `total_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `total_cost_nusd` SimpleAggregateFunction(sum, Int64) CODEC(T64, ZSTD(1)),
+    `environments` SimpleAggregateFunction(groupUniqArrayArray(16), Array(String)) CODEC(ZSTD(1)),
+    `trace_name_pick` SimpleAggregateFunction(max, String) CODEC(ZSTD(1)),
+    `user_id_pick` SimpleAggregateFunction(max, String) CODEC(ZSTD(1)),
+    `session_id_pick` SimpleAggregateFunction(max, String) CODEC(ZSTD(1))
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY row_day
+PRIMARY KEY (project_id, trace_id)
+ORDER BY (project_id, trace_id, row_day, marker_epoch, marker_batch_seq)
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200
