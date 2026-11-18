@@ -4,9 +4,9 @@ Crucible is a development preview. Nothing is released yet, the data format may 
 is no upgrade path from one preview to the next, so do not put data you need to keep in it. To get a server running,
 follow [quickstart.md](quickstart.md).
 
-A deployment is one `crucible` server, one ClickHouse and one Postgres. Postgres holds the control plane: in this
-milestone that is the migrations ledger. Sign-in, projects and key management will follow; until then project keys
-come from a file.
+A deployment is one `crucible` server, one ClickHouse and one Postgres. Postgres holds the control plane: sign-in, the
+organization, projects, members, API keys and the migrations ledger. A server without Postgres takes its project keys
+from a file instead and has no sign-in ([Without Postgres](#without-postgres-keys-from-a-file)).
 
 | Way to run it | Files | State |
 |---|---|---|
@@ -39,29 +39,49 @@ carries `LICENSE` and `THIRD_PARTY_NOTICES` in `/usr/share/doc/crucible/`. Its d
 - `clickhouse`: ClickHouse 26.8 LTS with its data in the volume `clickhouse-data`, and the admin user `crucible_admin`,
   which may manage access;
 - `postgres`: Postgres 18 with its data in the volume `postgres-data`, and the user and database `crucible`;
-- `crucible`: the server with `--migrate`, its data in the volume `crucible-data`, and the project keys from
-  `keys.toml` beside the Compose file;
+- `crucible`: the server with `--migrate` and its data in the volume `crucible-data`; it keeps sign-in, projects and
+  API keys in the bundled Postgres;
 - `ready`: a curl container that reports Crucible's `/readyz` as its health. The Crucible image has no shell, so it
   cannot run a health check inside itself; with this service `docker compose up --wait` returns once Crucible is
   ready, and `docker compose ps` shows whether it is.
 
-Every refusal says what to change: a missing `.env` setting stops Compose with the setting's name and a server that
-cannot take ingest yet answers `/readyz` with the reason. Without `keys.toml`, Docker Engine refuses to start the
-server and names the missing path; Docker Desktop for Windows creates an empty directory there instead, and the
-server stops with `reading /etc/crucible/keys.toml` and `Is a directory`. Delete that directory and make the file.
+Every refusal says what to change: a missing `.env` setting stops Compose with the setting's name, and a server that
+cannot take ingest yet answers `/readyz` with the reason. A server given both Postgres and a keys file
+(`--keys-file`) refuses to start and says to make the keys in Settings or with `crucible admin create-key` instead.
 
-**Why Postgres is bundled already.** The server is designed to run with Postgres, and in this milestone it keeps its
-migrations ledger there: `--migrate` records each step in `schema_migrations` and skips it on the next start, and it
-applies the ClickHouse steps under a lease, so two servers that migrate at once do not interleave. Sign-in, projects
-and keys will live in the same database, so bundling it now gives the Compose file its final shape from the first
-install. The server can run without Postgres (`compose.cloud.yaml` makes it optional); it then applies every
-idempotent step on each start.
+On the first start no one can sign in yet: the server logs a one-time setup link for the owner, or
+`docker compose exec crucible crucible admin init` creates the owner from the command line
+([quickstart.md](quickstart.md#4-create-the-organization-and-its-owner)). `--migrate` records each schema step in the
+ledger table `schema_migrations` and skips it on the next start, and it applies the ClickHouse steps under a lease, so
+two servers that migrate at once do not interleave.
 
 `deploy/compose/compose.cloud.yaml` runs the server and the `ready` service against a ClickHouse and a Postgres
 elsewhere, configured through `.env`. This preview supports a single-node ClickHouse only: it refuses a ClickHouse Cloud
-service at startup and `/readyz` gives the reason. ClickHouse Cloud support is planned. A managed Postgres is given as
-`CRUCIBLE_POSTGRES_URL` with its password in the URL and `?sslmode=require` for TLS; `crucible config print` shows the
-URL with the password redacted.
+service at startup and `/readyz` gives the reason. ClickHouse Cloud support is planned. The Postgres, 15 or newer, is
+required and given as `CRUCIBLE_POSTGRES_URL` with its password in the URL and `?sslmode=require` for TLS;
+`crucible config print` shows the URL with the password redacted.
+
+## Without Postgres: keys from a file
+
+Without Postgres the server has no control plane: nobody signs in, and there are no members and no key management.
+Ingest and the API accept the project keys listed in a TOML file passed with `--keys-file`
+(`CRUCIBLE_SERVER_KEYS_FILE`, `server.keys_file`), and the UI connects with one of those keys through its Connect
+dialog. This mode is meant for ingest-only setups, such as a collector or a test rig, and for development:
+`deploy/compose/compose.dev.yaml` runs it. With Postgres configured the server refuses a keys file.
+
+A project id is any UUID; a key pair is a public key `cpk_` and a secret `csk_`, each followed by 43 characters from
+`0-9A-Za-z` that encode 32 bytes, which a leading `0` always keeps in range. One way to make the file:
+
+```sh
+key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
+printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
+  "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
+  "$(key cpk_)" "$(key csk_)" > keys.toml
+```
+
+The file is read at startup; to change the keys, edit it and restart the server. In the image the server reads it as
+uid 65532, so keep it readable by others (the default mode 644) or give it to that user (`chown 65532 keys.toml`).
+Without Postgres nothing records which schema steps ran, so `--migrate` applies every idempotent step on each start.
 
 ## Binaries (planned)
 
@@ -91,23 +111,27 @@ Compose reads these from `.env` beside the Compose file:
 |---|---|---|
 | `CLICKHOUSE_PASSWORD` | none, required by `compose.yaml` | The password of `crucible_admin` in the bundled ClickHouse |
 | `POSTGRES_PASSWORD` | none, required by `compose.yaml` | The password of `crucible` in the bundled Postgres |
-| `CRUCIBLE_MASTER_KEY` | none, required | 32 random bytes as 64 hexadecimal characters. Crucible derives the passwords of its ClickHouse service users and the key that signs API cursors from it |
+| `CRUCIBLE_MASTER_KEY` | none, required | 32 random bytes as 64 hexadecimal characters. Crucible derives the passwords of its ClickHouse service users, the key that signs API cursors, the key that seals the secrets it stores in Postgres and the key that looks up API keys from it |
 | `CRUCIBLE_CLICKHOUSE_URL` | none, required by `compose.cloud.yaml` | `https://<host>:8443` or `http://<host>:8123` |
 | `CRUCIBLE_CLICKHOUSE_USER` | `crucible_admin` | The admin user in `compose.cloud.yaml`; it needs access management |
 | `CRUCIBLE_CLICKHOUSE_PASSWORD` | none, required by `compose.cloud.yaml` | That user's password |
-| `CRUCIBLE_POSTGRES_URL` | none, optional in `compose.cloud.yaml` | `postgres://<user>:<password>@<host>:5432/<database>`, with `?sslmode=require` for TLS |
+| `CRUCIBLE_POSTGRES_URL` | none, required by `compose.cloud.yaml` | `postgres://<user>:<password>@<host>:5432/<database>`, with `?sslmode=require` for TLS |
 | `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image. Pin a version here so that a pull never changes it |
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | Host port of the UI, the REST API and OTLP/HTTP ingest |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | Host port of OTLP/HTTP ingest |
 
-The defaults work on an internal network over plain HTTP. This preview has no sign-in: the API and ingest need a
-project key, but anyone who can reach port 8080 can load the UI's pages. Set `CRUCIBLE_BIND_ADDRESS=127.0.0.1`, or
-put a TLS proxy in front, on a network you do not trust.
-
 The server's own flags and environment variables are listed in
-[development.md](../development.md#running-crucible-serve); to change them, edit the `command` of the `crucible`
-service. Two notes for containers:
+[development.md](../development.md#running-crucible-serve); to change them, edit the `command` or the `environment`
+of the `crucible` service. Every setting is also a `CRUCIBLE_*` variable named after its key, so a setting without a
+flag is a line in that `environment`. For example the address people use, which sign-in through GitHub, Google or an
+OpenID Connect provider needs:
+
+```yaml
+      CRUCIBLE_SERVER_PUBLIC_URL: https://crucible.example.com
+```
+
+Notes for containers:
 
 - Every setting can also come from a TOML file (`--config`); `crucible config check` reports every problem at once
   and `crucible config print` shows the effective values with secrets redacted.
@@ -115,6 +139,16 @@ service. Two notes for containers:
   and `--master-key-file`, for example from Docker secrets mounted under `/run/secrets/`.
 - The recent-span index takes 10% of the machine's memory, at most 1 GiB, by default. The server reads the host's
   total memory, not a container limit, so a container with a memory limit should pass `--recent-max-bytes` below it.
+
+## Security
+
+The defaults work on an internal network over plain HTTP. People sign in with a password or a configured provider,
+and the API and ingest take a session or a project key; anyone who can reach port 8080 can still load the UI's static
+pages. Over plain HTTP, passwords and session cookies cross the network unencrypted, so on a network you do not trust,
+set `CRUCIBLE_BIND_ADDRESS=127.0.0.1` or put a TLS proxy in front and set `server.public_url` to its `https`
+address. A public URL limits cookie-authenticated writes to its origin (`server.allowed_origins` adds others), and an
+`https` one makes the session cookie `Secure`. With `security.require_https = true` the server refuses sign-in until
+the public URL is `https`.
 
 ## Ports
 
@@ -130,10 +164,10 @@ the port.
 
 ## Health
 
-`GET /healthz` answers `ok` while the process runs. `GET /readyz` answers `ready` once the WAL accepts writes and the
-startup checks against ClickHouse have passed, and 503 with the reason before that; ingest answers 503 for the same
-time. The checks retry with a pause that grows from 1 s to 15 s, so Crucible may start before ClickHouse does.
-`docker compose logs crucible` shows the same reason.
+`GET /healthz` answers `ok` while the process runs. `GET /readyz` answers `ready` once the WAL accepts writes, the
+startup checks against ClickHouse have passed and, with Postgres, the API keys have loaded from it, and 503 with the
+reason before that; ingest answers 503 for the same time. The checks retry with a pause that grows from 1 s to 15 s,
+so Crucible may start before ClickHouse does. `docker compose logs crucible` shows the same reason.
 
 ## Upgrades
 
@@ -145,15 +179,18 @@ A development preview has no upgrade path: when the data format changes, start o
    adds.
 
 Keep `CRUCIBLE_MASTER_KEY` across upgrades. Crucible creates its ClickHouse service users once, with passwords
-derived from that key, so a server started with another key cannot log in to the same ClickHouse data.
+derived from that key, so a server started with another key cannot log in to the same ClickHouse data, and the API
+keys and provider secrets in Postgres stop working under another key.
 
 ## Backups
 
 A backup is four things:
 
-1. `.env` and `keys.toml`. Without the master key, restored ClickHouse data cannot be used.
+1. `.env`. Without the master key, restored ClickHouse data cannot be used, and neither can the API keys and provider
+   secrets in Postgres, so keep `.env` with the `postgres-data` archive it belongs to.
 2. The volume `clickhouse-data`: the telemetry.
-3. The volume `postgres-data`: the control plane, which in this milestone is the migrations ledger.
+3. The volume `postgres-data`: the control plane: the organization, its users and members, projects, API keys,
+   sign-in providers and the migrations ledger.
 4. The volume `crucible-data`: the WAL, which holds requests that were acknowledged but are not yet in ClickHouse.
 
 Stop the stack first, so that the server drains its open requests and the databases write nothing while the volumes
@@ -167,8 +204,8 @@ done
 docker compose start
 ```
 
-To restore, put `.env` and `keys.toml` back beside the Compose file, let Compose create the empty volumes, unpack
-the archives into them and start:
+To restore, put `.env` back beside the Compose file, let Compose create the empty volumes, unpack the archives into
+them and start:
 
 ```sh
 docker compose create

@@ -95,7 +95,8 @@ echo "sending trace $trace_id"
 for attempt in $(seq 1 20); do
   status=$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST "http://127.0.0.1:$otlp_port/v1/traces" \
     --header "Authorization: Bearer $secret" --header 'Content-Type: application/json' \
-    --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"compose-smoke"}}]},
+    --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name",
+      "value":{"stringValue":"compose-smoke"}}]},
       "scopeSpans":[{"spans":[{"traceId":"'"$trace_id"'","spanId":"'"$span_id"'","name":"compose smoke span","kind":1,
       "startTimeUnixNano":"'"$now"'000000000","endTimeUnixNano":"'"$now"'250000000"}]}]}]}' || true)
   if [ "$status" = 200 ]; then
