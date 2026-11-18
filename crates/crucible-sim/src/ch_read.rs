@@ -13,8 +13,16 @@
 //!   computes on a real server: the project predicate and the window predicates on every table reference,
 //!   three-valued predicate logic, the keyset cursor as a tuple comparison, `ORDER BY` with nulls last, the
 //!   server's `UUID` order (second half first), `sumMap` without zero sums, `argMax` that skips null arguments,
-//!   and the semi-join id cap. Where the renderer refuses a plan (a zero-filled time series), so does the model.
-//!   Distinct counts are exact.
+//!   the semi-join id cap, the per-series fill of a zero-filled time series, the keyset of a grouped list and
+//!   the snippets of a text search. Distinct counts are exact.
+//! - **Guardrails.** A read runs under the limits its plan carries (contract 8.4) and is refused as a server
+//!   refuses it: `query_too_broad` above the rows or the bytes to read, `query_timeout` above the execution
+//!   time, `query_memory_exceeded` above the memory. The model has no parts index, so each figure is an upper
+//!   bound of what a server can reach: rows and bytes read are those of every row that ever landed in the
+//!   tables the plan reads (less dropped partitions; merges, deletes and mask applications never lower it,
+//!   because a server may not have run them yet), the execution time is that scan at [`SCAN_ROWS_PER_SEC`],
+//!   and the memory is the size of every row that passed the plan's filters plus the buckets a fill adds. So
+//!   the model is stricter than a server here and never more permissive.
 //! - **Deletes.** A lightweight delete hides its rows from every later read at once and leaves a mask on the
 //!   parts it touched; `APPLY DELETED MASK` and merges remove masked rows for good. A partition drop removes
 //!   the partition's parts, markers included, and its deduplication entries.
@@ -22,6 +30,7 @@
 //! The differential check of `crucible-conformance` runs the same plans and maintenance calls against this
 //! model and real servers.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -45,6 +54,11 @@ const METADATA_KV_CAP: usize = 1_024;
 const NAME_NGRAM: usize = 3;
 /// How often, per million, a merge follows newly landed parts unless [`ReadSide::merge_ppm`] says otherwise.
 const DEFAULT_MERGE_PPM: u32 = 300_000;
+/// The rows a second a read scans, for its execution time: slower than a server, so that the model's time
+/// limit is the stricter one.
+pub const SCAN_ROWS_PER_SEC: u64 = 10_000_000;
+/// The most rows a zero-filled time series may hold in the model before it is refused as out of memory.
+const MAX_FILLED_ROWS: u64 = 1_000_000;
 
 /// The rows a plan returns, grouped by what the plan's order defines.
 ///
@@ -106,6 +120,9 @@ struct StoredTable {
     mutations: BTreeMap<String, u64>,
     /// A landed block that could not be read as rows of the table.
     broken: Option<String>,
+    /// The rows and bytes that ever landed in each partition that was not dropped: what a read of the table
+    /// can have to scan on a server that has not merged, and so the read cost the guardrails count.
+    landed: BTreeMap<PartitionId, (u64, u64)>,
 }
 
 /// The store's view of every table.
@@ -117,6 +134,8 @@ pub(crate) struct ReadSide {
     next_mutation: u64,
     /// Merges done.
     pub(crate) merges: u64,
+    /// The rows a second a read scans.
+    pub(crate) scan_rows_per_sec: u64,
 }
 
 impl Default for ReadSide {
@@ -126,6 +145,7 @@ impl Default for ReadSide {
             merge_ppm: DEFAULT_MERGE_PPM,
             next_mutation: 0,
             merges: 0,
+            scan_rows_per_sec: SCAN_ROWS_PER_SEC,
         }
     }
 }
@@ -197,6 +217,23 @@ fn rows_of(def: &TableDef, block: &DecodedBlock) -> Option<Vec<Cells>> {
                 .collect()
         })
         .collect()
+}
+
+/// The size of a value as a read counts it: never below the bytes a server holds for it in memory.
+fn value_bytes(value: &Value) -> u64 {
+    1 + match value {
+        Value::Null => 0,
+        Value::String(text) => 16 + text.len() as u64,
+        Value::Bytes(bytes) => 16 + bytes.len() as u64,
+        Value::Uuid(_) => 16,
+        Value::Array(items) => 16 + items.iter().map(value_bytes).sum::<u64>(),
+        Value::Tuple2(a, b) => value_bytes(a) + value_bytes(b),
+        _ => 8,
+    }
+}
+
+fn row_bytes(row: &Cells) -> u64 {
+    row.iter().map(value_bytes).sum()
 }
 
 fn bytes_of(value: &Value) -> Option<&[u8]> {
@@ -713,12 +750,17 @@ impl ReadSide {
         let mut unreadable = None;
         for part in landed.iter().skip(before) {
             match rows_of(def, &part.block) {
-                Some(rows) => stored.parts.push(Stored {
-                    partition: part.partition,
-                    deleted: vec![false; rows.len()],
-                    mask_until: 0,
-                    rows,
-                }),
+                Some(rows) => {
+                    let landed = stored.landed.entry(part.partition).or_default();
+                    landed.0 += rows.len() as u64;
+                    landed.1 += rows.iter().map(row_bytes).sum::<u64>();
+                    stored.parts.push(Stored {
+                        partition: part.partition,
+                        deleted: vec![false; rows.len()],
+                        mask_until: 0,
+                        rows,
+                    });
+                }
                 None => {
                     let what = format!(
                         "a landed block of {} does not read as rows of the table",
@@ -963,6 +1005,17 @@ impl ReadSide {
         let stored = self.tables.entry(id).or_default();
         stored.touched = true;
         stored.parts.retain(|part| part.partition != partition);
+        stored.landed.remove(&partition);
+    }
+
+    /// The rows and bytes a read of the table can have to scan.
+    fn read_cost(&self, id: TableId) -> (u64, u64) {
+        self.tables.get(&id).map_or((0, 0), |stored| {
+            stored
+                .landed
+                .values()
+                .fold((0, 0), |(rows, bytes), (r, b)| (rows + r, bytes + b))
+        })
     }
 
     /// A mutation the store does not list is done.
@@ -1046,35 +1099,54 @@ fn finish<T>(
 
 /// The first instant of the bucket of `step` that holds `value`, as the renderer's bucket expression gives it.
 fn bucket(value: &Value, step: Step) -> Value {
-    let seconds = match value {
-        Value::Time(t) => t.micros().div_euclid(1_000_000),
-        Value::Date(d) => d.start().micros().div_euclid(1_000_000),
-        _ => return Value::Null,
+    match value {
+        Value::Time(t) => Value::Time(step.bucket(*t)),
+        Value::Date(d) => Value::Time(step.bucket(d.start())),
+        _ => Value::Null,
+    }
+}
+
+/// The zero of a sum over a column.
+fn zero(ty: &Ty) -> Value {
+    match ty.scalar() {
+        Ty::Int32 | Ty::Int64 => Value::Int(0),
+        Ty::Float32 | Ty::Float64 => Value::Float(0.0),
+        _ => Value::UInt(0),
+    }
+}
+
+/// What a measure holds in a bucket a zero fill added: the default of its result type, which is null for the
+/// measures the renderer makes nullable.
+fn unfilled(measure: &Measure) -> Value {
+    let absent = |c: &ColumnRef| match c.ty().scalar() {
+        Ty::Array(_) => Value::Array(Vec::new()),
+        _ => Value::Null,
     };
-    let floor = |width: i64| seconds.div_euclid(width) * width;
-    let start = match step {
-        Step::Minute => floor(60),
-        Step::FiveMinutes => floor(300),
-        Step::FifteenMinutes => floor(900),
-        Step::Hour => floor(3_600),
-        Step::Day => floor(86_400),
-        Step::Week => {
-            let day = CivilDate::from_day_number(seconds.div_euclid(86_400));
-            day.monday_on_or_before().start().micros() / 1_000_000
+    match measure {
+        Measure::Count => Value::UInt(0),
+        Measure::Sum(c) => zero(c.ty()),
+        Measure::Uniq(_) => Value::Null,
+        Measure::Min(c) | Measure::Max(c) | Measure::PickMerge(c) | Measure::LatestByVersion(c) => {
+            absent(c)
         }
-    };
-    Value::Time(Timestamp::from_micros(start * 1_000_000))
+        Measure::HistogramMerge(_) => histogram(&BTreeMap::new()),
+        Measure::SetMerge(_) => Value::Array(Vec::new()),
+    }
 }
 
 /// One measure with its columns resolved.
 #[derive(Debug)]
 enum Computed {
     Count,
-    Sum(usize),
+    /// With the value a sum of nulls takes: null, or zero in a zero-filled series.
+    Sum(usize, Value),
     Min(usize),
     Max(usize),
-    Uniq(usize),
+    /// With whether the column is nullable, in which case the count of a group of nulls is null.
+    Uniq(usize, bool),
     Histogram(usize),
+    /// With the bound of the stored sets.
+    Set(usize, usize),
     Latest {
         value: usize,
         version: usize,
@@ -1083,23 +1155,23 @@ enum Computed {
 }
 
 impl Computed {
-    fn of(def: &TableDef, measure: &Measure) -> Result<Self, QueryError> {
+    fn of(def: &TableDef, measure: &Measure, filled: bool) -> Result<Self, QueryError> {
         let at = |column: &ColumnRef| index(def, column.name());
         Ok(match measure {
             Measure::Count => Self::Count,
-            Measure::Sum(c) => Self::Sum(at(c)?),
+            Measure::Sum(c) if filled => Self::Sum(at(c)?, zero(c.ty())),
+            Measure::Sum(c) => Self::Sum(at(c)?, Value::Null),
             Measure::Min(c) => Self::Min(at(c)?),
             // A pick partial is rank-prefixed, so its merge is the maximum.
             Measure::Max(c) | Measure::PickMerge(c) => Self::Max(at(c)?),
-            // `uniqCombined64` of a nullable column has a nullable result, which the plan's output type cannot
-            // carry: the adapter fails such a read, and so does the model.
-            Measure::Uniq(c) if matches!(c.ty(), Ty::Nullable(_)) => {
-                return Err(internal(format!(
-                    "a distinct count of the nullable column {} has a nullable result",
-                    c.name()
-                )));
+            Measure::Uniq(c) => Self::Uniq(at(c)?, matches!(c.ty(), Ty::Nullable(_))),
+            Measure::SetMerge(c) => {
+                let bound = match c.ty().agg_fn() {
+                    Some(AggFn::GroupUniqArrayArray(bound)) => usize::from(bound),
+                    _ => usize::from(u8::MAX),
+                };
+                Self::Set(at(c)?, bound)
             }
-            Measure::Uniq(c) => Self::Uniq(at(c)?),
             Measure::HistogramMerge(c) => Self::Histogram(at(c)?),
             Measure::LatestByVersion(c) => Self::Latest {
                 value: at(c)?,
@@ -1112,17 +1184,37 @@ impl Computed {
     fn over(&self, rows: &[&Cells]) -> Value {
         match self {
             Self::Count => Value::UInt(rows.len() as u64),
-            Self::Sum(at) => sum(rows, *at),
+            Self::Sum(at, of_nulls) => match sum(rows, *at) {
+                Value::Null => of_nulls.clone(),
+                total => total,
+            },
             Self::Min(at) => extreme(rows, *at, Ordering::Less),
             Self::Max(at) => extreme(rows, *at, Ordering::Greater),
-            Self::Uniq(at) => {
+            Self::Uniq(at, nullable) => {
                 let distinct: BTreeSet<Vec<u8>> = rows
                     .iter()
                     .filter_map(|row| row.get(*at))
                     .filter(|value| !matches!(value, Value::Null))
                     .map(|value| key_of([value]))
                     .collect();
-                Value::UInt(distinct.len() as u64)
+                // The server's distinct count of a nullable column is null when every value is.
+                if *nullable && distinct.is_empty() {
+                    Value::Null
+                } else {
+                    Value::UInt(distinct.len() as u64)
+                }
+            }
+            Self::Set(at, bound) => {
+                // The union of the stored sets, ascending, cut to the bound.
+                let mut union: Vec<&Value> = Vec::new();
+                let mut seen = BTreeSet::new();
+                for row in rows {
+                    if let Some(Value::Array(items)) = row.get(*at) {
+                        union.extend(items.iter().filter(|item| seen.insert(key_of([*item]))));
+                    }
+                }
+                union.sort_by(|a, b| sort_order(a, b, Direction::Asc));
+                Value::Array(union.into_iter().take(*bound).cloned().collect())
             }
             Self::Histogram(at) => {
                 let mut sums = BTreeMap::new();
@@ -1164,6 +1256,9 @@ struct Interp<'a> {
     side: &'a ReadSide,
     project: Value,
     window: TimeWindow,
+    /// The bytes of the rows that passed the filters of the plan's table references, and of filled buckets:
+    /// what the read holds in memory.
+    held: Cell<u64>,
 }
 
 impl<'a> Interp<'a> {
@@ -1183,6 +1278,8 @@ impl<'a> Interp<'a> {
                 }));
             }
         }
+        let bytes: u64 = rows.iter().map(|row| row_bytes(row)).sum();
+        self.held.set(self.held.get().saturating_add(bytes));
         Ok((rows, window))
     }
 
@@ -1266,10 +1363,12 @@ impl<'a> Interp<'a> {
         }))
     }
 
+    /// An aggregate, optionally bucketed by a time column; `filled` is set for a zero-filled series.
     fn aggregate(
         &self,
         n: &Aggregate,
         series: Option<(usize, Step)>,
+        filled: bool,
     ) -> Result<Answer, QueryError> {
         let def = table(n.table());
         let (rows, window) = self.rows(n.table(), n.pred())?;
@@ -1277,7 +1376,7 @@ impl<'a> Interp<'a> {
         let measures: Vec<Computed> = n
             .measures()
             .iter()
-            .map(|measure| Computed::of(def, measure))
+            .map(|measure| Computed::of(def, measure, filled))
             .collect::<Result<_, _>>()?;
         let mut groups: BTreeMap<Vec<u8>, (Vec<Value>, Vec<&Cells>)> = BTreeMap::new();
         for row in rows {
@@ -1321,6 +1420,23 @@ impl<'a> Interp<'a> {
                 (at, *direction)
             })
             .collect();
+        if let (Some(cursor), Some((_, direction))) = (n.cursor(), by.first()) {
+            let cursor: Vec<Value> = cursor.iter().map(literal).collect();
+            let after = match direction {
+                Direction::Asc => Ordering::Greater,
+                Direction::Desc => Ordering::Less,
+            };
+            // A tuple comparison over the order outputs: the first that differs decides.
+            out.retain(|row| {
+                for ((at, _), value) in by.iter().zip(&cursor) {
+                    match compare(&row[*at], value) {
+                        Some(Ordering::Equal) => {}
+                        other => return other == Some(after),
+                    }
+                }
+                false
+            });
+        }
         let order = |a: &Vec<Value>, b: &Vec<Value>| {
             by.iter()
                 .map(|(at, direction)| sort_order(&a[*at], &b[*at], *direction))
@@ -1333,7 +1449,10 @@ impl<'a> Interp<'a> {
 
     fn semi_join(&self, n: &SemiJoin) -> Result<Answer, QueryError> {
         let (ids, right_in) = match n.right() {
-            Node::Aggregate(right) => (self.aggregate(right, None)?, longest_in(right.pred())),
+            Node::Aggregate(right) => (
+                self.aggregate(right, None, false)?,
+                longest_in(right.pred()),
+            ),
             Node::Scan(right) => (self.scan(right, None)?, longest_in(right.pred())),
             _ => return Err(internal("a semi-join over a node that produces no ids")),
         };
@@ -1388,19 +1507,103 @@ impl<'a> Interp<'a> {
             })
         };
         let out = indexes(def, &def.key_columns())?;
+        let snippets = indexes(def, &n.snippet_fields())?;
+        // The needles of the position function: it folds ASCII case on both sides.
+        let needles: Vec<Vec<u8>> = n
+            .tokens()
+            .iter()
+            .map(|token| token.as_bytes().to_ascii_lowercase())
+            .collect();
         let found: Vec<&Cells> = rows.into_iter().filter(matches).collect();
         Ok(finish(found, None, Some(n.limit()), |row| {
-            Row::new(out.iter().map(|at| row[*at].clone()).collect())
+            let mut values: Vec<Value> = out.iter().map(|at| row[*at].clone()).collect();
+            if let Some(snippet) = n.snippet() {
+                for at in &snippets {
+                    let bytes = bytes_of(&row[*at]).unwrap_or_default();
+                    let lowered = bytes.to_ascii_lowercase();
+                    // The first byte, from 1, of the leftmost occurrence of any needle; 0 when none occurs.
+                    let position = needles
+                        .iter()
+                        .filter_map(|needle| {
+                            lowered
+                                .windows(needle.len())
+                                .position(|window| window == needle.as_slice())
+                        })
+                        .min()
+                        .map_or(0, |at| at + 1);
+                    let before = snippet.before as usize;
+                    let start = if position > before {
+                        position - before
+                    } else {
+                        1
+                    };
+                    let from = (start - 1).min(bytes.len());
+                    let to = from.saturating_add(snippet.len as usize).min(bytes.len());
+                    values.push(Value::UInt(position as u64));
+                    values.push(Value::string(bytes[from..to].to_vec()));
+                }
+            }
+            Row::new(values)
         }))
     }
 
     fn time_series(&self, n: &TimeSeries) -> Result<Answer, QueryError> {
-        if n.fill() == Fill::Zero {
-            return Err(internal("zero-filled time series are not rendered"));
-        }
         let def = table(n.aggregate().table());
         let time = index(def, n.time().name())?;
-        self.aggregate(n.aggregate(), Some((time, n.step())))
+        let filled = n.fill() == Fill::Zero;
+        let answer = self.aggregate(n.aggregate(), Some((time, n.step())), filled)?;
+        if !filled {
+            return Ok(answer);
+        }
+        // The fill of the renderer's statement: every series holds every bucket the window overlaps. A series
+        // is a key of group dimensions with a row; without group dimensions there is one, rows or not.
+        let dimensions = n.aggregate().group().len();
+        let mut series: BTreeMap<Vec<u8>, (Vec<Value>, BTreeMap<i64, Vec<Value>>)> = BTreeMap::new();
+        if dimensions == 0 {
+            series.insert(Vec::new(), (Vec::new(), BTreeMap::new()));
+        }
+        for row in answer.into_rows() {
+            let values = row.into_values();
+            let Some(Value::Time(bucket)) = values.first() else {
+                return Err(internal("a bucket that is not an instant"));
+            };
+            let key = values[1..=dimensions].to_vec();
+            series
+                .entry(key_of(&key))
+                .or_insert_with(|| (key, BTreeMap::new()))
+                .1
+                .insert(bucket.micros(), values);
+        }
+        let (first, count) = n.step().buckets(self.window);
+        if count.saturating_mul(series.len() as u64) > MAX_FILLED_ROWS {
+            return Err(QueryError::MemoryExceeded);
+        }
+        let width = n.step().seconds() * 1_000_000;
+        let empty: Vec<Value> = n.aggregate().measures().iter().map(unfilled).collect();
+        let mut out: Vec<Vec<Value>> = Vec::new();
+        for (key, mut rows) in series.into_values() {
+            for i in 0..count {
+                let bucket = first.micros().saturating_add(i as i64 * width);
+                rows.entry(bucket).or_insert_with(|| {
+                    let mut values = vec![Value::Time(Timestamp::from_micros(bucket))];
+                    values.extend(key.iter().cloned());
+                    values.extend(empty.iter().cloned());
+                    values
+                });
+            }
+            out.extend(rows.into_values());
+        }
+        let bytes: u64 = out.iter().map(row_bytes).sum();
+        self.held.set(self.held.get().saturating_add(bytes));
+        // The order of the statement: the dimensions, then the bucket.
+        let order = |a: &Vec<Value>, b: &Vec<Value>| {
+            (1..=dimensions)
+                .chain([0])
+                .map(|at| sort_order(&a[at], &b[at], Direction::Asc))
+                .find(|o| o.is_ne())
+                .unwrap_or(Ordering::Equal)
+        };
+        Ok(finish(out, Some(&order), None, Row::new))
     }
 
     fn field_range(&self, n: &FieldRange) -> Result<Answer, QueryError> {
@@ -1426,7 +1629,11 @@ impl<'a> Interp<'a> {
                 .min(bytes.len());
             let len = usize::try_from(n.byte_len()).unwrap_or(usize::MAX);
             let end = start.saturating_add(len).min(bytes.len());
-            Row::new(vec![Value::string(bytes[start..end].to_vec())])
+            let mut values = vec![Value::string(bytes[start..end].to_vec())];
+            if n.total() {
+                values.push(Value::UInt(bytes.len() as u64));
+            }
+            Row::new(values)
         }))
     }
 
@@ -1434,7 +1641,7 @@ impl<'a> Interp<'a> {
         match node {
             Node::Scan(n) => self.scan(n, None),
             Node::PointLookup(n) => self.point_lookup(n),
-            Node::Aggregate(n) => self.aggregate(n, None),
+            Node::Aggregate(n) => self.aggregate(n, None, false),
             Node::SemiJoin(n) => self.semi_join(n),
             Node::TextSearch(n) => self.text_search(n),
             Node::TimeSeries(n) => self.time_series(n),
@@ -1443,14 +1650,36 @@ impl<'a> Interp<'a> {
     }
 }
 
-/// Runs a plan over what the store holds. Every row is checked against `plan.output()`.
+/// Runs a plan over what the store holds, under the limits the plan carries. Every row is checked against
+/// `plan.output()`.
 pub(crate) fn interpret(side: &ReadSide, plan: &QueryPlan) -> Result<Answer, QueryError> {
+    let limits = plan.limits();
+    // What the read scans is known before it runs, as it is to a server, which refuses on its estimate.
+    let (rows, bytes) = plan
+        .root()
+        .tables()
+        .into_iter()
+        .map(|id| side.read_cost(id))
+        .fold((0u64, 0u64), |(rows, bytes), (r, b)| (rows + r, bytes + b));
+    let over = |limit: Option<u64>, read: u64| limit.is_some_and(|limit| read > limit);
+    if over(limits.max_rows_to_read, rows) || over(limits.max_bytes_to_read, bytes) {
+        return Err(QueryError::TooBroad);
+    }
+    // Zero means no limit, as on a server.
+    let seconds = u64::from(limits.max_execution_time_secs);
+    if seconds > 0 && rows / side.scan_rows_per_sec.max(1) > seconds {
+        return Err(QueryError::Timeout);
+    }
     let interp = Interp {
         side,
         project: Value::Uuid(plan.scope().project_id().uuid()),
         window: plan.window(),
+        held: Cell::new(0),
     };
     let answer = interp.node(plan.root())?;
+    if limits.max_memory_usage > 0 && interp.held.get() > limits.max_memory_usage {
+        return Err(QueryError::MemoryExceeded);
+    }
     let schema = plan.output();
     for row in answer.runs.iter().flatten() {
         schema

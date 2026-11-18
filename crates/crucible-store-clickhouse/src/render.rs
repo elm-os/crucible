@@ -92,9 +92,6 @@ pub enum RenderError {
     /// A table whose time column the window cannot bound.
     #[error("table {0} has no window predicate")]
     Window(&'static str),
-    /// A zero-filled time series: its empty buckets hold nulls that the plan's output types cannot carry.
-    #[error("zero-filled time series are not rendered")]
-    ZeroFill,
 }
 
 /// Collects the bound values of one statement.
@@ -501,16 +498,41 @@ fn point_lookup(b: &mut Binder, scope: &Scope, n: &PointLookup) -> Result<String
     Ok(format!("SELECT {} {from} AND {keys}", names(n.columns())))
 }
 
-fn measure(m: &Measure) -> String {
+/// A measure. In a zero-filled time series (`filled`) the measures whose empty bucket is null are made
+/// nullable, so the fill gives them a null instead of their type's default, and a sum is never null.
+fn measure(m: &Measure, filled: bool) -> String {
+    let absent = |sql: String, c: &ColumnRef| match c.ty() {
+        Ty::Array(_) | Ty::Tuple2(..) => sql,
+        _ if filled => format!("toNullable({sql})"),
+        _ => sql,
+    };
     match m {
         Measure::Count => "count()".to_owned(),
+        Measure::Sum(c) if filled && matches!(c.ty(), Ty::Nullable(_)) => {
+            format!("ifNull(sum({}), 0)", c.name())
+        }
         Measure::Sum(c) => format!("sum({})", c.name()),
-        Measure::Min(c) => format!("min({})", c.name()),
+        Measure::Min(c) => absent(format!("min({})", c.name()), c),
+        Measure::Uniq(c) if filled => format!("toNullable(uniqCombined64({}))", c.name()),
         Measure::Uniq(c) => format!("uniqCombined64({})", c.name()),
         Measure::HistogramMerge(c) => format!("sumMap({})", c.name()),
         // A pick partial is rank-prefixed, so its merge is the maximum.
-        Measure::Max(c) | Measure::PickMerge(c) => format!("max({})", c.name()),
-        Measure::LatestByVersion(c) => format!("argMax({}, (version, fact_id))", c.name()),
+        Measure::Max(c) | Measure::PickMerge(c) => absent(format!("max({})", c.name()), c),
+        Measure::LatestByVersion(c) => absent(
+            format!("argMax({}, (version, fact_id))", c.name()),
+            c,
+        ),
+        // The union of the stored sets, ascending, cut to the column's bound.
+        Measure::SetMerge(c) => {
+            let bound = match c.ty().agg_fn() {
+                Some(crucible_schema::AggFn::GroupUniqArrayArray(bound)) => bound,
+                _ => u8::MAX,
+            };
+            format!(
+                "arraySlice(arraySort(groupUniqArrayArray({})), 1, {bound})",
+                c.name()
+            )
+        }
     }
 }
 
@@ -527,25 +549,46 @@ fn measure_ty(m: &Measure) -> Ty {
         | Measure::Max(c)
         | Measure::HistogramMerge(c)
         | Measure::PickMerge(c)
-        | Measure::LatestByVersion(c) => *c.ty(),
+        | Measure::LatestByVersion(c)
+        | Measure::SetMerge(c) => *c.ty(),
     }
 }
 
-/// An aggregate, optionally bucketed: `bucket` is the bucket expression of a time series.
+/// The bucket expression and the fill of a time series.
+struct Bucket {
+    expression: String,
+    /// `FROM .. TO .. STEP ..` of a zero-filled series.
+    fill: Option<String>,
+}
+
+/// An aggregate, optionally bucketed by the bucket expression of a time series.
 fn aggregate(
     b: &mut Binder,
     scope: &Scope,
     n: &Aggregate,
-    bucket: Option<String>,
+    bucket: Option<Bucket>,
 ) -> Result<String, RenderError> {
-    let mut select: Vec<String> = bucket.iter().map(|e| format!("{e} AS bucket")).collect();
+    let filled = bucket.as_ref().is_some_and(|bucket| bucket.fill.is_some());
+    let mut outputs: Vec<String> = bucket.iter().map(|_| "bucket".to_owned()).collect();
+    outputs.extend(n.group().iter().map(|c| c.name().to_owned()));
+    outputs.extend((0..n.measures().len()).map(|i| format!("m{i}")));
+    let mut select: Vec<String> = bucket
+        .iter()
+        .map(|bucket| format!("{} AS bucket", bucket.expression))
+        .collect();
     select.extend(n.group().iter().map(|c| c.name().to_owned()));
     select.extend(
         n.measures()
             .iter()
             .enumerate()
-            .map(|(i, m)| format!("{} AS m{i}", measure(m))),
+            .map(|(i, m)| format!("{} AS m{i}", measure(m, filled))),
     );
+    // A filled series of several dimension keys counts its rows, so that the statement around it can tell a
+    // result without any matching row from one whose buckets were filled.
+    let grouped_fill = filled && !n.group().is_empty();
+    if grouped_fill {
+        select.push("count() AS matched".to_owned());
+    }
     let mut sql = format!("SELECT {} ", select.join(", "));
     let (from, mut having) = scope.from(b, n.table())?;
     sql.push_str(&from);
@@ -571,19 +614,61 @@ fn aggregate(
             op(condition.op)
         ));
     }
+    let output = |output: &AggOutput| match output {
+        AggOutput::Group(i) => n.group().get(*i).map(|c| (c.name().to_owned(), *c.ty())),
+        AggOutput::Measure(i) => n.measures().get(*i).map(|m| (format!("m{i}"), measure_ty(m))),
+    };
+    if let (Some(cursor), Some((_, direction))) = (n.cursor(), n.order().first()) {
+        // The keyset of a grouped list: a tuple comparison over the order outputs, after grouping.
+        let mut names = Vec::with_capacity(cursor.len());
+        let mut values = Vec::with_capacity(cursor.len());
+        for ((by, _), value) in n.order().iter().zip(cursor) {
+            let (name, ty) =
+                output(by).ok_or_else(|| RenderError::Literal("cursor".to_owned()))?;
+            values.push(b.literal(&ty, value)?);
+            names.push(name);
+        }
+        let after = match direction {
+            Direction::Asc => ">",
+            Direction::Desc => "<",
+        };
+        having.push(match (names.as_slice(), values.as_slice()) {
+            ([name], [value]) => format!("{name} {after} {value}"),
+            _ => format!("({}) {after} ({})", names.join(", "), values.join(", ")),
+        });
+    }
     if !having.is_empty() {
         let _ = write!(sql, " HAVING {}", having.join(" AND "));
+    }
+    if let Some(fill) = bucket.as_ref().and_then(|bucket| bucket.fill.as_ref()) {
+        // Each dimension key is a series: the rows before the filled column in the order are its sorting
+        // prefix, and the server fills each prefix on its own.
+        let mut by: Vec<String> = n
+            .group()
+            .iter()
+            .map(|c| format!("{} ASC", c.name()))
+            .collect();
+        let series = by.join(", ");
+        by.push(format!("bucket ASC WITH FILL {fill}"));
+        let _ = write!(sql, " ORDER BY {}", by.join(", "));
+        if grouped_fill {
+            // Without any matching row the fill still returns its buckets once, for a key of defaults that is
+            // no series: keep the result only when it holds a row that matched.
+            sql = format!(
+                "SELECT {} FROM ({sql}) QUALIFY max(matched) OVER () > 0 ORDER BY {series}, bucket ASC",
+                outputs.join(", ")
+            );
+        }
+        b.settings.push(("use_with_fill_by_sorting_prefix", "1".to_owned()));
+        return Ok(sql);
     }
     if !n.order().is_empty() {
         let by: Vec<String> = n
             .order()
             .iter()
-            .map(|(output, dir)| {
-                let name = match output {
-                    AggOutput::Group(i) => n.group().get(*i).map(|c| c.name().to_owned()),
-                    AggOutput::Measure(i) => Some(format!("m{i}")),
-                };
-                format!("{} {}", name.unwrap_or_default(), direction(*dir))
+            .map(|(by, dir)| {
+                let name = output(by).map(|(name, _)| name).unwrap_or_default();
+                format!("{name} {}", direction(*dir))
             })
             .collect();
         let _ = write!(sql, " ORDER BY {}", by.join(", "));
@@ -632,20 +717,28 @@ fn text_search(b: &mut Binder, scope: &Scope, n: &TextSearch) -> Result<String, 
         .iter()
         .map(|f| format!("{function}({}, [{tokens}])", f.name()))
         .collect();
-    let mut sql = format!(
-        "SELECT {} {from} AND ({})",
-        names(&def.key_columns()),
-        fields.join(" OR ")
-    );
+    let mut select = names(&def.key_columns());
+    if let Some(snippet) = n.snippet() {
+        // The first occurrence of any token as a substring, without regard to ASCII case, and the bytes
+        // around it. The position counts bytes from 1 and is 0 when no token occurs.
+        let before = b.u64(u64::from(snippet.before));
+        let len = b.u64(u64::from(snippet.len));
+        for (i, field) in n.snippet_fields().iter().enumerate() {
+            let name = field.name();
+            let _ = write!(
+                select,
+                ", multiSearchFirstPositionCaseInsensitive({name}, [{tokens}]) AS s{i}, \
+                 substring({name}, if(s{i} > {before}, s{i} - {before}, 1), {len})"
+            );
+        }
+    }
+    let mut sql = format!("SELECT {select} {from} AND ({})", fields.join(" OR "));
     and_pred(b, &mut sql, n.pred())?;
     limit(b, &mut sql, Some(n.limit()));
     Ok(sql)
 }
 
 fn time_series(b: &mut Binder, scope: &Scope, n: &TimeSeries) -> Result<String, RenderError> {
-    if n.fill() == Fill::Zero {
-        return Err(RenderError::ZeroFill);
-    }
     let function = match n.step() {
         Step::Minute => "toStartOfMinute",
         Step::FiveMinutes => "toStartOfFiveMinutes",
@@ -655,11 +748,28 @@ fn time_series(b: &mut Binder, scope: &Scope, n: &TimeSeries) -> Result<String, 
         Step::Week => "toMonday",
     };
     let utc = b.string("UTC");
-    let bucket = format!(
+    let expression = format!(
         "toDateTime({function}(toDateTime({}, {utc})), {utc})",
         n.time().name()
     );
-    aggregate(b, scope, n.aggregate(), Some(bucket))
+    let fill = (n.fill() == Fill::Zero).then(|| {
+        // Every bucket the window overlaps: from the first, to the end of the last.
+        let (first, count) = n.step().buckets(scope.window);
+        let width = n.step().seconds();
+        let end = first.saturating_add_micros(
+            i64::try_from(count)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(width)
+                .saturating_mul(1_000_000),
+        );
+        format!(
+            "FROM {} TO {} STEP {}",
+            b.bind(Ty::DateTime, seconds(first)),
+            b.bind(Ty::DateTime, seconds(end)),
+            b.u64(width.unsigned_abs())
+        )
+    });
+    aggregate(b, scope, n.aggregate(), Some(Bucket { expression, fill }))
 }
 
 fn field_range(b: &mut Binder, scope: &Scope, n: &FieldRange) -> Result<String, RenderError> {
@@ -667,10 +777,13 @@ fn field_range(b: &mut Binder, scope: &Scope, n: &FieldRange) -> Result<String, 
     // `substring` counts bytes from 1.
     let offset = b.u64(n.offset().saturating_add(1));
     let len = b.u64(n.byte_len());
-    let mut sql = format!(
-        "SELECT substring({}, {offset}, {len}) {from}",
-        n.field().name()
-    );
+    let field = n.field().name();
+    let total = if n.total() {
+        format!(", length({field})")
+    } else {
+        String::new()
+    };
+    let mut sql = format!("SELECT substring({field}, {offset}, {len}){total} {from}");
     for (column, value) in n.key_columns().iter().zip(n.key()) {
         let _ = write!(
             sql,

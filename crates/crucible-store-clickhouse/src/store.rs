@@ -15,7 +15,7 @@ use crucible_env::{
     TelemetryStore, TlsRoots,
 };
 use crucible_plan::{
-    BatchProbe, CLASS_FIXED_SETTINGS, DeletePlan, OutputSchema, QueryClass, QueryPlan, RowBlock,
+    BatchProbe, CLASS_FIXED_SETTINGS, ClassLimits, DeletePlan, OutputSchema, QueryPlan, RowBlock,
 };
 use crucible_records::{
     BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
@@ -46,16 +46,18 @@ pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 14] = [
+pub const QUERY_SETTINGS: [&str; 16] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
+    "max_bytes_to_read",
     "max_threads",
     "timeout_overflow_mode",
     "read_overflow_mode",
     "cancel_http_readonly_queries_on_client_close",
     "max_rows_in_set",
     "set_overflow_mode",
+    "use_with_fill_by_sorting_prefix",
     "lightweight_deletes_sync",
     "lightweight_delete_mode",
     "mutations_sync",
@@ -82,9 +84,8 @@ const DELETE_SETTINGS: [(&str, &str); 2] = [
     ("lightweight_delete_mode", "alter_update"),
 ];
 
-/// The settings every read of a class carries: its limits and the fixed settings (contracts 8.4 and 8.5).
-fn class_settings(class: QueryClass) -> Vec<(&'static str, String)> {
-    let limits = class.limits();
+/// The settings every read carries: the limits of its class and the fixed settings (contracts 8.4 and 8.5).
+fn class_settings(limits: ClassLimits) -> Vec<(&'static str, String)> {
     let mut settings = vec![
         (
             "max_execution_time",
@@ -95,6 +96,9 @@ fn class_settings(class: QueryClass) -> Vec<(&'static str, String)> {
     ];
     if let Some(rows) = limits.max_rows_to_read {
         settings.push(("max_rows_to_read", rows.to_string()));
+    }
+    if let Some(bytes) = limits.max_bytes_to_read {
+        settings.push(("max_bytes_to_read", bytes.to_string()));
     }
     settings.extend(
         CLASS_FIXED_SETTINGS
@@ -819,13 +823,14 @@ impl TelemetryStore for ClickHouseStore {
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
         let statement =
             render::plan(&plan).map_err(|error| QueryError::Internal(error.to_string()))?;
-        let settings = class_settings(plan.class());
+        let limits = plan.limits();
+        let settings = class_settings(limits);
         let (query_id, reading) = self.read(
             plan.identity(),
             &statement,
             &settings,
             "RowBinaryWithNamesAndTypes",
-            Duration::from_secs(u64::from(plan.class().deadline_secs())),
+            Duration::from_secs(u64::from(limits.max_execution_time_secs) + DEADLINE_SLACK_SECS),
             true,
         )?;
         Ok(RowStream::new(query_id, rows(reading, plan.output())))
@@ -1035,6 +1040,7 @@ impl TelemetryStore for ClickHouseStore {
 
 #[cfg(test)]
 mod tests {
+    use crucible_plan::QueryClass;
     use crucible_schema::{Ident, Variant};
 
     use super::*;
@@ -1043,13 +1049,16 @@ mod tests {
     fn detection_checks_every_setting_the_store_sends() {
         let mut sent: Vec<&str> = Vec::new();
         for class in QueryClass::ALL {
-            sent.extend(class_settings(class).iter().map(|(name, _)| *name));
+            sent.extend(class_settings(class.limits()).iter().map(|(name, _)| *name));
         }
         sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
-        // The semi-join id cap, the mask application and the partition drop.
+        // The byte limit a plan may carry, the semi-join id cap, the per-series fill, the mask application and
+        // the partition drop.
         sent.extend([
+            "max_bytes_to_read",
             "max_rows_in_set",
             "set_overflow_mode",
+            "use_with_fill_by_sorting_prefix",
             "mutations_sync",
             "alter_sync",
         ]);
