@@ -1,0 +1,140 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: an agent run span of pydantic/pydantic-ai v1.107.10 (tests/test_logfire.py lines 264-321), whose usage keys hold the cumulative usage of the run, with one model request below it",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD6, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The agent span stores and shows its cumulative usage and is flagged as a usage aggregate, so token and cost sums count the model request only."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pydantic-ai",
+              "version": "1.107.10"
+            },
+            "spans": [
+              {
+                "traceId": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+                "spanId": "0000000000000001",
+                "name": "agent run",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "model_name",
+                    "value": {
+                      "stringValue": "test"
+                    }
+                  },
+                  {
+                    "key": "agent_name",
+                    "value": {
+                      "stringValue": "helper"
+                    }
+                  },
+                  {
+                    "key": "logfire.msg",
+                    "value": {
+                      "stringValue": "helper run"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "51"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "4"
+                    }
+                  },
+                  {
+                    "key": "final_result",
+                    "value": {
+                      "stringValue": "done"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+                "spanId": "0000000000000002",
+                "name": "chat test",
+                "kind": 3,
+                "startTimeUnixNano": "1100000000",
+                "endTimeUnixNano": "1900000000",
+                "attributes": [
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "chat"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "test"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "51"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "4"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000001"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 6,
+      "observation_type": "span",
+      "usage_provided": {
+        "input": 51,
+        "output": 4
+      },
+      "total_tokens": 55,
+      "usage_aggregate": true,
+      "output": "done",
+      "residual": [
+        "model_name",
+        "agent_name",
+        "logfire.msg"
+      ]
+    },
+    "0000000000000002": {
+      "compat_dialect": 6,
+      "observation_type": "generation",
+      "usage_provided": {
+        "input": 51,
+        "output": 4
+      },
+      "usage_aggregate": false,
+      "residual": [
+        "gen_ai.operation.name"
+      ]
+    }
+  }
+}

@@ -28,6 +28,7 @@ fn concrete(path: &str) -> String {
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
         .replace("{run_id}", "01010101-0101-7101-8101-010101010102")
         .replace("{query_id}", "01010101-0101-7101-8101-010101010103")
+        .replace("{span_id}", "0000000000000001")
 }
 
 #[test]
@@ -60,7 +61,7 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        // Four telemetry reads and the eleven operations of the SQL workspace.
-        assert_eq!(operations, 15);
+        // The telemetry and search operations and the eleven operations of the SQL workspace.
+        assert_eq!(operations, 17);
     });
 }

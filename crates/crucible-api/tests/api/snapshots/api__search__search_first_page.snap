@@ -1,0 +1,58 @@
+---
+source: crates/crucible-api/tests/api/search.rs
+expression: first.pretty()
+---
+{
+  "data": [
+    {
+      "matches": [
+        {
+          "cut_after": false,
+          "cut_before": false,
+          "field": "input",
+          "fragments": [
+            {
+              "highlighted": false,
+              "text": "The customer asked for a "
+            },
+            {
+              "highlighted": true,
+              "text": "Refund"
+            },
+            {
+              "highlighted": false,
+              "text": " of order 7"
+            }
+          ]
+        }
+      ],
+      "span": {
+        "child_count": null,
+        "duration_us": 1000,
+        "end_time": "2026-11-17T09:30:00.001000Z",
+        "input_tokens": 1,
+        "io_shape": "raw",
+        "level": "default",
+        "model": "",
+        "name": "span-10",
+        "observation_type": "span",
+        "output_tokens": 2,
+        "parent_span_id": null,
+        "saturated": false,
+        "span_id": "000000000000000a",
+        "start_time": "2026-11-17T09:30:00.000000Z",
+        "status_code": "ok",
+        "total_cost_usd": 7e-9,
+        "total_tokens": 3
+      },
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000001"
+    }
+  ],
+  "has_more": true,
+  "meta": {
+    "as_of": "2026-11-17T09:30:02.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": "v1.test.AQEDAQEBAQEBAQEBAQEBAQEBAQE8rLRtZyqybkFBJipNLFoQAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgiaeqNgAABmB1ifFagAAGYHWJ0tYAJ-MAQAAAAAAAAAAK.vA6usIH21WaIIw6XxD-Mow"
+}

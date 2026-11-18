@@ -159,7 +159,6 @@ mod tests {
             "runs/r",
             "saved-queries",
             "saved-queries/q",
-            "saved-queries/run",
         ] {
             assert_eq!(
                 request_deadline(&format!("{base}/{path}")),

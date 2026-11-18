@@ -5,7 +5,9 @@
 #![cfg(test)]
 
 mod list;
+mod payload;
 mod properties;
+mod search;
 mod store;
 mod trace;
 mod world;

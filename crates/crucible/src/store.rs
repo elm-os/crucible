@@ -6,11 +6,11 @@
 //!   generation counter, so nothing is stored. The info string is
 //!   `crucible/clickhouse-identity/v1/<name>/<generation>` and the password is the 32 output bytes as lowercase
 //!   hex.
-//! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base` and the access steps
+//! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, the access steps
 //!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
-//!   policies, views and probe identities) for a single-node server ([`apply_migrations`]). All are idempotent. With Postgres
-//!   configured they are recorded in the ledger of contract 6.6 and applied once; without it there is no
-//!   ledger and both are applied each time.
+//!   policies, views and probe identities) and schema step `0004_span_usage_aggregate` for a single-node
+//!   server ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the
+//!   ledger of contract 6.6 and applied once; without it there is no ledger and all are applied each time.
 //! - [`bring_up`] is everything that must hold before ingest is accepted.
 
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use crucible_plan::profile_caps;
 use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PasswordHash, ServiceIdentity,
     SqlProfile, TABLES, Variant, WorkspaceParams, access_service, access_workspace, schema_base,
-    workspace_user,
+    schema_span_usage_aggregate, workspace_user,
 };
 
 use crate::control::{ApplyStep, Applying, Control};
@@ -208,12 +208,13 @@ impl ClickHouse {
 
     /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
     /// workspace's settings profile, fitted to the server.
-    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 3]> {
+    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 4]> {
         let variant = Variant::SingleNode;
         Ok([
             schema_base(&variant, Granularity::Day),
             access_service(&variant, &self.access_params()?),
             access_workspace(&variant, &self.workspace_params(profile)?),
+            schema_span_usage_aggregate(&variant),
         ])
     }
 }
@@ -422,7 +423,8 @@ mod tests {
             [
                 crucible_schema::SCHEMA_BASE,
                 crucible_schema::ACCESS_SERVICE,
-                crucible_schema::ACCESS_WORKSPACE
+                crucible_schema::ACCESS_WORKSPACE,
+                crucible_schema::SCHEMA_SPAN_USAGE_AGGREGATE
             ]
         );
         // The probe identities' passwords are derived like every other, and only their digests are sent.

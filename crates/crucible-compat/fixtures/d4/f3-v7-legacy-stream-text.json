@@ -1,0 +1,512 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "vercel/ai tag ai@7.0.176 packages/otel/src/__snapshots__/legacy-open-telemetry.test.ts.snap lines 1010-1098",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD4, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "In this class the tool span is a child of the step span and the first-chunk event time is the step end, so the time of the first chunk is taken from the reported offset, not from the event."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "ai"
+            },
+            "spans": [
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000001",
+                "name": "ai.streamText",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "ai.model.id",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "ai.model.provider",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "ai.operationId",
+                    "value": {
+                      "stringValue": "ai.streamText"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt",
+                    "value": {
+                      "stringValue": "{\"messages\":[{\"role\":\"user\",\"content\":\"find q\"}]}"
+                    }
+                  },
+                  {
+                    "key": "ai.response.finishReason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "ai.response.text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "ai.response.toolCalls",
+                    "value": {
+                      "stringValue": "[{\"toolCallId\":\"call-7\",\"toolName\":\"lookup\",\"input\":{\"query\":\"q\"}}]"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.maxRetries",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokenDetails.noCacheTokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokenDetails.textTokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.totalTokens",
+                    "value": {
+                      "intValue": "14"
+                    }
+                  },
+                  {
+                    "key": "operation.name",
+                    "value": {
+                      "stringValue": "ai.streamText"
+                    }
+                  }
+                ]
+              },
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000002",
+                "name": "ai.streamText.doStream",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "1500000000",
+                "attributes": [
+                  {
+                    "key": "ai.model.id",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "ai.model.provider",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "ai.operationId",
+                    "value": {
+                      "stringValue": "ai.streamText.doStream"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt.messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"find q\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt.toolChoice",
+                    "value": {
+                      "stringValue": "{\"type\":\"auto\"}"
+                    }
+                  },
+                  {
+                    "key": "ai.prompt.tools",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "{\"type\":\"function\",\"name\":\"lookup\",\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"],\"additionalProperties\":false}}"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "ai.response.avgOutputTokensPerSecond",
+                    "value": {
+                      "intValue": "18"
+                    }
+                  },
+                  {
+                    "key": "ai.response.finishReason",
+                    "value": {
+                      "stringValue": "stop"
+                    }
+                  },
+                  {
+                    "key": "ai.response.id",
+                    "value": {
+                      "stringValue": "id-0"
+                    }
+                  },
+                  {
+                    "key": "ai.response.model",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "ai.response.msToFinish",
+                    "value": {
+                      "intValue": "450"
+                    }
+                  },
+                  {
+                    "key": "ai.response.msToFirstChunk",
+                    "value": {
+                      "intValue": "450"
+                    }
+                  },
+                  {
+                    "key": "ai.response.text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "ai.response.timestamp",
+                    "value": {
+                      "stringValue": "2026-02-03T04:05:06.000Z"
+                    }
+                  },
+                  {
+                    "key": "ai.response.toolCalls",
+                    "value": {
+                      "stringValue": "[{\"toolCallId\":\"call-7\",\"toolName\":\"lookup\",\"input\":{\"query\":\"q\"}}]"
+                    }
+                  },
+                  {
+                    "key": "ai.settings.maxRetries",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokenDetails.noCacheTokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.inputTokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokenDetails.textTokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.outputTokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "ai.usage.totalTokens",
+                    "value": {
+                      "intValue": "14"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.finish_reasons",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "stop"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.id",
+                    "value": {
+                      "stringValue": "id-0"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "demo-model"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.system",
+                    "value": {
+                      "stringValue": "demo-provider"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "5"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "9"
+                    }
+                  },
+                  {
+                    "key": "operation.name",
+                    "value": {
+                      "stringValue": "ai.streamText.doStream"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000001",
+                "events": [
+                  {
+                    "timeUnixNano": "1500000000",
+                    "name": "ai.stream.firstChunk",
+                    "attributes": [
+                      {
+                        "key": "ai.response.msToFirstChunk",
+                        "value": {
+                          "intValue": "450"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "1500000000",
+                    "name": "ai.stream.finish",
+                    "attributes": [
+                      {
+                        "key": "ai.response.avgOutputTokensPerSecond",
+                        "value": {
+                          "intValue": "18"
+                        }
+                      },
+                      {
+                        "key": "ai.response.msToFinish",
+                        "value": {
+                          "intValue": "450"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "traceId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+                "spanId": "0000000000000003",
+                "name": "ai.toolCall",
+                "kind": 1,
+                "startTimeUnixNano": "1300000000",
+                "endTimeUnixNano": "1400000000",
+                "attributes": [
+                  {
+                    "key": "ai.operationId",
+                    "value": {
+                      "stringValue": "ai.toolCall"
+                    }
+                  },
+                  {
+                    "key": "ai.toolCall.args",
+                    "value": {
+                      "stringValue": "{\"query\":\"q\"}"
+                    }
+                  },
+                  {
+                    "key": "ai.toolCall.id",
+                    "value": {
+                      "stringValue": "call-7"
+                    }
+                  },
+                  {
+                    "key": "ai.toolCall.name",
+                    "value": {
+                      "stringValue": "lookup"
+                    }
+                  },
+                  {
+                    "key": "ai.toolCall.result",
+                    "value": {
+                      "stringValue": "\"found-it\""
+                    }
+                  },
+                  {
+                    "key": "operation.name",
+                    "value": {
+                      "stringValue": "ai.toolCall"
+                    }
+                  }
+                ],
+                "parentSpanId": "0000000000000002"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 4,
+      "observation_type": "agent",
+      "input": "{\"messages\":[{\"role\":\"user\",\"content\":\"find q\"}]}",
+      "output": "",
+      "tool_calls": [
+        {
+          "id": "call-7",
+          "name": "lookup",
+          "arguments": {
+            "query": "q"
+          }
+        }
+      ],
+      "tool_names": [
+        "lookup"
+      ],
+      "tool_call_count": 1,
+      "finish_reasons": [
+        "stop"
+      ],
+      "usage_provided": {
+        "input": 5,
+        "output": 9,
+        "total": 14
+      },
+      "usage_aggregate": true,
+      "residual": [
+        "ai.operationId",
+        "ai.response.text",
+        "ai.usage.inputTokenDetails.noCacheTokens",
+        "ai.usage.outputTokenDetails.textTokens",
+        "operation.name"
+      ]
+    },
+    "0000000000000002": {
+      "compat_dialect": 4,
+      "observation_type": "generation",
+      "tool_calls": [
+        {
+          "id": "call-7",
+          "name": "lookup",
+          "arguments": {
+            "query": "q"
+          }
+        }
+      ],
+      "tool_definitions": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "inputSchema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "completion_start_offset_us": 450000,
+      "model_parameters": {
+        "max_retries": 2,
+        "tool_choice": {
+          "type": "auto"
+        }
+      },
+      "usage_provided": {
+        "input": 5,
+        "output": 9,
+        "total": 14
+      },
+      "usage_aggregate": false,
+      "residual": [
+        "ai.model.id",
+        "ai.model.provider",
+        "ai.operationId",
+        "ai.response.avgOutputTokensPerSecond",
+        "ai.response.finishReason",
+        "ai.response.id",
+        "ai.response.model",
+        "ai.response.msToFinish",
+        "ai.response.text",
+        "ai.response.timestamp",
+        "ai.usage.inputTokenDetails.noCacheTokens",
+        "ai.usage.inputTokens",
+        "ai.usage.outputTokenDetails.textTokens",
+        "ai.usage.outputTokens",
+        "gen_ai.response.id",
+        "operation.name"
+      ]
+    },
+    "0000000000000003": {
+      "compat_dialect": 4,
+      "observation_type": "tool",
+      "tool_names": [
+        "lookup"
+      ],
+      "input": "{\"query\":\"q\"}",
+      "output": "\"found-it\"",
+      "residual": [
+        "ai.operationId",
+        "ai.toolCall.id",
+        "operation.name"
+      ]
+    }
+  }
+}

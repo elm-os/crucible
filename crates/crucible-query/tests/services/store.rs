@@ -14,8 +14,8 @@ use crucible_env::{
     StoreFacts, StoreHealth, TelemetryStore,
 };
 use crucible_plan::{
-    Aggregate, BatchProbe, CmpOp, DeletePlan, Direction, Literal, Measure, Node, Pred, QueryPlan,
-    Row, RowBlock, Scan, Value,
+    Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, Direction, FieldRange, Literal,
+    Measure, Node, Order, Pred, QueryPlan, Row, RowBlock, Scan, TextSearch, TokenMode, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
 use crucible_schema::{ColumnRef, MigrationStep, Ty, table};
@@ -134,6 +134,15 @@ fn compare(a: &Value, b: &Value) -> Ordering {
     }
 }
 
+/// The text of a string value; the fake store's payloads are UTF-8.
+fn text_of(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        other => panic!("{other:?} is not text"),
+    }
+}
+
 fn compare_tuple(a: &[Value], b: &[Value]) -> Ordering {
     a.iter()
         .zip(b)
@@ -172,7 +181,9 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
         other => panic!("{name} is {other:?}"),
     };
     match table_id {
-        TableId::SpanCore | TableId::TraceHeads => window.contains(time("start_time")),
+        TableId::SpanCore | TableId::TraceHeads | TableId::SpanPayload => {
+            window.contains(time("start_time"))
+        }
         TableId::SpanMetrics | TableId::McpToolRollup => window.contains(time("minute")),
         TableId::TraceStats => match &row[position(table_id, "row_day")] {
             // A day's partial is read when the day overlaps the window.
@@ -227,10 +238,15 @@ impl FakeStore {
             .collect()
     }
 
-    fn scan(&self, plan: &QueryPlan, scan: &Scan) -> Vec<Row> {
-        let table_id = scan.table();
-        let mut rows = self.visible(plan, table_id, scan.pred());
-        let arrival = scan.arrival();
+    /// The rows inside the arrival bounds, ordered and after the cursor, cut at the limit.
+    fn keyset(
+        table_id: TableId,
+        rows: &mut Vec<StoredRow>,
+        arrival: ArrivalBounds,
+        order: Option<&Order>,
+        cursor: Option<&[Literal]>,
+        limit: Option<u32>,
+    ) {
         if arrival.as_of.is_some() || arrival.since.is_some() {
             let at = position(table_id, "received_at");
             rows.retain(|row| {
@@ -241,7 +257,7 @@ impl FakeStore {
                     && arrival.since.is_none_or(|since| received_at > since)
             });
         }
-        if let Some(order) = scan.order() {
+        if let Some(order) = order {
             let key = |row: &StoredRow| -> Vec<Value> {
                 order
                     .columns()
@@ -254,16 +270,29 @@ impl FakeStore {
                 Direction::Desc => order_of.reverse(),
             };
             rows.sort_by(|a, b| directed(compare_tuple(&key(a), &key(b))));
-            if let Some(cursor) = scan.cursor() {
+            if let Some(cursor) = cursor {
                 let cursor: Vec<Value> = cursor.iter().map(literal).collect();
                 rows.retain(|row| directed(compare_tuple(&key(row), &cursor)).is_gt());
             }
         } else {
-            assert!(scan.cursor().is_none());
+            assert!(cursor.is_none());
         }
-        if let Some(limit) = scan.limit() {
+        if let Some(limit) = limit {
             rows.truncate(limit as usize);
         }
+    }
+
+    fn scan(&self, plan: &QueryPlan, scan: &Scan) -> Vec<Row> {
+        let table_id = scan.table();
+        let mut rows = self.visible(plan, table_id, scan.pred());
+        Self::keyset(
+            table_id,
+            &mut rows,
+            scan.arrival(),
+            scan.order(),
+            scan.cursor(),
+            scan.limit(),
+        );
         rows.iter()
             .map(|row| {
                 Row::new(
@@ -273,6 +302,97 @@ impl FakeStore {
                         .collect(),
                 )
             })
+            .collect()
+    }
+
+    /// A text search: tokens as the payload indexes split and lower them, snippets around the first needle.
+    fn text_search(&self, plan: &QueryPlan, search: &TextSearch) -> Vec<Row> {
+        let table_id = search.table();
+        let mut rows = self.visible(plan, table_id, search.pred());
+        let held = |value: &Value| -> Vec<String> {
+            match value {
+                Value::Array(items) => items.iter().map(text_of).collect(),
+                other => text_of(other)
+                    .to_ascii_lowercase()
+                    .split(|c: char| c.is_ascii() && !c.is_ascii_alphanumeric())
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            }
+        };
+        rows.retain(|row| {
+            search.fields().iter().any(|field| {
+                let held = held(cell(row, field));
+                let mut wanted = search.tokens().iter();
+                match search.mode() {
+                    TokenMode::All | TokenMode::Phrase => wanted.all(|t| held.contains(t)),
+                    TokenMode::Any => wanted.any(|t| held.contains(t)),
+                }
+            })
+        });
+        Self::keyset(
+            table_id,
+            &mut rows,
+            search.arrival(),
+            search.order(),
+            search.cursor(),
+            Some(search.limit()),
+        );
+        let keys = table(table_id).key_columns();
+        rows.iter()
+            .map(|row| {
+                let mut values: Vec<Value> = keys.iter().map(|c| cell(row, c).clone()).collect();
+                if let Some(snippet) = search.snippet() {
+                    for field in search.snippet_fields() {
+                        let text = text_of(cell(row, &field));
+                        let lowered = text.to_ascii_lowercase();
+                        let found = search
+                            .needles()
+                            .iter()
+                            .filter_map(|needle| lowered.find(&needle.to_ascii_lowercase()))
+                            .min()
+                            .map_or(0, |at| at + 1);
+                        let before = snippet.before as usize;
+                        let start = if found > before {
+                            found - before - 1
+                        } else {
+                            0
+                        };
+                        let end = (start + snippet.len as usize).min(text.len());
+                        values.push(Value::UInt(found as u64));
+                        values.push(Value::string(text.as_bytes()[start..end].to_vec()));
+                    }
+                }
+                Row::new(values)
+            })
+            .collect()
+    }
+
+    /// A byte range of one field of the row with the key.
+    fn field_range(&self, plan: &QueryPlan, range: &FieldRange) -> Vec<Row> {
+        let rows = self.visible(plan, range.table(), &Pred::all());
+        let found = rows.iter().find(|row| {
+            range
+                .key_columns()
+                .iter()
+                .zip(range.key())
+                .all(|(column, value)| compare(cell(row, column), &literal(value)).is_eq())
+        });
+        found
+            .map(|row| {
+                let text = text_of(cell(row, &range.field()));
+                let bytes = text.as_bytes();
+                let start = usize::try_from(range.offset()).unwrap().min(bytes.len());
+                let end = start
+                    .saturating_add(usize::try_from(range.byte_len()).unwrap_or(usize::MAX))
+                    .min(bytes.len());
+                let mut values = vec![Value::string(bytes[start..end].to_vec())];
+                if range.total() {
+                    values.push(Value::UInt(bytes.len() as u64));
+                }
+                Row::new(values)
+            })
+            .into_iter()
             .collect()
     }
 
@@ -350,6 +470,8 @@ impl TelemetryStore for FakeStore {
         let rows = match plan.root() {
             Node::Scan(scan) => self.scan(&plan, scan),
             Node::Aggregate(aggregate) => self.aggregate(&plan, aggregate),
+            Node::TextSearch(search) => self.text_search(&plan, search),
+            Node::FieldRange(range) => self.field_range(&plan, range),
             other => panic!("the fake store does not run {other:?}"),
         };
         let hook = self.during_read.lock().unwrap().take();

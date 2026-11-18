@@ -127,6 +127,7 @@ pub(crate) fn span(row: &Row) -> Decoded<SpanSummary> {
         input_tokens: f.uint(at(C::InputTokens))?,
         output_tokens: f.uint(at(C::OutputTokens))?,
         total_tokens: f.uint(at(C::TotalTokens))?,
+        usage_aggregate: f.uint(at(C::UsageAggregate))? != 0,
     })
 }
 

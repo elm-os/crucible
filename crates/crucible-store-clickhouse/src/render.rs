@@ -38,9 +38,9 @@
 use std::fmt::{self, Write as _};
 
 use crucible_plan::{
-    AggOutput, Aggregate, BatchProbe, CmpOp, DeletePlan, DeleteTarget, Direction, FieldRange, Fill,
-    Literal, Measure, Node, PointLookup, Pred, ProbeKind, QueryPlan, Scan, SemiJoin, Step,
-    TextSearch, TimeSeries, TokenMode, pad_in_list,
+    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, DeleteTarget, Direction,
+    FieldRange, Fill, Literal, Measure, Node, Order, PointLookup, Pred, ProbeKind, QueryPlan, Scan,
+    SemiJoin, Step, TextSearch, TimeSeries, TokenMode, pad_in_list,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str};
 use crucible_schema::{ColumnRef, DATABASE, PROJECT_ID, TableDef, Ty, table};
@@ -439,6 +439,59 @@ fn key_in(
     Ok(format!("{left} IN ({})", tuples.join(", ")))
 }
 
+/// The arrival bounds of a read of a plain table.
+fn arrival(b: &mut Binder, sql: &mut String, arrival: ArrivalBounds) {
+    if let Some(as_of) = arrival.as_of {
+        let _ = write!(sql, " AND received_at <= {}", b.time(as_of));
+    }
+    if let Some(since) = arrival.since {
+        let _ = write!(sql, " AND received_at > {}", b.time(since));
+    }
+}
+
+/// The keyset condition: the rows strictly after `cursor` in `order`, as a tuple comparison.
+fn keyset(
+    b: &mut Binder,
+    sql: &mut String,
+    order: Option<&Order>,
+    cursor: Option<&[Literal]>,
+) -> Result<(), RenderError> {
+    let (Some(order), Some(cursor)) = (order, cursor) else {
+        return Ok(());
+    };
+    let values = order
+        .columns()
+        .iter()
+        .zip(cursor)
+        .map(|(column, value)| b.literal(column.ty(), value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let after = match order.direction() {
+        Direction::Asc => ">",
+        Direction::Desc => "<",
+    };
+    let _ = match (order.columns(), values.as_slice()) {
+        ([column], [value]) => write!(sql, " AND {} {after} {value}", column.name()),
+        (columns, values) => write!(
+            sql,
+            " AND ({}) {after} ({})",
+            names(columns),
+            values.join(", ")
+        ),
+    };
+    Ok(())
+}
+
+fn order_by(sql: &mut String, order: Option<&Order>) {
+    if let Some(order) = order {
+        let by: Vec<String> = order
+            .columns()
+            .iter()
+            .map(|c| format!("{} {}", c.name(), direction(order.direction())))
+            .collect();
+        let _ = write!(sql, " ORDER BY {}", by.join(", "));
+    }
+}
+
 fn scan(
     b: &mut Binder,
     scope: &Scope,
@@ -447,47 +500,14 @@ fn scan(
 ) -> Result<String, RenderError> {
     let (from, _) = scope.from(b, n.table())?;
     let mut sql = format!("SELECT {} {from}", names(n.columns()));
-    let arrival = n.arrival();
-    if let Some(as_of) = arrival.as_of {
-        let _ = write!(sql, " AND received_at <= {}", b.time(as_of));
-    }
-    if let Some(since) = arrival.since {
-        let _ = write!(sql, " AND received_at > {}", b.time(since));
-    }
+    arrival(b, &mut sql, n.arrival());
     and_pred(b, &mut sql, n.pred())?;
-    if let (Some(order), Some(cursor)) = (n.order(), n.cursor()) {
-        let values = order
-            .columns()
-            .iter()
-            .zip(cursor)
-            .map(|(column, value)| b.literal(column.ty(), value))
-            .collect::<Result<Vec<_>, _>>()?;
-        let after = match order.direction() {
-            Direction::Asc => ">",
-            Direction::Desc => "<",
-        };
-        let _ = match (order.columns(), values.as_slice()) {
-            ([column], [value]) => write!(sql, " AND {} {after} {value}", column.name()),
-            (columns, values) => write!(
-                sql,
-                " AND ({}) {after} ({})",
-                names(columns),
-                values.join(", ")
-            ),
-        };
-    }
+    keyset(b, &mut sql, n.order(), n.cursor())?;
     if let Some(restriction) = restriction {
         sql.push_str(" AND ");
         sql.push_str(restriction);
     }
-    if let Some(order) = n.order() {
-        let by: Vec<String> = order
-            .columns()
-            .iter()
-            .map(|c| format!("{} {}", c.name(), direction(order.direction())))
-            .collect();
-        let _ = write!(sql, " ORDER BY {}", by.join(", "));
-    }
+    order_by(&mut sql, n.order());
     limit(b, &mut sql, n.limit());
     Ok(sql)
 }
@@ -699,6 +719,12 @@ fn semi_join(b: &mut Binder, scope: &Scope, n: &SemiJoin) -> Result<String, Rend
     Ok(sql)
 }
 
+/// A list of strings, padded to a power of two.
+fn string_list(b: &mut Binder, values: &[String]) -> Result<String, RenderError> {
+    let values: Vec<Literal> = values.iter().map(|v| Literal::String(v.clone())).collect();
+    b.list(&Ty::String, &values)
+}
+
 fn text_search(b: &mut Binder, scope: &Scope, n: &TextSearch) -> Result<String, RenderError> {
     let def = table(n.table());
     let (from, _) = scope.from(b, n.table())?;
@@ -708,34 +734,38 @@ fn text_search(b: &mut Binder, scope: &Scope, n: &TextSearch) -> Result<String, 
         TokenMode::All | TokenMode::Phrase => "hasAllTokens",
         TokenMode::Any => "hasAnyTokens",
     };
-    let tokens: Vec<Literal> = n
-        .tokens()
-        .iter()
-        .map(|t| Literal::String(t.clone()))
-        .collect();
-    let tokens = b.list(&Ty::String, &tokens)?;
+    let tokens = string_list(b, n.tokens())?;
     let fields: Vec<String> = n
         .fields()
         .iter()
         .map(|f| format!("{function}({}, [{tokens}])", f.name()))
         .collect();
     let mut select = names(&def.key_columns());
-    if let Some(snippet) = n.snippet() {
-        // The first occurrence of any token as a substring, without regard to ASCII case, and the bytes
-        // around it. The position counts bytes from 1 and is 0 when no token occurs.
+    let snippet_fields = n.snippet_fields();
+    if let (Some(snippet), false) = (n.snippet(), snippet_fields.is_empty()) {
+        // The first occurrence of a needle as a substring, without regard to ASCII case, and the bytes around
+        // it. The position counts bytes from 1 and is 0 when no needle occurs.
+        let needles = match n.mode() {
+            TokenMode::Phrase => string_list(b, &n.needles())?,
+            TokenMode::All | TokenMode::Any => tokens.clone(),
+        };
         let before = b.u64(u64::from(snippet.before));
         let len = b.u64(u64::from(snippet.len));
-        for (i, field) in n.snippet_fields().iter().enumerate() {
+        for (i, field) in snippet_fields.iter().enumerate() {
             let name = field.name();
             let _ = write!(
                 select,
-                ", multiSearchFirstPositionCaseInsensitive({name}, [{tokens}]) AS s{i}, \
+                ", multiSearchFirstPositionCaseInsensitive({name}, [{needles}]) AS s{i}, \
                  substring({name}, if(s{i} > {before}, s{i} - {before}, 1), {len})"
             );
         }
     }
-    let mut sql = format!("SELECT {select} {from} AND ({})", fields.join(" OR "));
+    let mut sql = format!("SELECT {select} {from}");
+    arrival(b, &mut sql, n.arrival());
+    let _ = write!(sql, " AND ({})", fields.join(" OR "));
     and_pred(b, &mut sql, n.pred())?;
+    keyset(b, &mut sql, n.order(), n.cursor())?;
+    order_by(&mut sql, n.order());
     limit(b, &mut sql, Some(n.limit()));
     Ok(sql)
 }

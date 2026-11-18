@@ -1,0 +1,150 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "pydantic/pydantic-ai v2.70.0 tests/test_logfire.py lines 139-198 and 291-348",
+    "license_of_the_shape_source": "MIT",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD6, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The aggregated usage keys are the cumulative usage of the run and are never usage."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "pydantic-ai",
+              "version": "2.70.0"
+            },
+            "spans": [
+              {
+                "traceId": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+                "spanId": "0000000000000001",
+                "name": "invoke_agent helper",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "model_name",
+                    "value": {
+                      "stringValue": "test"
+                    }
+                  },
+                  {
+                    "key": "agent_name",
+                    "value": {
+                      "stringValue": "helper"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.agent.name",
+                    "value": {
+                      "stringValue": "helper"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.agent.call.id",
+                    "value": {
+                      "stringValue": "019b0c1d-2e3f-7a4b-9d6e-7f8091a2b3c4"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.conversation.id",
+                    "value": {
+                      "stringValue": "019b0c1d-2e3f-7a4b-8c5d-6e7f8091a2b3"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "invoke_agent"
+                    }
+                  },
+                  {
+                    "key": "logfire.msg",
+                    "value": {
+                      "stringValue": "helper run"
+                    }
+                  },
+                  {
+                    "key": "logfire.span_type",
+                    "value": {
+                      "stringValue": "span"
+                    }
+                  },
+                  {
+                    "key": "final_result",
+                    "value": {
+                      "stringValue": "{\"my_ret\":\"1\"}"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.aggregated_usage.input_tokens",
+                    "value": {
+                      "intValue": "97"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.aggregated_usage.output_tokens",
+                    "value": {
+                      "intValue": "11"
+                    }
+                  },
+                  {
+                    "key": "pydantic_ai.all_messages",
+                    "value": {
+                      "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call_ret\",\"name\":\"my_ret\",\"arguments\":{\"x\":0}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"call_ret\",\"name\":\"my_ret\",\"result\":\"1\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"{\\\"my_ret\\\":\\\"1\\\"}\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "metadata",
+                    "value": {
+                      "stringValue": "{\"stage\":\"qa\"}"
+                    }
+                  },
+                  {
+                    "key": "logfire.json_schema",
+                    "value": {
+                      "stringValue": "{\"type\":\"object\",\"properties\":{\"pydantic_ai.all_messages\":{\"type\":\"array\"},\"metadata\":{\"type\":\"array\"},\"final_result\":{\"type\":\"object\"}}}"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 6,
+      "observation_type": "agent",
+      "session_id": "019b0c1d-2e3f-7a4b-8c5d-6e7f8091a2b3",
+      "input": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Hello\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call_ret\",\"name\":\"my_ret\",\"arguments\":{\"x\":0}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"call_ret\",\"name\":\"my_ret\",\"result\":\"1\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"{\\\"my_ret\\\":\\\"1\\\"}\"}]}]",
+      "output": "{\"my_ret\":\"1\"}",
+      "io_shape": "genai_messages",
+      "metadata": {
+        "stage": "qa"
+      },
+      "usage_provided": {},
+      "tool_calls": null,
+      "residual": [
+        "model_name",
+        "agent_name",
+        "gen_ai.agent.name",
+        "gen_ai.agent.call.id",
+        "gen_ai.operation.name",
+        "logfire.msg",
+        "logfire.span_type",
+        "gen_ai.aggregated_usage.input_tokens",
+        "gen_ai.aggregated_usage.output_tokens",
+        "logfire.json_schema"
+      ]
+    }
+  }
+}

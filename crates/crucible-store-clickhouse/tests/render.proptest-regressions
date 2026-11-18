@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 98adb0204d4afe60be93bb11a07d4db72c27182ff3ad521cc0608d6a029dfbbf # shrinks to shape = SpanList { filtered: true, metadata: false, cursor: false }, seeds = (0, 3085585524273410226)
+cc 38c1e3c5794fb161b2ff2125784bafcd2414344ffdb9770c27a6a520ce36642e # shrinks to shape = SearchSpans { hits: 2, filtered: true }, seeds = (0, 5436339066187403977)

@@ -16,7 +16,9 @@
 mod data_bounds;
 mod enums;
 mod meta;
+mod payload;
 mod problem;
+mod search;
 mod spans;
 mod sql;
 mod trace_detail;
@@ -24,9 +26,15 @@ mod traces;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
-pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
+pub use enums::{
+    Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason, StatusCode,
+};
 pub use meta::Meta;
+pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use search::{
+    SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
+};
 pub use spans::{SpanPage, SpanPageParams};
 pub use sql::{
     SavedQuery, SavedQueryInput, SavedQueryList, SavedQueryParameter, SavedQueryParameterType,
@@ -43,11 +51,14 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 /// not change the output, one file per type.
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<DataBounds>();
+    visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
     visitor.visit::<SavedQuery>();
     visitor.visit::<SavedQueryInput>();
     visitor.visit::<SavedQueryList>();
     visitor.visit::<SavedQueryRunRequest>();
+    visitor.visit::<SearchPage>();
+    visitor.visit::<SearchRequest>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<SqlExportRequest>();

@@ -12,6 +12,7 @@ use common::{
     BASE_NANOS, RECEIVED_AT, bitmap, ctx, frame, int, kv, kvlist, request, request_with, run, s,
     span, span_with, strings, value,
 };
+use crucible_compat::{Confidence, DetectOn, KeyMatch};
 use crucible_normalize::{NormalizeError, normalize, normalize_with};
 use crucible_records::{
     ApiKeyId, IoShape, Level, Lsn, ObservationType, ProjectId, SourceFormat, SpanId, SpanKind,
@@ -484,21 +485,43 @@ fn a_body_that_does_not_scan_fails_the_frame() {
 }
 
 #[test]
-fn a_hint_without_a_mapper_falls_back_to_dialect_0() {
-    let body = request(vec![span(1, 1, None)]);
-    for hint in 1..=7 {
-        let mut f = frame(&body, &[]);
+fn a_hint_is_a_detection_of_its_dialect_at_confidence_60() {
+    let dialect_of = |body: &[u8], hint: u8| {
+        let mut f = frame(body, &[]);
         f.compat_dialect = hint;
         let r = &normalize(&f, &ctx()).unwrap().spans[0];
-        assert_eq!(
-            (r.core.compat_dialect, r.core.source_format),
-            (0, SourceFormat::Otel)
-        );
+        (r.core.compat_dialect, r.core.source_format)
+    };
+    // A span that nothing detects takes the hinted dialect; a hint that names no dialect is ignored.
+    let plain = request(vec![span(1, 1, None)]);
+    for hint in 1..=7 {
+        assert_eq!(dialect_of(&plain, hint), (hint, SourceFormat::Compat));
+    }
+    for hint in [0, 8, u8::MAX] {
+        assert_eq!(dialect_of(&plain, hint), (0, SourceFormat::Otel));
+    }
+    // A key only one dialect writes (confidence 90) keeps that dialect on a hinted path, and a weak rule
+    // (confidence 40) loses to the hint. The keys come from the tables.
+    for table in crucible_compat::TABLES {
+        for rule in table.detect {
+            let DetectOn::SpanKey(KeyMatch::Exact(key)) = rule.on else {
+                continue;
+            };
+            let body = request(vec![span_with(1, 1, None, vec![s(key, "v")])]);
+            let other = if table.dialect == 1 { 7 } else { 1 };
+            let expected = if rule.confidence > Confidence::HINT {
+                table.dialect
+            } else {
+                other
+            };
+            assert_eq!(dialect_of(&body, other).0, expected, "{key}");
+            assert_ne!(dialect_of(&body, 0).0, 0, "{key}");
+        }
     }
 }
 
 #[test]
-fn the_dialect_is_the_hint_else_the_most_confident_else_0() {
+fn the_dialect_is_the_most_confident_with_the_hint_at_60_else_0() {
     let body = request(vec![span(1, 1, None)]);
     let mapped = |mappers: &[&dyn crucible_normalize::SpanMapper], hint: u8| {
         let mut f = frame(&body, &[]);
@@ -525,11 +548,18 @@ fn the_dialect_is_the_hint_else_the_most_confident_else_0() {
             confidence: Some(9),
         },
     );
-    // The hint wins over detection.
+    // The hint counts as a detection at confidence 60: it wins over weaker rules and loses to stronger ones.
     assert_eq!(
         mapped(&[&native, &a, &c], 3),
         (3, SourceFormat::Compat, "double 3".into())
     );
+    let sure = Double {
+        id: 6,
+        confidence: Some(90),
+    };
+    assert_eq!(mapped(&[&native, &a, &sure], 3).0, 6);
+    // A hint that names no mapper is ignored.
+    assert_eq!(mapped(&[&native, &a, &b], 5).0, 2);
     // Highest confidence, ties to the lowest id.
     assert_eq!(mapped(&[&native, &a, &b], 0).0, 2);
     assert_eq!(mapped(&[&native, &a, &b, &c], 7).0, 6);

@@ -1,0 +1,100 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "synthetic: the log level, linked prompts and trace tag keys of mlflow/mlflow v3.18.0",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD5, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The linked prompts are JSON text inside JSON text; a member path reads through both and does not consume the key. A trace tag is a raw string and is stored as sent. The scope and the resource are the ones mlflow/mlflow v3.18.0 mlflow/tracing/provider.py sets (lines 284, 592-599 and 764-773); the test builds the span alone."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "python"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "mlflow"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "3.17.2"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "mlflow.tracing.provider",
+              "version": ""
+            },
+            "spans": [
+              {
+                "traceId": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+                "spanId": "0000000000000001",
+                "name": "op",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "mlflow.spanType",
+                    "value": {
+                      "stringValue": "\"CHAIN\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.spanLogLevel",
+                    "value": {
+                      "stringValue": "30"
+                    }
+                  },
+                  {
+                    "key": "mlflow.linkedPrompts",
+                    "value": {
+                      "stringValue": "\"[{\\\"name\\\":\\\"greeter\\\",\\\"version\\\":\\\"3\\\"}]\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.traceTag.team",
+                    "value": {
+                      "stringValue": "core"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 5,
+      "observation_type": "chain",
+      "level": "warning",
+      "prompt_name": "greeter",
+      "prompt_version": "3",
+      "trace_metadata": {
+        "team": "core"
+      },
+      "residual": [
+        "mlflow.linkedPrompts"
+      ]
+    }
+  }
+}
