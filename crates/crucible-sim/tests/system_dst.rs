@@ -70,8 +70,13 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
         let outcome = run_system_sim(seed, Options::realistic(mask));
         assert_holds(&outcome);
         targets.extend(outcome.stats.targets());
-        reads += outcome.stats.live_reads;
-        whole += outcome.stats.live_whole;
+        // One frame that does not normalize marks every later read of its project `partial: quarantined`, and
+        // a row budget of a few KiB holds stage B back behind the batches in flight, so those runs say
+        // nothing about how often a read needs a marker.
+        if !mask.has(Dim::FrameFaults) && !mask.has(Dim::SmallBudget) {
+            reads += outcome.stats.live_reads;
+            whole += outcome.stats.live_whole;
+        }
         acked += outcome.stats.acked;
     }
     println!("{acked} requests acknowledged; {whole} of {reads} live trace reads whole and strong");
@@ -79,6 +84,14 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
     // live reads must need none.
     assert!(acked > 500 && whole * 2 > reads, "{whole} of {reads} reads");
     for target in [
+        "frame quarantined",
+        "fact write acknowledged",
+        "fact write refused",
+        "facts resolved against the reference fold",
+        "rollups compared with the reference",
+        "request throttled (429)",
+        "span re-read through its locator",
+        "request with a repeated span acknowledged",
         "json request acknowledged",
         "repeated request acknowledged",
         "request refused",
@@ -126,6 +139,8 @@ fn live_reads_are_whole_without_store_stalls() {
         Dim::ChPoison,
         Dim::ChRejects,
         Dim::ChServerErrors,
+        Dim::FrameFaults,
+        Dim::SmallBudget,
     ];
     let (mut reads, mut whole) = (0, 0);
     for (mask, seed) in budget(0, 12, 1) {

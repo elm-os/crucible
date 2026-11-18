@@ -22,12 +22,13 @@ use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{Compression, PreparedFrame, Record, RecordType};
 
-/// The four tables a span yields rows in.
-const TABLES: [TableId; 4] = [
+/// The tables a span without a session or a user yields rows in.
+const TABLES: [TableId; 5] = [
     TableId::SpanCore,
     TableId::SpanPayload,
     TableId::TraceHeads,
     TableId::TraceStats,
+    TableId::SpanMetrics,
 ];
 
 struct Rig {
@@ -343,7 +344,7 @@ fn once_in_doubt_every_send_follows_a_probe() {
             // The rejections do not clear the doubt: a probe precedes each later send.
             assert_eq!(calls, "IPIPIPI", "{pair:?}");
         }
-        assert_eq!(node.snapshot().unknown_outcomes, 4);
+        assert_eq!(node.snapshot().unknown_outcomes, TABLES.len() as u64);
         assert_eq!(node.snapshot().probes_present, 0);
         assert_eq!(rig.rows(TableId::SpanCore), 2);
         node.host.stop().await;
@@ -366,7 +367,7 @@ fn an_insert_that_landed_unseen_is_found_by_the_probe() {
         for (pair, calls) in rig.calls_by_pair() {
             assert_eq!(calls, "IP", "{pair:?}");
         }
-        assert_eq!(node.snapshot().probes_present, 4);
+        assert_eq!(node.snapshot().probes_present, TABLES.len() as u64);
         assert_eq!(rig.rows(TableId::SpanCore), 2);
         node.host.stop().await;
     });
@@ -406,8 +407,8 @@ fn a_restart_probes_every_pair_and_resends_with_the_same_token() {
         assert_eq!(node.snapshot().reshipped, 1);
         // Everything before a restart is in doubt: every pair is probed; only the missing one is sent, with
         // the token of the first incarnation.
-        assert_eq!(node.snapshot().probes, 4);
-        assert_eq!(node.snapshot().probes_present, 3);
+        assert_eq!(node.snapshot().probes, TABLES.len() as u64);
+        assert_eq!(node.snapshot().probes_present, TABLES.len() as u64 - 1);
         assert_eq!(node.snapshot().inserts, 1);
         let resent: Vec<BatchToken> = rig
             .model

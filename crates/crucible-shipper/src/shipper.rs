@@ -482,6 +482,11 @@ impl Shipper {
         Ok(())
     }
 
+    /// Whether no batch in flight holds rows any more.
+    fn all_released(&self) -> bool {
+        self.in_flight.iter().all(|batch| batch.released)
+    }
+
     /// Whether the budget of `shipper.encoded_bytes` has room for `bytes` more.
     fn budget_admits(&self, bytes: u64) -> bool {
         self.ctx.stats.held_bytes().saturating_add(bytes) <= self.ctx.config.encoded_bytes
@@ -519,8 +524,8 @@ impl Shipper {
             if !fits && !self.open.is_sealable() {
                 return Err(ShipError::FrameTooLarge(lsn));
             }
-            let waits = !self.budget_admits(row_bytes)
-                && (self.open.is_sealable() || !self.in_flight.is_empty());
+            let waits =
+                !self.budget_admits(row_bytes) && (self.open.is_sealable() || !self.all_released());
             if !fits || waits {
                 held.row_bytes = Some(row_bytes);
                 self.held = Some(held);
@@ -595,7 +600,12 @@ impl Shipper {
     /// Whether the open batch takes another frame.
     fn can_read(&self) -> bool {
         match self.seals.front() {
-            Some(seal) => self.open.last_lsn() < seal.last_lsn,
+            // A batch that recovery found takes every frame of its range; while the budget is exhausted it
+            // waits for the batches in flight before it takes the next one.
+            Some(seal) => {
+                self.open.last_lsn() < seal.last_lsn
+                    && (self.all_released() || self.budget_admits(1))
+            }
             None => {
                 self.held.is_none()
                     && !self
@@ -790,7 +800,7 @@ impl Shipper {
                 self.seal().await?;
                 continue;
             }
-            let room = self.in_flight.is_empty()
+            let room = self.all_released()
                 || self
                     .held
                     .as_ref()

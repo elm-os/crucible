@@ -19,7 +19,16 @@
 //!   `lagging`, and each marker must be warranted by the run's configuration: `store_unavailable` only with
 //!   store outages, read faults or the tiny index bound, `quarantined` only with poison pairs. At quiescence
 //!   no marker is accepted except `quarantined` when a quarantine exists.
+//! - **I4** the fact rows in the store resolve, through the reference fold, to what the facts as they were
+//!   written resolve to, in any order of the rows. Every acknowledged fact is in its table exactly once, in a
+//!   durable frame above the watermark, or in a quarantine (I1, I2).
+//! - **I5** a refusal for load is a 429 or a 503 with `Retry-After`, and the rows the shipper holds stay within
+//!   `shipper.encoded_bytes`.
 //! - **I6** no read returns a span or a trace of another project (the projects share trace ids).
+//! - **I7** every `span_core` row carries the tokens, the cost and the error status its span reported, and at
+//!   quiescence `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics` equal the reference
+//!   aggregation over `span_core` exactly: counts, error counts, token and cost sums, first and last seen,
+//!   and the duration histograms.
 //! - **I12** the recovered log equals the uninterrupted reference recovery, and a restart after quiescence
 //!   ships nothing and changes nothing.
 //! - **I13** at quiescence no segment wholly at or below the watermark is left and the index is empty.
@@ -34,18 +43,24 @@ use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
 use crucible_auth::{SecretKey, StaticKey, StaticKeys};
 use crucible_chfmt::Compression;
-use crucible_env::{Env, QueryError, Rng, StoreFlavour, Stores};
-use crucible_ingest::{Ingest, IngestConfig};
+use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
+use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
+use crucible_normalize::{IngestFrame, NormCtx, PriceTable, normalize};
 use crucible_plan::{Caller, Pred};
 use crucible_query::{
     Consistency, Meta, PartialReason, QueryService, QueryServiceError, ReadContext, SpanSource,
     TraceListQuery,
 };
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
-use crucible_records::{ApiKeyId, Lsn, ProjectId, TableId, TimeWindow, Timestamp, TraceId};
+use crucible_records::{
+    ApiKeyId, AuthorKind, CorrectionBody, FactBody, FactTargetKind, FlagBody, Lsn, PayloadCaps,
+    ProjectId, ScoreBody, ScoreDataType, ScoreSource, SpanId, TableId, TagBody, TagOp, TimeWindow,
+    Timestamp, TraceId, Uuid,
+};
 use crucible_schema::{Granularity, RetentionSettings};
 use crucible_shipper::{
-    Hooks, RecentHook, ShipError, Shipper, ShipperConfig, ShipperStats, StatsSnapshot,
+    FRAMES_FILE, FrameFault, FrameManifest, Hooks, MANIFEST_FILE, RecentHook, ShipError, Shipper,
+    ShipperConfig, ShipperStats, StatsSnapshot,
 };
 use crucible_wal::{RecoveryReport, Wal, WalConfig, WalFrame};
 use crucible_wal_codec::{Record, RecordType};
@@ -54,7 +69,7 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
-use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
 use prost::Message;
 use tower::ServiceExt;
 
@@ -63,10 +78,11 @@ use crate::ch_model::{ChFaults, ChModel, ChStats, bytes_at, i8_at, u8_at, u64_at
 use crate::disk::{DiskFaults, SimDisk};
 use crate::runtime::{Host, SIM_EPOCH_MICROS, Sim, run};
 use crate::ship_sim::{
-    BARRIERS, QUARANTINE_COPIED, QuarantineFault, SimBarriers, add, manifests, random,
-    read_quarantines,
+    BARRIERS, QUARANTINE_COPIED, QuarantineFault, SimBarriers, add, copied_payloads, manifests,
+    random, read_quarantines,
 };
 use crate::swarm::{ConfigMask, Dim, RunRecord};
+use crate::system_oracle::{self, FactRow};
 use crate::trace::Trace;
 use crate::wal_sim::{self, LogState, coin, pick, read_log};
 
@@ -112,17 +128,26 @@ pub enum Mutant {
     SkipProbeAfterUnknown,
     /// `crucible-ingest` answers 200 before the WAL append resolves.
     AckBeforeAppend,
+    /// `crucible-shipper` counts one row of every rollup block twice.
+    DoubleCountRollup,
+    /// `crucible-shipper` counts a pair of a fact table as landed when its insert is retried.
+    DropFactOnRetry,
+    /// `crucible-shipper` quarantines a frame that does not normalize without copying it.
+    FrameQuarantineWithoutCopy,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
         Self::SilentEviction,
         Self::SkipProbeAfterUnknown,
         Self::AckBeforeAppend,
+        Self::DoubleCountRollup,
+        Self::DropFactOnRetry,
+        Self::FrameQuarantineWithoutCopy,
     ];
 
     /// The name used on the command line.
@@ -134,6 +159,9 @@ impl Mutant {
             Self::SilentEviction => "silent-eviction",
             Self::SkipProbeAfterUnknown => "skip-probe-after-unknown",
             Self::AckBeforeAppend => "ack-before-append",
+            Self::DoubleCountRollup => "double-count-rollup",
+            Self::DropFactOnRetry => "drop-fact-on-retry",
+            Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
         }
     }
 
@@ -258,6 +286,28 @@ pub enum Violation {
     RestartNotIdempotent,
     /// The run did not finish within its virtual-time deadline.
     Deadline,
+    /// I1: an acknowledged fact is neither in its fact table, nor in a durable frame above the watermark, nor
+    /// in a quarantine.
+    AckedFactLost {
+        /// The table.
+        table: &'static str,
+        /// The fact write, in submission order.
+        write: usize,
+    },
+    /// I2: a fact row landed twice, or a fact row that no write explains.
+    FactRow(String),
+    /// I4: the facts in the store do not resolve to what the reference fold gives for the facts written, or
+    /// the result depends on the order of the rows.
+    FactResolution(String),
+    /// I7: a count, an error count, a token sum or a cost sum differs from the reference aggregation.
+    Aggregate(String),
+    /// I5: a tracked budget went above its cap, or a refusal was not a 429 or 503 with `Retry-After`.
+    Backpressure(String),
+    /// Contract 8.6: the WAL locator of an index entry does not lead back to its span.
+    Locator {
+        /// The request, in submission order.
+        request: usize,
+    },
 }
 
 impl Violation {
@@ -265,7 +315,14 @@ impl Violation {
     /// not drain or finish.
     pub const fn invariant(&self) -> &'static str {
         match self {
-            Self::AckedSpanLost { .. } | Self::LogUnreadable(_) => "I1",
+            Self::AckedSpanLost { .. } | Self::AckedFactLost { .. } | Self::LogUnreadable(_) => {
+                "I1"
+            }
+            Self::FactRow(_) => "I2",
+            Self::FactResolution(_) => "I4",
+            Self::Aggregate(_) => "I7",
+            Self::Backpressure(_) => "I5",
+            Self::Locator { .. } => "I3",
             Self::Store(_)
             | Self::IdentityOverlap { .. }
             | Self::DuplicateRow { .. }
@@ -332,6 +389,24 @@ pub struct Stats {
     pub outages: u64,
     /// Quarantine directories at the end.
     pub quarantines: u64,
+    /// Of those, frames quarantined because they do not normalize.
+    pub frame_quarantines: u64,
+    /// Fact writes acknowledged.
+    pub fact_writes: u64,
+    /// Fact writes refused.
+    pub fact_writes_refused: u64,
+    /// Fact rows in the store at the end.
+    pub fact_rows: u64,
+    /// Keys the facts in the store resolve to a value for, at the end.
+    pub fact_keys: u64,
+    /// Rollup keys compared with the reference aggregation at the end.
+    pub rollup_keys: u64,
+    /// Requests refused with 429.
+    pub throttled: u64,
+    /// Spans re-read through the WAL locator of their index entry.
+    pub locator_reads: u64,
+    /// Requests that carry a span of an earlier request beside their own.
+    pub partial_repeats: u64,
     /// The shipper's counters, summed over its incarnations.
     pub shipper: StatsSnapshot,
     /// The store's counters.
@@ -366,6 +441,21 @@ impl Stats {
             (self.reads_unavailable, "read refused (store unavailable)"),
             (self.outages, "store outage"),
             (self.quarantines, "quarantine"),
+            (self.frame_quarantines, "frame quarantined"),
+            (self.fact_writes, "fact write acknowledged"),
+            (self.fact_writes_refused, "fact write refused"),
+            (self.fact_keys, "facts resolved against the reference fold"),
+            (self.rollup_keys, "rollups compared with the reference"),
+            (self.throttled, "request throttled (429)"),
+            (self.locator_reads, "span re-read through its locator"),
+            (
+                self.partial_repeats,
+                "request with a repeated span acknowledged",
+            ),
+            (
+                self.shipper.quarantined_frames,
+                "shipper quarantined a frame",
+            ),
             (
                 self.shipper.reshipped,
                 "sealed batch shipped again after a restart",
@@ -556,7 +646,7 @@ impl Plan {
             StoreFlavour::SingleNode
         };
         let window = |on: bool| if on { 8 } else { 4_000_000 };
-        let ship = ShipperConfig {
+        let mut ship = ShipperConfig {
             linger: if small {
                 millis(&[2, 20])
             } else {
@@ -593,11 +683,18 @@ impl Plan {
                 Some(Mutant::SkipProbeAfterUnknown) => {
                     Some(crucible_shipper::Mutant::SkipProbeAfterUnknown)
                 }
+                Some(Mutant::DoubleCountRollup) => {
+                    Some(crucible_shipper::Mutant::DoubleCountRollup)
+                }
+                Some(Mutant::DropFactOnRetry) => Some(crucible_shipper::Mutant::DropFactOnRetry),
+                Some(Mutant::FrameQuarantineWithoutCopy) => {
+                    Some(crucible_shipper::Mutant::FrameQuarantineWithoutCopy)
+                }
                 _ => None,
             },
             ..ShipperConfig::default()
         };
-        let ingest = IngestConfig {
+        let mut ingest = IngestConfig {
             compression: if has(Dim::WalCompressionOff) {
                 crucible_wal_codec::Compression::None
             } else {
@@ -640,6 +737,21 @@ impl Plan {
                 (1_000_000, 120_000_000)
             },
         };
+        // The settings of the milestone 2 dimensions are drawn last, so that a mask without them draws what it
+        // drew before they existed.
+        if has(Dim::SmallBudget) {
+            ship.encoded_bytes = choose(&[20_000, 200_000]);
+        }
+        if has(Dim::FrameFaults) {
+            let ppm = fault(Dim::FrameFaults, 40_000);
+            ship.frame_fault = Some(FrameFault::new(rng.next_u64(), ppm));
+        }
+        if has(Dim::ProjectRate) {
+            ingest.project_rate = Some(BucketConfig {
+                rate_per_s: choose(&[60_000, 2_000_000]),
+                burst: 128 << 10,
+            });
+        }
         Self {
             mask,
             wal,
@@ -666,11 +778,29 @@ fn secret(project: usize) -> String {
 
 type SpanKey = (usize, [u8; 16], [u8; 8]);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct SpanInfo {
     trace: [u8; 16],
     span: [u8; 8],
     root: bool,
+    /// What the span reports: tokens, the provided cost in nano-USD, and an error status.
+    sent: system_oracle::Sent,
+}
+
+/// A span a client sent, kept to send it again inside a later request.
+#[derive(Clone, Debug)]
+struct SentSpan {
+    project: usize,
+    info: SpanInfo,
+    wire: Span,
+}
+
+/// One fact write: what was handed in and, once acknowledged, what the server assigned.
+#[derive(Clone, Debug)]
+struct FactWrite {
+    project: usize,
+    facts: Arc<Vec<NewFact>>,
+    accepted: Option<Vec<AcceptedFact>>,
 }
 
 /// One request body: what the oracle expects of it, and its bytes for a repeat.
@@ -681,6 +811,8 @@ struct Request {
     body: Arc<Vec<u8>>,
     json: bool,
     acked: bool,
+    /// Whether the request carries a span of an earlier request beside its own.
+    partial_repeat: bool,
 }
 
 /// The oracle ledger.
@@ -693,6 +825,10 @@ struct Ledger {
     keys: BTreeMap<SpanKey, u32>,
     /// Every span sent of each trace of each project.
     traces: BTreeMap<(usize, [u8; 16]), BTreeSet<[u8; 8]>>,
+    /// What each span key reports, as every request that carries it sends it.
+    sent: BTreeMap<SpanKey, system_oracle::Sent>,
+    /// Every fact write, in submission order.
+    fact_writes: Vec<FactWrite>,
     repeats: u64,
     violations: Vec<Violation>,
     stats: Stats,
@@ -710,6 +846,8 @@ impl Ledger {
                 .entry((request.project, span.trace))
                 .or_default()
                 .insert(span.span);
+            self.sent
+                .insert((request.project, span.trace, span.span), span.sent);
         }
         self.stats.sent += 1;
     }
@@ -770,8 +908,26 @@ fn attribute(key: &str, value: AnyValue) -> KeyValue {
     }
 }
 
-/// Builds one request: a few spans, mostly of one new or recent trace.
-fn generate(plan: &Plan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Request> {
+fn int(value: u64) -> AnyValue {
+    AnyValue {
+        value: Some(any_value::Value::IntValue(value as i64)),
+    }
+}
+
+/// What a client remembers between its requests.
+#[derive(Default)]
+struct ClientState {
+    /// Recent trace ids, which later requests and fact writes reuse.
+    traces: Vec<[u8; 16]>,
+    /// Recent spans, which later requests send again beside their own.
+    spans: Vec<SentSpan>,
+}
+
+/// Builds one request: a few spans, mostly of one new or recent trace. Spans report a session, a user, an
+/// environment, a release, a model, usage, a provided cost and an error status from small seeded domains, so
+/// that the rollups have keys that collide and measures to sum.
+fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Request> {
+    let traces = &mut state.traces;
     let has = |dim| plan.mask.has(dim);
     let project = pick(rng, plan.projects as u64) as usize;
     let json = has(Dim::Json) && coin(rng);
@@ -794,6 +950,21 @@ fn generate(plan: &Plan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Re
     let mut rootless = reuse_main || (has(Dim::Rootless) && coin(rng));
     let mut spans = Vec::new();
     let mut wire = Vec::new();
+    // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
+    // window still holds it, which shifts the spans after it in the frame.
+    let again = state
+        .spans
+        .iter()
+        .filter(|sent| sent.project == project)
+        .nth(pick(rng, 4) as usize)
+        .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
+        .cloned();
+    let partial_repeat = again.is_some();
+    if let Some(sent) = again {
+        spans.push(sent.info);
+        wire.push(sent.wire);
+    }
+    let session = (pick(rng, 3) > 0).then(|| format!("session-{}", pick(rng, 3)));
     for ordinal in 0..count {
         let other = traces.len() > 1 && pick(rng, 5) == 0;
         let trace = if other {
@@ -831,8 +1002,57 @@ fn generate(plan: &Plan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Re
             name.push_str("BADUTF8!");
             attributes.push(attribute("sim.text", text("a BADUTF8! b".to_owned())));
         }
-        spans.push(SpanInfo { trace, span, root });
-        wire.push(Span {
+        if let Some(session) = &session {
+            attributes.push(attribute("crucible.session.id", text(session.clone())));
+        }
+        if coin(rng) {
+            attributes.push(attribute("user.id", text(format!("user-{}", pick(rng, 3)))));
+        }
+        if pick(rng, 3) == 0 {
+            let environment = ["prod", "staging"][pick(rng, 2) as usize];
+            attributes.push(attribute(
+                "crucible.environment",
+                text(environment.to_owned()),
+            ));
+        }
+        if pick(rng, 4) == 0 {
+            attributes.push(attribute("crucible.release", text("r1".to_owned())));
+        }
+        let mut sent = system_oracle::Sent::default();
+        if coin(rng) {
+            sent.input = pick(rng, 1_000);
+            sent.output = pick(rng, 500);
+            attributes.push(attribute("gen_ai.usage.input_tokens", int(sent.input)));
+            attributes.push(attribute("gen_ai.usage.output_tokens", int(sent.output)));
+            attributes.push(attribute(
+                "gen_ai.response.model",
+                text(format!("sim-model-{}", pick(rng, 2))),
+            ));
+            if coin(rng) {
+                attributes.push(attribute("gen_ai.operation.name", text("chat".to_owned())));
+                attributes.push(attribute(
+                    "crucible.completion_start_time",
+                    int(start_nanos + 1_000 * pick(rng, 900)),
+                ));
+            }
+            if coin(rng) {
+                // A provided cost in whole micro-dollars, as a decimal string of USD.
+                let micro_usd = pick(rng, 5_000);
+                sent.cost_nusd = micro_usd as i64 * 1_000;
+                attributes.push(attribute(
+                    "crucible.cost.total",
+                    text(format!("0.{micro_usd:06}")),
+                ));
+            }
+        }
+        sent.error = pick(rng, 5) == 0;
+        let info = SpanInfo {
+            trace,
+            span,
+            root,
+            sent,
+        };
+        let span = Span {
             trace_id: trace.to_vec(),
             span_id: span.to_vec(),
             parent_span_id: if root { Vec::new() } else { vec![7; 8] },
@@ -841,8 +1061,22 @@ fn generate(plan: &Plan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Re
             start_time_unix_nano: start_nanos,
             end_time_unix_nano: start_nanos + 1_500_000 * (1 + ordinal),
             attributes,
+            status: sent.error.then(|| Status {
+                message: String::new(),
+                code: 2,
+            }),
             ..Span::default()
+        };
+        state.spans.push(SentSpan {
+            project,
+            info,
+            wire: span.clone(),
         });
+        if state.spans.len() > 16 {
+            state.spans.remove(0);
+        }
+        spans.push(info);
+        wire.push(span);
     }
     let otlp = ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
@@ -878,24 +1112,137 @@ fn generate(plan: &Plan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Re
         body: Arc::new(body),
         json,
         acked: false,
+        partial_repeat,
     })
 }
 
-/// The node's WAL as the recent-span index sees it. The query services of milestone 1 never re-read a payload
-/// through the index, so the simulation does not model that read.
+/// Builds one fact write: a few facts about recent traces, from small key domains so that versions collide
+/// on a key and retractions meet the values they retract.
+fn generate_facts(rng: &dyn Rng, state: &ClientState) -> Vec<NewFact> {
+    let count = 1 + pick(rng, 5);
+    (0..count)
+        .map(|_| {
+            let trace = match state.traces.len() as u64 {
+                0 => [0x5a; 16],
+                n => state.traces[pick(rng, n) as usize],
+            };
+            let on_span = pick(rng, 4) == 0;
+            let in_session = !on_span && pick(rng, 5) == 0;
+            // Mostly this month; sometimes a month earlier, so a second partition.
+            let days_back = if pick(rng, 6) == 0 { 40 } else { 0 };
+            let target_time = START_BASE_MICROS + pick(rng, 3 * 86_400_000_000) as i64
+                - days_back * 86_400_000_000;
+            let (key, body): (String, FactBody) = match pick(rng, 4) {
+                0 => (
+                    format!("tag-{}", pick(rng, 3)),
+                    FactBody::Tag(TagBody {
+                        op: if coin(rng) { TagOp::Add } else { TagOp::Remove },
+                    }),
+                ),
+                1 => (
+                    ["bookmarked", "public"][pick(rng, 2) as usize].to_owned(),
+                    FactBody::Flag(FlagBody { value: coin(rng) }),
+                ),
+                2 => (
+                    "quality".to_owned(),
+                    FactBody::Score(ScoreBody {
+                        data_type: ScoreDataType::Numeric,
+                        value_num: pick(rng, 100) as f64 / 100.0,
+                        value_str: "".into(),
+                        comment: "x".repeat(pick(rng, 40) as usize).into(),
+                        source: ScoreSource::Api,
+                        metadata: bytes::Bytes::from_static(b"{}"),
+                        config_id: None,
+                    }),
+                ),
+                _ => (
+                    "output".to_owned(),
+                    FactBody::Correction(CorrectionBody {
+                        corrected: bytes::Bytes::from(format!("\"fixed-{}\"", pick(rng, 9))),
+                        note: "".into(),
+                    }),
+                ),
+            };
+            NewFact {
+                target_kind: if on_span {
+                    FactTargetKind::Span
+                } else if in_session {
+                    FactTargetKind::Session
+                } else {
+                    FactTargetKind::Trace
+                },
+                trace_id: if in_session {
+                    TraceId::ZERO
+                } else {
+                    TraceId::from_bytes(trace)
+                },
+                span_id: if on_span {
+                    SpanId::from_bytes([1 + pick(rng, 2) as u8; 8])
+                } else {
+                    SpanId::ZERO
+                },
+                session_id: if in_session {
+                    format!("session-{}", pick(rng, 3)).into()
+                } else {
+                    "".into()
+                },
+                target_time: Timestamp::from_micros(target_time),
+                key: key.into(),
+                retracted: pick(rng, 5) == 0,
+                body,
+            }
+        })
+        .collect()
+}
+
+/// The node's WAL as the recent-span index sees it: the durable LSN, and the re-read of one span by its
+/// locator through `Wal::read_at` and stage A, as the binary does it.
 #[derive(Debug)]
-struct SimWalView(Wal);
+struct SimWalView {
+    wal: Wal,
+    ctx: NormCtx<'static>,
+}
 
 impl WalView for SimWalView {
     fn durable_lsn(&self) -> Lsn {
-        self.0.durable_lsn()
+        self.wal.durable_lsn()
     }
 
-    fn read_span(&self, _project_id: ProjectId, _locator: WalLocator) -> SpanRead {
-        Box::pin(async {
-            Err(WalReadError::Failed(
-                "the simulation does not re-read payloads".to_owned(),
-            ))
+    fn read_span(&self, project_id: ProjectId, locator: WalLocator) -> SpanRead {
+        let (wal, ctx) = (self.wal.clone(), self.ctx);
+        Box::pin(async move {
+            let failed = |reason: String| WalReadError::Failed(reason);
+            let frame = wal
+                .read_at(locator.segment, locator.offset)
+                .await
+                .map_err(|e| failed(e.to_string()))?
+                .filter(|frame| frame.record_type() == RecordType::IngestRequest)
+                .ok_or(WalReadError::Gone)?;
+            let payload = frame.payload().map_err(|e| failed(e.to_string()))?;
+            let Ok(Record::IngestRequest(request)) =
+                Record::decode(RecordType::IngestRequest, &payload)
+            else {
+                return Err(WalReadError::Gone);
+            };
+            let ingest = IngestFrame {
+                wal_epoch: wal.epoch(),
+                lsn: frame.lsn(),
+                received_at: frame.received_at(),
+                project_id: request.project_id,
+                api_key_id: request.api_key_id,
+                compat_dialect: request.compat_dialect,
+                sdk_name: request.sdk_name,
+                sdk_version: request.sdk_version,
+                rejected: request.rejected,
+                otlp: request.otlp,
+            };
+            normalize(&ingest, &ctx)
+                .map_err(|e| failed(e.to_string()))?
+                .spans
+                .into_iter()
+                .nth(locator.ordinal as usize)
+                .filter(|span| span.core.project_id == project_id)
+                .ok_or(WalReadError::Gone)
         })
     }
 }
@@ -903,12 +1250,15 @@ impl WalView for SimWalView {
 /// The application of one incarnation, as its clients and readers see it.
 struct Node {
     router: Router,
+    ingest: Ingest,
     query: QueryService,
     index: Arc<RecentIndex>,
+    view: Arc<SimWalView>,
 }
 
-/// Sends one request body. `true` when the node answered 200 and rejected no span.
-async fn post(node: &Node, request: &Request) -> bool {
+/// Sends one request body. `true` when the node answered 200 and rejected no span. A refusal for load must be
+/// a 429 or a 503 with `Retry-After` (I5); the other refusals are for the body.
+async fn post(shared: &Shared, node: &Node, request: &Request) -> bool {
     let content_type = if request.json {
         "application/json"
     } else {
@@ -927,7 +1277,27 @@ async fn post(node: &Node, request: &Request) -> bool {
         return false;
     };
     let Ok(response) = node.router.clone().oneshot(built).await;
-    if response.status() != StatusCode::OK {
+    let status = response.status();
+    if status != StatusCode::OK {
+        let load = matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = matches!(
+            status,
+            StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let waits = response.headers().contains_key("retry-after");
+        let mut ledger = shared.ledger();
+        ledger.stats.throttled += u64::from(status == StatusCode::TOO_MANY_REQUESTS);
+        let throttle_expected = shared.plan.mask.has(Dim::ProjectRate);
+        if !(body || (load && waits))
+            || (status == StatusCode::TOO_MANY_REQUESTS && !throttle_expected)
+        {
+            ledger.violate(Violation::Backpressure(format!(
+                "a request was refused with {status}, Retry-After {waits}"
+            )));
+        }
         return false;
     }
     let Ok(body) = axum::body::to_bytes(response.into_body(), 1 << 20).await else {
@@ -961,7 +1331,7 @@ impl Permitted {
                 || has(Dim::LongOutages)
                 || has(Dim::ChReadErrors)
                 || has(Dim::TinyRecent),
-            quarantined: has(Dim::ChPoison),
+            quarantined: has(Dim::ChPoison) || has(Dim::FrameFaults),
             lagging: true,
             read,
         }
@@ -1051,36 +1421,56 @@ async fn read_back(shared: &Shared, node: &Node, index: usize, permitted: Permit
                     .map(|span| span.summary.span_id.to_bytes())
                     .collect();
                 let whole = check_meta(shared, &detail.meta, permitted);
-                let mut ledger = shared.ledger();
-                let foreign = ledger
-                    .traces
-                    .get(&(request.project, trace))
-                    .is_none_or(|sent| !returned.is_subset(sent));
-                if foreign {
-                    ledger.violate(Violation::ForeignData("trace"));
-                }
-                let missing = request
-                    .spans
-                    .iter()
-                    .any(|span| span.trace == trace && !returned.contains(&span.span));
-                if missing && whole {
-                    ledger.violate(Violation::SilentMiss {
-                        read: permitted.read,
-                        request: index,
-                    });
-                }
-                ledger.stats.live_reads += u64::from(permitted.lagging);
-                if !missing && whole {
-                    ledger.stats.reads_whole += 1;
-                    ledger.stats.live_whole += u64::from(permitted.lagging);
-                }
-                for span in &detail.spans {
-                    match span.source {
-                        SpanSource::Recent(_) => ledger.stats.spans_from_index += 1,
-                        SpanSource::Store(_) => ledger.stats.spans_from_store += 1,
+                let located = {
+                    let mut ledger = shared.ledger();
+                    let foreign = ledger
+                        .traces
+                        .get(&(request.project, trace))
+                        .is_none_or(|sent| !returned.is_subset(sent));
+                    if foreign {
+                        ledger.violate(Violation::ForeignData("trace"));
+                    }
+                    let missing = request
+                        .spans
+                        .iter()
+                        .any(|span| span.trace == trace && !returned.contains(&span.span));
+                    if missing && whole {
+                        ledger.violate(Violation::SilentMiss {
+                            read: permitted.read,
+                            request: index,
+                        });
+                    }
+                    ledger.stats.live_reads += u64::from(permitted.lagging);
+                    if !missing && whole {
+                        ledger.stats.reads_whole += 1;
+                        ledger.stats.live_whole += u64::from(permitted.lagging);
+                    }
+                    let mut located = None;
+                    for span in &detail.spans {
+                        match span.source {
+                            SpanSource::Recent(locator) => {
+                                ledger.stats.spans_from_index += 1;
+                                located.get_or_insert((span.summary.span_id, locator));
+                            }
+                            SpanSource::Store(_) => ledger.stats.spans_from_store += 1,
+                        }
+                    }
+                    located
+                };
+                // Contract 8.6: the locator of an index entry leads back to its span. A frame that is gone or
+                // does not read is the store's to serve; a frame that reads must hold the span there.
+                if let Some((span_id, locator)) = located
+                    && let Ok(record) = node
+                        .view
+                        .read_span(project_id(request.project), locator)
+                        .await
+                {
+                    let mut ledger = shared.ledger();
+                    ledger.stats.locator_reads += 1;
+                    if record.core.span_id != span_id {
+                        ledger.violate(Violation::Locator { request: index });
                     }
                 }
-                drop(ledger);
                 shared.trace.event(
                     "read.trace",
                     &[
@@ -1205,11 +1595,12 @@ async fn exchange(ctx: &ClientCtx, index: usize, repeat: bool) -> bool {
         ledger.sending(index);
         ledger.requests[index].clone()
     };
-    let acked = post(&ctx.node, &request).await;
+    let acked = post(&ctx.shared, &ctx.node, &request).await;
     {
         let mut ledger = ctx.shared.ledger();
         if acked {
             ledger.stats.acked += 1;
+            ledger.stats.partial_repeats += u64::from(request.partial_repeat);
             ledger.stats.acked_json += u64::from(request.json);
             ledger.stats.acked_repeats += u64::from(repeat);
             if !ledger.requests[index].acked {
@@ -1230,12 +1621,58 @@ async fn exchange(ctx: &ClientCtx, index: usize, repeat: bool) -> bool {
     acked
 }
 
+/// Writes facts to a project through the entry point the fact routes will call, and records what the server
+/// assigned once the write is acknowledged.
+async fn write_facts(ctx: &ClientCtx, facts: Vec<NewFact>) {
+    let project = pick(ctx.rng.as_ref(), ctx.shared.plan.projects as u64) as usize;
+    let Ok(scope) = crucible_auth::test_support::scope(project_id(project)) else {
+        return;
+    };
+    let author = FactAuthor {
+        kind: AuthorKind::User,
+        id: Uuid::from_bytes([0x77; 16]),
+    };
+    let facts = Arc::new(facts);
+    let index = {
+        let mut ledger = ctx.shared.ledger();
+        ledger.fact_writes.push(FactWrite {
+            project,
+            facts: Arc::clone(&facts),
+            accepted: None,
+        });
+        ledger.fact_writes.len() - 1
+    };
+    let result = ctx.node.ingest.append_facts(&scope, author, &facts).await;
+    let mut ledger = ctx.shared.ledger();
+    let acked = result.is_ok();
+    match result {
+        Ok(accepted) => {
+            ledger.stats.fact_writes += 1;
+            ledger.fact_writes[index].accepted = Some(accepted);
+        }
+        Err(error) => {
+            ledger.stats.fact_writes_refused += 1;
+            use crucible_ingest::FactWriteError as E;
+            if !matches!(error, E::Throttled { .. } | E::Unavailable { .. }) {
+                ledger.violate(Violation::Backpressure(format!(
+                    "a fact write was refused with: {error}"
+                )));
+            }
+        }
+    }
+    drop(ledger);
+    ctx.shared.trace.event(
+        "facts",
+        &[index as u64, u64::from(acked), facts.len() as u64],
+    );
+}
+
 /// One ingest client: sends a bounded number of requests, sometimes several at once and sometimes a repeat of
 /// an earlier one, and reads each acknowledged request back.
 async fn client(ctx: ClientCtx, budget: u64) {
     let plan = &ctx.shared.plan;
     let rng = ctx.rng.as_ref();
-    let mut traces = Vec::new();
+    let mut state = ClientState::default();
     let mut sent = 0;
     let mut refused = 0u32;
     while sent < budget {
@@ -1243,6 +1680,9 @@ async fn client(ctx: ClientCtx, budget: u64) {
             .clock
             .sleep(Duration::from_micros(pick(rng, 3_000)))
             .await;
+        if plan.mask.has(Dim::Facts) && pick(rng, 4) == 0 {
+            write_facts(&ctx, generate_facts(rng, &state)).await;
+        }
         let burst = if plan.wal.bursts { 1 + pick(rng, 4) } else { 1 };
         let mut waiting = Vec::new();
         for _ in 0..burst {
@@ -1253,10 +1693,12 @@ async fn client(ctx: ClientCtx, budget: u64) {
                 ctx.shared.ledger().repeats += 1;
                 pick(rng, earlier) as usize
             } else {
-                let Some(request) = generate(plan, rng, &mut traces) else {
+                let Some(request) = generate(plan, rng, &mut state) else {
                     continue;
                 };
                 let mut ledger = ctx.shared.ledger();
+                // A span sent again makes the derived tables depend on what each restart remembered.
+                ledger.repeats += u64::from(request.partial_repeat);
                 ledger.requests.push(request);
                 ledger.requests.len() - 1
             };
@@ -1337,6 +1779,63 @@ fn keys_above(
         }
     }
     keys
+}
+
+/// The ids of the facts that the `FactBatch` frames above `watermark` hold.
+fn facts_above(log: &BTreeMap<u64, WalFrame>, watermark: u64) -> BTreeSet<[u8; 16]> {
+    let mut ids = BTreeSet::new();
+    for frame in log.values() {
+        if frame.lsn().get() <= watermark || frame.record_type() != RecordType::FactBatch {
+            continue;
+        }
+        let Ok(payload) = frame.payload() else {
+            continue;
+        };
+        if let Ok(Record::FactBatch(batch)) = Record::decode(RecordType::FactBatch, &payload) {
+            ids.extend(batch.facts.iter().map(|fact| fact.fact_id.to_bytes()));
+        }
+    }
+    ids
+}
+
+/// A frame that was quarantined as a frame: its LSN and the payload of its copy.
+struct FrameCopy {
+    manifest: FrameManifest,
+    payload: Vec<u8>,
+}
+
+/// The frame quarantines on `disk` whose manifest is whole, and the directories whose copy does not hold the
+/// frame its manifest names (contract 5.6).
+fn frame_copies(disk: &SimDisk) -> (Vec<FrameCopy>, Vec<String>) {
+    let mut copies = Vec::new();
+    let mut broken = Vec::new();
+    for path in disk.files(Root::Quarantine) {
+        let Some(dir) = path.as_str().strip_suffix(&format!("/{MANIFEST_FILE}")) else {
+            continue;
+        };
+        let text = disk.read_file(&path).unwrap_or_default();
+        let Some(manifest) = FrameManifest::parse(&String::from_utf8_lossy(&text)) else {
+            continue;
+        };
+        let frames = DiskPath::new(Root::Quarantine, &format!("{dir}/{FRAMES_FILE}"))
+            .ok()
+            .and_then(|p| disk.read_file(&p))
+            .unwrap_or_default();
+        let lsn = manifest.lsn.get();
+        let payload = frames
+            .get(..manifest.bytes as usize)
+            .and_then(|bytes| copied_payloads(bytes, lsn, lsn))
+            .and_then(|mut payloads| payloads.pop());
+        match payload {
+            Some(payload) => copies.push(FrameCopy { manifest, payload }),
+            None => broken.push(dir.to_owned()),
+        }
+    }
+    (copies, broken)
+}
+
+fn holds(payload: &[u8], id: &[u8]) -> bool {
+    payload.windows(id.len()).any(|w| w == id)
 }
 
 struct Run<'a> {
@@ -1437,9 +1936,22 @@ impl Run<'_> {
             self.violate(Violation::IdentityOverlap { first, second });
         }
         let (directories, quarantined, faults) = read_quarantines(&self.disk, model, watermark);
+        let (frame_copies, broken_copies) = frame_copies(&self.disk);
         let in_log = keys_above(log, watermark);
+        let facts_in_log = facts_above(log, watermark);
+        let fact_rows = system_oracle::fact_rows(model);
         let mut ledger = self.shared.ledger();
         ledger.stats.quarantines = directories;
+        ledger.stats.frame_quarantines = frame_copies.len() as u64;
+        // The directories of pairs: a pair that is quarantined in one table and landed in another makes the
+        // tables differ until it is requeued.
+        let pair_directories = directories
+            .saturating_sub(frame_copies.len() as u64)
+            .saturating_sub(broken_copies.len() as u64);
+        let quarantined_frames: BTreeSet<u64> = frame_copies
+            .iter()
+            .map(|copy| copy.manifest.lsn.get())
+            .collect();
         let mut found: Vec<Violation> = faults
             .into_iter()
             .map(|fault| match fault {
@@ -1448,6 +1960,7 @@ impl Run<'_> {
                 }
                 QuarantineFault::Copy(dir) => Violation::QuarantineCopy(dir),
             })
+            .chain(broken_copies.into_iter().map(Violation::QuarantineCopy))
             .collect();
         let project_of =
             |id: [u8; 16]| (0..self.plan().projects).find(|&p| project_id(p).to_bytes() == id);
@@ -1479,6 +1992,22 @@ impl Run<'_> {
                     if !by_frame.insert((lsn, key.2)) {
                         found.push(Violation::DuplicateRow { table: name, lsn });
                     }
+                    if quarantined_frames.contains(&lsn) {
+                        found.push(Violation::Store(format!(
+                            "frame {lsn} is quarantined as a frame and has rows in {name}"
+                        )));
+                    }
+                    // I7 at the core tier: tokens, cost and the error status are what the span reported.
+                    let reported = ledger.sent.get(&key);
+                    if table == TableId::SpanCore
+                        && reported
+                            .is_some_and(|sent| !system_oracle::span_matches(block, row, sent))
+                    {
+                        found.push(Violation::Aggregate(format!(
+                            "the span_core row of a span of frame {lsn} differs from what the span reported: \
+                             {reported:?}"
+                        )));
+                    }
                     let rows = by_key.entry(key).or_default();
                     *rows += 1;
                     if *rows > sent && sent > 0 {
@@ -1506,6 +2035,11 @@ impl Run<'_> {
                         quarantined
                             .iter()
                             .any(|q| q.table == table && q.holds(&span.trace, &span.span))
+                            || frame_copies.iter().any(|copy| {
+                                !copy.manifest.facts
+                                    && holds(&copy.payload, &span.trace)
+                                    && holds(&copy.payload, &span.span)
+                            })
                     };
                     if !by_key.contains_key(&key) && !durable && !parked() {
                         found.push(Violation::AckedSpanLost {
@@ -1515,6 +2049,102 @@ impl Run<'_> {
                     }
                 }
             }
+        }
+
+        // Facts. I2: no fact row twice, and every row is a fact that was written. I1: every acknowledged fact
+        // is in its table, in a durable frame above the watermark, or in a quarantine. I4: the rows resolve to
+        // what the reference fold gives for the facts as they were written, whatever the order of the rows.
+        match fact_rows {
+            None => found.push(Violation::FactRow("a fact row does not read".to_owned())),
+            Some(rows) => {
+                // Every fact the ledger knows by id, as the row it must be.
+                let mut written: BTreeMap<[u8; 16], (usize, FactRow)> = BTreeMap::new();
+                for (write, entry) in ledger.fact_writes.iter().enumerate() {
+                    let Some(accepted) = &entry.accepted else {
+                        continue;
+                    };
+                    for (fact, assigned) in entry.facts.iter().zip(accepted) {
+                        let row = FactRow {
+                            table: fact.body.table(),
+                            project: project_id(entry.project).to_bytes(),
+                            fact_id: assigned.fact_id.to_bytes(),
+                            version: assigned.version,
+                            retracted: fact.retracted,
+                            key: fact.key.as_bytes().to_vec(),
+                            trace: fact.trace_id.to_bytes(),
+                            span: fact.span_id.to_bytes(),
+                            session: fact.session_id.as_bytes().to_vec(),
+                        };
+                        written.insert(row.fact_id, (write, row));
+                    }
+                }
+                // A write that was not acknowledged may be durable all the same: its rows carry ids the
+                // ledger never learned.
+                let unacked = |row: &FactRow| {
+                    ledger.fact_writes.iter().any(|entry| {
+                        entry.accepted.is_none()
+                            && project_id(entry.project).to_bytes() == row.project
+                            && entry.facts.iter().any(|fact| {
+                                fact.body.table() == row.table && fact.key.as_bytes() == row.key
+                            })
+                    })
+                };
+                let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
+                let mut expected: Vec<FactRow> = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    if !seen.insert(row.fact_id) {
+                        found.push(Violation::FactRow(format!(
+                            "a fact landed twice in {}",
+                            row.table.name()
+                        )));
+                    }
+                    match written.get(&row.fact_id) {
+                        Some((_, sent)) => expected.push(sent.clone()),
+                        None if unacked(row) => expected.push(row.clone()),
+                        None => found.push(Violation::FactRow(format!(
+                            "a row of {} that no fact write explains",
+                            row.table.name()
+                        ))),
+                    }
+                }
+                for (id, (write, row)) in &written {
+                    let parked = || {
+                        quarantined
+                            .iter()
+                            .any(|q| q.table == row.table && q.holds_id(id))
+                            || frame_copies
+                                .iter()
+                                .any(|copy| copy.manifest.facts && holds(&copy.payload, id))
+                    };
+                    if !seen.contains(id) && !facts_in_log.contains(id) && !parked() {
+                        found.push(Violation::AckedFactLost {
+                            table: row.table.name(),
+                            write: *write,
+                        });
+                    }
+                }
+                let resolved = system_oracle::resolve(&rows);
+                if resolved != system_oracle::resolve(&expected) {
+                    found.push(Violation::FactResolution(
+                        "the fact rows do not resolve to what the facts written resolve to"
+                            .to_owned(),
+                    ));
+                }
+                if resolved != system_oracle::resolve(rows.iter().rev()) {
+                    found.push(Violation::FactResolution(
+                        "the resolution depends on the order of the rows".to_owned(),
+                    ));
+                }
+                ledger.stats.fact_rows = rows.len() as u64;
+                ledger.stats.fact_keys = resolved.len() as u64;
+            }
+        }
+
+        // I7: once everything has landed, every rollup equals the reference aggregation over `span_core`.
+        if quiescent && pair_directories == 0 {
+            let (keys, wrong) = system_oracle::check_aggregates(model);
+            ledger.stats.rollup_keys = keys;
+            found.extend(wrong.into_iter().map(Violation::Aggregate));
         }
 
         if quiescent {
@@ -1586,11 +2216,21 @@ impl Run<'_> {
     ) -> Option<(Arc<Node>, Shipping)> {
         let plan = self.plan();
         let watermark = report.watermark_lsn();
-        let view = Arc::new(SimWalView(wal.clone()));
+        let prices = match PriceTable::bundled() {
+            Ok(prices) => prices,
+            Err(e) => {
+                self.violate(Violation::ShipperFailed(e.to_string()));
+                return None;
+            }
+        };
+        let view = Arc::new(SimWalView {
+            wal: wal.clone(),
+            ctx: NormCtx::new(prices, PayloadCaps::DEFAULT),
+        });
         let (index, mut writer) = RecentIndex::rebuild(
             plan.recent,
             host.env.clock.clone(),
-            view,
+            view.clone(),
             watermark,
             std::iter::empty(),
         );
@@ -1606,6 +2246,16 @@ impl Run<'_> {
                 .filter_map(|(_, parsed)| parsed)
                 .filter(|(q, _)| q.last <= watermark.get())
                 .map(|(q, _)| (Lsn::new(q.first), q.table, q.partition)),
+        );
+        // The same for the frames that were quarantined as frames; the ones the log still holds are marked
+        // again when stage B replays them.
+        hook.restore_unshippable(
+            frame_copies(&self.disk)
+                .0
+                .into_iter()
+                .map(|copy| copy.manifest)
+                .filter(|manifest| manifest.lsn <= watermark)
+                .map(|manifest| (manifest.lsn, manifest.project_id, manifest.facts)),
         );
         let barriers = Arc::new(SimBarriers::new(&self.disk, self.sim.trace()));
         let hooks = Hooks {
@@ -1643,8 +2293,10 @@ impl Run<'_> {
         );
         let node = Arc::new(Node {
             router: ingest.router(),
+            ingest,
             query: QueryService::new(stores, host.env.clock.clone(), Arc::clone(&index)),
             index,
+            view,
         });
         Some((
             node,
@@ -1665,7 +2317,17 @@ impl Run<'_> {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let mut ledger = self.shared.ledger();
-        add(&mut ledger.stats.shipper, &shipping.stats.snapshot());
+        let snapshot = shipping.stats.snapshot();
+        add(&mut ledger.stats.shipper, &snapshot);
+        // I5: the rows the shipper holds stay within `shipper.encoded_bytes`, give or take the one frame
+        // that is never split.
+        let cap = self.plan().ship.encoded_bytes;
+        if snapshot.encoded_bytes_peak > cap.saturating_add(snapshot.largest_frame_bytes) {
+            ledger.violate(Violation::Backpressure(format!(
+                "the shipper held {} bytes of rows under a budget of {cap} with frames of at most {}",
+                snapshot.encoded_bytes_peak, snapshot.largest_frame_bytes
+            )));
+        }
         match ended {
             None | Some(Ok(())) => {}
             Some(Err(ShipError::WalFailed)) if !healed => {}

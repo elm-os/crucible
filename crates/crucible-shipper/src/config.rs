@@ -131,8 +131,9 @@ pub struct ShipperConfig {
     /// until the batch's pairs are resolved. Rows are charged at their estimated size ([`crate::value::Row`]),
     /// and the encoded blocks that replace them at the seal keep that charge. While the budget is exhausted
     /// the shipper reads no further frame: the open batch seals and the next frame waits for a batch in flight
-    /// to resolve. Frames are never split, so one frame whose rows alone exceed the budget is taken by itself;
-    /// a batch that recovery found keeps its recorded boundaries whatever its size.
+    /// to resolve. Frames are never split, so one frame whose rows alone exceed the budget is taken by itself.
+    /// A batch that recovery found keeps its recorded boundaries: it takes its next frame once the budget has
+    /// any room or nothing else is held, so the rows held never exceed the budget by more than one frame.
     pub encoded_bytes: u64,
     /// A seeded normalizer fault; `None` outside the simulation suite.
     pub frame_fault: Option<FrameFault>,
