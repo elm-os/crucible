@@ -1,76 +1,77 @@
-# Quickstart: a development build
+# Quickstart
 
-This page runs a development preview of Crucible from a local build: one `crucible` container and one ClickHouse
-26.8 container on your machine. There is no release yet, no published image and no upgrade path, and the data
-format may change between commits. Do not put data you need to keep in it.
+This page runs a development preview of Crucible with Docker Compose: the `crucible` server, ClickHouse 26.8 and
+Postgres 18 on one machine. There is no release yet and no upgrade path, and the data format may change between commits. Do not put
+data you need to keep in it. [README.md](README.md) covers configuration, ports, upgrades and backups.
 
-What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the REST API for
-traces, and the UI's traces table and trace page. Sign-in, projects and key management will arrive with the control
+What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the migrations
+ledger in Postgres, the REST API for traces, and the UI's traces table and trace page. Sign-in, projects and key management will arrive with the control
 plane; until then project keys come from a file and the UI connects with a key (see "Open the UI").
 
 ## Requirements
 
-- Docker with Compose.
-- Node.js 24 and pnpm 11 to build the UI.
-- The dev container image from [development.md](../development.md): `docker build -t crucible-dev:1 -f deploy/dev/Dockerfile deploy/dev`.
+- Docker Engine 25 or newer with Docker Compose v2 or newer.
+- `openssl` and a POSIX shell for the first-run commands: Linux, macOS, or WSL or Git Bash on Windows.
+- A checkout of this repository, until the first release publishes the image.
 
-## 1. Build the binary with the UI inside
+## 1. Build the image
 
 From the repository root:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm --filter crucible-ui build
-
-docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/usr/local/cargo/registry \
-  crucible-dev:1 sh -c '
-    cargo xtask ui compress &&
-    cargo build --locked -p crucible --release --features embed-ui &&
-    mkdir -p deploy/compose/bin && cp /target/release/crucible deploy/compose/bin/crucible'
+docker build -f deploy/docker/Dockerfile -t crucible:dev .
 ```
 
-Build the `crucible` package on its own, as above. A `--workspace` build also compiles test-only features of other
-crates into the binary.
+The build needs only Docker: it compiles the UI and the server inside the build and takes a few minutes. Once
+releases exist, skip this step; Compose pulls `ghcr.io/elm-os/crucible`.
 
-## 2. Write the three local files
+## 2. Make the two local files
 
-All three live in `deploy/compose/` and are ignored by git.
+Both live in `deploy/compose/` and are ignored by git. Make them before the first start: Docker Desktop for Windows
+turns a missing `keys.toml` into an empty directory, which you would have to delete first.
 
-`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a key pair is a public
-key `cpk_` and a secret `csk_`, each followed by 43 characters from `0-9A-Za-z`:
+`.env` holds the ClickHouse admin password, the Postgres password and the master key, 32 random bytes as 64
+hexadecimal characters. Make it once, with one line, and name the image you built:
 
 ```sh
 cd deploy/compose
-python3 - > keys.toml <<'PY'
-import secrets, string, uuid
-alphabet = string.digits + string.ascii_letters
-# 43 characters encode 32 bytes only below 2^256; a leading zero keeps the value in range.
-key = lambda prefix: prefix + "0" + "".join(secrets.choice(alphabet) for _ in range(42))
-print(f'[[project_key]]\nproject_id = "{uuid.uuid4()}"\npublic_key = "{key("cpk_")}"\nsecret = "{key("csk_")}"')
-PY
-```
-
-`.env` holds the ClickHouse admin password and the master key, 32 random bytes as 64 hexadecimal characters:
-
-```sh
-printf 'CLICKHOUSE_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+echo 'CRUCIBLE_IMAGE=crucible:dev' >> .env
 ```
 
 Keep the master key. Crucible derives the passwords of its four ClickHouse service users from it, and the users are
 created once: a server started with a different master key cannot log in to the same ClickHouse data. To start over,
-remove the volumes with `docker compose -f compose.dev.yaml down -v`.
+remove the volumes with `docker compose down -v`.
+
+`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a key pair is a public
+key `cpk_` and a secret `csk_`, each followed by 43 characters from `0-9A-Za-z` that encode 32 bytes, which a
+leading `0` always keeps in range:
+
+```sh
+key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
+printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
+  "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
+  "$(key cpk_)" "$(key csk_)" > keys.toml
+```
+
+The server reads the file as uid 65532, so keep it readable by others (the default mode 644) or give it to that user
+(`chown 65532 keys.toml`).
 
 ## 3. Start
 
 ```sh
-docker compose -f compose.dev.yaml up --build -d
-curl -s http://127.0.0.1:8080/readyz     # "ready" once the startup checks have passed
+docker compose up -d --wait
+curl -s http://127.0.0.1:8080/readyz     # "ready"
 ```
 
-On start Crucible applies the ClickHouse schema (`--migrate`), checks the server (version 26.3 or newer, the settings
-and functions it relies on), and inserts one block twice to prove that deduplication works. Until that has passed,
-ingest answers 503 and `/readyz` says what is missing; `docker compose -f compose.dev.yaml logs crucible` shows the
-same reason.
+`--wait` returns once the `ready` service reports Crucible's `/readyz` as healthy. On start Crucible applies the
+Postgres migrations and the ClickHouse schema (`--migrate`) and records each step in the ledger in Postgres, checks
+the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), and inserts one block twice
+to prove that deduplication works. Until that has passed, ingest answers 503 and
+`/readyz` says what is missing; `docker compose logs crucible` shows the same reason.
+
+The ports are published on every interface, so other machines on your network can send traces. Add
+`CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
 
 ## 4. Send a trace
 
@@ -104,8 +105,8 @@ Open <http://127.0.0.1:8080/traces/>. The page asks you to connect: choose **Con
 project id and the secret from `keys.toml`.
 
 The Connect dialog is temporary. This preview has no sign-in, so the UI sends the project key as
-`Authorization: Bearer` on its API requests and remembers it in this browser until you press Disconnect. Browser sessions will replace the dialog in milestone 4. Do not expose this
-preview to a network you do not trust.
+`Authorization: Bearer` on its API requests and remembers it in this browser until you press Disconnect. Browser
+sessions will replace the dialog in milestone 4. Do not expose this preview to a network you do not trust.
 
 The same data is available from the API, for example the trace sent above:
 
@@ -116,14 +117,17 @@ curl -s -H "Authorization: Bearer <secret>" \
 
 The trace list takes a time window of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
 
-## Without Compose
-
-`crucible serve` runs the same way outside a container. The flags, their environment variables and the two modes
-(with ClickHouse, or ingest only) are described in [development.md](../development.md#running-crucible-serve).
-
 ## Stop
 
 ```sh
-docker compose -f compose.dev.yaml down        # keeps the data
-docker compose -f compose.dev.yaml down -v     # removes it
+docker compose down        # keeps the data
+docker compose down -v     # removes it
 ```
+
+## Other ways to run it
+
+- Against a ClickHouse you run elsewhere: `deploy/compose/compose.cloud.yaml`, described in [README.md](README.md).
+- Without Compose: `crucible serve` runs the same way outside a container. The flags, their environment variables and
+  the two modes (with ClickHouse, or ingest only) are in [development.md](../development.md#running-crucible-serve).
+- With a binary you built in the dev container: `deploy/compose/compose.dev.yaml`, described in
+  [development.md](../development.md#a-local-build-in-compose).

@@ -51,6 +51,9 @@ pub enum Mutant {
     /// Count the tokens and cost of a usage aggregate (a span with a descendant that carries usage) in the sums.
     #[cfg(feature = "test-mutants")]
     CountAggregateUsage,
+    /// Collect garbage without regard for what the admission of an unchecked frame relied on.
+    #[cfg(feature = "test-mutants")]
+    CollectWhatFramesRelyOn,
 }
 
 /// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
@@ -203,4 +206,5 @@ mutant_flags! {
     drops_fact_on_retry => DropFactOnRetry,
     quarantines_frames_without_copy => FrameQuarantineWithoutCopy,
     counts_aggregate_usage => CountAggregateUsage,
+    collects_what_frames_rely_on => CollectWhatFramesRelyOn,
 }

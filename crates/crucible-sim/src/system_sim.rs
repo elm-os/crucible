@@ -137,11 +137,13 @@ pub enum Mutant {
     /// `crucible-shipper` counts the tokens and cost of a usage aggregate, a span with a descendant that carries
     /// usage or cost.
     CountAggregateUsage,
+    /// `crucible-shipper` collects the segments that the admission of an unchecked frame relied on.
+    CollectWhatFramesRelyOn,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -152,6 +154,7 @@ impl Mutant {
         Self::DropFactOnRetry,
         Self::FrameQuarantineWithoutCopy,
         Self::CountAggregateUsage,
+        Self::CollectWhatFramesRelyOn,
     ];
 
     /// The name used on the command line.
@@ -167,6 +170,7 @@ impl Mutant {
             Self::DropFactOnRetry => "drop-fact-on-retry",
             Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
             Self::CountAggregateUsage => "count-aggregate-usage",
+            Self::CollectWhatFramesRelyOn => "collect-what-frames-rely-on",
         }
     }
 
@@ -697,6 +701,9 @@ impl Plan {
                 }
                 Some(Mutant::CountAggregateUsage) => {
                     Some(crucible_shipper::Mutant::CountAggregateUsage)
+                }
+                Some(Mutant::CollectWhatFramesRelyOn) => {
+                    Some(crucible_shipper::Mutant::CollectWhatFramesRelyOn)
                 }
                 _ => None,
             },

@@ -118,10 +118,11 @@ the two attempts equal, and I7 and the quiescence half of I2 check them in every
   is checkpointed, and nothing is collected while a batch that recovery found waits for its frames
   (`ship_directed.rs`, `a_restart_drops_the_repeats_that_the_first_attempt_dropped`);
 - after a failed collection no frame is admitted until one succeeds, because a removal that is not durable
-  leaves open what a restart will find. No directed test covers this rule; only the swarm reaches it, through
-  `disk_sync_errors` and `disk_write_errors`.
+  leaves open what a restart will find (`ship_directed.rs`: a hint that cannot be replaced, and a removal
+  whose directory sync fails). While it retries at every tail poll, the failure is logged once per
+  `gc_interval` with a count.
 
-Six corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
+Nine corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
 the rollups counted a repeat that `span_core` did not hold, or the reverse.
 
 ## Mutants
@@ -142,9 +143,12 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3000 | `0xebd29ab92c5` |
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0xeaeca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x2fe574beef1d` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x911e418a948` |
 
-Of the 600 runs of the budget, the mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and 178 runs,
-in the order of the table.
+Of the 600 runs of the budget, the first ten mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and
+178 runs, in the order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a
+repeat, a collection and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run
+is a line of the regression corpus, and six of the nine corpus lines of this defect catch it.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
