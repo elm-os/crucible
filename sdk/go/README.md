@@ -77,19 +77,31 @@ import "github.com/elm-os/crucible/sdk/go/cruciblemcp"
 server := mcp.NewServer(&mcp.Implementation{Name: "orders", Version: "2.1.0"}, nil)
 mcp.AddTool(server, &mcp.Tool{Name: "lookup_order"}, lookupOrder)
 
-err := cruciblemcp.Instrument(server, cruciblemcp.Options{
+in, err := cruciblemcp.Instrument(server, cruciblemcp.Options{
 	ServerName:    "orders",
 	ServerVersion: "2.1.0",
 	HandleParams:  map[string]string{"lookup_order": "order_id"},
 })
+
+// stdio:
+err = server.Run(ctx, in.Transport(&mcp.StdioTransport{}))
+// or streamable HTTP:
+http.Handle("/mcp", in.Handler(mcp.NewStreamableHTTPHandler(getServer, nil)))
 ```
 
 `Instrument` adds receiving and sending middleware. Add it after your own middleware so that it wraps them and sees
 the whole operation. Every request and notification the server receives becomes a SERVER span named after its method
-and tool or prompt, carrying the MCP wire keys of [contracts](../../docs/architecture/contracts.md) 9.1: method, tool or prompt name, protocol version and
-era, transport, client name and version, the outcome and its error class, result type, progress count, content block
-counts and, in the legacy era, the session id hashed as `mcp.session.id`. A `traceparent` in `params._meta` makes the
-span a child of the caller's span.
+and tool or prompt, carrying the MCP wire keys of [contracts](../../docs/architecture/contracts.md) 9.1: method,
+tool or prompt name, protocol version and era, transport, client name and version, the outcome and its error class,
+result type, progress count, content block counts and, in the legacy era, the session id hashed as
+`mcp.session.id`. A `traceparent` in `params._meta` makes the span a child of the caller's span.
+
+The MCP Go SDK does not pass middleware the JSON-RPC id of a request, so `Instrument` returns an `Instrumentation`
+whose `Transport` and `Handler` wrap what the server is connected over. With either, each request's span carries its
+`jsonrpc.request.id`; without them everything else is recorded the same. `Handler` reads each POST body, up to 4 MiB,
+to find the id and passes it on unchanged; wrap the MCP handler directly, because a handler in between must not
+replace the request's header map. A connection from `Transport` does not reject JSON-RPC batches in protocol versions
+that removed them, because the MCP SDK tells only its own connection type the negotiated version.
 
 Streamable HTTP is detected; requests that arrive any other way are reported as `Options.Transport`, which defaults
 to `stdio`. Over HTTP the span also carries the `User-Agent` and the request size from `Content-Length`.
@@ -173,7 +185,7 @@ The MCP Go SDK hands middleware a method, its decoded params and a context, whic
 
 | Not observed | Why |
 |---|---|
-| `jsonrpc.request.id` | go-sdk v1.8.0 keeps the request id under an unexported context key |
+| `jsonrpc.request.id` without `Transport` or `Handler` | go-sdk v1.8.0 keeps the request id under an unexported context key |
 | Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; `crucible proxy` sees them |
 | HTTP status and transport failures | They happen in the HTTP handler and the transport, outside the middleware |
 | The resource template of `resources/read` | Only the concrete URI is visible, and a raw URI is not used as a target name |

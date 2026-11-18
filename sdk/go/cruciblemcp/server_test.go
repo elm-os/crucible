@@ -44,13 +44,16 @@ func TestOperationsInBothEras(t *testing.T) {
 				"crucible.mcp.content.captured":         nil,
 				"gen_ai.tool.call.arguments":            nil,
 				"mcp.session.id":                        nil,
-				"jsonrpc.request.id":                    nil,
 				"crucible.mcp.identity.source":          nil,
 				"crucible.mcp.mrtr.state_out":           nil,
 				"crucible.mcp.client.capabilities_hash": nil,
 			})
 			if srv.StatusCode != tracepb.Status_STATUS_CODE_UNSET {
 				t.Errorf("server status = %v", srv.StatusCode)
+			}
+			// The wrapped transport gives each request's span the JSON-RPC id the client chose.
+			if id, _ := srv.Attrs["jsonrpc.request.id"].(string); id == "" || strings.Trim(id, "0123456789") != "" {
+				t.Errorf("jsonrpc.request.id = %#v, want the client's numeric id", srv.Attrs["jsonrpc.request.id"])
 			}
 			if srv.Resource["service.name"] != "orders-service" || srv.Resource["crucible.deploy.id"] != "deploy-3" {
 				t.Errorf("resource = %v", srv.Resource)
@@ -84,6 +87,7 @@ func TestOperationsInBothEras(t *testing.T) {
 					"crucible.mcp.is_notification": true,
 					"crucible.mcp.result_type":     nil,
 					"crucible.mcp.progress.count":  nil,
+					"jsonrpc.request.id":           nil,
 				})
 			} else {
 				expect(t, server(t, c, "server/discover"), map[string]any{
@@ -399,7 +403,8 @@ func TestBrokenConnectionIsAStreamClose(t *testing.T) {
 	c := startCrucible(t)
 	toServer, fromClient := io.Pipe()
 	toClient, fromServer := io.Pipe()
-	ss, err := newServer(t, cruciblemcp.Options{}).Connect(t.Context(), &mcp.IOTransport{Reader: toServer, Writer: fromServer}, nil)
+	srv := newServer(t, cruciblemcp.Options{})
+	ss, err := srv.Connect(t.Context(), srv.in.Transport(&mcp.IOTransport{Reader: toServer, Writer: fromServer}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +467,7 @@ func TestInstrumentRefusesInvalidOptions(t *testing.T) {
 		{cruciblemcp.Options{Capture: []cruciblemcp.CaptureRule{{Tool: "*", SampleRate: 1.5}}}, "use 0 or 1 to capture every call"},
 		{cruciblemcp.Options{Capture: []cruciblemcp.CaptureRule{{Tool: "*", MaxBytes: -1}}}, "use 0 for the default of 16 KiB"},
 	} {
-		err := cruciblemcp.Instrument(mcp.NewServer(&mcp.Implementation{Name: "x"}, nil), tc.opts)
+		_, err := cruciblemcp.Instrument(mcp.NewServer(&mcp.Implementation{Name: "x"}, nil), tc.opts)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Instrument(%+v) = %v, want it to say %q", tc.opts, err, tc.want)
 		}

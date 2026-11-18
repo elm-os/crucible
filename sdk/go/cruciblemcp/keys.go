@@ -4,6 +4,7 @@ package cruciblemcp
 // crucible.mcp.* extension keys.
 const (
 	keyMethod          = "mcp.method.name"
+	keyRequestID       = "jsonrpc.request.id"
 	keyProtocolVersion = "mcp.protocol.version"
 	keySessionID       = "mcp.session.id"
 	keyToolName        = "gen_ai.tool.name"

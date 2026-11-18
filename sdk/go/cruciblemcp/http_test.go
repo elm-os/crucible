@@ -42,7 +42,7 @@ func serveHTTP(t *testing.T, opts cruciblemcp.Options, version string) *mcp.Clie
 		}, nil
 	}
 	hopts := &mcp.StreamableHTTPOptions{Stateless: version >= modern}
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, hopts)
+	handler := srv.in.Handler(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv.Server }, hopts))
 	hs := httptest.NewServer(auth.RequireBearerToken(verify, nil)(handler))
 	t.Cleanup(hs.Close)
 	transport := &mcp.StreamableClientTransport{
@@ -139,7 +139,7 @@ func TestModernHTTPCancellationIsAStreamClose(t *testing.T) {
 	c := startCrucible(t)
 	srv := newServer(t, cruciblemcp.Options{})
 	opts := &mcp.StreamableHTTPOptions{Stateless: true, PropagateRequestCancellation: true}
-	hs := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, opts))
+	hs := httptest.NewServer(srv.in.Handler(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv.Server }, opts)))
 	t.Cleanup(hs.Close)
 	got := make(chan float64, 4)
 	cs, err := newClient(t, got).Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: hs.URL}, &mcp.ClientSessionOptions{ProtocolVersion: modern})

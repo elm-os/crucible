@@ -24,19 +24,23 @@ type server struct {
 	identify                  func(context.Context, mcp.Request) Identity
 	noIdentity                bool
 	scrubFn                   func(field, value string) (string, bool)
+
+	extras  extraTable
+	headers headerTable
 }
 
 // Instrument adds receiving and sending middleware to s, so that every request and notification it receives
-// becomes a SERVER span (contract 9.1). Add it after other middleware so that it sees the whole operation. It
-// returns an error, saying which option to change, when opts is invalid.
-func Instrument(s *mcp.Server, opts Options) error {
+// becomes a SERVER span (contract 9.1). Add it after other middleware so that it sees the whole operation. Wrap
+// the server's transport or HTTP handler with the returned Instrumentation so that the spans also carry the
+// JSON-RPC request id. It returns an error, saying which option to change, when opts is invalid.
+func Instrument(s *mcp.Server, opts Options) (*Instrumentation, error) {
 	transport, err := checkTransport(opts.Transport, TransportStdio)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	capture, err := checkCapture(opts.Capture)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	in := &server{
 		serverName:    opts.ServerName,
@@ -50,7 +54,22 @@ func Instrument(s *mcp.Server, opts Options) error {
 	}
 	s.AddReceivingMiddleware(in.receive)
 	s.AddSendingMiddleware(in.send)
-	return nil
+	return &Instrumentation{s: in}, nil
+}
+
+// common returns the keys every server span carries.
+func (s *server) common(method string) []attribute.KeyValue {
+	kv := []attribute.KeyValue{
+		attribute.String(keyMethod, method),
+		attribute.String(keyCaptureSource, "sdk"),
+	}
+	if s.serverName != "" {
+		kv = append(kv, attribute.String(keyServerName, s.serverName))
+	}
+	if s.serverVersion != "" {
+		kv = append(kv, attribute.String(keyServerVersion, s.serverVersion))
+	}
+	return kv
 }
 
 // requestInfo is implemented by every *mcp.ServerRequest: it reads the per-request _meta of the modern era and
@@ -63,6 +82,7 @@ type requestInfo interface {
 func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		params := req.GetParams()
+		id := s.requestID(req.GetExtra())
 		o := &op{}
 		ctx = context.WithValue(extract(ctx, params), opKey{}, o)
 		ctx, span := core.Tracer().Start(ctx, spanName(method, params), trace.WithSpanKind(trace.SpanKindServer))
@@ -71,16 +91,10 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 			return next(ctx, method, req)
 		}
 
-		kv := []attribute.KeyValue{
-			attribute.String(keyMethod, method),
-			attribute.String(keyCaptureSource, "sdk"),
-		}
+		kv := s.common(method)
 		kv = append(kv, targetAttr(method, params)...)
-		if s.serverName != "" {
-			kv = append(kv, attribute.String(keyServerName, s.serverName))
-		}
-		if s.serverVersion != "" {
-			kv = append(kv, attribute.String(keyServerVersion, s.serverVersion))
+		if id != "" {
+			kv = append(kv, attribute.String(keyRequestID, id))
 		}
 		notification := isNotification(method)
 		if notification {

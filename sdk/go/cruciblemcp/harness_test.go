@@ -59,9 +59,15 @@ type noteIn struct {
 
 func text(s string) []mcp.Content { return []mcp.Content{&mcp.TextContent{Text: s}} }
 
+// refServer is an instrumented reference server.
+type refServer struct {
+	*mcp.Server
+	in *cruciblemcp.Instrumentation
+}
+
 // newServer is the reference server: one tool per outcome the error taxonomy distinguishes, plus tools for
 // content capture, progress and cancellation, and the multi-round exchange.
-func newServer(t *testing.T, opts cruciblemcp.Options) *mcp.Server {
+func newServer(t *testing.T, opts cruciblemcp.Options) refServer {
 	t.Helper()
 	s := mcp.NewServer(&mcp.Implementation{Name: "orders", Version: "2.1.0"}, nil)
 	mcp.AddTool(s, &mcp.Tool{Name: "echo"}, func(_ context.Context, _ *mcp.CallToolRequest, in textIn) (*mcp.CallToolResult, any, error) {
@@ -119,10 +125,11 @@ func newServer(t *testing.T, opts cruciblemcp.Options) *mcp.Server {
 		}
 		return &mcp.CallToolResult{Content: text("confirmed")}, nil, nil
 	})
-	if err := cruciblemcp.Instrument(s, opts); err != nil {
+	in, err := cruciblemcp.Instrument(s, opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return s
+	return refServer{s, in}
 }
 
 // newClient returns an instrumented client that accepts every elicitation and passes the progress it receives
@@ -145,12 +152,12 @@ func newClient(t *testing.T, progress chan<- float64) *mcp.Client {
 	return c
 }
 
-// connect joins the server and the client over the in-memory transport at the given protocol version, and
-// checks that the client negotiated that version rather than falling back.
-func connect(t *testing.T, s *mcp.Server, c *mcp.Client, version string) *mcp.ClientSession {
+// connect joins the server and the client over the in-memory transport, wrapped by the instrumentation, at
+// the given protocol version, and checks that the client negotiated that version rather than falling back.
+func connect(t *testing.T, s refServer, c *mcp.Client, version string) *mcp.ClientSession {
 	t.Helper()
 	st, ct := mcp.NewInMemoryTransports()
-	ss, err := s.Connect(t.Context(), st, nil)
+	ss, err := s.Connect(t.Context(), s.in.Transport(st), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
