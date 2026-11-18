@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | payload version, 1 |
 //! | 1 | kind: 1 `page`, 2 `head` |
-//! | 2 | route: 1 trace list, 2 span children, 3 span list, 4 session list, 5 user list, 6 a user's sessions |
+//! | 2 | route: 1 trace list, 2 span children, 4 span list, 5 session list, 6 user list, 7 a user's sessions |
 //! | 3 | sort: 1 newest first, 2 oldest first |
 //! | 4..20 | project id |
 //! | 20..36 | filter hash |
@@ -102,10 +102,10 @@ impl Route {
         match self {
             Self::TraceList => 1,
             Self::SpanChildren => 2,
-            Self::SpanList => 3,
-            Self::SessionList => 4,
-            Self::UserList => 5,
-            Self::UserSessions => 6,
+            Self::SpanList => 4,
+            Self::SessionList => 5,
+            Self::UserList => 6,
+            Self::UserSessions => 7,
         }
     }
 
@@ -113,10 +113,10 @@ impl Route {
         match code {
             1 => Some(Self::TraceList),
             2 => Some(Self::SpanChildren),
-            3 => Some(Self::SpanList),
-            4 => Some(Self::SessionList),
-            5 => Some(Self::UserList),
-            6 => Some(Self::UserSessions),
+            4 => Some(Self::SpanList),
+            5 => Some(Self::SessionList),
+            6 => Some(Self::UserList),
+            7 => Some(Self::UserSessions),
             _ => None,
         }
     }

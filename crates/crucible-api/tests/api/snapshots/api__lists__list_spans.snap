@@ -65,5 +65,5 @@ expression: spans.pretty()
     "consistency": "strong",
     "partial": false
   },
-  "next_cursor": "v1.test.AQEDAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgdmBmegAABmB1ifFagAAGYHWHcHwAAAAAAAAAABQ.IrJAY9YBIufKVSLbab8e1g"
+  "next_cursor": "v1.test.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgdmBmegAABmB1ifFagAAGYHWHcHwAAAAAAAAAABQ.1BgUXbw_HdJHBl0I_hNigg"
 }

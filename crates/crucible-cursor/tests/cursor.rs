@@ -385,8 +385,8 @@ fn the_text_form_matches_a_separate_encoder_of_the_layout() {
         "v1.k1.AQEBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-76WlpaWlpaWlAAAAAAAAAAc.6HzZu5Q6KvE6HcQo5nszEw",
         "v1.k1.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAKg.FdfBQUrJd_OltJZsDIsjFg",
         "v1.k1.AQECAgEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AKWlpaWlpaWlAAAAAAAAAAcAAAAAAAAACgAGYHWGTpFAAAAAAAAAAAs.Fd_lH4ykLaXgVRq4aiiLsQ",
-        "v1.k1.AQEDAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08AAAAAAAAAAAw.OTTz7EEWV8FBk_NH_RakMw",
-        "v1.k1.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1hj9PAAAKc2Vzc2lvbi3DpA.MuGtiSz7JJg52ezkgHiqkw",
+        "v1.k1.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08AAAAAAAAAAAw.T8VL5iOpZ_DFL7zjqHEMqA",
+        "v1.k1.AQEFAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1hj9PAAAKc2Vzc2lvbi3DpA.tDP91Un0C9wt5e6M-QE0OQ",
     ];
     for (cursor, expected) in golden_cursors().iter().zip(expected) {
         assert_eq!(ring.seal(cursor), expected);
@@ -505,7 +505,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     };
     assert_eq!(with(&page, 0, 2), Err(DecodeError::Version(2)));
     assert_eq!(with(&page, 0, 0), Err(DecodeError::Version(0)));
-    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 7), (3, 0), (3, 3)] {
+    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 200), (3, 0), (3, 3)] {
         assert_eq!(
             with(&page, at, value),
             Err(DecodeError::Value),
@@ -513,7 +513,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
         );
     }
     // Only the trace list has a head.
-    for route in 2..=6 {
+    for route in 2..=7 {
         assert_eq!(with(&head, 2, route), Err(DecodeError::Value), "{route}");
     }
     // A page of span children read as a trace page runs out of bytes; the reverse has bytes left over.
