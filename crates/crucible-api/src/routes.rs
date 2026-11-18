@@ -8,11 +8,17 @@ mod data_bounds;
 mod facts;
 mod filter_values;
 mod metrics;
+mod payload;
+mod search;
 mod spans;
 mod trace_detail;
 mod traces;
 
 use axum::Router;
+use axum::extract::{Request, State};
+use axum::http::HeaderValue;
+use axum::http::header::ALLOW;
+use axum::response::Response;
 use crucible_api_types::ProblemCode;
 use crucible_cursor::CursorError;
 use crucible_records::RequestId;
@@ -20,7 +26,7 @@ use utoipa::OpenApi as _;
 use utoipa::openapi::OpenApi;
 
 use crate::access::ApiState;
-use crate::problem::ApiError;
+use crate::problem::{ApiError, problem, request_id};
 
 /// The routes of every group, relative to the base path. The groups' paths are disjoint, so their order does
 /// not matter; the list is kept sorted.
@@ -30,6 +36,8 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(facts::routes())
         .merge(filter_values::routes())
         .merge(metrics::routes())
+        .merge(payload::routes())
+        .merge(search::routes())
         .merge(spans::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
@@ -42,19 +50,26 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
     doc.merge(metrics::Paths::openapi());
+    doc.merge(payload::Paths::openapi());
+    doc.merge(search::Paths::openapi());
     doc.merge(spans::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
     doc
 }
 
-/// The methods a path under the base path takes, for the `Allow` header of a wrong method.
-pub(crate) fn allowed_methods(path: &str) -> &'static str {
-    let post = facts::POST_PATHS
-        .iter()
-        .chain(&metrics::POST_PATHS)
-        .any(|suffix| path.ends_with(suffix));
-    if post { "POST" } else { "GET, HEAD" }
+/// The answer of a POST route to any other method: the fact writes and the metrics query take POST only.
+async fn post_only(State(state): State<ApiState>, request: Request) -> Response {
+    let id = request_id(request.extensions(), &state.env);
+    let mut response = problem(
+        id,
+        ProblemCode::MethodNotAllowed,
+        "the resource takes POST with a JSON body",
+    );
+    response
+        .headers_mut()
+        .insert(ALLOW, HeaderValue::from_static("POST"));
+    response
 }
 
 fn cursor_invalid(request_id: RequestId) -> impl FnOnce(CursorError) -> ApiError {

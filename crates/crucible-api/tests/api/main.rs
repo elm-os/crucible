@@ -17,6 +17,8 @@ mod endpoints;
 mod errors;
 mod facts;
 mod metrics;
+mod payload;
+mod search;
 
 use std::future::Future;
 use std::sync::Arc;

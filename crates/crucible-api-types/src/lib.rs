@@ -18,7 +18,9 @@ mod enums;
 mod facts;
 mod meta;
 mod metrics;
+mod payload;
 mod problem;
+mod search;
 mod spans;
 mod trace_detail;
 mod traces;
@@ -26,8 +28,8 @@ mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{
-    AuthorKind, Consistency, HeadKind, Level, ObservationType, PartialReason, ScoreDataType,
-    ScoreSource, StatusCode, TagOp,
+    AuthorKind, Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason,
+    ScoreDataType, ScoreSource, StatusCode, TagOp,
 };
 pub use facts::{
     Correction, CorrectionRequest, FactRef, FactWritten, Facts, FactsParams, FeedbackRequest,
@@ -40,7 +42,11 @@ pub use metrics::{
     MetricsSeries, SchemaDimension, SchemaFilterField, SchemaLimits, SchemaMeasure, SeriesKey,
     SourceSchema,
 };
+pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use search::{
+    SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
+};
 pub use spans::{SpanPage, SpanPageParams};
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
@@ -62,7 +68,10 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<MetricsQueryRequest>();
     visitor.visit::<MetricsResponse>();
     visitor.visit::<MetricsSchema>();
+    visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
+    visitor.visit::<SearchPage>();
+    visitor.visit::<SearchRequest>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<TagRequest>();

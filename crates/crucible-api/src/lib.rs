@@ -122,15 +122,16 @@ async fn unknown_path(State(state): State<ApiState>, request: Request) -> Respon
     problem(id, ProblemCode::NotFound, "no resource exists at this path")
 }
 
-/// A route asked with a method it does not take: the reads take GET and HEAD, the writes and the metrics query
-/// POST.
+/// Every route of milestone 1 is a read.
 async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
     let id = request_id(request.extensions(), &state.env);
-    let allowed = routes::allowed_methods(request.uri().path());
-    let detail = format!("the resource supports {allowed} only");
-    let mut response = problem(id, ProblemCode::MethodNotAllowed, &detail);
+    let mut response = problem(
+        id,
+        ProblemCode::MethodNotAllowed,
+        "the resource supports GET and HEAD only",
+    );
     response
         .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static(allowed));
+        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
     response
 }

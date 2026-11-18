@@ -22,8 +22,8 @@ endpoints share stays in the shared modules.
 | Sessions (plan builders only so far) | `sessions.rs` | | | |
 | Users (plan builders only so far) | `users.rs` | | | |
 | Span list (plan builder only so far) | `span_list.rs` | | | |
-| Search (plan builders only so far) | `search.rs` | | | |
-| Payload byte range (plan builder only so far) | `payload.rs` | | | |
+| Search | `search.rs` | `search.rs` | `search.rs` | `search.rs` |
+| Payload byte range | `payload.rs` | `payload.rs` | `payload.rs` | `payload.rs` |
 | Metrics query and schema | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | `metrics.rs` | `metrics.rs` | `metrics.rs` |
 | Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
@@ -156,8 +156,9 @@ that every endpoint of a kind changes; each is a follow-up:
 - The `tags(...)` list of the document in `crates/crucible-api/src/openapi.rs`: a group with a new tag adds to it.
 - The `Route` and `Position` enums in `crates/crucible-cursor/src/payload.rs` and the cursor methods in
   `crates/crucible-api/src/cursor.rs`: every paged endpoint adds to each.
-- The `Allow` header of a wrong method: a group with a POST route lists its paths in `POST_PATHS`, which
-  `routes::allowed_methods` in `crates/crucible-api/src/routes.rs` reads.
+- The `Allow: GET, HEAD` header that `unknown_method` sends in `crates/crucible-api/src/lib.rs`: a route with another
+  method gives its method router a fallback of its own, as `POST search` does (`Allow: POST`) and the fact writes
+  and `POST metrics/query` do through `routes::post_only`.
 - `ui/src/api/client.ts`, which holds every request function.
 - `crates/crucible-sim/src/system_sim.rs`, the one oracle.
 

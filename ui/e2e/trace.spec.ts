@@ -1,5 +1,6 @@
 import type { TraceDetail } from "../src/api/generated/TraceDetail";
 import {
+  AGENT_SPANS,
   AS_OF,
   CHILDREN_PATH,
   expect,
@@ -261,7 +262,10 @@ test.describe("trace detail: span panel", () => {
     await expect(panel).toContainText("send_reply");
     await expect(panel).toContainText("Error");
     await expect(panel).toContainText("a000000000000001");
-    await expect(panel).toContainText("will show here once the span detail API ships");
+    await expect(panel.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     await expectAccessible(page, "span panel success");
   });
 
@@ -574,6 +578,137 @@ test.describe("trace detail: agent graph", () => {
     api.on(TRACE_PATH, json(traceDetail({ paged: true, span_count: 9_000, spans: [root, tool] })));
     await page.goto(traceUrl({ view: "graph" }));
     await expect(page.getByText("The graph covers the 2 spans loaded so far.")).toBeVisible();
+  });
+});
+
+const PAYLOAD_PATH = new RegExp(`/projects/${PROJECT}/spans/${TRACE}/[0-9a-f]{16}/payload$`);
+
+// Answers payload requests over `body` as the server does: 206 for a range with the field's length, the
+// whole field when it is empty.
+function payload(body: string) {
+  const bytes = Buffer.from(body, "utf8");
+  return async (route: import("@playwright/test").Route) => {
+    const match = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? "");
+    if (!match || bytes.length === 0) {
+      await route.fulfill({ status: 200, contentType: "text/plain; charset=utf-8", body: bytes });
+      return;
+    }
+    const first = Number(match[1]);
+    const last = Math.min(match[2] ? Number(match[2]) : bytes.length - 1, bytes.length - 1);
+    await route.fulfill({
+      status: 206,
+      contentType: "text/plain; charset=utf-8",
+      headers: { "content-range": `bytes ${first}-${last}/${bytes.length}` },
+      body: bytes.subarray(first, last + 1),
+    });
+  };
+}
+
+test.describe("trace detail: payload", () => {
+  const inputTab = traceUrl({ span: "a000000000000002", tab: "input" });
+
+  test("loading: the open tab asks for the first kibibyte and is busy until it comes", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    const release = api.hold(PAYLOAD_PATH, { status: 200, body: '{"q": 1}' });
+    await page.goto(inputTab);
+    const panel = page.getByRole("region", { name: "Span", exact: true });
+    await expect(panel.getByRole("tab", { name: "Input" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(panel.getByRole("status")).toHaveText("Loading the input");
+    await expectAccessible(page, "payload loading");
+    release();
+    await expect(panel.getByRole("tree", { name: "Input" })).toBeVisible();
+  });
+
+  test("success: a JSON field is a tree whose branches open in place", async ({ page, api }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    api.on(PAYLOAD_PATH, payload('{"model": "gpt-4.1", "params": {"temperature": 0.2}}'));
+    await page.goto(inputTab);
+    const tree = page.getByRole("tree", { name: "Input" });
+    await expect(tree.getByRole("treeitem")).toHaveCount(2);
+    const params = tree.getByRole("treeitem", { name: /params/ });
+    await params.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(tree.getByRole("treeitem", { name: /temperature/ })).toBeVisible();
+    await expectAccessible(page, "payload success");
+  });
+
+  test("success: GenAI messages read as a conversation, with the JSON a choice away", async ({
+    page,
+    api,
+  }) => {
+    const spans = AGENT_SPANS.map((s) =>
+      s.span_id === "a000000000000002" ? { ...s, io_shape: "genai_messages" as const } : s,
+    );
+    api.on(TRACE_PATH, json(traceDetail({ spans })));
+    api.on(
+      PAYLOAD_PATH,
+      payload(
+        JSON.stringify([
+          { role: "user", parts: [{ type: "text", content: "Where is my refund?" }] },
+          {
+            role: "assistant",
+            parts: [{ type: "tool_call", name: "search_docs", arguments: { q: "refund" } }],
+          },
+        ]),
+      ),
+    );
+    await page.goto(inputTab);
+    const messages = page.getByRole("list", { name: "Input messages" });
+    await expect(messages).toContainText("Where is my refund?");
+    await expect(messages).toContainText("Calls tool search_docs");
+    await expectAccessible(page, "payload messages");
+    await page.getByRole("radio", { name: "JSON" }).click();
+    await expect(page.getByRole("tree", { name: "Input" })).toBeVisible();
+  });
+
+  test("a large field shows its preview, then loads by byte ranges with progress when asked", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    const body = JSON.stringify({ transcript: "word ".repeat(80_000) });
+    api.on(PAYLOAD_PATH, payload(body));
+    await page.goto(inputTab);
+    await expect(page.getByText(/showing the first 1 KB/)).toBeVisible();
+    expect(api.count(PAYLOAD_PATH)).toBe(1);
+    await page.getByRole("button", { name: /^Load / }).click();
+    await expect(page.getByRole("tree", { name: "Input" })).toBeVisible();
+    await expect(page.getByRole("treeitem", { name: /transcript/ })).toBeVisible();
+    expect(api.count(PAYLOAD_PATH)).toBe(2);
+  });
+
+  test("error: a failed read offers a retry that reads the field again", async ({ page, api }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    api.on(PAYLOAD_PATH, problem(503, "telemetry_store_unavailable", "req-payload"));
+    await page.goto(inputTab);
+    const panel = page.getByRole("region", { name: "Span", exact: true });
+    await expect(panel.getByText("This section couldn't load.")).toBeVisible({ timeout: 10_000 });
+    await expect(panel.getByText("req-payload")).toBeVisible();
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expectAccessible(page, "payload error");
+    api.on(PAYLOAD_PATH, payload('{"ok": true}'));
+    await panel.getByRole("button", { name: "Retry input" }).click();
+    await expect(panel.getByRole("tree", { name: "Input" })).toBeVisible();
+  });
+
+  test("empty: an empty field, and a payload that is not stored, each say so", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    api.on(PAYLOAD_PATH, payload(""));
+    await page.goto(inputTab);
+    await expect(page.getByText("No input was recorded.")).toBeVisible();
+    await expectAccessible(page, "payload empty");
+    api.on(PAYLOAD_PATH, problem(404, "not_found"));
+    await page.getByRole("tab", { name: "Output" }).click();
+    await expect(page.getByText("This span's output isn't stored.")).toBeVisible();
   });
 });
 

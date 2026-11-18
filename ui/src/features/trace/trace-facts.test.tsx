@@ -70,6 +70,7 @@ function detail(traceFacts: TraceFacts): TraceDetail {
         output_tokens: 0,
         total_tokens: 0,
         child_count: null,
+        io_shape: "raw",
         saturated: false,
       },
     ],

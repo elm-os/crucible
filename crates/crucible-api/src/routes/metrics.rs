@@ -29,7 +29,10 @@ use crate::problem::{ApiError, field_error};
 /// The group's routes, relative to the base path.
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/projects/{project_id}/metrics/query", post(query_metrics))
+        .route(
+            "/projects/{project_id}/metrics/query",
+            post(query_metrics).fallback(super::post_only),
+        )
         .route(
             "/projects/{project_id}/metrics/schema",
             get(get_metrics_schema),
@@ -40,9 +43,6 @@ pub(super) fn routes() -> Router<ApiState> {
 #[derive(OpenApi)]
 #[openapi(paths(get_metrics_schema, query_metrics))]
 pub(super) struct Paths;
-
-/// The paths of the group's POST routes, for the `Allow` header of a wrong method.
-pub(crate) const POST_PATHS: [&str; 1] = ["/metrics/query"];
 
 pub(crate) const fn step_name(step: Step) -> wire::Granularity {
     match step {

@@ -5,15 +5,15 @@
 
 use crucible_auth::test_support;
 use crucible_plan::{
-    Aggregate, Aggregation, Caller, DimensionId, FieldRange, Fill, Filter, Granularity, Literal,
-    Measure, MeasureId, MetricsQuery, Node, OutputSchema, PayloadField, PayloadRangeRequest,
-    PointLookup, Pred, QueryClass, QueryPlan, RetentionClamp, Scan, SearchField, SearchRequest,
-    SemiJoin, SessionListRequest, Snippet, Source, SpanListRequest, Step, TextSearch, TimeSeries,
-    TokenMode, TraceBounds, TraceListRequest, UserListRequest, child_counts, data_bounds,
-    metrics_other, metrics_ranking, metrics_series, payload_range, search, search_spans,
-    session_detail, session_list, span_children, span_list, spans_of_parents, trace_list,
-    trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
-    user_session_counts,
+    Aggregate, Aggregation, ArrivalBounds, Caller, DimensionId, Direction, FieldRange, Fill,
+    Filter, Granularity, Literal, Measure, MeasureId, MetricsQuery, Node, OutputSchema,
+    PayloadField, PayloadRangeRequest, PlanError, PointLookup, Pred, QueryClass, QueryPlan,
+    RetentionClamp, Scan, SearchField, SearchRequest, SemiJoin, SessionListRequest, Snippet,
+    Source, SpanListRequest, Step, TextSearch, TimeSeries, TokenMode, TraceBounds,
+    TraceListRequest, UserListRequest, child_counts, data_bounds, metrics_other, metrics_ranking,
+    metrics_series, payload_range, search, search_spans, session_detail, session_list,
+    span_children, span_list, spans_of_parents, trace_list, trace_page_stats, trace_roots,
+    trace_spans, trace_time_bounds, user_detail, user_list, user_session_counts,
 };
 use crucible_records::{ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{
@@ -329,7 +329,24 @@ fn output_is_defined_for_every_node_kind() {
         20,
     )
     .unwrap();
-    assert_eq!(shape(&plan(Node::TextSearch(search)).output()), keys);
+    assert_eq!(
+        shape(&plan(Node::TextSearch(search.clone())).output()),
+        keys
+    );
+    // An order, a cursor and arrival bounds change which rows come back, not their shape.
+    let paged = search
+        .clone()
+        .ordered(Direction::Desc)
+        .after(key())
+        .unwrap()
+        .arrived(ArrivalBounds::default())
+        .unwrap();
+    assert_eq!(shape(&plan(Node::TextSearch(paged)).output()), keys);
+    assert_eq!(search.clone().after(key()), Err(PlanError::Cursor));
+    assert_eq!(
+        search.ordered(Direction::Asc).after(vec![Literal::UInt(1)]),
+        Err(PlanError::Cursor)
+    );
 
     let range = FieldRange::new(
         TableId::SpanPayload,
@@ -586,13 +603,11 @@ fn span_list_search_and_payload_outputs() {
     let request = SearchRequest {
         tokens: vec!["Rate".to_owned(), "LIMIT".to_owned()],
         mode: TokenMode::All,
-        fields: vec![
-            SearchField::Output,
-            SearchField::Metadata,
-            SearchField::Input,
-        ],
+        fields: vec![SearchField::Output, SearchField::Input],
         filter: Filter::all(),
         limit: 20,
+        cursor: Some((window().from(), 7, SpanId::from_bytes([4; 8]))),
+        as_of: window().to(),
     };
     let found = search(scope(), window(), &keep(), Caller::Session, &request);
     let found = found.unwrap().unwrap();
@@ -611,9 +626,51 @@ fn span_list_search_and_payload_outputs() {
     let Node::TextSearch(text) = found.hits.root() else {
         panic!("a text search")
     };
-    // The builder lowers the tokens, as the indexes lower the columns.
+    // The builder lowers the tokens, as the indexes lower the columns, and reads one hit more than the page,
+    // newest first after the cursor, among the rows that arrived by `as_of`.
     assert_eq!(text.tokens(), ["rate", "limit"]);
+    assert_eq!(text.limit(), 21);
+    assert_eq!(
+        text.order()
+            .map(|order| (order.columns().to_vec(), order.direction())),
+        Some((
+            crucible_schema::table(TableId::SpanPayload).key_columns(),
+            Direction::Desc
+        ))
+    );
+    assert_eq!(text.cursor().map(<[Literal]>::len), Some(3));
+    assert_eq!(text.arrival().as_of, Some(window().to()));
     assert!(found.rest.is_all());
+    // Metadata entries keep their case, and one search does not mix them with the lowered text fields.
+    let entries = SearchRequest {
+        tokens: vec!["Tenant=Acme".to_owned()],
+        fields: vec![SearchField::Metadata],
+        ..request.clone()
+    };
+    let entries = search(scope(), window(), &keep(), Caller::Session, &entries);
+    let Node::TextSearch(text) = entries.unwrap().unwrap().hits.root().clone() else {
+        panic!("a text search")
+    };
+    assert_eq!(text.tokens(), ["Tenant=Acme"]);
+    let mixed = SearchRequest {
+        fields: vec![SearchField::Input, SearchField::Metadata],
+        ..request.clone()
+    };
+    assert_eq!(
+        search(scope(), window(), &keep(), Caller::Session, &mixed),
+        Err(PlanError::Tokenizers)
+    );
+    // In phrase mode the snippets look for the phrase itself.
+    let phrase = TextSearch::new(
+        TableId::SpanPayload,
+        [SpanPayloadCol::Input],
+        TokenMode::Phrase,
+        vec!["rate".to_owned(), "limit".to_owned()],
+        Pred::all(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(phrase.needles(), ["rate limit"]);
     let hit = (window().from(), 7, SpanId::from_bytes([4; 8]));
     let spans = search_spans(
         scope(),

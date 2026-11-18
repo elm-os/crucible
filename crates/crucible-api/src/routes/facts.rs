@@ -37,20 +37,29 @@ use crate::writer::{FactAuthor, FactRefusal, NewFact};
 /// The group's routes, relative to the base path.
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/projects/{project_id}/corrections", post(post_correction))
+        .route(
+            "/projects/{project_id}/corrections",
+            post(post_correction).fallback(super::post_only),
+        )
         .route("/projects/{project_id}/facts", get(get_facts))
-        .route("/projects/{project_id}/feedback", post(post_feedback))
-        .route("/projects/{project_id}/flags", post(post_flag))
-        .route("/projects/{project_id}/tags", post(post_tag))
+        .route(
+            "/projects/{project_id}/feedback",
+            post(post_feedback).fallback(super::post_only),
+        )
+        .route(
+            "/projects/{project_id}/flags",
+            post(post_flag).fallback(super::post_only),
+        )
+        .route(
+            "/projects/{project_id}/tags",
+            post(post_tag).fallback(super::post_only),
+        )
 }
 
 /// The OpenAPI paths of the group.
 #[derive(OpenApi)]
 #[openapi(paths(get_facts, post_correction, post_feedback, post_flag, post_tag))]
 pub(super) struct Paths;
-
-/// The paths of the group's POST routes, for the `Allow` header of a wrong method.
-pub(crate) const POST_PATHS: [&str; 4] = ["/corrections", "/feedback", "/flags", "/tags"];
 
 /// One fact before the target's start is looked up.
 struct Draft {

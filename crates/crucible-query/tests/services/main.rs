@@ -7,7 +7,9 @@
 mod facts;
 mod list;
 mod metrics;
+mod payload;
 mod properties;
+mod search;
 mod store;
 mod trace;
 mod world;

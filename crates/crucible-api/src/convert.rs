@@ -47,6 +47,7 @@ pub(crate) fn span(span: &query::TraceSpan) -> wire::Span {
         output_tokens: s.u64(summary.output_tokens),
         total_tokens: s.u64(summary.total_tokens),
         child_count: span.child_count.map(|count| s.u64(count)),
+        io_shape: span.io_shape().map(Into::into),
         saturated: s.saturated(),
     }
 }
