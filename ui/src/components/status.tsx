@@ -17,6 +17,10 @@ export function StatusLabel({ status, label }: { status: StatusCode; label: stri
 
 // A response can be whole, or say that rows may be missing (the store didn't answer) or that the newest
 // rows may not be shown yet (ingest is catching up).
+export function isWhole(meta: Meta): boolean {
+  return !meta.partial && meta.consistency === "strong";
+}
+
 export function MetaNotice({ meta, noun }: { meta: Meta; noun: string }) {
   let text: string | null = null;
   if (meta.partial) text = `Some ${noun} may be missing. Part of the data couldn't be read.`;

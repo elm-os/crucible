@@ -109,6 +109,9 @@ fn every_endpoint_answers_with_its_wire_shape() {
         assert_eq!(spans[0]["child_count"], Value::Null);
         assert_whole(&detail.body);
         insta::assert_snapshot!("trace_detail", detail.pretty());
+        // `hint_time` is accepted in place of a window, and changes nothing.
+        let hinted = path(1, &format!("/traces/{}?hint_time={}", trace(1), ago(60)));
+        assert_eq!(get(&api, &hinted).await.body, detail.body);
 
         let children = get(
             &api,

@@ -8,7 +8,7 @@ import { listTraces } from "@/api/client";
 import type { TraceListItem } from "@/api/generated/TraceListItem";
 import { EmptyState } from "@/components/empty-state";
 import { Section } from "@/components/section";
-import { MetaNotice, StatusLabel } from "@/components/status";
+import { isWhole, MetaNotice, StatusLabel } from "@/components/status";
 import { formatCost, formatDuration, formatTime } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { RANGE_PHRASE, type Range, rangeWindow, useTimeRange } from "@/lib/time-range";
@@ -28,20 +28,31 @@ export function TracesSection() {
       title="Recent traces"
       query={query}
       skeleton={<TracesSkeleton />}
-      isEmpty={(page) => page.data.length === 0}
+      // An empty page means "no traces" only when it is whole; otherwise traces may exist unseen.
+      isEmpty={(page) => page.data.length === 0 && isWhole(page.meta)}
       empty={<TracesEmpty range={range} onWiden={() => setRange("30d")} />}
     >
-      {(page) => (
-        <>
-          <MetaNotice meta={page.meta} noun="traces" />
-          <TracesTable rows={page.data} project={project} />
-          {page.has_more ? (
-            <p className="mt-3 text-label text-ink-soft">
-              Showing the newest {page.data.length} traces. Paging will arrive with the data grid.
-            </p>
-          ) : null}
-        </>
-      )}
+      {(page) =>
+        page.data.length === 0 ? (
+          <EmptyState
+            kind="incomplete"
+            title="No traces to show yet."
+            action={<Button onClick={() => query.refetch()}>Check again</Button>}
+          >
+            Traces may still be arriving, or part of the data couldn&apos;t be read.
+          </EmptyState>
+        ) : (
+          <>
+            <MetaNotice meta={page.meta} noun="traces" />
+            <TracesTable rows={page.data} project={project} />
+            {page.has_more ? (
+              <p className="mt-3 text-label text-ink-soft">
+                Showing the newest {page.data.length} traces. Paging will arrive with the data grid.
+              </p>
+            ) : null}
+          </>
+        )
+      }
     </Section>
   );
 }

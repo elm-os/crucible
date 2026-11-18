@@ -71,7 +71,17 @@ impl Params {
     /// A required RFC 3339 time inside the valid range of contract 1.2.
     fn time(&mut self, name: &str) -> Option<Timestamp> {
         let text = self.required(name)?;
-        let Ok(time) = Timestamp::parse_rfc3339(&text) else {
+        self.parse_time(name, &text)
+    }
+
+    /// An optional RFC 3339 time, checked like a required one.
+    pub(crate) fn optional_time(&mut self, name: &str) -> Option<Timestamp> {
+        let text = self.optional(name)?;
+        self.parse_time(name, &text)
+    }
+
+    fn parse_time(&mut self, name: &str, text: &str) -> Option<Timestamp> {
+        let Ok(time) = Timestamp::parse_rfc3339(text) else {
             self.error(name, "invalid_timestamp", "expected an RFC 3339 date-time");
             return None;
         };

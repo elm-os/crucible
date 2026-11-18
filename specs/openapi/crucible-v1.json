@@ -271,6 +271,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "hint_time",
+            "in": "query",
+            "description": "When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;\nthe read does not need it yet.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
           }
         ],
         "responses": {

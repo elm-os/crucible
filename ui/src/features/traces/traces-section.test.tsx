@@ -1,5 +1,6 @@
 import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
+import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { TraceListItem } from "@/api/generated/TraceListItem";
 import type { TraceListPage } from "@/api/generated/TraceListPage";
@@ -9,6 +10,7 @@ import { TracesSection } from "./traces-section";
 vi.mock("next/navigation", () => import("@/test/navigation"));
 
 const fetchMock = vi.fn<typeof fetch>();
+const agent = createAgent();
 
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
@@ -210,6 +212,42 @@ describe("with the API answering", () => {
     );
     renderSection();
     expect(await screen.findByText("The newest traces may not be shown yet.")).toBeTruthy();
+  });
+
+  test("an empty page that is not whole offers to check again instead of saying there are no traces", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        page([], {
+          meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
+        }),
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(json(page([item()])));
+    renderSection();
+    const empty = await screen.findByText("No traces to show yet.");
+    expect(empty.closest("[data-empty]")?.getAttribute("data-empty")).toBe("incomplete");
+    expect(screen.queryByText(/No traces in/)).toBeNull();
+    await act(async () => screen.getByRole("button", { name: "Check again" }).click());
+    expect(await screen.findByRole("link", { name: "checkout agent" })).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("an agent finds the section's controls by name and can widen the range", async () => {
+    fetchMock.mockImplementation(async () => json(page([])));
+    renderSection();
+    await screen.findByRole("button", { name: "Show last 30 days" });
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    expect(components.map((entry) => entry.label)).toContain("Show last 30 days");
+
+    const result = await agent.act({ steps: [{ ref: "Show last 30 days", action: "press" }] });
+    expect(result.ok, result.error?.message).toBe(true);
+    expect(await screen.findByText("No traces in the last 30 days.")).toBeTruthy();
+    expect(new URLSearchParams(window.location.search).get("range")).toBe("30d");
   });
 
   test("an entity 404 problem uses the not-found copy", async () => {

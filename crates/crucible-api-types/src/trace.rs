@@ -166,6 +166,20 @@ pub struct TraceDetail {
     pub saturated: bool,
 }
 
+/// The query of `GET projects/{project_id}/traces/{trace_id}`: no window, because the trace's own time bounds
+/// are looked up.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, IntoParams, TS)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct TraceDetailParams {
+    /// When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;
+    /// the read does not need it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(format = DateTime)]
+    #[ts(optional)]
+    pub hint_time: Option<String>,
+}
+
 /// The query of `GET projects/{project_id}/traces/{trace_id}/spans`.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, IntoParams, TS)]
 #[into_params(parameter_in = Query)]

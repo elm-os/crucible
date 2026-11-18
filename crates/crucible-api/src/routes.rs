@@ -6,8 +6,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::Uri;
 use crucible_api_types::{
-    DataBounds, Problem, ProblemCode, SpanPage, SpanPageParams, TraceDetail, TraceListPage,
-    TraceListParams,
+    DataBounds, Problem, ProblemCode, SpanPage, SpanPageParams, TraceDetail, TraceDetailParams,
+    TraceListPage, TraceListParams,
 };
 use crucible_plan::{Pred, SPAN_CHILDREN_MAX_LIMIT, TRACE_LIST_MAX_LIMIT};
 use crucible_query::{SpanChildrenQuery, TraceListQuery, TraceTailQuery};
@@ -110,6 +110,7 @@ pub(crate) async fn list_traces(
     params(
         ("project_id" = String, Path, description = "The project id (a UUID)."),
         ("trace_id" = String, Path, description = "The trace id (32 hex characters)."),
+        TraceDetailParams,
     ),
     responses(
         (status = 200, description = "The trace.", body = TraceDetail),
@@ -129,6 +130,9 @@ pub(crate) async fn get_trace(
     let rid = project.request_id;
     let mut params = Params::new(rid, &uri)?;
     let trace_id = params.trace_id(&project.path);
+    // Contract 12.6 lets a client pass `hint_time` instead of a window. The service finds the trace's time
+    // bounds itself, so the hint is checked and then not needed.
+    let _hint = params.optional_time("hint_time");
     params.finish()?;
     let Some(trace_id) = trace_id else {
         return Err(ApiError::validation(rid, Vec::new()));

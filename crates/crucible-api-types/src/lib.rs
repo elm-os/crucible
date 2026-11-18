@@ -25,7 +25,8 @@ pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, St
 pub use meta::Meta;
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
 pub use trace::{
-    Span, SpanPage, SpanPageParams, TraceDetail, TraceListItem, TraceListPage, TraceListParams,
+    Span, SpanPage, SpanPageParams, TraceDetail, TraceDetailParams, TraceListItem, TraceListPage,
+    TraceListParams,
 };
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 
@@ -34,6 +35,7 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<TraceListParams>();
     visitor.visit::<TraceListPage>();
+    visitor.visit::<TraceDetailParams>();
     visitor.visit::<TraceDetail>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<SpanPage>();

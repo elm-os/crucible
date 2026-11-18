@@ -125,13 +125,14 @@ fn invalid_parameters_are_validation_problems_with_pointers() {
         .await;
         assert_eq!(ancient.field_errors(), [("/from", "out_of_range")]);
 
-        let detail = get(&api, &path(1, "/traces/xyz?hint_time=2026-11-17T09:30:00Z")).await;
+        let detail = get(&api, &path(1, "/traces/xyz?hint_time=yesterday&from=x")).await;
         detail.assert_problem(422, "validation_failed");
         assert_eq!(
             detail.field_errors(),
             [
                 ("/trace_id", "invalid_id"),
-                ("/hint_time", "unknown_parameter")
+                ("/hint_time", "invalid_timestamp"),
+                ("/from", "unknown_parameter")
             ]
         );
 

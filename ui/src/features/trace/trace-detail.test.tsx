@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
+import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Span } from "@/api/generated/Span";
 import type { TraceDetail as TraceDetailBody } from "@/api/generated/TraceDetail";
@@ -9,6 +10,7 @@ import { TraceDetail } from "./trace-detail";
 vi.mock("next/navigation", () => import("@/test/navigation"));
 
 const fetchMock = vi.fn<typeof fetch>();
+const agent = createAgent();
 const TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
 
 beforeEach(() => {
@@ -157,6 +159,29 @@ describe("the trace page", () => {
     await act(async () => screen.getByRole("button", { name: "Check again" }).click());
     expect(await screen.findByText("agent run")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("an agent finds the page's controls by name and can check again", async () => {
+    const lagging = detail({
+      spans: [],
+      span_count: 0,
+      meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
+    });
+    fetchMock.mockResolvedValueOnce(json(lagging));
+    fetchMock.mockResolvedValueOnce(json(detail()));
+    renderPage();
+    await screen.findByRole("button", { name: "Check again" });
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    expect(components.map((entry) => entry.label)).toContain("Check again");
+
+    const result = await agent.act({ steps: [{ ref: "Check again", action: "press" }] });
+    expect(result.ok, result.error?.message).toBe(true);
+    expect(await screen.findByText("search tool")).toBeTruthy();
   });
 
   test("a partial trace says spans may be missing", async () => {
