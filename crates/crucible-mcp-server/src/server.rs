@@ -94,20 +94,20 @@ impl ServerHandler for McpServer {
             );
             return Err(ErrorData::invalid_params(message, None));
         };
-        // The authentication layer runs before rmcp, so every request that reaches a tool carries its principal.
-        let parts = context.extensions.get::<Parts>();
-        let principal = parts.and_then(|parts| parts.extensions.get::<Authorized>());
-        let Some(&Authorized(principal)) = principal else {
+        // The authentication layer runs before rmcp, so every request that reaches a tool carries its principal
+        // among the HTTP request's parts.
+        let verified = context.extensions.get::<Parts>().and_then(|parts| {
+            let Authorized(principal) = *parts.extensions.get::<Authorized>()?;
+            Some((parts, principal))
+        });
+        let Some((parts, principal)) = verified else {
             return Err(ErrorData::internal_error(
                 "the request reached a tool without a verified key",
                 None,
             ));
         };
         let shared = &self.0;
-        let request_id = match parts {
-            Some(parts) => crucible_api::request_id(&parts.extensions, &shared.env),
-            None => crucible_api::request_id(&axum::http::Extensions::new(), &shared.env),
-        };
+        let request_id = crucible_api::request_id(&parts.extensions, &shared.env);
         if let Some(limiter) = &shared.limiter
             && let Err(wait) = limiter.check(principal.api_key_id, shared.env.clock.now())
         {
