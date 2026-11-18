@@ -72,7 +72,7 @@ export function JsonTree({
     <div className="flex flex-col gap-2">
       {failed ? (
         <p role="alert" className="text-label text-ink-soft">
-          Part of this document couldn&apos;t be opened. Load the field again to retry.
+          Part of this document couldn&apos;t be opened. Reload the page to try again.
         </p>
       ) : null}
       <div

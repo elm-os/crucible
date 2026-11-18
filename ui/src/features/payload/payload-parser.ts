@@ -1,5 +1,6 @@
 // The page's side of the payload worker: one worker for the page, documents named by the caller. Where no
-// Worker exists (tests, very old browsers) the same model runs on the main thread.
+// Worker exists (tests, very old browsers), or once the worker has failed, the same model runs on the main
+// thread.
 import { type JsonNode, type Parsed, PayloadDocument } from "./payload-model";
 import type { WorkerReply, WorkerRequest } from "./payload.worker";
 
@@ -19,7 +20,9 @@ class InlineParser implements PayloadParser {
   }
 
   async children(doc: string, pointer: string): Promise<JsonNode[]> {
-    return this.documents.get(doc)?.children(pointer) ?? [];
+    const document = this.documents.get(doc);
+    if (!document) throw new Error("the payload is no longer loaded");
+    return document.children(pointer);
   }
 
   drop(doc: string): void {
@@ -32,6 +35,8 @@ type Pending = { resolve: (reply: WorkerReply) => void; reject: (error: Error) =
 class WorkerParser implements PayloadParser {
   private readonly worker: Worker;
   private readonly pending = new Map<number, Pending>();
+  private readonly fallback = new InlineParser();
+  private broken = false;
   private next = 1;
 
   constructor() {
@@ -41,7 +46,9 @@ class WorkerParser implements PayloadParser {
       this.pending.delete(event.data.call);
       waiting?.resolve(event.data);
     });
+    // A worker that fails, for example because it could not load, answers nothing more.
     this.worker.addEventListener("error", () => {
+      this.broken = true;
       for (const waiting of this.pending.values())
         waiting.reject(new Error("payload worker failed"));
       this.pending.clear();
@@ -49,6 +56,7 @@ class WorkerParser implements PayloadParser {
   }
 
   private call(request: WorkerRequest & { call: number }, transfer: Transferable[] = []) {
+    if (this.broken) return Promise.reject(new Error("payload worker failed"));
     return new Promise<WorkerReply>((resolve, reject) => {
       this.pending.set(request.call, { resolve, reject });
       this.worker.postMessage(request, transfer);
@@ -56,29 +64,44 @@ class WorkerParser implements PayloadParser {
   }
 
   async parse(doc: string, bytes: Uint8Array): Promise<Parsed> {
-    // A copy is transferred, so the caller's bytes stay usable.
-    const buffer = bytes.slice().buffer;
-    const reply = await this.call({ type: "parse", call: this.next++, doc, bytes: buffer }, [
-      buffer,
-    ]);
-    if (reply.type !== "parsed") throw new Error("the payload could not be parsed");
-    return reply.parsed;
+    try {
+      // A copy is transferred, so the caller's bytes stay usable for the fallback.
+      const buffer = bytes.slice().buffer;
+      const message = { type: "parse" as const, call: this.next++, doc, bytes: buffer };
+      const reply = await this.call(message, [buffer]);
+      if (reply.type === "parsed") return reply.parsed;
+    } catch {
+      // The worker failed: the page parses the field itself.
+    }
+    return this.fallback.parse(doc, bytes);
   }
 
   async children(doc: string, pointer: string): Promise<JsonNode[]> {
+    if (this.broken) return this.fallback.children(doc, pointer);
     const reply = await this.call({ type: "children", call: this.next++, doc, pointer });
-    if (reply.type !== "children") throw new Error("the payload could not be read");
+    if (reply.type !== "children") return this.fallback.children(doc, pointer);
     return reply.nodes;
   }
 
   drop(doc: string): void {
-    this.worker.postMessage({ type: "drop", doc } satisfies WorkerRequest);
+    this.fallback.drop(doc);
+    if (!this.broken) this.worker.postMessage({ type: "drop", doc } satisfies WorkerRequest);
+  }
+}
+
+export function createPayloadParser(): PayloadParser {
+  if (typeof Worker === "undefined") return new InlineParser();
+  try {
+    return new WorkerParser();
+  } catch {
+    // A page whose policy refuses the worker parses on the main thread.
+    return new InlineParser();
   }
 }
 
 let shared: PayloadParser | null = null;
 
 export function payloadParser(): PayloadParser {
-  shared ??= typeof Worker === "undefined" ? new InlineParser() : new WorkerParser();
+  shared ??= createPayloadParser();
   return shared;
 }
