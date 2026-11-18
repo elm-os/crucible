@@ -1,0 +1,74 @@
+name: pg-conformance
+
+# The production Postgres adapter (crates/crucible-control-pg) against real servers, and the differential check
+# of the simulation's control-store model (crates/crucible-sim, PgModel): every repository, transaction,
+# key-feed, lease, claim and pool script of crates/crucible-conformance/src/control runs against the server and
+# against the model, and the two transcripts must be equal. The rows that only a server can answer (the
+# migrations and their ledger, the two 10 s timeouts, lost connections) run beside them.
+# One job per server version: 15 is the floor (contract 11) and 18 the current release.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-control/**
+      - crates/crucible-control-pg/**
+      - crates/crucible-conformance/**
+      - crates/crucible-sim/src/pg_model.rs
+      - .github/workflows/pg-conformance.yml
+  schedule:
+    - cron: "29 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  postgres:
+    name: postgres ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["15", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.tag }}
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_PASSWORD: conformance
+          POSTGRES_DB: crucible
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible -d crucible"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: pg-conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance --bin crucible-pg-conformance
+      - name: Server rows and the PgModel differential
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          cargo run --locked -p crucible-conformance --bin crucible-pg-conformance -- \
+            --url postgres://crucible:conformance@localhost:5432/crucible --label "$TAG"
