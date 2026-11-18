@@ -66,8 +66,6 @@ pub struct ShipperConfig {
     pub flavour: StoreFlavour,
     /// The partition granularity the tables were provisioned with.
     pub granularity: Granularity,
-    /// The price table version recorded in every new seal.
-    pub price_table_version: u32,
     /// The payload caps the normalizer applies.
     pub caps: PayloadCaps,
     /// How long a probe that read absent authorizes a resend.
@@ -106,7 +104,6 @@ impl Default for ShipperConfig {
             compression: Compression::Lz4,
             flavour: StoreFlavour::SingleNode,
             granularity: Granularity::Day,
-            price_table_version: 0,
             caps: PayloadCaps::DEFAULT,
             probe_valid_for: PROBE_VALID_FOR,
             insert_timeout: Duration::from_secs(90),
