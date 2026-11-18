@@ -664,6 +664,7 @@ dependencies = [
  "crucible-ui-assets",
  "crucible-wal",
  "crucible-wal-codec",
+ "flate2",
  "hkdf",
  "http",
  "mimalloc",

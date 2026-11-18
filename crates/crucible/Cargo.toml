@@ -63,6 +63,8 @@ prost = { workspace = true }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel", "gzip"] }
 crucible-sim = { path = "../crucible-sim" }
 crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
+# The gzip body of the compat route send.
+flate2 = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
