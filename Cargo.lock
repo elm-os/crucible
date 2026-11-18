@@ -758,6 +758,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-config"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "crucible-conformance"
 version = "0.0.0"
 dependencies = [
