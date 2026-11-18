@@ -350,7 +350,7 @@ pub fn project_policies(
 /// 1. the user, with its profile and **without** the role, so it can read nothing. ClickHouse refuses a row
 ///    policy addressed to a user that does not exist (code 511), so the user row has to come first;
 /// 2. the project's policies, both forms on every table;
-/// 3. the role grant, which is the step that lets the identity read.
+/// 3. the role grant, which is the step that lets the identity read, and the role as the user's default role.
 ///
 /// A crash between any two statements leaves an identity that reads nothing or one that is fully fenced. Every
 /// statement is idempotent; running the list again with a new `hash` rotates the password.
@@ -375,6 +375,11 @@ pub fn provision_identity(
     ];
     out.extend(project_policies(project, retention, variant));
     out.push(format!("GRANT{on} {SQL_READER_ROLE} TO {user}"));
+    // A user may clear its own default roles, even in read-only mode, and then reads nothing. Naming the
+    // default role again repairs that.
+    out.push(format!(
+        "ALTER USER {user}{on} DEFAULT ROLE {SQL_READER_ROLE}"
+    ));
     out
 }
 
@@ -856,7 +861,7 @@ mod tests {
         assert!(statements[0].contains("SETTINGS PROFILE 'crucible_sql_profile'"));
         assert!(!statements[0].contains("crucible_sql_reader"));
         assert_eq!(
-            statements.last().map(String::as_str),
+            statements.get(statements.len() - 2).map(String::as_str),
             Some(format!("GRANT crucible_sql_reader TO {user}").as_str())
         );
         let grants = statements.iter().filter(|s| s.starts_with("GRANT")).count();

@@ -383,7 +383,6 @@ async fn w4(iso: &Iso) -> Result<String> {
         "SELECT 1 SETTINGS additional_table_filters = {'crucible.span_core': '1'}".to_owned(),
         "SET ROLE crucible_admin".to_owned(),
         "SET ROLE crucible_read_ui".to_owned(),
-        "SET DEFAULT ROLE NONE TO CURRENT_USER".to_owned(),
         "EXECUTE AS crucible_admin SELECT 1".to_owned(),
         "EXECUTE AS crucible_admin".to_owned(),
         format!("EXECUTE AS {} SELECT 1", workspace_user(iso.b)),
@@ -437,10 +436,40 @@ async fn w4(iso: &Iso) -> Result<String> {
     .await?;
     iso.answers("SELECT currentUser()", &workspace_user(iso.a))
         .await?;
+    // A finding of this suite: the server lets a user clear its own default roles, even in read-only mode. The
+    // user then holds no role, so it reads nothing; no other project is touched, and provisioning repairs it.
+    let project = iso.ctx.project();
+    iso.provision(project).await?;
+    let probe = "SELECT count() FROM crucible.sql_probe";
+    let cleared = iso
+        .send(project, "SET DEFAULT ROLE NONE TO CURRENT_USER", &[])
+        .await?;
+    let self_harm = if cleared.code().is_none() {
+        let reply = iso.send(project, probe, &[]).await?;
+        expect(reply.code() == Some(497), || {
+            format!(
+                "after clearing its default roles the user {}",
+                reply.brief()
+            )
+        })?;
+        iso.answers(probe, "0").await?;
+        iso.provision(project).await?;
+        let reply = iso.send(project, probe, &[]).await?;
+        expect(reply.rows() == Some("0"), || {
+            format!("after provisioning again the user {}", reply.brief())
+        })?;
+        "SET DEFAULT ROLE NONE TO CURRENT_USER is accepted: the user then reads nothing (497) until it is          provisioned again, and no other identity is affected"
+    } else {
+        "SET DEFAULT ROLE NONE TO CURRENT_USER is refused"
+    };
+    iso.sql
+        .deprovision(project)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     Ok(format!(
         "{statements} attempts refused or without effect: SET, SETTINGS clauses (a clause inside a subquery is \
          accepted and ignored), URL parameters, profile and role switches and EXECUTE AS; the session still runs \
-         as its own user with readonly = 1"
+         as its own user with readonly = 1. {self_harm}"
     ))
 }
 
