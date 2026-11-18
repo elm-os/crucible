@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Raw statements for the conformance suite's scratch tables. Product builds never enable it.
+test-support = []
+
 [dependencies]
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
@@ -20,10 +24,16 @@ clickhouse = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+hyper-util = { workspace = true, features = ["tokio", "client-legacy", "http1"] }
 thiserror = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-plan = { workspace = true, features = ["test-support"] }
+insta = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

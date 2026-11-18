@@ -1,0 +1,16 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&counts)
+---
+SELECT parent_span_id, count() AS m0 FROM crucible.span_core WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (trace_hash = {p5:UInt32} AND trace_id = unhex({p6:String}) AND parent_span_id IN (unhex({p7:String}), unhex({p8:String}), unhex({p9:String}), unhex({p10:String}))) GROUP BY parent_span_id
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794907800.009001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794907800"
+p5: UInt32 = "1524766824"
+p6: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+p7: String = "0101010101010101"
+p8: String = "0202020202020202"
+p9: String = "0303030303030303"
+p10: String = "0303030303030303"

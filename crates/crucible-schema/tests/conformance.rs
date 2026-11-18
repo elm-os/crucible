@@ -246,6 +246,8 @@ fn access_checks_hold_under_both_switch_values() {
         ("read_agent_rows_ceiling", CONSTRAINT),
         ("read_agent_concurrency_is_const", CONSTRAINT),
         ("maint_reads_mutations", "1"),
+        ("maint_reads_engines", "MergeTree"),
+        ("maint_reads_server_settings", "1"),
         ("maint_lightweight_delete", "ok"),
         ("maint_rows_after_delete", "0"),
         ("maint_apply_deleted_mask", "ok"),

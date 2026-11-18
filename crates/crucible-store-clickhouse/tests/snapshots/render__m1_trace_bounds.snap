@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&plan)
+---
+SELECT trace_id, min(min_start) AS m0, max(max_end) AS m1, sum(span_count) AS m2, max(has_root) AS m3, min(min_head_start) AS m4 FROM crucible.trace_stats WHERE project_id = {p0:UUID} AND row_day >= {p1:Date} AND row_day <= {p2:Date} AND trace_id = unhex({p3:String}) GROUP BY trace_id
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: Date = "2026-11-17"
+p2: Date = "2026-11-17"
+p3: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
