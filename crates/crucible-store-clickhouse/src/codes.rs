@@ -18,7 +18,7 @@ pub enum InsertCodeClass {
 
 /// Server codes that classify a failed insert. A code that is not listed is an unknown outcome, because probing
 /// is always safe.
-pub const INSERT_CODES: [(u32, InsertCodeClass); 21] = [
+pub const INSERT_CODES: [(u32, InsertCodeClass); 20] = [
     (202, InsertCodeClass::Retry(RetryReason::TooManyQueries)),
     (252, InsertCodeClass::Retry(RetryReason::TooManyParts)),
     (241, InsertCodeClass::Retry(RetryReason::Memory)),
@@ -34,13 +34,14 @@ pub const INSERT_CODES: [(u32, InsertCodeClass); 21] = [
     (53, InsertCodeClass::Poison),
     (27, InsertCodeClass::Poison),
     (117, InsertCodeClass::Poison),
-    // The similar data errors of contract 5.6: a block the server cannot read or convert.
-    (6, InsertCodeClass::Poison),
+    // The similar data errors of contract 5.6, as a Native block provokes them on a real server: a body cut
+    // short (33), a frame that fails its checksum (271) or names no codec (432), and a column whose values (376)
+    // or type (43) cannot be converted to the table's.
     (33, InsertCodeClass::Poison),
-    (50, InsertCodeClass::Poison),
-    (70, InsertCodeClass::Poison),
-    (131, InsertCodeClass::Poison),
     (271, InsertCodeClass::Poison),
+    (432, InsertCodeClass::Poison),
+    (376, InsertCodeClass::Poison),
+    (43, InsertCodeClass::Poison),
 ];
 
 /// Code 252 is shared: too many parts (retry), and a block that spans more partitions than
@@ -222,7 +223,7 @@ mod tests {
         for code in [516, 497, 60, 16] {
             assert_eq!(class(code), InsertClass::FatalConfig, "{code}");
         }
-        for code in [53, 27, 117] {
+        for code in [53, 27, 117, 33, 271, 432, 376, 43] {
             assert_eq!(class(code), InsertClass::Poison, "{code}");
         }
         let mut codes: Vec<u32> = INSERT_CODES.iter().map(|(code, _)| *code).collect();

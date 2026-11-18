@@ -126,26 +126,53 @@ fn value(r: &mut Reader<'_>, ty: &Ty) -> Option<Result<Value, DecodeError>> {
     }))
 }
 
-/// The type string the server prints for a result column, without the `LowCardinality` wrapper: the row image
-/// is the same with or without it.
-fn normalize(server: &str) -> String {
-    let mut out = String::with_capacity(server.len());
-    let mut rest = server;
-    while let Some(at) = rest.find("LowCardinality(") {
-        out.push_str(&rest[..at]);
-        let inner = &rest[at + "LowCardinality(".len()..];
-        match inner.find(')') {
-            Some(end) => {
-                out.push_str(&inner[..end]);
-                rest = &inner[end + 1..];
-            }
-            None => {
-                rest = inner;
-            }
+/// The index of the `)` that closes a `(` just before `text`.
+fn closing(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(at),
+            ')' => depth -= 1,
+            _ => {}
         }
     }
-    out.push_str(rest);
-    out
+    None
+}
+
+/// The type string the server prints for a result column, without the storage wrappers: `LowCardinality(T)` and
+/// `SimpleAggregateFunction(f, T)` are `T`. The row image is the same with or without them, and the server
+/// keeps the latter on a `min` or `max` over such a column.
+fn normalize(server: &str) -> String {
+    const WRAPPERS: [&str; 2] = ["LowCardinality(", "SimpleAggregateFunction("];
+    let found = WRAPPERS
+        .iter()
+        .filter_map(|wrapper| server.find(wrapper).map(|at| (at, *wrapper)))
+        .min();
+    let Some((at, wrapper)) = found else {
+        return server.to_owned();
+    };
+    let inside = &server[at + wrapper.len()..];
+    let Some(end) = closing(inside) else {
+        return server.to_owned();
+    };
+    let mut inner = &inside[..end];
+    if wrapper == WRAPPERS[1] {
+        // Skip the function, which may carry its own parameter list, and the comma after it.
+        let name_end = inner.find([',', '(']).unwrap_or(inner.len());
+        let after_name = &inner[name_end..];
+        let function_end = match after_name.strip_prefix('(') {
+            Some(parameters) => name_end + closing(parameters).map_or(0, |close| close + 2),
+            None => name_end,
+        };
+        inner = inner[function_end..].trim_start_matches(',').trim_start();
+    }
+    format!(
+        "{}{}{}",
+        &server[..at],
+        normalize(inner),
+        normalize(&inside[end + 1..])
+    )
 }
 
 /// Decodes the byte chunks of one result, in arrival order.
@@ -280,8 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn low_cardinality_wrappers_are_dropped_from_server_types() {
+    fn storage_wrappers_are_dropped_from_server_types() {
         assert_eq!(normalize("LowCardinality(String)"), "String");
+        assert_eq!(
+            normalize("SimpleAggregateFunction(min, DateTime64(6, 'UTC'))"),
+            "DateTime64(6, 'UTC')"
+        );
+        assert_eq!(
+            normalize("SimpleAggregateFunction(groupUniqArrayArray(16), Array(LowCardinality(String)))"),
+            "Array(String)"
+        );
+        assert_eq!(
+            normalize("Tuple(SimpleAggregateFunction(max, UInt8), LowCardinality(String))"),
+            "Tuple(UInt8, String)"
+        );
+        assert_eq!(normalize("Enum8('a' = 1, 'b' = 2)"), "Enum8('a' = 1, 'b' = 2)");
         assert_eq!(
             normalize("Array(LowCardinality(String))"),
             "Array(String)"

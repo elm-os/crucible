@@ -75,7 +75,6 @@ pub(crate) fn statement(sql: impl Into<String>) -> Statement {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn with_settings(sql: impl Into<String>, settings: &[(&'static str, &str)]) -> Statement {
     Statement {
         settings: settings

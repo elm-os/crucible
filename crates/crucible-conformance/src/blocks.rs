@@ -257,6 +257,11 @@ impl Rows {
         self.with(name, (0..rows).map(f).collect())
     }
 
+    /// The table.
+    pub const fn table(&self) -> TableId {
+        self.table
+    }
+
     /// The number of rows.
     pub const fn len(&self) -> usize {
         self.rows
