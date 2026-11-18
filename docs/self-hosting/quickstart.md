@@ -112,6 +112,25 @@ curl -s -H "Authorization: Bearer <secret>" \
 
 The trace list takes a time window of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
 
+## With Postgres: sign-in, members and API keys
+
+With a Postgres 15 or newer configured (`postgres.url`, `CRUCIBLE_POSTGRES_URL`), the server has a control plane:
+people sign in, projects and members live in Postgres, and API keys are made in the UI instead of `keys.toml`. The
+master key is required then; it also seals stored secrets.
+
+- Start with `--migrate` once, so the Postgres tables exist. Until the API key snapshot has loaded from Postgres,
+  `/readyz` answers 503 and ingest is closed.
+- While no owner exists, the log prints a one-time link, `/setup/?token=...`, valid for 24 hours. Open it to create the
+  organization and its owner, or run `crucible admin init --org-name <name> --email <email> --name <name>` with the
+  password on standard input or in `--password-file`.
+- Invite people from Settings: the invitation link is shown once, to pass on. This version sends no email, so a
+  forgotten password is reset with `crucible admin reset-password <email>`, which prints a link valid for 30 minutes.
+- Sign-in through GitHub, Google or an OpenID Connect provider needs `server.public_url` (the address people use,
+  which the provider redirects back to). An `https` public URL also makes the session cookie `Secure`; over plain HTTP
+  sign-in still works.
+- If Postgres becomes unreachable, open sessions keep working for `auth.session_outage_grace` (10 minutes by
+  default), and keys the server already knows keep working for ingest (`auth.pg_outage_mode = "fail_open"`).
+
 ## Without Compose
 
 `crucible serve` runs the same way outside a container. The flags, their environment variables and the two modes
