@@ -40,15 +40,15 @@
     { "key": "crucible.mcp.oauth.client_id", "type": "string", "contract": "9.3" },
     { "key": "crucible.mcp.tenant", "type": "string", "contract": "9.3" },
     { "key": "user.id", "type": "string", "contract": "9.3" },
-    { "key": "crucible.mcp.handle.id", "type": "string", "contract": "9.8" },
+    { "key": "crucible.mcp.handle.id", "type": "string", "max_bytes": 256, "contract": "9.8" },
     { "key": "crucible.mcp.user.issuer", "type": "string", "contract": "9.3" },
     { "key": "crucible.mcp.user.subject", "type": "string", "contract": "9.3" },
     { "key": "crucible.mcp.identity.source", "type": "string", "enum": ["none", "identify_hook", "token_claims", "token_verified"], "contract": "9.3" },
     { "key": "crucible.mcp.request.bytes", "type": "int", "min": 0, "contract": "9.1" },
     { "key": "crucible.mcp.response.bytes", "type": "int", "min": 0, "contract": "9.1" },
     { "prefix": "crucible.mcp.content.blocks.", "type": "int", "min": 0, "contract": "9.1" },
-    { "key": "gen_ai.tool.call.arguments", "type": "string", "contract": "9.10" },
-    { "key": "gen_ai.tool.call.result", "type": "string", "contract": "9.10" },
+    { "key": "gen_ai.tool.call.arguments", "type": "string", "max_bytes": 16384, "contract": "9.10" },
+    { "key": "gen_ai.tool.call.result", "type": "string", "max_bytes": 16384, "contract": "9.10" },
     { "key": "crucible.mcp.content.captured", "type": "bool", "contract": "9.10" },
     { "key": "crucible.mcp.content.sample_rate", "type": "number", "min": 0, "max": 1, "contract": "9.10" },
     { "key": "crucible.mcp.content.truncation", "type": "string", "enum": ["none", "cap_exceeded"], "contract": "9.10" },
@@ -124,7 +124,6 @@
     },
     "direction": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.direction" }, { "default": "client_to_server" }] },
     "is_notification": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.is_notification" }, { "default": false }] },
-    "result_type": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.result_type" }] },
     "identity_source": {
       "contract": "9.3",
       "sources": [{ "span": "crucible.mcp.identity.source" }, { "if_present": "user.id", "value": "identify_hook" }, { "default": "none" }]
@@ -132,6 +131,27 @@
     "server_name": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.server.name" }, { "resource": "service.name" }] },
     "server_version": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.server.version" }, { "resource": "service.version" }] },
     "deploy_id": { "contract": "9.7", "sources": [{ "resource": "crucible.deploy.id" }, { "field": "server_version" }] },
+    "service_name": { "contract": "3.1", "sources": [{ "resource": "service.name" }] },
+    "observation_type": {
+      "contract": "10.4",
+      "sources": [
+        { "span": "crucible.observation.type" },
+        { "span": "mcp.method.name", "map": { "tools/call": "tool" } },
+        {
+          "span": "gen_ai.operation.name",
+          "map": {
+            "chat": "generation",
+            "text_completion": "generation",
+            "generate_content": "generation",
+            "embeddings": "embedding",
+            "execute_tool": "tool",
+            "create_agent": "agent",
+            "invoke_agent": "agent"
+          }
+        },
+        { "default": "span" }
+      ]
+    },
     "session_id": {
       "contract": "10.6",
       "sources": [{ "span": "crucible.session.id" }, { "span": "session.id" }, { "span": "gen_ai.conversation.id" }]
@@ -149,14 +169,20 @@
   },
   "forbidden": {
     "contract": "9.1",
-    "keys": ["client.address", "http.request.header.authorization", "http.request.header.cookie", "http.response.header.set-cookie"],
+    "keys": [
+      "client.address",
+      "network.peer.address",
+      "http.request.header.authorization",
+      "http.request.header.cookie",
+      "http.response.header.set-cookie"
+    ],
     "prefixes": ["http.request.header.mcp-param-"]
   },
   "export": {
     "contract": "9.10",
     "path": "/v1/traces",
     "media_type": "application/x-protobuf",
-    "authorization_scheme": "Bearer"
+    "encodings": ["identity", "gzip"]
   },
   "hashes": {
     "session_id": {
@@ -185,26 +211,48 @@
     }
   },
   "mcp_rules": [
-    { "field": "side", "equals": "server", "contract": "9.1" },
-    { "field": "capture_source", "equals": "sdk", "contract": "9.1" },
-    { "field": "era", "equals": "$era", "contract": "9.1" },
-    { "field": "transport", "equals": "$transport", "contract": "9.1" },
-    { "field": "server_name", "equals": "$server_name", "contract": "9.1" },
-    { "field": "server_version", "equals": "$server_version", "contract": "9.1" },
-    { "field": "deploy_id", "equals": "$deploy_id", "contract": "9.7" },
-    { "key": "mcp.protocol.version", "equals": "2026-07-28", "when": { "era": "modern" }, "contract": "9.1" },
-    { "key": "mcp.protocol.version", "matches": "^(2024-11-05|2025-03-26|2025-06-18|2025-11-25)$", "when": { "era": "legacy" }, "contract": "9.1" },
-    { "key": "mcp.session.id", "absent": true, "when": { "era": "modern" }, "contract": "9.1" },
-    { "key": "jsonrpc.request.id", "absent": true, "if": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
-    { "key": "jsonrpc.request.id", "present": true, "unless": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
-    { "key": "gen_ai.tool.name", "absent": true, "unless": { "mcp.method.name": "tools/call" }, "contract": "9.1" },
-    { "key": "gen_ai.tool.call.arguments", "absent": true, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
-    { "key": "gen_ai.tool.call.result", "absent": true, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
-    { "key": "crucible.mcp.mrtr.state_out", "absent": true, "unless": { "crucible.mcp.result_type": "input_required" }, "contract": "9.6" },
-    { "key": "http.response.status_code", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
-    { "key": "user_agent.original", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
-    { "key": "crucible.mcp.client.ip_prefix", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
-    { "key": "network.transport", "equals": "pipe", "optional": true, "when": { "transport": "stdio" }, "contract": "9.1" },
-    { "key": "network.transport", "equals": "tcp", "optional": true, "when": { "transport": "streamable_http" }, "contract": "9.1" }
+    { "field": "side", "assert": "server", "contract": "9.1" },
+    { "field": "capture_source", "assert": "sdk", "contract": "9.1" },
+    { "field": "era", "assert": "$era", "contract": "9.1" },
+    { "field": "transport", "assert": "$transport", "contract": "9.1" },
+    { "field": "direction", "assert": "client_to_server", "contract": "9.1" },
+    { "field": "server_name", "assert": "$server_name", "contract": "9.1" },
+    { "field": "server_version", "assert": "$server_version", "contract": "9.1" },
+    { "field": "deploy_id", "assert": "$deploy_id", "contract": "9.7" },
+    { "field": "identity_source", "assert": "none", "contract": "9.3" },
+    { "key": "mcp.protocol.version", "assert": "$protocol_version", "contract": "9.1" },
+    { "key": "mcp.session.id", "assert": { "absent": true }, "when": { "era": "modern" }, "contract": "9.4" },
+    { "key": "mcp.session.id", "assert": { "absent": true }, "when": { "transport": "stdio" }, "contract": "9.4" },
+    {
+      "key": "mcp.session.id",
+      "assert": { "session_hash": "initialize" },
+      "when": { "era": "legacy", "transport": "streamable_http" },
+      "unless": { "mcp.method.name": "initialize" },
+      "contract": "9.4"
+    },
+    { "key": "jsonrpc.request.id", "assert": { "absent": true }, "if": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
+    { "key": "jsonrpc.request.id", "assert": { "present": true }, "unless": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
+    { "key": "crucible.mcp.client.name", "assert": "$client_name", "unless": { "crucible.mcp.is_notification": true }, "contract": "9.3" },
+    { "key": "crucible.mcp.client.version", "assert": "$client_version", "unless": { "crucible.mcp.is_notification": true }, "contract": "9.3" },
+    { "key": "gen_ai.tool.name", "assert": { "absent": true }, "unless": { "mcp.method.name": "tools/call" }, "contract": "9.1" },
+    { "key": "crucible.mcp.handle.id", "assert": { "absent": true }, "unless": { "gen_ai.tool.name": "lookup_order" }, "contract": "9.8" },
+    { "key": "user.id", "assert": { "absent": true }, "contract": "9.3" },
+    { "key": "crucible.mcp.content.captured", "assert": { "optional": false }, "unless": { "gen_ai.tool.name": "secret" }, "contract": "9.10" },
+    { "key": "gen_ai.tool.call.arguments", "assert": { "absent": true }, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
+    { "key": "gen_ai.tool.call.result", "assert": { "absent": true }, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
+    { "key": "crucible.mcp.mrtr.state_out", "assert": { "absent": true }, "unless": { "crucible.mcp.result_type": "input_required" }, "contract": "9.6" },
+    { "key": "crucible.mcp.is_batch", "assert": { "optional": false }, "contract": "9.1" },
+    { "key": "http.response.status_code", "assert": { "absent": true }, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "user_agent.original", "assert": { "absent": true }, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "crucible.mcp.client.ip_prefix", "assert": { "absent": true }, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "crucible.mcp.client.ip_prefix", "assert": { "optional": "127.0.0.0/24" }, "when": { "transport": "streamable_http" }, "contract": "9.1" },
+    { "key": "network.transport", "assert": { "optional": "pipe" }, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "network.transport", "assert": { "optional": "tcp" }, "when": { "transport": "streamable_http" }, "contract": "9.1" }
+  ],
+  "agent_rules": [
+    { "field": "service_name", "assert": "$service_name", "contract": "3.1" },
+    { "field": "environment", "assert": "$environment", "contract": "10.6" },
+    { "field": "release", "assert": "$release", "contract": "10.6" },
+    { "key": "mcp.method.name", "assert": { "absent": true }, "contract": "9.1" }
   ]
 }

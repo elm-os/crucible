@@ -1,0 +1,14 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-flush-shutdown",
+  "kind": "agent",
+  "title": "flush exports what has ended, shutdown exports the rest, and spans after shutdown are dropped",
+  "steps": [
+    { "step": "first", "observe": { "name": "before-flush", "type": "span" } },
+    { "step": "flush", "flush": {} },
+    { "step": "mark", "checkpoint": "flushed" },
+    { "step": "second", "observe": { "name": "after-flush", "type": "span" } },
+    { "step": "shutdown", "shutdown": {} },
+    { "step": "late", "observe": { "name": "after-shutdown", "type": "span" } }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-slow",
+  "kind": "mcp",
+  "title": "A tool call whose span covers the handler's wait",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "slow",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "slow", "arguments": { "ms": 250, "steps": 0 } } }
+    }
+  ]
+}
