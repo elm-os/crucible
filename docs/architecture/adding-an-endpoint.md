@@ -73,7 +73,9 @@ appending it, so that two slices rarely insert at the same place.
 5. **API route module with OpenAPI.** Create `crates/crucible-api/src/routes/<group>.rs` with:
    - the handler and its `#[utoipa::path]`: operation id, tag, path and query parameters, and every problem
      response it can return. It checks every parameter with `Params` (which refuses unknown ones) and
-     `check_window` before `state.service(rid)?`, so a server without a store still validates the request;
+     `check_window` before `state.service(rid)?`, so a server without a store still validates the request. Each
+     refusal names what to change: the parameter by JSON pointer (contract 12.3), or the setting that caused it
+     (contract 1.7);
    - `pub(super) fn routes() -> Router<ApiState>`, and `pub(super) struct Paths` with
      `#[derive(OpenApi)] #[openapi(paths(..))]` over the group's handlers;
    - the conversion of the service's response to its DTO. `crates/crucible-api/src/convert.rs` holds the
@@ -140,8 +142,8 @@ split:
   `every_builder_clamps_its_window_to_retention`, in `crates/crucible-plan/tests/properties.rs`.
 - The fixture, `endpoint_plans` and the summary line of `reads()` in `crates/crucible-conformance/src/reads.rs`.
 - `crates/crucible-store-clickhouse/tests/render.rs`, which holds every builder's snapshots.
-- `visit_exported` in `crates/crucible-api-types/src/lib.rs`, and the cursor methods in
-  `crates/crucible-api/src/cursor.rs`.
+- `visit_exported` in `crates/crucible-api-types/src/lib.rs`, sorted by type rather than by endpoint, and the cursor
+  methods in `crates/crucible-api/src/cursor.rs`.
 - `ui/src/api/client.ts`, which holds every request function.
 - `crates/crucible-sim/src/system_sim.rs`, the one oracle.
 
@@ -150,5 +152,5 @@ split:
 Run the quality bar in the dev container ([`../development.md`](../development.md)): `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 `cargo nextest run --workspace --locked --no-tests=pass`, `cargo deny check` and
-`node tools/policy/policy.mjs files`. The pull request must pass the `ci-rust` (Linux and Windows), `drift`, `sim`,
-`e2e`, `conformance`, `ci-ui` and `policy` workflows.
+`node tools/policy/policy.mjs files`. The pull request must pass every CI workflow, among them `ci-rust` (Linux and
+Windows), `drift`, `sim`, `e2e`, `conformance`, `ci-ui` and `policy`.
