@@ -36,6 +36,7 @@ use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyVerifier, StaticKeys};
+use crucible_config::Config;
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
 use crucible_env::{
@@ -51,14 +52,13 @@ use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
-use crucible_store_clickhouse::Credentials;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
 
-use crate::ServeArgs;
+use crate::control::Control;
 use crate::recent::WalSpans;
-use crate::store::{self, ClickHouse, MasterKey, NoLedger};
+use crate::store::{self, ClickHouse};
 
 /// How long tasks get to finish after shutdown is requested before they are aborted.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
@@ -443,7 +443,10 @@ async fn start(
 /// What the `telemetry-store` task takes over.
 struct StoreTask {
     config: ClickHouse,
+    /// `--migrate`: apply the migrations before the startup checks.
     migrate: bool,
+    /// The control plane, when Postgres is configured.
+    control: Option<Control>,
     wal: Wal,
     report: RecoveryReport,
     keys: Arc<dyn KeyVerifier>,
@@ -523,6 +526,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let StoreTask {
         config,
         migrate,
+        control,
         wal,
         report,
         keys,
@@ -530,6 +534,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         gate,
         recent_max_bytes,
     } = task;
+    let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
     let mut shutdown = env.shutdown();
     let mut delay = STORE_RETRY.0;
@@ -537,7 +542,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         let attempt = tokio::select! {
             biased;
             () = &mut shutdown => return Ok(()),
-            attempt = store::bring_up(&config, &store, migrate, &NoLedger) => attempt,
+            attempt = store::bring_up(&env, &config, &store, migration.as_ref()) => attempt,
         };
         match attempt {
             Ok(facts) => break facts,
@@ -588,6 +593,10 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     hook.restore_quarantined(pairs);
     hook.restore_unshippable(frames);
     let stores = Stores::new(Arc::new(store));
+    let stores = match control {
+        Some(control) => stores.with_control(Arc::new(control.store)),
+        None => stores,
+    };
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
         recent: hook,
@@ -625,35 +634,16 @@ fn default_recent_max_bytes() -> u64 {
     })
 }
 
-/// The ClickHouse settings of the command line, or `None` for the ingest-only mode.
-fn clickhouse(args: &ServeArgs) -> anyhow::Result<Option<ClickHouse>> {
-    let Some(url) = &args.clickhouse_url else {
+/// The ClickHouse settings of the configuration, or `None` for the ingest-only mode.
+fn clickhouse(config: &Config, migrate: bool) -> anyhow::Result<Option<ClickHouse>> {
+    let Some(clickhouse) = &config.clickhouse else {
         anyhow::ensure!(
-            !args.migrate,
-            "--migrate needs a telemetry store (--clickhouse-url)"
+            !migrate,
+            "--migrate needs a telemetry store (--clickhouse-url); `crucible migrate` migrates Postgres alone"
         );
         return Ok(None);
     };
-    let password = store::secret(
-        args.clickhouse_password_file.as_deref(),
-        "CRUCIBLE_CLICKHOUSE_PASSWORD",
-    )?
-    .context(
-        "--clickhouse-url needs the admin password: --clickhouse-password-file or CRUCIBLE_CLICKHOUSE_PASSWORD",
-    )?;
-    let master_key = store::secret(args.master_key_file.as_deref(), "CRUCIBLE_MASTER_KEY")?
-        .context(
-            "--clickhouse-url needs the master key, from which the service passwords are derived: \
-         --master-key-file or CRUCIBLE_MASTER_KEY",
-        )?;
-    Ok(Some(ClickHouse {
-        url: url.clone(),
-        admin: Credentials {
-            user: args.clickhouse_user.clone(),
-            password,
-        },
-        master_key: MasterKey::parse(&master_key)?,
-    }))
+    ClickHouse::new(clickhouse).map(Some)
 }
 
 /// Resolves with the name of the first termination signal the process receives.
@@ -685,13 +675,14 @@ fn server_result(
     }
 }
 
-pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
+pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let roots = [Root::Wal, Root::Quarantine, Root::Exports];
     let mut roots: BTreeMap<_, _> = roots
         .into_iter()
-        .map(|root| (root, args.data_dir.join(root.name())))
+        .map(|root| (root, config.data.dir.join(root.name())))
         .collect();
-    if let Some(dir) = &args.ui_dir {
+    let ui_dir = config.server.ui_dir.as_ref();
+    if let Some(dir) = ui_dir {
         // The disk backend creates a missing root; a mistyped `--ui-dir` must fail instead.
         anyhow::ensure!(
             dir.is_dir(),
@@ -700,18 +691,18 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         );
         roots.insert(Root::Ui, dir.clone());
     }
-    let config = ProdConfig {
+    let prod_config = ProdConfig {
         roots,
-        wal_backend: args.wal_backend,
+        wal_backend: crate::wal_backend(config.data.wal_backend),
     };
-    let prod = crucible_env_prod::build(tokio::runtime::Handle::current(), &config)
+    let prod = crucible_env_prod::build(tokio::runtime::Handle::current(), &prod_config)
         .context("building the production environment")?;
     let env = &prod.env;
     env.metrics
         .gauge(&registry::BUILD_INFO, &[env!("CARGO_PKG_VERSION")])
         .set(1);
 
-    let (ui, ui_source) = match &args.ui_dir {
+    let (ui, ui_source) = match ui_dir {
         Some(dir) => {
             let catalog = Catalog::from_dir(env.disk.as_ref())
                 .await
@@ -728,7 +719,7 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
     };
     let ui_routes = ui.manifest().routes.len();
 
-    let keys = match &args.keys_file {
+    let keys = match &config.server.keys_file {
         Some(path) => crate::keys::load(path, env)?,
         None => StaticKeys::new(env.rng.as_ref(), Vec::new())?,
     };
@@ -738,7 +729,18 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
     let key_count = keys.len();
-    let clickhouse = clickhouse(&args)?;
+    let clickhouse = clickhouse(&config, migrate)?;
+    // Nothing reads the control plane yet in this milestone except the migrations ledger; the store opens its
+    // first connection when something does.
+    let control = match &config.postgres {
+        Some(postgres) => Some(Control::new(env, postgres)?),
+        None => None,
+    };
+    let control_mode = if control.is_some() {
+        "postgres"
+    } else {
+        "none"
+    };
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -760,29 +762,31 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
     } else {
         "ingest-only"
     };
+    let recent_max_bytes = config
+        .recent_max_bytes
+        .unwrap_or_else(default_recent_max_bytes);
     // Without a store the task is one that never ends, so the wait below has one shape.
     let mut store = match clickhouse {
         Some(config) => {
             let task = StoreTask {
                 config,
-                migrate: args.migrate,
+                migrate,
+                control,
                 wal: app.wal.clone(),
                 report,
                 keys: Arc::clone(&app.keys),
                 cursors,
                 gate: Arc::clone(&app.gate),
-                recent_max_bytes: args
-                    .recent_max_bytes
-                    .unwrap_or_else(default_recent_max_bytes),
+                recent_max_bytes,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
         None => None,
     };
     let listen = Addrs {
-        api: args.listen,
-        ingest: args.ingest_listen,
-        metrics: args.metrics_listen,
+        api: config.server.listen,
+        ingest: config.server.ingest_listen,
+        metrics: config.server.metrics_listen,
     };
     let mut servers = start(env, Arc::clone(&prod.recorder), Arc::new(ui), listen, app).await?;
     tracing::info!(
@@ -796,6 +800,7 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         keys = key_count,
         cursor_kid,
         mode,
+        control = control_mode,
         "crucible is serving"
     );
 
@@ -853,6 +858,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+    use crate::store::MasterKey;
 
     const LOOPBACK: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     const LISTEN: Addrs = Addrs {
