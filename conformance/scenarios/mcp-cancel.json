@@ -1,0 +1,21 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-cancel",
+  "kind": "mcp",
+  "title": "Cancelling an in-flight call: a notification on stdio and legacy HTTP, a closed stream on modern HTTP",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "slow",
+      "wait": false,
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "slow", "arguments": { "ms": 3000, "steps": 0 } } }
+    },
+    { "step": "pause", "sleep_ms": 300 },
+    { "step": "cancel", "cancel": "slow", "reason": "conformance cancel" },
+    { "step": "settle", "sleep_ms": 200 },
+    {
+      "step": "after",
+      "send": { "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": "still serving" } } }
+    }
+  ]
+}

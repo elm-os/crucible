@@ -1,0 +1,20 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-fail",
+  "spans": [
+    {
+      "id": "fail",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "fail",
+        "error.type": "tool_error",
+        "rpc.response.status_code": { "absent": true },
+        "crucible.mcp.error.class": { "optional": "tool_execution" },
+        "crucible.mcp.error.subclass": "upstream"
+      },
+      "outcome": { "status": "tool_error", "error_class": "tool_execution", "error_subclass": "upstream", "caller_fault": false }
+    }
+  ]
+}

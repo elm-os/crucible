@@ -1,0 +1,39 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-cancel",
+  "spans": [
+    {
+      "id": "slow-notified",
+      "when": [{ "transport": "stdio" }, { "era": "legacy" }],
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "gen_ai.tool.name": "slow", "crucible.mcp.cancel.source": "notification" },
+      "outcome": { "status": "cancelled", "error_class": "cancelled" }
+    },
+    {
+      "id": "cancel-notification",
+      "when": [{ "transport": "stdio" }, { "era": "legacy" }],
+      "select": { "mcp.method.name": "notifications/cancelled" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "crucible.mcp.is_notification": true }
+    },
+    {
+      "id": "slow-closed",
+      "when": { "era": "modern", "transport": "streamable_http" },
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "gen_ai.tool.name": "slow", "crucible.mcp.cancel.source": "stream_close" },
+      "outcome": { "status": "cancelled", "error_class": "cancelled" }
+    },
+    {
+      "id": "after",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "3" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "gen_ai.tool.name": "echo", "crucible.mcp.cancel.source": { "optional": "none" } }
+    }
+  ]
+}

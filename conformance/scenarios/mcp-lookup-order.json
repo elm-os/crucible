@@ -1,0 +1,17 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-lookup-order",
+  "kind": "mcp",
+  "title": "The handle id comes from the handle_params argument and only on that tool",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "lookup",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "lookup_order", "arguments": { "order_id": "ord_1042" } } }
+    },
+    {
+      "step": "echo",
+      "send": { "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": "ord_1042" } } }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-needs-input",
+  "spans": [
+    {
+      "id": "ask",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "needs_input",
+        "crucible.mcp.result_type": "input_required",
+        "crucible.mcp.mrtr.state_out": { "mrtr_hash": "ask/result/requestState" },
+        "crucible.mcp.mrtr.state_in": { "absent": true }
+      }
+    },
+    {
+      "id": "answer",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "3" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "needs_input",
+        "crucible.mcp.result_type": { "optional": "complete" },
+        "crucible.mcp.mrtr.state_in": { "mrtr_hash": "ask/result/requestState" },
+        "crucible.mcp.mrtr.state_out": { "absent": true }
+      }
+    }
+  ]
+}
