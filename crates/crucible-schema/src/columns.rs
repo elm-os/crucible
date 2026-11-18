@@ -155,11 +155,11 @@ columns! { SpanCore, SpanCoreCol, SPAN_CORE, scoped;
     InputSha256 "input_sha256": Ty::FixedString(32);
     OutputSha256 "output_sha256": Ty::FixedString(32);
     RowDigest "row_digest": U64 => Codec::Zstd1;
+    UsageAggregate "usage_aggregate": U8;
     WalEpoch "wal_epoch": Ty::Uuid;
     BatchSeq "batch_seq": U64;
     Lsn "lsn": U64;
     ReceivedAt "received_at": DT64;
-    UsageAggregate "usage_aggregate": U8;
 }
 
 columns! { SpanPayload, SpanPayloadCol, SPAN_PAYLOAD, scoped;

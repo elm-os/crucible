@@ -122,9 +122,9 @@ pub fn span_core_row(span: &SpanRecord) -> Vec<Value> {
         Value::bytes(&c.input_sha256.unwrap_or([0; 32])),
         Value::bytes(&c.output_sha256.unwrap_or([0; 32])),
         Value::U64(c.row_digest),
+        Value::flag(c.usage_aggregate),
     ]);
     ingestion(&mut cells, &c.ingestion);
-    cells.push(Value::flag(c.usage_aggregate));
     cells
 }
 

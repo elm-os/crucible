@@ -14,8 +14,11 @@
 pub mod blocks;
 mod cancel;
 mod codes;
+pub mod control;
+pub mod control_pg;
 mod differential;
 mod inserts;
+mod m2;
 mod maintenance;
 mod reads;
 mod startup;

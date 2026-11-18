@@ -82,8 +82,8 @@ later_steps() {
   local container=$1 variant=$2 on_cluster=$3
   shift 3
   client "$container" "$ADMIN" "$@" -q "ALTER TABLE crucible.span_core$on_cluster DROP COLUMN usage_aggregate"
-  apply "$container" "step__${variant}__0004_schema_span_usage_aggregate" "$@"
-  apply "$container" "step__${variant}__0004_schema_span_usage_aggregate" "$@"
+  apply "$container" "step__${variant}__0004_span_usage_aggregate" "$@"
+  apply "$container" "step__${variant}__0004_span_usage_aggregate" "$@"
 }
 
 start() {
@@ -226,7 +226,7 @@ single() {
   switch_config "$config" false
   start "$name" "$tag" "$config"
   apply "$name" step__single__day__0001_schema_base
-  apply "$name" step__single__0004_schema_span_usage_aggregate
+  apply "$name" step__single__0004_span_usage_aggregate
   access_checks "$name" strict "$out"
   docker rm -f "$name" >/dev/null
   echo "single $tag: $(cat "$out/version.txt")"

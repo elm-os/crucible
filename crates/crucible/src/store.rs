@@ -6,12 +6,12 @@
 //!   generation counter, so nothing is stored. The info string is
 //!   `crucible/clickhouse-identity/v1/<name>/<generation>` and the password is the 32 output bytes as lowercase
 //!   hex.
-//! - `--migrate` applies schema step `0001_schema_base`, access step `0002_access_service` and schema step
-//!   `0004_schema_span_usage_aggregate` for a single-node server. All are idempotent, and [`MigrationLedger`] is
-//!   where the Postgres ledger of contract 6.6 will plug in.
+//! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, access step
+//!   `0002_access_service` and schema step `0004_span_usage_aggregate` for a single-node server
+//!   ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the ledger of
+//!   contract 6.6 and applied once; without it there is no ledger and all are applied each time.
 //! - [`bring_up`] is everything that must hold before ingest is accepted.
 
-use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -23,6 +23,8 @@ use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PasswordHash, ServiceIdentity, TABLES,
     Variant, access_service, schema_base, schema_span_usage_aggregate,
 };
+
+use crate::control::{ApplyStep, Applying, Control};
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
@@ -88,18 +90,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// A secret from a file or, failing that, from an environment variable. Trailing line ends are dropped.
-#[allow(clippy::disallowed_methods)] // The binary reads its own configuration.
-pub(crate) fn secret(file: Option<&Path>, variable: &str) -> anyhow::Result<Option<String>> {
-    let text = match file {
-        Some(path) => Some(
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
-        ),
-        None => std::env::var(variable).ok(),
-    };
-    Ok(text.map(|text| text.trim_end_matches(['\r', '\n']).to_owned()))
-}
-
 /// What `crucible serve` needs to reach ClickHouse.
 #[derive(Clone, Debug)]
 pub(crate) struct ClickHouse {
@@ -109,6 +99,18 @@ pub(crate) struct ClickHouse {
 }
 
 impl ClickHouse {
+    /// The settings of the `[clickhouse]` section.
+    pub(crate) fn new(config: &crucible_config::ClickHouse) -> anyhow::Result<Self> {
+        Ok(Self {
+            url: config.url.clone(),
+            admin: Credentials {
+                user: config.user.clone(),
+                password: config.password.expose().to_owned(),
+            },
+            master_key: MasterKey::parse(config.master_key.expose())?,
+        })
+    }
+
     fn generated(&self, identity: ServiceIdentity) -> Credentials {
         Credentials {
             user: identity.name().to_owned(),
@@ -167,26 +169,41 @@ impl ClickHouse {
     }
 }
 
-/// Which migration steps have been applied. Contract 6.6 keeps this ledger (`schema_migrations`) in Postgres,
-/// which milestone 1 does not have: [`NoLedger`] remembers nothing, so `--migrate` applies every step each
-/// time, which their idempotence allows. The control plane will implement this trait over Postgres.
-pub(crate) trait MigrationLedger: Send + Sync {
-    /// Whether the step with this id is recorded as applied.
-    fn is_applied(&self, id: &str) -> bool;
-    /// Records the step as applied.
-    fn record(&self, id: &str);
+impl ApplyStep for ClickHouseStore {
+    fn apply<'a>(&'a self, step: &'a MigrationStep) -> Applying<'a> {
+        Box::pin(async move {
+            self.apply_migration(step)
+                .await
+                .with_context(|| format!("migration step {}", step.id))
+        })
+    }
 }
 
-/// The ledger of milestone 1: none.
+/// What `--migrate` asks of [`bring_up`]: apply the migrations first, under the ledger of the control plane
+/// when Postgres is configured.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct NoLedger;
+pub(crate) struct Migrate<'a>(pub(crate) Option<&'a Control>);
 
-impl MigrationLedger for NoLedger {
-    fn is_applied(&self, _id: &str) -> bool {
-        false
+/// Applies the ClickHouse schema and access steps. With a control plane, the Postgres migrations run first and
+/// the ledger of contract 6.6 (`schema_migrations`) decides which steps are still to apply. Without one there
+/// is no ledger: every step is applied each time, which their idempotence allows.
+pub(crate) async fn apply_migrations(
+    env: &Env,
+    config: &ClickHouse,
+    store: &ClickHouseStore,
+    control: Option<&Control>,
+) -> anyhow::Result<()> {
+    let steps = config.steps()?;
+    match control {
+        Some(control) => control.migrate(env, &steps, store).await,
+        None => {
+            for step in &steps {
+                store.apply(step).await?;
+                tracing::info!(step = step.id, "migration step applied");
+            }
+            Ok(())
+        }
     }
-
-    fn record(&self, _id: &str) {}
 }
 
 /// Why a server cannot take ingest although detection ran (contract 5.8); `None` when it can.
@@ -225,23 +242,13 @@ fn refusal(facts: &StoreFacts) -> Option<String> {
 /// Everything that must hold before a node accepts ingest: the migrations when asked for, then startup
 /// detection and the two self-tests of contract 5.8. On `Err` ingest stays closed and the text says why.
 pub(crate) async fn bring_up(
+    env: &Env,
     config: &ClickHouse,
     store: &ClickHouseStore,
-    migrate: bool,
-    ledger: &dyn MigrationLedger,
+    migrate: Option<&Migrate<'_>>,
 ) -> anyhow::Result<StoreFacts> {
-    if migrate {
-        for step in &config.steps()? {
-            if ledger.is_applied(step.id) {
-                continue;
-            }
-            store
-                .apply_migration(step)
-                .await
-                .with_context(|| format!("migration step {}", step.id))?;
-            ledger.record(step.id);
-            tracing::info!(step = step.id, "migration step applied");
-        }
+    if let Some(Migrate(control)) = migrate {
+        apply_migrations(env, config, store, *control).await?;
     }
     // `detect` includes the check that every service identity sees a known row.
     let facts = store.detect().await.map_err(|error| {

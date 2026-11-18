@@ -34,7 +34,7 @@ pub const ACCESS_SERVICE: &str = "0002_access_service";
 pub const ACCESS_WORKSPACE: &str = "0003_access_workspace";
 
 /// The stable ledger id of the schema step that adds `span_core.usage_aggregate`.
-pub const SCHEMA_SPAN_USAGE_AGGREGATE: &str = "0004_schema_span_usage_aggregate";
+pub const SCHEMA_SPAN_USAGE_AGGREGATE: &str = "0004_span_usage_aggregate";
 
 /// Every step id in ledger order.
 pub const LEDGER_ORDER: [(&str, StepKind); 4] = [
@@ -77,24 +77,24 @@ pub fn schema_base(variant: &Variant, granularity: Granularity) -> MigrationStep
     }
 }
 
-/// Adds the column `usage_aggregate` to `span_core` (contract 3.1): set on a span that repeats usage a descendant
-/// of it also carries, which token and cost sums leave out. The column is the last of the table, where
-/// `ADD COLUMN` puts it, so a migrated table and a new one have the same shape. Rows written before the step
-/// read 0.
+/// Adds the column `usage_aggregate` to `span_core`, after `row_digest` (contracts 3.1 and 6.6): set on a span
+/// with a descendant that carries usage or cost, which token and cost sums leave out. A migrated table and a new
+/// one have the same shape. Rows written before the step read 0.
 pub fn schema_span_usage_aggregate(variant: &Variant) -> MigrationStep {
     let def = table(TableId::SpanCore);
     let statements = def
         .columns
-        .iter()
-        .find(|c| c.name == USAGE_AGGREGATE)
-        .map(|c| {
+        .windows(2)
+        .find(|pair| pair[1].name == USAGE_AGGREGATE)
+        .map(|pair| {
             format!(
-                "ALTER TABLE {DATABASE}.{}{} ADD COLUMN IF NOT EXISTS `{}` {} CODEC({})",
+                "ALTER TABLE {DATABASE}.{}{} ADD COLUMN IF NOT EXISTS `{}` {} CODEC({}) AFTER `{}`",
                 def.name(),
                 variant.on_cluster(),
-                c.name,
-                c.ty,
-                c.codec
+                pair[1].name,
+                pair[1].ty,
+                pair[1].codec,
+                pair[0].name
             )
         })
         .into_iter()
@@ -261,23 +261,28 @@ mod tests {
         }
     }
 
-    /// The step adds the last column of the table, with the type and codec the table definition gives it, so a
+    /// The step adds the column after `row_digest`, with the type and codec the table definition gives it, so a
     /// table the step migrated has the shape of a table the base schema creates.
     #[test]
-    fn the_usage_aggregate_step_adds_the_last_column_of_span_core() {
+    fn the_usage_aggregate_step_adds_the_column_after_the_row_digest() {
         let def = table(TableId::SpanCore);
-        let last = def.columns.last().unwrap();
-        assert_eq!(last.name, "usage_aggregate");
+        let at = def
+            .columns
+            .iter()
+            .position(|c| c.name == "usage_aggregate")
+            .unwrap();
+        assert_eq!(def.columns[at - 1].name, "row_digest");
+        let column = &def.columns[at];
         let step = schema_span_usage_aggregate(&Variant::SingleNode);
         assert_eq!(
             (step.id, step.kind),
-            (SCHEMA_SPAN_USAGE_AGGREGATE, StepKind::Schema)
+            ("0004_span_usage_aggregate", StepKind::Schema)
         );
         assert_eq!(
             step.statements,
             [format!(
-                "ALTER TABLE crucible.span_core ADD COLUMN IF NOT EXISTS `usage_aggregate` {} CODEC({})",
-                last.ty, last.codec
+                "ALTER TABLE crucible.span_core ADD COLUMN IF NOT EXISTS `usage_aggregate` {} CODEC({}) AFTER `row_digest`",
+                column.ty, column.codec
             )]
         );
         let base = schema_base(&Variant::SingleNode, Granularity::Day);

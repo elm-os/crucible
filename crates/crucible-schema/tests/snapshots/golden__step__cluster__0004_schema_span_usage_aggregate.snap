@@ -1,5 +1,0 @@
----
-source: crates/crucible-schema/tests/golden.rs
-expression: script(&step)
----
-ALTER TABLE crucible.span_core ON CLUSTER crucible ADD COLUMN IF NOT EXISTS `usage_aggregate` UInt8 CODEC(ZSTD(1));

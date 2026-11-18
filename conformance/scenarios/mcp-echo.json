@@ -1,0 +1,27 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-echo",
+  "kind": "mcp",
+  "title": "tools/list, an echo call, and an echo call with propagated trace context",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    { "step": "list", "send": { "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} } },
+    {
+      "step": "echo",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": "hello conformance" } } }
+    },
+    {
+      "step": "echo-traced",
+      "send": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "echo",
+          "arguments": { "text": "traced" },
+          "_meta": { "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }
+        }
+      }
+    }
+  ]
+}

@@ -200,7 +200,7 @@ pub fn span_record(entry: &SpanEntry, lsn: Lsn, received_at: Timestamp) -> SpanR
         cost_source: CostSource::None,
         price_model_id: None,
         price_tier_id: None,
-        usage_aggregate: false,
+        usage_aggregate: s.usage_aggregate,
         prompt_name: "".into(),
         prompt_version: "".into(),
         tool_names: Vec::new(),

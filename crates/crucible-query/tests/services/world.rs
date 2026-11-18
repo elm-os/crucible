@@ -78,6 +78,7 @@ pub fn span(trace_n: u64, id: u64, parent: u64, start: Timestamp) -> SpanEntry {
             input_tokens: 1,
             output_tokens: 2,
             total_tokens: 3,
+            usage_aggregate: false,
         },
         head: is_root.then_some(HeadKind::Root),
         locator: WalLocator {
@@ -127,6 +128,7 @@ pub fn span_core_row(entry: &SpanEntry, lsn: Lsn, received_at: Timestamp) -> Vec
             ("output_tokens", Value::UInt(s.output_tokens)),
             ("total_tokens", Value::UInt(s.total_tokens)),
             ("total_cost_nusd", Value::Int(s.total_cost_nusd.nanos())),
+            ("usage_aggregate", Value::UInt(u64::from(s.usage_aggregate))),
             // A column only the store has: the index keeps no preview.
             ("input_preview", text("preview")),
             ("lsn", Value::UInt(lsn.get())),
@@ -181,6 +183,8 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
         .into_iter()
         .map(|((project_id, trace_id, _), members)| {
             let summaries = || members.iter().map(|entry| &entry.summary);
+            // Token and cost sums leave out the usage aggregates (the sums rule of contract 3.1).
+            let counted = || summaries().filter(|s| !s.usage_aggregate);
             let pick = |value: fn(&SpanSummary) -> &str| {
                 let merged = summaries()
                     .map(|s| Pick::new(s.is_root, s.end_time, s.span_id, value(s)))
@@ -222,19 +226,19 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
                     ),
                     (
                         "total_cost_nusd",
-                        Value::Int(summaries().map(|s| s.total_cost_nusd.nanos()).sum()),
+                        Value::Int(counted().map(|s| s.total_cost_nusd.nanos()).sum()),
                     ),
                     (
                         "input_tokens",
-                        Value::UInt(summaries().map(|s| s.input_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.input_tokens).sum()),
                     ),
                     (
                         "output_tokens",
-                        Value::UInt(summaries().map(|s| s.output_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.output_tokens).sum()),
                     ),
                     (
                         "total_tokens",
-                        Value::UInt(summaries().map(|s| s.total_tokens).sum()),
+                        Value::UInt(counted().map(|s| s.total_tokens).sum()),
                     ),
                     ("trace_name_pick", pick(|s| &s.trace_name)),
                     ("user_id_pick", pick(|s| &s.user_id)),

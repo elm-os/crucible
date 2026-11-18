@@ -129,6 +129,7 @@ fn span_core_puts_every_field_in_its_column() {
         ("input_sha256", Value::bytes(&[7; 32])),
         ("output_sha256", Value::bytes(&[8; 32])),
         ("row_digest", Value::U64(0x1234_5678_9abc_def0)),
+        ("usage_aggregate", Value::U8(0)),
     ];
     // Every string field of the record holds the name of its column.
     for name in [
@@ -160,7 +161,6 @@ fn span_core_puts_every_field_in_its_column() {
         expected.push((name, s(name)));
     }
     expected.extend(ingestion_columns());
-    expected.push(("usage_aggregate", Value::U8(0)));
     assert_columns(TableId::SpanCore, &span_core_row(&distinct()), &expected);
 }
 

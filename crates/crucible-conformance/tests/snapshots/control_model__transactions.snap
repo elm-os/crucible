@@ -1,0 +1,24 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"transactions\")"
+---
+inside sees its write: true
+outside before commit: false
+commit: ()
+outside after commit: (true, Some(Owner))
+after rollback and drop: false
+concurrent update outside: true
+snapshot read: Some(("Project 20", 1))
+write after concurrent update: error SerializationFailure
+statement after the failure: error SerializationFailure
+commit after the failure: error SerializationFailure
+the outside update stands: Some(("Renamed outside", 2))
+unique violation inside: error UniqueViolation("users_email_key")
+commit after the violation: error UniqueViolation("users_email_key")
+nothing of it applied: false
+snapshot taken: 1
+inside cannot see it: false
+inside insert of the same id: error UniqueViolation("users_pkey")
+wrapper commit: 3
+wrapper rollback: error Fenced
+users at the end: [UserId(01a3185c-500a-7000-8000-00000000000a), UserId(01a3185c-500b-7000-8000-00000000000b), UserId(01a3185c-500d-7000-8000-00000000000d)]
