@@ -34,6 +34,12 @@ pub const PROBE_RETRY: Duration = Duration::from_secs(30);
 pub const MAX_HISTORY: u32 = 200;
 /// The byte bound of an export the server encodes.
 const EXPORT_BYTES: usize = 32 << 20;
+/// The row bound of an export: what a grid holds.
+const EXPORT_ROWS: usize = 10_000;
+
+fn lines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|byte| **byte == b'\n').count()
+}
 
 /// Who calls: the scope from the permission extractor, the actor and the effective project role.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -528,11 +534,8 @@ impl SqlWorkspace {
                 sql: sql.to_owned(),
                 params: params.clone(),
                 generation,
-                query_id: if attempt == 0 {
-                    run.query_id
-                } else {
-                    env.new_id()
-                },
+                // The retry carries the same id: the first attempt never ran, and a cancel names this id.
+                query_id: run.query_id,
             };
             let outcome = self.attempt(caller.scope, &query, &mode).await;
             // The identity was dropped or rotated behind the row: provision it again, once.
@@ -712,10 +715,25 @@ impl SqlWorkspace {
                 Mode::Export(format),
             )
             .await?;
-        Ok(match output {
-            Output::Grid(grid, _) => Bytes::from(to_csv(&grid, self.inner.formula_guard)),
-            Output::Bytes(bytes) => bytes,
-        })
+        // An export under the interactive limits holds what a grid holds. A longer result is refused, never cut
+        // without a word: a file that looks whole and is not would be worse than no file.
+        let too_long = || {
+            SqlProblem::new(
+                SqlProblemCode::TooBroad,
+                "The result is larger than an export holds (10,000 rows, 16 MiB). Narrow the time window, add a \
+                 LIMIT, or aggregate.",
+            )
+        };
+        match output {
+            Output::Grid(grid, _) if grid.truncated => Err(too_long()),
+            Output::Grid(grid, _) => Ok(Bytes::from(to_csv(&grid, self.inner.formula_guard))),
+            Output::Bytes(bytes)
+                if format == ExportFormat::JsonLines && lines(&bytes) > EXPORT_ROWS =>
+            {
+                Err(too_long())
+            }
+            Output::Bytes(bytes) => Ok(bytes),
+        }
     }
 
     /// Cancels a run: `KILL QUERY` through `crucible_maint`, bound to the project's identity. The run's own
@@ -749,15 +767,17 @@ impl SqlWorkspace {
 
     /// The project's recent runs, newest first. A caller sees its own runs; an admin sees everyone's.
     pub async fn history(&self, caller: SqlCaller, limit: u32) -> Result<Vec<SqlRun>, SqlProblem> {
-        let mut runs = self
+        let actor = (caller.role != SqlRole::Admin).then_some(caller.actor);
+        let runs = self
             .inner
             .control
             .sql_runs()
-            .list(caller.scope.project_id(), limit.clamp(1, MAX_HISTORY))
+            .list(
+                caller.scope.project_id(),
+                actor,
+                limit.clamp(1, MAX_HISTORY),
+            )
             .await?;
-        if caller.role != SqlRole::Admin {
-            runs.retain(|run| run.actor == caller.actor);
-        }
         Ok(runs)
     }
 

@@ -620,6 +620,57 @@ async fn the_sql_workspace_holds_through_the_api() {
     );
     let cancelled = status == 409;
 
+    // 8b. Cancel by disconnect, the path the UI takes: the client closes the connection of a running statement.
+    //     The audit row must say cancelled, and ClickHouse must hold no statement of project A's identity.
+    // This statement would run into the 30 s limit; it cannot end by itself before the connection closes.
+    let endless = format!(
+        "SELECT count() FROM numbers(900000000) ARRAY JOIN range(100) AS x WHERE sipHash64(x, number, 2) = 0 AND {always}"
+    );
+    {
+        let body = serde_json::to_vec(&run_body(&endless)).unwrap();
+        let mut stream = TcpStream::connect_timeout(&api, Duration::from_secs(5)).unwrap();
+        let head = format!(
+            "POST /api/v1/projects/{a}/sql/run HTTP/1.1\r\nHost: sqliso\r\nAuthorization: {}\r\nContent-Type: \
+             application/json\r\nContent-Length: {}\r\n\r\n",
+            alice.bearer,
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+        // Long enough for the two validations and the start of the statement.
+        std::thread::sleep(Duration::from_millis(1500));
+        drop(stream);
+    }
+    let workspace_user = format!("crucible_sql_{}", a.to_string().replace('-', ""));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let dropped = loop {
+        let (_, runs) = alice.json("GET", "runs?limit=1", None);
+        let newest = runs["data"][0].clone();
+        assert_eq!(newest["sql"], endless, "{newest:#}");
+        let still_running = store
+            .raw_text(
+                ServiceIdentity::Admin,
+                &Statement {
+                    sql: format!(
+                        "SELECT count() FROM system.processes WHERE user = '{workspace_user}'"
+                    ),
+                    params: Vec::new(),
+                    settings: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        if newest["outcome"] != "running" && still_running.trim() == "0" {
+            break newest;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "after the client went away the run is {newest:#} and ClickHouse still runs {still_running} statements"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(dropped["outcome"], "cancelled", "{dropped:#}");
+
     // 9. Audit rows: every run above is recorded with its outcome and code.
     let (status, runs) = alice.json("GET", "runs?limit=200", None);
     assert_eq!(status, 200);
@@ -772,8 +823,22 @@ async fn the_sql_workspace_holds_through_the_api() {
     let (status, head, _) = alice.send("GET", "run", None, &[]);
     assert_eq!(status, 405);
     assert!(head.to_ascii_lowercase().contains("allow: post"), "{head}");
+    // An export never cuts a result without a word: a result longer than it holds is refused.
+    for format in ["csv", "jsonl"] {
+        let mut body = run_body(&format!("SELECT number FROM numbers(50000) WHERE {always}"));
+        body["format"] = json!(format);
+        let (status, _, bytes) = alice.send("POST", "export", Some(&body), &[]);
+        let problem: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        assert_eq!(
+            (status, problem["code"].as_str()),
+            (422, Some("query_too_broad")),
+            "{format}: {problem:#}"
+        );
+        assert!(fix(&problem).contains("10,000 rows"));
+    }
     eprintln!(
-        "sqliso layer C: {} audit rows for project A; cancellation observed: {cancelled}",
+        "sqliso layer C: {} audit rows for project A; cancellation observed: {cancelled}; a dropped connection \
+         cancelled its statement",
         runs.len()
     );
 }

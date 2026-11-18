@@ -3,8 +3,8 @@
 
 use async_trait::async_trait;
 use crucible_control::{
-    SavedQuery, SavedQueryRepo, SqlIdentity, SqlIdentityRepo, SqlIdentityState, SqlRun, SqlRunEnd,
-    SqlRunRepo, TxError,
+    SavedQuery, SavedQueryRepo, SqlActor, SqlIdentity, SqlIdentityRepo, SqlIdentityState, SqlRun,
+    SqlRunEnd, SqlRunRepo, TxError,
 };
 use crucible_records::{ProjectId, SavedQueryId, SqlRunId, Timestamp};
 
@@ -203,10 +203,17 @@ impl SqlRunRepo for Runner {
         .await
     }
 
-    async fn list(&self, project_id: ProjectId, limit: u32) -> Result<Vec<SqlRun>, TxError> {
+    async fn list(
+        &self,
+        project_id: ProjectId,
+        actor: Option<SqlActor>,
+        limit: u32,
+    ) -> Result<Vec<SqlRun>, TxError> {
         self.run(Pool::Main, false, |cx| {
             let mut runs = all!(cx, Tbl::SqlRuns, Row::SqlRun);
-            runs.retain(|run| run.project_id == project_id);
+            runs.retain(|run| {
+                run.project_id == project_id && actor.is_none_or(|actor| run.actor == actor)
+            });
             runs.sort_by_key(|run| std::cmp::Reverse((run.started_at, run.id)));
             runs.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
             Ok(runs)

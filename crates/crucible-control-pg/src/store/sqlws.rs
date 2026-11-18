@@ -291,15 +291,31 @@ impl SqlRunRepo for Handle {
         )
     }
 
-    async fn list(&self, project_id: ProjectId, limit: u32) -> Result<Vec<SqlRun>, TxError> {
+    async fn list(
+        &self,
+        project_id: ProjectId,
+        actor: Option<SqlActor>,
+        limit: u32,
+    ) -> Result<Vec<SqlRun>, TxError> {
+        // Without an actor both conditions are true for every row.
         let sql = format!(
-            "SELECT {RUN} FROM sql_runs WHERE project_id = $1 ORDER BY started_at DESC, id DESC LIMIT $2"
+            "SELECT {RUN} FROM sql_runs WHERE project_id = $1 AND ($2::uuid IS NULL OR user_id = $2) AND \
+             ($3::uuid IS NULL OR api_key_id = $3) ORDER BY started_at DESC, id DESC LIMIT $4"
         );
+        let user = actor.and_then(|actor| actor.user_id()).map(|id| id.uuid());
+        let key = actor
+            .and_then(|actor| actor.api_key_id())
+            .map(|id| id.uuid());
         every(
             &self
                 .read(
                     &sql,
-                    &[P::Uuid(project_id.uuid()), P::Int(i64::from(limit))],
+                    &[
+                        P::Uuid(project_id.uuid()),
+                        P::OptUuid(user),
+                        P::OptUuid(key),
+                        P::Int(i64::from(limit)),
+                    ],
                 )
                 .await?,
             run,

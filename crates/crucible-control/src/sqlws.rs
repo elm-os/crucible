@@ -330,8 +330,13 @@ pub struct SqlRun {
 pub trait SqlRunRepo: Send + Sync {
     /// The run with this id in the project.
     async fn get(&self, project_id: ProjectId, id: SqlRunId) -> Result<Option<SqlRun>, TxError>;
-    /// The project's most recent runs, newest first, at most `limit`.
-    async fn list(&self, project_id: ProjectId, limit: u32) -> Result<Vec<SqlRun>, TxError>;
+    /// The project's most recent runs, newest first, at most `limit`; with `actor`, only the runs it started.
+    async fn list(
+        &self,
+        project_id: ProjectId,
+        actor: Option<SqlActor>,
+        limit: u32,
+    ) -> Result<Vec<SqlRun>, TxError>;
     /// Records the start of a run.
     async fn insert(&self, run: &SqlRun) -> Result<(), TxError>;
     /// Records the end of a run that has none yet. `false` when it already ended or does not exist.

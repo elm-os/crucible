@@ -493,8 +493,33 @@ impl Iso {
         expect(report.breaches.is_empty(), || {
             format!("the runtime self-probe reports {:?}", report.breaches)
         })?;
+        // The probe identities are outside the hourly quota: a probe is about twenty refused statements, so
+        // more probes than the error allowance of an hour must all still run (several nodes probe at once).
+        if !self.quota_lifted.load(std::sync::atomic::Ordering::Relaxed) {
+            for n in 0..20 {
+                let again = self
+                    .sql
+                    .probe()
+                    .await
+                    .map_err(|e| anyhow!("probe {n} of 20 in a row: {e}"))?;
+                expect(again.breaches.is_empty(), || {
+                    format!("probe {n} reports {:?}", again.breaches)
+                })?;
+            }
+            let used = self
+                .ctx
+                .admin_count(format!(
+                    "SELECT count() FROM system.quotas_usage WHERE quota_name = '{SQL_QUOTA}' AND quota_key = '{}'",
+                    workspace_user(crucible_schema::PROBE_PROJECTS[0])
+                ))
+                .await?;
+            expect(used == 0, || {
+                "the probe identity is counted against the workspace quota".to_owned()
+            })?;
+        }
         Ok(format!(
-            "{} statements as the probe identity on {}, no breach",
+            "{} statements as the probe identity on {}, no breach; 21 probes in a row at the real quota all ran, \
+             and the probe identity has no quota usage",
             report.statements, report.version
         ))
     }

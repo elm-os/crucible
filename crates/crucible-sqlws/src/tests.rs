@@ -200,7 +200,7 @@ fn a_run_provisions_on_first_use_sends_the_text_verbatim_and_is_recorded() {
             .unwrap()
             .unwrap();
         assert_eq!(identity.state, SqlIdentityState::Active);
-        let runs = w.model.sql_runs().list(w.project, 10).await.unwrap();
+        let runs = w.model.sql_runs().list(w.project, None, 10).await.unwrap();
         assert_eq!(runs.len(), 1);
         let run = &runs[0];
         assert_eq!(
@@ -268,7 +268,12 @@ fn a_refused_text_never_reaches_the_store_and_says_how_to_fix_it() {
         // Only the one accepted run reached the store or the audit table.
         assert_eq!(w.stub.calls().ran.len(), 1);
         assert_eq!(
-            w.model.sql_runs().list(w.project, 10).await.unwrap().len(),
+            w.model
+                .sql_runs()
+                .list(w.project, None, 10)
+                .await
+                .unwrap()
+                .len(),
             1
         );
     });
@@ -318,7 +323,7 @@ fn store_errors_keep_their_class_and_are_recorded() {
             let problem = w.workspace.run(caller, &input(TEXT)).await.unwrap_err();
             assert_eq!(problem.code.as_str(), code);
             assert!(!problem.fix.is_empty());
-            let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+            let runs = w.model.sql_runs().list(w.project, None, 1).await.unwrap();
             let end = runs[0].end.as_ref().unwrap();
             assert_eq!(end.outcome, SqlRunOutcome::Failed);
             assert_eq!(end.error_code.as_deref(), Some(code));
@@ -425,7 +430,7 @@ fn viewers_run_only_project_visible_saved_queries_with_declared_parameters() {
             assert_eq!(query.params[2].value, "chat");
             assert_eq!(query.params[3].value, "10");
         }
-        let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+        let runs = w.model.sql_runs().list(w.project, None, 1).await.unwrap();
         assert_eq!(
             (runs[0].kind, runs[0].saved_query_id),
             (SqlRunKind::Saved, Some(shared.id))
@@ -519,7 +524,7 @@ fn limits_refuse_a_second_run_and_a_dropped_run_is_recorded_as_cancelled() {
                 .is_ok()
         );
         // A cancel names the run; only its starter or an admin may.
-        let running = w.model.sql_runs().list(w.project, 10).await.unwrap();
+        let running = w.model.sql_runs().list(w.project, None, 10).await.unwrap();
         let running = running
             .iter()
             .find(|run| run.end.is_none())
@@ -590,7 +595,7 @@ fn csv_exports_carry_the_formula_guard_and_other_formats_pass_through() {
             .await
             .unwrap();
         assert_eq!(jsonl, "JsonLines");
-        let runs = w.model.sql_runs().list(w.project, 10).await.unwrap();
+        let runs = w.model.sql_runs().list(w.project, None, 10).await.unwrap();
         assert!(runs.iter().all(|run| run.kind == SqlRunKind::Export));
         assert!(runs.iter().any(|run| run.actor == key.actor));
     });
@@ -750,7 +755,7 @@ fn a_hang_ends_at_the_callers_deadline_and_a_disconnect_is_reported_as_unavailab
         let run = w.workspace.run(w.member(), &text);
         assert!(w.env.timeout(Duration::from_secs(40), run).await.is_err());
         w.env.clock.sleep(Duration::from_secs(1)).await;
-        let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+        let runs = w.model.sql_runs().list(w.project, None, 1).await.unwrap();
         assert_eq!(
             runs[0].end.as_ref().unwrap().outcome,
             SqlRunOutcome::Cancelled
@@ -762,7 +767,7 @@ fn a_hang_ends_at_the_callers_deadline_and_a_disconnect_is_reported_as_unavailab
         let problem = w.workspace.run(w.member(), &input(TEXT)).await.unwrap_err();
         assert_eq!(problem.code, SqlProblemCode::Unavailable);
         assert_eq!(problem.reason.as_deref(), Some("store_unavailable"));
-        let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+        let runs = w.model.sql_runs().list(w.project, None, 1).await.unwrap();
         let end = runs[0].end.as_ref().unwrap();
         assert_eq!(end.outcome, SqlRunOutcome::Failed);
         assert_eq!(end.error_code.as_deref(), Some("sql_workspace_unavailable"));
