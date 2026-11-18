@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "render::probe(&marker).to_string()"
+---
+SELECT count() FROM crucible.span_metrics WHERE project_id = {p3:UUID} AND marker_epoch = {p1:UUID} AND marker_batch_seq = {p2:UInt64} AND _partition_id = {p0:String}
+p0: String = "202611"
+p1: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1c"
+p2: UInt64 = "1048577"
+p3: UUID = "00000000-0000-0000-0000-000000000000"

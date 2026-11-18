@@ -163,6 +163,8 @@ SQL
   check read_agent_rows_ceiling crucible_read_agent "SELECT 1 SETTINGS max_rows_to_read = 100000001"
   check read_agent_concurrency_is_const crucible_read_agent "SELECT 1 SETTINGS max_concurrent_queries_for_user = 100"
   check maint_reads_mutations crucible_maint "SELECT count() >= 0 FROM system.mutations"
+  check maint_reads_engines crucible_maint "SELECT engine FROM system.tables WHERE database = 'crucible' AND name = 'dedup_selftest'"
+  check maint_reads_server_settings crucible_maint "SELECT count() FROM system.server_settings WHERE name = 'distributed_ddl_use_initial_user_and_roles'"
   check maint_lightweight_delete crucible_maint \
     "DELETE FROM crucible.span_core IN PARTITION '19700101' WHERE project_id = toUUID('$PROJECT') SETTINGS lightweight_deletes_sync = 1"
   check maint_rows_after_delete crucible_maint "SELECT count() FROM crucible.span_core"

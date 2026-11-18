@@ -22,6 +22,25 @@ docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/us
 
 On Windows PowerShell, replace `"$PWD"` with `"${PWD}"`.
 
+## The web UI in the binary
+
+`crucible serve` answers every path that no other route claims with the UI. Where the UI comes from:
+
+- A default build has none: every page answers 404 with a note on how to add one.
+- `crucible serve --ui-dir ui/out` serves a built export from a directory. The files are read once at startup, so
+  restart the server after a UI rebuild.
+- The `embed-ui` feature compiles `ui/out` into the binary:
+
+```sh
+pnpm --filter crucible-ui build                         # writes ui/out
+cargo xtask ui compress                                 # writes .br and .gz variants beside the text files
+cargo build --release -p crucible --features embed-ui
+```
+
+Run `cargo xtask ui compress` after every UI build, because the build replaces `ui/out`; without the variants the
+server sends every file uncompressed. `embed-ui` fails to compile without `ui/out`, so it is off by default and CI
+builds without it.
+
 ## Hooks
 
 `pnpm install` at the repository root installs the git hooks (lefthook):

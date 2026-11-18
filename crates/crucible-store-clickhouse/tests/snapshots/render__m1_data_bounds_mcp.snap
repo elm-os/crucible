@@ -1,0 +1,8 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&plans.mcp)
+---
+SELECT side, min(minute) AS m0, max(minute) AS m1 FROM crucible.mcp_tool_rollup WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} GROUP BY side
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1794911400"

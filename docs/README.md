@@ -6,5 +6,6 @@
 | Binding contracts (records, WAL, API, schemas) | [architecture/contracts.md](architecture/contracts.md) |
 | Testing methodology | [testing/methodology.md](testing/methodology.md) |
 | Formal model of the ingest protocol | [testing/formal-model.md](testing/formal-model.md) |
+| Performance rig, load generator and fsync-honesty probe | [testing/perf.md](testing/perf.md) |
 | Development setup | [development.md](development.md) |
 | Self-hosting (planned) | [self-hosting/README.md](self-hosting/README.md) |

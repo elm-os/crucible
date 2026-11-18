@@ -18,6 +18,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,6 +331,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli"
+version = "9.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "627b7cfb0578f0eafce087a90fcd40add1231900b69e4d4de2d456260a4f5d81"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "6.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75c74c9c51b9140663e196b5fb88bc94c334d7a497c8311cb759d8557874747f"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -602,7 +638,9 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-records",
+ "crucible-ui-assets",
  "mimalloc",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -660,6 +698,7 @@ name = "crucible-conformance"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
@@ -668,6 +707,8 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "crucible-store-clickhouse",
+ "futures",
+ "sha2",
  "thiserror",
  "tokio",
 ]
@@ -754,8 +795,16 @@ dependencies = [
  "crucible-records",
  "flate2",
  "hdrhistogram",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "opentelemetry-proto",
+ "proptest",
  "prost",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
 ]
 
@@ -814,12 +863,16 @@ dependencies = [
 name = "crucible-query"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "crucible-auth",
+ "crucible-chfmt",
  "crucible-env",
  "crucible-plan",
  "crucible-recent",
  "crucible-records",
  "crucible-schema",
  "futures",
+ "proptest",
  "thiserror",
 ]
 
@@ -827,6 +880,7 @@ dependencies = [
 name = "crucible-recent"
 version = "0.0.0"
 dependencies = [
+ "crucible-auth",
  "crucible-env",
  "crucible-plan",
  "crucible-records",
@@ -926,6 +980,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clickhouse",
+ "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
  "crucible-plan",
@@ -935,6 +990,8 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "insta",
+ "proptest",
  "thiserror",
  "tower",
  "tracing",
@@ -944,10 +1001,13 @@ dependencies = [
 name = "crucible-ui-assets"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "bytes",
  "crucible-env",
  "http",
+ "proptest",
  "rust-embed",
+ "sha2",
 ]
 
 [[package]]
@@ -3280,6 +3340,10 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.0.0"
+dependencies = [
+ "brotli",
+ "flate2",
+]
 
 [[package]]
 name = "xxhash-rust"

@@ -60,6 +60,9 @@ pub enum PlanError {
     /// Trace bounds whose end is before their start, or outside the representable range.
     #[error("trace bounds are not a time range")]
     Bounds,
+    /// The retention cut-off cannot be computed: the clock is outside the valid time range.
+    #[error("the retention cut-off is outside the valid time range")]
+    Retention,
     /// The table is not one the operation applies to: for a read, a table without `project_id`.
     #[error("table {0:?} is not valid here")]
     Table(TableId),

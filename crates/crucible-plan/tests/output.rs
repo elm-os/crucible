@@ -6,13 +6,14 @@
 use crucible_auth::test_support;
 use crucible_plan::{
     Aggregate, Caller, FieldRange, Fill, Literal, Measure, Node, OutputSchema, PointLookup, Pred,
-    QueryClass, QueryPlan, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode, TraceBounds,
-    TraceListRequest, data_bounds, span_children, trace_list, trace_spans, trace_time_bounds,
+    QueryClass, QueryPlan, RetentionClamp, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode,
+    TraceBounds, TraceListRequest, child_counts, data_bounds, span_children, spans_of_parents,
+    trace_list, trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
 };
 use crucible_records::{ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{
-    Column, FactScoresCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol,
-    TraceStatsCol, Ty,
+    Column, FactScoresCol, RetentionSettings, SpanCoreCol, SpanMetricsCol, SpanPayloadCol,
+    TraceHeadsCol, TraceStatsCol, Ty,
 };
 
 fn scope() -> ProjectScope {
@@ -25,7 +26,12 @@ fn window() -> TimeWindow {
 }
 
 fn plan(root: Node) -> QueryPlan {
-    QueryPlan::new(scope(), window(), QueryClass::Point, root)
+    crucible_plan::test_support::query_plan(scope(), window(), QueryClass::Point, root)
+}
+
+/// A project that keeps its data forever: the clamp leaves every window as it is.
+fn keep() -> RetentionClamp {
+    RetentionClamp::new(RetentionSettings::default(), window().to())
 }
 
 /// The output as (label, type string) pairs.
@@ -61,7 +67,9 @@ const DT64: &str = "DateTime64(6, 'UTC')";
 #[test]
 fn trace_bounds_output_is_the_key_then_the_merged_partials() {
     let trace_id = TraceId::from_bytes([3; 16]);
-    let plan = trace_time_bounds(scope(), window(), Caller::Session, trace_id).unwrap();
+    let plan = trace_time_bounds(scope(), window(), &keep(), Caller::Session, trace_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         shape(&plan.output()),
         pairs(&[
@@ -79,7 +87,9 @@ fn trace_bounds_output_is_the_key_then_the_merged_partials() {
 fn scans_of_the_m1_builders_output_their_columns_in_table_order() {
     let (from, to) = (window().from(), window().to());
     let trace_id = TraceId::from_bytes([3; 16]);
-    let spans = trace_spans(scope(), from, to, Caller::Session, trace_id).unwrap();
+    let spans = trace_spans(scope(), from, to, &keep(), Caller::Session, trace_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(shape(&spans.output()), table_shape::<SpanCoreCol>());
     assert_eq!(spans.output().columns().len(), SpanCoreCol::ALL.len());
 
@@ -88,7 +98,17 @@ fn scans_of_the_m1_builders_output_their_columns_in_table_order() {
         min_start: from,
         max_end: to,
     };
-    let children = span_children(scope(), trace, Caller::Agent, SpanId::ZERO, None, None).unwrap();
+    let children = span_children(
+        scope(),
+        trace,
+        &keep(),
+        Caller::Agent,
+        SpanId::ZERO,
+        None,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(children.output(), spans.output());
 
     let request = TraceListRequest {
@@ -98,19 +118,74 @@ fn scans_of_the_m1_builders_output_their_columns_in_table_order() {
         as_of: to,
         since: None,
     };
-    let list = trace_list(scope(), window(), Caller::Session, request).unwrap();
+    let list = trace_list(scope(), window(), &keep(), Caller::Session, request)
+        .unwrap()
+        .unwrap();
     assert_eq!(shape(&list.output()), table_shape::<TraceHeadsCol>());
 }
 
 #[test]
+fn page_stats_and_paged_detail_outputs() {
+    let trace_id = TraceId::from_bytes([3; 16]);
+    let stats = trace_page_stats(scope(), window(), &keep(), Caller::Session, &[trace_id])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        shape(&stats.output()),
+        pairs(&[
+            ("trace_id", "FixedString(16)"),
+            ("min_min_start", DT64),
+            ("max_max_end", DT64),
+            ("max_has_root", "UInt8"),
+            ("min_min_head_start", DT64),
+            ("sum_span_count", "UInt64"),
+            ("sum_error_count", "UInt64"),
+            ("sum_total_cost_nusd", "Int64"),
+            ("sum_input_tokens", "UInt64"),
+            ("sum_output_tokens", "UInt64"),
+            ("sum_total_tokens", "UInt64"),
+            ("pick_trace_name_pick", "String"),
+            ("pick_user_id_pick", "String"),
+            ("pick_session_id_pick", "String"),
+        ])
+    );
+    assert_eq!(
+        trace_page_stats(scope(), window(), &keep(), Caller::Session, &[]).map(|_| ()),
+        Err(crucible_plan::PlanError::ListLength("trace_id"))
+    );
+
+    let trace = TraceBounds {
+        trace_id,
+        min_start: window().from(),
+        max_end: window().to(),
+    };
+    let parents = [SpanId::from_bytes([1; 8]), SpanId::from_bytes([2; 8])];
+    let roots = trace_roots(scope(), trace, &keep(), Caller::Session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(shape(&roots.output()), table_shape::<SpanCoreCol>());
+    let children = spans_of_parents(scope(), trace, &keep(), Caller::Session, &parents, 10)
+        .unwrap()
+        .unwrap();
+    assert_eq!(children.output(), roots.output());
+    let counts = child_counts(scope(), trace, &keep(), Caller::Session, &parents)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        shape(&counts.output()),
+        pairs(&[("parent_span_id", "FixedString(8)"), ("count", "UInt64")])
+    );
+}
+
+#[test]
 fn data_bounds_output_is_the_first_and_last_minute() {
-    let plans = data_bounds(scope(), window(), Caller::Session).unwrap();
+    let plans = data_bounds(scope(), window(), &keep(), Caller::Session).unwrap();
     let minutes = [
         ("min_minute", "DateTime('UTC')"),
         ("max_minute", "DateTime('UTC')"),
     ];
-    assert_eq!(shape(&plans.spans.output()), pairs(&minutes));
-    let mcp = shape(&plans.mcp.output());
+    assert_eq!(shape(&plans.spans.unwrap().output()), pairs(&minutes));
+    let mcp = shape(&plans.mcp.unwrap().output());
     assert_eq!(mcp.len(), 3);
     assert_eq!(mcp[0].0, "side");
     assert!(mcp[0].1.starts_with("Enum8('"), "{}", mcp[0].1);

@@ -42,7 +42,8 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [x] `crucible-wal-codec` with proptest and Kani harnesses -> verify: five proofs pass; 1M random frames round-trip.
       Done in #6: 10 Kani harnesses (obligation 4 by bounded lemmas, contracts 4.10), 1M frames in 5.6 s, fuzzing
       found nothing in 24M executions.
-- [ ] Portable WAL with group commit, recovery and GC -> verify: torn-tail and fsync-lie DST seeds keep I1.
+- [x] Portable WAL with group commit, recovery and GC -> verify: torn-tail and fsync-lie DST seeds keep I1. Done in #16:
+      61,000 long-run seeds with zero acked loss; the stress tier's fsync lie is detected; three mutants caught.
 - [ ] Minimal OTLP HTTP ingest, admission, normalizer stub -> verify: proto and JSON inputs map identically.
 - [ ] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
       -> verify: the same token three times yields one copy on single node and replicated; a two-partition block is
@@ -53,20 +54,25 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [x] `crucible-records` record types and kernels (histogram, MCP error classifier, batch token) with Kani proofs (#10).
 - [x] `crucible-chfmt` Native encoder and framing, byte-identical to ClickHouse 26.3, 26.8 and 26.10 output (#9).
 - [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST. (Plan IR
-      and builders done in #8; the recent index and query layer remain.)
+      #8; recent index and read services #18 with Shuttle and property tests; I3 under DST waits for the full
+      simulation harness.)
 - [ ] Simulation harness (turmoil, SimDisk, ChModel, oracle, I1-I3, I12-I14) and the swarm config generator
       -> verify: seeded mutants (skip sync, drop token, truncate early) caught within 200 configs; same seed, same
          trace hash.
-- [ ] Quint spec of the ingest protocol -> verify: safety properties hold; an ack-before-sync variant is caught.
-- [ ] Conformance C1-C4, startup dedup self-test, single-block rows -> verify: green on 26.3, 26.8, latest.
-- [ ] fsync-honesty probe and load generator baseline -> verify: probe classification recorded.
+- [x] Quint spec of the ingest protocol -> verify: safety properties hold; an ack-before-sync variant is caught. Done
+      in #13: five mutants caught; the model's three findings are in the contract (#15).
+- [x] Conformance C1-C4, startup dedup self-test, single-block rows -> verify: green on 26.3, 26.8, latest. Done in
+      #20: 36 of 36 rows single node and 21 of 21 on a one-shard, two-replica cluster; `conformance` workflow in CI.
+- [x] fsync-honesty probe and load generator baseline -> verify: probe classification recorded. Done in #21: the
+      Docker volume classifies honest and tmpfs suspicious; the generator holds 50k requests/s within 0.0002%.
 - [x] UI scaffold in `ui/`: pinned Next 16.4.6 static export, tokens and fonts, shell with UI SDK navigation, project
       placeholder and the one global time range -> verify: typecheck, Oxlint, Biome and `next build` green; `ui/out`
       has one `index.html` per route.
 - [x] UI data layer: typed `/api/v1` client, problem+json mapper, TanStack Query provider, four-state `Section`
       -> verify: Vitest green (mapper rows, range hook, no-backend shapes, loading ladder, agent test); headless
       Chrome shows the designed error state on `/traces/` with no backend.
-- [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract.
+- [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract. (Serving
+      and try-files done in #19; the traces table needs the API routes.)
 - [x] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback. All five pass on SDK
       2.0.0 to 2.4.0 (#3); decision in `docs/architecture/mcp-typescript-seam.md`.
 - [x] CI for the UI (`ci-ui`: install, Biome, Oxlint, typecheck, Vitest, static export) -> verify: green on its PR.
