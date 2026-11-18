@@ -8,7 +8,7 @@ use crucible_admission::{
 };
 use crucible_env::{Clock, Gauge, Instant, Rng};
 use crucible_records::ProjectId;
-use crucible_wal::Wal;
+use crucible_wal::{Wal, WalConfig};
 
 use crate::reply::Reject;
 
@@ -44,8 +44,7 @@ const DISK_FLOOR: &str = "free disk space is below wal.min_free_bytes";
 impl Admission {
     pub(crate) fn new(
         wal: Wal,
-        wal_max_bytes: u64,
-        wal_min_free_bytes: u64,
+        wal_config: &WalConfig,
         jitter: Arc<dyn Rng>,
         inflight_bytes: u64,
         gauge: Gauge,
@@ -55,8 +54,8 @@ impl Admission {
         gauge.set(0);
         Self {
             wal,
-            wal_max_bytes,
-            wal_min_free_bytes,
+            wal_max_bytes: wal_config.max_bytes,
+            wal_min_free_bytes: wal_config.min_free_bytes,
             jitter,
             budget: ByteBudget::new(inflight_bytes),
             gauge,

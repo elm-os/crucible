@@ -446,7 +446,7 @@ mod tests {
             unseen &= mask.0;
         }
         assert_eq!((seen, unseen), (ConfigMask::FULL.0, 0));
-        assert_eq!(Dim::ALL.len(), 41);
+        assert_eq!(Dim::ALL.len(), 45);
     }
 
     #[test]

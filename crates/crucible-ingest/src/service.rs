@@ -239,8 +239,7 @@ impl Ingest {
         let gauge = env.metrics.gauge(&registry::INGEST_INFLIGHT_BYTES, &[]);
         let admission = Admission::new(
             wal,
-            wal_config.max_bytes,
-            wal_config.min_free_bytes,
+            wal_config,
             env.rng.fork("crucible-ingest/retry-after"),
             config.inflight_bytes,
             gauge,

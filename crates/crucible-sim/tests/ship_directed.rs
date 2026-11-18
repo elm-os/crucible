@@ -11,10 +11,15 @@ use std::time::Duration;
 use crucible_env::{
     DiskPath, InsertError, InsertSettings, RetryReason, Root, StoreFlavour, Stores,
 };
-use crucible_records::{BatchToken, Lsn, TableId};
+use crucible_normalize::NORMALIZER_VERSION;
+use crucible_records::{
+    AuthorKind, BatchToken, FactId, FactTargetKind, Lsn, ProjectId, ScoreDataType, ScoreSource,
+    SpanId, TableId, TagOp, Timestamp, TraceId, Uuid,
+};
 use crucible_schema::Granularity;
 use crucible_shipper::{
-    FRAMES_FILE, Hooks, MANIFEST_FILE, ShipError, Shipper, ShipperConfig, StatsSnapshot,
+    FRAMES_FILE, FrameManifest, Hooks, MANIFEST_FILE, ShipError, Shipper, ShipperConfig,
+    StatsSnapshot, frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
 use crucible_sim::ship_sim::request_payload;
@@ -629,6 +634,149 @@ fn rows_carry_the_batch_they_were_sealed_into() {
                 Some(part.token.first_lsn().get())
             );
         }
+        node.host.stop().await;
+    });
+}
+
+/// Contract 5.6, frame quarantine: a durable frame that does not decode is copied by itself with a manifest,
+/// counted, and passed; the frames after it ship, the watermark passes it, and a restart finds the copy and
+/// sends nothing.
+#[test]
+fn a_frame_that_does_not_decode_is_quarantined_and_shipping_continues() {
+    directed(|rig| async move {
+        let (node, _) = rig.boot().await;
+        let garbage = vec![0xff; 40];
+        let bad = PreparedFrame::new(
+            RecordType::IngestRequest,
+            garbage.clone(),
+            Compression::None,
+        );
+        let bad_lsn = node.wal.append(bad.unwrap()).await.unwrap();
+        let good_lsn = node.ingest(2, 3).await;
+        node.sleep(300).await;
+        assert_eq!(node.ended(), None, "the shipper stopped");
+        assert!(node.watermark() >= good_lsn.get());
+        assert_eq!(rig.rows(TableId::SpanCore), 3);
+        assert_eq!(node.snapshot().quarantined_frames, 1);
+        assert_eq!(node.snapshot().quarantined, 0);
+
+        let dir = frame_quarantine_ref(node.wal.epoch(), bad_lsn);
+        assert_eq!(dir, format!("frame-{}-{}", node.wal.epoch(), bad_lsn.get()));
+        let file = |name: &str| {
+            let path = DiskPath::new(Root::Quarantine, &format!("{dir}/{name}")).unwrap();
+            rig.disk.read_file(&path).unwrap()
+        };
+        let manifest = String::from_utf8(file(MANIFEST_FILE)).unwrap();
+        let parsed = FrameManifest::parse(&manifest).unwrap();
+        assert_eq!(
+            (parsed.lsn, parsed.project_id, parsed.facts),
+            (bad_lsn, None, false)
+        );
+        for line in [
+            "kind=frame",
+            "record_type=ingest_request",
+            "stage=decode",
+            &format!("normalizer_version={NORMALIZER_VERSION}"),
+            &format!("wal_epoch={}", node.wal.epoch()),
+        ] {
+            assert!(manifest.lines().any(|l| l == line), "{line} in {manifest}");
+        }
+        // The copy is the frame as the log holds it: its 36-byte header, then its stored payload.
+        let frames = file(FRAMES_FILE);
+        assert_eq!(frames.len() as u64, parsed.bytes);
+        assert_eq!(&frames[36..], &garbage[..]);
+        let inserts = rig.model.stats().inserts;
+        node.host.stop().await;
+
+        // The decision is recomputed on replay; the copy is found and nothing is sent or copied again.
+        let (node, _) = rig.boot().await;
+        node.sleep(200).await;
+        assert_eq!(node.ended(), None);
+        assert_eq!(rig.model.stats().inserts, inserts);
+        assert_eq!(file(FRAMES_FILE), frames);
+        assert_eq!(String::from_utf8(file(MANIFEST_FILE)).unwrap(), manifest);
+        node.host.stop().await;
+    });
+}
+
+/// Contract 3.8 and 6.4: the facts of a `FactBatch` frame land once in their fact tables, by the month of their
+/// target time.
+#[test]
+fn a_fact_batch_frame_lands_in_the_fact_tables() {
+    use crucible_wal_codec::{Fact, FactBatch, FactBody, ScoreBody};
+    directed(|rig| async move {
+        let (node, _) = rig.boot().await;
+        let fact = |n: u8, target_micros: i64, body| Fact {
+            fact_id: FactId::from_bytes([n; 16]),
+            target_kind: FactTargetKind::Trace,
+            trace_id: TraceId::from_bytes([9; 16]),
+            span_id: SpanId::ZERO,
+            session_id: "",
+            target_time: Timestamp::from_micros(target_micros),
+            key: "key",
+            version: u64::from(n),
+            retracted: n.is_multiple_of(2),
+            created_at: Timestamp::from_micros(SIM_EPOCH_MICROS),
+            body,
+        };
+        let score = FactBody::Score(ScoreBody {
+            data_type: ScoreDataType::Numeric,
+            value_num: 0.5,
+            value_str: "",
+            comment: "",
+            source: ScoreSource::Api,
+            metadata: "{}",
+            config_id: None,
+        });
+        let earlier = SIM_EPOCH_MICROS - 40 * 86_400_000_000;
+        let batch = FactBatch {
+            project_id: ProjectId::from_bytes([1; 16]),
+            author_kind: AuthorKind::User,
+            author_id: Uuid::from_bytes([4; 16]),
+            facts: vec![
+                fact(1, SIM_EPOCH_MICROS, score),
+                fact(2, SIM_EPOCH_MICROS, FactBody::Tag { op: TagOp::Add }),
+                // Another month: another pair of the same table.
+                fact(3, earlier, FactBody::Tag { op: TagOp::Remove }),
+                fact(4, SIM_EPOCH_MICROS, FactBody::Flag { value: true }),
+                fact(
+                    5,
+                    SIM_EPOCH_MICROS,
+                    FactBody::Correction {
+                        corrected: "1",
+                        note: "",
+                    },
+                ),
+            ],
+        };
+        let payload = Record::FactBatch(batch).encode().unwrap();
+        let frame = PreparedFrame::new(RecordType::FactBatch, payload, Compression::Lz4);
+        let lsn = node.wal.append(frame.unwrap()).await.unwrap();
+        node.sleep(300).await;
+        assert_eq!(node.ended(), None);
+        assert!(node.watermark() >= lsn.get());
+        let rows = [
+            TableId::FactScores,
+            TableId::FactTags,
+            TableId::FactFlags,
+            TableId::FactCorrections,
+        ]
+        .map(|table| (rig.model.parts(table).len(), rig.rows(table)));
+        assert_eq!(rows, [(1, 1), (2, 2), (1, 1), (1, 1)]);
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        for part in rig.model.parts(TableId::FactTags) {
+            assert_eq!(u64_at(&part.block, "lsn", 0), Some(lsn.get()));
+            assert_eq!(u64_at(&part.block, "batch_seq", 0), Some(lsn.get()));
+        }
+        let inserts = rig.model.stats().inserts;
+        node.host.stop().await;
+        let (node, _) = rig.boot().await;
+        node.sleep(200).await;
+        assert_eq!(rig.model.stats().inserts, inserts);
         node.host.stop().await;
     });
 }
