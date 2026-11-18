@@ -112,7 +112,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-normalize` | `crucible-records`, `crucible-otlp`, `crucible-compat` |
 | `crucible-env` | `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-chfmt`, `crucible-control` (the `ControlStore` trait lives in `crucible-control`; `Stores` holds it) |
 | `crucible-env-prod` | `crucible-env`, `crucible-records` |
-| `crucible-auth` | `crucible-records`, `crucible-env` |
+| `crucible-auth` | `crucible-records`, `crucible-env`, `crucible-control` (identity repositories) |
 | `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
 | `crucible-recent` | `crucible-env`, `crucible-records`, `crucible-plan` |
 | `crucible-query` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-recent`, `crucible-schema` |
@@ -122,11 +122,11 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-ui-assets` | `crucible-env` |
 | `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
 | `crucible-cursor` | `crucible-records` |
-| `crucible-config` | `crucible-records` (the only crate that reads the process environment) |
-| `crucible-control` | `crucible-env`, `crucible-records` |
+| `crucible-config` | none (the only crate that reads the process environment) |
+| `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
 | `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
 | `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
@@ -349,7 +349,7 @@ Repository-shaped access to Postgres. One repository per aggregate in section 11
 
 | Method | Semantics |
 |---|---|
-| `transaction(f) -> Result<T, TxError>` | Runs `f` in one transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `CommitUnknown` (connection lost during commit) and `Unavailable` |
+| `transaction(f) -> Result<T, TxError>` | Runs `f` in one repeatable-read transaction. `TxError` distinguishes `SerializationFailure` (retryable), `UniqueViolation(constraint)`, `ForeignKeyViolation(constraint)`, `CommitUnknown` (connection lost during commit), `Fenced` (a lease's fencing token was superseded), `Invalid` (the request broke a model rule) and `Unavailable` |
 | `key_feed().poll(after_seq, overlap) -> Vec<KeyChange>` | Section 11.8 |
 | `key_feed().snapshot() -> KeySnapshot` | Full reconcile |
 | `leases().acquire(name, holder, ttl) -> Option<Lease { fencing_token, expires_at }>`, `renew(lease)`, `release(lease)` | Section 11.7. Expiry uses the database clock |
@@ -366,6 +366,11 @@ and a reserved pool of 2 connections for the key feed, leases and session lookup
 constraints; commit-unknown on connection loss; pool exhaustion; failover (brief unavailability, then a
 stale-free reconnect); lease rows; claims; key-feed sequence numbers that can commit out of order; and a database
 clock with skew against node clocks.
+
+Settled in code: the store sits in `Stores.control` as an `Option`, so `crucible serve` without Postgres keeps
+working as an ingest and telemetry node. The pool is `deadpool` with a custom manager over `connect_raw` on `Net`
+(`deadpool-postgres` spawns on the ambient runtime, which the `Env` rule forbids). Migrations are `refinery`,
+forward-only, numbered `V<n>__<name>.sql` in `crates/crucible-control-pg/migrations`.
 
 ### 2.8 ChildProcess
 
@@ -492,6 +497,7 @@ character boundary.
 | | `total_cost_nusd` | i64 nano-USD | Section 3.4 |
 | | `cost_source` | `CostSource` | Provided wins over calculated |
 | | `price_model_id`, `price_tier_id` | UUID, optional | The price row used |
+| | `usage_aggregate` | bool | Set by normalizer stage B on a span with an observed descendant that carries usage or cost (or is itself marked), seen in the same request or earlier in the LSN stream (the usage descendant set of section 5.3). The span stores and shows its own usage; token and cost sums leave it out (the sums rule below) |
 | Prompt | `prompt_name`, `prompt_version` | string | 256 and 64 bytes; reference only in v0 |
 | Tools | `tool_names` | list of string | 128 items, 256 bytes each |
 | | `tool_call_count` | u32 | |
@@ -530,7 +536,7 @@ character boundary.
 | `tool_definitions` | JSON | 8 MiB |
 | `tool_calls` | JSON list of `{id, name, arguments}` | 8 MiB |
 | `model_parameters` | JSON object | 64 KiB |
-| `usage_provided` | ordered map string to u64 | As sent by the client; never estimated |
+| `usage_provided` | ordered map string to u64 | Provided usage under normalized keys (section 10.5); never estimated |
 | `cost_provided` | ordered map string to i64 nano-USD | Decimal USD inputs are converted per 3.4 |
 | `trace_state` | string | 4 KiB |
 | `truncated_fields` | list of string | Names of payload fields cut by either cap |
@@ -550,11 +556,19 @@ character boundary.
   kept in the core tier. For every cut field its name is added to `truncated_fields`.
 - A cut JSON field is stored as its raw text prefix and is no longer valid JSON. Readers must treat any field named
   in `truncated_fields` (or with `*_truncation = cap_exceeded`) as opaque text.
-- Previews are cut from the original value before truncation.
+- Previews are cut from the original value before truncation, after media tokens are replaced (section 10.5).
 
 **Other rules**
 
 - There is no server-side token estimation. `usage` is computed only from provided usage.
+- **Sums rule.** Trace, session, user and metrics token and cost sums count every span whose `usage_aggregate` is
+  false, whatever its observation type. A span with `usage_aggregate = true` repeats usage that its descendants
+  report, so the descendants, which carry the model used for pricing, are what is counted; a hand-instrumented span
+  of any type that carries usage or a provided cost and has no usage-bearing descendant counts. The rule applies to
+  token and cost sums only: span, error and other counts include every span, and every span still stores and shows
+  its own usage and cost. Known limit: a usage-bearing descendant that arrives after its ancestor, or after the
+  descendant set forgot the trace, leaves the ancestor counted as well (a double count); the I7 oracle models the
+  same rule.
 - A client retry that re-sends a span produces new LSNs for one span key. The normalizer's duplicate window (section
   5.3) drops a repeat whose `row_digest` equals the remembered one; a repeat with a different digest is kept. Trace
   detail de-duplicates by `span_id` in the Rust tier (greatest `lsn` wins). Aggregates accept the rare duplicate
@@ -701,7 +715,8 @@ rows with `side = server`. It backs `mcp/deploys` and `mcp/compare` (section 9.9
 Facts resolve by one comparator, `crucible_records::fact_order`: `version` first, then `fact_id` in RFC 9562 byte
 order (time order for UUIDv7). No SQL ordering of UUIDs ever picks a winner, because ClickHouse compares UUIDs by
 their second half first: plans fetch candidate facts, and the Rust fold, `ChModel` and the differential check use
-the same comparator.
+the same comparator. A fact write larger than one frame is split across frames; if it fails after some frames are
+durable, a retry writes new facts that win, so writes are at-least-once with latest-wins resolution.
 
 Facts are later-written, append-only, versioned rows. They are never updated or deleted in place; a retraction is a
 new row. Facts written through the API go through the WAL (`FactBatch`) and are acknowledged after the fsync.
@@ -767,7 +782,7 @@ new row. Facts written through the API go through the WAL (`FactBatch`) and are 
 | `min_head_start` | min | Earliest head `start_time` |
 | `max_level` | max | |
 | `span_count`, `error_count`, `generation_count`, `tool_count`, `mcp_count` | sum | |
-| `total_cost_nusd`, `input_tokens`, `output_tokens`, `total_tokens` | sum | |
+| `total_cost_nusd`, `input_tokens`, `output_tokens`, `total_tokens` | sum | Under the sums rule of 3.1: every span with `usage_aggregate = false` contributes |
 | `environments` | groupUniqArrayArray, at most 16 | |
 | `trace_name_pick`, `user_id_pick`, `session_id_pick` | max | Rank-prefixed picks (3.3) |
 
@@ -779,7 +794,8 @@ semi-join into `trace_stats` in class `analytics_raw`.
 ### 3.10 Rollup rows
 
 All written by the shipper from the rows of one batch; none by ClickHouse. Each rollup row is a partial that merges
-by its key (section 6).
+by its key (section 6). The cost and token sums of `session_rollup`, `user_rollup` and `span_metrics` follow the
+sums rule of 3.1; their counts and histograms include every span.
 
 | Set | Key | Measures | Freshness target |
 |---|---|---|---|
@@ -1078,6 +1094,7 @@ every table, base and derived, is written by this protocol.
 | Normalizer version | Recorded in the seal. If the binary changed, the new version is used; safe because routing is frozen and pairs land wholesale |
 | Price table | `price_table_version` in the seal records the table the first attempt used; versions are immutable. As with the normalizer version, a replay after a binary change prices with the current bundled table; pairs land wholesale, so costs never mix inside a pair. A batch whose pairs straddle a crash and an upgrade can carry two table versions across its tables, which I7 states as an exception |
 | Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys, oldest LSN evicted first |
+| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream, bounded to 4,000,000 entries (oldest LSN evicted first) and rebuilt from the retained prefix like the duplicate window |
 | Tombstones | A replay may drop more rows, never fewer. The deletion executor acts only after the node's checkpoint passes the tombstone (section 13.3) |
 | Partition routing | Section 5.2 |
 | Marker and ingestion columns | Computed from the seal and the frames (`received_at` of the batch's last frame for `marker_at`) |
@@ -1314,6 +1331,7 @@ Columns are listed in `TableDef` order. Unless a codec is named, the convention 
 | `input_preview`, `output_preview` | String |
 | `input_sha256`, `output_sha256` | FixedString(32) |
 | `row_digest` | UInt64 |
+| `usage_aggregate` | UInt8 (added by the step in 6.6) |
 | `wal_epoch`, `batch_seq`, `lsn`, `received_at` | ingestion columns |
 
 **`span_payload`**
@@ -1463,6 +1481,18 @@ report(b) = lower(b) + width(b) / 2          (integer division)
 - A change to a sort key or partition expression means a new table and a backfill job, never a dual write.
 - A schema step that creates a base table must, in that same step, create the table's service-identity row policy
   (section 7.3).
+- Schema step `0004_span_usage_aggregate` adds the `UInt8` column `usage_aggregate` (section 3.1) to `span_core`,
+  after `row_digest`. Like every step it is forward-only and idempotent; rows written before the step read 0. The
+  shipper's rollup functions, the system simulation's I7 oracle and the fixtures' goldens apply the sums rule of
+  3.1 from the change that starts writing the column.
+
+Ledger (settled in code): with Postgres configured, `crucible migrate` (and `serve --migrate`) runs every pending
+Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
+`migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
+(steps are idempotent, so a crash between apply and record only repeats the step). A step that outlives the lease is
+not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step (for
+example after a master-key change) makes the step reapply, with a warning. Without Postgres, `--migrate` applies the
+ClickHouse steps on every start.
 
 ### 6.7 Settled in code
 
@@ -1814,7 +1844,10 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   response would be whole and strong; otherwise the answer is an empty trace carrying `partial` or `lagging`.
 - Sums in lists and paged detail (`span_count`, cost, tokens, `child_count`) are store sums plus index entries above
   the watermark, so they can run ahead until the low watermark passes the spans; inline trace detail is exact.
-- Filtered lists read the store only, because the index keeps no tags, environment or release, and answer
+- Token and cost sums follow the sums rule of 3.1 on every read path: store sums, the index entries above the
+  watermark and sums computed at read time over `span_core` (inline trace detail included) leave out spans with
+  `usage_aggregate = true`. Counts are not filtered.
+- Filtered lists read the store only, because the index keeps no tags or release (it keeps each span's environment), and answer
   `consistency: lagging` when unconfirmed index heads were left out. The index is consulted on every list page.
 - Heads of one trace with the same `(start_time, trace_hash, trace_id)` collapse to one row; a trace with several
   roots at different start times appears once per root.
@@ -1822,12 +1855,15 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - The shipper feeds the index through `RecentHook`: `applied(frame, normalized, admission)` for ingest frames and
   `passed(frame)` for every other frame. After a restart the host restores quarantine marks from the manifests under
   the quarantine root (the `Quarantine` frames may have been collected), with reach `All`.
-- `WalLocator.ordinal` is the span's position among the spans stage B admitted from the frame; a payload re-read must
-  apply the same admission (open: the binary's re-read path uses stage A positions, fixed in milestone 2).
+- `WalLocator.ordinal` is the span's stage A position in the frame (`Admission::stage_a_ordinals`), which is what a
+  payload re-read of the frame sees.
 - `ChModel` does not yet apply query-class guardrails, so it is more permissive than ClickHouse there (milestone 2).
-- Live tail can miss a head that was durable but unapplied when the cursor was issued, or whose `received_at` equals
-  the cursor's `as_of`; the head cursor gains `wal_epoch` and LSN with a `>=` arrival bound when `crucible-cursor`
-  lands (milestone 2).
+- Live tail: a head cursor carries the issuing node's `wal_epoch` and applied LSN. The store is read with
+  `(wal_epoch = E AND (lsn > L OR received_at > as_of)) OR (wal_epoch != E AND received_at >= as_of)`, and the recent
+  index by LSN only for a cursor from this node's WAL, so a head that was durable but unapplied when the cursor was
+  issued, or that shares the cursor's microsecond, is not missed. The `OR` stops the `received_at` skip index from
+  pruning the tail scan (a performance follow-up). A head applied while a page is being built can appear on that page
+  and on the next tail, which only inflates `new_count`.
 - Zero-filled `TimeSeries` buckets need nullable output types; until they exist the adapter refuses `Fill::Zero`.
 - `TokenMode::Phrase` renders as all-tokens, because 26.3 has no phrase-match function; `Pred::TextMatch` is a
   case-insensitive substring match.
@@ -2045,19 +2081,25 @@ tests. This document describes dialects generically on purpose.
 | Id | Description | Detected by |
 |---|---|---|
 | 0 | Native: the OTel GenAI and MCP semantic conventions and `crucible.*` keys | Default |
-| 1 | A third-party tracing SDK's OTLP traffic on its compatibility path, with Basic auth carrying Crucible keys | The compatibility path (request hint), instrumentation scope name, or its attribute key prefix |
+| 1 | A third-party tracing SDK's OTLP traffic on its compatibility path, with Basic auth carrying Crucible keys | The compatibility path (request hint), its instrumentation scope name, its type key, or its attribute key prefix |
 | 2 | An open instrumentation convention identified by a span-kind attribute | That attribute |
 | 3 | An open instrumentation library family identified by its attribute namespace | Keys in that namespace |
 | 4 | A web framework's AI SDK telemetry identified by an operation-id attribute | That attribute |
 | 5 | An ML lifecycle tool's tracing attributes identified by their namespace | Keys in that namespace |
 | 6 | An agent framework's instrumentation identified by its scope name | Scope name |
-| 7 | A third-party evaluation product's OTLP attribute namespace, on an aliased path with Bearer auth | The alias path or routing header (request hint), or its attribute key prefix |
+| 7 | A third-party evaluation product's OTLP attribute namespace, on an aliased path with Bearer auth | The alias path or routing header (request hint), or one of its content keys |
 
 Ids are stable and never reused. A new dialect appends an id by contract change.
 
-Rules for every dialect: the project always comes from the credential, so routing headers are accepted and
-ignored for routing; keys the tables do not consume stay in residual `attributes`; a media reference token is
-recognized and kept as opaque text (section 14).
+Rules for every dialect: the project always comes from the credential, so routing headers and routing
+attributes are accepted and ignored for routing; keys the tables do not consume stay in residual `attributes`;
+a media reference token is recognized, kept as opaque text in every stored field and replaced by `[media]` in
+previews (section 14). Detection rules carry a confidence on one scale: 100 the dialect's own scope name, 90 a
+key only that dialect writes, 70 likely, 60 the request hint, 40 weak. Keys that an exporter stamps on every
+span it forwards are never detection rules.
+
+Media-token handling is recognition plus preview replacement only. Stored bodies are never rewritten: they keep
+the token exactly as sent, so the sending SDK's own media round trip keeps working.
 
 ### 10.2 The pure map and the traits
 
@@ -2082,15 +2124,30 @@ trait McpProjector {
   `crucible-normalize`) is a thin wrapper over `map`: `detect` evaluates a table's detection rules, `map` runs the
   engine for one span, and `McpProjector` applies section 9.1. Test doubles may implement the traits; no second
   production implementation exists in v0.
-- Dialect choice per span: the request-level hint in the envelope when present, else the dialect with the highest
-  detection confidence, ties going to the lowest id; default 0. `source_format` is decided per span.
+- Dialect choice per span: the dialect with the highest detection confidence, ties going to the lowest id;
+  default 0. A request-level hint in the envelope counts as a detection of its dialect at confidence 60, so a
+  span that another dialect's own scope name or exclusive key identifies keeps that dialect on a hinted path.
+  `source_format` is decided per span.
+- The dialect tables are layers in the section 10.3 order, and the engine maps every span with all of them. A
+  source is scoped `any` (read on every span) or `own` (read only when its table's dialect is the chosen
+  dialect; used for bare, un-namespaced keys). The chosen dialect decides `compat_dialect`, which `own` sources
+  are live, and the table's value encoding; it never disables another table's `any` sources.
+- A table may declare the value encoding `json text`: on a span of that dialect, a string attribute that is
+  JSON text of one scalar is unwrapped before any scalar decoder or type rule reads it. Bodies and maps are
+  never unwrapped.
 - The duplicate window and first-seen set are stage B state, not mapper state.
 
 ### 10.3 Field priority
 
-Each target field has an ordered list of sources `(dialect, key or key prefix or event name, decoder)`. Decoders:
-string, JSON, JSON-or-string, integer, prefix-flatten to map, indexed messages, enum map. **The first non-empty
-source wins.** Sources are ordered by this dialect priority:
+Each target field has an ordered list of sources `(dialect, location, key or key prefix or event name, optional
+JSON member path, decoder, scope)`. Decoders: string, string-or-integer, integer, boolean, JSON, JSON-or-string,
+JSON object, JSON string array, timestamp, offset from span start (milliseconds or seconds), event time,
+decimal USD, level map, tag list, prefix-flatten to map, map member, usage object and usage prefix (with an
+alias table), cost object, indexed messages, indexed list, tool-call reshape. **The first non-empty source
+wins**, with three exceptions: map fields (`metadata`, `trace_metadata`, `model_parameters`) merge every source
+and the higher-priority source wins a member clash; usage and provided cost are resolved per key; one attribute
+may feed several fields and is consumed once. A source with a member path does not consume its attribute.
+Sources are ordered by this dialect priority:
 
 1. `crucible.*` keys
 2. dialect 1
@@ -2102,21 +2159,30 @@ source wins.** Sources are ordered by this dialect priority:
 8. dialect 5
 9. dialect 6
 
+A table may repeat a higher- or lower-ranked dialect's key in its own list, for the same field only, to fix the
+order among its own keys.
+
 ### 10.4 Observation-type priority
 
 The first rule that yields a value wins:
 
 1. explicit `crucible.observation.type`
 2. dialect 1's type key
-3. dialect 7's span type
+3. dialect 7's span type (its flattened key, then the member of its span-attributes object, then its scorer
+   purpose)
 4. `mcp.method.name` (`tools/call` maps to `tool`)
 5. dialect 2's span-kind attribute
-6. `gen_ai.operation.name` (chat, text completion and content generation map to `generation`; embeddings to
-   `embedding`; `execute_tool` to `tool`; agent operations to `agent`)
+6. `gen_ai.operation.name` with a semantic-convention value (chat, text completion and content generation map
+   to `generation`; embeddings to `embedding`; `execute_tool` to `tool`; agent operations to `agent`)
 7. dialect 4's operation
-8. dialect 3's span kind
-9. dialect 5's span type
-10. `span`
+8. dialect 3's span kind, then its operation-name values, then its request type
+9. dialect 5's span type, then its operation-name values
+10. dialect 6's operation-name values
+11. `span`
+
+A type rule may read a member of a JSON object held in a string attribute. Operation-name values outside the
+semantic conventions are listed by the table of the dialect that emits them and rank at that dialect's
+position; the value lists of one key are disjoint across tables.
 
 Mapping must be total (never panics), idempotent, and identical for the protobuf and JSON encodings of one request.
 
@@ -2131,6 +2197,15 @@ Mapping must be total (never panics), idempotent, and identical for the protobuf
 | Residual JSON | Wire order, duplicates kept; integers as numbers; NaN and infinities as strings; bytes as lowercase hex; events capped at 128 and links at 32 (not listed in `truncated_fields`, because the JSON stays valid) |
 | Dropped in milestone 1 | Instrumentation-scope attributes (name and version are kept), link `trace_state`, span flags, dropped counts and schema URLs |
 | Stage B | A changed repeat moves its key to the newest position; the first-seen set is bounded at 4,000,000 traces; the provisional head is the first kept span, in wire order, of a trace first seen in a frame without its root; an out-of-order LSN is refused |
+| Layers | `crucible.*` keys form their own table at the first position; the tables are applied as layers `[crucible keys, 1, 7, 0, 2, 4, 3, 5, 6]`; a candidate's rank is (layer, source position) |
+| Consumption | An attribute leaves the residual when a winning source read its whole value. A family decoder (indexed, prefix) consumes the keys it used; keys it skipped stay. Losing candidates and member-path sources never consume |
+| `usage_provided` keys | The six normalized keys, plus other provided keys under the name the dialect table assigns, else the name as sent. A dialect whose buckets are disjoint is converted to the inclusive rule by its usage table; that is a conversion, not an estimate |
+| Indexed messages | Stored as the un-flattened JSON array (ascending index, members in wire order, wrapper segments removed), `io_shape = indexed_messages`. Keys with a non-numeric index segment are not part of the family |
+| Derived tool fields | When no source fills `tool_calls`, they are read from an `indexed_messages` output by the table's tool-call shape; `tool_names` and `tool_call_count` derive from `tool_calls` unless a source fills `tool_names`. `finish_reasons` falls back to the per-element finish reason of an indexed output |
+| Offsets | A start-relative duration becomes `start_time + value`, rounded half to even to the microsecond and clamped to `end_time` |
+| Media in previews | A dialect's media reference token is replaced by `[media]` in `input_preview` and `output_preview`; stored fields, sizes and hashes use the original bytes |
+| Compat SDK identity | On a compat route, `sdk_name` and `sdk_version` come from that route's SDK headers when present, else from the first `User-Agent` product |
+| Not mapped in v0 | Conditional sources, span-name rules, cross-span usage correction (a span's own usage is never rewritten; `usage_aggregate` in 3.1 only keeps a repeated count out of sums), and extraction of tools, system instructions or models from `raw` bodies |
 
 ### 10.6 Source keys for fields without a semantic convention
 
@@ -2141,7 +2216,7 @@ applications fill the field too. These names are wire contract: renaming one is 
 | Field | Sources, in priority order |
 |---|---|
 | `trace_name` | `crucible.trace.name`; when no span of the trace sets it, displays use the root span's `name` |
-| `session_id` | `crucible.session.id`, `session.id`, `gen_ai.conversation.id` |
+| `session_id` | `crucible.session.id`, `session.id`, `gen_ai.conversation.id` (string, or an integer rendered in decimal) |
 | `user_id` | `crucible.user.id`, `user.id` |
 | `environment` | `crucible.environment`, resource `deployment.environment.name`, resource `deployment.environment` |
 | `release` | `crucible.release`, resource `service.version` |
@@ -2150,13 +2225,17 @@ applications fill the field too. These names are wire contract: renaming one is 
 | `metadata` | `crucible.metadata.*` (prefix-flattened to a map) |
 | `level` | `crucible.level` (`debug`, `default`, `warning`, `error`) |
 | `trace_tags`, `trace_metadata`, `trace_public` | `crucible.trace.tags`, `crucible.trace.metadata.*`, `crucible.trace.public` (bool) |
-| `input`, `output` (non-GenAI spans) | `crucible.input`, `crucible.output` (JSON or string); GenAI spans keep the message keys of 10.3 |
+| `input`, `output` (non-GenAI spans) | `crucible.input`, `crucible.output` (JSON or string); GenAI spans keep the message keys of 10.3; tool spans without messages take `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` |
 | `prompt_name`, `prompt_version` | `crucible.prompt.name`, `crucible.prompt.version` |
 | Provided cost | `crucible.cost.total` and `crucible.cost.<usage key>`, in USD as a decimal string or a double |
 | `completion_start_time` | `crucible.completion_start_time` (RFC 3339 string or Unix nanoseconds) |
-| `model_parameters` | `crucible.model_parameters.*`, then every `gen_ai.request.*` key other than the model (temperature, top_p, max_tokens and the rest), then `openai.request.service_tier` as `service_tier` |
+| `model_parameters` | `crucible.model_parameters.*`, then every `gen_ai.request.*` key other than the model under its suffix name (temperature, top_p, max_tokens and the rest), then `openai.request.service_tier` as `service_tier`. Dialect tables use the same member names |
+| `provider` | `gen_ai.provider.name`, then the deprecated `gen_ai.system` |
+| `tool_names` | `gen_ai.tool.name` on tool spans; otherwise derived from `tool_calls` |
+| `is_root`, `is_app_root` | No native key in v0; dialect tables may set them |
 
-Trace-level fields follow 3.3: never backfilled, forward-filled within one request, picked by rank across requests.
+Trace-level fields follow 3.3: never backfilled, forward-filled within one request, picked by rank across
+requests. The `crucible.*` keys are read on every span, whatever dialect is chosen.
 
 ## 11. Control plane
 
@@ -2204,7 +2283,9 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 A 32-byte master key comes from `CRUCIBLE_MASTER_KEY` or its `_FILE` form, with a ring of at most two keys for
 rotation. HKDF-SHA256 gives one subkey per purpose. Secrets are sealed with XChaCha20-Poly1305 and a random nonce
 from `Rng`. Cursor-signing keys are random, stored sealed, rotated every 30 days, and kept `verify_only` for 24 h
-(the cursor lifetime).
+(the cursor lifetime). Until the `signing_keys` rows and their rotation job exist (milestone 4), the cursor key is the
+master-key subkey with HKDF info `crucible/cursor-signing/v1/0` and key id `master-0`; a node without a master key
+(ingest-only mode) uses a random per-process key, so its cursors reset on restart and clients restart from page one.
 
 ### 11.3 API keys
 
@@ -2374,6 +2455,15 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `specs/openapi/crucible-v1.json`, and checked for drift and for `openapi: 3.1.x` in CI.
 - Paths under `/api/`, `/v1/`, `/mcp` and the health paths never fall back to HTML; unknown paths there return
   problem 404.
+- Compat ingest routes are listed in `crates/crucible-compat` (path, dialect hint, accepted auth forms, SDK
+  identity headers). Both ingest listeners serve them. A compat route takes the same bodies as `/v1/traces`
+  (`application/x-protobuf` or `application/json`, optionally gzip), has the same limits, admission and ack
+  rule, answers with the OTLP response and refusal bodies of `/v1/traces`, and sets the envelope's
+  `compat_dialect` hint. An empty export answers 200.
+- A dialect's routing header on `/v1/traces` sets the same hint. Routing headers never select a project.
+- Compat routes never fall back to HTML: an unknown path under a compat route's first segment answers problem
+  404, as do that dialect's non-trace signal paths (logs), which v0 does not ingest.
+- The compat media endpoints of section 14.3 live under the same route prefix as their dialect's ingest route.
 - `server.public_url` is needed only where an absolute URL leaves the server: OAuth and OIDC redirect URIs and links in email. Without it, origin checks and cookie flags follow the request (same-origin; HTTPS when the request arrived over TLS or a trusted proxy says so), and the startup log says which features need it.
 - Middleware order, outermost first: request id, trace span, panic catcher, security headers, body limit, `Clock`
   timeout, test fault (debug builds only, header `X-Crucible-Test-Fault`), IP rate limit, principal resolution,
@@ -2386,7 +2476,8 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `id`,
   `project_id` and `secret`; error messages never echo the file).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
-  code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product.
+  code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product; on a compat route
+  that declares SDK identity headers, from those headers when present.
 - With ClickHouse configured, `serve` also takes `--clickhouse-url`, `--clickhouse-user`, `--clickhouse-password-file`,
   `--master-key-file`, `--migrate` and `--recent-max-bytes` (the first four also read `CRUCIBLE_*` variables; the
   secrets have no value-taking flag). Listeners bind first with ingest closed (503 with `Retry-After`, `/readyz` gives
@@ -2408,10 +2499,17 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 | Form | Where | Notes |
 |---|---|---|
 | Session cookie plus `X-Crucible-CSRF` | UI requests to `/api/v1` | Section 11.4 |
-| `Authorization: Basic base64(public_key:secret_key)` | API, ingest, compat ingest, MCP server | |
-| `Authorization: Bearer <secret key>` | API, ingest, compat alias paths, MCP server | Row found by `lookup_tag` |
+| `Authorization: Basic base64(public_key:secret_key)` | API, ingest, compat ingest, MCP server | The value is split at the first `:`: the username is a Crucible public key (`cpk_`), the password a Crucible secret key (`csk_`). The row is found by the secret's `lookup_tag` and verified as in 11.3; the public key must be that row's public key (constant-time compare), else 401 with the message "the public key does not belong to the same project as the secret key; use the key pair shown together in Settings". An empty username or password answers 401 |
+| `Authorization: Bearer <secret key>` | API, ingest, every compat ingest route, MCP server | Row found by `lookup_tag` |
 | `Authorization: Bearer <public key>` | `POST projects/{id}/feedback` only | |
 | None | `auth/providers`, pre-session auth routes, `/healthz`, `/readyz`, `version` | Public allowlist |
+
+On ingest and compat ingest routes the key needs the `ingest` scope (403 otherwise). A public key alone
+(Basic with an empty password, or Bearer with a public key) is refused with 401 on every ingest route. The
+dialect 1 compatibility path is the route third-party SDKs reach with Basic auth; users configure those SDKs
+with a Crucible public and secret key pair in place of the upstream pair. Refusals use the OTLP status body
+and never echo either key. A mismatched pair is refused rather than logged, because it means the keys of two
+projects were mixed; per 1.7 the refusal says what to fix, with the message quoted in the Basic row.
 
 ### 12.3 Errors
 
@@ -2473,8 +2571,10 @@ shows server text. Guardrail errors are never retried by the server.
   (default 30 days); a wider request is `query_too_broad` with `limit`.
 - Telemetry lists paginate only when sorted by time.
 - Cursor format: `v1.<kid>.<payload>.<mac>`. `kid` names a `signing_keys` row of purpose `cursor`. `payload` is
-  the base64url (no padding) encoding of: cursor kind (`page` or `head`), project id, route id, filter hash, sort,
-  window, the sort tuple of the last row, `as_of`, and an expiry 24 h after issue. `mac` is the base64url of
+  the base64url (no padding) encoding of a version byte, the cursor kind (`page`, `head` or span children), route
+  id, sort, project id, filter hash, issue time and an expiry 24 h after issue, then the position: for trace-list
+  pages the window, `as_of` and the sort tuple of the last row; for heads the window, `as_of`, `wal_epoch` and LSN;
+  for span children the trace, the parent and the last sort tuple. `mac` is the base64url of
   HMAC-SHA256 over `v1.<kid>.<payload>`, truncated to 16 bytes. Codec: `crucible-cursor` (pure, Kani-checked).
 - A cursor that fails the MAC, is expired, or does not match the request's project, route, filters, sort or window
   is `cursor_invalid`. Clients treat that as "restart from the first page".
@@ -2787,3 +2887,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-17 | Additive: internal dependency edges, `ProjectScope` minting by lint, settled-in-code tables (2.14, 3.11, 4.10, 6.7, 8.9), pico-USD prices, frozen MCP duration bounds, real-server grants |
 | v2 | 2026-11-17 | Additive: `TelemetryStore` final shape with `probe(BatchProbe)`, typed result rows and `Stores` (2, 2.6, 8.1, 8.5) |
 | v2 | 2026-11-17 | Clarification from the ingest model: probe once in doubt, probe results expire, quarantine only after an absent probe, quarantined pairs are read gaps (5.5, 5.6, 6.2, I3) |
+| v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums leave out spans with `usage_aggregate = true` (an observed usage-bearing descendant); a Basic public key that does not match the secret key's row is refused with 401 |

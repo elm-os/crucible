@@ -5,12 +5,16 @@
 
 use crucible_auth::test_support;
 use crucible_plan::{
-    AggOutput, Aggregate, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Having, Literal,
-    MAX_LIST, Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass, QueryPlan,
-    RetentionClamp, Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest,
-    child_counts, data_bounds, effective_window, pad_in_list, padded_in_len, span_children,
-    spans_of_parents, trace_bounds_window, trace_list, trace_page_stats, trace_roots, trace_spans,
-    trace_time_bounds,
+    AggOutput, Aggregate, Aggregation, Caller, CmpOp, DeletePlan, DeleteTarget, DimensionId,
+    Direction, Fill, Filter, Granularity, Having, Literal, MAX_LIST, Measure, MeasureId,
+    MetricsError, MetricsQuery, Node, Order, PayloadField, PayloadRangeRequest, PlanError,
+    PointLookup, Pred, ProbeKind, QueryClass, QueryPlan, RetentionClamp, Scan, SearchField,
+    SearchRequest, SemiJoin, SessionListRequest, Source, SpanListRequest, Step,
+    TRACE_LIST_MAX_LIMIT, TextField, TokenMode, TraceBounds, TraceListRequest, UserListRequest,
+    child_counts, data_bounds, effective_window, metrics_other, metrics_ranking, metrics_series,
+    pad_in_list, padded_in_len, payload_range, search, search_spans, session_detail, session_list,
+    span_children, span_list, spans_of_parents, trace_bounds_window, trace_list, trace_page_stats,
+    trace_roots, trace_spans, trace_time_bounds, user_detail, user_list, user_session_counts,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -161,36 +165,69 @@ fn walk_preds<'a>(pred: &'a Pred, out: &mut Vec<&'a Pred>) {
     }
 }
 
+fn aggregate_names<'a>(
+    aggregate: &'a Aggregate,
+    columns: &mut Vec<ColumnRef>,
+    preds: &mut Vec<&'a Pred>,
+) {
+    columns.extend_from_slice(aggregate.group());
+    for measure in aggregate.measures() {
+        match measure {
+            Measure::Count => {}
+            Measure::Sum(c)
+            | Measure::Min(c)
+            | Measure::Max(c)
+            | Measure::Uniq(c)
+            | Measure::HistogramMerge(c)
+            | Measure::PickMerge(c)
+            | Measure::LatestByVersion(c)
+            | Measure::SetMerge(c) => columns.push(*c),
+        }
+    }
+    walk_preds(aggregate.pred(), preds);
+}
+
+fn scan_names<'a>(scan: &'a Scan, columns: &mut Vec<ColumnRef>, preds: &mut Vec<&'a Pred>) {
+    columns.extend_from_slice(scan.columns());
+    if let Some(order) = scan.order() {
+        columns.extend_from_slice(order.columns());
+    }
+    walk_preds(scan.pred(), preds);
+}
+
+fn node_names<'a>(node: &'a Node, columns: &mut Vec<ColumnRef>, preds: &mut Vec<&'a Pred>) {
+    match node {
+        Node::Scan(scan) => scan_names(scan, columns, preds),
+        Node::Aggregate(aggregate) => aggregate_names(aggregate, columns, preds),
+        Node::TimeSeries(series) => {
+            columns.push(series.time());
+            aggregate_names(series.aggregate(), columns, preds);
+        }
+        Node::SemiJoin(join) => {
+            columns.push(join.on());
+            scan_names(join.left(), columns, preds);
+            node_names(join.right(), columns, preds);
+        }
+        Node::TextSearch(search) => {
+            columns.extend_from_slice(search.fields());
+            walk_preds(search.pred(), preds);
+        }
+        Node::FieldRange(range) => {
+            columns.extend_from_slice(range.key_columns());
+            columns.push(range.field());
+        }
+        Node::PointLookup(lookup) => {
+            columns.extend_from_slice(lookup.key_columns());
+            columns.extend_from_slice(lookup.columns());
+        }
+    }
+}
+
 /// Every column a node names, and every predicate it holds.
 fn names(node: &Node) -> (Vec<ColumnRef>, Vec<&Pred>) {
     let mut columns = Vec::new();
     let mut preds = Vec::new();
-    match node {
-        Node::Scan(scan) => {
-            columns.extend_from_slice(scan.columns());
-            if let Some(order) = scan.order() {
-                columns.extend_from_slice(order.columns());
-            }
-            walk_preds(scan.pred(), &mut preds);
-        }
-        Node::Aggregate(aggregate) => {
-            columns.extend_from_slice(aggregate.group());
-            for measure in aggregate.measures() {
-                match measure {
-                    Measure::Count => {}
-                    Measure::Sum(c)
-                    | Measure::Min(c)
-                    | Measure::Max(c)
-                    | Measure::Uniq(c)
-                    | Measure::HistogramMerge(c)
-                    | Measure::PickMerge(c)
-                    | Measure::LatestByVersion(c) => columns.push(*c),
-                }
-            }
-            walk_preds(aggregate.pred(), &mut preds);
-        }
-        other => panic!("the first builders produce scans and aggregates, not {other:?}"),
-    }
+    node_names(node, &mut columns, &mut preds);
     for pred in &preds {
         match pred {
             Pred::Cmp(c, _, _) | Pred::In(c, _) | Pred::StartsWith(c, _) | Pred::HasAny(c, _) => {
@@ -224,15 +261,24 @@ fn assert_scoped(
             prop_assert_eq!(plan.identity(), ServiceIdentity::ReadAgent);
         }
     }
-    prop_assert_eq!(plan.root().tables(), vec![table_id]);
+    // The first table is the one the plan returns rows of; a semi-join names a second.
+    let tables = plan.root().tables();
+    prop_assert_eq!(tables.first(), Some(&table_id));
     let (columns, _) = names(plan.root());
     for column in columns {
-        prop_assert_eq!(column.table(), table_id);
+        prop_assert!(tables.contains(&column.table()));
         prop_assert_ne!(column.name(), PROJECT_ID);
     }
-    // Aggregating tables are only ever read through an aggregate.
+    // Aggregating tables are only ever read through an aggregate, bucketed or not.
     let aggregating = table(table_id).kind == TableKind::Aggregating;
-    prop_assert_eq!(matches!(plan.root(), Node::Aggregate(_)), aggregating);
+    let aggregate = match plan.root() {
+        Node::Aggregate(aggregate) => Some(aggregate),
+        Node::TimeSeries(series) => Some(series.aggregate()),
+        _ => None,
+    };
+    prop_assert!(!aggregating || aggregate.is_some());
+    // The plan runs under the limits of its class.
+    prop_assert_eq!(plan.limits(), plan.class().limits());
     Ok(())
 }
 
@@ -727,6 +773,124 @@ proptest! {
         let data = data_bounds(scope, window, &keep(), caller).unwrap();
         assert_scoped(&data.spans.unwrap(), scope, window, caller, QueryClass::Analytics, TableId::SpanMetrics)?;
         assert_scoped(&data.mcp.unwrap(), scope, window, caller, QueryClass::Analytics, TableId::McpToolRollup)?;
+
+        // The builders of milestone 2.
+        let page = cursor.map(|(t, _, _)| (t, user.clone()));
+        let sessions = SessionListRequest { limit, cursor: page.clone() };
+        let sessions = session_list(scope, window, &keep(), caller, sessions).unwrap().unwrap();
+        assert_scoped(&sessions, scope, window, caller, QueryClass::List, TableId::SessionRollup)?;
+        let Node::Aggregate(aggregate) = sessions.root() else { panic!("an aggregate") };
+        prop_assert_eq!(aggregate.limit(), Some(limit + 1));
+        prop_assert_eq!(aggregate.cursor().is_some(), cursor.is_some());
+        let session = session_detail(scope, window, &keep(), caller, &user).unwrap().unwrap();
+        assert_scoped(&session, scope, window, caller, QueryClass::List, TableId::SessionRollup)?;
+        let (_, preds) = names(session.root());
+        prop_assert!(preds.contains(&&Pred::eq(SessionRollupCol::SessionId, user.as_str())));
+
+        let users = UserListRequest { limit, cursor: page };
+        let users = user_list(scope, window, &keep(), caller, users).unwrap().unwrap();
+        assert_scoped(&users, scope, window, caller, QueryClass::List, TableId::UserRollup)?;
+        let one = user_detail(scope, window, &keep(), caller, &user).unwrap().unwrap();
+        assert_scoped(&one, scope, window, caller, QueryClass::List, TableId::UserRollup)?;
+        let counts = user_session_counts(scope, window, &keep(), caller, std::slice::from_ref(&user)).unwrap().unwrap();
+        assert_scoped(&counts, scope, window, caller, QueryClass::List, TableId::TraceHeads)?;
+
+        let metadata = Filter::Metadata { key: user.clone(), value: user.clone() };
+        let by_user = Filter::Text(TextField::UserId, vec![user.clone()]);
+        for (filter, joined) in [
+            (Filter::all(), false),
+            (by_user.clone(), false),
+            (Filter::And(vec![metadata.clone(), by_user.clone()]), true),
+        ] {
+            let request = SpanListRequest { filter, limit, cursor: child_cursor, as_of };
+            let spans = span_list(scope, window, &keep(), caller, request).unwrap().unwrap();
+            assert_scoped(&spans, scope, window, caller, QueryClass::List, TableId::SpanCore)?;
+            let scan = match spans.root() {
+                Node::Scan(scan) => scan,
+                Node::SemiJoin(join) => join.left(),
+                other => panic!("{other:?}"),
+            };
+            prop_assert_eq!(matches!(spans.root(), Node::SemiJoin(_)), joined);
+            prop_assert_eq!(scan.limit(), Some(limit + 1));
+            prop_assert_eq!(scan.arrival().as_of, Some(as_of));
+            prop_assert_eq!(scan.cursor().is_some(), child_cursor.is_some());
+            let key: Vec<&str> = scan.order().unwrap().columns().iter().map(|c| c.name()).collect();
+            prop_assert_eq!(key, ["start_minute", "start_time", "span_id"]);
+        }
+        // Metadata under a disjunction with a field of another table cannot be evaluated by either.
+        let mixed = SpanListRequest {
+            filter: Filter::Or(vec![metadata.clone(), Filter::Name(user.clone())]),
+            limit,
+            cursor: None,
+            as_of,
+        };
+        let refused = matches!(
+            span_list(scope, window, &keep(), caller, mixed),
+            Err(PlanError::UnsupportedFilter { field: "metadata", .. })
+        );
+        prop_assert!(refused);
+
+        let request = SearchRequest {
+            tokens: vec![user.clone(), "X".to_owned()],
+            mode: TokenMode::All,
+            fields: vec![SearchField::Input, SearchField::Output, SearchField::Metadata],
+            filter: Filter::And(vec![metadata, by_user, Filter::Name(user.clone())]),
+            limit,
+        };
+        if !user.is_empty() {
+            let found = search(scope, window, &keep(), caller, &request).unwrap().unwrap();
+            assert_scoped(&found.hits, scope, window, caller, QueryClass::Search, TableId::SpanPayload)?;
+            prop_assert_eq!(&found.rest.canonical(), &Filter::Name(user.clone()));
+            let hit = (as_of, trace_id.trace_hash(), parent);
+            let core = search_spans(scope, window, &keep(), caller, &[hit], &found.rest).unwrap().unwrap();
+            assert_scoped(&core, scope, window, caller, QueryClass::Search, TableId::SpanCore)?;
+        }
+
+        let request = PayloadRangeRequest {
+            trace_id,
+            span_id: parent,
+            start_time: last,
+            field: PayloadField::Output,
+            offset: 0,
+            len: 1,
+        };
+        let range = payload_range(scope, &keep(), caller, request).unwrap().unwrap();
+        prop_assert_eq!(range.window().from(), last);
+        prop_assert_eq!(range.window().to(), window.to());
+        prop_assert_eq!(range.root().tables(), vec![TableId::SpanPayload]);
+        prop_assert_eq!(range.scope(), scope);
+
+        let query = MetricsQuery {
+            source: Source::Spans,
+            measures: vec![(MeasureId::Count, Aggregation::Sum), (MeasureId::Duration, Aggregation::P95)],
+            dimensions: vec![DimensionId::Environment],
+            filter: Filter::Level(vec![crucible_records::Level::Error]),
+            granularity: Granularity::Step(Step::Week),
+            fill: Fill::Zero,
+            top_n: None,
+        };
+        let keys = [vec![Literal::String(user.clone())]];
+        // Two measures over 20 keys and the `other` series are 42 series, so 238 week buckets fit 10,000
+        // points and a longer window fits no granularity; the caps are the subject of `tests/metrics.rs`.
+        let plans = [
+            metrics_ranking(scope, window, &keep(), caller, &query),
+            metrics_series(scope, window, &keep(), caller, &query, Some(&keys)),
+            metrics_other(scope, window, &keep(), caller, &query, &keys),
+        ];
+        let weeks = Step::Week.buckets(window).1;
+        for plan in plans {
+            match plan {
+                Ok(plan) => {
+                    prop_assert!(weeks <= 238);
+                    assert_scoped(&plan.unwrap(), scope, window, caller, QueryClass::Analytics, TableId::SpanMetrics)?;
+                }
+                Err(MetricsError::TooBroad { suggested_granularity, .. }) => {
+                    prop_assert!(weeks > 238);
+                    prop_assert_eq!(suggested_granularity, None);
+                }
+                Err(other) => prop_assert!(false, "{other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -744,6 +908,20 @@ proptest! {
             since: None,
         };
         prop_assert_eq!(trace_list(scope, window, &keep(), Caller::Session, request), Err(PlanError::Limit));
+        let sessions = SessionListRequest { limit, cursor: None };
+        prop_assert_eq!(session_list(scope, window, &keep(), Caller::Session, sessions), Err(PlanError::Limit));
+        let users = UserListRequest { limit, cursor: None };
+        prop_assert_eq!(user_list(scope, window, &keep(), Caller::Session, users), Err(PlanError::Limit));
+        let spans = SpanListRequest { filter: Filter::all(), limit, cursor: None, as_of: Timestamp::EPOCH };
+        prop_assert_eq!(span_list(scope, window, &keep(), Caller::Session, spans), Err(PlanError::Limit));
+        let request = SearchRequest {
+            tokens: vec!["x".to_owned()],
+            mode: TokenMode::Any,
+            fields: vec![SearchField::Input],
+            filter: Filter::all(),
+            limit,
+        };
+        prop_assert_eq!(search(scope, window, &keep(), Caller::Session, &request), Err(PlanError::Limit));
         let trace = TraceBounds {
             trace_id: TraceId::ZERO,
             min_start: window.from(),
@@ -843,7 +1021,11 @@ proptest! {
         days in prop::option::of(0u32..800),
         trace in any::<[u8; 16]>(),
     ) {
-        let settings = RetentionSettings { retention_days: days, ..RetentionSettings::default() };
+        let settings = RetentionSettings {
+            retention_days: days,
+            payload_retention_days: days,
+            ..RetentionSettings::default()
+        };
         let clamp = RetentionClamp::new(settings, now);
         let trace_id = TraceId::from_bytes(trace);
         let last = Timestamp::from_micros(window.to().micros() - 1);
@@ -858,7 +1040,35 @@ proptest! {
         let parents = [SpanId::from_bytes([1; 8])];
         let caller = Caller::Session;
         let data = data_bounds(scope, window, &clamp, caller).unwrap();
+        let page = || (now, "id".to_owned());
+        let query = MetricsQuery {
+            source: Source::Spans,
+            measures: vec![(MeasureId::Count, Aggregation::Sum)],
+            dimensions: vec![DimensionId::Level],
+            filter: Filter::all(),
+            granularity: Granularity::Step(Step::Week),
+            fill: Fill::None,
+            top_n: None,
+        };
+        let keys = [vec![Literal::Enum(3)]];
+        let search_request = SearchRequest {
+            tokens: vec!["x".to_owned()],
+            mode: TokenMode::Any,
+            fields: vec![SearchField::Input],
+            filter: Filter::all(),
+            limit: 10,
+        };
+        let spans = SpanListRequest { filter: Filter::all(), limit: 10, cursor: None, as_of: now };
         let plans = [
+            session_list(scope, window, &clamp, caller, SessionListRequest { limit: 10, cursor: Some(page()) }).unwrap(),
+            session_detail(scope, window, &clamp, caller, "id").unwrap(),
+            user_list(scope, window, &clamp, caller, UserListRequest { limit: 10, cursor: Some(page()) }).unwrap(),
+            user_detail(scope, window, &clamp, caller, "id").unwrap(),
+            user_session_counts(scope, window, &clamp, caller, &["id".to_owned()]).unwrap(),
+            span_list(scope, window, &clamp, caller, spans).unwrap(),
+            search(scope, window, &clamp, caller, &search_request).unwrap().map(|found| found.hits),
+            search_spans(scope, window, &clamp, caller, &[(now, 1, parents[0])], &Filter::all()).unwrap(),
+
             trace_time_bounds(scope, window, &clamp, caller, trace_id).unwrap(),
             trace_page_stats(scope, window, &clamp, caller, &[trace_id]).unwrap(),
             trace_spans(scope, window.from(), last, &clamp, caller, trace_id).unwrap(),
@@ -870,7 +1080,27 @@ proptest! {
             data.spans,
             data.mcp,
         ];
+        // The metrics plans, when the window fits a granularity at all.
+        let expected = effective_window(TableId::SpanMetrics, window, &settings, now).unwrap();
+        for plan in [
+            metrics_ranking(scope, window, &clamp, caller, &query),
+            metrics_series(scope, window, &clamp, caller, &query, Some(&keys)),
+            metrics_other(scope, window, &clamp, caller, &query, &keys),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            prop_assert_eq!(plan.map(|plan| plan.window()), expected);
+        }
         let tables = [
+            TableId::SessionRollup,
+            TableId::SessionRollup,
+            TableId::UserRollup,
+            TableId::UserRollup,
+            TableId::TraceHeads,
+            TableId::SpanCore,
+            TableId::SpanPayload,
+            TableId::SpanCore,
             TableId::TraceStats,
             TableId::TraceStats,
             TableId::SpanCore,
