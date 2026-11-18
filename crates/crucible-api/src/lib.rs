@@ -2,7 +2,8 @@
 //! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
 //!
 //! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
-//!   and `.../data-bounds` over a [`QueryService`]; DTOs come from `crucible-api-types`.
+//!   and `.../data-bounds` over a [`QueryService`], one module per route group; DTOs come from
+//!   `crucible-api-types`.
 //! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
 //!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
 //!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
@@ -34,7 +35,6 @@ use axum::http::HeaderValue;
 use axum::http::header::ALLOW;
 use axum::middleware;
 use axum::response::Response;
-use axum::routing::get;
 use crucible_api_types::ProblemCode;
 use crucible_auth::KeyVerifier;
 use crucible_cursor::KeyRing;
@@ -90,20 +90,7 @@ fn build(
         settings,
         cursors,
     };
-    let api = Router::new()
-        .route("/projects/{project_id}/traces", get(routes::list_traces))
-        .route(
-            "/projects/{project_id}/traces/{trace_id}",
-            get(routes::get_trace),
-        )
-        .route(
-            "/projects/{project_id}/traces/{trace_id}/spans",
-            get(routes::list_span_children),
-        )
-        .route(
-            "/projects/{project_id}/data-bounds",
-            get(routes::get_data_bounds),
-        )
+    let api = routes::router()
         .fallback(unknown_path)
         .method_not_allowed_fallback(unknown_method)
         .with_state(state)
