@@ -26,7 +26,7 @@ include = ["THIRD_PARTY_NOTICES"]
 # Builds the UI and its compressed variants before each binary build.
 github-build-setup = "../build-setup.yml"
 # Release runs start only from a tag.
-pr-run-mode = "skip"
+pr-run-mode = "upload"
 
 # The actions the generated workflow uses, pinned by commit like every other workflow here.
 [dist.github-action-commits]
