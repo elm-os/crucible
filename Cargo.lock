@@ -1037,6 +1037,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-proxy"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "crucible-env",
+ "crucible-proxy",
+ "crucible-records",
+ "memchr",
+ "opentelemetry-proto",
+ "proptest",
+ "prost",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "crucible-query"
 version = "0.0.0"
 dependencies = [
