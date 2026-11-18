@@ -163,7 +163,6 @@ name = "crucible-sdk"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "futures",
  "hmac",
  "http",
  "http-body-util",
