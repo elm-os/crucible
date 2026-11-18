@@ -238,14 +238,15 @@ impl Wal {
     /// Opens the WAL directory under the `wal` root: initialises an empty directory, otherwise recovers
     /// it (contract section 4.6), then starts the committer. The log accepts appends as soon as this
     /// returns.
-    pub async fn open(env: &Env, config: WalConfig) -> Result<(Self, RecoveryReport), RecoveryError> {
+    pub async fn open(
+        env: &Env,
+        config: WalConfig,
+    ) -> Result<(Self, RecoveryReport), RecoveryError> {
         let capacity = config
             .segment_bytes
             .saturating_sub(SEGMENT_HEADER_LEN as u64);
         if capacity <= crucible_wal_codec::FRAME_HEADER_LEN as u64 {
-            return Err(RecoveryError::InvalidConfig(
-                "segment_bytes holds no frame",
-            ));
+            return Err(RecoveryError::InvalidConfig("segment_bytes holds no frame"));
         }
         let recovered = recover(env, &config).await?;
         let report = recovered.report;
@@ -421,8 +422,8 @@ impl Wal {
         let config = &shared.config;
         let now = shared.clock.wall_now().micros();
         let retention = config.replay_retention_micros();
-        let under_pressure =
-            (segments.len() as u64).saturating_mul(config.segment_bytes) >= config.high_water_bytes();
+        let under_pressure = (segments.len() as u64).saturating_mul(config.segment_bytes)
+            >= config.high_water_bytes();
         // Retained segments are evicted oldest first. One may stay only while it is younger than the
         // retention, the segments kept from it on fit the byte budget, and the log is below high-water.
         let mut removable = 0;
@@ -450,10 +451,7 @@ impl Wal {
         }
         if !removed.is_empty() {
             shared.publish_sizes();
-            shared
-                .metrics
-                .gc_removed_segments
-                .add(removed.len() as u64);
+            shared.metrics.gc_removed_segments.add(removed.len() as u64);
         }
         shared.refresh_free_bytes().await;
         result?;

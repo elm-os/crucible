@@ -707,9 +707,7 @@ impl Run<'_> {
     async fn reference(&self) -> Result<(LogState, bool), RecoveryError> {
         let label = format!("wal-sim/reference-{}", self.boots);
         let copy = self.disk.fork(self.sim.rng(&label).as_ref());
-        let host = self
-            .sim
-            .host(&label, &copy, self.plan().wall_offset_micros);
+        let host = self.sim.host(&label, &copy, self.plan().wall_offset_micros);
         let opened = Box::pin(Wal::open(&host.env, self.plan().config.clone())).await;
         let state = match opened {
             Ok((wal, report)) => {

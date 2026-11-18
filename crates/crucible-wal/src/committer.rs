@@ -149,7 +149,8 @@ impl Committer {
         let mut buf = Vec::with_capacity(usize::try_from(bytes).unwrap_or(0));
         let mut lsn = self.next_lsn;
         for item in &items {
-            item.frame.write_to(Lsn::new(lsn), clock.wall_now(), &mut buf);
+            item.frame
+                .write_to(Lsn::new(lsn), clock.wall_now(), &mut buf);
             lsn += 1;
         }
         let first_lsn = self.next_lsn;
@@ -175,11 +176,13 @@ impl Committer {
             // Nothing of this group is acknowledged. The LSNs it used are assigned again: `next_lsn` still
             // is the last durable LSN plus 1, and the next segment starts there, which supersedes whatever
             // the group left in this one.
+            // The waiters learn of it once the log has settled: either a new segment is ready, or the WAL
+            // is in the failed state.
             self.shared.metrics.group_failures.add(1);
+            self.abandon_segment().await;
             for item in items {
                 item.finish(Err(AppendError::Unavailable));
             }
-            self.abandon_segment().await;
             return;
         }
 

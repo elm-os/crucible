@@ -10,6 +10,12 @@
 //! `keep-torn-tail`, to replay the seed in that mode. The long run takes `CRUCIBLE_SIM_SEEDS=<count>` and
 //! `CRUCIBLE_SIM_FIRST_SEED=<n>`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout
+)]
 #![allow(clippy::disallowed_methods)]
 
 use std::ops::Range;
@@ -17,7 +23,8 @@ use std::ops::Range;
 use crucible_sim::wal_sim::{Options, Outcome, Stats, Violation, run_wal_sim};
 use crucible_wal::Mutant;
 
-const REPLAY: &str = "cargo nextest run -p crucible-sim --test wal_dst replay_seed --run-ignored all --no-capture";
+const REPLAY: &str =
+    "cargo nextest run -p crucible-sim --test wal_dst replay_seed --run-ignored all --no-capture";
 
 fn assert_holds(outcome: &Outcome) {
     assert!(
@@ -53,8 +60,14 @@ fn realistic(seeds: Range<u64>) -> Stats {
     // A shard that never acknowledged, crashed, retried a recovery, repaired a tail or reclaimed a
     // segment would prove nothing.
     assert!(total.acked > 0 && total.crashes > 0, "{total:?}");
-    assert!(total.recovery_retries > 0 && total.tail_repairs > 0, "{total:?}");
-    assert!(total.failed_appends > 0 && total.segments_removed > 0, "{total:?}");
+    assert!(
+        total.recovery_retries > 0 && total.tail_repairs > 0,
+        "{total:?}"
+    );
+    assert!(
+        total.failed_appends > 0 && total.segments_removed > 0,
+        "{total:?}"
+    );
     total
 }
 
@@ -177,7 +190,11 @@ fn mutant_census() {
         Mutant::KeepTornTail,
     ] {
         let caught: Vec<u64> = MUTANT_BUDGET
-            .filter(|&seed| !run_wal_sim(seed, Options::mutant(mutant)).violations.is_empty())
+            .filter(|&seed| {
+                !run_wal_sim(seed, Options::mutant(mutant))
+                    .violations
+                    .is_empty()
+            })
             .collect();
         println!(
             "{mutant:?}: {} of {} seeds, first {:?}",

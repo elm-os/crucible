@@ -26,9 +26,7 @@ pub use config::{
     DEFAULT_MAX_BYTES, DEFAULT_MIN_FREE_BYTES, DEFAULT_REPLAY_RETENTION, DEFAULT_SEGMENT_BYTES,
     Durability, GROUP_BYTES, MAX_REPLAY_RETENTION, WalConfig,
 };
-pub use error::{
-    AppendError, GcError, RecoveryError, ReplayError, SegmentHeaderIssue, WalGap,
-};
+pub use error::{AppendError, GcError, RecoveryError, ReplayError, SegmentHeaderIssue, WalGap};
 pub use layout::SegmentMeta;
 pub use recovery::{RecoveryReport, TailRepair, Watermark};
 pub use replay::Replay;

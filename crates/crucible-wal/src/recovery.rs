@@ -18,14 +18,12 @@ use bytes::Bytes;
 use crucible_env::{Clock, Disk, DiskError, Env, File, OpenMode};
 use crucible_records::{Lsn, WalEpoch};
 use crucible_wal_codec::{
-    BatchSeal, Checkpoint, CheckpointHint, EPOCH_ENTRY_LEN, Record, RecordType,
-    SEGMENT_HEADER_LEN, SegmentEnd, SegmentHeader, decode_epoch, encode_epoch,
+    BatchSeal, Checkpoint, CheckpointHint, EPOCH_ENTRY_LEN, Record, RecordType, SEGMENT_HEADER_LEN,
+    SegmentEnd, SegmentHeader, decode_epoch, encode_epoch,
 };
 
 use crate::config::{GROUP_BYTES, WalConfig};
-use crate::error::{
-    RecoveryError, SegmentHeaderIssue, WalGap, bad_compression, bad_payload,
-};
+use crate::error::{RecoveryError, SegmentHeaderIssue, WalGap, bad_compression, bad_payload};
 use crate::layout::{
     CHECKPOINT_NAME, EPOCH_NAME, SegmentMeta, entry, parse_segment_name, segment_path, wal_dir,
 };
@@ -135,11 +133,7 @@ pub(crate) struct Recovered {
     pub(crate) hint_lsn: Option<Lsn>,
 }
 
-async fn read_entry(
-    disk: &dyn Disk,
-    name: &str,
-    max: usize,
-) -> Result<Option<Bytes>, DiskError> {
+async fn read_entry(disk: &dyn Disk, name: &str, max: usize) -> Result<Option<Bytes>, DiskError> {
     match disk.open(&entry(name)?, OpenMode::Read).await {
         Ok(file) => Ok(Some(file.read_at(0, max).await?)),
         Err(DiskError::NotFound) => Ok(None),
@@ -213,7 +207,8 @@ fn decode_header(bytes: &[u8]) -> Result<SegmentHeader, SegmentHeaderIssue> {
     if bytes.iter().all(|&b| b == 0) {
         return Err(SegmentHeaderIssue::Unwritten);
     }
-    let array = <&[u8; SEGMENT_HEADER_LEN]>::try_from(bytes).map_err(|_| SegmentHeaderIssue::Short)?;
+    let array =
+        <&[u8; SEGMENT_HEADER_LEN]>::try_from(bytes).map_err(|_| SegmentHeaderIssue::Short)?;
     Ok(SegmentHeader::decode(array)?)
 }
 

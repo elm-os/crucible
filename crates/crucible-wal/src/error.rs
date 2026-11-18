@@ -27,7 +27,9 @@ pub enum WalGap {
         first_lsn: Lsn,
     },
     /// An earlier segment's valid prefix ends below the next segment's `first_lsn` minus 1.
-    #[error("segment {segment_no} is valid through lsn {valid_through}, the next starts at {next_first_lsn}")]
+    #[error(
+        "segment {segment_no} is valid through lsn {valid_through}, the next starts at {next_first_lsn}"
+    )]
     ShortSegment {
         /// The short segment.
         segment_no: u64,

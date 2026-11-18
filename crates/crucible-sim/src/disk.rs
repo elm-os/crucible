@@ -196,6 +196,10 @@ struct State {
     faults: DiskFaults,
     ops: u64,
     crash_at_op: Option<u64>,
+    /// Writes that fail regardless of the fault rates, for directed tests.
+    failing_writes: u32,
+    /// Syncs that fail regardless of the fault rates, for directed tests.
+    failing_syncs: u32,
 }
 
 impl State {
@@ -358,6 +362,8 @@ impl SimDisk {
     pub fn fork(&self, rng: &dyn Rng) -> Self {
         let mut state = self.shared.lock().clone();
         state.faults = DiskFaults::default();
+        state.failing_writes = 0;
+        state.failing_syncs = 0;
         state.crash_at_op = None;
         state.frozen = false;
         Self::with_state(rng, Arc::new(Trace::new()), state)
@@ -371,6 +377,16 @@ impl SimDisk {
     /// The current fault configuration.
     pub fn faults(&self) -> DiskFaults {
         self.shared.lock().faults.clone()
+    }
+
+    /// Makes the next `n` writes fail with EIO after a seeded prefix was written.
+    pub fn fail_next_writes(&self, n: u32) {
+        self.shared.lock().failing_writes = n;
+    }
+
+    /// Makes the next `n` syncs fail with EIO.
+    pub fn fail_next_syncs(&self, n: u32) {
+        self.shared.lock().failing_syncs = n;
     }
 
     /// Operations started so far.
@@ -419,7 +435,9 @@ impl SimDisk {
                 let prefix = (rng.next_u64() % (total as u64 + 1)) as usize;
                 (0..total).map(|i| i < prefix).collect()
             }
-            _ => (0..total).map(|_| rng.next_u64().is_multiple_of(2)).collect(),
+            _ => (0..total)
+                .map(|_| rng.next_u64().is_multiple_of(2))
+                .collect(),
         };
         let mut names = std::mem::take(&mut state.durable_names);
         for (op, _) in pending.iter().zip(&kept).filter(|(_, kept)| **kept) {
@@ -675,7 +693,9 @@ impl FileOps for SimFile {
         }
         let streams = &self.shared.streams;
         let mut state = self.shared.live(self.generation).await?;
-        let fault = if hit(streams.write_error.as_ref(), state.faults.write_error_ppm) {
+        let forced = state.failing_writes > 0;
+        state.failing_writes = state.failing_writes.saturating_sub(1);
+        let fault = if forced || hit(streams.write_error.as_ref(), state.faults.write_error_ppm) {
             Some(io_error(std::io::ErrorKind::Other, "EIO on write"))
         } else if hit(streams.short_write.as_ref(), state.faults.short_write_ppm) {
             Some(io_error(std::io::ErrorKind::WriteZero, "short write"))
@@ -738,7 +758,9 @@ impl FileOps for SimFile {
             tokio::time::sleep(Duration::from_micros(micros)).await;
         }
         let mut state = self.shared.live(self.generation).await?;
-        let error = hit(streams.sync_error.as_ref(), state.faults.sync_error_ppm);
+        let forced = state.failing_syncs > 0;
+        state.failing_syncs = state.failing_syncs.saturating_sub(1);
+        let error = forced || hit(streams.sync_error.as_ref(), state.faults.sync_error_ppm);
         let lie = !error && hit(streams.fsync_lie.as_ref(), state.faults.fsync_lie_ppm);
         let file = inode(&mut state, self.inode)?;
         if error || lie {
