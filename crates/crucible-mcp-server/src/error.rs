@@ -144,6 +144,9 @@ impl ToolError {
             retry_after_s: self.retry_after_s,
             limit: self.limit,
             suggested_granularity: None,
+            line: None,
+            column: None,
+            reason: None,
         };
         // Serializing these plain fields cannot fail; the code would still be in the empty text's place.
         let text = serde_json::to_string(&problem).unwrap_or_default();
