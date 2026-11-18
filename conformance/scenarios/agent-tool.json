@@ -1,0 +1,18 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-tool",
+  "kind": "agent",
+  "title": "A tool span inside an agent span",
+  "steps": [
+    {
+      "step": "assist",
+      "observe": {
+        "name": "assist",
+        "type": "agent",
+        "children": [
+          { "name": "lookup-weather", "type": "tool", "input": { "city": "Lisbon" }, "output": { "forecast": "sunny", "high_c": 24 } }
+        ]
+      }
+    }
+  ]
+}

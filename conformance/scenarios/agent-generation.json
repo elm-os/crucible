@@ -1,0 +1,30 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-generation",
+  "kind": "agent",
+  "title": "A generation with model, messages, usage parts and a provided cost",
+  "steps": [
+    {
+      "step": "answer",
+      "observe": {
+        "name": "answer",
+        "type": "agent",
+        "children": [
+          {
+            "name": "draft-reply",
+            "type": "generation",
+            "model": "conformance-model-1",
+            "provider": "conformance-provider",
+            "input_messages": [{ "role": "user", "parts": [{ "type": "text", "content": "Summarize the refund policy." }] }],
+            "output_messages": [
+              { "role": "assistant", "parts": [{ "type": "text", "content": "Refunds take 5 days." }], "finish_reason": "stop" }
+            ],
+            "finish_reasons": ["stop"],
+            "usage": { "input_tokens": 120, "output_tokens": 40, "cache_read.input_tokens": 20, "reasoning.output_tokens": 8 },
+            "cost_usd": { "total": "0.0042", "input": "0.003", "output": "0.0012" }
+          }
+        ]
+      }
+    }
+  ]
+}
