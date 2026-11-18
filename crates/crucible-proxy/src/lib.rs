@@ -10,9 +10,12 @@
 //! - [`encode`]: operations to OTLP spans.
 //! - [`live`]: the telemetry task and the exporter, off the forwarding path.
 //! - [`stdio`]: the pumps of `crucible proxy stdio`.
+//! - [`http`]: the reverse proxy of `crucible proxy http`, and [`identity`], its opt-in token identity.
 
 pub mod core;
 pub mod encode;
+pub mod http;
+pub mod identity;
 pub mod live;
 pub mod net;
 pub mod scan;

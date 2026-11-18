@@ -22,6 +22,7 @@ test-mutants = []
 [dependencies]
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
+base64 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -31,9 +32,15 @@ hyper-util = { workspace = true, features = ["tokio"] }
 memchr = { workspace = true }
 opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
 prost = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
 tracing = { workspace = true }
+
+# Signature verification of the opt-in `verified` identity mode (contract 9.3). MIT. The pure-Rust backend:
+# no C toolchain on any platform.
+jsonwebtoken = { version = "=12.0.0", default-features = false, features = ["rust_crypto"] }
 
 [dev-dependencies]
 # The crate's own seeded defects, so the tests can check that they are caught.
