@@ -72,7 +72,7 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: payload | `trace.spec.ts` "payload": loading, success (tree), success (messages), large field by ranges, error with retry, empty and not stored (6) | `payload-viewer.test.tsx`, `payload-model.test.ts` |
 | Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
-| Phone | `phone.spec.ts` (5) | |
+| Phone | `phone.spec.ts` (6), including the list pages, one session and one user, and a long filter chip | |
 
 ## Keyboard paths
 
