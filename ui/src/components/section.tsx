@@ -14,7 +14,7 @@ const LABEL_AFTER_MS = 5_000;
 
 const updatedFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 
-function useLoadingPhase(loading: boolean): LoadingPhase {
+export function useLoadingPhase(loading: boolean): LoadingPhase {
   const [phase, setPhase] = useState<LoadingPhase>("hidden");
   useEffect(() => {
     if (!loading) return;
@@ -121,7 +121,7 @@ export function Section<T>({
   );
 }
 
-function ErrorCard({
+export function ErrorCard({
   error,
   label,
   onRetry,

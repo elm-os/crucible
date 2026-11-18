@@ -1,8 +1,9 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Span } from "@/api/generated/Span";
+import type { SpanPage } from "@/api/generated/SpanPage";
 import type { TraceDetail as TraceDetailBody } from "@/api/generated/TraceDetail";
 import { createQueryClient } from "@/components/providers";
 import { TraceDetail } from "./trace-detail";
@@ -61,7 +62,7 @@ function span(fields: Partial<Span>): Span {
 }
 
 const SPANS = [
-  span({}),
+  span({ total_cost_usd: 0.0042 }),
   span({
     span_id: "00f067aa0ba902b8",
     parent_span_id: "00f067aa0ba902b7",
@@ -70,14 +71,20 @@ const SPANS = [
     start_time: "2026-11-17T14:00:00.012500Z",
     duration_us: 300,
     status_code: "error",
+    level: "error",
   }),
   span({
     span_id: "00f067aa0ba902b9",
     parent_span_id: "00f067aa0ba902b7",
     name: "",
+    observation_type: "generation",
+    model: "gpt-x",
     start_time: "2026-11-17T14:00:00.900000Z",
     duration_us: 40_000,
     status_code: "unset",
+    input_tokens: 1_200,
+    output_tokens: 300,
+    total_tokens: 1_500,
   }),
 ];
 
@@ -93,11 +100,22 @@ function detail(fields: Partial<TraceDetailBody> = {}): TraceDetailBody {
   };
 }
 
-function cells(): string[][] {
-  return screen
+const lagging = () =>
+  detail({
+    spans: [],
+    span_count: 0,
+    meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
+  });
+
+function rows(): string[][] {
+  return within(screen.getByRole("treegrid", { name: "Spans" }))
     .getAllByRole("row")
     .slice(1)
-    .map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent ?? ""));
+    .map((row) =>
+      [...row.querySelectorAll('[role="rowheader"], [role="gridcell"]')].map(
+        (cell) => cell.textContent ?? "",
+      ),
+    );
 }
 
 describe("the trace page", () => {
@@ -110,78 +128,139 @@ describe("the trace page", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("lists the spans with name, start offset, duration and status", async () => {
+  test("a trace id that isn't 32 hex characters is an invalid link, and nothing is fetched", () => {
+    window.history.replaceState(null, "", "/trace/?project=p-1&trace=not-a-trace");
+    renderPage();
+    expect(screen.getByText("This trace link isn't valid.")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("the spans form a tree with type, name, error marker and duration", async () => {
     fetchMock.mockResolvedValue(json(detail()));
     renderPage();
-    expect(await screen.findByText("agent run")).toBeTruthy();
-    expect(cells()).toEqual([
-      ["agent run", "0 ms", "1.3 s", "OK"],
-      ["search tool", "+13 ms", "<1 ms", "Error"],
-      ["Unnamed span", "+900 ms", "40 ms", "Unset"],
+    await screen.findByRole("treegrid", { name: "Spans" });
+    expect(rows()).toEqual([
+      ["Agent agent run", "", "1.3 s"],
+      ["Tool search tool Error", "", "<1 ms"],
+      ["Generation Unnamed span", "", "40 ms"],
     ]);
-    for (const [label, status] of [
-      ["OK", "ok"],
-      ["Error", "error"],
-      ["Unset", "unset"],
-    ]) {
-      expect(screen.getByText(label).getAttribute("data-status")).toBe(status);
-    }
+    const bars = within(screen.getByRole("treegrid")).getAllByRole("gridcell");
+    expect(bars[0]?.getAttribute("aria-label")).toBe("Starts at 0 ms, lasts 1.3 s");
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]), "http://localhost");
     expect(url.pathname).toBe(`/api/v1/projects/p-1/traces/${TRACE}`);
     expect(url.search).toBe("");
   });
 
-  test("a paged trace says how many spans it shows", async () => {
-    fetchMock.mockResolvedValue(json(detail({ paged: true, span_count: 12_000 })));
+  test("the summary totals the trace, and status reads as icon and label", async () => {
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    const errors = await screen.findByText("1 error");
+    expect(errors.getAttribute("data-status")).toBe("error");
+    expect(errors.querySelector("svg")).toBeTruthy();
+    expect(screen.getByText("$0.0042")).toBeTruthy();
+    expect(screen.getByText("1,500")).toBeTruthy();
+  });
+
+  test("choosing a span writes it to the URL and fills the span panel", async () => {
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    const panel = (await screen.findByText("Select a span.")).closest("section");
+    if (!panel) throw new Error("the span panel is not a section");
+    expect(panel.getAttribute("aria-busy")).toBeNull();
+    const row = screen.getByRole("row", { name: /Unnamed span/ });
+    await act(async () => {
+      row.focus();
+      fireEvent.keyDown(row, { key: "Enter" });
+    });
+    expect(new URLSearchParams(window.location.search).get("span")).toBe("00f067aa0ba902b9");
+    expect(row.getAttribute("aria-selected")).toBe("true");
+    expect(within(panel).getByText("gpt-x")).toBeTruthy();
+    expect(within(panel).getByText("1,200 in, 300 out, 1,500 total")).toBeTruthy();
+    expect(within(panel).getByText(/once the span detail API ships/)).toBeTruthy();
+  });
+
+  test("a paged trace says its totals cover the loaded spans, and expanding fetches children", async () => {
+    const parent = span({ child_count: 2 });
+    const child = span({
+      span_id: "00f067aa0ba902c1",
+      parent_span_id: "00f067aa0ba902b7",
+      name: "child one",
+      child_count: 4,
+    });
+    const page: SpanPage = {
+      data: [
+        span({
+          span_id: "00f067aa0ba902d1",
+          parent_span_id: "00f067aa0ba902c1",
+          name: "grandchild",
+        }),
+      ],
+      next_cursor: null,
+      has_more: false,
+      meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
+    };
+    fetchMock.mockImplementation(async (input) =>
+      String(input).includes("/spans?")
+        ? json(page)
+        : json(detail({ paged: true, span_count: 12_000, spans: [parent, child] })),
+    );
     renderPage();
     expect(
       await screen.findByText(
-        "Showing the root spans and their children, 3 of 12000. Deeper spans will load with the span tree.",
+        "This trace is large. Duration, cost and tokens cover the 2 spans loaded so far; expanding a span loads its children.",
       ),
     ).toBeTruthy();
+    const row = screen.getByRole("row", { name: /child one/ });
+    await act(async () => {
+      row.focus();
+      fireEvent.keyDown(row, { key: "ArrowRight" });
+    });
+    expect(await screen.findByRole("row", { name: /grandchild/ })).toBeTruthy();
+    const childCalls = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname.endsWith("/spans"));
+    expect(childCalls.map((url) => url.searchParams.get("parent_span_id"))).toContain(
+      "00f067aa0ba902c1",
+    );
   });
 
   test("an empty answer that may be incomplete offers to check again, distinct from not found", async () => {
-    fetchMock.mockResolvedValueOnce(
-      json(
-        detail({
-          spans: [],
-          span_count: 0,
-          meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
-        }),
-      ),
-    );
+    fetchMock.mockResolvedValueOnce(json(lagging()));
     fetchMock.mockResolvedValueOnce(json(detail()));
     renderPage();
     const empty = await screen.findByText("This trace has no spans to show yet.");
     expect(empty.closest("[data-empty]")?.getAttribute("data-empty")).toBe("incomplete");
     expect(screen.queryByText("This isn't in this project.")).toBeNull();
     await act(async () => screen.getByRole("button", { name: "Check again" }).click());
-    expect(await screen.findByText("agent run")).toBeTruthy();
+    expect(await screen.findByRole("row", { name: /agent run/ })).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  test("an agent finds the page's controls by name and can check again", async () => {
-    const lagging = detail({
-      spans: [],
-      span_count: 0,
-      meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
-    });
-    fetchMock.mockResolvedValueOnce(json(lagging));
-    fetchMock.mockResolvedValueOnce(json(detail()));
+  test("an agent finds the page's controls by name, can check again and choose a span", async () => {
+    fetchMock.mockResolvedValueOnce(json(lagging()));
+    fetchMock.mockResolvedValue(json(detail()));
     renderPage();
     await screen.findByRole("button", { name: "Check again" });
-    const components = agent
-      .snapshot()
-      .filter((entry) => !entry.offPage && entry.component !== "more");
-    for (const entry of components) {
+    const components = () =>
+      agent.snapshot().filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components()) {
       expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
     }
-    expect(components.map((entry) => entry.label)).toContain("Check again");
+    expect(components().map((entry) => entry.label)).toContain("Check again");
 
-    const result = await agent.act({ steps: [{ ref: "Check again", action: "press" }] });
-    expect(result.ok, result.error?.message).toBe(true);
-    expect(await screen.findByText("search tool")).toBeTruthy();
+    const checked = await agent.act({ steps: [{ ref: "Check again", action: "press" }] });
+    expect(checked.ok, checked.error?.message).toBe(true);
+    await screen.findByRole("treegrid", { name: "Spans" });
+    for (const entry of components()) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    expect(components().map((entry) => entry.label)).toContain("Spans");
+
+    const chosen = await agent.act({
+      steps: [{ ref: "Spans", action: "setValue", args: ["search tool"] }],
+    });
+    expect(chosen.ok, chosen.error?.message).toBe(true);
+    expect(new URLSearchParams(window.location.search).get("span")).toBe("00f067aa0ba902b8");
   });
 
   test("a partial trace says spans may be missing", async () => {
@@ -216,7 +295,7 @@ describe("the trace page", () => {
     expect(screen.getByText("r2")).toBeTruthy();
   });
 
-  test("a store outage is a section error with a retry", async () => {
+  test("a store outage is one section error with a retry, and the panel stands aside", async () => {
     fetchMock.mockResolvedValue(
       json(
         { code: "telemetry_store_unavailable", status: 503, request_id: "r3" },
@@ -226,6 +305,53 @@ describe("the trace page", () => {
     );
     renderPage();
     expect(await screen.findByText("This section couldn't load.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry spans" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Retry/ }).map((b) => b.textContent)).toEqual([
+      "Retry spans",
+    ]);
+    expect(screen.queryByRole("region", { name: "Span" })).toBeNull();
+  });
+});
+
+describe("the agent graph view", () => {
+  test("an agent finds the graph's nodes, and choosing one filters the timeline", async () => {
+    window.history.replaceState(null, "", `/trace/?project=p-1&trace=${TRACE}&view=graph`);
+    fetchMock.mockResolvedValue(json(detail()));
+    renderPage();
+    const graph = await screen.findByRole("listbox", { name: "Agent graph" });
+    // Flow order: left to right, then top to bottom.
+    expect(
+      within(graph)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "Agent agent run 1 span ",
+      "Model gpt-x 1 span ",
+      "Tool search tool 1 span 1 error",
+    ]);
+    const tool = within(graph).getByRole("option", { name: /search tool/ });
+    const description = document.getElementById(tool.getAttribute("aria-describedby") ?? "");
+    expect(description?.textContent).toBe("Called by agent run 1 time.");
+
+    const components = agent
+      .snapshot()
+      .filter((entry) => !entry.offPage && entry.component !== "more");
+    for (const entry of components) {
+      expect(entry.label, `${entry.component} ${entry.ref} has no name`).toBeTruthy();
+    }
+    expect(components.map((entry) => entry.label)).toEqual(
+      expect.arrayContaining(["View", "Agent graph"]),
+    );
+    const chosen = await agent.act({
+      steps: [{ ref: "Agent graph", action: "setValue", args: ["Tool search tool"] }],
+    });
+    expect(chosen.ok, chosen.error?.message).toBe(true);
+    expect(tool.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The timeline shows the 1 span of tool search tool.")).toBeTruthy();
+
+    await act(async () => screen.getByRole("button", { name: "Show in timeline" }).click());
+    expect(new URLSearchParams(window.location.search).get("view")).toBeNull();
+    expect(rows().map(([name]) => name)).toEqual(["Agent agent run", "Tool search tool Error"]);
+    await act(async () => screen.getByRole("button", { name: "Show all spans" }).click());
+    expect(rows()).toHaveLength(3);
   });
 });

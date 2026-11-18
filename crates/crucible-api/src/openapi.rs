@@ -1,5 +1,6 @@
 //! The OpenAPI 3.1 document, generated from the handlers (contract 12.1). `crucible openapi` prints it and it
-//! is committed at `specs/openapi/crucible-v1.json`; a test fails when the two differ.
+//! is committed at `specs/openapi/crucible-v1.json`; a test fails when the two differ. The document holds the
+//! info, the security scheme and the tags; each route group adds its paths (`routes::document`).
 
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
@@ -32,12 +33,6 @@ impl Modify for ProjectKey {
                        Errors are `application/problem+json` documents with a stable `code`.",
         license(name = "MIT"),
     ),
-    paths(
-        routes::list_traces,
-        routes::get_trace,
-        routes::list_span_children,
-        routes::get_data_bounds
-    ),
     modifiers(&ProjectKey),
     tags((name = "traces", description = "Traces, their spans and the project's data bounds.")),
 )]
@@ -45,7 +40,7 @@ struct ApiDoc;
 
 /// The OpenAPI document. `info.version` is the binary's version: every crate shares the workspace version.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    routes::document(ApiDoc::openapi())
 }
 
 /// The OpenAPI document as pretty-printed JSON with a final newline, as committed.

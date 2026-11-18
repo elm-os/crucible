@@ -14,25 +14,35 @@
 //! - **Cursors** are plain values ([`PageCursor`], [`HeadCursor`], [`ChildCursor`]); the API signs and encodes
 //!   them with `crucible-cursor`.
 //! - **Errors** are [`QueryServiceError`], one problem code of contract 12.3 each.
+//!
+//! Each service is one module (`trace_detail`, `trace_list`, `live_tail`, `span_children`, `data_bounds`),
+//! registered here with its `mod` line and its `pub use` line. What the services share is in `service` (the
+//! store calls and the per-trace aggregates), `spans` (the merge and de-duplication of a trace's spans), `heads`
+//! (the merge of trace heads), `context` (`meta` and errors), `cursor` and `decode`.
 
-mod bounds;
 mod context;
 mod cursor;
+mod data_bounds;
 mod decode;
-mod list;
+mod heads;
+mod live_tail;
 mod service;
-mod trace;
+mod span_children;
+mod spans;
+mod trace_detail;
+mod trace_list;
 
-pub use bounds::{DataBounds, MinuteRange};
 pub use context::{Meta, PartialReason, QueryServiceError, ReadContext};
 pub use crucible_recent::Consistency;
 /// Re-exported for callers that build a [`ReadContext`] without depending on `crucible-schema`.
 pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, PageCursor};
+pub use data_bounds::{DataBounds, MinuteRange};
 pub use decode::TraceHeadView;
-pub use list::{
-    NEW_COUNT_MAX, TRACE_LIST_DEFAULT_LIMIT, TraceListItem, TraceListPage, TraceListQuery,
-    TraceTail, TraceTailQuery,
-};
+pub use heads::{TRACE_LIST_DEFAULT_LIMIT, TraceListItem};
+pub use live_tail::{NEW_COUNT_MAX, TraceTail, TraceTailQuery};
 pub use service::{QueryService, TraceSummary};
-pub use trace::{SpanChildrenPage, SpanChildrenQuery, SpanSource, TraceDetail, TraceSpan};
+pub use span_children::{SpanChildrenPage, SpanChildrenQuery};
+pub use spans::{SpanSource, TraceSpan};
+pub use trace_detail::TraceDetail;
+pub use trace_list::{TraceListPage, TraceListQuery};

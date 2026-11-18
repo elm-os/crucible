@@ -135,6 +135,77 @@ body {
   letter-spacing: 0.05em;
 }
 
+/* Trace waterfall. UI SDK places each bar with --waterfall-start and --waterfall-size and indents with
+   --waterfall-level; the virtualizer places each row. */
+[data-slot="waterfall-row"] {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+[data-slot="waterfall-row"][data-selected] {
+  background-color: color-mix(in srgb, var(--color-midnight-ink) 8%, transparent);
+  font-weight: 600;
+}
+
+[data-slot="waterfall-row"]:focus-visible,
+[data-slot="waterfall-row"] [tabindex]:focus-visible {
+  outline: 2px solid var(--color-midnight-ink);
+  outline-offset: -2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-slot="waterfall-row"]:not([data-selected]):hover {
+    background-color: color-mix(in srgb, var(--color-midnight-ink) 4%, transparent);
+  }
+}
+
+[data-slot="waterfall-row-header"] {
+  padding-inline-start: calc((var(--waterfall-level, 1) - 1) * 0.75rem);
+}
+
+[data-slot="waterfall-indicator"] svg {
+  transition: rotate 150ms var(--ease-out-strong);
+}
+
+[data-slot="waterfall-indicator"][data-expanded] svg {
+  rotate: 90deg;
+}
+
+[data-slot="waterfall-bar"] {
+  position: relative;
+  align-self: stretch;
+}
+
+/* A minimum width keeps sub-millisecond spans visible. */
+[data-slot="waterfall-bar"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0.6875rem;
+  inset-inline-start: min(var(--waterfall-start), calc(100% - 2px));
+  width: max(var(--waterfall-size), 2px);
+  border-radius: 1px;
+  background-color: var(--color-midnight-ink);
+}
+
+[data-slot="waterfall-axis"] {
+  position: relative;
+  display: block;
+  height: 1.125rem;
+}
+
+[data-slot="waterfall-tick"] {
+  position: absolute;
+  inset-inline-start: var(--waterfall-tick);
+  translate: calc(var(--waterfall-tick) * -1) 0;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="waterfall-indicator"] svg {
+    transition: none;
+  }
+}
+
 /* Skeleton shimmer: opacity only, and a still block when motion is unwelcome. */
 @keyframes skeleton-pulse {
   50% {

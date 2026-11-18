@@ -1,5 +1,7 @@
 import { type Connection, connectionKey } from "@/lib/connection";
 import { fromHttpFailure, networkError, type UiError } from "./errors";
+import type { SpanPage } from "./generated/SpanPage";
+import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
 import type { TraceListParams } from "./generated/TraceListParams";
@@ -77,6 +79,21 @@ export function getTrace(
   signal?: AbortSignal,
 ): Promise<TraceDetail> {
   return apiGet(projectPath(project, `/traces/${encodeURIComponent(traceId)}`), {}, signal);
+}
+
+export function listSpanChildren(
+  project: string,
+  traceId: string,
+  parentSpanId: string,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<SpanPage> {
+  const query: SpanPageParams = { parent_span_id: parentSpanId, cursor: cursor ?? undefined };
+  return apiGet(
+    projectPath(project, `/traces/${encodeURIComponent(traceId)}/spans`),
+    query,
+    signal,
+  );
 }
 
 async function failure(response: Response, readBody = true): Promise<UiError> {

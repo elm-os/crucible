@@ -9,6 +9,7 @@
 
 mod build;
 mod class;
+mod endpoints;
 mod error;
 mod literal;
 mod node;
@@ -19,16 +20,11 @@ mod registry;
 pub mod test_support;
 mod value;
 
-pub use build::{
-    DataBoundsPlans, RetentionClamp, SPAN_CHILDREN_DEFAULT_LIMIT, SPAN_CHILDREN_MAX_LIMIT,
-    TRACE_INLINE_SPAN_LIMIT, TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TRACE_PAGED_SPAN_LIMIT,
-    TraceBounds, TraceListRequest, child_counts, data_bounds, effective_window, span_children,
-    spans_of_parents, trace_bounds_window, trace_list, trace_page_stats, trace_roots, trace_spans,
-    trace_time_bounds,
-};
+pub use build::{RetentionClamp, TraceBounds, effective_window, trace_bounds_window};
 pub use class::{
     CLASS_FIXED_SETTINGS, Caller, ClassLimits, DEADLINE_SLACK_SECS, QueryClass, profile_caps,
 };
+pub use endpoints::*;
 pub use error::PlanError;
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{
