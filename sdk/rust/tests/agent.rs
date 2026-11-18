@@ -121,6 +121,9 @@ async fn flush_and_shutdown_export_what_ended_and_later_spans_are_dropped() {
     init(&collector, |_| {}).await;
 
     observe(&Context::new(), "first", ObservationType::Span).end();
+    // With a long flush interval, nothing leaves before flush.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(collector.exports().is_empty());
     crucible_sdk::flush().await.unwrap();
     assert_eq!(collector.spans().len(), 1);
     let open = observe(&Context::new(), "open at shutdown", ObservationType::Span);

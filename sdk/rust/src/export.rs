@@ -167,7 +167,8 @@ struct Worker {
 
 impl Worker {
     async fn run(mut self) {
-        let mut ticker = tokio::time::interval(self.interval);
+        // The first tick comes one interval after start: spans leave on a tick, a full batch, flush or shutdown.
+        let mut ticker = tokio::time::interval_at(Instant::now() + self.interval, self.interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
