@@ -796,6 +796,7 @@ dependencies = [
  "proptest",
  "smallvec",
  "thiserror",
+ "xxhash-rust",
 ]
 
 [[package]]
