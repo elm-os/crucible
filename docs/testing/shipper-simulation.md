@@ -13,7 +13,7 @@ shipper follows is in [`formal-model.md`](formal-model.md); the disk and the WAL
 | Workload and oracle | `crucible_sim::ship_sim` | The WAL suite's plan (segment sizes, disk faults, crash loops, process stops, crashes during recovery), clients that append OTLP requests as `IngestRequest` frames, the real shipper, seeded crash points, and the ledger that checks I1, I2, I12, I13 and I14 |
 | Recovery driver | `crucible_sim::boot` (crate-private) | Recovers the WAL through crashes and faults and compares it with an uninterrupted reference recovery. Both suites use it |
 | Suite | `crates/crucible-sim/tests/ship_dst.rs` | The per-pull-request seeds, the mutants, the determinism test, the long run and the replay tool |
-| Directed tests | `crates/crucible-sim/tests/ship_directed.rs` | One scripted situation each, with the calls the store received checked in order |
+| Directed tests | `crates/crucible-sim/tests/ship_directed.rs` | One scripted situation each, with the calls the store received checked in order; and a crash at every disk operation of the two quarantine copies, after which every whole manifest must stand beside the copy it declares |
 
 The WAL suite keeps its stand-in shipper (seal, checkpoint, collect). It checks `crucible-wal` alone, with opaque
 frames and incarnations of a few milliseconds, and its recorded mutant seeds do not depend on the shipper. The

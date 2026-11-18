@@ -1,0 +1,68 @@
+{
+  "name": "@elm-os/crucible",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Crucible SDK for TypeScript: agent tracing helpers and MCP server and client instrumentation.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elm-os/crucible.git",
+    "directory": "sdk/typescript"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "default": "./dist/mcp/index.js"
+    },
+    "./mcp-client": {
+      "types": "./dist/mcp-client/index.d.ts",
+      "default": "./dist/mcp-client/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "check:private": "node scripts/check-private.mjs selftest && node scripts/check-private.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/core": "2.12.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.2",
+    "@opentelemetry/resources": "2.12.1",
+    "@opentelemetry/sdk-trace-base": "2.12.1"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/client": ">=2.0.0 <3",
+    "@modelcontextprotocol/server": ">=2.0.0 <3"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/client": {
+      "optional": true
+    },
+    "@modelcontextprotocol/server": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@opentelemetry/context-async-hooks": "2.12.1",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0",
+    "zod": "4.6.7"
+  }
+}

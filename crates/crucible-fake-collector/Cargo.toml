@@ -1,0 +1,57 @@
+[package]
+name = "crucible-fake-collector"
+description = "Loopback OTLP/HTTP collector and the SDK conformance driver, crucible-sdk-driver."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crucible-sdk-driver"
+path = "src/main.rs"
+
+[features]
+# The seeded defect of the self-test runner (`selftest-runner --mutant`), which the driver must flag. Never enabled
+# by the crucible binary.
+test-mutants = []
+
+[dependencies]
+crucible-env = { workspace = true }
+crucible-env-prod = { workspace = true }
+crucible-records = { workspace = true }
+crucible-otlp = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+flate2 = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+memchr = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
+prost = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "process", "io-util"] }
+
+# HMAC-SHA256 for the multi-round state hashes of contract 9.6.
+hmac = "=0.13.0"
+
+[dev-dependencies]
+# The crate's own seeded defect, so the tests can check that the driver flags it.
+crucible-fake-collector = { path = ".", features = ["test-mutants"] }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
+proptest = { workspace = true }
+# The suite directory, embedded so the tests read it without touching the filesystem.
+rust-embed = { workspace = true, features = ["debug-embed", "deterministic-timestamps"] }
+
+[lints]
+workspace = true

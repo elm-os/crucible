@@ -1299,10 +1299,11 @@ fn rollup(index: usize) -> (TableId, ColumnRef, Vec<Measure>) {
 fn filter(v: &mut Values, filtered: bool, metadata: bool) -> Filter {
     let mut conditions = Vec::new();
     if filtered {
-        conditions.push(Filter::Text(
-            TextField::Environment,
-            vec![v.string(), v.string()],
-        ));
+        // Distinct by construction (the second extends the first): the plan keeps a filter's values as a set, so
+        // two equal draws would shorten the list and change the shape, not just the values.
+        let first = v.string();
+        let second = format!("{first}{}", v.string());
+        conditions.push(Filter::Text(TextField::Environment, vec![first, second]));
         conditions.push(Filter::Not(Box::new(Filter::Level(vec![Level::Error]))));
         conditions.push(Filter::Or(vec![
             Filter::Tags(vec![v.string()]),

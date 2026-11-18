@@ -25,7 +25,9 @@ use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
 use crucible_sim::ship_sim::request_payload;
 use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
-use crucible_wal_codec::{Compression, PreparedFrame, Record, RecordType};
+use crucible_wal_codec::{
+    Compression, FRAME_HEADER_LEN, FrameHeader, PreparedFrame, Record, RecordType,
+};
 
 /// The tables a span without a session or a user yields rows in.
 const TABLES: [TableId; 5] = [
@@ -167,7 +169,15 @@ where
     F: FnOnce(Rig) -> Fut,
     Fut: Future<Output = ()>,
 {
-    run(7, |sim| {
+    directed_seeded(7, body);
+}
+
+fn directed_seeded<F, Fut>(seed: u64, body: F) -> Fut::Output
+where
+    F: FnOnce(Rig) -> Fut,
+    Fut: Future,
+{
+    run(seed, |sim| {
         let disk = sim.disk("disk");
         let model = ChModel::new(
             sim.rng("store").as_ref(),
@@ -181,7 +191,7 @@ where
             model,
             boots: Mutex::new(0),
         })
-    });
+    })
 }
 
 fn retry() -> InsertError {
@@ -779,4 +789,226 @@ fn a_fact_batch_frame_lands_in_the_fact_tables() {
         assert_eq!(rig.model.stats().inserts, inserts);
         node.host.stop().await;
     });
+}
+
+/// Virtual time in which a node ships a frame through to its quarantine and its checkpoint.
+const SHIPPING_MILLIS: u64 = 60;
+
+/// What a quarantine copy is made of in the crash sweeps below.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Copied {
+    /// A frame that does not decode: the frame quarantine.
+    Frame,
+    /// A pair that the store refuses as poison: the pair quarantine.
+    Pair,
+}
+
+impl Copied {
+    fn script(self, model: &ChModel) {
+        if self == Self::Pair {
+            model.set_script(Script::new(|token, _| {
+                (token.table() == TableId::TraceHeads).then(|| InsertError::Poison {
+                    code: 27,
+                    message: "cannot parse".to_owned(),
+                })
+            }));
+        }
+    }
+
+    /// Appends the frame whose shipping ends in the copy.
+    async fn write(self, node: &Node) {
+        match self {
+            Self::Frame => {
+                let bad = PreparedFrame::new(
+                    RecordType::IngestRequest,
+                    vec![0xff; 40],
+                    Compression::None,
+                );
+                node.wal.append(bad.unwrap()).await.unwrap();
+            }
+            Self::Pair => {
+                node.ingest(1, 2).await;
+            }
+        }
+    }
+
+    fn copies(self, node: &Node) -> u64 {
+        match self {
+            Self::Frame => node.snapshot().quarantined_frames,
+            Self::Pair => node.snapshot().quarantined,
+        }
+    }
+}
+
+/// Whether `bytes` is one or more whole WAL frames, as a quarantine copy holds them.
+fn whole_frames(bytes: &[u8]) -> bool {
+    let mut at = 0;
+    while at < bytes.len() {
+        let header = bytes
+            .get(at..at + FRAME_HEADER_LEN)
+            .and_then(|header| FrameHeader::decode(header.try_into().ok()?).ok());
+        let Some(header) = header else {
+            return false;
+        };
+        let end = at + FRAME_HEADER_LEN + header.payload_len as usize;
+        match bytes.get(at + FRAME_HEADER_LEN..end) {
+            Some(stored) if header.payload_matches(stored) => at = end,
+            _ => return false,
+        }
+    }
+    !bytes.is_empty()
+}
+
+/// The quarantine directories whose manifest is whole (it ends with its `bytes` line), and those of them
+/// whose frames file is not the whole copy the manifest declares.
+fn whole_and_broken_copies(disk: &SimDisk) -> (usize, Vec<String>) {
+    let mut whole = 0;
+    let mut broken = Vec::new();
+    for path in disk.files(Root::Quarantine) {
+        let Some(dir) = path.as_str().strip_suffix(&format!("/{MANIFEST_FILE}")) else {
+            continue;
+        };
+        let manifest = disk.read_file(&path).unwrap();
+        let declared = String::from_utf8_lossy(&manifest)
+            .lines()
+            .find_map(|line| line.strip_prefix("bytes=")?.parse::<usize>().ok());
+        let Some(declared) = declared else {
+            continue;
+        };
+        whole += 1;
+        let frames = DiskPath::new(Root::Quarantine, &format!("{dir}/{FRAMES_FILE}")).unwrap();
+        let frames = disk.read_file(&frames).unwrap_or_default();
+        if frames.len() != declared || !whole_frames(&frames) {
+            broken.push(format!(
+                "{dir}: the manifest declares {declared} bytes, the frames file holds {}",
+                frames.len()
+            ));
+        }
+    }
+    (whole, broken)
+}
+
+/// Runs the node until the armed crash point of the disk is reached, then crashes it: first the append of
+/// the frame of `copied`, if any, then [`SHIPPING_MILLIS`] of shipping. `false` when all of that ended before the
+/// crash point; the node is then stopped. Returns the watermark the node had reached.
+async fn run_to_crash(rig: &Rig, node: Node, copied: Option<Copied>) -> u64 {
+    let reached = {
+        let work = async {
+            if let Some(copied) = copied {
+                copied.write(&node).await;
+            }
+            node.sleep(SHIPPING_MILLIS).await;
+        };
+        tokio::select! {
+            biased;
+            () = rig.disk.crash_point_reached() => true,
+            () = work => false,
+        }
+    };
+    rig.disk.disarm_crash();
+    let watermark = node.watermark();
+    let Node { host, wal, .. } = node;
+    drop(wal);
+    if reached {
+        host.crash().await;
+    } else {
+        host.stop().await;
+    }
+    watermark
+}
+
+/// The disk operations from the append of the frame until its copy is announced, in a run without a crash.
+fn copy_operations(copied: Copied) -> u64 {
+    directed_seeded(0, |rig| async move {
+        copied.script(&rig.model);
+        let (node, _) = rig.boot().await;
+        let before = rig.disk.ops();
+        copied.write(&node).await;
+        while copied.copies(&node) == 0 {
+            assert_eq!(node.ended(), None);
+            node.sleep(1).await;
+        }
+        let operations = rig.disk.ops() - before;
+        node.host.stop().await;
+        operations
+    })
+}
+
+/// Crashes the node at disk operation `first` after the frame is appended and, with `second`, the next
+/// incarnation at that operation; then lets one more run to the end. After each of them, every whole manifest
+/// must stand beside the whole copy it declares. Returns whether the first crash left a quarantine file, and
+/// whether the incarnation of the second crash had passed the frame before it.
+fn crash_in_the_copy(copied: Copied, seed: u64, first: u64, second: Option<u64>) -> (bool, bool) {
+    directed_seeded(seed, |rig| async move {
+        let check = |when: &str| {
+            let (whole, broken) = whole_and_broken_copies(&rig.disk);
+            assert!(
+                broken.is_empty(),
+                "{copied:?}, seed {seed}, crashes at operations {first} and {second:?}, {when}: {broken:?}"
+            );
+            whole
+        };
+        copied.script(&rig.model);
+        let (node, _) = rig.boot().await;
+        rig.disk.arm_crash_after_ops(first);
+        run_to_crash(&rig, node, Some(copied)).await;
+        check("after the first crash");
+        let started = !rig.disk.files(Root::Quarantine).is_empty();
+        let mut passed = false;
+        if let Some(second) = second {
+            let (node, _) = rig.boot().await;
+            rig.disk.arm_crash_after_ops(second);
+            passed = run_to_crash(&rig, node, None).await >= Lsn::FIRST.get();
+            check("after the second crash");
+        }
+
+        let (node, report) = rig.boot().await;
+        node.sleep(SHIPPING_MILLIS).await;
+        assert_eq!(node.ended(), None);
+        let whole = check("at the end");
+        if report.last_lsn >= Lsn::FIRST {
+            // The frame survived the crashes: its copy is whole and the watermark has passed it.
+            assert_eq!(whole, 1, "{copied:?}, seed {seed}, {first} and {second:?}");
+            assert!(node.watermark() >= Lsn::FIRST.get());
+        }
+        node.host.stop().await;
+        (started, passed)
+    })
+}
+
+/// Sweeps a crash over every disk operation of the copy, and a second crash over every operation of the copy
+/// that the next incarnation repeats, for each of `seeds` seeds: the seed decides what each crash keeps.
+fn sweep_crashes_in_the_copy(copied: Copied, seeds: u64) {
+    let operations = copy_operations(copied);
+    for seed in 0..seeds {
+        for first in 1..=operations {
+            if !crash_in_the_copy(copied, seed, first, None).0 {
+                continue;
+            }
+            // Until the second crash comes after the checkpoint that passes the frame.
+            let mut second = 1;
+            while !crash_in_the_copy(copied, seed, first, Some(second)).1 {
+                second += 1;
+                assert!(
+                    second < 8 * operations,
+                    "{copied:?}, seed {seed}: no checkpoint"
+                );
+            }
+        }
+    }
+}
+
+/// Contracts 5.6 and 5.9: a manifest that reads whole names a copy that is durable. A crash keeps any part of
+/// the directory entries that were not synced, so the copy syncs its directory, and with it the entry of the
+/// frames file, before it fills in the manifest. Without that, a crash between the manifest's sync and the
+/// directory's leaves a whole manifest beside no frames file.
+#[test]
+fn a_whole_frame_manifest_names_a_durable_copy_at_every_crash_point() {
+    sweep_crashes_in_the_copy(Copied::Frame, 16);
+}
+
+/// The same for the copy of a quarantined pair.
+#[test]
+fn a_whole_pair_manifest_names_a_durable_copy_at_every_crash_point() {
+    sweep_crashes_in_the_copy(Copied::Pair, 8);
 }
