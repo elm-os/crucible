@@ -23,7 +23,7 @@ const DEFAULT_ENVIRONMENT: &str = "default";
 /// Normalizes one frame with the production mappers ([`NATIVE`]).
 pub fn normalize(
     frame: &IngestFrame<'_>,
-    ctx: &NormCtx,
+    ctx: &NormCtx<'_>,
 ) -> Result<NormalizedFrame, NormalizeError> {
     normalize_with(&[&NATIVE], frame, ctx)
 }
@@ -43,7 +43,7 @@ pub fn normalize(
 pub fn normalize_with(
     mappers: &[&dyn SpanMapper],
     frame: &IngestFrame<'_>,
-    ctx: &NormCtx,
+    ctx: &NormCtx<'_>,
 ) -> Result<NormalizedFrame, NormalizeError> {
     let request = TraceRequest::scan(frame.otlp, None)?;
     let map_ctx = MapCtx {
@@ -119,7 +119,7 @@ fn text(s: &str, cap: usize) -> Box<str> {
 }
 
 /// The draft of a span before any mapper runs.
-fn draft(frame: &IngestFrame<'_>, ctx: &NormCtx, span: &SpanView<'_>) -> SpanDraft {
+fn draft(frame: &IngestFrame<'_>, ctx: &NormCtx<'_>, span: &SpanView<'_>) -> SpanDraft {
     let (start_time, start_clamped) = span.start_time().clamp_valid();
     let (end_time, end_clamped) = span.end_time().clamp_valid();
     let ahead = start_time.micros()
@@ -215,7 +215,7 @@ fn draft(frame: &IngestFrame<'_>, ctx: &NormCtx, span: &SpanView<'_>) -> SpanDra
 }
 
 /// The finished record of a filled draft.
-fn finish(draft: SpanDraft, ctx: &NormCtx) -> SpanRecord {
+fn finish(draft: SpanDraft, ctx: &NormCtx<'_>) -> SpanRecord {
     let SpanDraft { mut record, level } = draft;
     let core = &mut record.core;
     core.level = level.unwrap_or(if core.status_code == StatusCode::Error {
@@ -226,7 +226,7 @@ fn finish(draft: SpanDraft, ctx: &NormCtx) -> SpanRecord {
     if core.environment.is_empty() {
         core.environment = DEFAULT_ENVIRONMENT.into();
     }
-    cost::apply(&mut record);
+    cost::apply(&mut record, &ctx.prices);
     record.enforce_payload_caps(&ctx.caps);
     record.core.row_digest = digest::row_digest(&record);
     record

@@ -6,6 +6,7 @@
 //! - `t.trace_tags`: an array of strings. `t.trace_metadata`: a string body. `t.trace_public`: a bool.
 //! - `t.level`: a level name. `t.usage.<key>`: an integer. `t.cost.<key>`: decimal USD text or a double.
 //!   `t.cost_nanos.<key>`: a nano-USD integer, taken as is (negative values included).
+//! - `t.model_requested`, `t.model_response`: strings. `t.model_parameters`: a string body.
 
 use bytes::Bytes;
 use crucible_compat::Confidence;
@@ -75,6 +76,11 @@ impl SpanMapper for Double {
                     };
                 }
                 ("t.level", AnyValueView::String(s)) => out.level = Level::parse(s),
+                ("t.model_requested", AnyValueView::String(s)) => core.model_requested = s.into(),
+                ("t.model_response", AnyValueView::String(s)) => core.model_response = s.into(),
+                ("t.model_parameters", AnyValueView::String(s)) => {
+                    payload.model_parameters = Bytes::copy_from_slice(s.as_bytes());
+                }
                 (k, AnyValueView::Int(i)) if k.starts_with("t.usage.") => {
                     let units = u64::try_from(i).unwrap_or(0);
                     payload

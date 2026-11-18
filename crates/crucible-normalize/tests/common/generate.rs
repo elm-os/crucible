@@ -5,9 +5,9 @@
 //! edge value (empty, negative or extreme integers, NaN). Trace and span ids come from small domains so that
 //! traces group and keys repeat, with some empty or all-zero ids for the rejection paths. Times stray outside the
 //! valid range and ahead of `received_at`. With `finite` set, doubles are finite: OTLP/JSON has no lossless form for
-//! the others.
+//! the others. Model keys mostly carry names that bundled price rows match, so usage meets the calculated cost path.
 
-use crucible_compat::{Location, TABLES};
+use crucible_compat::{Location, TABLES, Target};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -38,6 +38,26 @@ pub fn table_keys(location: Location) -> Vec<&'static str> {
         }
     }
     keys
+}
+
+/// Model names that bundled price rows match; `gemini-2.5-pro` has a tier chosen by input size.
+const PRICED_MODELS: [&str; 6] = [
+    "gpt-4o",
+    "GPT-4O",
+    "claude-3-haiku-20240307",
+    "gemini-2.5-pro",
+    "text-embedding-3-small",
+    "us.anthropic.claude-opus-4-7",
+];
+
+/// Every key the tables read for a model name.
+fn model_keys() -> Vec<&'static str> {
+    TABLES
+        .iter()
+        .flat_map(|t| t.fields)
+        .filter(|rule| matches!(rule.target, Target::ModelRequested | Target::ModelResponse))
+        .flat_map(|rule| rule.sources.iter().map(|s| s.key.text()))
+        .collect()
 }
 
 /// Every value an observation-type rule recognizes.
@@ -146,11 +166,15 @@ fn type_values_of(key: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// One attribute. An observation-type key mostly carries a value its rule recognizes, so every rule yields.
+/// One attribute. An observation-type key mostly carries a value its rule recognizes, so every rule yields, and a
+/// model key mostly carries a priced model name.
 fn pair(location: Location, finite: bool) -> BoxedStrategy<KeyValue> {
     key(location)
         .prop_flat_map(move |key| {
-            let known = type_values_of(&key);
+            let mut known = type_values_of(&key);
+            if model_keys().contains(&key.as_str()) {
+                known.extend(PRICED_MODELS);
+            }
             let any = option::weighted(0.9, value(finite));
             let value = if known.is_empty() {
                 any.boxed()
