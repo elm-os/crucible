@@ -20,7 +20,7 @@
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
 //! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key and reads the trace back with the session |
 //!
-//! `docs/self-hosting/quickstart.md` has the commands.
+//! `docs/development.md` ("The end-to-end test") has the commands.
 
 #![allow(
     clippy::disallowed_methods,
