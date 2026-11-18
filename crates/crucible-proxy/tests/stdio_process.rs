@@ -6,33 +6,24 @@
 //! over 1 MiB all pass through. The tests run on Linux and Windows; the helper is `crucible-proxy-rig server`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::{Sink, Sinked, by_id, check_wire_contract, prod_env, start_sink, text};
 use crucible_env::{ChildProcess, ChildSignal, ChildSpec, Env, ExitStatus, JoinHandle, StderrMode};
-use crucible_env_prod::{ProdConfig, TokioChildProcess};
-use crucible_fake_collector::registry::Registry;
+use crucible_env_prod::TokioChildProcess;
+use crucible_fake_collector::RecordedSpan;
 use crucible_fake_collector::value::{Value, get};
-use crucible_fake_collector::{Collector, Event, RecordedSpan};
-use crucible_proxy::encode::ResourceInfo;
-use crucible_proxy::live::{ExportConfig, Telemetry};
-use crucible_proxy::net::Target;
 use crucible_proxy::stdio::{ClientIo, StdioError, run};
-use crucible_proxy::{CoreConfig, ProxyCore};
 use crucible_records::CaptureSource;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 const RIG: &str = env!("CARGO_BIN_EXE_crucible-proxy-rig");
-const SECRET: &str = "csk_test0000000000000000000000000000000000000000";
-
-fn prod_env() -> Env {
-    crucible_env_prod::build(tokio::runtime::Handle::current(), &ProdConfig::default())
-        .unwrap()
-        .env
-}
 
 fn server(flags: &[&str]) -> ChildSpec {
     ChildSpec {
@@ -45,86 +36,22 @@ fn server(flags: &[&str]) -> ChildSpec {
     }
 }
 
-/// The state of the collector for a run.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Sink {
-    Healthy,
-    /// Nothing listens on the port.
-    Refused,
-    /// The port accepts connections and never answers.
-    Stalled,
-    /// No collector is configured.
-    Absent,
-}
-
 struct Proxy {
     to_proxy: Option<DuplexStream>,
     from_proxy: DuplexStream,
     stderr: DuplexStream,
     signals: mpsc::UnboundedSender<ChildSignal>,
     run: JoinHandle<Result<ExitStatus, StdioError>>,
-    telemetry: Telemetry,
-    collector: Option<Collector>,
-    /// Keeps the stalled listener's connections open.
-    _stalled: Option<JoinHandle<()>>,
+    sink: Sinked,
 }
 
 async fn start(env: &Env, spec: ChildSpec, sink: Sink) -> Proxy {
-    let mut collector = None;
-    let mut stalled = None;
-    let endpoint = match sink {
-        Sink::Healthy => {
-            let started = Collector::start(env).await.unwrap();
-            let endpoint = started.endpoint();
-            collector = Some(started);
-            Some(endpoint)
-        }
-        Sink::Refused | Sink::Stalled => {
-            let mut listener = env
-                .net
-                .listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-                .await
-                .unwrap();
-            let endpoint = format!("http://{}", listener.local_addr().unwrap());
-            if sink == Sink::Stalled {
-                stalled = Some(env.spawn("stalled-collector", async move {
-                    let mut open = Vec::new();
-                    while let Ok((stream, _)) = listener.accept().await {
-                        open.push(stream);
-                    }
-                }));
-            }
-            // For `Refused` the listener is dropped here, so the port is closed.
-            Some(endpoint)
-        }
-        Sink::Absent => None,
-    };
-    let telemetry = match endpoint {
-        Some(endpoint) => Telemetry::start(
-            env,
-            ProxyCore::new(
-                CoreConfig::new(CaptureSource::ProxyStdio),
-                env.rng.fork("proxy"),
-            ),
-            ExportConfig {
-                endpoint: Target::parse(&endpoint).unwrap(),
-                secret_key: SECRET.to_owned(),
-                timeout: Duration::from_secs(5),
-                resource: ResourceInfo {
-                    service_name: "scripted".to_owned(),
-                    instance_id: "instance-1".to_owned(),
-                    deploy_id: None,
-                    capture_source: CaptureSource::ProxyStdio,
-                },
-            },
-        ),
-        None => Telemetry::disabled(env),
-    };
+    let sink = start_sink(env, sink, CaptureSource::ProxyStdio).await;
     let (to_proxy, proxy_in) = tokio::io::duplex(64 * 1024);
     let (proxy_out, from_proxy) = tokio::io::duplex(64 * 1024);
     let (proxy_err, stderr) = tokio::io::duplex(64 * 1024);
     let (signals, signal_stream) = mpsc::unbounded();
-    let tap = telemetry.tap();
+    let tap = sink.telemetry.tap();
     let run = env.spawn("proxy-under-test", {
         let env = env.clone();
         async move {
@@ -143,9 +70,7 @@ async fn start(env: &Env, spec: ChildSpec, sink: Sink) -> Proxy {
         stderr,
         signals,
         run,
-        telemetry,
-        collector,
-        _stalled: stalled,
+        sink,
     }
 }
 
@@ -177,29 +102,7 @@ impl Proxy {
         let mut rest = Vec::new();
         self.from_proxy.read_to_end(&mut rest).await.unwrap();
         let status = self.run.join().await.unwrap().unwrap();
-        self.telemetry.finish().await;
-        let spans = self.collector.map_or_else(Vec::new, |collector| {
-            collector
-                .events()
-                .into_iter()
-                .flat_map(|event| match event {
-                    Event::Export(export) => {
-                        assert_eq!(export.status, 200, "{:?}", export.refusal);
-                        assert_eq!(export.path, "/v1/traces");
-                        assert_eq!(
-                            export.content_type.as_deref(),
-                            Some("application/x-protobuf")
-                        );
-                        assert_eq!(
-                            export.authorization.as_deref(),
-                            Some(format!("Bearer {SECRET}").as_str())
-                        );
-                        export.spans
-                    }
-                    Event::Checkpoint(_) => Vec::new(),
-                })
-                .collect()
-        });
+        let spans = self.sink.finish().await.spans;
         (rest, status, spans)
     }
 }
@@ -245,43 +148,6 @@ fn transcript() -> Vec<u8> {
     let mut bytes = lines.join("\n").into_bytes();
     bytes.push(b'\n');
     bytes
-}
-
-fn registry() -> Registry {
-    Registry::parse(
-        "registry.json",
-        include_bytes!("../../../conformance/registry.json"),
-    )
-    .unwrap()
-}
-
-fn text<'a>(span: &'a RecordedSpan, key: &str) -> Option<&'a str> {
-    get(&span.attributes, key).and_then(Value::as_str)
-}
-
-fn by_id<'a>(spans: &'a [RecordedSpan], id: &str) -> &'a RecordedSpan {
-    spans
-        .iter()
-        .find(|span| text(span, "jsonrpc.request.id") == Some(id))
-        .unwrap_or_else(|| panic!("no span for request {id}"))
-}
-
-/// Every attribute is a registry key of the right type, nothing forbidden is sent, and the derived fields say
-/// which proxy captured the row.
-fn check_wire_contract(spans: &[RecordedSpan], capture_source: &str) {
-    let registry = registry();
-    for span in spans {
-        for (key, value) in span.attributes.iter().chain(&span.resource) {
-            assert!(registry.key(key).is_some(), "{key} is not a registry key");
-            assert!(!registry.is_forbidden(key), "{key} is forbidden");
-            assert_eq!(registry.type_error(key, value), None);
-        }
-        let field = |name: &str| registry.derive(name, span).unwrap_or_default();
-        assert_eq!(field("capture_source"), capture_source);
-        assert_eq!(field("side"), "server");
-        assert!(text(span, "mcp.method.name").is_some());
-        assert!(span.end >= span.start);
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -484,7 +350,7 @@ async fn a_stalled_collector_does_not_delay_the_exit_beyond_the_flush_deadline()
     assert_eq!(status, ExitStatus::Code(0));
     let started = env.clock.now();
     assert!(
-        proxy.telemetry.finish().await.is_none(),
+        proxy.sink.telemetry.finish().await.is_none(),
         "the export cannot have finished"
     );
     let waited = env.clock.now().saturating_duration_since(started);
