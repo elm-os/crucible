@@ -2,6 +2,7 @@
 
 mod control;
 mod cursor_keys;
+mod jobs;
 mod keys;
 mod recent;
 mod serve;

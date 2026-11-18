@@ -10,5 +10,7 @@
 | Throughput baseline of `crucible serve` (milestone 1) | [testing/perf-baseline.md](testing/perf-baseline.md) |
 | UI surfaces by state (Playwright and axe) | [testing/ui-surfaces.md](testing/ui-surfaces.md) |
 | Control store: the Postgres differential and the lease simulation | [testing/control-store.md](testing/control-store.md) |
+| Background jobs: adding one | [architecture/adding-a-job.md](architecture/adding-a-job.md) |
+| Background jobs: the simulation, its oracle and its mutants | [testing/jobs-simulation.md](testing/jobs-simulation.md) |
 | Development setup | [development.md](development.md) |
 | Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |

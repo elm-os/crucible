@@ -23,6 +23,8 @@ crucible-config = { workspace = true }
 crucible-control = { workspace = true }
 crucible-control-pg = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-jobs = { path = "../crucible-jobs" }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-cursor = { workspace = true }
 # The compat ingest routes that the ingest listeners serve (contract 12.1).
 crucible-compat = { workspace = true }

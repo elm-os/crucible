@@ -191,22 +191,23 @@ pub(crate) struct LeaderRunner {
     pub(crate) skip_margin: bool,
 }
 
-/// Logs a failure that repeats as a warning once, then at debug level until something succeeds.
+/// Logs a failure that keeps repeating as one warning, at its third occurrence in a row, and at debug level
+/// otherwise: a store that is still starting or failing over does not fill the log.
 #[derive(Default)]
-struct Quiet(bool);
+struct Quiet(u32);
 
 impl Quiet {
     fn failed(&mut self, lease: LeaseName, what: &str, error: &TxError) {
-        if self.0 {
-            tracing::debug!(%lease, %error, "{what}");
+        self.0 = self.0.saturating_add(1);
+        if self.0 == 3 {
+            tracing::warn!(%lease, %error, "{what} three times in a row; still trying every few seconds");
         } else {
-            tracing::warn!(%lease, %error, "{what}; trying again every few seconds");
-            self.0 = true;
+            tracing::debug!(%lease, %error, "{what}");
         }
     }
 
     fn worked(&mut self) {
-        self.0 = false;
+        self.0 = 0;
     }
 }
 
@@ -304,7 +305,9 @@ impl LeaderRunner {
                 Ok(Err(error)) => {
                     tracing::debug!(lease = %self.name, %error, "releasing the lease failed; it expires");
                 }
-                Err(_) => tracing::debug!(lease = %self.name, "releasing the lease timed out; it expires"),
+                Err(_) => {
+                    tracing::debug!(lease = %self.name, "releasing the lease timed out; it expires")
+                }
             }
         }
         true
@@ -384,7 +387,10 @@ impl LeaderRunner {
             match result {
                 Ok(()) => {}
                 Err(JobError::LeaseLost) => {
-                    tracing::debug!(job = job.name, "the run stopped: the lease is no longer held");
+                    tracing::debug!(
+                        job = job.name,
+                        "the run stopped: the lease is no longer held"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(job = job.name, %error, "the run failed; the job runs again at its next cadence");

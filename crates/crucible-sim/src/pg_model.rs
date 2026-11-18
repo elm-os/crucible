@@ -2058,12 +2058,11 @@ enum Settle {
 /// Ends a claim: done, due again at a retry time, or parked.
 fn settle(cx: &mut Cx<'_>, claim: &Claim, how: Settle) -> Step<bool> {
     let key = job_key(claim.queue, claim.id);
-    let unchecked = cx.db.mutant == Some(PgMutant::CompleteWithoutClaimCheck)
-        && matches!(how, Settle::Done);
+    let unchecked =
+        cx.db.mutant == Some(PgMutant::CompleteWithoutClaimCheck) && matches!(how, Settle::Done);
     match one!(cx, Tbl::Jobs, &key, Row::Job) {
         Some(mut job)
-            if (job.attempts == claim.attempt || unchecked)
-                && job.status == JobStatus::Pending =>
+            if (job.attempts == claim.attempt || unchecked) && job.status == JobStatus::Pending =>
         {
             job.lease_until = None;
             match how {

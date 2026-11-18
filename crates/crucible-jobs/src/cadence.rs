@@ -101,7 +101,9 @@ mod tests {
         let secs: Vec<u64> = (0..=12).map(|n| backoff_base(n).as_secs()).collect();
         assert_eq!(
             secs,
-            [5, 5, 10, 20, 40, 80, 160, 320, 640, 1_280, 2_560, 3_600, 3_600]
+            [
+                5, 5, 10, 20, 40, 80, 160, 320, 640, 1_280, 2_560, 3_600, 3_600
+            ]
         );
         assert_eq!(backoff_base(u32::MAX), BACKOFF_MAX);
     }

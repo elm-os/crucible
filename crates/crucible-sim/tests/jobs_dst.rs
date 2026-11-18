@@ -124,7 +124,10 @@ fn skipping_the_validity_margin_is_caught() {
     };
     let caught = catching(0..40, options, "J1: the action");
     println!("skip the validity margin: caught by seeds {caught:?} of 0..40");
-    assert!(caught.contains(&3), "seed 3 no longer catches the mutant: {caught:?}");
+    assert!(
+        caught.contains(&3),
+        "seed 3 no longer catches the mutant: {caught:?}"
+    );
 }
 
 /// The mutant "renew without compare-and-set": a holder whose lease was taken writes its old token back.
@@ -136,7 +139,10 @@ fn renewing_without_compare_and_set_is_caught() {
     };
     let caught = catching(0..20, options, "J1: the lease row went from");
     println!("renew without compare-and-set: caught by seeds {caught:?} of 0..20");
-    assert!(caught.contains(&0), "seed 0 no longer catches the mutant: {caught:?}");
+    assert!(
+        caught.contains(&0),
+        "seed 0 no longer catches the mutant: {caught:?}"
+    );
 }
 
 /// The mutant "complete without checking the claim": a claimer whose claim ran out completes the row of a
@@ -149,7 +155,10 @@ fn completing_without_the_claim_check_is_caught() {
     };
     let caught = catching(0..20, options, "J2: ");
     println!("complete without checking the claim: caught by seeds {caught:?} of 0..20");
-    assert!(caught.contains(&0), "seed 0 no longer catches the mutant: {caught:?}");
+    assert!(
+        caught.contains(&0),
+        "seed 0 no longer catches the mutant: {caught:?}"
+    );
 }
 
 #[test]

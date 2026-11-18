@@ -100,13 +100,20 @@ fn a_leader_releases_its_lease_on_shutdown_and_another_node_takes_over() {
         let (a, b) = (w.node("a", 0), w.node("b", 0));
         let (runs_a, runs_b) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let every = Duration::from_secs(1);
-        let mut running_a = counting(&runs_a, every, Duration::ZERO).start(&a.env, w.store(), "a#1");
+        let mut running_a =
+            counting(&runs_a, every, Duration::ZERO).start(&a.env, w.store(), "a#1");
         w.sleep(Duration::from_secs(1)).await;
         let _running_b = counting(&runs_b, every, Duration::ZERO).start(&b.env, w.store(), "b#1");
 
         // Well past the TTL: the lease is renewed, never taken over.
         w.sleep(LEASE_TTL * 4).await;
-        let lease = w.model.leases().get(LeaseName::Lifecycle).await.unwrap().unwrap();
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((lease.holder.as_str(), lease.fencing_token), ("a#1", 1));
         assert!(lease.expires_at > w.db_now());
         assert!(runs_a.load(Ordering::SeqCst) >= 60);
@@ -114,13 +121,25 @@ fn a_leader_releases_its_lease_on_shutdown_and_another_node_takes_over() {
 
         a.spawner.request_shutdown();
         running_a.join().await;
-        let lease = w.model.leases().get(LeaseName::Lifecycle).await.unwrap().unwrap();
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(lease.holder, "a#1");
         assert_eq!(lease.expires_at, Timestamp::from_micros(0), "released");
 
         // The other node asks every 5 s plus up to 1 s of jitter: it leads without waiting out a TTL.
         w.sleep(Duration::from_secs(7)).await;
-        let lease = w.model.leases().get(LeaseName::Lifecycle).await.unwrap().unwrap();
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((lease.holder.as_str(), lease.fencing_token), ("b#1", 2));
         assert!(runs_b.load(Ordering::SeqCst) > 0);
     });
@@ -143,7 +162,9 @@ fn work_stops_when_the_local_window_ends_and_resumes_under_a_new_token() {
                 async move {
                     loop {
                         let token = ctx.lease()?.fencing_token;
-                        seen.lock().unwrap().push((ctx.env.clock.now().nanos(), token));
+                        seen.lock()
+                            .unwrap()
+                            .push((ctx.env.clock.now().nanos(), token));
                         ctx.env.clock.sleep(Duration::from_millis(100)).await;
                     }
                 }
@@ -157,7 +178,10 @@ fn work_stops_when_the_local_window_ends_and_resumes_under_a_new_token() {
         let last = ticks.lock().unwrap().last().copied().unwrap();
         let secs = Duration::from_nanos(last.0).as_secs_f64();
         // The last renewal was asked at 20 s, so the window ends at 20 + 15 - 2 = 33 s, and so does the work.
-        assert!((32.85..33.0).contains(&secs), "the last tick was at {secs} s");
+        assert!(
+            (32.85..33.0).contains(&secs),
+            "the last tick was at {secs} s"
+        );
         assert_eq!(last.1, 1);
 
         // After the outage the node takes the expired lease again and works under the next token.
@@ -182,7 +206,13 @@ fn a_shutdown_lets_the_run_in_flight_finish_and_cuts_one_that_takes_too_long() {
         running.join().await;
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         assert!((3.0..3.1).contains(&w.secs()), "stopped at {} s", w.secs());
-        let lease = w.model.leases().get(LeaseName::Lifecycle).await.unwrap().unwrap();
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(lease.expires_at, Timestamp::from_micros(0), "released");
 
         // A run of 30 s is cut after the drain limit; its lease is left to expire.
@@ -195,21 +225,29 @@ fn a_shutdown_lets_the_run_in_flight_finish_and_cuts_one_that_takes_too_long() {
         long.spawner.request_shutdown();
         running.join().await;
         let waited = w.secs() - before;
-        assert!((waited - DRAIN_LIMIT.as_secs_f64()).abs() < 0.01, "waited {waited} s");
+        assert!(
+            (waited - DRAIN_LIMIT.as_secs_f64()).abs() < 0.01,
+            "waited {waited} s"
+        );
         assert_eq!(runs.load(Ordering::SeqCst), 0);
-        let lease = w.model.leases().get(LeaseName::Lifecycle).await.unwrap().unwrap();
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(lease.holder, "long#1");
         assert!(lease.expires_at > w.db_now(), "not released: {lease:?}");
     });
 }
 
+/// The handler calls of a consumer: the payload, the attempt and the time.
+type Calls = Arc<Mutex<Vec<(String, u32, f64)>>>;
+
 /// A consumer whose handler fails every row whose payload starts with `poison`, and records every call
 /// with the time `secs` gives.
-fn consumer(
-    calls: &Arc<Mutex<Vec<(String, u32, f64)>>>,
-    secs: impl Fn() -> f64 + Send + Sync + 'static,
-    cap: u32,
-) -> Job {
+fn consumer(calls: &Calls, secs: impl Fn() -> f64 + Send + Sync + 'static, cap: u32) -> Job {
     let calls = Arc::clone(calls);
     let secs = Arc::new(secs);
     Job::claimed(
@@ -260,11 +298,19 @@ fn a_failing_row_backs_off_on_the_database_clock_and_is_parked_at_the_cap() {
     for skew in [0, 300_000_000, -300_000_000] {
         world(4, async |w| {
             let node = w.node("a", skew);
-            let calls = Arc::new(Mutex::new(Vec::new()));
+            let calls: Calls = Arc::new(Mutex::new(Vec::new()));
             let clock: Arc<dyn Clock> = w.database.clock.clone();
             let secs = move || Duration::from_nanos(clock.now().nanos()).as_secs_f64();
-            w.model.claims().enqueue(QUEUE, &row(1, "poison", w.db_now())).await.unwrap();
-            w.model.claims().enqueue(QUEUE, &row(2, "fine", w.db_now())).await.unwrap();
+            w.model
+                .claims()
+                .enqueue(QUEUE, &row(1, "poison", w.db_now()))
+                .await
+                .unwrap();
+            w.model
+                .claims()
+                .enqueue(QUEUE, &row(2, "fine", w.db_now()))
+                .await
+                .unwrap();
             let _running = only(consumer(&calls, secs, 4)).start(&node.env, w.store(), "a#1");
             w.sleep(Duration::from_secs(600)).await;
 
@@ -301,15 +347,24 @@ fn a_failing_row_backs_off_on_the_database_clock_and_is_parked_at_the_cap() {
 #[test]
 fn a_row_whose_attempts_died_without_an_answer_is_parked_without_running() {
     world(5, async |w| {
-        w.model.claims().enqueue(QUEUE, &row(1, "fine", w.db_now())).await.unwrap();
+        w.model
+            .claims()
+            .enqueue(QUEUE, &row(1, "fine", w.db_now()))
+            .await
+            .unwrap();
         // Three claimers take the row and die: no completion, no failure.
         for attempt in 1..=3 {
-            let claims = w.model.claims().claim(QUEUE, 1, Duration::from_secs(1)).await.unwrap();
+            let claims = w
+                .model
+                .claims()
+                .claim(QUEUE, 1, Duration::from_secs(1))
+                .await
+                .unwrap();
             assert_eq!(claims[0].attempt, attempt);
             w.sleep(Duration::from_secs(2)).await;
         }
         let node = w.node("a", 0);
-        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
         let _running = only(consumer(&calls, || 0.0, 3)).start(&node.env, w.store(), "a#1");
         w.sleep(Duration::from_secs(120)).await;
         assert!(calls.lock().unwrap().is_empty());
@@ -413,7 +468,7 @@ fn without_a_control_store_only_the_per_node_jobs_run() {
         let mut registry = Registry::new();
         registry
             .register(housekeeping::job())
-            .register(consumer(&Arc::new(Mutex::new(Vec::new())), || 0.0, 3))
+            .register(consumer(&Calls::default(), || 0.0, 3))
             .register(Job::per_node(
                 "tick",
                 Cadence::every(Duration::from_secs(5)).with_jitter(Duration::ZERO),

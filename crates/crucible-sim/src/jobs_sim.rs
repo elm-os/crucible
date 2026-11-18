@@ -1009,7 +1009,10 @@ async fn seed(world: &World) -> Result<ProjectId, TxError> {
         } else {
             now.saturating_add_micros(86_400_000_000)
         };
-        store.sessions().insert(&session(n, user.id, expires)).await?;
+        store
+            .sessions()
+            .insert(&session(n, user.id, expires))
+            .await?;
     }
     let project = Project {
         id: ProjectId::from_uuid(id(9_001)),
@@ -1097,9 +1100,9 @@ fn audit_leases(world: &World, ledger: &mut Ledger) {
                         lease.fencing_token == old.fencing_token + 1
                     };
                     if !ok {
-                        ledger.violations.push(format!(
-                            "J1: the lease row went from {old:?} to {lease:?}"
-                        ));
+                        ledger
+                            .violations
+                            .push(format!("J1: the lease row went from {old:?} to {lease:?}"));
                     }
                     if !same {
                         ledger.stats.takeovers += 1;

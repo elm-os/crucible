@@ -809,6 +809,9 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     } else {
         "none"
     };
+    // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
+    // for them.
+    let jobs = crate::jobs::start(env, control.as_ref());
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -871,6 +874,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         cursor_kid,
         mode,
         control = control_mode,
+        job_tasks = jobs.tasks(),
         "crucible is serving"
     );
 

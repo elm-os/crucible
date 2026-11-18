@@ -653,6 +653,7 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-ingest",
+ "crucible-jobs",
  "crucible-loadgen",
  "crucible-normalize",
  "crucible-otlp",
