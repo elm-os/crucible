@@ -163,4 +163,12 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     exact nano-USD with half-even rounding.
 76. **Native block headers keep `SimpleAggregateFunction` wrappers.** ClickHouse accepts both forms; sending the
     column's own type means the server converts nothing.
+77. **Source keys follow the semantic conventions where they exist, `crucible.*` otherwise (contracts 10.6).** They
+    are wire contract from milestone 3, when the SDKs start emitting them.
+78. **An un-normalizable frame is quarantined, not fatal.** Shipping continues; the frame's copy keeps I1, and a
+    newer binary can ship it.
+79. **One fact comparator, in Rust.** ClickHouse orders UUIDs differently, so no SQL ordering of UUIDs decides a
+    fact winner.
+80. **Replays after an upgrade use the current price table and normalizer**, with a stated I7 exception for batches
+    that straddle the upgrade.
 
