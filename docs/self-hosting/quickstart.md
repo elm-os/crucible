@@ -115,8 +115,7 @@ export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
 ```
 
-Exporters that speak OTLP over gRPC use `http://127.0.0.1:4317` with the same header
-(`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`).
+The Compose files publish OTLP over HTTP; OTLP/gRPC on port 4317 is not published.
 
 Or by hand:
 
@@ -151,7 +150,8 @@ menu puts it in the address bar as `?project=<project id>`. The trace list takes
 
 - Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. This version sends no
   email, so a forgotten password is reset with `docker compose exec crucible crucible admin reset-password <email>`,
-  which prints a link valid for 30 minutes.
+  which prints a one-time link valid for 30 minutes. Without `server.public_url` it prints the path,
+  `/reset/?token=...`, to open at the address you reach the server at.
 - Sign-in through GitHub, Google or an OpenID Connect provider needs the address people use, which the provider
   redirects back to, as `server.public_url` ([README.md](README.md#configuration)). An `https` public URL also makes
   the session cookie `Secure`.

@@ -100,6 +100,22 @@ describe("first-run setup", () => {
   });
 });
 
+describe("first-run setup from the server log's link", () => {
+  test("the link's token is filled in and sent", async () => {
+    renderForm(<SetupForm />, "/setup/?token=setup-token-2");
+    fetchMock.mockResolvedValueOnce(json(sessionInfo()));
+    await act([
+      { ref: "Organization name", action: "setValue", args: ["Analytical Engines"] },
+      { ref: "Your name", action: "setValue", args: ["Ada Lovelace"] },
+      { ref: "Email", action: "setValue", args: ["ada@example.com"] },
+      { ref: "Password", action: "setValue", args: [PASSWORD] },
+      { ref: "Create owner account", action: "press" },
+    ]);
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/"));
+    expect(sentBody()).toMatchObject({ token: "setup-token-2", org_name: "Analytical Engines" });
+  });
+});
+
 describe("invitations", () => {
   test("an agent joins with the link's token", async () => {
     renderForm(<InviteForm />, "/invite/?token=invite-token-1");

@@ -371,6 +371,13 @@ fn main() -> anyhow::Result<()> {
                 let link =
                     runtime()?.block_on(identity::admin_reset_password(&config, &args.email))?;
                 writeln!(std::io::stdout().lock(), "{link}")?;
+                if config.server.public_url.is_none() {
+                    writeln!(
+                        std::io::stderr().lock(),
+                        "without server.public_url this is a path: open it at the address you reach the server \
+                         at, for example http://127.0.0.1:8080/reset/?token=...; it works once and for 30 minutes"
+                    )?;
+                }
                 Ok(())
             }
         },

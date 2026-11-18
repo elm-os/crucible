@@ -5,6 +5,7 @@ import { Button } from "@ui-sdk/react/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@ui-sdk/react/field";
 import { Input } from "@ui-sdk/react/input";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { FormEvent } from "react";
 import { setupOwner } from "@/api/client";
 import { asUiError } from "@/api/errors";
@@ -25,6 +26,8 @@ const SETUP_COPY: CopyByCode = {
 };
 
 export function SetupForm() {
+  // The setup link in the server log carries the token.
+  const linkToken = useSearchParams().get("token") ?? "";
   const setup = useMutation({ mutationFn: setupOwner, onSuccess: () => loadPage("/") });
   const busy = setup.isPending || setup.isSuccess;
   const failure = setup.isError ? asUiError(setup.error) : null;
@@ -56,7 +59,13 @@ export function SetupForm() {
       >
         <Field name="token" invalid={badToken || undefined}>
           <FieldLabel>Setup token</FieldLabel>
-          <Input required autoComplete="off" spellCheck={false} className="font-mono" />
+          <Input
+            required
+            defaultValue={linkToken}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
           <FieldDescription>
             Crucible prints it in the server log when it starts without an owner.
           </FieldDescription>

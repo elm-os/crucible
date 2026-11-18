@@ -237,8 +237,8 @@ impl Gate {
                 .as_ref()
                 .filter(|keys| !keys.is_loaded())
                 .map(|_| {
-                    "the API key snapshot is not loaded yet: Postgres has not answered, or its tables are \
-                     missing (start with --migrate or run `crucible migrate`); the log has the error"
+                    "the API key snapshot is not loaded yet: Postgres has not answered, or its migrations have \
+                     not run (`--migrate` and `crucible migrate` apply them); the log has the error"
                         .to_owned()
                 })
         })
