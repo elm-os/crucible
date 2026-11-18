@@ -80,7 +80,7 @@ appending it, so that two slices rarely insert at the same place.
      conversions the groups share (`meta`, `span`, `micros_between`).
 
    Register the group in `crates/crucible-api/src/routes.rs`: `mod <group>;`, one `.merge(<group>::routes())` line
-   in `router()` and one `.merge_from(<group>::Paths::openapi())` line in `document()`. Then regenerate the document
+   in `router()` and one `doc.merge(<group>::Paths::openapi());` line in `document()`. Then regenerate the document
    with `cargo run -p crucible -- openapi > specs/openapi/crucible-v1.json`. A paged endpoint also needs a cursor:
    a `Route` and a `Position` in `crucible-cursor`, and seal and open methods in `crates/crucible-api/src/cursor.rs`
    that bind it to the request's filters, sort and window.

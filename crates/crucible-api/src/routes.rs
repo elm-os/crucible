@@ -31,11 +31,12 @@ pub(crate) fn router() -> Router<ApiState> {
 
 /// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
 /// order of the groups does not change it; the list is kept sorted.
-pub(crate) fn document(doc: OpenApi) -> OpenApi {
-    doc.merge_from(data_bounds::Paths::openapi())
-        .merge_from(spans::Paths::openapi())
-        .merge_from(trace_detail::Paths::openapi())
-        .merge_from(traces::Paths::openapi())
+pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
+    doc.merge(data_bounds::Paths::openapi());
+    doc.merge(spans::Paths::openapi());
+    doc.merge(trace_detail::Paths::openapi());
+    doc.merge(traces::Paths::openapi());
+    doc
 }
 
 fn cursor_invalid(request_id: RequestId) -> impl FnOnce(CursorError) -> ApiError {
