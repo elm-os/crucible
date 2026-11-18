@@ -41,7 +41,7 @@ const MUTANTS: [(Mutant, u64, &str); 10] = [
     (Mutant::DoubleCountRollup, 0, "I7"),
     (Mutant::DropFactOnRetry, 3000, "I1"),
     (Mutant::FrameQuarantineWithoutCopy, 0, "I1"),
-    (Mutant::CollectWhatFramesRelyOn, 910_904_000, "I7"),
+    (Mutant::CollectWhatFramesRelyOn, 44_393_171_719_000, "I7"),
 ];
 
 fn replay(outcome: &Outcome) -> String {
