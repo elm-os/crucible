@@ -2,12 +2,14 @@
 //! configuration file, WAL, ClickHouse, Postgres or UI. Settings come from flags and `CRUCIBLE_*` variables.
 //!
 //! - `crucible proxy stdio -- <command> [args]` wraps a stdio MCP server.
+//! - `crucible proxy http --listen <addr> --upstream <url>` stands in front of a Streamable HTTP MCP server.
 //!
 //! Standard output carries only the server's bytes; everything the proxy says goes to standard error.
 
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +19,8 @@ use clap::{Args, Subcommand};
 use crucible_env::{ChildSignal, ChildSpec, Env, ExitStatus, MemoryRecorder, StderrMode};
 use crucible_env_prod::{PortableDisk, SystemClock, TokioChildProcess, TokioNet, TokioSpawner};
 use crucible_proxy::encode::ResourceInfo;
+use crucible_proxy::http::{HostHeader, HttpProxyConfig};
+use crucible_proxy::identity::{IdentityResolver, VerifyConfig};
 use crucible_proxy::live::{ExportConfig, Telemetry};
 use crucible_proxy::net::Target;
 use crucible_proxy::stdio::ClientIo;
@@ -39,6 +43,9 @@ enum ProxyCommand {
     /// Wrap a stdio MCP server: `crucible proxy stdio -- <command> [args]`. Bytes pass unchanged in both
     /// directions; the proxy exits the way the server does.
     Stdio(StdioArgs),
+    /// Stand in front of a Streamable HTTP MCP server: requests, responses and event streams pass unchanged,
+    /// `Authorization` included.
+    Http(Box<HttpArgs>),
     /// Start a program so that it ends when this proxy does (internal).
     #[command(name = EXEC_CHILD, hide = true)]
     ExecChild {
@@ -81,8 +88,63 @@ struct StdioArgs {
     command: Vec<String>,
 }
 
+/// Which `Host` header the upstream sees.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum HostHeaderArg {
+    /// The client's, so a token audience bound to the public name stays valid.
+    Preserve,
+    /// The upstream's own, for upstreams that route by host name.
+    Upstream,
+}
+
+/// Whether identity is derived from the bearer token.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+enum IdentityArg {
+    /// No identity is recorded.
+    Off,
+    /// The token's claims are read without verification and labelled unverified.
+    Claims,
+    /// Only tokens whose signature verifies against --jwks-url yield an identity.
+    Verified,
+}
+
+#[derive(Debug, Args)]
+struct HttpArgs {
+    #[command(flatten)]
+    telemetry: TelemetryArgs,
+    /// The address to listen on, such as 127.0.0.1:8090. Plain HTTP; put a TLS terminator in front for
+    /// clients outside the host or the internal network.
+    #[arg(long, env = "CRUCIBLE_PROXY_LISTEN")]
+    listen: SocketAddr,
+    /// The MCP server, such as http://127.0.0.1:3000 or https://mcp.internal.example. A path in the URL is
+    /// put in front of every request path.
+    #[arg(long, env = "CRUCIBLE_PROXY_UPSTREAM")]
+    upstream: String,
+    /// Which `Host` header the upstream sees.
+    #[arg(long, value_enum, default_value = "preserve")]
+    host_header: HostHeaderArg,
+    /// Derive the caller's identity from the bearer token. Off by default; the token is forwarded untouched
+    /// in every mode. Also read from CRUCIBLE_PROXY_IDENTITY.
+    #[arg(
+        long,
+        value_enum,
+        default_value = "off",
+        env = "CRUCIBLE_PROXY_IDENTITY"
+    )]
+    identity: IdentityArg,
+    /// The JWKS URL of the token issuer, for --identity verified.
+    #[arg(long, env = "CRUCIBLE_PROXY_JWKS_URL")]
+    jwks_url: Option<String>,
+    /// With --identity verified: the audience a token must carry.
+    #[arg(long, env = "CRUCIBLE_PROXY_JWT_AUDIENCE")]
+    jwt_audience: Option<String>,
+    /// With --identity verified: the issuer a token must carry.
+    #[arg(long, env = "CRUCIBLE_PROXY_JWT_ISSUER")]
+    jwt_issuer: Option<String>,
+}
+
 /// The environment of a proxy process: clocks, entropy, tasks and the network. No disk root is opened.
-fn proxy_env(runtime: &tokio::runtime::Handle) -> anyhow::Result<Env> {
+fn proxy_env(runtime: &tokio::runtime::Handle) -> anyhow::Result<(Env, Arc<TokioSpawner>)> {
     let clock = Arc::new(SystemClock::new());
     let rng = Arc::new(
         crucible_env_prod::os_seeded_rng().map_err(|e| anyhow::anyhow!("os entropy: {e}"))?,
@@ -90,14 +152,15 @@ fn proxy_env(runtime: &tokio::runtime::Handle) -> anyhow::Result<Env> {
     let spawner = Arc::new(TokioSpawner::new(runtime.clone()));
     let disk = Arc::new(PortableDisk::new(runtime.clone(), &BTreeMap::new())?);
     let net = Arc::new(TokioNet::new(clock.clone()));
-    Ok(Env::new(
+    let env = Env::new(
         clock,
         rng,
-        spawner,
+        spawner.clone(),
         disk,
         net,
         Arc::new(MemoryRecorder::new()),
-    ))
+    );
+    Ok((env, spawner))
 }
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
@@ -109,11 +172,12 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .context("starting the runtime")
 }
 
-fn init_logging() {
+fn init_logging(level: tracing::Level) {
     // Standard output belongs to the MCP server; the proxy speaks on standard error only.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_max_level(level)
         .init();
 }
 
@@ -224,7 +288,7 @@ fn exit_like(status: ExitStatus) -> ! {
 }
 
 fn stdio(args: StdioArgs) -> anyhow::Result<()> {
-    init_logging();
+    init_logging(tracing::Level::WARN);
     let (program, rest) = args
         .command
         .split_first()
@@ -250,7 +314,7 @@ fn stdio(args: StdioArgs) -> anyhow::Result<()> {
     // The child is started from this thread, which lives as long as the process: the parent-death signal is
     // tied to the thread that starts the child.
     let status = runtime.block_on(async {
-        let env = proxy_env(&tokio::runtime::Handle::current())?;
+        let (env, _scope) = proxy_env(&tokio::runtime::Handle::current())?;
         let telemetry = telemetry(
             &env,
             &args.telemetry,
@@ -273,10 +337,84 @@ fn stdio(args: StdioArgs) -> anyhow::Result<()> {
     exit_like(status)
 }
 
+fn http(args: HttpArgs) -> anyhow::Result<()> {
+    init_logging(tracing::Level::INFO);
+    let upstream = Target::parse(&args.upstream).map_err(|e| anyhow::anyhow!("--upstream: {e}"))?;
+    let verify = match (args.identity, &args.jwks_url) {
+        (IdentityArg::Verified, Some(url)) => Some(VerifyConfig {
+            jwks: Target::parse(url).map_err(|e| anyhow::anyhow!("--jwks-url: {e}"))?,
+            audience: args.jwt_audience.clone(),
+            issuer: args.jwt_issuer.clone(),
+            refresh: Duration::from_secs(600),
+        }),
+        (IdentityArg::Verified, None) => anyhow::bail!(
+            "--identity verified needs the issuer's key set: set --jwks-url (CRUCIBLE_PROXY_JWKS_URL), or use \
+             --identity claims to record unverified claims, or --identity off"
+        ),
+        _ => None,
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("crucible-proxy")
+        .build()
+        .context("starting the runtime")?;
+    runtime.block_on(async {
+        let (env, scope) = proxy_env(&tokio::runtime::Handle::current())?;
+        let telemetry = telemetry(
+            &env,
+            &args.telemetry,
+            CaptureSource::ProxyHttp,
+            &upstream.host,
+        )?;
+        let identity = match (args.identity, verify) {
+            (IdentityArg::Off, _) => IdentityResolver::off(&env),
+            (IdentityArg::Claims, _) => IdentityResolver::claims(&env),
+            (IdentityArg::Verified, Some(verify)) => IdentityResolver::verified(&env, verify),
+            (IdentityArg::Verified, None) => IdentityResolver::off(&env),
+        };
+        let listener = env.net.listen(args.listen).await.with_context(|| {
+            format!(
+                "listening on {}; choose another address with --listen",
+                args.listen
+            )
+        })?;
+        let config = HttpProxyConfig {
+            upstream,
+            host_header: match args.host_header {
+                HostHeaderArg::Preserve => HostHeader::Preserve,
+                HostHeaderArg::Upstream => HostHeader::Upstream,
+            },
+            connect_timeout: Duration::from_secs(10),
+            identity,
+        };
+        tracing::info!(
+            listen = %listener.local_addr().unwrap_or(args.listen),
+            upstream = %config.upstream.authority(),
+            "the proxy is listening"
+        );
+        let mut serving = env.spawn(
+            "proxy-http",
+            crucible_proxy::http::serve(env.clone(), listener, config, telemetry.tap()),
+        );
+        let mut signals = signals()?;
+        tokio::select! {
+            biased;
+            _signal = signals.next() => {}
+            _stopped = serving.join() => {}
+        }
+        scope.request_shutdown();
+        telemetry.finish().await;
+        anyhow::Ok(())
+    })?;
+    // Open connections are not waited for: an event stream may never end.
+    std::process::exit(0)
+}
+
 /// Runs a `crucible proxy` subcommand.
 pub fn run(args: ProxyArgs) -> anyhow::Result<()> {
     match args.command {
         ProxyCommand::Stdio(args) => stdio(args),
+        ProxyCommand::Http(args) => http(*args),
         ProxyCommand::ExecChild { args } => {
             #[cfg(unix)]
             {
