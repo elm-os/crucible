@@ -12,7 +12,7 @@ publish.workspace = true
 thiserror = { workspace = true }
 # Parsing only. The same exact version as the binary's keys-file parser, until the root
 # [workspace.dependencies] table lists it.
-toml = { version = "=1.2.1", default-features = false, features = ["std", "serde", "parse"] }
+toml = { workspace = true, features = ["std", "serde", "parse"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
