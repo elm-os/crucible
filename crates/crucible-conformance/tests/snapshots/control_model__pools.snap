@@ -1,0 +1,11 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"pools\")"
+---
+begin beyond the main pool: error Unavailable
+a main-pool statement: error Unavailable
+a session lookup: false
+a lease read: false
+a feed poll: 0
+the database clock: ()
+begin after the pool drained: ()
