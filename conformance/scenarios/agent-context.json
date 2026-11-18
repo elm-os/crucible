@@ -1,0 +1,25 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-context",
+  "kind": "agent",
+  "title": "Session, user, tags and metadata set by the context setters reach every span",
+  "steps": [
+    {
+      "step": "conversation",
+      "observe": {
+        "name": "conversation",
+        "type": "agent",
+        "context": {
+          "session_id": "conformance-session",
+          "user_id": "conformance-user",
+          "tags": ["conformance", "beta"],
+          "metadata": { "plan": "pro", "seats": 3, "trial": false }
+        },
+        "children": [
+          { "name": "turn-1", "type": "span", "children": [{ "name": "think", "type": "chain" }] },
+          { "name": "turn-2", "type": "span" }
+        ]
+      }
+    }
+  ]
+}
