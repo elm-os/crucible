@@ -1,0 +1,12 @@
+{
+  "schema": "crucible.conformance.manifest/v1",
+  "sdk": "selftest",
+  "language": "rust",
+  "sdk_version": "0.0.0",
+  "runner": ["crucible-sdk-driver", "selftest-runner"],
+  "kinds": ["agent", "mcp"],
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "throw_outcome": "internal",
+  "progress_count": "observed",
+  "skips": []
+}
