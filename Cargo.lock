@@ -1042,14 +1042,24 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "crucible-env",
+ "crucible-env-prod",
+ "crucible-fake-collector",
  "crucible-proxy",
  "crucible-records",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "memchr",
  "opentelemetry-proto",
  "proptest",
  "prost",
  "serde_json",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

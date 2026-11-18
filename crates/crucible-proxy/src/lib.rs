@@ -8,11 +8,16 @@
 //! - [`core`]: [`ProxyCore`], the state machine with no IO, and its forwarding face [`Tap`].
 //! - [`scan`] and [`sse`]: the bounded streaming readers that find JSON-RPC fields in the copy.
 //! - [`encode`]: operations to OTLP spans.
+//! - [`live`]: the telemetry task and the exporter, off the forwarding path.
+//! - [`stdio`]: the pumps of `crucible proxy stdio`.
 
 pub mod core;
 pub mod encode;
+pub mod live;
+pub mod net;
 pub mod scan;
 pub mod sse;
+pub mod stdio;
 
 pub use crate::core::{
     Batch, BodyKind, CoreConfig, EndReason, ExportResult, HeaderView, Identity, Now, Op, ProxyCore,
