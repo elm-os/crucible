@@ -3,9 +3,8 @@
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
-// One search param as state. Changes replace the history entry. The router applies replaceState in a
-// transition, so the choice is held here until the URL has it; otherwise readers would see the old
-// value for a render.
+// The router applies replaceState in a transition, so a new value is held here until the URL has it;
+// otherwise readers would see the old value for a render.
 export function useUrlParam(name: string): [string | null, (next: string | null) => void] {
   const fromUrl = useSearchParams().get(name);
   const [chosen, setChosen] = useState<{ value: string | null } | null>(null);

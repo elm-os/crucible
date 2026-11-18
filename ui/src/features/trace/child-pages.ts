@@ -25,7 +25,7 @@ export function childPagesKey(project: string, trace: string, parent?: string) {
   return parent === undefined ? key : [...key, parent];
 }
 
-export interface ChildPagesResult {
+interface ChildPagesResult {
   pages: ReadonlyMap<string, readonly ChildLoad[]>;
   retry: (parent: string) => void;
 }

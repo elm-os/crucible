@@ -15,7 +15,6 @@ export function StatusLabel({ status, label }: { status: StatusCode; label: stri
   );
 }
 
-// A trace with error-level spans counts them; otherwise its head span's status decides.
 export function TraceStatusLabel({ errors, status }: { errors: number; status: StatusCode }) {
   if (errors > 0) {
     return <StatusLabel status="error" label={errors === 1 ? "1 error" : `${errors} errors`} />;

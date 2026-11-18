@@ -11,9 +11,8 @@ import {
   live,
 } from "@ui-sdk/core";
 
-// A graph of nodes laid out on a canvas you pan and zoom: an APG listbox whose options are the nodes,
-// in the order they are rendered (the view renders them in flow order). Arrows step through them, typing
-// jumps by name, and Enter, Space or a press chooses one; choosing the chosen node again clears it.
+// An APG listbox of graph nodes on a canvas you pan and zoom. Options follow render order, so arrows and
+// typeahead keep the listbox contract; choosing the chosen node again clears the choice.
 
 type AgentGraphOptions = {
   value?: string | null;

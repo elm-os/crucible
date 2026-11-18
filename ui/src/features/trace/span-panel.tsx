@@ -7,7 +7,7 @@ import { formatCost, formatCount, formatDuration, formatOffset, formatTime } fro
 import { TYPE_LABEL } from "./span-waterfall";
 import type { TraceNode, TraceTree } from "./trace-tree";
 
-export const STATUS_LABEL = { error: "Error", ok: "OK", unset: "Unset" } as const;
+const STATUS_LABEL = { error: "Error", ok: "OK", unset: "Unset" } as const;
 
 const LEVEL_LABEL: Record<Level, string> = {
   debug: "Debug",
@@ -16,7 +16,6 @@ const LEVEL_LABEL: Record<Level, string> = {
   error: "Error",
 };
 
-// What the span panel shows for the `span` in the URL: the span, or why there is none.
 export function SpanPanelBody({
   tree,
   paged,

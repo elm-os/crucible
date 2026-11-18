@@ -109,7 +109,6 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
   const [viewParam, setView] = useUrlParam("view");
   const [expandedState, setExpanded] = useState<string[] | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
-  // The agent graph node whose spans the timeline shows, if one is chosen.
   const [graphNode, setGraphNode] = useState<string | null>(null);
 
   const detail = query.data;
@@ -120,9 +119,8 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
   const graph = tree ? agentGraphModel(tree) : null;
   const filter = graph?.nodes.find((node) => node.id === graphNode) ?? null;
 
-  // An open span whose children have not been read yet requests their first page. Requests are
-  // state, not derived, so a page stays loaded after its span closes; once requested, a span is no
-  // longer unloaded, so this settles in one extra render.
+  // Requests are state, not derived, so a page stays loaded after its span closes; a requested span is
+  // no longer unloaded, so this settles in one extra render.
   const wanted = tree ? expanded.filter((id) => tree.nodes.get(id)?.more === "unloaded") : [];
   if (wanted.length > 0) setRequests(wanted.reduce(withFirstPage, requests));
 

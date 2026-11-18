@@ -4,7 +4,6 @@ import type { Span } from "@/api/generated/Span";
 import type { SpanPage } from "@/api/generated/SpanPage";
 import { formatCount, parseMicros } from "@/lib/format";
 
-// One requested page of a span's children, as far as it has loaded.
 export type ChildLoad =
   | { status: "pending" }
   | { status: "error"; error: unknown }
@@ -39,9 +38,8 @@ function byStart(a: TraceNode, b: TraceNode): number {
   return a.span.span_id < b.span.span_id ? -1 : 1;
 }
 
-// Builds the span tree from the trace detail and every loaded page of children. A span whose parent is
-// not loaded is shown at the top level, and so is the earliest span of any parent cycle, so every span
-// appears exactly once.
+// A span whose parent is not loaded is shown at the top level, and so is the earliest span of any
+// parent cycle, so every span appears exactly once.
 export function buildTraceTree(spans: readonly Span[], pages: ChildPages = NO_PAGES): TraceTree {
   const merged = new Map<string, Span>();
   for (const span of spans) merged.set(span.span_id, span);
@@ -143,7 +141,7 @@ function moreState(node: TraceNode, loads: readonly ChildLoad[] | undefined): Mo
 
 const MORE_SUFFIX = "/more";
 
-export const MORE_LABEL: Record<MoreState, string> = {
+const MORE_LABEL: Record<MoreState, string> = {
   unloaded: "Loading child spans",
   loading: "Loading child spans",
   error: "Couldn't load child spans. Select to retry.",
@@ -165,7 +163,7 @@ export function moreRowParent(value: string): string | null {
   return value.endsWith(MORE_SUFFIX) ? value.slice(0, -MORE_SUFFIX.length) : null;
 }
 
-export function spanLabel(span: Span): string {
+function spanLabel(span: Span): string {
   return span.name || "Unnamed span";
 }
 
@@ -217,7 +215,7 @@ export function ancestorsOf(tree: TraceTree, id: string): string[] {
   return chain;
 }
 
-export interface TraceTotals {
+interface TraceTotals {
   name: string;
   start: string | null;
   durationUs: number;
