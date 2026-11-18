@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
+
 [dependencies]
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
@@ -22,6 +26,11 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+prost = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
 
 [lints]
 workspace = true
