@@ -1,0 +1,44 @@
+[package]
+name = "crucible-mcp-server"
+description = "Crucible's own MCP server at /mcp: read-only tools for coding agents over the query services."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Path dependencies through the root table: problems, request ids and project settings shared with the REST API.
+crucible-api = { workspace = true }
+crucible-api-types = { workspace = true }
+crucible-auth = { workspace = true }
+crucible-cursor = { workspace = true }
+crucible-env = { workspace = true }
+crucible-plan = { workspace = true }
+crucible-query = { workspace = true }
+crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+# The MCP protocol: the server role and the streamable HTTP transport of both protocol eras.
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+# The tools' input and output schemas; rmcp builds on schemars 1.
+schemars = "=1.2.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-chfmt = { workspace = true }
+crucible-recent = { workspace = true, features = ["test-support"] }
+crucible-sim = { path = "../crucible-sim" }
+async-trait = { workspace = true }
+http-body-util = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true
