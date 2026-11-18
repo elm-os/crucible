@@ -151,7 +151,9 @@ const fn slot(identity: ServiceIdentity) -> usize {
 
 /// A tab-separated answer: one `Vec` of fields per line.
 fn lines(text: &str) -> Vec<Vec<&str>> {
-    text.lines().map(|line| line.split('\t').collect()).collect()
+    text.lines()
+        .map(|line| line.split('\t').collect())
+        .collect()
 }
 
 fn unexpected(what: &str, text: &str) -> StoreError {
@@ -472,11 +474,7 @@ impl ClickHouseStore {
     }
 
     /// The names of `names` that `system.<system_table>` does not list.
-    async fn missing(
-        &self,
-        system_table: &str,
-        names: &[&str],
-    ) -> Result<Vec<String>, StoreError> {
+    async fn missing(&self, system_table: &str, names: &[&str]) -> Result<Vec<String>, StoreError> {
         let mut b = Binder::default();
         let list = b.strings(names);
         let statement = b.finish(format!(
@@ -554,10 +552,7 @@ impl ClickHouseStore {
                 let cloud = self.setting_value("settings", "cloud_mode").await?;
                 if cloud.trim() == "1" || engines.iter().any(|(_, f)| *f == EngineFamily::Shared) {
                     StoreFlavour::Cloud
-                } else if engines
-                    .iter()
-                    .any(|(_, f)| *f == EngineFamily::Replicated)
-                {
+                } else if engines.iter().any(|(_, f)| *f == EngineFamily::Replicated) {
                     StoreFlavour::Clustered
                 } else {
                     StoreFlavour::SingleNode

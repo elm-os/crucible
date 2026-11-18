@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "rendered(&series(Step::Week, Fill::None))"
+---
+SELECT toDateTime(toMonday(toDateTime(minute, {p0:String})), {p0:String}) AS bucket, environment, sum(count) AS m0 FROM crucible.span_metrics WHERE project_id = {p1:UUID} AND minute >= {p2:DateTime('UTC')} AND minute <= {p3:DateTime('UTC')} GROUP BY bucket, environment
+p0: String = "UTC"
+p1: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p2: DateTime('UTC') = "1794907800"
+p3: DateTime('UTC') = "1794911400"

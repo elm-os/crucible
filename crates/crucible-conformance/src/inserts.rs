@@ -78,7 +78,11 @@ pub(crate) fn rollup_rows(
         })
         .all("minute", Value::Time(time.floor_minute()))
         .each("release", |row| {
-            Value::String(if data(row) { format!("r{row}") } else { String::new() })
+            Value::String(if data(row) {
+                format!("r{row}")
+            } else {
+                String::new()
+            })
         })
         .each("marker_epoch", |row| {
             uuid(if data(row) { Uuid::NIL } else { epoch.uuid() })
@@ -98,7 +102,13 @@ async fn rows_of(ctx: &Ctx, table: TableId, project: ProjectId) -> Result<u64> {
     .await
 }
 
-async fn probe(ctx: &Ctx, table: TableId, time: Timestamp, epoch: WalEpoch, seq: u64) -> Result<bool> {
+async fn probe(
+    ctx: &Ctx,
+    table: TableId,
+    time: Timestamp,
+    epoch: WalEpoch,
+    seq: u64,
+) -> Result<bool> {
     let partition = route(table, Granularity::Day, time)?;
     Ok(ctx
         .store
@@ -115,12 +125,19 @@ pub(crate) async fn c1(ctx: &Ctx) -> Result<String> {
             plain_rows(TableId::SpanCore, project, epoch, 1, T0, 100, 1),
             100,
         ),
-        (TableId::SpanMetrics, rollup_rows(project, epoch, 1, T0, 50), 50),
+        (
+            TableId::SpanMetrics,
+            rollup_rows(project, epoch, 1, T0, 50),
+            50,
+        ),
     ];
     for (table, rows, expected) in blocks {
         ctx.stop_merges(table.name()).await?;
         expect(!probe(ctx, table, T0, epoch, 1).await?, || {
-            format!("{}: the probe reads present before the insert", table.name())
+            format!(
+                "{}: the probe reads present before the insert",
+                table.name()
+            )
         })?;
         let token = ctx.token(epoch, 1, table, T0)?;
         for attempt in 1..=3 {
@@ -130,13 +147,19 @@ pub(crate) async fn c1(ctx: &Ctx) -> Result<String> {
         }
         let landed = rows_of(ctx, table, project).await?;
         expect(landed == expected, || {
-            format!("{}: three attempts left {landed} rows, not {expected}", table.name())
+            format!(
+                "{}: three attempts left {landed} rows, not {expected}",
+                table.name()
+            )
         })?;
         expect(probe(ctx, table, T0, epoch, 1).await?, || {
             format!("{}: the probe reads absent after the insert", table.name())
         })?;
         expect(!probe(ctx, table, T0, epoch, 2).await?, || {
-            format!("{}: the probe reads present for another batch", table.name())
+            format!(
+                "{}: the probe reads present for another batch",
+                table.name()
+            )
         })?;
     }
     Ok(format!(
@@ -199,7 +222,8 @@ pub(crate) async fn c2(ctx: &Ctx) -> Result<String> {
             ctx.admin_count(format!("SELECT count() FROM crucible.{name}"))
                 .await?,
         );
-        ctx.admin(format!("DROP TABLE crucible.{name} SYNC")).await?;
+        ctx.admin(format!("DROP TABLE crucible.{name} SYNC"))
+            .await?;
     }
     expect(counts == [6, 3], || {
         format!("two sends of 3 rows left {counts:?} rows without and with the window, not [6, 3]")
@@ -217,7 +241,8 @@ pub(crate) async fn c3(ctx: &Ctx) -> Result<String> {
     let (project, epoch) = (ctx.project(), ctx.epoch());
     let batch = |seq: u64| fact_rows(table, project, epoch, seq, T0, 10);
     let token = |seq: u64| ctx.token(epoch, seq, table, T0);
-    let window = "ALTER TABLE crucible.fact_flags MODIFY SETTING non_replicated_deduplication_window";
+    let window =
+        "ALTER TABLE crucible.fact_flags MODIFY SETTING non_replicated_deduplication_window";
     ctx.stop_merges(table.name()).await?;
     ctx.admin(format!("{window} = 2")).await?;
     let observed = async {
@@ -244,7 +269,9 @@ pub(crate) async fn c3(ctx: &Ctx) -> Result<String> {
         "the probe reads absent for a block that landed".to_owned()
     })?;
     expect((before, after) == (60, 70), || {
-        format!("a resend beyond the window took the table from {before} to {after} rows, not 60 to 70")
+        format!(
+            "a resend beyond the window took the table from {before} to {after} rows, not 60 to 70"
+        )
     })?;
     Ok(
         "with a log of 2 entries a retry inside it is dropped; after 5 more inserts the same token lands a \
@@ -314,7 +341,9 @@ pub(crate) async fn single_block(ctx: &Ctx) -> Result<String> {
         Ok(field.trim().parse()?)
     };
     expect(parts_of(&first)? == parts_of(&before)? + 1, || {
-        format!("the block made parts go from {before:?} to {first:?}, not one more part of 262144 rows")
+        format!(
+            "the block made parts go from {before:?} to {first:?}, not one more part of 262144 rows"
+        )
     })?;
     expect(second == first && count == MAX_BLOCK_ROWS as u64, || {
         format!("the resend changed the parts from {first:?} to {second:?}, rows {count}")
@@ -327,10 +356,8 @@ pub(crate) async fn two_partitions(ctx: &Ctx) -> Result<String> {
     let table = TableId::SpanCore;
     let (project, epoch) = (ctx.project(), ctx.epoch());
     let next_day = T0.saturating_add_micros(DAY_MICROS);
-    let rows = plain_rows(table, project, epoch, 1, T0, 2, 1).with(
-        "start_time",
-        vec![Value::Time(T0), Value::Time(next_day)],
-    );
+    let rows = plain_rows(table, project, epoch, 1, T0, 2, 1)
+        .with("start_time", vec![Value::Time(T0), Value::Time(next_day)]);
     let outcome = ctx.insert(&rows, ctx.token(epoch, 1, table, T0)?).await;
     let landed = rows_of(ctx, table, project).await?;
     expect(landed == 0, || format!("{landed} rows of the block landed"))?;

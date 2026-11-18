@@ -1,0 +1,14 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "rendered(&plan(QueryClass::AnalyticsRaw, Node::Aggregate(plain)))"
+---
+SELECT user_id, model_response, count() AS m0, sum(total_cost_nusd) AS m1, uniqCombined64(trace_id) AS m2, min(start_time) AS m3, max(duration_us) AS m4 FROM crucible.span_core WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND environment = {p5:String} GROUP BY user_id, model_response HAVING m0 > {p6:UInt64} AND m1 < {p7:Int64} ORDER BY m0 DESC, user_id ASC LIMIT {p8:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911400"
+p5: String = "prod"
+p6: UInt64 = "10"
+p7: Int64 = "-1"
+p8: UInt64 = "100"

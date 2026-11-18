@@ -270,7 +270,9 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use crucible_auth::test_support::scope;
-    use crucible_plan::{Aggregate, Caller, Measure, Node, Pred, QueryClass, QueryPlan, data_bounds};
+    use crucible_plan::{
+        Aggregate, Caller, Measure, Node, Pred, QueryClass, QueryPlan, data_bounds,
+    };
     use crucible_records::{ProjectId, TableId, TimeWindow};
     use crucible_schema::{Column, SpanMetricsCol};
     use proptest::prelude::*;
@@ -314,18 +316,20 @@ mod tests {
             "DateTime64(6, 'UTC')"
         );
         assert_eq!(
-            normalize("SimpleAggregateFunction(groupUniqArrayArray(16), Array(LowCardinality(String)))"),
+            normalize(
+                "SimpleAggregateFunction(groupUniqArrayArray(16), Array(LowCardinality(String)))"
+            ),
             "Array(String)"
         );
         assert_eq!(
             normalize("Tuple(SimpleAggregateFunction(max, UInt8), LowCardinality(String))"),
             "Tuple(UInt8, String)"
         );
-        assert_eq!(normalize("Enum8('a' = 1, 'b' = 2)"), "Enum8('a' = 1, 'b' = 2)");
         assert_eq!(
-            normalize("Array(LowCardinality(String))"),
-            "Array(String)"
+            normalize("Enum8('a' = 1, 'b' = 2)"),
+            "Enum8('a' = 1, 'b' = 2)"
         );
+        assert_eq!(normalize("Array(LowCardinality(String))"), "Array(String)");
         assert_eq!(
             normalize("Tuple(Array(UInt16), Array(UInt64))"),
             "Tuple(Array(UInt16), Array(UInt64))"
@@ -360,7 +364,10 @@ mod tests {
         put_string(&mut bytes, b"DateTime('UTC')");
         put_string(&mut bytes, b"DateTime");
         let error = Decoder::new(&schema).push(&bytes).unwrap_err();
-        assert!(matches!(error, DecodeError::Type { index: 1, .. }), "{error}");
+        assert!(
+            matches!(error, DecodeError::Type { index: 1, .. }),
+            "{error}"
+        );
     }
 
     #[test]
@@ -368,7 +375,11 @@ mod tests {
         let cases: Vec<(Ty, Vec<u8>, Value)> = vec![
             (Ty::UInt16, vec![1, 2], Value::UInt(0x0201)),
             (Ty::Int32, (-2i32).to_le_bytes().to_vec(), Value::Int(-2)),
-            (Ty::Float32, 0.5f32.to_le_bytes().to_vec(), Value::Float(0.5)),
+            (
+                Ty::Float32,
+                0.5f32.to_le_bytes().to_vec(),
+                Value::Float(0.5),
+            ),
             (Ty::String, vec![2, b'o', b'k'], Value::String("ok".into())),
             (Ty::String, vec![1, 0xff], Value::Bytes(vec![0xff])),
             (Ty::FixedString(2), vec![0, 9], Value::Bytes(vec![0, 9])),

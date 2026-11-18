@@ -44,7 +44,10 @@ async fn running(ctx: &Ctx, query_id: Uuid) -> Result<bool> {
 
 /// Starts the statement and waits until the server lists it.
 async fn started(ctx: &Ctx, reading: &mut RawRead) -> Result<()> {
-    let first = ctx.env.timeout(Duration::from_secs(3), reading.next()).await;
+    let first = ctx
+        .env
+        .timeout(Duration::from_secs(3), reading.next())
+        .await;
     if let Ok(Some(Err(error))) = first {
         bail!("the slow statement failed: {error}");
     }

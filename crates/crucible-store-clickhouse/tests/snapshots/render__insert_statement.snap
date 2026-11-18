@@ -1,0 +1,5 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "render::insert(TableId::TraceStats)"
+---
+INSERT INTO crucible.trace_stats (project_id, trace_id, row_day, marker_epoch, marker_batch_seq, marker_at, min_start, max_end, has_root, min_head_start, max_level, span_count, error_count, generation_count, tool_count, mcp_count, input_tokens, output_tokens, total_tokens, total_cost_nusd, environments, trace_name_pick, user_id_pick, session_id_pick) FORMAT Native

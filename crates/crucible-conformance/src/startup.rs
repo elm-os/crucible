@@ -2,7 +2,9 @@
 //! self-test and the service-identity visibility check.
 
 use anyhow::{Context as _, Result, bail};
-use crucible_env::{EngineFamily, StoreError, StoreFlavour, StoreHealth, StoreVersion, TelemetryStore};
+use crucible_env::{
+    EngineFamily, StoreError, StoreFlavour, StoreHealth, StoreVersion, TelemetryStore,
+};
 use crucible_schema::TABLES;
 
 use crate::{Ctx, expect};
@@ -70,7 +72,10 @@ pub(crate) async fn visibility(ctx: &Ctx) -> Result<String> {
     // Restore the policy of access step A1 before judging.
     ctx.admin(format!("DROP ROW POLICY {policy}")).await?;
     ctx.migrate().await?;
-    ctx.store.detect().await.context("detect after the policy was restored")?;
+    ctx.store
+        .detect()
+        .await
+        .context("detect after the policy was restored")?;
     match narrowed {
         Err(StoreError::SelfTest(reason)) => Ok(format!(
             "all five identities see the known row; with the policy narrowed detect refuses ({reason})"

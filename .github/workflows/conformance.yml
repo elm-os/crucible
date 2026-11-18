@@ -1,0 +1,75 @@
+name: conformance
+
+# The production ClickHouse adapter against real servers: the conformance rows of docs/testing/invariants.md
+# that crates/crucible-conformance implements. One job per server version, each with its own service container.
+# The 1 shard x 2 replica run needs server configuration files, which a service container cannot take, so it
+# stays in crates/crucible-conformance/scripts/conformance.sh.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-store-clickhouse/**
+      - crates/crucible-conformance/**
+      - crates/crucible-schema/**
+      - crates/crucible-chfmt/**
+      - .github/workflows/conformance.yml
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  clickhouse:
+    name: clickhouse ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["26.3", "26.8", "latest"]
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:${{ matrix.tag }}
+        env:
+          CLICKHOUSE_USER: crucible_admin
+          CLICKHOUSE_PASSWORD: conformance-admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance
+      - name: Wait for ClickHouse
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8123/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "ClickHouse did not answer on port 8123" >&2
+          exit 1
+      - name: Conformance rows
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          cargo run --locked -p crucible-conformance -- --url http://localhost:8123 \
+            --user crucible_admin --password conformance-admin --label "$TAG"

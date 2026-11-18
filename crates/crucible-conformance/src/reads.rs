@@ -27,7 +27,8 @@ use crate::{Ctx, T0, expect};
 const SALT: u32 = 7;
 const HOUR: i64 = 3_600_000_000;
 /// A string with every character the parameter text form escapes, and a few it must leave alone.
-const AWKWARD: &str = "tab\there, back\\slash, quote', line\nfeed, \r, nul\0, {p0:String}, ? and \u{e9}";
+const AWKWARD: &str =
+    "tab\there, back\\slash, quote', line\nfeed, \r, nul\0, {p0:String}, ? and \u{e9}";
 
 fn at(micros: i64) -> Timestamp {
     T0.saturating_add_micros(micros)
@@ -56,7 +57,11 @@ fn trace_bytes(n: u8) -> Value {
 fn rollup(table: TableId, project: ProjectId, epoch: WalEpoch, seq: u64, data: usize) -> Rows {
     Rows::new(table, data + 1)
         .each("project_id", |row| {
-            uuid(if row < data { project.uuid() } else { Uuid::NIL })
+            uuid(if row < data {
+                project.uuid()
+            } else {
+                Uuid::NIL
+            })
         })
         .each("marker_epoch", |row| {
             uuid(if row < data { Uuid::NIL } else { epoch.uuid() })
@@ -150,7 +155,9 @@ async fn load(ctx: &Ctx) -> Result<Fixture> {
         .each("minute", |row| {
             Value::Time(at(minutes.get(row).copied().unwrap_or(0)).floor_minute())
         })
-        .each("release", |row| text(if row < 3 { ["r0", "r1", "r2"][row] } else { "" }))
+        .each("release", |row| {
+            text(if row < 3 { ["r0", "r1", "r2"][row] } else { "" })
+        })
         .each("count", |row| Value::UInt([2, 3, 5, 0][row]))
         .each("dur_hist", |row| match row {
             0 => histogram(&[1, 2], &[1, 1]),
@@ -159,7 +166,11 @@ async fn load(ctx: &Ctx) -> Result<Fixture> {
         });
     insert(metrics, T0).await?;
 
-    let sides = [McpSide::Client.value(), McpSide::Server.value(), McpSide::None.value()];
+    let sides = [
+        McpSide::Client.value(),
+        McpSide::Server.value(),
+        McpSide::None.value(),
+    ];
     let mcp = rollup(TableId::McpToolRollup, project, epoch, 0, 2)
         .each("side", |row| Value::Enum(sides[row]))
         .each("minute", |row| {
@@ -236,7 +247,11 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         .iter()
         .position(|c| *c == SpanCoreCol::StatusMessage)
         .context("status_message is a column")?;
-    same("a string with escapes", &spans[5].values()[message], &text(AWKWARD))?;
+    same(
+        "a string with escapes",
+        &spans[5].values()[message],
+        &text(AWKWARD),
+    )?;
 
     let trace_of = |rows: &[Row]| -> Vec<Value> {
         let at = TraceHeadsCol::ALL
@@ -273,20 +288,40 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
         &vec![trace_bytes(1), trace_bytes(0)],
     )?;
     let early = rows(ctx, list(None, at(500_000), None)?).await?;
-    same("trace list as of an earlier instant", &trace_of(&early), &vec![trace_bytes(0)])?;
+    same(
+        "trace list as of an earlier instant",
+        &trace_of(&early),
+        &vec![trace_bytes(0)],
+    )?;
     let tail = rows(ctx, list(None, at(10_000_000), Some(at(1_000_000)))?).await?;
-    same("trace list since a head cursor", &trace_of(&tail), &vec![trace_bytes(2)])?;
+    same(
+        "trace list since a head cursor",
+        &trace_of(&tail),
+        &vec![trace_bytes(2)],
+    )?;
 
     let bounds = TraceBounds {
         trace_id: trace(0),
         min_start: T0,
         max_end: at(9_000),
     };
-    let children = rows(ctx, span_children(scope, bounds, session, span_id(0), None, None)?).await?;
+    let children = rows(
+        ctx,
+        span_children(scope, bounds, session, span_id(0), None, None)?,
+    )
+    .await?;
     same("children of the root", &children.len(), &3)?;
     let after = Some((at(1_000), span_id(1)));
-    let more = rows(ctx, span_children(scope, bounds, session, span_id(0), after, Some(1))?).await?;
-    same("children after the cursor, one more than the page", &more.len(), &2)?;
+    let more = rows(
+        ctx,
+        span_children(scope, bounds, session, span_id(0), after, Some(1))?,
+    )
+    .await?;
+    same(
+        "children after the cursor, one more than the page",
+        &more.len(),
+        &2,
+    )?;
 
     let plans = data_bounds(scope, window, session)?;
     let span_bounds = rows(ctx, plans.spans).await?;
@@ -319,8 +354,16 @@ async fn endpoint_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     // An aggregate without group dimensions returns no row when nothing matches.
     let other = crucible_auth::test_support::scope(ctx.project()).map_err(|e| anyhow!("{e}"))?;
     let empty = data_bounds(other, window, session)?;
-    same("bounds of a project without data", &rows(ctx, empty.spans).await?.len(), &0)?;
-    same("mcp bounds of a project without data", &rows(ctx, empty.mcp).await?.len(), &0)?;
+    same(
+        "bounds of a project without data",
+        &rows(ctx, empty.spans).await?.len(),
+        &0,
+    )?;
+    same(
+        "mcp bounds of a project without data",
+        &rows(ctx, empty.mcp).await?.len(),
+        &0,
+    )?;
     Ok(14)
 }
 
@@ -328,8 +371,9 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     let (scope, window) = (f.scope, f.window);
     let plan = |class: QueryClass, root: Node| QueryPlan::new(scope, window, class, root);
     let names = async |pred: Pred| -> Result<Vec<Value>> {
-        let scan = Scan::new(TableId::SpanCore, [SpanCoreCol::Name], pred)?
-            .ordered(crucible_plan::Order::by([SpanCoreCol::StartTime], Direction::Asc))?;
+        let scan = Scan::new(TableId::SpanCore, [SpanCoreCol::Name], pred)?.ordered(
+            crucible_plan::Order::by([SpanCoreCol::StartTime], Direction::Asc),
+        )?;
         let found = rows(ctx, plan(QueryClass::List, Node::Scan(scan))).await?;
         Ok(found.into_iter().flat_map(Row::into_values).collect())
     };
@@ -363,8 +407,16 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             ),
             vec![2, 4],
         ),
-        ("TextMatch", Pred::TextMatch("COMPLETION 5".to_owned()), vec![5]),
-        ("TextMatch below one gram", Pred::TextMatch("N 4".to_owned().split_off(2)), vec![4]),
+        (
+            "TextMatch",
+            Pred::TextMatch("COMPLETION 5".to_owned()),
+            vec![5],
+        ),
+        (
+            "TextMatch below one gram",
+            Pred::TextMatch("4".to_owned()),
+            vec![4],
+        ),
         (
             "Not and Or",
             Pred::Not(Box::new(Pred::Or(vec![
@@ -450,7 +502,13 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     .limited(1)?;
     same(
         "aggregate over spans",
-        &values(&rows(ctx, plan(QueryClass::AnalyticsRaw, Node::Aggregate(by_user))).await?),
+        &values(
+            &rows(
+                ctx,
+                plan(QueryClass::AnalyticsRaw, Node::Aggregate(by_user)),
+            )
+            .await?,
+        ),
         &vec![vec![
             text("u1"),
             Value::UInt(3),
@@ -520,14 +578,32 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             Pred::all(),
             10,
         )?;
-        Ok(rows(ctx, plan(QueryClass::Search, Node::TextSearch(search)))
-            .await?
-            .len())
+        Ok(
+            rows(ctx, plan(QueryClass::Search, Node::TextSearch(search)))
+                .await?
+                .len(),
+        )
     };
-    same("all tokens", &search(TokenMode::All, &["hello", "world", "foo"]).await?, &1)?;
-    same("all tokens, one absent", &search(TokenMode::All, &["hello", "absent"]).await?, &0)?;
-    same("any token", &search(TokenMode::Any, &["absent", "foo"]).await?, &1)?;
-    same("phrase", &search(TokenMode::Phrase, &["hello", "world"]).await?, &1)?;
+    same(
+        "all tokens",
+        &search(TokenMode::All, &["hello", "world", "foo"]).await?,
+        &1,
+    )?;
+    same(
+        "all tokens, one absent",
+        &search(TokenMode::All, &["hello", "absent"]).await?,
+        &0,
+    )?;
+    same(
+        "any token",
+        &search(TokenMode::Any, &["absent", "foo"]).await?,
+        &1,
+    )?;
+    same(
+        "phrase",
+        &search(TokenMode::Phrase, &["hello", "world"]).await?,
+        &1,
+    )?;
 
     // FieldRange: bytes 6..11 of the input.
     let payload_key = [
@@ -563,7 +639,9 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
     )?;
     same(
         "metadata equality",
-        &rows(ctx, plan(QueryClass::List, Node::Scan(by_metadata))).await?.len(),
+        &rows(ctx, plan(QueryClass::List, Node::Scan(by_metadata)))
+            .await?
+            .len(),
         &1,
     )?;
 
@@ -575,9 +653,15 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             [FactTagsCol::TraceId],
             vec![Measure::LatestByVersion(FactTagsCol::Version.column_ref())],
         )?;
-        let heads = Scan::new(TableId::TraceHeads, [TraceHeadsCol::Name], Pred::all())?
-            .ordered(crucible_plan::Order::by([TraceHeadsCol::StartTime], Direction::Asc))?;
-        let join = SemiJoin::new(heads, TraceHeadsCol::TraceId, Node::Aggregate(facts), max_ids)?;
+        let heads = Scan::new(TableId::TraceHeads, [TraceHeadsCol::Name], Pred::all())?.ordered(
+            crucible_plan::Order::by([TraceHeadsCol::StartTime], Direction::Asc),
+        )?;
+        let join = SemiJoin::new(
+            heads,
+            TraceHeadsCol::TraceId,
+            Node::Aggregate(facts),
+            max_ids,
+        )?;
         Ok(plan(QueryClass::List, Node::SemiJoin(join)))
     };
     same(
@@ -615,7 +699,9 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
 
 pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let fixture = load(ctx).await?;
-    let endpoints = endpoint_plans(ctx, &fixture).await.context("endpoint plans")?;
+    let endpoints = endpoint_plans(ctx, &fixture)
+        .await
+        .context("endpoint plans")?;
     let nodes = node_plans(ctx, &fixture).await.context("node plans")?;
     Ok(format!(
         "{endpoints} reads of the endpoint builders (trace bounds, trace spans, trace list, span children, \

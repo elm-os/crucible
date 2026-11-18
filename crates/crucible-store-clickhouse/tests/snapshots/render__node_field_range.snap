@@ -1,0 +1,15 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: "rendered(&plan(QueryClass::Point, Node::FieldRange(range)))"
+---
+SELECT substring(output, {p5:UInt64}, {p6:UInt64}) FROM crucible.span_payload WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND start_minute = {p7:DateTime('UTC')} AND trace_hash = {p8:UInt32} AND span_id = unhex({p9:String}) LIMIT 1
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911400"
+p5: UInt64 = "4097"
+p6: UInt64 = "65536"
+p7: DateTime('UTC') = "1794907800"
+p8: UInt32 = "1524766824"
+p9: String = "0101010101010101"

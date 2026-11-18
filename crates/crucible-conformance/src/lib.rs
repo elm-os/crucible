@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use crucible_env::{
-    Env, InsertError, InsertSettings, StoreFlavour, TelemetryStore, TlsRoots,
-};
+use crucible_env::{Env, InsertError, InsertSettings, StoreFlavour, TelemetryStore, TlsRoots};
 use crucible_plan::profile_caps;
 use crucible_records::{BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, WalEpoch};
 use crucible_schema::{
@@ -75,7 +73,10 @@ pub(crate) fn statement(sql: impl Into<String>) -> Statement {
     }
 }
 
-pub(crate) fn with_settings(sql: impl Into<String>, settings: &[(&'static str, &str)]) -> Statement {
+pub(crate) fn with_settings(
+    sql: impl Into<String>,
+    settings: &[(&'static str, &str)],
+) -> Statement {
     Statement {
         settings: settings
             .iter()
@@ -235,7 +236,8 @@ impl Ctx {
 
     /// Stops background merges of a table, so part and row counts show what each insert did.
     pub(crate) async fn stop_merges(&self, table: &str) -> Result<()> {
-        self.admin(format!("SYSTEM STOP MERGES crucible.{table}")).await
+        self.admin(format!("SYSTEM STOP MERGES crucible.{table}"))
+            .await
     }
 }
 
@@ -265,7 +267,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
             });
         }};
     }
-    row!("Startup detection and self-test (5.8)", startup::startup(&ctx));
+    row!(
+        "Startup detection and self-test (5.8)",
+        startup::startup(&ctx)
+    );
     if outcomes.iter().any(|o| o.result.is_err()) {
         return outcomes;
     }
@@ -276,14 +281,26 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         row!("C3 bounded logs", inserts::c3(&ctx));
     }
     row!("C4 token overrides content hash", inserts::c4(&ctx));
-    row!("Single Native block not re-split", inserts::single_block(&ctx));
-    row!("Two-partition block rejected", inserts::two_partitions(&ctx));
+    row!(
+        "Single Native block not re-split",
+        inserts::single_block(&ctx)
+    );
+    row!(
+        "Two-partition block rejected",
+        inserts::two_partitions(&ctx)
+    );
     if single {
         row!("C12 stable error codes", codes::c12(&ctx));
         row!("C13 cancel-on-close and kill", cancel::c13(&ctx));
-        row!("Typed plans on the real server (8.1, 8.3)", reads::reads(&ctx));
+        row!(
+            "Typed plans on the real server (8.1, 8.3)",
+            reads::reads(&ctx)
+        );
         row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
-        row!("Service identities see all rows (7.3)", startup::visibility(&ctx));
+        row!(
+            "Service identities see all rows (7.3)",
+            startup::visibility(&ctx)
+        );
     }
     outcomes
 }
