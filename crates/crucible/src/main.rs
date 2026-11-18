@@ -4,6 +4,7 @@ mod control;
 mod cursor_keys;
 mod facts;
 mod keys;
+mod mcp;
 mod proxy;
 mod recent;
 mod serve;
