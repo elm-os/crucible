@@ -41,6 +41,26 @@ Run `cargo xtask ui compress` after every UI build, because the build replaces `
 server sends every file uncompressed. `embed-ui` fails to compile without `ui/out`, so it is off by default and CI
 builds without it.
 
+## Sending traces to a local server
+
+`crucible serve` accepts OTLP/HTTP traces at `POST /v1/traces` on `--ingest-listen` (default `0.0.0.0:4318`) and on
+the main listener. Bodies are protobuf or JSON, optionally gzip-compressed, and a request is acknowledged only once
+its WAL frame under `--data-dir` is durable. Requests authenticate with a project's secret key as
+`Authorization: Bearer <key>`. Key management will move to the control plane; until then, list the keys in a TOML file
+passed with `--keys-file` (without one, every ingest request answers 401):
+
+```toml
+[[project_key]]
+project_id = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+secret = "csk_..."
+```
+
+A secret is `csk_` followed by 43 base62 characters (`0-9A-Za-z`) that encode 32 random bytes. One way to make one:
+
+```sh
+python3 -c "import secrets, string as s; a = s.digits + s.ascii_uppercase + s.ascii_lowercase; print('csk_0' + ''.join(secrets.choice(a) for _ in range(42)))"
+```
+
 ## Hooks
 
 `pnpm install` at the repository root installs the git hooks (lefthook):
