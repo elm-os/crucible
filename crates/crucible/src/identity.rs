@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_auth::csrf::Origins;
-use crucible_auth::service::{Identity, IdentityConfig};
+use crucible_auth::service::{AuthError, Identity, IdentityConfig};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer, StoreFeed, run_feed, run_last_used};
 use crucible_config::{Config, PgOutageMode};
-use crucible_control::ControlStore;
+use crucible_control::{ControlStore, KeyScope};
 use crucible_env::Env;
 
 use crate::control::Control;
@@ -149,6 +149,49 @@ pub(crate) async fn admin_init(
         "the organization and its owner are created; sign in at /login/"
     );
     Ok(())
+}
+
+/// `crucible admin create-key`: a key for the project with this slug or id, printed as TOML lines (`project_id`,
+/// `public_key`, `secret_key`). The secret key is shown once.
+pub(crate) async fn admin_create_key(
+    config: &Config,
+    project: &str,
+    scopes: &[String],
+    note: Option<String>,
+    import: bool,
+) -> anyhow::Result<String> {
+    let scopes = if scopes.is_empty() {
+        None
+    } else {
+        let parsed = scopes
+            .iter()
+            .map(|scope| {
+                KeyScope::parse(scope.trim()).with_context(|| {
+                    format!("unknown scope {scope:?}; use ingest, read, write, delete or sql")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Some(parsed)
+    };
+    let (_prod, identity) = admin_identity(config)?;
+    let found = identity
+        .project_by_reference(project)
+        .await
+        .map_err(|e| match e {
+            AuthError::NotFound => anyhow::anyhow!(
+                "no project has the slug or id {project:?}; the first project's slug is `default`, and Settings lists \
+                 the others"
+            ),
+            other => anyhow::anyhow!("{other}"),
+        })?;
+    let created = identity
+        .create_key(found.id, scopes, note, None, import)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(format!(
+        "project_id = \"{}\"\npublic_key = \"{}\"\nsecret_key = \"{}\"\n",
+        found.id, created.key.public_key, created.secret
+    ))
 }
 
 /// `crucible admin reset-password`: a one-time reset link for the user with `email`, valid for 30 minutes.

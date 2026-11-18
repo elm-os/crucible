@@ -59,6 +59,27 @@ enum AdminCommand {
     /// Print a one-time password-reset link for a user, valid for 30 minutes. This version sends no email, so
     /// pass the link on.
     ResetPassword(Box<AdminResetArgs>),
+    /// Make an API key for a project and print `project_id`, `public_key` and `secret_key`. The secret key is
+    /// shown once.
+    CreateKey(Box<AdminCreateKeyArgs>),
+}
+
+#[derive(Debug, Args)]
+struct AdminCreateKeyArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The project: its slug (the first project's is `default`) or its id.
+    #[arg(long)]
+    project: String,
+    /// The scopes, comma-separated, from ingest, read, write, delete and sql [default: ingest,read,write].
+    #[arg(long, value_delimiter = ',')]
+    scopes: Vec<String>,
+    /// A note, shown with the key in Settings.
+    #[arg(long)]
+    note: Option<String>,
+    /// Let the key send spans older than the event-age limit, to import history.
+    #[arg(long)]
+    import: bool,
 }
 
 #[derive(Debug, Args)]
@@ -327,6 +348,18 @@ fn main() -> anyhow::Result<()> {
                     &args.name,
                     &password,
                 ))
+            }
+            AdminCommand::CreateKey(args) => {
+                let config = args.config.load_for_run()?;
+                let printed = runtime()?.block_on(identity::admin_create_key(
+                    &config,
+                    &args.project,
+                    &args.scopes,
+                    args.note.clone(),
+                    args.import,
+                ))?;
+                std::io::stdout().lock().write_all(printed.as_bytes())?;
+                Ok(())
             }
             AdminCommand::ResetPassword(args) => {
                 let config = args.config.load_for_run()?;

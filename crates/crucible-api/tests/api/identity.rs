@@ -11,10 +11,7 @@ use crucible_auth::csrf::Origins;
 use crucible_auth::password::HashCost;
 use crucible_auth::roles::ProjectPermission;
 use crucible_auth::service::{Identity, IdentityConfig, SessionVerdict};
-use crucible_auth::{
-    DbKeys, LookupKey, OutageMode, PublicKey, Sealer, SecretKey, StaticKey, StaticKeys,
-    WithFileKeys,
-};
+use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer};
 use crucible_control::{JsonDoc, OrgRole, Project, ProjectRole, Repos as _};
 use crucible_env::Env;
 use crucible_sim::pg_model::{PgFaults, PgModel};
@@ -27,11 +24,6 @@ use crate::world::{World, project};
 use crate::{Reply, cursor_keys, run};
 
 const HOST: &str = "crucible.test";
-
-/// The secret of the one key in the keys file.
-fn file_key_secret() -> String {
-    format!("csk_{}", "3".repeat(43))
-}
 const PASSWORD: &str = "correct horse battery";
 
 /// How a request authenticates.
@@ -186,29 +178,13 @@ async fn platform(env: &Env, world: &World) -> Platform {
         .await
         .unwrap();
     let created = identity
-        .create_key(project(1), None, None, None)
+        .create_key(project(1), None, None, None, false)
         .await
         .unwrap();
-    // The keys file stays beside the Postgres keys.
-    let file = StaticKeys::new(
-        env.rng.as_ref(),
-        vec![StaticKey {
-            id: crucible_records::ApiKeyId::from_bytes([3; 16]),
-            project_id: project(1),
-            public_key: PublicKey::parse(&format!("cpk_{}", "3".repeat(43))).unwrap(),
-            secret: SecretKey::parse(&file_key_secret()).unwrap(),
-        }],
-    )
-    .unwrap();
-    let keys = Arc::new(WithFileKeys {
-        db: Arc::clone(identity.keys()),
-        file: Arc::new(file),
-    });
     let router = crucible_api::platform_router(
         env,
         Some(world.service.clone()),
         Arc::clone(&identity),
-        keys,
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
     );
@@ -524,14 +500,6 @@ fn keys_made_through_the_api_work_at_once_and_stop_at_once() {
         call(&p.router, Method::GET, &bounds, &key, None, &[])
             .await
             .assert_problem(401, "unauthenticated");
-        // A key from the keys file reads beside the Postgres keys.
-        let from_file = As::Key(file_key_secret());
-        assert_eq!(
-            call(&p.router, Method::GET, &bounds, &from_file, None, &[])
-                .await
-                .status,
-            StatusCode::OK
-        );
         // During a Postgres outage an open session survives a page reload: the sign-in mode and the session both
         // answer, from this node's last read and its session cache.
         let owner_view = call(

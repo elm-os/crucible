@@ -40,7 +40,7 @@ use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
-use crucible_auth::{DbKeys, KeyVerifier, StaticKeys, WithFileKeys};
+use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
 use crucible_config::Config;
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
@@ -342,12 +342,9 @@ async fn open_app(
         segments = report.segments.len(),
         "wal opened"
     );
-    // With a control plane the keys are the Postgres snapshot, with the keys file beside it.
+    // With a control plane the keys are the Postgres snapshot; the keys file is the mode without one.
     let keys: Arc<dyn KeyVerifier> = match &identity {
-        Some(identity) => Arc::new(WithFileKeys {
-            db: Arc::clone(identity.keys()),
-            file: Arc::new(keys),
-        }),
+        Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
         None => Arc::new(keys),
     };
     let ingest = Ingest::new(
@@ -365,14 +362,7 @@ async fn open_app(
             .as_ref()
             .map(|identity| Arc::clone(identity.keys())),
         api_without_store: match identity {
-            Some(identity) => crucible_api::platform_router(
-                env,
-                None,
-                identity,
-                Arc::clone(&keys),
-                settings,
-                cursors,
-            ),
+            Some(identity) => crucible_api::platform_router(env, None, identity, settings, cursors),
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
     });
@@ -707,14 +697,9 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
     let settings = Arc::new(StaticProjectSettings::default());
     gate.open(match identity {
-        Some(identity) => crucible_api::platform_router(
-            &env,
-            Some(service),
-            identity,
-            Arc::clone(&keys),
-            settings,
-            cursors,
-        ),
+        Some(identity) => {
+            crucible_api::platform_router(&env, Some(service), identity, settings, cursors)
+        }
         None => crucible_api::router(&env, service, keys, settings, cursors),
     });
     tracing::info!(

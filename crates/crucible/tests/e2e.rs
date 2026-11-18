@@ -168,8 +168,6 @@ impl Rig {
             .args(["--metrics-listen", &metrics.to_string()])
             .arg("--data-dir")
             .arg(self.dir.join("data"))
-            .arg("--keys-file")
-            .arg(self.dir.join("keys.toml"))
             .args(["--clickhouse-url", &self.clickhouse_url])
             .args(["--clickhouse-user", &self.admin.user])
             .arg("--clickhouse-password-file")
@@ -183,9 +181,11 @@ impl Rig {
         if migrate {
             command.arg("--migrate");
         }
-        if let Some(url) = &self.postgres_url {
-            command.args(["--postgres-url", url]);
-        }
+        // With Postgres the keys live there; the keys file is the mode without it.
+        match &self.postgres_url {
+            Some(url) => command.args(["--postgres-url", url]),
+            None => command.arg("--keys-file").arg(self.dir.join("keys.toml")),
+        };
         let mut server = Server {
             child: command.spawn().unwrap(),
             api,
@@ -1127,17 +1127,6 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     let out = std::env::var_os("CRUCIBLE_E2E_OUT")
         .map_or_else(|| dir.clone(), |o| PathBuf::from(o).join("control-plane"));
     std::fs::create_dir_all(&out).unwrap();
-    // The keys file keeps working beside the keys made through the API, as in the Compose files.
-    let file_project = env.new_id().to_string();
-    std::fs::write(
-        dir.join("keys.toml"),
-        format!(
-            "[[project_key]]\nproject_id = \"{file_project}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n",
-            public('c'),
-            secret('c')
-        ),
-    )
-    .unwrap();
     std::fs::write(dir.join("master-key"), format!("{MASTER_KEY}\n")).unwrap();
     std::fs::write(dir.join("clickhouse-password"), &admin.password).unwrap();
     let password = "e2e owner password 1";
@@ -1271,32 +1260,60 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    // 6. A key from the keys file ingests and reads beside the Postgres keys.
-    let file_bearer = format!("Bearer {}", secret('c'));
-    let file_trace = Trace::new(env, "e2e keys-file trace");
+    // 6. A key from the command line, as the Compose smoke test makes one, for the first project `default`.
+    let made = Command::new(&binary)
+        .args([
+            "admin",
+            "create-key",
+            "--project",
+            "default",
+            "--scopes",
+            "ingest,read",
+        ])
+        .args(["--postgres-url", &postgres_url])
+        .arg("--master-key-file")
+        .arg(dir.join("master-key"))
+        .env_remove("CRUCIBLE_POSTGRES_URL")
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let printed = String::from_utf8(made.stdout).unwrap();
+    let field = |name: &str| {
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} = \"")))
+            .map(|value| value.trim_end_matches('"').to_owned())
+            .unwrap_or_else(|| panic!("no {name} in {printed}"))
+    };
+    let cli_bearer = format!("Bearer {}", field("secret_key"));
+    let cli_trace = Trace::new(env, "e2e command-line key trace");
     let (status, body) = http(
         server.ingest,
         "POST",
         "/v1/traces",
         &[
             ("content-type", "application/json"),
-            ("authorization", &file_bearer),
+            ("authorization", &cli_bearer),
         ],
-        file_trace.json().as_bytes(),
+        cli_trace.json().as_bytes(),
     )
     .unwrap();
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
-    let file_api = Api {
+    let cli_api = Api {
         addr: server.api,
-        project: file_project.clone(),
-        bearer: file_bearer.clone(),
-        pair: basic('c'),
+        project: field("project_id"),
+        bearer: cli_bearer.clone(),
+        pair: String::new(),
     };
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !file_api.lists(&file_trace) {
+    while !cli_api.lists(&cli_trace) {
         assert!(
             Instant::now() < deadline,
-            "the keys-file trace was not listed"
+            "the command-line key's trace was not listed"
         );
         std::thread::sleep(Duration::from_millis(200));
     }

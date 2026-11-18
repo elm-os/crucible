@@ -361,7 +361,7 @@ fn keys_work_at_once_and_stop_at_once() {
         owner(&identity).await;
         let project = identity.create_project("Agents", "agents").await.unwrap();
         let created = identity
-            .create_key(project.id, None, Some("ci".to_owned()), None)
+            .create_key(project.id, None, Some("ci".to_owned()), None, false)
             .await
             .unwrap();
         assert!(matches!(
@@ -390,7 +390,7 @@ fn keys_work_at_once_and_stop_at_once() {
         );
         // Deleting a project revokes its keys at once.
         let other = identity
-            .create_key(project.id, None, None, None)
+            .create_key(project.id, None, None, None, false)
             .await
             .unwrap();
         assert!(matches!(

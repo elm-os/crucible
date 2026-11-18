@@ -41,7 +41,7 @@ pub(crate) struct ApiState {
     /// `None` until a telemetry store is configured: requests are still authenticated and validated, then
     /// answered with `telemetry_store_unavailable`.
     pub(crate) service: Option<QueryService>,
-    /// The keys file; with a control plane, it backs the Postgres key snapshot.
+    /// The keys file, when the server has no control plane.
     pub(crate) keys: Arc<dyn KeyVerifier>,
     pub(crate) settings: Arc<dyn ProjectSettingsSource>,
     /// The cursor-signing keys.
@@ -172,27 +172,15 @@ pub(crate) async fn resolve(
                     Presented::Bearer(secret) => identity.keys().check_secret(secret),
                     Presented::Basic(public, secret) => identity.keys().check_pair(public, secret),
                 };
-                if let KeyVerdict::Valid(grant) = verdict {
-                    return Ok(Principal::Key(grant));
-                }
-                // A key from the keys file, which works beside the Postgres keys.
-                let from_file = match &presented {
-                    Presented::Bearer(secret) => state.keys.verify(secret),
-                    Presented::Basic(public, secret) => state.keys.verify_pair(public, secret).ok(),
-                };
-                match (from_file, verdict) {
-                    (Some(principal), _) => Ok(Principal::Key(KeyGrant {
-                        principal,
-                        scopes: Scopes::DEFAULT,
-                        import: false,
-                    })),
-                    (None, KeyVerdict::Unavailable { retry_after }) => Err(ApiError::new(
+                match verdict {
+                    KeyVerdict::Valid(grant) => Ok(Principal::Key(grant)),
+                    KeyVerdict::Invalid => Err(ApiError::unauthenticated(request_id)),
+                    KeyVerdict::Unavailable { retry_after } => Err(ApiError::new(
                         request_id,
                         ProblemCode::ControlPlaneUnavailable,
                         "the server cannot check this key while Postgres is unreachable; try again",
                     )
                     .with_retry_after(retry_after)),
-                    (None, _) => Err(ApiError::unauthenticated(request_id)),
                 }
             }
             None => {

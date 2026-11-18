@@ -390,6 +390,15 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
                     "`postgres.url` must look like postgres://user@host:5432/database".to_owned(),
                 );
             }
+            if t.text("server.keys_file").is_some() {
+                postgres_ok = false;
+                t.errors.push(
+                    "`server.keys_file` (--keys-file) is for a server without Postgres: with `postgres.url` set, API \
+                     keys live in Postgres. Make them in Settings or with `crucible admin create-key --project \
+                     default`, and remove the keys file setting"
+                        .to_owned(),
+                );
+            }
             if master_key.is_none() && master_key_ok {
                 postgres_ok = false;
                 t.errors.push(
@@ -655,7 +664,6 @@ master_key = "{KEY}"
 [server]
 listen = "127.0.0.1:9000"
 ui_dir = "ui/out"
-keys_file = "keys.toml"
 
 [data]
 dir = "/var/lib/crucible"
@@ -677,10 +685,7 @@ pool_size = 4
         let config = load(Some(&file), &[], &[]).unwrap().config;
         assert_eq!(config.server.listen.to_string(), "127.0.0.1:9000");
         assert_eq!(config.server.ui_dir.as_deref(), Some(Path::new("ui/out")));
-        assert_eq!(
-            config.server.keys_file.as_deref(),
-            Some(Path::new("keys.toml"))
-        );
+        assert_eq!(config.server.keys_file, None);
         assert_eq!(config.data.dir, Path::new("/var/lib/crucible"));
         assert_eq!(config.data.wal_backend, WalBackend::Portable);
         assert_eq!(config.recent_max_bytes, Some(1 << 20));
@@ -969,6 +974,22 @@ directory_of_everything = "x"
         let ConfigErrors(errors) = load(None, &bad, &[]).unwrap_err();
         assert_eq!(errors.len(), 3, "{errors:?}");
         assert!(!load(None, &[], &[]).unwrap().config.auth.require_https);
+        let both = env(&[
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+            ("CRUCIBLE_SERVER_KEYS_FILE", "/etc/crucible/keys.toml"),
+        ]);
+        let ConfigErrors(errors) = load(None, &both, &[]).unwrap_err();
+        assert!(
+            errors[0].contains("crucible admin create-key"),
+            "{errors:?}"
+        );
+        // Without Postgres the keys file is the server's keys.
+        let file_only = env(&[("CRUCIBLE_SERVER_KEYS_FILE", "/etc/crucible/keys.toml")]);
+        assert_eq!(
+            load(None, &file_only, &[]).unwrap().config.server.keys_file,
+            Some(std::path::PathBuf::from("/etc/crucible/keys.toml"))
+        );
         let defaults = load(None, &[], &[]).unwrap().config.auth;
         assert_eq!(defaults.pg_outage_mode, PgOutageMode::FailOpen);
         assert_eq!(defaults.session_outage_grace, 600);

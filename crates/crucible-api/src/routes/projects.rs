@@ -447,7 +447,13 @@ pub(crate) async fn create_key(
         .scopes
         .map(|list| list.into_iter().map(c::scope_in).collect());
     let created = identity
-        .create_key(scoped.scope.project_id(), scopes, body.note, expires_at)
+        .create_key(
+            scoped.scope.project_id(),
+            scopes,
+            body.note,
+            expires_at,
+            false,
+        )
         .await
         .map_err(auth(rid))?;
     Ok((

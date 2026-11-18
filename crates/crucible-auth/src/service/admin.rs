@@ -726,13 +726,27 @@ impl Identity {
         Ok(self.store.api_keys().list(project).await?)
     }
 
-    /// Mints a key for a project; it works on this node before the response returns.
+    /// The live project with this slug or id.
+    pub async fn project_by_reference(&self, reference: &str) -> Result<Project, AuthError> {
+        let project = match reference.parse::<Uuid>() {
+            Ok(id) => self.store.projects().get(ProjectId::from_uuid(id)).await?,
+            Err(_) => self.store.projects().get_by_slug(reference).await?,
+        };
+        match project {
+            Some(project) if project.deleted_at.is_none() => Ok(project),
+            _ => Err(AuthError::NotFound),
+        }
+    }
+
+    /// Mints a key for a project; it works on this node before the response returns. `import` lets the key send
+    /// spans older than the event-age limit (contract 1.2); only `crucible admin create-key --import` sets it.
     pub async fn create_key(
         &self,
         project: ProjectId,
         scopes: Option<Vec<KeyScope>>,
         note: Option<String>,
         expires_at: Option<Timestamp>,
+        import: bool,
     ) -> Result<KeyCreated, AuthError> {
         self.live_project(project).await?;
         let mut scopes =
@@ -754,7 +768,7 @@ impl Identity {
             secret_hash: minted.hash,
             lookup_tag: minted.lookup_tag,
             scopes,
-            import: false,
+            import,
             note: note.unwrap_or_default(),
             expires_at,
             last_used_at: None,

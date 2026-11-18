@@ -79,16 +79,15 @@ pub fn router_without_store(
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
-/// key snapshot verifies API keys with their scopes. `keys` adds the keys file (a key there has the scopes of a
-/// new key). `service` is `None` until a telemetry store is up.
+/// key snapshot verifies API keys with their scopes. `service` is `None` until a telemetry store is up.
 pub fn platform_router(
     env: &Env,
     service: Option<QueryService>,
     identity: Arc<Identity>,
-    keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
+    let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
     build(env, service, keys, settings, cursors, Some(identity))
 }
 
