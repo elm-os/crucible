@@ -1,0 +1,190 @@
+package core
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+// Span keys the processor sets on every span at start (contract 10.6).
+const (
+	KeySessionID = "crucible.session.id"
+	KeyUserID    = "crucible.user.id"
+	KeyTags      = "crucible.tags"
+	KeyRelease   = "crucible.release"
+)
+
+// Stats counts what happened to finished spans.
+type Stats struct {
+	Exported     uint64
+	QueueFull    uint64
+	ExportFailed uint64
+}
+
+// Processor is the SDK's span processor. At span start it copies the session, user and tags carried in the
+// context onto the span. At span end it puts the span on a bounded queue without blocking: when the queue is
+// full the span is dropped and counted. One goroutine drains the queue in batches to the exporter.
+type Processor struct {
+	exporter  sdktrace.SpanExporter
+	release   string
+	batchSize int
+	interval  time.Duration
+
+	queue   chan sdktrace.ReadOnlySpan
+	flushes chan chan error
+	stop    chan struct{}
+	done    chan struct{}
+
+	// exportCtx is cancelled when a shutdown runs out of time, which abandons an export in progress.
+	exportCtx    context.Context
+	cancelExport context.CancelFunc
+	stopOnce     sync.Once
+
+	exported, queueFull, exportFailed atomic.Uint64
+}
+
+var _ sdktrace.SpanProcessor = (*Processor)(nil)
+
+// NewProcessor starts a processor whose queue holds queueSize spans.
+func NewProcessor(exporter sdktrace.SpanExporter, release string, queueSize, batchSize int, interval time.Duration) *Processor {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &Processor{
+		exporter:     exporter,
+		release:      release,
+		batchSize:    batchSize,
+		interval:     interval,
+		queue:        make(chan sdktrace.ReadOnlySpan, queueSize),
+		flushes:      make(chan chan error),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
+		exportCtx:    ctx,
+		cancelExport: cancel,
+	}
+	go p.run()
+	return p
+}
+
+// OnStart copies the context's session, user and tags, and the configured release, onto the span.
+func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
+	a := attrsFrom(parent)
+	if a.session != "" {
+		s.SetAttributes(attribute.String(KeySessionID, a.session))
+	}
+	if a.user != "" {
+		s.SetAttributes(attribute.String(KeyUserID, a.user))
+	}
+	if len(a.tags) > 0 {
+		s.SetAttributes(attribute.StringSlice(KeyTags, a.tags))
+	}
+	if p.release != "" {
+		s.SetAttributes(attribute.String(KeyRelease, p.release))
+	}
+}
+
+// OnEnd queues the span, or drops and counts it when the queue is full. It never blocks.
+func (p *Processor) OnEnd(s sdktrace.ReadOnlySpan) {
+	select {
+	case p.queue <- s:
+	default:
+		p.queueFull.Add(1)
+	}
+}
+
+// ForceFlush exports every span queued before the call. It returns the export error, if any, or the context's
+// error when ctx ends first.
+func (p *Processor) ForceFlush(ctx context.Context) error {
+	reply := make(chan error, 1)
+	select {
+	case p.flushes <- reply:
+	case <-p.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Shutdown exports what is queued and stops the processor and its exporter. When ctx ends first, the export
+// in progress is abandoned and the context's error is returned.
+func (p *Processor) Shutdown(ctx context.Context) error {
+	p.stopOnce.Do(func() { close(p.stop) })
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		p.cancelExport()
+		return ctx.Err()
+	}
+	return p.exporter.Shutdown(ctx)
+}
+
+// Stats returns the counters.
+func (p *Processor) Stats() Stats {
+	return Stats{
+		Exported:     p.exported.Load(),
+		QueueFull:    p.queueFull.Load(),
+		ExportFailed: p.exportFailed.Load(),
+	}
+}
+
+func (p *Processor) run() {
+	defer close(p.done)
+	defer p.cancelExport()
+	ticker := time.NewTicker(p.interval)
+	defer ticker.Stop()
+	batch := make([]sdktrace.ReadOnlySpan, 0, p.batchSize)
+	var failed error
+	export := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := p.exporter.ExportSpans(p.exportCtx, batch); err != nil {
+			p.exportFailed.Add(uint64(len(batch)))
+			failed = err
+		} else {
+			p.exported.Add(uint64(len(batch)))
+		}
+		clear(batch)
+		batch = batch[:0]
+	}
+	add := func(s sdktrace.ReadOnlySpan) {
+		batch = append(batch, s)
+		if len(batch) >= p.batchSize {
+			export()
+		}
+	}
+	drain := func() {
+		for {
+			select {
+			case s := <-p.queue:
+				add(s)
+			default:
+				export()
+				return
+			}
+		}
+	}
+	for {
+		select {
+		case s := <-p.queue:
+			add(s)
+		case <-ticker.C:
+			export()
+		case reply := <-p.flushes:
+			failed = nil
+			drain()
+			reply <- failed
+		case <-p.stop:
+			drain()
+			return
+		}
+	}
+}

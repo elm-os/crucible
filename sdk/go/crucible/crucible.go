@@ -1,0 +1,156 @@
+package crucible
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/elm-os/crucible/sdk/go/internal/core"
+)
+
+// Options configures the process-wide client.
+type Options struct {
+	// Endpoint is the base URL of the Crucible server, for example http://localhost:4318. Spans are sent to
+	// Endpoint + "/v1/traces". Plain http works.
+	Endpoint string
+	// SecretKey is a project secret key (csk_...) with the ingest scope. It is sent as a Bearer token.
+	SecretKey string
+
+	// ServiceName and ServiceVersion become the resource's service.name and service.version. An MCP
+	// server's name and version default to them.
+	ServiceName    string
+	ServiceVersion string
+	// Environment becomes the resource's deployment.environment.name.
+	Environment string
+	// Release is set on every span as crucible.release. When empty, Crucible uses ServiceVersion.
+	Release string
+	// DeployID becomes the resource's crucible.deploy.id. When empty, Crucible uses the server version.
+	DeployID string
+
+	// QueueSize is how many finished spans wait for export; when the queue is full, new spans are dropped and
+	// counted in Stats. 0 means 2048.
+	QueueSize int
+	// FlushInterval is how often queued spans are exported. 0 means one second.
+	FlushInterval time.Duration
+}
+
+const (
+	defaultQueueSize     = 2048
+	defaultBatchSize     = 512
+	defaultFlushInterval = time.Second
+)
+
+// Init configures the process-wide client from opts and starts its exporter. It returns an error that says
+// which option to change when opts is incomplete, and when Init was already called.
+func Init(opts Options) error {
+	cfg, err := validate(opts)
+	if err != nil {
+		return err
+	}
+	c, err := core.New(cfg)
+	if err != nil {
+		return fmt.Errorf("crucible: starting the exporter: %w", err)
+	}
+	if !core.Install(c) {
+		_ = c.Shutdown(context.Background())
+		return errors.New("crucible: Init was already called; call crucible.Shutdown before calling Init again")
+	}
+	return nil
+}
+
+func validate(opts Options) (core.Config, error) {
+	const example = "set it to the base URL of your Crucible server, for example http://localhost:4318"
+	if opts.Endpoint == "" {
+		return core.Config{}, errors.New("crucible: Options.Endpoint is empty; " + example)
+	}
+	u, err := url.Parse(opts.Endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return core.Config{}, fmt.Errorf("crucible: Options.Endpoint %q is not an http or https URL; %s", opts.Endpoint, example)
+	}
+	if opts.SecretKey == "" {
+		return core.Config{}, errors.New("crucible: Options.SecretKey is empty; set it to a project secret key (csk_...) with the ingest scope")
+	}
+	if !strings.HasPrefix(opts.SecretKey, "csk_") {
+		return core.Config{}, errors.New("crucible: Options.SecretKey does not start with csk_; sending telemetry needs a project secret key, not a public key (cpk_...)")
+	}
+	if opts.QueueSize < 0 {
+		return core.Config{}, errors.New("crucible: Options.QueueSize is negative; set it to 0 for the default of 2048")
+	}
+	if opts.FlushInterval < 0 {
+		return core.Config{}, errors.New("crucible: Options.FlushInterval is negative; set it to 0 for the default of one second")
+	}
+	cfg := core.Config{
+		TracesURL:      strings.TrimRight(opts.Endpoint, "/") + "/v1/traces",
+		SecretKey:      opts.SecretKey,
+		ServiceName:    opts.ServiceName,
+		ServiceVersion: opts.ServiceVersion,
+		Environment:    opts.Environment,
+		Release:        opts.Release,
+		DeployID:       opts.DeployID,
+		QueueSize:      opts.QueueSize,
+		BatchSize:      defaultBatchSize,
+		FlushInterval:  opts.FlushInterval,
+	}
+	if cfg.QueueSize == 0 {
+		cfg.QueueSize = defaultQueueSize
+	}
+	if cfg.FlushInterval == 0 {
+		cfg.FlushInterval = defaultFlushInterval
+	}
+	return cfg, nil
+}
+
+// Flush exports every span that has ended. It returns the export error, if any, or ctx's error when ctx
+// ends first. Before Init it does nothing.
+func Flush(ctx context.Context) error {
+	if c := core.Active(); c != nil {
+		return c.Flush(ctx)
+	}
+	return nil
+}
+
+// Shutdown flushes, stops the client and lets Init be called again. When ctx ends first, the spans still
+// queued are dropped.
+func Shutdown(ctx context.Context) error {
+	c := core.Active()
+	if c == nil {
+		return nil
+	}
+	err := c.Shutdown(ctx)
+	core.Uninstall(c)
+	return err
+}
+
+// Stats counts what happened to finished spans since Init.
+type Stats struct {
+	// Exported is the number of spans the server accepted.
+	Exported uint64
+	// QueueFull is the number of spans dropped because the export queue was full.
+	QueueFull uint64
+	// ExportFailed is the number of spans dropped because their export failed.
+	ExportFailed uint64
+}
+
+// CurrentStats returns the counters of the process-wide client; zero before Init.
+func CurrentStats() Stats {
+	c := core.Active()
+	if c == nil {
+		return Stats{}
+	}
+	s := c.Stats()
+	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed}
+}
+
+// WithSession returns a context whose spans carry the session id (crucible.session.id).
+func WithSession(ctx context.Context, id string) context.Context { return core.WithSession(ctx, id) }
+
+// WithUser returns a context whose spans carry the user id (crucible.user.id).
+func WithUser(ctx context.Context, id string) context.Context { return core.WithUser(ctx, id) }
+
+// WithTags returns a context whose spans carry the tags (crucible.tags), added to those ctx carries.
+func WithTags(ctx context.Context, tags ...string) context.Context {
+	return core.WithTags(ctx, tags...)
+}

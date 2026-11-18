@@ -1,0 +1,96 @@
+{
+  "schema": "crucible.sdk.scrub/v1",
+  "rules": [
+    {
+      "name": "pem",
+      "pattern": "-----BEGIN[A-Z ]*-----(?:[\\s\\S]*?-----END[A-Z ]*-----|[\\s\\S]*)",
+      "replacement": "[redacted:pem]"
+    },
+    {
+      "name": "secret_field",
+      "pattern": "(?i)\"(password|passwd|pwd|secret|client_secret|api_key|apikey|access_token|refresh_token|id_token|token|authorization|cookie|set-cookie|private_key|session_token)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)",
+      "group": 2,
+      "replacement": "[redacted]"
+    },
+    {
+      "name": "secret_param",
+      "pattern": "(?i)\\b(password|passwd|pwd|secret|token|api_key|apikey|access_token)=([^&\\s\"']+)",
+      "group": 2,
+      "replacement": "[redacted]"
+    },
+    {
+      "name": "jwt",
+      "pattern": "\\beyJ[A-Za-z0-9_-]{4,}\\.[A-Za-z0-9_-]{4,}(?:\\.[A-Za-z0-9_-]*)?",
+      "replacement": "[redacted:jwt]"
+    },
+    {
+      "name": "bearer",
+      "pattern": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]+=*",
+      "replacement": "[redacted:bearer]"
+    },
+    {
+      "name": "key",
+      "pattern": "\\b(?:csk|cpk)_[0-9A-Za-z]{16,}|\\bsk-[A-Za-z0-9_-]{16,}|\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\\bgithub_pat_[A-Za-z0-9_]{20,}|\\bxox[abprs]-[A-Za-z0-9-]{10,}|\\bAKIA[0-9A-Z]{16}\\b|\\bAIza[0-9A-Za-z_-]{35}|\\b[rs]k_(?:live|test)_[0-9A-Za-z]{16,}",
+      "replacement": "[redacted:key]"
+    },
+    {
+      "name": "card",
+      "pattern": "\\b(?:\\d[ -]?){12,18}\\d\\b",
+      "check": "luhn",
+      "replacement": "[redacted:card]"
+    },
+    {
+      "name": "email",
+      "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}",
+      "replacement": "[redacted:email]"
+    },
+    {
+      "name": "phone",
+      "pattern": "\\+\\d(?:[ .-]?\\d){7,14}\\b|\\(?\\b\\d{3}\\)?[ .-]\\d{3}[ .-]\\d{4}\\b",
+      "replacement": "[redacted:phone]"
+    },
+    {
+      "name": "ipv4",
+      "pattern": "\\b(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\b",
+      "replacement": "[redacted:ip]"
+    },
+    {
+      "name": "ipv6",
+      "pattern": "\\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\\b|\\b(?:[0-9A-Fa-f]{1,4}:){1,6}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})?",
+      "replacement": "[redacted:ip]"
+    }
+  ],
+  "vectors": [
+    { "input": "nothing to see here", "output": "nothing to see here" },
+    { "input": "write to ada.lovelace+mcp@example.co.uk today", "output": "write to [redacted:email] today" },
+    { "input": "call +1 415 555 0134 or (415) 555-0134", "output": "call [redacted:phone] or [redacted:phone]" },
+    { "input": "card 4111 1111 1111 1111 expires", "output": "card [redacted:card] expires" },
+    { "input": "order 4111 1111 1111 1112 shipped", "output": "order 4111 1111 1111 1112 shipped" },
+    {
+      "input": "Authorization: Bearer abc.DEF-123_x~y/z+w==",
+      "output": "Authorization: [redacted:bearer]"
+    },
+    {
+      "input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2lnbmF0dXJl end",
+      "output": "token [redacted:jwt] end"
+    },
+    {
+      "input": "key csk_0123456789abcdefghijABCDEFGHIJ0123456789abc used",
+      "output": "key [redacted:key] used"
+    },
+    { "input": "aws AKIAABCDEFGHIJKLMNOP here", "output": "aws [redacted:key] here" },
+    { "input": "from 203.0.113.7 and 2001:db8::8a2e:370:7334", "output": "from [redacted:ip] and [redacted:ip]" },
+    { "input": "at 10:30:45 on 2026-11-18", "output": "at 10:30:45 on 2026-11-18" },
+    {
+      "input": "{\"user\":\"ada\",\"password\":\"hunter2\",\"Token\": \"t-1\"}",
+      "output": "{\"user\":\"ada\",\"password\":\"[redacted]\",\"Token\": \"[redacted]\"}"
+    },
+    { "input": "{\"password\":\"cut before the clo", "output": "{\"password\":\"[redacted]" },
+    { "input": "GET /x?user=ada&api_key=k123&page=2", "output": "GET /x?user=ada&api_key=[redacted]&page=2" },
+    {
+      "input": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBg\n-----END PRIVATE KEY-----\nafter",
+      "output": "[redacted:pem]\nafter"
+    },
+    { "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQ", "output": "[redacted:pem]" }
+  ]
+}
