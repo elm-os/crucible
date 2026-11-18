@@ -17,7 +17,7 @@
 //! | `CRUCIBLE_E2E_NODE` | The Node binary; `node` when unset |
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
 //!
-//! `docs/self-hosting/quickstart.md` has the commands.
+//! `docs/development.md` ("The end-to-end test") has the commands.
 
 #![allow(
     clippy::disallowed_methods,

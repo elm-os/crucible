@@ -134,6 +134,34 @@ On SIGTERM or Ctrl-C the listeners stop accepting and finish their open requests
 shipper stops at its next step and abandons the inserts in flight. That is safe: after a restart every pair of
 every sealed batch is probed before anything is sent again. Tasks get 30 s before they are aborted.
 
+## A local build in Compose
+
+[The quickstart](self-hosting/quickstart.md) runs the image that `deploy/docker/Dockerfile` builds. To iterate on a
+binary built in the dev container instead, `deploy/compose/compose.dev.yaml` wraps `deploy/compose/bin/crucible` in a small image beside
+ClickHouse 26.8. Build the binary with the UI inside, from the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter crucible-ui build
+
+docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/usr/local/cargo/registry \
+  crucible-dev:1 sh -c '
+    cargo xtask ui compress &&
+    cargo build --locked -p crucible --release --features embed-ui &&
+    mkdir -p deploy/compose/bin && cp /target/release/crucible deploy/compose/bin/crucible'
+```
+
+Build the `crucible` package on its own, as above: a `--workspace` build also compiles test-only features of other
+crates into the binary. Then make `.env` and `keys.toml` in `deploy/compose/` as in the quickstart's step 2 (the
+`CRUCIBLE_IMAGE` line is not needed) and start it from that directory:
+
+```sh
+docker compose -f compose.dev.yaml up --build -d
+curl -s http://127.0.0.1:8080/readyz
+```
+
+It publishes the ports on `127.0.0.1` only. `docker compose -f compose.dev.yaml down -v` removes its volumes.
+
 ## The UI against a running server
 
 The UI has no browser sessions until the control plane lands (milestone 4). Until then the shell has a **Connect**

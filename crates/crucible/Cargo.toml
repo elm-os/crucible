@@ -63,5 +63,9 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 [target.'cfg(not(windows))'.dependencies]
 mimalloc = { workspace = true }
 
+# The one package cargo-dist releases (dist-workspace.toml); without this, `publish = false` hides it.
+[package.metadata.dist]
+dist = true
+
 [lints]
 workspace = true

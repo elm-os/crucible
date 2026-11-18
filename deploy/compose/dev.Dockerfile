@@ -1,5 +1,5 @@
-# Development preview image: wraps a `crucible` binary that you built locally (see
-# docs/self-hosting/quickstart.md). It is not a release image.
+# Development preview image: wraps a `crucible` binary that you built locally (see docs/development.md, "A local
+# build in Compose"). deploy/docker/Dockerfile builds the image that a version tag will publish.
 FROM debian:bookworm-slim
 RUN useradd --system --home-dir /var/lib/crucible --create-home crucible
 COPY bin/crucible /usr/local/bin/crucible

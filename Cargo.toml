@@ -143,6 +143,10 @@ panic = "unwind"
 inherits = "release"
 lto = "fat"
 
+# The profile cargo-dist builds release binaries with (dist-workspace.toml).
+[profile.dist]
+inherits = "release"
+
 [profile.profiling]
 inherits = "release"
 debug = "full"

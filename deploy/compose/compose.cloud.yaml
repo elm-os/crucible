@@ -1,0 +1,63 @@
+# Crucible alone, against a ClickHouse that runs elsewhere: ClickHouse Cloud, or a ClickHouse 26.3 or newer that you
+# operate. Development preview: see docs/self-hosting/README.md.
+#
+# This preview supports a single-node ClickHouse only. It refuses a ClickHouse Cloud service at startup and /readyz
+# names the reason; Cloud support is planned. The managed Postgres of the control plane is planned too and will be
+# configured here when the server can use it.
+#
+# Settings in .env beside this file:
+#   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS (Cloud), or http://<host>:8123
+#   CRUCIBLE_CLICKHOUSE_USER      an admin user with access management (default crucible_admin)
+#   CRUCIBLE_CLICKHOUSE_PASSWORD  that user's password
+#   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32
+#   CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT  as in compose.yaml
+# and keys.toml, as for compose.yaml. Then: docker compose -f compose.cloud.yaml up -d --wait
+name: crucible-cloud
+
+services:
+  crucible:
+    image: ${CRUCIBLE_IMAGE:-ghcr.io/elm-os/crucible:latest}
+    restart: unless-stopped
+    environment:
+      CRUCIBLE_CLICKHOUSE_URL: ${CRUCIBLE_CLICKHOUSE_URL:?set CRUCIBLE_CLICKHOUSE_URL in .env, for example https://<host>:8443}
+      CRUCIBLE_CLICKHOUSE_USER: ${CRUCIBLE_CLICKHOUSE_USER:-crucible_admin}
+      CRUCIBLE_CLICKHOUSE_PASSWORD: ${CRUCIBLE_CLICKHOUSE_PASSWORD:?set CRUCIBLE_CLICKHOUSE_PASSWORD in .env}
+      CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (openssl rand -hex 32)}
+    # --migrate is idempotent, so it stays on: every start applies the schema steps that are missing.
+    command:
+      - serve
+      - --migrate
+      - --data-dir=/var/lib/crucible/data
+      - --keys-file=/etc/crucible/keys.toml
+    volumes:
+      - crucible-data:/var/lib/crucible
+      - type: bind
+        source: ./keys.toml
+        target: /etc/crucible/keys.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_HTTP_PORT:-8080}:8080"
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_OTLP_HTTP_PORT:-4318}:4318"
+    read_only: true
+    stop_grace_period: 35s
+
+  # Reports the server's /readyz as this service's health (see compose.yaml).
+  ready:
+    image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+    restart: unless-stopped
+    depends_on:
+      - crucible
+    command: ["sleep", "infinity"]
+    stop_signal: SIGKILL
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--output", "/dev/null", "http://crucible:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 1s
+
+volumes:
+  crucible-data:

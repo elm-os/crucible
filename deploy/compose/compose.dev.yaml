@@ -1,5 +1,5 @@
 # Development preview: ClickHouse 26.8 and a locally built Crucible. Not a release and not for production.
-# docs/self-hosting/quickstart.md walks through the three files this needs beside it:
+# docs/development.md ("A local build in Compose") walks through the three files this needs beside it:
 #   bin/crucible   the binary, built with the embedded UI
 #   keys.toml      the project keys
 #   .env           CLICKHOUSE_PASSWORD and CRUCIBLE_MASTER_KEY
