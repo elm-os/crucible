@@ -17,6 +17,9 @@ How `crucible-wal` is verified in `crucible-sim`, and how to replay a failing se
 Disk-backed tests of `crucible-wal` live in `crucible-sim` because the crate dependency table of the contract
 gives `crucible-wal` no edge to a disk implementation.
 
+The stand-in shipper of this suite only seals, checkpoints and collects. The real shipper runs over the same
+plan and disk in its own suite, [`shipper-simulation.md`](shipper-simulation.md).
+
 ## What `SimDisk` models
 
 - Each file has a current image and a durable image. Blocks of 4,096 bytes written since the last successful
