@@ -19,7 +19,7 @@ crucible-api = { workspace = true }
 crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
-crucible-cursor = { path = "../crucible-cursor" }
+crucible-cursor = { workspace = true }
 crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-ingest = { workspace = true }

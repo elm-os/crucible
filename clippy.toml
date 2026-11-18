@@ -1,5 +1,6 @@
 # Determinism bans: product crates use crucible-env traits instead of ambient APIs.
-# Only crucible-env-prod, crucible-sim (the simulated Env), the binary crate, xtask, benches and the
+# Only crucible-env-prod, crucible-sim (the simulated Env), crucible-config (environment variables), the binary
+# crate, xtask, benches and the
 # scope-minting file of crucible-auth
 # may allow these lints (the allow-attribute guard in ci-rust enforces this).
 msrv = "1.100"

@@ -110,7 +110,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-wal-codec`, `crucible-otlp`, `crucible-admission`, `crucible-compat`, `crucible-schema`, `crucible-api-types` | `crucible-records` |
 | `crucible-plan` | `crucible-records`, `crucible-schema` |
 | `crucible-normalize` | `crucible-records`, `crucible-otlp`, `crucible-compat` |
-| `crucible-env` | `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-chfmt` |
+| `crucible-env` | `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-chfmt`, `crucible-control` (the `ControlStore` trait lives in `crucible-control`; `Stores` holds it) |
 | `crucible-env-prod` | `crucible-env`, `crucible-records` |
 | `crucible-auth` | `crucible-records`, `crucible-env` |
 | `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
@@ -120,7 +120,12 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
+| `crucible-cursor` | `crucible-records` |
+| `crucible-config` | `crucible-records` (the only crate that reads the process environment) |
+| `crucible-control` | `crucible-env`, `crucible-records` |
+| `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
+| `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
