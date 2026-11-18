@@ -18,7 +18,7 @@ crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-records = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
-crucible-ui-assets = { path = "../crucible-ui-assets" }
+crucible-ui-assets = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
 clap = { workspace = true }
