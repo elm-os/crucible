@@ -18,7 +18,7 @@ projects and key management); until then the server does not use it, and project
 
 The first version tag will publish `ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64, with SBOM and
 provenance attestations. A tag `v1.2.3` will push the image tags `1.2.3`, `1.2` and `latest`; a pre-release tag such as
-`v1.2.3-rc.1` pushes only its own. Until then, build the image from a checkout of this repository. It needs only
+`v1.2.3-rc.1` will push only its own. Until then, build the image from a checkout of this repository. It needs only
 Docker:
 
 ```sh
@@ -43,9 +43,11 @@ carries `LICENSE` and `THIRD_PARTY_NOTICES` in `/usr/share/doc/crucible/`. Its d
   cannot run a health check inside itself; with this service `docker compose up --wait` returns once Crucible is
   ready, and `docker compose ps` shows whether it is.
 
-Every refusal says what to change: a missing `.env` setting stops Compose with the setting's name, a missing
-`keys.toml` stops the start with the missing path, and a server that cannot take ingest yet answers `/readyz` with the
-reason.
+Every refusal says what to change: a missing `.env` setting stops Compose with the setting's name and a server that
+cannot take ingest yet answers `/readyz` with the reason. Without `keys.toml`, Docker Engine refuses to start the
+server and names the missing path; Docker Desktop for Windows creates an empty directory there instead, and the
+server stops with
+`reading /etc/crucible/keys.toml` and `Is a directory`. Delete that directory and make the file.
 
 **Why there is no Postgres service.** Nothing in this preview connects to Postgres. An idle database would cost memory
 and a password and add a volume to back up, for no benefit. When the control plane lands, the Compose file will gain a
@@ -150,10 +152,18 @@ copied, then archive each volume. With the project name `crucible` from `compose
 ```sh
 docker compose stop
 for v in clickhouse-data crucible-data; do
-  docker run --rm -v "crucible_$v:/data:ro" -v "$PWD:/backup" busybox tar -czf "/backup/$v.tar.gz" -C /data .
+  docker run --rm -v "crucible_$v:/data:ro" -v "$PWD:/backup" busybox:1.37 tar -czf "/backup/$v.tar.gz" -C /data .
 done
 docker compose start
 ```
 
-To restore, create the volumes on the new machine, unpack each archive into its volume the same way (with
-`tar -xzf`), put `.env` and `keys.toml` back, and start the stack with the same ClickHouse version.
+To restore, put `.env` and `keys.toml` back beside the Compose file, let Compose create the empty volumes, unpack
+the archives into them and start:
+
+```sh
+docker compose create
+for v in clickhouse-data crucible-data; do
+  docker run --rm -v "crucible_$v:/data" -v "$PWD:/backup:ro" busybox:1.37 tar -xzf "/backup/$v.tar.gz" -C /data
+done
+docker compose up -d --wait
+```

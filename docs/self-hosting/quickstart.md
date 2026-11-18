@@ -27,7 +27,8 @@ releases exist, skip this step; Compose pulls `ghcr.io/elm-os/crucible`.
 
 ## 2. Make the two local files
 
-Both live in `deploy/compose/` and are ignored by git.
+Both live in `deploy/compose/` and are ignored by git. Make them before the first start: Docker Desktop for Windows
+turns a missing `keys.toml` into an empty directory, which you would have to delete first.
 
 `.env` holds the ClickHouse admin password and the master key, 32 random bytes as 64 hexadecimal characters. Make it
 once, and name the image you built:

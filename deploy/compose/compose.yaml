@@ -60,7 +60,8 @@ services:
         target: /etc/crucible/keys.toml
         read_only: true
         bind:
-          # Without keys.toml the start fails and names the missing path, instead of mounting an empty directory.
+          # Docker Engine then refuses to start without keys.toml and names the path. Docker Desktop for Windows
+          # makes an empty directory instead, which the server reports as "Is a directory"; delete it, make the file.
           create_host_path: false
     ports:
       # The UI, the REST API and OTLP/HTTP ingest.
