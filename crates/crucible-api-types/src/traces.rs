@@ -1,10 +1,10 @@
-//! Traces: the list, one trace, and the children of a span (contract 8.7, 8.8 and 12.6).
+//! The trace list and its live tail: `GET projects/{project_id}/traces` (contract 8.7, 8.8 and 12.6).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::enums::{HeadKind, Level, ObservationType, StatusCode};
+use crate::enums::{HeadKind, Level, StatusCode};
 use crate::meta::Meta;
 use crate::wire::SafeU64;
 
@@ -102,112 +102,6 @@ pub struct TraceListPage {
     #[schema(nullable = false)]
     #[ts(optional)]
     pub new_count: Option<u32>,
-    /// How complete and how fresh the page is.
-    pub meta: Meta,
-}
-
-/// One span of a trace.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, ToSchema, TS)]
-pub struct Span {
-    /// 16 lowercase hex characters.
-    pub span_id: String,
-    /// The parent span, or null for a root span.
-    #[schema(required = true)]
-    pub parent_span_id: Option<String>,
-    /// The span name.
-    pub name: String,
-    /// What the span observes.
-    pub observation_type: ObservationType,
-    /// The span start.
-    #[schema(format = DateTime)]
-    pub start_time: String,
-    /// The span end.
-    #[schema(format = DateTime)]
-    pub end_time: String,
-    /// `end_time - start_time` in microseconds.
-    pub duration_us: SafeU64,
-    /// The span's status.
-    pub status_code: StatusCode,
-    /// The span's level.
-    pub level: Level,
-    /// The model the provider reported; empty for spans without one.
-    pub model: String,
-    /// The span's cost in USD.
-    pub total_cost_usd: f64,
-    /// Input tokens.
-    pub input_tokens: SafeU64,
-    /// Output tokens.
-    pub output_tokens: SafeU64,
-    /// Total tokens.
-    pub total_tokens: SafeU64,
-    /// The number of direct children, on paged traces and on children pages; null otherwise.
-    #[schema(required = true)]
-    pub child_count: Option<SafeU64>,
-    /// Whether a count above saturated at 2^53 - 1.
-    pub saturated: bool,
-}
-
-/// One trace. Up to 5,000 spans it holds every span; above that it holds the root spans and
-/// their direct children, and `GET .../spans` pages the rest.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, ToSchema, TS)]
-pub struct TraceDetail {
-    /// 32 lowercase hex characters.
-    pub trace_id: String,
-    /// Spans in the trace. Exact when `paged` is false.
-    pub span_count: SafeU64,
-    /// False: `spans` holds every span. True: the root spans and their direct children, at most 1,000, each
-    /// with `child_count`.
-    pub paged: bool,
-    /// The spans in start order. Empty only when `meta` says the response is partial or lagging.
-    pub spans: Vec<Span>,
-    /// How complete and how fresh the response is.
-    pub meta: Meta,
-    /// Whether `span_count` saturated at 2^53 - 1.
-    pub saturated: bool,
-}
-
-/// The query of `GET projects/{project_id}/traces/{trace_id}`: no window, because the trace's own time bounds
-/// are looked up.
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, IntoParams, TS)]
-#[into_params(parameter_in = Query)]
-#[serde(deny_unknown_fields)]
-pub struct TraceDetailParams {
-    /// When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;
-    /// the read does not need it yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[param(format = DateTime)]
-    #[ts(optional)]
-    pub hint_time: Option<String>,
-}
-
-/// The query of `GET projects/{project_id}/traces/{trace_id}/spans`.
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize, IntoParams, TS)]
-#[into_params(parameter_in = Query)]
-#[serde(deny_unknown_fields)]
-pub struct SpanPageParams {
-    /// The span whose direct children to list (16 hex characters).
-    pub parent_span_id: String,
-    /// The `next_cursor` of the previous page.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub cursor: Option<String>,
-    /// Page size: 1 to 2,000, default 500.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[param(minimum = 1, maximum = 2000)]
-    #[ts(optional)]
-    pub limit: Option<u32>,
-}
-
-/// One page of the direct children of a span, in start order. Each carries `child_count`.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, ToSchema, TS)]
-pub struct SpanPage {
-    /// The children.
-    pub data: Vec<Span>,
-    /// The cursor of the next page; null on the last page.
-    #[schema(required = true)]
-    pub next_cursor: Option<String>,
-    /// Whether another page exists.
-    pub has_more: bool,
     /// How complete and how fresh the page is.
     pub meta: Meta,
 }

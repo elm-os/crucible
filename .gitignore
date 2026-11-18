@@ -6,6 +6,8 @@
 node_modules/
 /ui/.next/
 /ui/out/
+/ui/test-results/
+/ui/playwright-report/
 /ui/next-env.d.ts
 *.tsbuildinfo
 .pnpm-store/

@@ -36,6 +36,12 @@ export function formatCost(usd: number): string {
   return usd < 1 ? smallCost.format(usd) : cost.format(usd);
 }
 
+const count = new Intl.NumberFormat("en-US");
+
+export function formatCount(value: number): string {
+  return count.format(value);
+}
+
 // The API writes times as RFC 3339 UTC with six fractional digits; Date keeps only milliseconds, so the
 // microseconds are read from the text.
 export function parseMicros(iso: string): number | null {

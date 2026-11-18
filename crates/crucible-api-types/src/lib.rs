@@ -13,34 +13,36 @@
 //! - enums are lowercase snake_case strings;
 //! - request parameters reject unknown fields.
 
-mod bounds;
+mod data_bounds;
 mod enums;
 mod meta;
 mod problem;
-mod trace;
+mod spans;
+mod trace_detail;
+mod traces;
 mod wire;
 
-pub use bounds::{DataBounds, McpBounds, TimeRange};
+pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
 pub use meta::Meta;
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
-pub use trace::{
-    Span, SpanPage, SpanPageParams, TraceDetail, TraceDetailParams, TraceListItem, TraceListPage,
-    TraceListParams,
-};
+pub use spans::{SpanPage, SpanPageParams};
+pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
+pub use traces::{TraceListItem, TraceListPage, TraceListParams};
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 
 /// Visits every type the TypeScript client is generated from; `cargo xtask gen-ts` exports each with the
-/// types it uses. A new request, parameter or response type joins this list.
+/// types it uses. A new request, parameter or response type joins this list at its sorted place; the order does
+/// not change the output, one file per type.
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
-    visitor.visit::<TraceListParams>();
-    visitor.visit::<TraceListPage>();
-    visitor.visit::<TraceDetailParams>();
-    visitor.visit::<TraceDetail>();
-    visitor.visit::<SpanPageParams>();
-    visitor.visit::<SpanPage>();
     visitor.visit::<DataBounds>();
     visitor.visit::<Problem>();
+    visitor.visit::<SpanPage>();
+    visitor.visit::<SpanPageParams>();
+    visitor.visit::<TraceDetail>();
+    visitor.visit::<TraceDetailParams>();
+    visitor.visit::<TraceListPage>();
+    visitor.visit::<TraceListParams>();
 }
 
 #[cfg(test)]
