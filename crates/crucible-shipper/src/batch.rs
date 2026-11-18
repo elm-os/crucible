@@ -33,6 +33,7 @@ pub struct OpenBatch {
     sealable_since: Option<Instant>,
     span_rows: usize,
     raw_bytes: u64,
+    row_bytes: u64,
     pairs: BTreeMap<Pair, Vec<Row>>,
 }
 
@@ -46,6 +47,7 @@ impl OpenBatch {
             sealable_since: None,
             span_rows: 0,
             raw_bytes: 0,
+            row_bytes: 0,
             pairs: BTreeMap::new(),
         }
     }
@@ -101,10 +103,22 @@ impl OpenBatch {
         }
     }
 
-    /// Adds the rows of the frame taken last. `spans` is the frame's span count after stage B.
+    /// The raw bytes of the frames taken.
+    pub const fn raw_bytes(&self) -> u64 {
+        self.raw_bytes
+    }
+
+    /// The estimated bytes of the rows held, which the `shipper.encoded_bytes` budget charges.
+    pub const fn row_bytes(&self) -> u64 {
+        self.row_bytes
+    }
+
+    /// Adds the rows of the frame taken last. `spans` is the frame's span count after stage B, or its fact
+    /// count.
     pub fn add_rows(&mut self, rows: Vec<RoutedRow>, spans: usize) {
         self.span_rows += spans;
         for routed in rows {
+            self.row_bytes = self.row_bytes.saturating_add(routed.row.size());
             self.pairs
                 .entry((routed.table, routed.partition))
                 .or_default()

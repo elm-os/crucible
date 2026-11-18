@@ -211,6 +211,86 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Fact writes answered, by outcome (`accepted`, or the reason for a refusal).
+    pub static INGEST_FACT_WRITES: CounterDef = CounterDef {
+        name: "crucible_ingest_fact_writes_total",
+        help: "Fact writes answered, by outcome.",
+        labels: &["outcome"],
+    };
+
+    /// Facts made durable in the WAL.
+    pub static INGEST_FACTS: CounterDef = CounterDef {
+        name: "crucible_ingest_facts_total",
+        help: "Facts made durable in the WAL.",
+        labels: &[],
+    };
+
+    /// Batches the shipper sealed or shipped again, by kind (`sealed`: fresh boundaries; `reshipped`: a sealed
+    /// batch found by recovery).
+    pub static SHIPPER_BATCHES: CounterDef = CounterDef {
+        name: "crucible_shipper_batches_total",
+        help: "Batches the shipper sealed, or shipped again after a restart, by kind.",
+        labels: &["kind"],
+    };
+
+    /// Checkpoints the shipper appended.
+    pub static SHIPPER_CHECKPOINTS: CounterDef = CounterDef {
+        name: "crucible_shipper_checkpoints_total",
+        help: "Checkpoints the shipper appended.",
+        labels: &[],
+    };
+
+    /// Inserts the shipper sent, and of those the ones whose outcome was unknown (`outcome`: `sent`,
+    /// `unknown`).
+    pub static SHIPPER_INSERTS: CounterDef = CounterDef {
+        name: "crucible_shipper_inserts_total",
+        help: "Inserts the shipper sent, and those whose outcome was unknown.",
+        labels: &["outcome"],
+    };
+
+    /// Existence probes, by result (`sent`, `present`, `expired`: an absent answer that outlived its validity).
+    pub static SHIPPER_PROBES: CounterDef = CounterDef {
+        name: "crucible_shipper_probes_total",
+        help: "Existence probes the shipper sent, and their notable results.",
+        labels: &["result"],
+    };
+
+    /// (Batch, table, partition) pairs quarantined after repeated data errors.
+    pub static SHIPPER_QUARANTINED_PAIRS: CounterDef = CounterDef {
+        name: "crucible_shipper_quarantined_pairs_total",
+        help: "Pairs quarantined after repeated data errors.",
+        labels: &[],
+    };
+
+    /// Durable frames this binary could not decode or normalize, copied to the quarantine root.
+    pub static SHIPPER_QUARANTINED_FRAMES: CounterDef = CounterDef {
+        name: "crucible_shipper_quarantined_frames_total",
+        help: "Durable frames this binary could not decode or normalize, copied to the quarantine root.",
+        labels: &[],
+    };
+
+    /// Batches whose pairs were built across a restart with another normalizer or price table version than
+    /// their seal records (invariant I7's stated exception).
+    pub static SHIPPER_MIXED_VERSION_BATCHES: CounterDef = CounterDef {
+        name: "crucible_shipper_mixed_version_batches_total",
+        help: "Batches shipped again with another normalizer or price table version than their seal records.",
+        labels: &[],
+    };
+
+    /// Estimated bytes of the rows the shipper holds, tracked against the `shipper.encoded_bytes` budget.
+    pub static SHIPPER_ENCODED_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_shipper_encoded_bytes",
+        help: "Estimated bytes of the rows the shipper holds, tracked against the shipper.encoded_bytes budget.",
+        labels: &[],
+    };
+
+    /// Raw WAL bytes per second that checkpoints resolved over the last ten seconds.
+    pub static SHIPPER_DRAIN_BYTES_PER_SECOND: GaugeDef = GaugeDef {
+        name: "crucible_shipper_drain_bytes_per_second",
+        help: "Raw WAL bytes per second that checkpoints resolved over the last ten seconds.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -247,6 +327,37 @@ pub mod registry {
             (
                 INGEST_INFLIGHT_BYTES.name,
                 INGEST_INFLIGHT_BYTES.labels,
+                &[],
+            ),
+            (INGEST_FACT_WRITES.name, INGEST_FACT_WRITES.labels, &[]),
+            (INGEST_FACTS.name, INGEST_FACTS.labels, &[]),
+            (SHIPPER_BATCHES.name, SHIPPER_BATCHES.labels, &[]),
+            (SHIPPER_CHECKPOINTS.name, SHIPPER_CHECKPOINTS.labels, &[]),
+            (SHIPPER_INSERTS.name, SHIPPER_INSERTS.labels, &[]),
+            (SHIPPER_PROBES.name, SHIPPER_PROBES.labels, &[]),
+            (
+                SHIPPER_QUARANTINED_PAIRS.name,
+                SHIPPER_QUARANTINED_PAIRS.labels,
+                &[],
+            ),
+            (
+                SHIPPER_QUARANTINED_FRAMES.name,
+                SHIPPER_QUARANTINED_FRAMES.labels,
+                &[],
+            ),
+            (
+                SHIPPER_MIXED_VERSION_BATCHES.name,
+                SHIPPER_MIXED_VERSION_BATCHES.labels,
+                &[],
+            ),
+            (
+                SHIPPER_ENCODED_BYTES.name,
+                SHIPPER_ENCODED_BYTES.labels,
+                &[],
+            ),
+            (
+                SHIPPER_DRAIN_BYTES_PER_SECOND.name,
+                SHIPPER_DRAIN_BYTES_PER_SECOND.labels,
                 &[],
             ),
         ]

@@ -113,6 +113,7 @@ mod tests {
                 user_id: text(),
                 session_id: text(),
                 model: text(),
+                environment: text(),
                 total_cost_nusd: NanoUsd::MAX,
                 input_tokens: tokens,
                 output_tokens: 0,

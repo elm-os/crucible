@@ -8,11 +8,18 @@
 //!   decode and keys the table does not know stay in the residual `attributes` or `resource_attributes`, so no
 //!   span or resource attribute is dropped. Events are never consumed: `events` keeps all of them, up to its item
 //!   cap. Instrumentation-scope attributes have no column in contract 3.1 and are not stored.
+//! - A map field (`metadata`, `trace_metadata`, `model_parameters`, `cost_provided`) collects one member per
+//!   matching attribute ([`Target::is_map`]). Per member name the highest-priority source wins, then the first
+//!   occurrence in wire order. Members are written in ascending byte order of their names, so the stored object
+//!   does not depend on the order of the attributes. Members beyond the field's key cap, in that order, are not
+//!   taken and stay in the residual attributes.
 
 use bytes::Bytes;
-use crucible_compat::{Decoder, DialectTable, Location, Target};
+use crucible_compat::{Decoder, DialectTable, KeyMatch, Location, Target};
 use crucible_otlp::{AnyValueView, SpanView};
-use crucible_records::{IoShape, ObservationType, caps, truncate_str};
+use crucible_records::{
+    IoShape, Level, NanoUsd, ObservationType, Timestamp, TracePublic, caps, truncate_str,
+};
 use serde::de::IgnoredAny;
 use smallvec::SmallVec;
 
@@ -30,6 +37,16 @@ enum Value<'a> {
     Count(u64),
     /// A body and the shape it has.
     Body(AnyValueView<'a>, IoShape),
+    /// A flag.
+    Flag(bool),
+    /// A level.
+    Level(Level),
+    /// An instant.
+    Time(Timestamp),
+    /// A map member's value.
+    Member(AnyValueView<'a>),
+    /// A map member's cost.
+    Cost(NanoUsd),
 }
 
 /// The attribute occurrence that supplied a value.
@@ -49,7 +66,16 @@ struct Candidate<'a> {
 }
 
 /// The best candidate of each field, indexed like the table's field rules.
-type Slots<'a> = SmallVec<[Option<Candidate<'a>>; 24]>;
+type Slots<'a> = SmallVec<[Option<Candidate<'a>>; 64]>;
+
+/// One member of a map field.
+#[derive(Debug)]
+struct Member<'a> {
+    /// Position of the map's rule in the table.
+    slot: usize,
+    name: &'a str,
+    candidate: Candidate<'a>,
+}
 
 /// Where an attribute was read.
 #[derive(Clone, Copy, Debug)]
@@ -68,7 +94,10 @@ fn located(location: Location, at: At<'_>) -> bool {
 }
 
 const fn is_list(target: Target) -> bool {
-    matches!(target, Target::FinishReasons)
+    matches!(
+        target,
+        Target::FinishReasons | Target::Tags | Target::TraceTags
+    )
 }
 
 /// Decodes `value` for `target`, or `None` when it does not decode or decodes to an empty value.
@@ -103,7 +132,58 @@ fn decode<'a>(target: Target, decoder: Decoder, value: &AnyValueView<'a>) -> Opt
             AnyValueView::Empty | AnyValueView::String("") => None,
             _ => Some(Value::Body(value.clone(), shape)),
         },
+        Decoder::Bool => match *value {
+            AnyValueView::Bool(b) => Some(Value::Flag(b)),
+            _ => None,
+        },
+        Decoder::Level => match *value {
+            AnyValueView::String(s) => Level::parse(s).map(Value::Level),
+            _ => None,
+        },
+        Decoder::Time => {
+            let time = match *value {
+                AnyValueView::String(s) => Timestamp::parse_rfc3339(s).ok()?,
+                AnyValueView::Int(nanos) => Timestamp::from_unix_nanos(u64::try_from(nanos).ok()?),
+                _ => return None,
+            };
+            time.is_valid().then_some(Value::Time(time))
+        }
+        Decoder::Member => match *value {
+            AnyValueView::Empty | AnyValueView::String("") => None,
+            _ => Some(Value::Member(value.clone())),
+        },
+        Decoder::Usd => match *value {
+            AnyValueView::String(s) => NanoUsd::from_usd_decimal(s).map(Value::Cost),
+            AnyValueView::Double(usd) => Some(Value::Cost(NanoUsd::from_usd_f64(usd))),
+            AnyValueView::Int(usd) => Some(Value::Cost(whole_usd(usd))),
+            _ => None,
+        },
     }
+}
+
+/// A whole number of USD; negative amounts are clamped to zero and the product saturates.
+fn whole_usd(usd: i64) -> NanoUsd {
+    NanoUsd::from_nanos(usd.max(0).saturating_mul(1_000_000_000))
+}
+
+/// The member name a map source gives `key`: the key without the source's prefix, or the last dot-separated
+/// segment of an exact key. `None` when the name would be empty.
+fn member_name(source: KeyMatch, key: &str) -> Option<&str> {
+    let name = match source {
+        KeyMatch::Prefix(prefix) => key.strip_prefix(prefix)?,
+        KeyMatch::Exact(_) => key.rsplit('.').next()?,
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether an exact source of a non-map field reads `key` at `location`: a map's prefix leaves it alone.
+fn owned_elsewhere(table: &DialectTable, location: Location, key: &str) -> bool {
+    table.fields.iter().any(|rule| {
+        !rule.target.is_map()
+            && rule.sources.iter().any(|s| {
+                s.location == location && matches!(s.key, KeyMatch::Exact(exact) if exact == key)
+            })
+    })
 }
 
 /// Whether `s` is JSON text, checked without building a value. Text nested beyond the parser's recursion limit
@@ -116,14 +196,46 @@ fn is_json(s: &str) -> bool {
 fn offer<'a>(
     table: &DialectTable,
     slots: &mut Slots<'a>,
+    members: &mut Vec<Member<'a>>,
     at: At<'_>,
     origin: Origin,
-    key: &str,
+    key: &'a str,
     value: &AnyValueView<'a>,
 ) {
     for (slot, rule) in table.fields.iter().enumerate() {
         for (rank, source) in rule.sources.iter().enumerate() {
             if !located(source.location, at) || !source.key.matches(key) {
+                continue;
+            }
+            if rule.target.is_map() {
+                let Some(name) = member_name(source.key, key) else {
+                    continue;
+                };
+                if matches!(source.key, KeyMatch::Prefix(_))
+                    && owned_elsewhere(table, source.location, key)
+                {
+                    continue;
+                }
+                let Some(value) = decode(rule.target, source.decoder, value) else {
+                    continue;
+                };
+                let candidate = Candidate {
+                    rank,
+                    origin,
+                    value,
+                };
+                match members
+                    .iter_mut()
+                    .find(|m| m.slot == slot && m.name == name)
+                {
+                    Some(member) if member.candidate.rank <= rank => {}
+                    Some(member) => member.candidate = candidate,
+                    None => members.push(Member {
+                        slot,
+                        name,
+                        candidate,
+                    }),
+                }
                 continue;
             }
             if slots[slot].as_ref().is_some_and(|c| c.rank <= rank) {
@@ -166,6 +278,65 @@ fn body(value: AnyValueView<'_>) -> Bytes {
     }
 }
 
+/// The members as a JSON object, in the order given.
+fn object(members: &[Member<'_>]) -> Bytes {
+    json::object_or_empty(members.iter().filter_map(|m| match &m.candidate.value {
+        Value::Member(v) => Some((m.name, v.clone())),
+        _ => None,
+    }))
+}
+
+/// Stores the members of one map field, which arrive in ascending name order, and returns how many were taken:
+/// the first [`caps::METADATA_MAX_KEYS`] of a metadata map, the first [`caps::USAGE_MAX_KEYS`] costs, every model
+/// parameter (the payload caps bound that object's bytes).
+fn fill_map(target: Target, members: &[Member<'_>], out: &mut SpanDraft) -> usize {
+    let payload = &mut out.record.payload;
+    let cap = match target {
+        Target::Metadata | Target::TraceMetadata => caps::METADATA_MAX_KEYS,
+        Target::CostProvided => caps::USAGE_MAX_KEYS,
+        _ => usize::MAX,
+    };
+    let members = members.get(..members.len().min(cap)).unwrap_or(members);
+    match target {
+        Target::Metadata => {
+            payload.metadata = object(members);
+            for member in members {
+                let Value::Member(value) = &member.candidate.value else {
+                    continue;
+                };
+                // A string is stored as it is, any other value as its JSON text.
+                let rendered;
+                let value: &str = match value {
+                    AnyValueView::String(s) => s,
+                    other => {
+                        rendered = json::value(other.clone());
+                        core::str::from_utf8(&rendered).unwrap_or_default()
+                    }
+                };
+                let pair = format!("{}={value}", member.name);
+                payload.metadata_keys.push(member.name.into());
+                payload.metadata_values.push(value.into());
+                payload
+                    .metadata_kv
+                    .push(text(&pair, caps::METADATA_KV_ITEM_BYTES));
+            }
+        }
+        Target::TraceMetadata => payload.trace_metadata = object(members),
+        Target::ModelParameters => payload.model_parameters = object(members),
+        Target::CostProvided => {
+            payload.cost_provided = members
+                .iter()
+                .filter_map(|m| match m.candidate.value {
+                    Value::Cost(cost) => Some((m.name.into(), cost)),
+                    _ => None,
+                })
+                .collect();
+        }
+        _ => return 0,
+    }
+    members.len()
+}
+
 /// Maps one span with `table` (the engine behind [`crate::TableMapper`]).
 pub(crate) fn map_span(
     table: &DialectTable,
@@ -174,10 +345,12 @@ pub(crate) fn map_span(
     out: &mut SpanDraft,
 ) {
     let mut slots: Slots<'_> = table.fields.iter().map(|_| None).collect();
+    let mut members: Vec<Member<'_>> = Vec::new();
     for (index, (key, value)) in span.resource().attributes().enumerate() {
         offer(
             table,
             &mut slots,
+            &mut members,
             At::Resource,
             Origin::Resource(index),
             key,
@@ -190,6 +363,7 @@ pub(crate) fn map_span(
         offer(
             table,
             &mut slots,
+            &mut members,
             At::Span,
             Origin::Span(index),
             key,
@@ -218,6 +392,7 @@ pub(crate) fn map_span(
                 offer(
                     table,
                     &mut slots,
+                    &mut members,
                     At::Event(event.name()),
                     Origin::Event,
                     key,
@@ -230,6 +405,14 @@ pub(crate) fn map_span(
     let mut consumed: SmallVec<[Origin; 24]> = slots.iter().flatten().map(|c| c.origin).collect();
     if let Some((_, index, _, true)) = kind {
         consumed.push(Origin::Span(index));
+    }
+    members.sort_by(|a, b| (a.slot, a.name).cmp(&(b.slot, b.name)));
+    for group in members.chunk_by(|a, b| a.slot == b.slot) {
+        let Some(rule) = group.first().and_then(|m| table.fields.get(m.slot)) else {
+            continue;
+        };
+        let taken = fill_map(rule.target, group, out);
+        consumed.extend(group.iter().take(taken).map(|m| m.candidate.origin));
     }
     let record = &mut out.record;
     let (mut input_shape, mut output_shape) = (None, None);
@@ -255,6 +438,37 @@ pub(crate) fn map_span(
                 core.telemetry_sdk_version = text(s, caps::SDK_BYTES);
             }
             (Target::UserId, Value::Text(s)) => core.user_id = text(s, caps::TRACE_ATTRIBUTE_BYTES),
+            (Target::SessionId, Value::Text(s)) => {
+                core.session_id = text(s, caps::TRACE_ATTRIBUTE_BYTES);
+            }
+            (Target::TraceName, Value::Text(s)) => {
+                core.trace_name = text(s, caps::TRACE_ATTRIBUTE_BYTES);
+            }
+            (Target::Environment, Value::Text(s)) => {
+                core.environment = text(s, caps::ENVIRONMENT_BYTES);
+            }
+            (Target::Release, Value::Text(s)) => core.release = text(s, caps::RELEASE_BYTES),
+            (Target::Version, Value::Text(s)) => core.version = text(s, caps::RELEASE_BYTES),
+            (Target::Tags, Value::List(v)) => {
+                core.tags = list(v, caps::TAGS_MAX_ITEMS, caps::TAG_BYTES);
+            }
+            (Target::TraceTags, Value::List(v)) => {
+                core.trace_tags = list(v, caps::TAGS_MAX_ITEMS, caps::TAG_BYTES);
+            }
+            (Target::TracePublic, Value::Flag(public)) => {
+                core.trace_public = if public {
+                    TracePublic::Public
+                } else {
+                    TracePublic::Private
+                };
+            }
+            (Target::Level, Value::Level(level)) => out.level = Some(level),
+            (Target::PromptVersion, Value::Text(s)) => {
+                core.prompt_version = text(s, caps::PROMPT_VERSION_BYTES);
+            }
+            (Target::CompletionStartTime, Value::Time(t)) => {
+                core.completion_start_time = Some(t);
+            }
             (Target::ModelRequested, Value::Text(s)) => {
                 core.model_requested = text(s, caps::MODEL_BYTES);
             }

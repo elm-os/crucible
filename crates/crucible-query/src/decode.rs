@@ -122,6 +122,7 @@ pub(crate) fn span(row: &Row) -> Decoded<SpanSummary> {
         user_id: f.text(at(C::UserId))?,
         session_id: f.text(at(C::SessionId))?,
         model: f.text(at(C::ModelResponse))?,
+        environment: f.text(at(C::Environment))?,
         total_cost_nusd: NanoUsd::from_nanos(f.int(at(C::TotalCostNusd))?),
         input_tokens: f.uint(at(C::InputTokens))?,
         output_tokens: f.uint(at(C::OutputTokens))?,

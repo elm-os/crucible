@@ -37,6 +37,10 @@ pub struct Admission {
     pub free_bytes: u64,
     /// The durability mode can lose acknowledged frames; health output must say `durability: unsafe`.
     pub durability_unsafe: bool,
+    /// The rate at which shipping resolves frames, in raw WAL bytes per second, as the shipper last reported
+    /// it through [`Wal::set_drain_rate`]; 0 when nothing reports or nothing drains. It scales the `Retry-After`
+    /// of a 503 for WAL space (contract 4.8).
+    pub drain_bytes_per_s: u64,
 }
 
 impl Admission {
@@ -111,6 +115,8 @@ pub(crate) struct Shared {
     watermark: Mutex<Option<Watermark>>,
     failed: AtomicBool,
     free_bytes: AtomicU64,
+    /// What the shipper last reported through [`Wal::set_drain_rate`].
+    drain_bytes_per_s: AtomicU64,
     pub(crate) metrics: WalMetrics,
 }
 
@@ -262,6 +268,7 @@ impl Wal {
             watermark: Mutex::new(report.watermark),
             failed: AtomicBool::new(false),
             free_bytes: AtomicU64::new(u64::MAX),
+            drain_bytes_per_s: AtomicU64::new(0),
             metrics: WalMetrics::new(env),
         });
         shared.set_durable_lsn(report.last_lsn.get());
@@ -393,7 +400,16 @@ impl Wal {
             unshipped_bytes,
             free_bytes,
             durability_unsafe: config.durability.is_unsafe(),
+            drain_bytes_per_s: self.shared.drain_bytes_per_s.load(Ordering::SeqCst),
         }
+    }
+
+    /// Records the rate at which shipping resolves frames, in raw WAL bytes per second. The shipper reports it
+    /// at every checkpoint and on its idle timer; admission reads it through [`Wal::admission`].
+    pub fn set_drain_rate(&self, bytes_per_s: u64) {
+        self.shared
+            .drain_bytes_per_s
+            .store(bytes_per_s, Ordering::SeqCst);
     }
 
     /// Reads durable frames in LSN order, starting at `from`.

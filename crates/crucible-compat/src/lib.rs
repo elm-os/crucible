@@ -6,9 +6,10 @@
 //! rules in priority order (contract 10.4) and the rules that detect the dialect. Tables are data: the engine holds
 //! no dialect-specific string.
 //!
-//! Milestone 1 ships dialect 0's table only. It holds the keys that the contract names, plus, where the contract
-//! names a field's concept, the one semantic-convention key that exists for it. The tables of dialects 1 to 7, and
-//! the decoders and targets only they need, arrive with their mappers.
+//! This build ships dialect 0's table only. It holds the keys that the contract names (section 10.6 for the fields
+//! without a semantic convention), plus, where the contract names a field's concept, the semantic-convention key
+//! that exists for it. The tables of dialects 1 to 7, and the decoders and targets only they need, arrive with
+//! their mappers.
 //!
 //! This crate is pure: no `Env`, no IO.
 
@@ -117,9 +118,20 @@ pub enum Location {
 /// How a source value is decoded (contract 10.3). A value that does not decode, or decodes to an empty value, is
 /// not a candidate, and its attribute stays in the residual attributes.
 ///
-/// Milestone 1 tables use these decoders; the others that contract 10.3 lists join with the tables that use them.
+/// Dialect 0 uses these decoders; the others that contract 10.3 lists join with the tables that use them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Decoder {
+    /// A boolean.
+    Bool,
+    /// A level by its wire name: `debug`, `default`, `warning` or `error`.
+    Level,
+    /// An instant: an RFC 3339 string, or a non-negative integer of Unix nanoseconds, inside the valid time range.
+    Time,
+    /// One member of a map (prefix-flatten to map): any value that is set and is not the empty string. See
+    /// [`Target::is_map`] for how members are named and combined.
+    Member,
+    /// One member of a cost map: a USD amount as a decimal string, a double or an integer.
+    Usd,
     /// A non-empty string. A list target also accepts an array whose elements are all strings.
     String,
     /// A non-negative integer.
@@ -147,6 +159,36 @@ pub enum Target {
     TelemetrySdkVersion,
     /// `user_id`, a trace-level attribute.
     UserId,
+    /// `session_id`, a trace-level attribute.
+    SessionId,
+    /// `trace_name`, a trace-level attribute.
+    TraceName,
+    /// `environment`, a trace-level attribute.
+    Environment,
+    /// `release`, a trace-level attribute.
+    Release,
+    /// `version`, a trace-level attribute.
+    Version,
+    /// `tags`.
+    Tags,
+    /// `trace_tags`, a trace-level attribute.
+    TraceTags,
+    /// `trace_public`, a trace-level attribute.
+    TracePublic,
+    /// The explicit `level`.
+    Level,
+    /// `prompt_version`.
+    PromptVersion,
+    /// `completion_start_time`.
+    CompletionStartTime,
+    /// `metadata`, a map.
+    Metadata,
+    /// `trace_metadata`, a map and a trace-level attribute.
+    TraceMetadata,
+    /// `model_parameters`, a map.
+    ModelParameters,
+    /// `cost_provided`, a map from a usage key (or `total`) to a USD amount.
+    CostProvided,
     /// `model_requested`.
     ModelRequested,
     /// `model_response`.
@@ -170,9 +212,32 @@ pub enum Target {
 }
 
 impl Target {
+    /// Whether the target is a map that collects one member per matching attribute, instead of taking one value.
+    ///
+    /// - A [`KeyMatch::Prefix`] source names the member by the key with the prefix removed; an attribute whose
+    ///   key equals the prefix has no member name and is not read. A [`KeyMatch::Exact`] source names the member
+    ///   by the key's last dot-separated segment.
+    /// - A prefix source does not read a key that an exact source of a non-map field of the same table reads at
+    ///   the same location: that key belongs to the other field.
+    /// - Per member name, the highest-priority source wins, and among occurrences of one source the first in wire
+    ///   order. Members are stored in ascending byte order of their names.
+    pub const fn is_map(self) -> bool {
+        matches!(
+            self,
+            Self::Metadata | Self::TraceMetadata | Self::ModelParameters | Self::CostProvided
+        )
+    }
+
     /// Whether a source of this target may use `decoder`.
     pub const fn accepts(self, decoder: Decoder) -> bool {
         match self {
+            Self::Metadata | Self::TraceMetadata | Self::ModelParameters => {
+                matches!(decoder, Decoder::Member)
+            }
+            Self::CostProvided => matches!(decoder, Decoder::Usd),
+            Self::TracePublic => matches!(decoder, Decoder::Bool),
+            Self::Level => matches!(decoder, Decoder::Level),
+            Self::CompletionStartTime => matches!(decoder, Decoder::Time),
             Self::Usage(_) => matches!(decoder, Decoder::Integer),
             // `input` and `output` are JSON or text; the other bodies are JSON (contract 3.1).
             Self::Input | Self::Output => matches!(decoder, Decoder::JsonOrString(_)),
@@ -183,6 +248,14 @@ impl Target {
             | Self::TelemetrySdkLanguage
             | Self::TelemetrySdkVersion
             | Self::UserId
+            | Self::SessionId
+            | Self::TraceName
+            | Self::Environment
+            | Self::Release
+            | Self::Version
+            | Self::Tags
+            | Self::TraceTags
+            | Self::PromptVersion
             | Self::ModelRequested
             | Self::ModelResponse
             | Self::Provider
@@ -276,6 +349,14 @@ const fn resource(key: &'static str, decoder: Decoder) -> Source {
     }
 }
 
+const fn span_prefix(prefix: &'static str, decoder: Decoder) -> Source {
+    Source {
+        location: Location::Span,
+        key: KeyMatch::Prefix(prefix),
+        decoder,
+    }
+}
+
 const fn field(target: Target, sources: &'static [Source]) -> FieldRule {
     FieldRule { target, sources }
 }
@@ -294,9 +375,18 @@ const OBSERVATION_TYPE_NAMES: &[(&str, ObservationType)] = &[
     ("guardrail", ObservationType::Guardrail),
 ];
 
-/// Dialect 0, native (contract 10.1): the keys the contract names, and the one semantic-convention key of each
-/// field concept the contract names. Fields with neither (for example the trace-level `trace_name` and
-/// `session_id`, or provided cost) have no source yet.
+/// Dialect 0, native (contract 10.1): the `crucible.*` keys of contract 10.6, which come first in each field's
+/// sources (priority 1 of contract 10.3), and the semantic-convention keys of each field concept the contract
+/// names.
+///
+/// Two readings of contract 10.6 are settled here:
+///
+/// - `input` and `output`: the row reads "non-GenAI spans" and "GenAI spans keep the message keys", so the GenAI
+///   message keys rank before `crucible.input` and `crucible.output`. A span that carries both keeps its messages
+///   and leaves the `crucible.*` body in the residual attributes.
+/// - `release`: the resource key `service.version` is its second source and stays the source of
+///   `service_version`. It is the one key that feeds two fields ([`SHARED_KEYS`]); it leaves the residual
+///   resource attributes as before, because `service_version` consumes it.
 pub static DIALECT_0: DialectTable = DialectTable {
     dialect: 0,
     detect: &[],
@@ -346,7 +436,84 @@ pub static DIALECT_0: DialectTable = DialectTable {
             Target::TelemetrySdkVersion,
             &[resource("telemetry.sdk.version", Decoder::String)],
         ),
-        field(Target::UserId, &[span("user.id", Decoder::String)]),
+        field(
+            Target::TraceName,
+            &[span("crucible.trace.name", Decoder::String)],
+        ),
+        field(
+            Target::SessionId,
+            &[
+                span("crucible.session.id", Decoder::String),
+                span("session.id", Decoder::String),
+                span("gen_ai.conversation.id", Decoder::String),
+            ],
+        ),
+        field(
+            Target::UserId,
+            &[
+                span("crucible.user.id", Decoder::String),
+                span("user.id", Decoder::String),
+            ],
+        ),
+        field(
+            Target::Environment,
+            &[
+                span("crucible.environment", Decoder::String),
+                resource("deployment.environment.name", Decoder::String),
+                resource("deployment.environment", Decoder::String),
+            ],
+        ),
+        field(
+            Target::Release,
+            &[
+                span("crucible.release", Decoder::String),
+                resource("service.version", Decoder::String),
+            ],
+        ),
+        field(
+            Target::Version,
+            &[span("crucible.version", Decoder::String)],
+        ),
+        field(Target::Tags, &[span("crucible.tags", Decoder::String)]),
+        field(
+            Target::TraceTags,
+            &[span("crucible.trace.tags", Decoder::String)],
+        ),
+        field(
+            Target::TracePublic,
+            &[span("crucible.trace.public", Decoder::Bool)],
+        ),
+        field(Target::Level, &[span("crucible.level", Decoder::Level)]),
+        field(
+            Target::Metadata,
+            &[span_prefix("crucible.metadata.", Decoder::Member)],
+        ),
+        field(
+            Target::TraceMetadata,
+            &[span_prefix("crucible.trace.metadata.", Decoder::Member)],
+        ),
+        field(
+            Target::CostProvided,
+            &[span_prefix("crucible.cost.", Decoder::Usd)],
+        ),
+        field(
+            Target::CompletionStartTime,
+            &[span("crucible.completion_start_time", Decoder::Time)],
+        ),
+        field(
+            Target::ModelParameters,
+            &[
+                span_prefix("crucible.model_parameters.", Decoder::Member),
+                // Every request parameter except the model, which `model_requested` reads.
+                span_prefix("gen_ai.request.", Decoder::Member),
+                // Read as the member `service_tier`.
+                span("openai.request.service_tier", Decoder::Member),
+            ],
+        ),
+        field(
+            Target::PromptVersion,
+            &[span("crucible.prompt.version", Decoder::String)],
+        ),
         field(
             Target::ModelRequested,
             &[span("gen_ai.request.model", Decoder::String)],
@@ -361,7 +528,10 @@ pub static DIALECT_0: DialectTable = DialectTable {
         ),
         field(
             Target::PromptName,
-            &[span("gen_ai.prompt.name", Decoder::String)],
+            &[
+                span("crucible.prompt.name", Decoder::String),
+                span("gen_ai.prompt.name", Decoder::String),
+            ],
         ),
         field(
             Target::FinishReasons,
@@ -400,17 +570,23 @@ pub static DIALECT_0: DialectTable = DialectTable {
         ),
         field(
             Target::Input,
-            &[span(
-                "gen_ai.input.messages",
-                Decoder::JsonOrString(IoShape::GenaiMessages),
-            )],
+            &[
+                span(
+                    "gen_ai.input.messages",
+                    Decoder::JsonOrString(IoShape::GenaiMessages),
+                ),
+                span("crucible.input", Decoder::JsonOrString(IoShape::Raw)),
+            ],
         ),
         field(
             Target::Output,
-            &[span(
-                "gen_ai.output.messages",
-                Decoder::JsonOrString(IoShape::GenaiMessages),
-            )],
+            &[
+                span(
+                    "gen_ai.output.messages",
+                    Decoder::JsonOrString(IoShape::GenaiMessages),
+                ),
+                span("crucible.output", Decoder::JsonOrString(IoShape::Raw)),
+            ],
         ),
         field(
             Target::SystemInstructions,
@@ -423,7 +599,12 @@ pub static DIALECT_0: DialectTable = DialectTable {
     ],
 };
 
-/// The table of every dialect with a mapper in this build: dialect 0 only, in milestone 1.
+/// The keys that feed two fields, as (location, key). Every other key feeds at most one field per location, so
+/// that consuming an attribute is unambiguous. `service.version` is `service_version` and the second source of
+/// `release` (contract 10.6).
+pub const SHARED_KEYS: &[(Location, &str)] = &[(Location::Resource, "service.version")];
+
+/// The table of every dialect with a mapper in this build: dialect 0 only.
 pub static TABLES: [&DialectTable; 1] = [&DIALECT_0];
 
 #[cfg(test)]
@@ -452,8 +633,9 @@ mod tests {
     }
 
     /// Every table is well formed: each field has one rule, every source fits its target and has a key, a key
-    /// feeds at most one field per location (so consuming an attribute is unambiguous), and type values are
-    /// unique within a rule.
+    /// feeds at most one field per location (so consuming an attribute is unambiguous) unless it is one of
+    /// [`SHARED_KEYS`], only map targets read prefixes, no prefix of one map covers a key or prefix of another
+    /// map, and type values are unique within a rule.
     #[test]
     fn tables_are_well_formed() {
         for (i, table) in TABLES.iter().enumerate() {
@@ -471,8 +653,32 @@ mod tests {
                     assert!(rule.target.accepts(source.decoder), "{source:?}");
                     assert!(!source.key.text().is_empty());
                     let at = (source.location, source.key.text());
-                    assert!(!keys.contains(&at), "{at:?} feeds two fields");
+                    assert!(
+                        !keys.contains(&at) || SHARED_KEYS.contains(&at),
+                        "{at:?} feeds two fields"
+                    );
                     keys.push(at);
+                    if table.dialect == 0 {
+                        // Dialect 0 reads prefixes only into maps; a member has no single winner to consume.
+                        assert_eq!(
+                            matches!(source.key, KeyMatch::Prefix(_)),
+                            rule.target.is_map() && source.key.text().ends_with('.'),
+                            "{source:?}"
+                        );
+                    }
+                    for other in table.fields[..j].iter().filter(|r| r.target.is_map()) {
+                        for theirs in other.sources {
+                            let overlap = |a: &Source, b: &Source| {
+                                a.location == b.location
+                                    && matches!(a.key, KeyMatch::Prefix(p) if b.key.text().starts_with(p))
+                            };
+                            assert!(
+                                !rule.target.is_map()
+                                    || !(overlap(source, theirs) || overlap(theirs, source)),
+                                "{source:?} overlaps {theirs:?}"
+                            );
+                        }
+                    }
                 }
             }
             for (j, rule) in table.observation_types.iter().enumerate() {
