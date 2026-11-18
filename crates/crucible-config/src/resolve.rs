@@ -8,7 +8,8 @@ use std::str::FromStr;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
-    ClickHouse, Config, ConfigErrors, Data, Postgres, Secret, Server, Source, WalBackend,
+    Auth, ClickHouse, Config, ConfigErrors, Data, PgOutageMode, Postgres, Secret, Server, Source,
+    WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -38,7 +39,12 @@ pub struct Loaded {
 type Values = BTreeMap<&'static str, (String, Source)>;
 
 /// The settings whose TOML value is a number.
-const NUMBERS: &[&str] = &["recent.max_bytes", "postgres.pool_size"];
+const NUMBERS: &[&str] = &[
+    "recent.max_bytes",
+    "postgres.pool_size",
+    "auth.fail_open_max",
+    "auth.session_outage_grace",
+];
 
 impl Loaded {
     /// Where the value of `key` came from; `None` when the setting is unset.
@@ -307,7 +313,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         let key = key.expose().trim();
         if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             let problem = "`master_key` must be 64 hexadecimal characters (32 bytes); `openssl rand -hex 32` makes one";
-            if t.text("clickhouse.url").is_some() {
+            if t.text("clickhouse.url").is_some() || t.text("postgres.url").is_some() {
                 master_key_ok = false;
                 t.errors.push(problem.to_owned());
             } else {
@@ -380,6 +386,15 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
                     "`postgres.url` must look like postgres://user@host:5432/database".to_owned(),
                 );
             }
+            if master_key.is_none() && master_key_ok {
+                postgres_ok = false;
+                t.errors.push(
+                    "`postgres.url` needs the master key, which seals stored secrets and keys API-key lookups: set \
+                     `master_key_file` (--master-key-file, CRUCIBLE_MASTER_KEY_FILE) or CRUCIBLE_MASTER_KEY; \
+                     `openssl rand -hex 32` makes one"
+                        .to_owned(),
+                );
+            }
             pool_size.map(|pool_size| Postgres {
                 url: Secret::new(url),
                 password: t.secret("postgres.password"),
@@ -388,7 +403,49 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         }
     };
 
-    if !(recent_ok && master_key_ok && clickhouse_ok && postgres_ok) {
+    let pg_outage_mode = match t.text("auth.pg_outage_mode") {
+        Some("fail_open") => Some(PgOutageMode::FailOpen),
+        Some("fail_closed") => Some(PgOutageMode::FailClosed),
+        other => {
+            if let (Some(value), Some((_, source))) = (other, t.values.get("auth.pg_outage_mode")) {
+                t.errors.push(format!(
+                    "`auth.pg_outage_mode` = {} is not one of fail_open, fail_closed ({source})",
+                    quoted(value)
+                ));
+            }
+            None
+        }
+    };
+    let fail_open_max = t.parsed::<u64>("auth.fail_open_max", "a whole number of seconds");
+    let fail_open_ok = t.text("auth.fail_open_max").is_none() || fail_open_max.is_some();
+    let session_outage_grace =
+        t.parsed::<u64>("auth.session_outage_grace", "a whole number of seconds");
+    let mut allowed_origins = Vec::new();
+    let origins = t
+        .text("server.allowed_origins")
+        .unwrap_or_default()
+        .to_owned();
+    for origin in origins.split(',').map(str::trim).filter(|o| !o.is_empty()) {
+        if origin.starts_with("http://") || origin.starts_with("https://") {
+            allowed_origins.push(origin.to_owned());
+        } else {
+            t.errors.push(format!(
+                "`server.allowed_origins` entry {} must be an http:// or https:// origin",
+                quoted(origin)
+            ));
+        }
+    }
+    let public_url = t.text("server.public_url").map(str::to_owned);
+    if let Some(url) = &public_url
+        && !(url.starts_with("http://") || url.starts_with("https://"))
+    {
+        t.errors.push(format!(
+            "`server.public_url` = {} must start with http:// or https://",
+            quoted(url)
+        ));
+    }
+
+    if !(recent_ok && master_key_ok && clickhouse_ok && postgres_ok && fail_open_ok) {
         return None;
     }
     Some(Config {
@@ -398,6 +455,8 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             metrics_listen: metrics_listen?,
             ui_dir: t.text("server.ui_dir").map(Into::into),
             keys_file: t.text("server.keys_file").map(Into::into),
+            public_url,
+            allowed_origins,
         },
         data: Data {
             dir: t.text("data.dir")?.into(),
@@ -409,6 +468,11 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         postgres: match t.text("postgres.url") {
             Some(_) => Some(postgres?),
             None => None,
+        },
+        auth: Auth {
+            pg_outage_mode: pg_outage_mode?,
+            fail_open_max,
+            session_outage_grace: session_outage_grace?,
         },
     })
 }
@@ -683,7 +747,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [clickhouse], [postgres].",
+                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [clickhouse], [postgres], [auth].",
             ]
         );
     }
@@ -737,6 +801,7 @@ directory_of_everything = "x"
         let env = env(&[
             ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
             ("CRUCIBLE_POSTGRES_PASSWORD_FILE", "/missing"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
         ]);
         let ConfigErrors(errors) = load(None, &env, &[]).unwrap_err();
         assert_eq!(
@@ -817,6 +882,55 @@ directory_of_everything = "x"
     }
 
     #[test]
+    fn postgres_needs_the_master_key_and_the_auth_settings_parse() {
+        let without_key = env(&[("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d")]);
+        let ConfigErrors(errors) = load(None, &without_key, &[]).unwrap_err();
+        assert!(
+            errors[0].contains("`postgres.url` needs the master key"),
+            "{errors:?}"
+        );
+        let ok = env(&[
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+            ("CRUCIBLE_SERVER_PUBLIC_URL", "https://crucible.example.com"),
+            (
+                "CRUCIBLE_SERVER_ALLOWED_ORIGINS",
+                "http://localhost:3000, https://a.example",
+            ),
+            ("CRUCIBLE_AUTH_PG_OUTAGE_MODE", "fail_closed"),
+            ("CRUCIBLE_AUTH_FAIL_OPEN_MAX", "120"),
+            ("CRUCIBLE_AUTH_SESSION_OUTAGE_GRACE", "0"),
+        ]);
+        let config = load(None, &ok, &[]).unwrap().config;
+        assert_eq!(
+            config.server.public_url.as_deref(),
+            Some("https://crucible.example.com")
+        );
+        assert_eq!(
+            config.server.allowed_origins,
+            ["http://localhost:3000", "https://a.example"]
+        );
+        assert_eq!(
+            config.auth,
+            Auth {
+                pg_outage_mode: PgOutageMode::FailClosed,
+                fail_open_max: Some(120),
+                session_outage_grace: 0,
+            }
+        );
+        let bad = env(&[
+            ("CRUCIBLE_AUTH_PG_OUTAGE_MODE", "sometimes"),
+            ("CRUCIBLE_SERVER_PUBLIC_URL", "crucible.example.com"),
+            ("CRUCIBLE_SERVER_ALLOWED_ORIGINS", "localhost"),
+        ]);
+        let ConfigErrors(errors) = load(None, &bad, &[]).unwrap_err();
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        let defaults = load(None, &[], &[]).unwrap().config.auth;
+        assert_eq!(defaults.pg_outage_mode, PgOutageMode::FailOpen);
+        assert_eq!(defaults.session_outage_grace, 600);
+    }
+
+    #[test]
     fn print_shows_sources_and_never_a_secret() {
         let file = format!(
             "master_key = \"{KEY}\"\n[recent]\nmax_bytes = 4096\n[postgres]\nurl = \"postgres://crucible:pg-secret@postgres:5432/crucible?sslmode=require\"\n"
@@ -855,6 +969,10 @@ password_file = "/run/secrets/clickhouse"  # env CRUCIBLE_CLICKHOUSE_PASSWORD_FI
 [postgres]
 url = "postgres://crucible:<redacted>@postgres:5432/crucible?sslmode=require"  # file
 pool_size = 8  # default
+
+[auth]
+pg_outage_mode = "fail_open"  # default
+session_outage_grace = 600  # default
 "#
         );
         // What is printed loads again, to the same settings apart from the redacted secrets.

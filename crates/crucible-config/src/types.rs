@@ -92,6 +92,30 @@ pub struct Server {
     pub ui_dir: Option<PathBuf>,
     /// TOML file of the project keys that ingest accepts.
     pub keys_file: Option<PathBuf>,
+    /// The URL people reach the server at.
+    pub public_url: Option<String>,
+    /// Origins besides the server's own that may send cookie-authenticated writes.
+    pub allowed_origins: Vec<String>,
+}
+
+/// `auth.pg_outage_mode`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PgOutageMode {
+    /// Known keys keep working for ingest.
+    FailOpen,
+    /// Every secret key is refused after 5 s without a successful poll.
+    FailClosed,
+}
+
+/// The `[auth]` section.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Auth {
+    /// API keys during a Postgres outage.
+    pub pg_outage_mode: PgOutageMode,
+    /// Seconds after which a fail-open outage behaves as fail-closed; `None` is unlimited.
+    pub fail_open_max: Option<u64>,
+    /// Seconds that cached sessions stay valid during a Postgres outage.
+    pub session_outage_grace: u64,
 }
 
 /// The `[data]` section.
@@ -142,6 +166,8 @@ pub struct Config {
     pub clickhouse: Option<ClickHouse>,
     /// The control plane; `None` to run without one.
     pub postgres: Option<Postgres>,
+    /// Sign-in and API keys.
+    pub auth: Auth,
 }
 
 /// Everything that is wrong with a configuration, one message per problem.

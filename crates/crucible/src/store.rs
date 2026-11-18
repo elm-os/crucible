@@ -84,6 +84,24 @@ impl MasterKey {
         let _ = Hkdf::<Sha256>::new(None, &self.0).expand(info.as_bytes(), &mut okm);
         okm
     }
+
+    /// A 32-byte HKDF-SHA256 subkey for `info` (contract 11.2: one subkey per purpose).
+    fn subkey(&self, info: &str) -> [u8; 32] {
+        let mut okm = [0u8; 32];
+        // 32 bytes is within what HKDF-SHA256 can give, so `expand` cannot fail.
+        let _ = Hkdf::<Sha256>::new(None, &self.0).expand(info.as_bytes(), &mut okm);
+        okm
+    }
+
+    /// The subkey that seals secrets at rest: `crucible/seal/v1`.
+    pub(crate) fn seal_key(&self) -> [u8; 32] {
+        self.subkey("crucible/seal/v1")
+    }
+
+    /// The subkey of the API keys' lookup tags (contract 11.3): `crucible/api-key-lookup/v1`.
+    pub(crate) fn lookup_key(&self) -> [u8; 32] {
+        self.subkey("crucible/api-key-lookup/v1")
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {

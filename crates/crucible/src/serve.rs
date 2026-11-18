@@ -35,7 +35,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
-use crucible_auth::{KeyVerifier, StaticKeys};
+use crucible_auth::service::Identity;
+use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
 use crucible_config::Config;
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
@@ -209,14 +210,26 @@ struct Gate {
     api: OnceLock<Router>,
     /// The API until then.
     api_without_store: Router,
+    /// The Postgres key snapshot, with a control plane: until it loads the node is not ready and ingest stays
+    /// closed (contract 11.8: a cold start without Postgres accepts nothing).
+    snapshot: Option<Arc<DbKeys>>,
 }
 
 impl Gate {
     fn closed(&self) -> Option<String> {
-        self.closed
+        let closed = self
+            .closed
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .clone();
+        closed.or_else(|| {
+            self.snapshot
+                .as_ref()
+                .filter(|keys| !keys.is_loaded())
+                .map(|_| {
+                    "the API key snapshot is not loaded yet: Postgres has not answered".to_owned()
+                })
+        })
     }
 
     fn close(&self, reason: String) {
@@ -269,6 +282,7 @@ async fn open_app(
     keys: StaticKeys,
     cursors: Arc<KeyRing>,
     config: WalConfig,
+    identity: Option<Arc<Identity>>,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -281,7 +295,11 @@ async fn open_app(
         segments = report.segments.len(),
         "wal opened"
     );
-    let keys: Arc<dyn KeyVerifier> = Arc::new(keys);
+    // With a control plane the keys are the Postgres snapshot; the keys file serves ingest-only and dev setups.
+    let keys: Arc<dyn KeyVerifier> = match &identity {
+        Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
+        None => Arc::new(keys),
+    };
     let ingest = Ingest::new(
         env,
         wal.clone(),
@@ -289,15 +307,17 @@ async fn open_app(
         Arc::clone(&keys),
         IngestConfig::default(),
     );
+    let settings = Arc::new(StaticProjectSettings::default());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
-        api_without_store: crucible_api::router_without_store(
-            env,
-            Arc::clone(&keys),
-            Arc::new(StaticProjectSettings::default()),
-            cursors,
-        ),
+        snapshot: identity
+            .as_ref()
+            .map(|identity| Arc::clone(identity.keys())),
+        api_without_store: match identity {
+            Some(identity) => crucible_api::platform_router(env, None, identity, settings, cursors),
+            None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
+        },
     });
     let app = App {
         ingest,
@@ -453,6 +473,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// Identity, with a control plane.
+    identity: Option<Arc<Identity>>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -533,6 +555,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        identity,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -604,13 +627,13 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
-    gate.open(crucible_api::router(
-        &env,
-        service,
-        keys,
-        Arc::new(StaticProjectSettings::default()),
-        cursors,
-    ));
+    let settings = Arc::new(StaticProjectSettings::default());
+    gate.open(match identity {
+        Some(identity) => {
+            crucible_api::platform_router(&env, Some(service), identity, settings, cursors)
+        }
+        None => crucible_api::router(&env, service, keys, settings, cursors),
+    });
     tracing::info!(
         watermark = %watermark,
         last_lsn = %report.last_lsn,
@@ -730,10 +753,20 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     }
     let key_count = keys.len();
     let clickhouse = clickhouse(&config, migrate)?;
-    // Nothing reads the control plane yet in this milestone except the migrations ledger; the store opens its
-    // first connection when something does.
     let control = match &config.postgres {
         Some(postgres) => Some(Control::new(env, postgres)?),
+        None => None,
+    };
+    // With a control plane, identity serves sessions and the Postgres keys. Its tables must exist first.
+    let identity = match &control {
+        Some(control) => {
+            if migrate {
+                control.migrate_postgres(env).await?;
+            }
+            let identity = crate::identity::build(env, &config, control)?;
+            crate::identity::start(env, &identity, Arc::new(control.store.clone()));
+            Some(identity)
+        }
         None => None,
     };
     let control_mode = if control.is_some() {
@@ -754,6 +787,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         keys,
         Arc::clone(&cursors),
         WalConfig::default(),
+        identity.clone(),
         closed,
     )
     .await?;
@@ -778,6 +812,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                identity,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -908,7 +943,10 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None).await.unwrap().0
+        open_app(env, keys, cursors, config, None, None)
+            .await
+            .unwrap()
+            .0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -1060,6 +1098,7 @@ mod tests {
                 closed: RwLock::new(None),
                 api: OnceLock::new(),
                 api_without_store: Router::new(),
+                snapshot: None,
             };
             let readiness = |wal: &Wal| {
                 let (status, text) = readiness(wal, &gate);

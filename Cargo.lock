@@ -1049,7 +1049,7 @@ dependencies = [
  "crucible-otlp",
  "crucible-records",
  "flate2",
- "hmac",
+ "hmac 0.13.0",
  "http",
  "http-body-util",
  "hyper",
@@ -1062,8 +1062,8 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "sha2",
- "thiserror",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
  "tokio",
 ]
 

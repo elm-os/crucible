@@ -2,6 +2,7 @@
 
 mod control;
 mod cursor_keys;
+mod identity;
 mod keys;
 mod recent;
 mod serve;
@@ -43,6 +44,64 @@ enum Command {
     },
     /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
     Openapi,
+    /// Administer sign-in on a server with a control plane (Postgres).
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminCommand {
+    /// Create the organization and its first owner, instead of the one-time setup page that `serve` prints.
+    /// The password is read from --password-file, or else from the first line of standard input.
+    Init(Box<AdminInitArgs>),
+    /// Print a one-time password-reset link for a user, valid for 30 minutes. This version sends no email, so
+    /// pass the link on.
+    ResetPassword(Box<AdminResetArgs>),
+}
+
+#[derive(Debug, Args)]
+struct AdminInitArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The organization's name.
+    #[arg(long)]
+    org_name: String,
+    /// The owner's email.
+    #[arg(long)]
+    email: String,
+    /// The owner's display name.
+    #[arg(long)]
+    name: String,
+    /// A file that holds the owner's password (12 to 128 characters).
+    #[arg(long)]
+    password_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AdminResetArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The user's email.
+    email: String,
+}
+
+/// The owner's password for `admin init`: the file's first line, or standard input's.
+#[allow(clippy::disallowed_methods)] // The binary reads the operator's input.
+fn read_password(file: Option<&std::path::Path>) -> anyhow::Result<String> {
+    let text = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading the password file {}", path.display()))?,
+        None => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading the password from standard input")?;
+            line
+        }
+    };
+    Ok(text.lines().next().unwrap_or_default().to_owned())
 }
 
 #[derive(Debug, Subcommand)]
@@ -253,6 +312,26 @@ fn main() -> anyhow::Result<()> {
             std::io::stdout().lock().write_all(json.as_bytes())?;
             Ok(())
         }
+        Command::Admin { command } => match command {
+            AdminCommand::Init(args) => {
+                let config = args.config.load_for_run()?;
+                let password = read_password(args.password_file.as_deref())?;
+                runtime()?.block_on(identity::admin_init(
+                    &config,
+                    &args.org_name,
+                    &args.email,
+                    &args.name,
+                    &password,
+                ))
+            }
+            AdminCommand::ResetPassword(args) => {
+                let config = args.config.load_for_run()?;
+                let link =
+                    runtime()?.block_on(identity::admin_reset_password(&config, &args.email))?;
+                writeln!(std::io::stdout().lock(), "{link}")?;
+                Ok(())
+            }
+        },
     }
 }
 
@@ -442,6 +521,8 @@ mod tests {
             "postgres://crucible@postgres:5432/crucible",
             "--postgres-password-file",
             "/run/secrets/clickhouse",
+            "--master-key-file",
+            "/run/secrets/master",
         ];
         let postgres = config(&argv, &[]).unwrap().postgres.unwrap();
         assert_eq!(
@@ -450,7 +531,10 @@ mod tests {
         );
         assert_eq!(postgres.password.unwrap().expose(), "password");
         assert_eq!(postgres.pool_size, 8);
-        let env = [("CRUCIBLE_POSTGRES_URL", "postgres://u:p@h/d")];
+        let env = [
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u:p@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ];
         let postgres = config(&["crucible", "serve"], &env)
             .unwrap()
             .postgres

@@ -64,6 +64,17 @@ pub const SETTINGS: &[Setting] = &[
         "TOML file of the project keys that ingest accepts",
     ),
     plain(
+        "server.public_url",
+        None,
+        "the URL people reach the server at, for example https://crucible.example.com; provider sign-in needs \
+         it for its callback URL, and an https URL makes the session cookie Secure",
+    ),
+    plain(
+        "server.allowed_origins",
+        None,
+        "comma-separated origins besides the server's own that may send cookie-authenticated writes",
+    ),
+    plain(
         "data.dir",
         Some("data"),
         "directory that holds the wal, quarantine and exports roots",
@@ -115,6 +126,22 @@ pub const SETTINGS: &[Setting] = &[
         "postgres.pool_size",
         Some("8"),
         "connections of the main Postgres pool (a reserved pool of 2 is added)",
+    ),
+    plain(
+        "auth.pg_outage_mode",
+        Some("fail_open"),
+        "API keys during a Postgres outage: fail_open keeps known keys working for ingest, fail_closed refuses \
+         every secret key after 5 s without a successful key-feed poll",
+    ),
+    plain(
+        "auth.fail_open_max",
+        None,
+        "seconds after which a fail_open outage behaves as fail_closed (default: unlimited)",
+    ),
+    plain(
+        "auth.session_outage_grace",
+        Some("600"),
+        "seconds that cached sessions stay valid during a Postgres outage; 0 refuses them at once",
     ),
 ];
 
