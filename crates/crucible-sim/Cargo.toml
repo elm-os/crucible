@@ -11,7 +11,7 @@ publish.workspace = true
 [dependencies]
 crucible-env = { workspace = true }
 crucible-records = { workspace = true }
-crucible-wal = { workspace = true }
+crucible-wal = { workspace = true, features = ["test-mutants"] }
 crucible-wal-codec = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
@@ -25,6 +25,7 @@ crucible-otlp = { workspace = true }
 crucible-admission = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 rand_chacha = { workspace = true }
@@ -39,7 +40,9 @@ turmoil = { workspace = true }
 mad-turmoil = { workspace = true }
 
 [dev-dependencies]
+crucible-env-prod = { workspace = true }
 proptest = { workspace = true }
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true
