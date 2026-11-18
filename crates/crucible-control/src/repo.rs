@@ -154,6 +154,10 @@ pub trait KeyFeed: Send + Sync {
     async fn poll(&self, after_seq: u64, overlap: Duration) -> Result<Vec<KeyChange>, TxError>;
     /// Every key, for the full reconcile.
     async fn snapshot(&self) -> Result<KeySnapshot, TxError>;
+    /// Deletes the feed rows written more than `older_than` before the database clock; returns how many.
+    /// `older_than` must cover the poll overlap window plus the reconcile interval, so that a row is gone
+    /// only after every node has reloaded the full snapshot at least once since it was written.
+    async fn prune(&self, older_than: Duration) -> Result<u64, TxError>;
 }
 
 /// Signing keys.
@@ -227,6 +231,9 @@ pub trait Claims: Send + Sync {
     async fn complete(&self, claim: &Claim) -> Result<bool, TxError>;
     /// Gives the row back, due again at `retry_at`. `false` under the same conditions as `complete`.
     async fn fail(&self, claim: &Claim, retry_at: Timestamp) -> Result<bool, TxError>;
+    /// Parks the row: it stays in the table and is never claimed again, for an operator to inspect. `false`
+    /// under the same conditions as `complete`.
+    async fn park(&self, claim: &Claim) -> Result<bool, TxError>;
 }
 
 /// The forward-only migrations ledger (contract 6.6): Postgres migrations and ClickHouse schema and access
