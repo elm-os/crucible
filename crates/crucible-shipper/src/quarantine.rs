@@ -24,6 +24,10 @@
 //! copied and filled in after the frames file is synced. A repeat of the copy (after a failed sync, a crash or
 //! a stop) finds the manifest, empties it and writes the same bytes again, because a file that reads back whole
 //! need not be durable; every file and both directories are synced before the frame counts as quarantined.
+//!
+//! **A whole manifest names a durable copy.** In both layouts the directory is synced after the frames file
+//! and before the manifest is filled in. A crash keeps any part of the directory entries that were not synced,
+//! so a manifest that was filled in first could survive whole beside a frames file whose entry did not.
 
 use std::sync::Arc;
 
@@ -118,9 +122,10 @@ async fn copy(
     }
     flush(&file, &mut offset, &mut pending).await?;
     file.sync_data().await?;
+    // The entry of the frames file is durable before the manifest says that the copy is whole.
+    disk.sync_dir(dir).await?;
     let manifest = format!("{manifest_head}frames={frames}\nbytes={offset}\n");
     write_file(ctx, &manifest_path, vec![Bytes::from(manifest)]).await?;
-    disk.sync_dir(dir).await?;
     disk.sync_dir(&DiskPath::root_dir(Root::Quarantine)).await?;
     Ok(())
 }
@@ -261,9 +266,10 @@ async fn copy_frame(
         Bytes::copy_from_slice(frame.stored_payload()),
     ];
     write_file(ctx, &dir.join(FRAMES_FILE)?, chunks).await?;
+    // The entry of the frames file is durable before the manifest says that the copy is whole.
+    disk.sync_dir(dir).await?;
     let chunks = vec![Bytes::copy_from_slice(manifest.as_bytes())];
     write_file(ctx, &manifest_path, chunks).await?;
-    disk.sync_dir(dir).await?;
     disk.sync_dir(&DiskPath::root_dir(Root::Quarantine)).await?;
     Ok(())
 }
