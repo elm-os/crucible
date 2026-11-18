@@ -190,6 +190,27 @@ pub mod registry {
         labels: &[],
     };
 
+    /// OTLP export requests answered, by outcome (`accepted`, `partial`, or the reason for a refusal).
+    pub static INGEST_REQUESTS: CounterDef = CounterDef {
+        name: "crucible_ingest_requests_total",
+        help: "OTLP export requests answered, by outcome.",
+        labels: &["outcome"],
+    };
+
+    /// Spans of acknowledged OTLP export requests, by outcome (`accepted` or a partial-success reason).
+    pub static INGEST_SPANS: CounterDef = CounterDef {
+        name: "crucible_ingest_spans_total",
+        help: "Spans of acknowledged OTLP export requests, by outcome.",
+        labels: &["outcome"],
+    };
+
+    /// Request bytes held by ingest handlers, tracked against the `ingest.inflight_bytes` budget.
+    pub static INGEST_INFLIGHT_BYTES: GaugeDef = GaugeDef {
+        name: "crucible_ingest_inflight_bytes",
+        help: "Request bytes held by ingest handlers, tracked against the ingest.inflight_bytes budget.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -219,6 +240,13 @@ pub mod registry {
             (
                 WAL_GC_REMOVED_SEGMENTS.name,
                 WAL_GC_REMOVED_SEGMENTS.labels,
+                &[],
+            ),
+            (INGEST_REQUESTS.name, INGEST_REQUESTS.labels, &[]),
+            (INGEST_SPANS.name, INGEST_SPANS.labels, &[]),
+            (
+                INGEST_INFLIGHT_BYTES.name,
+                INGEST_INFLIGHT_BYTES.labels,
                 &[],
             ),
         ]
