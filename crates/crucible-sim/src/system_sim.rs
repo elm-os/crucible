@@ -86,6 +86,8 @@ use crate::system_oracle::{self, FactRow};
 use crate::trace::Trace;
 use crate::wal_sim::{self, LogState, coin, pick, read_log};
 
+mod lists;
+
 /// How hostile a run is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
@@ -2563,6 +2565,7 @@ impl Run<'_> {
             self.violate(Violation::RestartNotIdempotent);
         }
         self.read_everything(&node, "after the last restart").await;
+        lists::check(&self.shared, &node, &self.model).await;
         drop(node);
         drop(wal);
         host.stop().await;
