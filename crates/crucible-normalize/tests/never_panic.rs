@@ -6,10 +6,10 @@
 
 mod common;
 
-use common::{frame, generate};
+use common::{frame, generate, prices};
 use crucible_normalize::{NormCtx, NormalizedFrame, normalize, row_digest};
 use crucible_otlp::TraceRequest;
-use crucible_records::{Lsn, McpSide, PayloadCaps, PayloadField, caps};
+use crucible_records::{CostSource, Lsn, McpSide, NanoUsd, PayloadCaps, PayloadField, caps};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use prost::Message;
@@ -49,6 +49,28 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
         );
         prop_assert!(c.usage.len() <= caps::USAGE_MAX_KEYS);
         let p = &r.payload;
+        prop_assert!(c.total_cost_nusd >= NanoUsd::ZERO);
+        prop_assert_eq!(
+            c.cost_source == CostSource::Provided,
+            !p.cost_provided.is_empty()
+        );
+        let priced = c.price_model_id.is_some() && c.price_tier_id.is_some();
+        let unpriced = c.price_model_id.is_none() && c.price_tier_id.is_none();
+        match c.cost_source {
+            CostSource::Calculated => {
+                prop_assert!(priced);
+                prop_assert_eq!(
+                    c.total_cost_nusd,
+                    NanoUsd::saturating_sum(c.usage.iter().map(|e| e.cost))
+                );
+            }
+            CostSource::None => {
+                prop_assert!(unpriced);
+                prop_assert_eq!(c.total_cost_nusd, NanoUsd::ZERO);
+                prop_assert!(c.usage.iter().all(|e| e.cost == NanoUsd::ZERO));
+            }
+            CostSource::Provided => prop_assert!(unpriced),
+        }
         for field in PayloadField::ALL {
             let stored = p.field(field);
             prop_assert!(stored.len() <= ctx.caps.field_cap(field));
@@ -90,9 +112,9 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-fn tiny(max_field_bytes: usize, max_span_bytes: usize) -> NormCtx {
+fn tiny(max_field_bytes: usize, max_span_bytes: usize) -> NormCtx<'static> {
     NormCtx::new(
-        0,
+        prices(),
         PayloadCaps {
             max_field_bytes,
             max_span_bytes,

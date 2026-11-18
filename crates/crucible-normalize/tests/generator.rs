@@ -1,5 +1,6 @@
 //! The request generator the properties share reaches the mapping, not only the residual path: over a fixed-seed
-//! sample, every field of dialect 0's table receives a value and every observation-type rule yields a type.
+//! sample, every field of dialect 0's table receives a value, every observation-type rule yields a type, and usage
+//! is priced from the bundled table.
 
 // Test code throughout: lets the helpers below use `unwrap` under the workspace lints.
 #![cfg(test)]
@@ -11,7 +12,7 @@ use std::collections::BTreeSet;
 use common::{ctx, frame, generate};
 use crucible_compat::{DIALECT_0, Target};
 use crucible_normalize::normalize;
-use crucible_records::{ObservationType, SpanRecord};
+use crucible_records::{CostSource, ObservationType, SpanRecord};
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use prost::Message;
@@ -62,6 +63,13 @@ fn generated_requests_reach_every_mapped_field_and_type_rule() {
         .map(|r| r.core.observation_type.value())
         .collect();
     assert_eq!(types.len(), ObservationType::ALL.len());
+    assert!(
+        records
+            .iter()
+            .any(|r| r.core.cost_source == CostSource::Calculated
+                && r.core.total_cost_nusd.nanos() > 0),
+        "no record has a calculated cost"
+    );
     // The MCP rule's key keeps its value in the residual, so its yielding value is visible there; which rule wins
     // when several apply is `mapping.rs`'s concern.
     assert!(records.iter().any(|r| {

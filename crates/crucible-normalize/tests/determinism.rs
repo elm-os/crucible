@@ -1,21 +1,43 @@
 //! Replay determinism (contracts 3.2 and 5.3): the same frame and the same `NormCtx` give byte-identical records,
-//! and a span re-sent in another frame (new LSN, epoch or key) has the same row digest, which is what lets the
-//! duplicate window drop it.
+//! a replay that loads the price table of the pinned `price_table_version` again computes identical costs, and a
+//! span re-sent in another frame (new LSN, epoch or key) has the same row digest, which is what lets the duplicate
+//! window drop it.
 
 // Test code throughout: lets the helpers below use `unwrap` under the workspace lints.
 #![cfg(test)]
 
 mod common;
 
-use common::{ctx, frame, generate, request, s, span_with};
-use crucible_normalize::{NormCtx, normalize, row_digest};
-use crucible_records::{ApiKeyId, Lsn, PayloadCaps, WalEpoch};
+use std::sync::LazyLock;
+
+use common::{ctx, frame, generate, int, prices, request, s, span_with};
+use crucible_normalize::{BUNDLED_PRICE_TABLE_VERSION, NormCtx, PriceTable, normalize, row_digest};
+use crucible_records::{ApiKeyId, CostSource, Lsn, PayloadCaps, WalEpoch};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use prost::Message;
 
+/// The bundled table loaded a second time, from the same file at the same version, as a replay would load it.
+static REPLAYED: LazyLock<PriceTable> = LazyLock::new(|| {
+    PriceTable::from_json(
+        BUNDLED_PRICE_TABLE_VERSION,
+        include_str!("../data/prices.json"),
+    )
+    .unwrap()
+});
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
+
+    #[test]
+    fn a_pinned_price_table_version_prices_identically(request in generate::request(false)) {
+        let body = request.encode_to_vec();
+        let f = frame(&body, &[]);
+        let first = normalize(&f, &ctx()).unwrap();
+        let replay_ctx = NormCtx::new(&REPLAYED, PayloadCaps::DEFAULT);
+        prop_assert_eq!(replay_ctx.price_table_version, ctx().price_table_version);
+        prop_assert_eq!(first, normalize(&f, &replay_ctx).unwrap());
+    }
 
     #[test]
     fn renormalizing_a_frame_gives_identical_records(
@@ -25,7 +47,7 @@ proptest! {
         max_span in 0usize..8_192,
     ) {
         let body = request.encode_to_vec();
-        let ctx = NormCtx::new(3, PayloadCaps { max_field_bytes: max_field, max_span_bytes: max_span });
+        let ctx = NormCtx::new(prices(), PayloadCaps { max_field_bytes: max_field, max_span_bytes: max_span });
         let f = frame(&body, &rejected);
         let first = normalize(&f, &ctx).unwrap();
         let second = normalize(&f, &ctx).unwrap();
@@ -55,6 +77,26 @@ proptest! {
         }
         prop_assert_eq!(original.spans, retry.spans);
     }
+}
+
+#[test]
+fn the_context_pins_the_bundled_price_table_version() {
+    assert_eq!(ctx().price_table_version, BUNDLED_PRICE_TABLE_VERSION);
+    assert_eq!(prices().version(), BUNDLED_PRICE_TABLE_VERSION);
+    let body = request(vec![span_with(
+        1,
+        1,
+        None,
+        vec![
+            s("gen_ai.request.model", "gpt-4o"),
+            int("gen_ai.usage.input_tokens", 1_000),
+        ],
+    )]);
+    let f = frame(&body, &[]);
+    let first = normalize(&f, &ctx()).unwrap();
+    assert_eq!(first.spans[0].core.cost_source, CostSource::Calculated);
+    let replay = normalize(&f, &NormCtx::new(&REPLAYED, PayloadCaps::DEFAULT)).unwrap();
+    assert_eq!(first, replay);
 }
 
 #[test]
@@ -106,7 +148,7 @@ fn the_context_pins_the_version_and_the_caps() {
     let capped = normalize(
         &f,
         &NormCtx::new(
-            0,
+            prices(),
             PayloadCaps {
                 max_field_bytes: 4,
                 max_span_bytes: 1 << 20,
