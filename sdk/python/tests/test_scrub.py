@@ -154,3 +154,11 @@ def test_a_long_key_is_cut_before_it_is_scrubbed() -> None:
     assert time.perf_counter() - start < 1.0
     assert cut
     assert text == '{"' + "k" * 14
+
+
+def test_a_rejected_match_resumes_after_its_first_separator() -> None:
+    rule = {"name": "digits", "pattern": "[0-9]{4}(?: [0-9]{4}){0,3}", "validator": "luhn", "replacement": "[card]"}
+    # The greedy match "1234 4111 1111 1111" fails the checksum; the search resumes after its first space, where the
+    # valid "4111 1111 1111 1111" starts. A run without separators is not searched for sub-windows.
+    assert only(rule).text("1234 4111 1111 1111 1111") == "1234 [card]"
+    assert only(rule).text("12344111") == "12344111"

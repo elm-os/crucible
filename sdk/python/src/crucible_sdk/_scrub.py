@@ -28,13 +28,20 @@ _MAX_DEPTH = 64
 _MARGIN = 4096
 
 
+def _ascii_alnum(c: str) -> bool:
+    return c.isascii() and c.isalnum()
+
+
 def _normalize_key(key: str) -> str:
     return key.lower().replace("-", "").replace("_", "").replace(".", "")
 
 
 def _luhn(text: str) -> bool:
+    digits = [c for c in text if "0" <= c <= "9"]
+    if len(digits) < 2:
+        return False
     total = 0
-    for i, ch in enumerate(reversed([c for c in text if "0" <= c <= "9"])):
+    for i, ch in enumerate(reversed(digits)):
         digit = ord(ch) - 48
         if i % 2:
             digit = digit * 2 - 9 if digit > 4 else digit * 2
@@ -49,6 +56,9 @@ def outside_subset(pattern: str) -> str | None:
     and greedy quantifiers; no `.`, class escapes, anchors, inline flags, lookaround, backreferences, other groups,
     lazy or possessive quantifiers, or an unbounded quantifier on a group that holds one.
     """
+    printable = next((c for c in pattern if not (" " <= c <= "~" or c == "	")), None)
+    if printable is not None:
+        return f"{printable!r}, which is not printable ASCII,"
     groups: list[bool] = []  # per open group: whether it holds an unbounded quantifier
     closed_unbounded = False  # the group that just closed held one
     i = 0
@@ -114,7 +124,23 @@ class _Rule:
     def apply(self, text: str) -> str:
         if not self.luhn:
             return self.regex.sub(self.replacement, text)
-        return self.regex.sub(lambda m: self.replacement if _luhn(m.group()) else m.group(), text)
+        # After a match the validator rejects, the search resumes after the match's first character that is neither
+        # an ASCII letter nor a digit (after the match when it has none), so a rejected run of digit groups cannot
+        # hide an accepted one that starts at a later group.
+        out: list[str] = []
+        copied = at = 0
+        while (match := self.regex.search(text, at)) is not None:
+            if not _luhn(match.group()):
+                separator = next((i for i, c in enumerate(match.group()) if not _ascii_alnum(c)), None)
+                at = match.end() if separator is None else match.start() + separator + 1
+                continue
+            out += (text[copied : match.start()], self.replacement)
+            copied = match.end()
+            at = match.end() if match.end() > match.start() else match.end() + 1
+            if at >= len(text):
+                break
+        out.append(text[copied:])
+        return "".join(out)
 
 
 class Scrubber:
