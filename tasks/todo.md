@@ -47,9 +47,13 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [ ] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
       -> verify: the same token three times yields one copy on single node and replicated; a two-partition block is
          rejected.
-- [ ] `crucible-schema` DDL-as-data for `span_core`, `span_payload`, `trace_heads`, `trace_stats`
-      -> verify: golden SQL for three variants; `SHOW CREATE TABLE` matches on 26.3, 26.8, latest.
-- [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST.
+- [x] `crucible-schema` DDL-as-data for `span_core`, `span_payload`, `trace_heads`, `trace_stats`
+      -> verify: golden SQL for three variants; `SHOW CREATE TABLE` matches on 26.3, 26.8, latest. Done in #8 for all
+      18 tables, plus access step A1 and the service-identity row under both server switch values and on a cluster.
+- [x] `crucible-records` record types and kernels (histogram, MCP error classifier, batch token) with Kani proofs (#10).
+- [x] `crucible-chfmt` Native encoder and framing, byte-identical to ClickHouse 26.3, 26.8 and 26.10 output (#9).
+- [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST. (Plan IR
+      and builders done in #8; the recent index and query layer remain.)
 - [ ] Simulation harness (turmoil, SimDisk, ChModel, oracle, I1-I3, I12-I14) and the swarm config generator
       -> verify: seeded mutants (skip sync, drop token, truncate early) caught within 200 configs; same seed, same
          trace hash.

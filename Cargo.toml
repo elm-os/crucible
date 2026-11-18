@@ -66,6 +66,7 @@ crc32c = "0.6.9"
 cityhash-rs = "1.0.1"
 xxhash-rust = { version = "0.8.21", features = ["xxh3"] }
 blake3 = "1.8.7"
+sha2 = "0.11.1"
 base64 = "0.23.1"
 regex = "1.13.1"
 memchr = "2.8.3"
@@ -103,7 +104,7 @@ hdrhistogram = "7.6.0"
 
 # Planned, added to this table when first used (versions verified on 2026-11-17):
 # tonic 0.14.9 (gRPC ingest), tower-http 0.7.1, tokio-postgres 0.7.18, deadpool-postgres 0.14.2,
-# refinery 0.10.0, rmcp 3.11.0, utoipa-axum 0.3.0, sha2 0.11.1, hmac 0.13.0, indexmap 2.14.2, arc-swap 1.9.5,
+# refinery 0.10.0, rmcp 3.11.0, utoipa-axum 0.3.0, hmac 0.13.0, indexmap 2.14.2, arc-swap 1.9.5,
 # criterion 0.8.2, process-wrap 10.0.1.
 
 [workspace.lints.rust]
