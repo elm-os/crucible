@@ -378,3 +378,90 @@ fn quantifier(chars: &[char], start: usize) -> Result<(bool, usize), String> {
     };
     Ok((unbounded, close + 1))
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn the_portable_subset_refuses_what_engines_disagree_on() {
+        let refused = [
+            (r"\d{3}", "not portable"),
+            (r"\bword", "not portable"),
+            (r"\s+", "not portable"),
+            ("a.b", "'.'"),
+            ("^start", "anchors"),
+            ("end$", "anchors"),
+            ("(capture)", "(?:...)"),
+            ("(?i)case", "(?:...)"),
+            ("(?=ahead)", "(?:...)"),
+            ("(?<name>x)", "(?:...)"),
+            (r"(a)\1", "(?:...)"),
+            ("[[:alpha:]]", "must be escaped"),
+            (r"\p{L}", "not portable"),
+            ("a+?", "lazy"),
+            ("a++", "lazy"),
+            ("a{1001}", "above 1000"),
+            ("a{3,2}", "min above max"),
+            ("(?:a+)+", "backtrack exponentially"),
+            ("(?:(?:a*)b)*", "backtrack exponentially"),
+            ("[a&&b]", "reserved"),
+            ("a{x}", "not a repetition count"),
+            ("*a", "follows no atom"),
+            ("(?:a", "unbalanced"),
+            ("a)", "unbalanced"),
+            ("[abc", "unterminated"),
+            ("caf\u{e9}", "printable ASCII"),
+        ];
+        for (pattern, needle) in refused {
+            let error = portable(pattern).unwrap_err();
+            assert!(error.contains(needle), "{pattern}: {error}");
+        }
+        for pattern in [
+            "[0-9](?:[ -]?[0-9]){12,18}",
+            r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}",
+            "[^-]*",
+            "a{2,}b|c",
+            r"\+[0-9]{1,3}",
+            "[ \t]+",
+        ] {
+            portable(pattern).unwrap();
+        }
+    }
+
+    #[test]
+    fn luhn_accepts_valid_card_numbers_only() {
+        assert!(luhn("4111 1111 1111 1111"));
+        assert!(luhn("378282246310005"));
+        assert!(!luhn("4111 1111 1111 1112"));
+        assert!(!luhn("7"));
+    }
+
+    fn fragment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z ;,]{0,8}",
+            Just("ada.lovelace@example.com".to_owned()),
+            Just("+1 415 555 0134".to_owned()),
+            Just("4111 1111 1111 1111".to_owned()),
+            Just("Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0".to_owned()),
+            Just("csk_conformance00000000000000000000000000000000".to_owned()),
+            Just("203.0.113.42".to_owned()),
+            Just("2001:db8::8a2e:370:7334".to_owned()),
+            Just("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2ln".to_owned()),
+            Just("-----BEGIN KEY-----\nMIIB\n-----END KEY-----".to_owned()),
+        ]
+    }
+
+    proptest! {
+        /// Scrubbing twice changes nothing more: no replacement is itself a match. Fragments are separated by "; ",
+        /// because a rejected card match can swallow the start of a valid one that follows without a separator.
+        #[test]
+        fn scrubbing_is_idempotent(parts in prop::collection::vec(fragment(), 0..8)) {
+            let rules = ScrubRules::builtin().unwrap();
+            let once = rules.scrub(&parts.join("; "));
+            prop_assert_eq!(rules.scrub(&once), once);
+        }
+    }
+}

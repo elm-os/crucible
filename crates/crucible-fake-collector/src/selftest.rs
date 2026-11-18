@@ -42,7 +42,15 @@ use crate::suite::{
 /// The session id the self-test's legacy HTTP server assigns.
 pub const SESSION_ID: &str = "3f8e1c2a-5b7d-4e9f-a1c3-d5e7f9a1b3c5";
 /// The reference server's tools.
-const TOOLS: [&str; 7] = ["echo", "fail", "throw", "slow", "secret", "needs_input", "lookup_order"];
+const TOOLS: [&str; 7] = [
+    "echo",
+    "fail",
+    "throw",
+    "slow",
+    "secret",
+    "needs_input",
+    "lookup_order",
+];
 /// The `requestState` the self-test's `needs_input` tool returns.
 pub const REQUEST_STATE: &str = "crucible-conformance-request-state-1";
 

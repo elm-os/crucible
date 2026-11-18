@@ -497,13 +497,13 @@ fn check_mcp(constants: &Constants, variant: Variant, steps: &[Step]) -> Result<
                     .and_then(Json::as_str)
                     .unwrap_or_default();
                 if let Some(id) = message.get("id") {
-                    if sent.iter().any(|s| s.id == id) {
-                        return Err(format!("step {name:?} reuses JSON-RPC id {id}"));
-                    }
                     if *id == json!(0) && name != INITIALIZE_STEP {
                         return Err(format!(
                             "step {name:?}: JSON-RPC id 0 belongs to the legacy initialize request"
                         ));
+                    }
+                    if sent.iter().any(|s| s.id == id) {
+                        return Err(format!("step {name:?} reuses JSON-RPC id {id}"));
                     }
                     check_templates(name, message, &sent)?;
                     if era == Era::Modern {
@@ -807,4 +807,28 @@ pub struct ResponseEvent {
     /// Server messages that arrived for the request before its response.
     #[serde(default)]
     pub notifications: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn templates_take_the_pointed_value_from_an_earlier_response() {
+        let responses = BTreeMap::from([(
+            "ask".to_owned(),
+            json!({ "result": { "requestState": "opaque", "n": [1, 2] } }),
+        )]);
+        let mut message = json!({ "params": { "requestState": { "$from": "ask/result/requestState" }, "list": [{ "$from": "ask/result/n/1" }] } });
+        fill_templates(&mut message, &responses).unwrap();
+        assert_eq!(
+            message,
+            json!({ "params": { "requestState": "opaque", "list": [2] } })
+        );
+        let mut missing = json!({ "$from": "nope/result" });
+        assert!(fill_templates(&mut missing, &responses).is_err());
+        // An object with other keys is not a template.
+        assert_eq!(template(&json!({ "$from": "a/b", "x": 1 })), None);
+        assert_eq!(template(&json!({ "$from": "a/b/c" })), Some(("a", "/b/c")));
+    }
 }

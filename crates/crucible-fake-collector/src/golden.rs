@@ -995,7 +995,7 @@ impl<'a> Eval<'a> {
                 None,
                 format!("{label} never leaves the sender"),
                 "absent from every export",
-                || format!("found in {}", place.clone().unwrap_or_default()),
+                || place.clone().unwrap_or_default(),
                 Some("9.1"),
             );
         }

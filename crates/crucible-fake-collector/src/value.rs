@@ -103,3 +103,30 @@ pub(crate) fn owned(views: AttributeViews<'_>) -> Attributes {
 pub fn get<'a>(attributes: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
     attributes.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn values_render_as_json_and_name_their_registry_types() {
+        let list = Value::KvList(vec![
+            ("a".to_owned(), Value::Int(1)),
+            ("a".to_owned(), Value::Int(2)),
+        ]);
+        assert_eq!(list.to_json(), serde_json::json!({ "a": 1 }));
+        assert_eq!(
+            Value::Bytes(vec![0xab, 1]).to_json(),
+            serde_json::json!("ab01")
+        );
+        assert_eq!(Value::Double(f64::NAN).to_json(), serde_json::json!("NaN"));
+        let strings = Value::Array(vec![Value::String("x".to_owned())]);
+        assert_eq!(strings.type_name(), "string_array");
+        assert_eq!(Value::Array(vec![Value::Int(1)]).type_name(), "array");
+        let attrs = vec![
+            ("k".to_owned(), Value::Bool(true)),
+            ("k".to_owned(), Value::Bool(false)),
+        ];
+        assert_eq!(get(&attrs, "k"), Some(&Value::Bool(true)));
+    }
+}
