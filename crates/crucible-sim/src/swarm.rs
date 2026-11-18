@@ -109,6 +109,15 @@ dimensions! {
     ProjectRate, "project_rate", Config, "A per-project byte rate, so some requests and fact writes get 429.";
     SmallBudget, "small_budget", Config, "A `shipper.encoded_bytes` budget of a few KiB, so frames wait for batches in flight.";
     NestedUsage, "nested_usage", Workload, "Spans form parent chains within a request, across requests (the child first) and under a span that a request sends again, so some have a descendant that carries usage.";
+    Mcp, "mcp", Workload, "Requests carry MCP operations: server-side and client-side spans in the legacy and the modern era, over stdio and HTTP, as an SDK wrapper, the proxy or a plain server reports them.";
+    McpDoubleCapture, "mcp_double_capture", Workload, "An SDK wrapper and the proxy both report one server call, so two server-side rows of two capture sources.";
+    McpErrors, "mcp_errors", Workload, "MCP exchanges fail in every class of the error taxonomy, and SDKs annotate classes that the exchange does not warrant.";
+    McpMrtr, "mcp_mrtr", Workload, "Multi-round exchanges: calls that ask for input and the retries that carry the state back.";
+    McpInventory, "mcp_inventory", Workload, "Tool lists whose tools and schemas change from one listing to the next.";
+    McpDeploys, "mcp_deploys", Workload, "Server versions and deploy ids that change between calls.";
+    McpContent, "mcp_content", Workload, "Opted-in arguments and results on tool calls.";
+    McpIdentity, "mcp_identity", Workload, "MCP operations carry a user subject, and the node has a control store for the project salts, whose reads sometimes fail. Without it the node is ingest-only and drops the identity keys.";
+    DirSyncErrors, "dir_sync_errors", Fault, "Windows in which every directory sync fails, so a created or removed segment is not durably so.";
 }
 
 /// A configuration: one bit per [`Dim`].
@@ -447,7 +456,7 @@ mod tests {
             unseen &= mask.0;
         }
         assert_eq!((seen, unseen), (ConfigMask::FULL.0, 0));
-        assert_eq!(Dim::ALL.len(), 46);
+        assert_eq!(Dim::ALL.len(), 55);
     }
 
     #[test]

@@ -1203,6 +1203,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "serde_json",
+ "sha2",
  "shuttle",
  "tempfile",
  "thiserror",
@@ -1210,6 +1211,7 @@ dependencies = [
  "tower",
  "tracing",
  "turmoil",
+ "xxhash-rust",
 ]
 
 [[package]]

@@ -36,12 +36,14 @@ prost = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 shuttle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync", "macros", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 turmoil = { workspace = true }
+xxhash-rust = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mad-turmoil = { workspace = true }

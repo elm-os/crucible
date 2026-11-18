@@ -1641,3 +1641,113 @@ proptest! {
         }
     }
 }
+
+/// The key registry of the wire contract is `conformance/registry.json`, shared by every SDK, the proxy and the
+/// normalizer (contract 9.1). Every key the projector reads is in it, with a type the projector takes, so that
+/// a producer and the projector cannot drift apart.
+#[test]
+fn every_key_the_projector_reads_is_in_the_registry_with_its_type() {
+    let registry: serde_json::Value =
+        serde_json::from_str(include_str!("../../../conformance/registry.json")).unwrap();
+    let entries = registry["keys"].as_array().unwrap();
+    let types = |key: &str, prefix: bool| -> Vec<String> {
+        let field = if prefix { "prefix" } else { "key" };
+        let entry = entries
+            .iter()
+            .find(|entry| entry[field].as_str() == Some(key))
+            .unwrap_or_else(|| panic!("{key} is not in the registry"));
+        match &entry["type"] {
+            serde_json::Value::String(one) => vec![one.clone()],
+            many => many
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t.as_str().unwrap().to_owned())
+                .collect(),
+        }
+    };
+    // Each key with the registry types the projector reads it as.
+    let string = &["string"][..];
+    let read: &[(&str, &[&str])] = &[
+        (keys::METHOD, string),
+        (keys::PROTOCOL_VERSION, string),
+        (keys::SESSION_ID, string),
+        (keys::SIDE, string),
+        (keys::CAPTURE_SOURCE, string),
+        (keys::TOOL_NAME, string),
+        (keys::PROMPT_NAME, string),
+        (keys::RESOURCE_TEMPLATE, string),
+        (keys::ERA, string),
+        (keys::TRANSPORT, string),
+        (keys::NETWORK_TRANSPORT, string),
+        (keys::JSONRPC_ID, &["string", "int"]),
+        (keys::DIRECTION, string),
+        (keys::IS_NOTIFICATION, &["bool"]),
+        (keys::IS_BATCH, &["bool"]),
+        (keys::ERROR_TYPE, string),
+        (keys::RPC_STATUS_CODE, &["string", "int"]),
+        (keys::ERROR_CLASS, string),
+        (keys::ERROR_SUBCLASS, string),
+        (keys::RESULT_TYPE, string),
+        (keys::MRTR_ROUND, &["int"]),
+        (keys::MRTR_STATE_IN, string),
+        (keys::MRTR_STATE_OUT, string),
+        (keys::TASK_ID, string),
+        (keys::SUBSCRIPTION_ID, string),
+        (keys::PROGRESS_COUNT, &["int"]),
+        (keys::CANCEL_SOURCE, string),
+        (keys::TIMED_OUT, &["bool"]),
+        (keys::CLIENT_NAME, string),
+        (keys::CLIENT_VERSION, string),
+        (keys::CLIENT_CAPABILITIES_HASH, &["int", "string"]),
+        (keys::OAUTH_CLIENT_ID, string),
+        (keys::TENANT, string),
+        (keys::USER_ID, string),
+        (keys::HANDLE_ID, string),
+        (keys::USER_ISSUER, string),
+        (keys::USER_SUBJECT, string),
+        (keys::IDENTITY_SOURCE, string),
+        (keys::REQUEST_BYTES, &["int"]),
+        (keys::RESPONSE_BYTES, &["int"]),
+        (keys::TOOL_ARGUMENTS, &["string", "kvlist", "array"]),
+        (keys::TOOL_RESULT, &["string", "kvlist", "array"]),
+        (keys::CONTENT_CAPTURED, &["bool"]),
+        (keys::CONTENT_SAMPLE_RATE, &["number", "double", "int"]),
+        (keys::CONTENT_TRUNCATION, string),
+        (keys::SERVER_NAME, string),
+        (keys::SERVER_VERSION, string),
+        (keys::CLIENT_IP_PREFIX, string),
+        (keys::USER_AGENT, string),
+        (keys::HTTP_STATUS, &["int"]),
+        (keys::TOOLS, &["string", "array"]),
+        (keys::RESOURCE_SERVICE_NAME, string),
+        (keys::RESOURCE_SERVICE_VERSION, string),
+        (keys::RESOURCE_DEPLOY_ID, string),
+        (keys::RESOURCE_INSTANCE_ID, string),
+    ];
+    for (key, accepted) in read {
+        for ty in types(key, false) {
+            assert!(
+                accepted.contains(&ty.as_str()),
+                "the registry types {key} as {ty}, which the projector does not read"
+            );
+        }
+    }
+    assert_eq!(types(keys::CONTENT_BLOCKS_PREFIX, true), ["int"]);
+    // The list above is every key the projector consumes, and the registry's forbidden keys are never stored.
+    let listed = |key: &str| read.iter().any(|(k, _)| *k == key);
+    for entry in entries {
+        if let Some(key) = entry["key"].as_str()
+            && keys::consumed(key)
+        {
+            assert!(listed(key), "{key} is consumed and not checked here");
+        }
+    }
+    for key in registry["forbidden"]["keys"].as_array().unwrap() {
+        assert!(keys::never_stored(key.as_str().unwrap()), "{key}");
+    }
+    for prefix in registry["forbidden"]["prefixes"].as_array().unwrap() {
+        let key = format!("{}x", prefix.as_str().unwrap());
+        assert!(keys::never_stored(&key), "{key}");
+    }
+}
