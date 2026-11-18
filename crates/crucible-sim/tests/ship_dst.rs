@@ -31,7 +31,10 @@ const MUTANTS: [(&str, Mutant); 6] = [
     ("skip-probe-after-unknown", Mutant::SkipProbeAfterUnknown),
     ("send-before-seal", Mutant::SendBeforeSeal),
     ("drop-token", Mutant::DropToken),
-    ("checkpoint-before-resolution", Mutant::CheckpointBeforeResolution),
+    (
+        "checkpoint-before-resolution",
+        Mutant::CheckpointBeforeResolution,
+    ),
     ("quarantine-without-probe", Mutant::QuarantineWithoutProbe),
     ("rejection-clears-doubt", Mutant::RejectionClearsDoubt),
 ];
@@ -90,12 +93,24 @@ fn realistic(seeds: Range<u64>) -> Stats {
     // A shard in which nothing was acknowledged, crashed at a barrier, shipped again after a restart, probed
     // present, deduplicated, landed late, expired from a window or was quarantined would prove nothing.
     let (ship, store) = (&total.shipper, &total.store);
-    assert!(total.acked > 0 && total.crashes > 0 && total.stops > 0, "{total:?}");
+    assert!(
+        total.acked > 0 && total.crashes > 0 && total.stops > 0,
+        "{total:?}"
+    );
     assert!(total.barrier_crashes > 0 && total.outages > 0, "{total:?}");
-    assert!(ship.sealed > 0 && ship.reshipped > 0 && ship.checkpoints > 0, "{total:?}");
+    assert!(
+        ship.sealed > 0 && ship.reshipped > 0 && ship.checkpoints > 0,
+        "{total:?}"
+    );
     assert!(ship.probes_present > 0 && ship.quarantined > 0, "{total:?}");
-    assert!(store.landed > 0 && store.deduplicated > 0 && store.late > 0, "{total:?}");
-    assert!(store.expired > 0 && store.rejected > 0 && store.poisoned > 0, "{total:?}");
+    assert!(
+        store.landed > 0 && store.deduplicated > 0 && store.late > 0,
+        "{total:?}"
+    );
+    assert!(
+        store.expired > 0 && store.rejected > 0 && store.poisoned > 0,
+        "{total:?}"
+    );
     total
 }
 

@@ -358,13 +358,66 @@ fn random<const N: usize>(rng: &dyn Rng) -> [u8; N] {
     bytes
 }
 
-/// Builds one request: a few spans of new or recent traces, as the frame payload ingest would append.
+/// One span of a request: its trace, its id, its start in microseconds, and whether it is a root.
+pub type SpanSpec = ([u8; 16], [u8; 8], i64, bool);
+
+/// The payload of the `IngestRequest` frame that ingest would append for a request with these spans. Bit
+/// `i` of `rejected` marks span `i` as rejected before the ack.
+pub fn request_payload(project: [u8; 16], spans: &[SpanSpec], rejected: u8) -> Option<Vec<u8>> {
+    let wire = spans
+        .iter()
+        .enumerate()
+        .map(|(i, &(trace, span, start_micros, root))| {
+            let start_nanos = (start_micros as u64) * 1_000;
+            Span {
+                trace_id: trace.to_vec(),
+                span_id: span.to_vec(),
+                parent_span_id: if root { Vec::new() } else { vec![7; 8] },
+                name: format!("op-{}", i % 4),
+                kind: 1,
+                start_time_unix_nano: start_nanos,
+                end_time_unix_nano: start_nanos + 1_500_000 * (1 + i as u64),
+                ..Span::default()
+            }
+        })
+        .collect();
+    let otlp = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: None,
+            scope_spans: vec![ScopeSpans {
+                scope: None,
+                spans: wire,
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+    .encode_to_vec();
+    Record::IngestRequest(IngestRequest {
+        project_id: ProjectId::from_bytes(project),
+        api_key_id: ApiKeyId::from_bytes([9; 16]),
+        compat_dialect: 0,
+        transport: IngestTransport::Http,
+        content_origin: ContentOrigin::Protobuf,
+        admin_import: false,
+        sdk_name: "sim",
+        sdk_version: "1",
+        idempotency_key: &[],
+        span_count: spans.len() as u32,
+        rejected: &[rejected],
+        otlp: &otlp,
+    })
+    .encode()
+    .ok()
+}
+
+/// Builds one request: a few spans of new or recent traces.
 fn generate(plan: &ShipPlan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Option<Request> {
     let project = [1 + pick(rng, plan.projects) as u8; 16];
     let count = 1 + pick(rng, 5);
     let mut spans = Vec::new();
     let mut wire = Vec::new();
-    let mut rejected_bits = vec![0u8; 1];
+    let mut rejected_bits = 0u8;
     for ordinal in 0..count {
         let reuse = !traces.is_empty() && pick(rng, 3) == 0;
         let trace = if reuse {
@@ -384,7 +437,7 @@ fn generate(plan: &ShipPlan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Optio
             SIM_EPOCH_MICROS + (day * 86_400_000_000 + pick(rng, 3_600_000_000)) as i64;
         let rejected = plan.reject_some && pick(rng, 6) == 0;
         if rejected {
-            rejected_bits[0] |= 1 << ordinal;
+            rejected_bits |= 1 << ordinal;
         }
         spans.push(SpanInfo {
             trace,
@@ -393,48 +446,12 @@ fn generate(plan: &ShipPlan, rng: &dyn Rng, traces: &mut Vec<[u8; 16]>) -> Optio
             root,
             rejected,
         });
-        let start_nanos = (start_micros as u64) * 1_000;
-        wire.push(Span {
-            trace_id: trace.to_vec(),
-            span_id: span.to_vec(),
-            parent_span_id: if root { Vec::new() } else { vec![7; 8] },
-            name: format!("op-{}", pick(rng, 4)),
-            kind: 1,
-            start_time_unix_nano: start_nanos,
-            end_time_unix_nano: start_nanos + pick(rng, 2_000_000_000),
-            ..Span::default()
-        });
+        wire.push((trace, span, start_micros, root));
     }
-    let otlp = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: wire,
-                schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
-    }
-    .encode_to_vec();
-    let record = Record::IngestRequest(IngestRequest {
-        project_id: ProjectId::from_bytes(project),
-        api_key_id: ApiKeyId::from_bytes([9; 16]),
-        compat_dialect: 0,
-        transport: IngestTransport::Http,
-        content_origin: ContentOrigin::Protobuf,
-        admin_import: false,
-        sdk_name: "sim",
-        sdk_version: "1",
-        idempotency_key: &[],
-        span_count: count as u32,
-        rejected: &rejected_bits,
-        otlp: &otlp,
-    });
     Some(Request {
         project,
         spans: Arc::new(spans),
-        payload: Arc::new(record.encode().ok()?),
+        payload: Arc::new(request_payload(project, &wire, rejected_bits)?),
     })
 }
 
@@ -642,7 +659,8 @@ fn copied_payloads(bytes: &[u8], first: u64, last: u64) -> Option<Vec<Vec<u8>>> 
     let mut next = first;
     let mut payloads = Vec::new();
     while at < bytes.len() {
-        let header: &[u8; FRAME_HEADER_LEN] = bytes.get(at..at + FRAME_HEADER_LEN)?.try_into().ok()?;
+        let header: &[u8; FRAME_HEADER_LEN] =
+            bytes.get(at..at + FRAME_HEADER_LEN)?.try_into().ok()?;
         let header = FrameHeader::decode(header).ok()?;
         let end = at + FRAME_HEADER_LEN + header.payload_len as usize;
         let stored = bytes.get(at + FRAME_HEADER_LEN..end)?;
@@ -1021,8 +1039,7 @@ impl Run<'_> {
         let rng = Arc::clone(&self.rng);
         let rng = rng.as_ref();
         if self.plan().wal.wall_steps {
-            host.clock
-                .step_wall(pick(rng, 400_000) as i64 - 200_000);
+            host.clock.step_wall(pick(rng, 400_000) as i64 - 200_000);
         }
         let pin_behind = (self.plan().wal.pin_recent && coin(rng)).then(|| pick(rng, 64));
         let shipping = self.start_shipper(&host, &wal, &report, pin_behind)?;
@@ -1069,11 +1086,7 @@ impl Run<'_> {
         let at_crash_point = {
             let mut crash_point = Box::pin(self.disk.crash_point_reached()).fuse();
             let mut barrier = Box::pin(shipping.barriers.tripped()).fuse();
-            let mut timer = host
-                .env
-                .clock
-                .sleep(Duration::from_micros(run_for))
-                .fuse();
+            let mut timer = host.env.clock.sleep(Duration::from_micros(run_for)).fuse();
             let mut outage_start = match outage {
                 Some((at, _)) => host.env.clock.sleep(Duration::from_micros(at)),
                 None => Box::pin(futures::future::pending()),
@@ -1170,13 +1183,21 @@ impl Run<'_> {
         self.check_store(u64::MAX, true);
 
         // I12: a restart of a drained node ships nothing and changes nothing.
-        let before = (self.model.digest(), self.model.stats().inserts, watermark(&wal));
+        let before = (
+            self.model.digest(),
+            self.model.stats().inserts,
+            watermark(&wal),
+        );
         self.crash(host, wal).await;
         let (host, wal, report) = self.boot().await?;
         let shipping = self.start_shipper(&host, &wal, &report, None)?;
         host.env.clock.sleep(Duration::from_secs(5)).await;
         self.account(&shipping, true);
-        let after = (self.model.digest(), self.model.stats().inserts, watermark(&wal));
+        let after = (
+            self.model.digest(),
+            self.model.stats().inserts,
+            watermark(&wal),
+        );
         if before != after {
             self.violate(Violation::RestartNotIdempotent);
         }

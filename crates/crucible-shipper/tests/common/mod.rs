@@ -179,10 +179,9 @@ pub fn cell(values: &Values, row: usize) -> Value {
                     .collect(),
             )
         }
-        Values::Tuple(elements) => Value::Tuple(Box::new((
-            cell(&elements[0], row),
-            cell(&elements[1], row),
-        ))),
+        Values::Tuple(elements) => {
+            Value::Tuple(Box::new((cell(&elements[0], row), cell(&elements[1], row))))
+        }
     }
 }
 
@@ -277,8 +276,7 @@ pub fn normalized(frames: &[Vec<SpanDesc>]) -> Vec<(NormalizedFrame, Admission)>
                 rejected: &[],
                 otlp: &body,
             };
-            let mut normalized =
-                normalize(&frame, &NormCtx::new(0, PayloadCaps::DEFAULT)).unwrap();
+            let mut normalized = normalize(&frame, &NormCtx::new(0, PayloadCaps::DEFAULT)).unwrap();
             let admission = stage_b.admit(&mut normalized).unwrap();
             normalized.stamp_batch_seq(Lsn::new(10));
             (normalized, admission)

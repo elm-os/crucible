@@ -120,7 +120,11 @@ pub(crate) async fn recover(
                 return Err(e);
             }
             failed => {
-                event(r.sim, "recovery.retry", &[attempt, u64::from(failed.is_some())]);
+                event(
+                    r.sim,
+                    "recovery.retry",
+                    &[attempt, u64::from(failed.is_some())],
+                );
                 counts.retries += 1;
                 let errored = failed.is_some();
                 drop(failed);

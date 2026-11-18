@@ -85,7 +85,10 @@ fn the_shippers_own_control_frames_never_warrant_a_seal() {
     for lsn in 5..50 {
         batch.take_frame(Lsn::new(lsn), Timestamp::EPOCH, SEAL_BYTES, false, at(lsn));
     }
-    assert_eq!((batch.first_lsn(), batch.last_lsn()), (Lsn::new(5), Lsn::new(49)));
+    assert_eq!(
+        (batch.first_lsn(), batch.last_lsn()),
+        (Lsn::new(5), Lsn::new(49))
+    );
     assert!(!batch.is_sealable());
     // Nor is such a batch ever full: it must keep reading until a frame that warrants a seal arrives.
     assert!(!batch.is_full(&limits(), SEAL_BYTES));

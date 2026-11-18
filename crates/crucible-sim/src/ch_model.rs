@@ -25,10 +25,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use crucible_chfmt::{DecodedBlock, EncodedBlock, MAX_BLOCK_ROWS, Values, decode_block, decompress};
+use crucible_chfmt::{
+    DecodedBlock, EncodedBlock, MAX_BLOCK_ROWS, Values, decode_block, decompress,
+};
 use crucible_env::{
-    EngineFamily, InsertError, InsertSettings, MutationId, MutationStatus, QueryError,
-    RetryReason, Rng, RowStream, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
+    EngineFamily, InsertError, InsertSettings, MutationId, MutationStatus, QueryError, RetryReason,
+    Rng, RowStream, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
     TelemetryStore,
 };
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan};
@@ -145,6 +147,48 @@ pub struct ChStats {
     pub expired: u64,
 }
 
+/// One call the store received, for directed tests.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Call {
+    /// An insert.
+    Insert {
+        /// The token it carried.
+        token: BatchToken,
+        /// BLAKE3 of the compressed body.
+        body: [u8; 32],
+        /// The settings it carried.
+        settings: Vec<(&'static str, String)>,
+    },
+    /// A probe.
+    Probe {
+        /// The pair it asked about.
+        pair: PairKey,
+    },
+}
+
+/// Decides the outcome of an insert ahead of the seeded faults: `Some` answers with that error and lands
+/// nothing; `None` leaves the insert to the model. The arguments are the token and the number of this attempt
+/// of its pair, from 1.
+#[derive(Clone)]
+pub struct Script(Arc<Decide>);
+
+type Decide = dyn Fn(&BatchToken, u64) -> Option<InsertError> + Send + Sync;
+
+impl Script {
+    /// A script from a function.
+    pub fn new(
+        decide: impl Fn(&BatchToken, u64) -> Option<InsertError> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(decide))
+    }
+}
+
+impl std::fmt::Debug for Script {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Script")
+    }
+}
+
 #[derive(Debug)]
 struct DedupEntry {
     token: String,
@@ -182,6 +226,9 @@ struct State {
     ranges: BTreeSet<(u64, u64)>,
     violations: Vec<String>,
     stats: ChStats,
+    script: Option<Script>,
+    /// The calls received since a script was set.
+    calls: Vec<Call>,
 }
 
 /// The simulated store. Clones share one state, which outlives every simulated host.
@@ -451,6 +498,8 @@ impl ChModel {
                 ranges: BTreeSet::new(),
                 violations: Vec::new(),
                 stats: ChStats::default(),
+                script: None,
+                calls: Vec::new(),
             })),
             origin: tokio::time::Instant::now(),
             flavour,
@@ -537,6 +586,16 @@ impl ChModel {
         self.settled().faults = faults;
     }
 
+    /// Sets the script that decides insert outcomes ahead of the faults, and starts recording calls.
+    pub fn set_script(&self, script: Script) {
+        self.settled().script = Some(script);
+    }
+
+    /// The calls received since [`ChModel::set_script`], in order.
+    pub fn calls(&self) -> Vec<Call> {
+        self.settled().calls.clone()
+    }
+
     /// Makes the store unreachable for `duration` from now. Inserts already in flight still land.
     pub fn start_outage(&self, duration: Duration) {
         let until = self
@@ -554,7 +613,12 @@ impl ChModel {
 
     /// When the last insert in flight lands, in virtual microseconds; zero when none is in flight.
     pub fn in_flight_until(&self) -> u64 {
-        self.settled().pending.iter().map(|p| p.due).max().unwrap_or(0)
+        self.settled()
+            .pending
+            .iter()
+            .map(|p| p.due)
+            .max()
+            .unwrap_or(0)
     }
 
     /// The landed parts of a table, in landing order.
@@ -624,7 +688,11 @@ impl ChModel {
         rate > 0 && u64::from_le_bytes(word) % 1_000_000 < u64::from(rate)
     }
 
-    fn decode(&self, block: &EncodedBlock, token: &BatchToken) -> Result<(BlockId, DecodedBlock), String> {
+    fn decode(
+        &self,
+        block: &EncodedBlock,
+        token: &BatchToken,
+    ) -> Result<(BlockId, DecodedBlock), String> {
         let native = decompress(block.compressed()).map_err(|e| e.to_string())?;
         let (decoded, used) = decode_block(&native).map_err(|e| e.to_string())?;
         if used != native.len() || decoded.rows != block.rows() {
@@ -682,6 +750,23 @@ impl TelemetryStore for ChModel {
                 *attempts += 1;
                 *attempts
             };
+            let scripted = state.script.clone().and_then(|script| {
+                state.calls.push(Call::Insert {
+                    token,
+                    body: *blake3::hash(block.compressed()).as_bytes(),
+                    settings: settings.pairs(),
+                });
+                (script.0)(&token, attempt)
+            });
+            if let Some(error) = scripted {
+                let answer = match &error {
+                    InsertError::Poison { .. } => LastAnswer::InsertPoison,
+                    InsertError::UnknownOutcome { .. } => LastAnswer::InsertUnknown,
+                    _ => LastAnswer::InsertRetry,
+                };
+                state.last.insert(key, answer);
+                return Err(error);
+            }
             let outcome = if now < state.outage_until {
                 if ppm(rng, 200_000) {
                     Outcome::Lost
@@ -735,7 +820,8 @@ impl TelemetryStore for ChModel {
                 None
             };
             let (reply, answer) = match (outcome, decoded) {
-                (Outcome::Ack | Outcome::AckLost | Outcome::Late(_), None) | (Outcome::Poison, _) => {
+                (Outcome::Ack | Outcome::AckLost | Outcome::Late(_), None)
+                | (Outcome::Poison, _) => {
                     state.stats.poisoned += 1;
                     let refused = InsertError::Poison {
                         code: 27,
@@ -836,6 +922,9 @@ impl TelemetryStore for ChModel {
                         })
                 });
                 let key = (probe.table(), probe.partition(), id.batch_seq);
+                if state.script.is_some() {
+                    state.calls.push(Call::Probe { pair: key });
+                }
                 if present {
                     state.stats.probes_present += 1;
                     state.last.insert(key, LastAnswer::ProbePresent);

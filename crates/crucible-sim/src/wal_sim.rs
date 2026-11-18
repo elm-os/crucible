@@ -30,8 +30,8 @@ use crucible_wal_codec::{
 };
 use futures::FutureExt;
 
-use crate::disk::{DiskFaults, SimDisk};
 use crate::boot::{BootCounts, Booted, Recovery, recover};
+use crate::disk::{DiskFaults, SimDisk};
 use crate::runtime::{Host, Sim, run};
 
 /// How hostile the disk is.

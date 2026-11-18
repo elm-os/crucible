@@ -62,7 +62,10 @@ fn every_aggregating_table_gets_its_marker_row() {
         }
         // The marker alone is a valid block of its table.
         let block = encode_block(def, std::slice::from_ref(&marker), Compression::Lz4).unwrap();
-        assert_eq!(decoded_rows(&decode(def, &block)), [marker.cells.clone()]);
+        assert_eq!(
+            decoded_rows(&decode(def, &block)),
+            std::slice::from_ref(&marker.cells)
+        );
     }
     assert_eq!(aggregating, 7);
 }
@@ -186,7 +189,10 @@ fn histograms_combine_by_bucket() {
         hist(&[(3, 6), (7, 1), (40, 2)])
     );
     let block = encode_block(def, &rows, Compression::Lz4).unwrap();
-    assert_eq!(decoded_rows(&decode(def, &block)), [rows[0].cells.clone()]);
+    assert_eq!(
+        decoded_rows(&decode(def, &block)),
+        std::slice::from_ref(&rows[0].cells)
+    );
 }
 
 #[test]
