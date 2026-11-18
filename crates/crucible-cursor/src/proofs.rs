@@ -21,7 +21,7 @@ fn any_window() -> TimeWindow {
 }
 
 fn any_position() -> Position {
-    match kani::any::<u8>() % 3 {
+    match kani::any::<u8>() % 4 {
         0 => Position::TracePage {
             window: any_window(),
             as_of: any_time(),
@@ -33,10 +33,15 @@ fn any_position() -> Position {
             wal_epoch: WalEpoch::from_bytes(kani::any()),
             lsn: Lsn::new(kani::any()),
         },
-        _ => Position::ChildPage {
+        2 => Position::ChildPage {
             trace_id: TraceId::from_bytes(kani::any()),
             parent: SpanId::from_bytes(kani::any()),
             last: (any_time(), SpanId::from_bytes(kani::any())),
+        },
+        _ => Position::SearchPage {
+            window: any_window(),
+            as_of: any_time(),
+            last: (any_time(), kani::any(), SpanId::from_bytes(kani::any())),
         },
     }
 }

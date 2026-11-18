@@ -69,3 +69,19 @@ export function MenuIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function ChevronDownIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="m6 9.5 6 6 6-6" />
+    </Icon>
+  );
+}
+
+export function TickIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </Icon>
+  );
+}
