@@ -123,3 +123,13 @@ async fn an_unknown_program_is_refused_with_a_hint() {
     assert!(matches!(error, ChildError::NotFound(_)), "{error:?}");
     assert!(error.to_string().contains("add its directory to PATH"));
 }
+
+#[tokio::test]
+async fn a_trampoline_that_cannot_start_falls_back_to_a_direct_start() {
+    let mut child = TokioChildProcess::new()
+        .with_parent_death_trampoline("/crucible-no-such-trampoline".into(), Vec::new())
+        .spawn(sh("exit 4"))
+        .await
+        .unwrap();
+    assert_eq!(child.wait().await.unwrap(), ExitStatus::Code(4));
+}

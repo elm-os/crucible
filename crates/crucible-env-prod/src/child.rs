@@ -223,6 +223,38 @@ impl Drop for Control {
     }
 }
 
+/// Starts `argv` with piped standard input and output, in its own process group (Unix) or Job Object
+/// (Windows).
+fn start(argv: &[OsString], spec: &ChildSpec) -> io::Result<Box<dyn ChildWrapper>> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err(io::Error::other("no program to start"));
+    };
+    let mut command = CommandWrap::with_new(program, |command| {
+        command
+            .args(args)
+            .envs(spec.env.iter().map(|(name, value)| (name, value)))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(match spec.stderr {
+                StderrMode::Inherit => std::process::Stdio::inherit(),
+                StderrMode::Pipe => std::process::Stdio::piped(),
+            });
+        if let Some(cwd) = &spec.cwd {
+            command.current_dir(cwd);
+        }
+    });
+    #[cfg(unix)]
+    command.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        // `KillOnDrop` is what makes the Job Object kill-on-close; `JobObject` starts the child suspended,
+        // assigns it and resumes it.
+        command.wrap(process_wrap::tokio::KillOnDrop);
+        command.wrap(process_wrap::tokio::JobObject);
+    }
+    command.spawn()
+}
+
 #[async_trait]
 impl ChildProcess for TokioChildProcess {
     async fn spawn(&self, spec: ChildSpec) -> Result<Child, ChildError> {
@@ -236,45 +268,35 @@ impl ChildProcess for TokioChildProcess {
             &|candidate| candidate.is_file(),
         )?;
 
-        let mut argv: Vec<OsString> = Vec::new();
-        match &self.trampoline {
+        let direct: Vec<OsString> = std::iter::once(program.clone().into_os_string())
+            .chain(spec.args.iter().map(OsString::from))
+            .collect();
+        let through_trampoline = match &self.trampoline {
             Some((exe, args)) if cfg!(target_os = "linux") => {
-                argv.push(exe.clone().into_os_string());
-                argv.extend(args.iter().map(OsString::from));
-                argv.push(std::process::id().to_string().into());
-                argv.push(program.clone().into_os_string());
+                let argv: Vec<OsString> = std::iter::once(exe.clone().into_os_string())
+                    .chain(args.iter().map(OsString::from))
+                    .chain(std::iter::once(std::process::id().to_string().into()))
+                    .chain(direct.iter().cloned())
+                    .collect();
+                match start(&argv, &spec) {
+                    Ok(child) => Some(child),
+                    Err(error) => {
+                        // For example the executable was replaced while running. The child still starts; it
+                        // only loses the parent-death signal.
+                        tracing::warn!(%error, "the child trampoline could not start; starting the child directly");
+                        None
+                    }
+                }
             }
-            _ => argv.push(program.clone().into_os_string()),
-        }
-        argv.extend(spec.args.iter().map(OsString::from));
-
-        let mut command = CommandWrap::with_new(&argv[0], |command| {
-            command
-                .args(&argv[1..])
-                .envs(spec.env.iter().map(|(name, value)| (name, value)))
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(match spec.stderr {
-                    StderrMode::Inherit => std::process::Stdio::inherit(),
-                    StderrMode::Pipe => std::process::Stdio::piped(),
-                });
-            if let Some(cwd) = &spec.cwd {
-                command.current_dir(cwd);
-            }
-        });
-        #[cfg(unix)]
-        command.wrap(process_wrap::tokio::ProcessGroup::leader());
-        #[cfg(windows)]
-        {
-            // `KillOnDrop` is what makes the Job Object kill-on-close; `JobObject` starts the child suspended,
-            // assigns it and resumes it.
-            command.wrap(process_wrap::tokio::KillOnDrop);
-            command.wrap(process_wrap::tokio::JobObject);
-        }
-        let mut child = command.spawn().map_err(|source| ChildError::Spawn {
-            program: program.display().to_string(),
-            source,
-        })?;
+            _ => None,
+        };
+        let mut child = match through_trampoline {
+            Some(child) => child,
+            None => start(&direct, &spec).map_err(|source| ChildError::Spawn {
+                program: program.display().to_string(),
+                source,
+            })?,
+        };
         let stdin = child
             .stdin()
             .take()
