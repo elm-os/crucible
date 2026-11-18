@@ -10,22 +10,28 @@
 use crucible_auth::test_support::scope;
 use crucible_plan::test_support::{batch_probe, query_plan};
 use crucible_plan::{
-    AggOutput, Aggregate, ArrivalBounds, Caller, CmpOp, DeletePlan, Direction, FieldRange, Fill,
-    Having, Literal, Measure, Node, Order, PlanError, PointLookup, Pred, QueryClass, QueryPlan,
-    RetentionClamp, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode, TraceBounds,
-    TraceListRequest, child_counts, data_bounds, span_children, spans_of_parents, trace_list,
-    trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
+    AggOutput, Aggregate, Aggregation, ArrivalBounds, Caller, CmpOp, DeletePlan, DimensionId,
+    Direction, FieldRange, Fill, Filter, Granularity, Having, Literal, Measure, MeasureId,
+    MetricsQuery, Node, Order, PayloadField, PayloadRangeRequest, PlanError, PointLookup, Pred,
+    QueryClass, QueryPlan, RetentionClamp, Scan, SearchField, SearchRequest, SemiJoin,
+    SessionListRequest, Snippet, Source, SpanListRequest, Step, TextField, TextSearch, TimeSeries,
+    TokenMode, TraceBounds, TraceListRequest, UserListRequest, child_counts, data_bounds,
+    metrics_other, metrics_ranking, metrics_series, payload_range, search, search_spans,
+    session_detail, session_list, span_children, span_list, spans_of_parents, trace_list,
+    trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
+    user_session_counts,
 };
+use crucible_records::{Level, ObservationType};
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
     TraceId, Uuid, WalEpoch,
 };
 use crucible_schema::{
-    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpToolInventoryCol, McpToolRollupCol,
+    Column, ColumnRef, FactTagsCol, McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol,
     RetentionSettings, SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol,
     TraceHeadsCol, TraceStatsCol, Ty, UserRollupCol, table,
 };
-use crucible_store_clickhouse::render::{self, RenderError, Statement};
+use crucible_store_clickhouse::render::{self, Statement};
 use proptest::prelude::*;
 
 const T0: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
@@ -502,11 +508,278 @@ fn node_time_series() {
         "node_time_series_week",
         rendered(&series(Step::Week, Fill::None))
     );
-    // The empty buckets of a zero-filled series hold nulls that the plan's output types cannot carry.
-    assert_eq!(
-        render::plan(&series(Step::Hour, Fill::Zero)),
-        Err(RenderError::ZeroFill)
+    // Zero fill: each dimension key is filled on its own, and a result without a matching row is dropped.
+    insta::assert_snapshot!(
+        "node_time_series_zero_fill_grouped",
+        rendered(&series(Step::Hour, Fill::Zero))
     );
+    // Every measure: 0 for the sums, null for the others, the empty histogram and the empty set.
+    let ops = Aggregate::new(
+        TableId::McpOps,
+        Pred::all(),
+        [] as [McpOpsCol; 0],
+        vec![
+            Measure::Count,
+            Measure::Sum(McpOpsCol::ProgressCount.column_ref()),
+            Measure::Sum(McpOpsCol::DurationUs.column_ref()),
+            Measure::Uniq(McpOpsCol::UserId.column_ref()),
+            Measure::Min(McpOpsCol::ServerName.column_ref()),
+            Measure::Max(McpOpsCol::JsonrpcCode.column_ref()),
+        ],
+    )
+    .unwrap();
+    let ops = TimeSeries::new(ops, McpOpsCol::StartTime, Step::Day, Fill::Zero).unwrap();
+    insta::assert_snapshot!(
+        "node_time_series_zero_fill_ungrouped",
+        rendered(&plan(QueryClass::AnalyticsRaw, Node::TimeSeries(ops)))
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Snapshots: the plans of the milestone 2 builders.
+
+#[test]
+fn m2_sessions() {
+    let request = |cursor| SessionListRequest { limit: 50, cursor };
+    let list = |request| {
+        live(session_list(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            request,
+        ))
+    };
+    insta::assert_snapshot!("m2_session_list_first_page", rendered(&list(request(None))));
+    let cursor = Some((T0, "session-9".to_owned()));
+    insta::assert_snapshot!(
+        "m2_session_list_after_cursor",
+        rendered(&list(request(cursor)))
+    );
+    let detail = live(session_detail(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        "session-9",
+    ));
+    insta::assert_snapshot!("m2_session_detail", rendered(&detail));
+}
+
+#[test]
+fn m2_users() {
+    let request = UserListRequest {
+        limit: 50,
+        cursor: Some((T0, "user-9".to_owned())),
+    };
+    let list = live(user_list(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        request,
+    ));
+    insta::assert_snapshot!("m2_user_list_after_cursor", rendered(&list));
+    let detail = live(user_detail(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Agent,
+        "user-9",
+    ));
+    insta::assert_snapshot!("m2_user_detail", rendered(&detail));
+    let users = ["user-1".to_owned(), "user-2".to_owned(), "user-3".to_owned()];
+    let counts = live(user_session_counts(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        &users,
+    ));
+    insta::assert_snapshot!("m2_user_session_counts", rendered(&counts));
+}
+
+/// A filter with every field a span list evaluates on `span_core`.
+fn core_filter() -> Filter {
+    Filter::And(vec![
+        Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
+        Filter::Text(
+            TextField::Release,
+            vec!["r2".to_owned(), "r1".to_owned()],
+        ),
+        Filter::Text(TextField::Version, vec!["v1".to_owned()]),
+        Filter::Level(vec![Level::Error, Level::Warning]),
+        Filter::ObservationType(vec![ObservationType::Generation]),
+        Filter::Not(Box::new(Filter::Text(
+            TextField::UserId,
+            vec!["u1".to_owned()],
+        ))),
+        Filter::Text(TextField::SessionId, vec!["s1".to_owned()]),
+        Filter::Or(vec![
+            Filter::Tags(vec!["beta".to_owned(), "alpha".to_owned()]),
+            Filter::Name("Chat".to_owned()),
+        ]),
+    ])
+}
+
+fn metadata_filter() -> Filter {
+    Filter::Metadata {
+        key: "tenant".to_owned(),
+        value: "acme".to_owned(),
+    }
+}
+
+#[test]
+fn m2_span_list() {
+    let request = |filter, cursor| SpanListRequest {
+        filter,
+        limit: 50,
+        cursor,
+        as_of: T0.saturating_add_micros(60_000_000),
+    };
+    let list = |request| {
+        live(span_list(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            request,
+        ))
+    };
+    insta::assert_snapshot!(
+        "m2_span_list_first_page",
+        rendered(&list(request(Filter::all(), None)))
+    );
+    let cursor = Some((T0.saturating_add_micros(5_000_001), span(7)));
+    insta::assert_snapshot!(
+        "m2_span_list_filtered_after_cursor",
+        rendered(&list(request(core_filter(), cursor)))
+    );
+    let with_metadata = Filter::And(vec![
+        metadata_filter(),
+        Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
+    ]);
+    insta::assert_snapshot!(
+        "m2_span_list_with_metadata",
+        rendered(&list(request(with_metadata, None)))
+    );
+}
+
+#[test]
+fn m2_search() {
+    let request = SearchRequest {
+        tokens: vec!["Rate".to_owned(), "limit".to_owned(), "exceeded".to_owned()],
+        mode: TokenMode::All,
+        fields: vec![SearchField::Input, SearchField::Output, SearchField::Metadata],
+        filter: Filter::And(vec![
+            metadata_filter(),
+            Filter::Text(TextField::UserId, vec!["u1".to_owned()]),
+            Filter::Level(vec![Level::Error]),
+        ]),
+        limit: 20,
+    };
+    let found = search(project(), window(), &clamp(), Caller::Session, &request)
+        .unwrap()
+        .unwrap();
+    insta::assert_snapshot!("m2_search_hits", rendered(&found.hits));
+    let hits = [
+        (T0, trace().trace_hash(), span(1)),
+        (T0.saturating_add_micros(61_000_000), 7, span(2)),
+        (T0.saturating_add_micros(1), trace().trace_hash(), span(3)),
+    ];
+    let spans = live(search_spans(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        &hits,
+        &found.rest,
+    ));
+    insta::assert_snapshot!("m2_search_spans", rendered(&spans));
+}
+
+#[test]
+fn m2_payload_range() {
+    let request = PayloadRangeRequest {
+        trace_id: trace(),
+        span_id: span(1),
+        start_time: T0.saturating_add_micros(1_500),
+        field: PayloadField::Output,
+        offset: 4_096,
+        len: 65_536,
+    };
+    let range = live(payload_range(
+        project(),
+        &clamp(),
+        Caller::Session,
+        request,
+    ));
+    insta::assert_snapshot!(rendered(&range));
+}
+
+#[test]
+fn m2_metrics() {
+    let query = |dimensions: Vec<DimensionId>| MetricsQuery {
+        source: Source::Spans,
+        measures: vec![
+            (MeasureId::Count, Aggregation::Sum),
+            (MeasureId::Duration, Aggregation::P95),
+            (MeasureId::TotalCost, Aggregation::Sum),
+            (MeasureId::Duration, Aggregation::P50),
+        ],
+        dimensions,
+        filter: Filter::Level(vec![Level::Error]),
+        granularity: Granularity::Auto,
+        fill: Fill::Zero,
+        top_n: Some(5),
+    };
+    let flat = query(Vec::new());
+    let series = metrics_series(project(), window(), &clamp(), Caller::Session, &flat, None);
+    insta::assert_snapshot!(
+        "m2_metrics_series_without_dimensions",
+        rendered(&series.unwrap().unwrap())
+    );
+    let by = query(vec![DimensionId::Model, DimensionId::ObservationType]);
+    let ranking = metrics_ranking(project(), window(), &clamp(), Caller::Session, &by);
+    insta::assert_snapshot!("m2_metrics_ranking", rendered(&ranking.unwrap().unwrap()));
+    let keys = vec![
+        vec![Literal::String("model-a".to_owned()), Literal::Enum(1)],
+        vec![Literal::String(String::new()), Literal::Enum(5)],
+    ];
+    let series = metrics_series(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        &by,
+        Some(&keys),
+    );
+    insta::assert_snapshot!("m2_metrics_series", rendered(&series.unwrap().unwrap()));
+    let other = metrics_other(project(), window(), &clamp(), Caller::Session, &by, &keys);
+    insta::assert_snapshot!("m2_metrics_other", rendered(&other.unwrap().unwrap()));
+}
+
+#[test]
+fn node_text_search_with_snippets() {
+    let search = TextSearch::new(
+        TableId::SpanPayload,
+        [
+            SpanPayloadCol::Input,
+            SpanPayloadCol::MetadataKv,
+            SpanPayloadCol::Output,
+        ],
+        TokenMode::Any,
+        vec!["rate".to_owned(), "limit".to_owned(), "exceeded".to_owned()],
+        Pred::all(),
+        20,
+    )
+    .unwrap()
+    .with_snippets(Snippet {
+        before: 40,
+        len: 160,
+    })
+    .unwrap();
+    insta::assert_snapshot!(rendered(&plan(QueryClass::Search, Node::TextSearch(search))));
 }
 
 #[test]
@@ -799,6 +1072,7 @@ enum Shape {
         grouped: bool,
         having: bool,
         order: bool,
+        cursor: bool,
         limit: bool,
     },
     AggregateRollup {
@@ -813,15 +1087,51 @@ enum Shape {
         tokens: usize,
         mode: usize,
         both_fields: bool,
+        snippets: bool,
     },
     TimeSeries {
         step: usize,
         grouped: bool,
+        zero: bool,
     },
-    FieldRange,
+    FieldRange {
+        total: bool,
+    },
     TraceList {
         cursor: bool,
         since: bool,
+    },
+    /// The session list (`users` unset) or the user list, or with `detail` one session or user.
+    Rollup {
+        users: bool,
+        detail: bool,
+        cursor: bool,
+    },
+    SessionCounts {
+        users: usize,
+    },
+    SpanList {
+        filtered: bool,
+        metadata: bool,
+        cursor: bool,
+    },
+    Search {
+        tokens: usize,
+        metadata: bool,
+        filtered: bool,
+    },
+    SearchSpans {
+        hits: usize,
+        filtered: bool,
+    },
+    Payload,
+    /// A metrics plan: the ranking (0), the series (1) or the `other` series (2).
+    Metrics {
+        dimensions: usize,
+        plan: usize,
+        keys: usize,
+        zero: bool,
+        filtered: bool,
     },
 }
 
@@ -846,27 +1156,62 @@ fn shape() -> impl Strategy<Value = Shape> {
             }),
         Just(Shape::Metadata),
         (1usize..10).prop_map(|keys| Shape::PointLookup { keys }),
-        (pred_shape(), flag(), flag(), flag(), flag()).prop_map(
-            |(pred, grouped, having, order, limit)| Shape::AggregateSpans {
+        (pred_shape(), flag(), flag(), flag(), flag(), flag()).prop_map(
+            |(pred, grouped, having, order, cursor, limit)| Shape::AggregateSpans {
                 pred,
                 grouped,
                 having,
                 order,
+                cursor,
                 limit
             }
         ),
         (0usize..7, flag()).prop_map(|(table, grouped)| Shape::AggregateRollup { table, grouped }),
         (flag(), pred_shape()).prop_map(|(right_scan, pred)| Shape::SemiJoin { right_scan, pred }),
-        (1usize..7, 0usize..3, flag()).prop_map(|(tokens, mode, both_fields)| {
-            Shape::TextSearch {
-                tokens,
-                mode,
-                both_fields,
+        (1usize..7, 0usize..3, flag(), flag()).prop_map(
+            |(tokens, mode, both_fields, snippets)| {
+                Shape::TextSearch {
+                    tokens,
+                    mode,
+                    both_fields,
+                    snippets,
+                }
             }
+        ),
+        (0usize..6, flag(), flag()).prop_map(|(step, grouped, zero)| Shape::TimeSeries {
+            step,
+            grouped,
+            zero
         }),
-        (0usize..6, flag()).prop_map(|(step, grouped)| Shape::TimeSeries { step, grouped }),
-        Just(Shape::FieldRange),
+        flag().prop_map(|total| Shape::FieldRange { total }),
         (flag(), flag()).prop_map(|(cursor, since)| Shape::TraceList { cursor, since }),
+        (flag(), flag(), flag()).prop_map(|(users, detail, cursor)| Shape::Rollup {
+            users,
+            detail,
+            cursor
+        }),
+        (1usize..6).prop_map(|users| Shape::SessionCounts { users }),
+        (flag(), flag(), flag()).prop_map(|(filtered, metadata, cursor)| Shape::SpanList {
+            filtered,
+            metadata,
+            cursor
+        }),
+        (1usize..5, flag(), flag()).prop_map(|(tokens, metadata, filtered)| Shape::Search {
+            tokens,
+            metadata,
+            filtered
+        }),
+        (1usize..6, flag()).prop_map(|(hits, filtered)| Shape::SearchSpans { hits, filtered }),
+        Just(Shape::Payload),
+        (0usize..3, 0usize..3, 1usize..4, flag(), flag()).prop_map(
+            |(dimensions, plan, keys, zero, filtered)| Shape::Metrics {
+                dimensions,
+                plan,
+                keys,
+                zero,
+                filtered
+            }
+        ),
     ]
 }
 
@@ -894,7 +1239,10 @@ fn rollup(index: usize) -> (TableId, ColumnRef, Vec<Measure>) {
         2 => (
             TableId::SessionRollup,
             SessionRollupCol::SessionId.column_ref(),
-            vec![Measure::Max(SessionRollupCol::LastSeen.column_ref())],
+            vec![
+                Measure::Max(SessionRollupCol::LastSeen.column_ref()),
+                Measure::SetMerge(SessionRollupCol::UserIds.column_ref()),
+            ],
         ),
         3 => (
             TableId::UserRollup,
@@ -917,6 +1265,27 @@ fn rollup(index: usize) -> (TableId, ColumnRef, Vec<Measure>) {
             vec![Measure::Min(McpDeploysCol::FirstSeen.column_ref())],
         ),
     }
+}
+
+/// A filter over fields of `span_core` and, when asked, a metadata condition: its shape is fixed, its values
+/// are drawn.
+fn filter(v: &mut Values, filtered: bool, metadata: bool) -> Filter {
+    let mut conditions = Vec::new();
+    if filtered {
+        conditions.push(Filter::Text(TextField::Environment, vec![v.string(), v.string()]));
+        conditions.push(Filter::Not(Box::new(Filter::Level(vec![Level::Error]))));
+        conditions.push(Filter::Or(vec![
+            Filter::Tags(vec![v.string()]),
+            Filter::Name(v.string()),
+        ]));
+    }
+    if metadata {
+        conditions.push(Filter::Metadata {
+            key: v.string(),
+            value: v.string(),
+        });
+    }
+    Filter::And(conditions)
 }
 
 /// The plan of a shape under one assignment of values.
@@ -989,6 +1358,7 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             grouped,
             having,
             order,
+            cursor,
             limit,
         } => {
             let group: Vec<ColumnRef> = grouped
@@ -1023,8 +1393,16 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             }
             if *order {
                 aggregate = aggregate
-                    .ordered(vec![(AggOutput::Measure(0), Direction::Desc)])
+                    .ordered(vec![
+                        (AggOutput::Measure(0), Direction::Desc),
+                        (AggOutput::Measure(1), Direction::Desc),
+                    ])
                     .unwrap();
+                if *cursor {
+                    aggregate = aggregate
+                        .after(vec![Literal::UInt(v.next()), Literal::Time(v.time())])
+                        .unwrap();
+                }
             }
             if *limit {
                 aggregate = aggregate.limited(v.limit()).unwrap();
@@ -1068,6 +1446,7 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             tokens,
             mode,
             both_fields,
+            snippets,
         } => {
             let mut fields = vec![SpanPayloadCol::Input];
             if *both_fields {
@@ -1075,7 +1454,7 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             }
             let mode = [TokenMode::All, TokenMode::Any, TokenMode::Phrase][*mode];
             let tokens = (0..*tokens).map(|_| v.string()).collect();
-            let search = TextSearch::new(
+            let mut search = TextSearch::new(
                 TableId::SpanPayload,
                 fields,
                 mode,
@@ -1084,9 +1463,20 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                 v.limit(),
             )
             .unwrap();
+            if *snippets {
+                let snippet = Snippet {
+                    before: v.below(1_000) as u32,
+                    len: 1 + v.below(1_000) as u32,
+                };
+                search = search.with_snippets(snippet).unwrap();
+            }
             plan(QueryClass::Search, Node::TextSearch(search))
         }
-        Shape::TimeSeries { step, grouped } => {
+        Shape::TimeSeries {
+            step,
+            grouped,
+            zero,
+        } => {
             let group: Vec<ColumnRef> = grouped
                 .then(|| SpanMetricsCol::Release.column_ref())
                 .into_iter()
@@ -1095,7 +1485,11 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                 TableId::SpanMetrics,
                 Pred::eq(SpanMetricsCol::Environment, Literal::String(v.string())),
                 group,
-                vec![Measure::Sum(SpanMetricsCol::Count.column_ref())],
+                vec![
+                    Measure::Sum(SpanMetricsCol::Count.column_ref()),
+                    Measure::Max(SpanMetricsCol::Minute.column_ref()),
+                    Measure::HistogramMerge(SpanMetricsCol::DurHist.column_ref()),
+                ],
             )
             .unwrap();
             let step = [
@@ -1106,14 +1500,14 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                 Step::Day,
                 Step::Week,
             ][*step];
-            let series =
-                TimeSeries::new(aggregate, SpanMetricsCol::Minute, step, Fill::None).unwrap();
+            let fill = if *zero { Fill::Zero } else { Fill::None };
+            let series = TimeSeries::new(aggregate, SpanMetricsCol::Minute, step, fill).unwrap();
             plan(QueryClass::Analytics, Node::TimeSeries(series))
         }
-        Shape::FieldRange => {
+        Shape::FieldRange { total } => {
             let columns = [SpanPayloadCol::StartMinute, SpanPayloadCol::SpanId];
             let key = columns.map(|c| v.literal(c.column_ref().ty())).to_vec();
-            let range = FieldRange::new(
+            let mut range = FieldRange::new(
                 TableId::SpanPayload,
                 columns,
                 key,
@@ -1122,7 +1516,153 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                 1 + v.below(1 << 20),
             )
             .unwrap();
+            if *total {
+                range = range.with_total();
+            }
             plan(QueryClass::Point, Node::FieldRange(range))
+        }
+        Shape::Rollup {
+            users,
+            detail,
+            cursor,
+        } => {
+            let id = v.string();
+            let cursor = cursor.then(|| (v.time(), v.string()));
+            let limit = 1 + v.below(200) as u32;
+            live(match (users, detail) {
+                (false, false) => {
+                    let request = SessionListRequest { limit, cursor };
+                    session_list(scope, window, &clamp(), Caller::Session, request)
+                }
+                (false, true) => session_detail(scope, window, &clamp(), Caller::Session, &id),
+                (true, false) => {
+                    let request = UserListRequest { limit, cursor };
+                    user_list(scope, window, &clamp(), Caller::Session, request)
+                }
+                (true, true) => user_detail(scope, window, &clamp(), Caller::Session, &id),
+            })
+        }
+        Shape::SessionCounts { users } => {
+            let users: Vec<String> = (0..*users).map(|_| v.string()).collect();
+            live(user_session_counts(
+                scope,
+                window,
+                &clamp(),
+                Caller::Agent,
+                &users,
+            ))
+        }
+        Shape::SpanList {
+            filtered,
+            metadata,
+            cursor,
+        } => {
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&v.bytes(8));
+            let request = SpanListRequest {
+                filter: filter(v, *filtered, *metadata),
+                limit: 1 + v.below(200) as u32,
+                cursor: cursor.then(|| (v.time(), SpanId::from_bytes(id))),
+                as_of: v.time(),
+            };
+            live(span_list(scope, window, &clamp(), Caller::Session, request))
+        }
+        Shape::Search {
+            tokens,
+            metadata,
+            filtered,
+        } => {
+            let mut fields = vec![SearchField::Output, SearchField::Input];
+            if *metadata {
+                fields.push(SearchField::Metadata);
+            }
+            let request = SearchRequest {
+                tokens: (0..*tokens).map(|_| v.string()).collect(),
+                mode: TokenMode::All,
+                fields,
+                filter: filter(v, *filtered, *metadata),
+                limit: 1 + v.below(200) as u32,
+            };
+            search(scope, window, &clamp(), Caller::Session, &request)
+                .unwrap()
+                .unwrap()
+                .hits
+        }
+        Shape::SearchSpans { hits, filtered } => {
+            let hits: Vec<(Timestamp, u32, SpanId)> = (0..*hits)
+                .map(|_| {
+                    let mut id = [0u8; 8];
+                    id.copy_from_slice(&v.bytes(8));
+                    // Distinct values, so the lists keep their arity under every assignment.
+                    (v.time(), v.next() as u32, SpanId::from_bytes(id))
+                })
+                .collect();
+            let rest = filter(v, *filtered, false);
+            live(search_spans(
+                scope,
+                window,
+                &clamp(),
+                Caller::Session,
+                &hits,
+                &rest,
+            ))
+        }
+        Shape::Payload => {
+            let mut trace = [0u8; 16];
+            trace.copy_from_slice(&v.bytes(16));
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&v.bytes(8));
+            let request = PayloadRangeRequest {
+                trace_id: TraceId::from_bytes(trace),
+                span_id: SpanId::from_bytes(id),
+                start_time: window.from(),
+                field: PayloadField::Input,
+                offset: v.below(1 << 40),
+                len: 1 + v.below(1 << 20),
+            };
+            live(payload_range(scope, &clamp(), Caller::Session, request))
+        }
+        Shape::Metrics {
+            dimensions,
+            plan,
+            keys,
+            zero,
+            filtered,
+        } => {
+            let all = [DimensionId::Environment, DimensionId::Level];
+            let filter = if *filtered {
+                Filter::Text(TextField::Release, vec![v.string()])
+            } else {
+                Filter::all()
+            };
+            let query = MetricsQuery {
+                source: Source::Spans,
+                measures: vec![
+                    (MeasureId::TotalCost, Aggregation::Sum),
+                    (MeasureId::Ttft, Aggregation::P99),
+                ],
+                dimensions: all[..*dimensions].to_vec(),
+                filter,
+                // The step is part of the shape, so the SQL text does not move with the window's length.
+                granularity: Granularity::Step(Step::Week),
+                fill: if *zero { Fill::Zero } else { Fill::None },
+                top_n: Some(3),
+            };
+            let keys: Vec<Vec<Literal>> = (0..*keys)
+                .map(|_| {
+                    let key = [Literal::String(v.string()), Literal::Enum(v.below(4) as u8)];
+                    key[..*dimensions].to_vec()
+                })
+                .collect();
+            let built = match (*dimensions, *plan) {
+                (0, _) => metrics_series(scope, window, &clamp(), Caller::Session, &query, None),
+                (_, 0) => metrics_ranking(scope, window, &clamp(), Caller::Session, &query),
+                (_, 1) => {
+                    metrics_series(scope, window, &clamp(), Caller::Session, &query, Some(&keys))
+                }
+                _ => metrics_other(scope, window, &clamp(), Caller::Session, &query, &keys),
+            };
+            built.unwrap().unwrap()
         }
         Shape::TraceList { cursor, since } => {
             let mut trace = [0u8; 16];
