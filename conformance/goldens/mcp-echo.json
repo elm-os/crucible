@@ -1,0 +1,33 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-echo",
+  "spans": [
+    {
+      "id": "list",
+      "select": { "mcp.method.name": "tools/list", "jsonrpc.request.id": "1" },
+      "kind": "server",
+      "parent": null
+    },
+    {
+      "id": "echo",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "attributes": {
+        "gen_ai.tool.name": "echo",
+        "error.type": { "absent": true },
+        "rpc.response.status_code": { "absent": true },
+        "crucible.mcp.result_type": { "optional": "complete" }
+      },
+      "outcome": { "status": "ok", "error_class": "none", "caller_fault": false }
+    },
+    {
+      "id": "echo-traced",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "3" },
+      "kind": "server",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "parent_span_id": "00f067aa0ba902b7",
+      "attributes": { "gen_ai.tool.name": "echo" }
+    }
+  ]
+}

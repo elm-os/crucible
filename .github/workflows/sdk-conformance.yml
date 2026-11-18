@@ -1,0 +1,76 @@
+name: sdk-conformance
+
+# The shared SDK conformance suite (docs/testing/sdk-conformance.md). Each matrix entry runs crucible-sdk-driver
+# against one SDK's runner, which the SDK's capability manifest names. The selftest entry needs no SDK: its runner
+# emits the expected spans directly. It also runs the seeded mutant, which the driver must fail on exactly the
+# mcp-secret cases. An SDK joins by adding a matrix entry with its manifest and the setup steps its runner needs.
+
+on:
+  pull_request:
+    paths:
+      - conformance/**
+      - sdk/**
+      - crates/crucible-fake-collector/**
+      - .github/workflows/sdk-conformance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  conformance:
+    name: ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: selftest
+            manifest: conformance/sdks/selftest.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: sdk-conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the driver
+        run: cargo build --locked -p crucible-fake-collector --features test-mutants
+      - name: Conformance
+        env:
+          MANIFEST: ${{ matrix.manifest }}
+          SDK: ${{ matrix.sdk }}
+        run: |
+          status=0
+          target/debug/crucible-sdk-driver run --manifest "$MANIFEST" --out target/sdk-conformance || status=$?
+          if [ -f "target/sdk-conformance/$SDK.md" ]; then cat "target/sdk-conformance/$SDK.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$status"
+      - name: The driver flags the seeded mutant
+        if: matrix.sdk == 'selftest'
+        run: |
+          status=0
+          target/debug/crucible-sdk-driver run --manifest conformance/sdks/selftest.json --out target/sdk-mutant \
+            -- crucible-sdk-driver selftest-runner --mutant unscrubbed-secret > /dev/null || status=$?
+          if [ "$status" -ne 1 ]; then echo "the mutant run exited $status; it must exit 1"; exit 1; fi
+          report=target/sdk-mutant/selftest.jsonl
+          failing=$(jq -r 'select(.status != "pass") | .case' "$report" | sort | tr '\n' ' ')
+          expected="mcp-secret@legacy-http mcp-secret@legacy-stdio mcp-secret@modern-http mcp-secret@modern-stdio "
+          if [ "$failing" != "$expected" ]; then echo "the mutant failed [$failing]; expected [$expected]"; exit 1; fi
+          leaks=$(jq -s '[.[] | select(.status == "fail") | .failures[]
+            | select(.check | endswith("never leaves the sender"))
+            | select(.actual | contains("gen_ai.tool.call.arguments"))] | length' "$report")
+          if [ "$leaks" -ne 36 ]; then echo "expected 36 leak findings on gen_ai.tool.call.arguments, found $leaks"; exit 1; fi
+          echo "the driver failed exactly the 4 mcp-secret cases, with 9 leak findings each"

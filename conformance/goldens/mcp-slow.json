@@ -1,0 +1,14 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-slow",
+  "spans": [
+    {
+      "id": "slow",
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "min_duration_ms": 250,
+      "attributes": { "gen_ai.tool.name": "slow", "crucible.mcp.timed_out": { "optional": false } }
+    }
+  ]
+}

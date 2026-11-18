@@ -1,0 +1,27 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-nested-spans",
+  "kind": "agent",
+  "title": "A span tree with a trace name, observation types and JSON or text input and output",
+  "steps": [
+    {
+      "step": "checkout",
+      "observe": {
+        "name": "checkout",
+        "type": "agent",
+        "trace_name": "checkout-flow",
+        "input": "Where is my refund?",
+        "children": [
+          {
+            "name": "plan",
+            "type": "chain",
+            "children": [
+              { "name": "fetch-docs", "type": "retriever", "input": { "query": "refund policy" }, "output": ["doc-1", "doc-2"] }
+            ]
+          },
+          { "name": "respond", "type": "span", "output": "Refunds take 5 days." }
+        ]
+      }
+    }
+  ]
+}
