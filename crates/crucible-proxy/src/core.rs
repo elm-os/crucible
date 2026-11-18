@@ -14,7 +14,7 @@
 //!   8 MiB or 10,000 operations that drops its oldest entry when full. [`ProxyCore::next_export`] and
 //!   [`ProxyCore::export_done`] move batches out, with backoff while the collector fails.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -341,7 +341,7 @@ enum Item {
 struct Queued {
     item: Item,
     now: Now,
-    /// Chunk copies were dropped since the item before this one.
+    /// Copies of this stream and direction were dropped just before this chunk.
     gap: bool,
 }
 
@@ -349,7 +349,8 @@ struct Queued {
 struct Shared {
     queue: VecDeque<Queued>,
     bytes: usize,
-    gap: bool,
+    /// Streams and directions that lost a chunk copy and have not queued one since.
+    gaps: BTreeSet<(StreamId, u8)>,
     forwarded_chunks: u64,
     forwarded_bytes: u64,
     dropped_chunks: u64,
@@ -411,12 +412,15 @@ impl Tap {
             _ => bytes,
         };
         if full {
-            shared.gap = true;
+            if shared.gaps.len() >= MAX_TRACKED {
+                shared.gaps.pop_first();
+            }
+            shared.gaps.insert((stream, direction.value()));
             shared.dropped_chunks += 1;
             shared.dropped_chunk_bytes += bytes.len() as u64;
         } else {
             shared.bytes += bytes.len();
-            let gap = std::mem::take(&mut shared.gap);
+            let gap = shared.gaps.remove(&(stream, direction.value()));
             shared.queue.push_back(Queued {
                 item: Item::Chunk {
                     stream,
@@ -434,12 +438,20 @@ impl Tap {
         let mut shared = lock(&self.shared);
         // Control items are small and carry what closes an operation, so they get twice the room of chunks.
         if shared.queue.len() >= self.queue_items.saturating_mul(2) {
-            shared.gap = true;
             return;
         }
+        if let Item::Close { stream, .. } = &item {
+            // Nothing more comes on a closed exchange.
+            for direction in [Direction::ClientToServer, Direction::ServerToClient] {
+                shared.gaps.remove(&(*stream, direction.value()));
+            }
+        }
         shared.bytes += CONTROL_ITEM_BYTES;
-        let gap = std::mem::take(&mut shared.gap);
-        shared.queue.push_back(Queued { item, now, gap });
+        shared.queue.push_back(Queued {
+            item,
+            now,
+            gap: false,
+        });
     }
 
     /// An HTTP exchange started.
@@ -720,14 +732,20 @@ impl ProxyCore {
             shared.bytes = shared.bytes.saturating_sub(size);
             queued
         };
-        if queued.gap {
-            for stream in self.streams.values_mut() {
-                stream.request.gap();
-                match &mut stream.response {
-                    ResponseReader::Lines(scanner) | ResponseReader::Json(scanner) => scanner.gap(),
-                    ResponseReader::Sse(reader) => reader.gap(),
-                    ResponseReader::Opaque => {}
+        if queued.gap
+            && let Item::Chunk {
+                stream, direction, ..
+            } = &queued.item
+            && let Some(state) = self.streams.get_mut(stream)
+        {
+            // The bytes before this chunk are missing: the reader of that direction must find its place again.
+            match (direction, &mut state.response) {
+                (Direction::ClientToServer, _) => state.request.gap(),
+                (_, ResponseReader::Lines(scanner) | ResponseReader::Json(scanner)) => {
+                    scanner.gap()
                 }
+                (_, ResponseReader::Sse(reader)) => reader.gap(),
+                (_, ResponseReader::Opaque) => {}
             }
         }
         let now = queued.now;
