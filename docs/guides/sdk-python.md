@@ -77,7 +77,8 @@ Crucible only. Because the SDK joins the global provider, spans that other instr
 - `flush(timeout=5.0)` waits until every span that ended before the call has been sent. It returns `False` when the
   timeout passes first.
 - `shutdown(timeout=5.0)` sends what is queued, waiting at most `timeout` seconds, and stops. Later spans are not
-  sent. It also runs at interpreter exit, so a script that ends normally loses nothing.
+  sent. It also runs at interpreter exit, with the default timeout, so a script that ends normally does not need to
+  call it.
 - A process forked after `init` starts its own export thread.
 
 ## Trace an agent
@@ -345,13 +346,14 @@ in code, so `OTEL_EXPORTER_OTLP_*` endpoint settings do not redirect it. Each ex
 
 ## Conformance
 
-The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both
-protocol eras over stdio and streamable HTTP, with no skipped case. Its capability manifest,
+The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both protocol
+eras over stdio and streamable HTTP, with no skipped case. Its capability manifest,
 `sdk/python/conformance/manifest.json`, declares that a raising tool becomes an `isError` result and that progress is
-not observed. CI runs the suite (`.github/workflows/sdk-conformance.yml`) on every pull request that touches the
-SDKs or the suite. To run it locally from the repository root, with the dev container's toolchain for the driver:
+not observed. CI runs the suite (`.github/workflows/sdk-conformance.yml`) on every pull request that touches the SDKs or
+the suite. To run it as CI does, on Linux with Rust and the SDK's own toolchain, from the repository root:
 
 ```sh
+uv sync --locked --project sdk/python
 cargo build -p crucible-fake-collector
 target/debug/crucible-sdk-driver run --manifest sdk/python/conformance/manifest.json
 ```

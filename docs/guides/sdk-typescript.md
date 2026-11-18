@@ -418,14 +418,15 @@ Every other setting is an option of `init` or `instrument`. Each export carries
 
 ## Conformance
 
-The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both
-protocol eras over stdio and streamable HTTP, with no skipped case. Its capability manifest,
+The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both protocol
+eras over stdio and streamable HTTP, with no skipped case. Its capability manifest,
 `sdk/typescript/conformance/manifest.json`, declares that a tool handler's exception becomes a tool error and that
-progress notifications are counted. CI runs the suite (`.github/workflows/sdk-conformance.yml`) on every pull
-request that touches the SDKs or the suite. To run it locally from the repository root, with the dev container's
-toolchain for the driver:
+progress notifications are counted. CI runs the suite (`.github/workflows/sdk-conformance.yml`) on every pull request
+that touches the SDKs or the suite. To run it as CI does, on Linux with Rust and the SDK's own toolchain, from the
+repository root:
 
 ```sh
+pnpm install --frozen-lockfile
 cargo build -p crucible-fake-collector
 target/debug/crucible-sdk-driver run --manifest sdk/typescript/conformance/manifest.json
 ```

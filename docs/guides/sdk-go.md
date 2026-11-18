@@ -85,10 +85,10 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0}`.
 | `QueueSize` | Finished spans waiting for export; 0 means 2,048 |
 | `FlushInterval` | How often the queue is exported; 0 means one second |
 
-The SDK reads no `CRUCIBLE_*` environment variables: pass every value in `Options`. `Init` returns an error that says which
-option to change when `Endpoint` is empty or not an `http` or `https` URL, when `SecretKey` is empty or does not
-start with `csk_` (a public key `cpk_...` cannot send telemetry), when a size or interval is negative, and when
-`Init` was already called; call `Shutdown` before calling `Init` again.
+The SDK reads no `CRUCIBLE_*` environment variables: pass every value in `Options`. `Init` returns an error that says
+which option to change when `Endpoint` is empty or not an `http` or `https` URL, when `SecretKey` is empty or does not
+start with `csk_` (a public key `cpk_...` cannot send telemetry), when a size or interval is negative, and when `Init`
+was already called; call `Shutdown` before calling `Init` again.
 
 The SDK keeps its own tracer provider and does not set the global one. Every span is kept: a remote parent that was
 not sampled does not suppress an MCP operation. Each process gets a random `service.instance.id`. Before `Init`,
@@ -516,13 +516,13 @@ The MCP Go SDK hands middleware a method, its decoded params and a context, whic
 
 ## Conformance
 
-The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both
-protocol eras over stdio and streamable HTTP, with no skipped case. `sdk/go/conformance/runner` is its runner: for an
-agent case it is the agent program, and for an MCP case it serves the reference server on go-sdk, instrumented
-through this SDK's public API. Its capability manifest, `sdk/go/conformance/manifest.json`, declares that a tool
-handler's error becomes a tool error and that progress notifications are counted. CI runs the suite
-(`.github/workflows/sdk-conformance.yml`) on every pull request that touches the SDKs or the suite. To run it
-locally from the repository root, with the dev container's toolchain for the driver:
+The SDK passes the shared [SDK conformance suite](../testing/sdk-conformance.md), agent and MCP cases, in both protocol
+eras over stdio and streamable HTTP, with no skipped case. `sdk/go/conformance/runner` is its runner: for an agent case
+it is the agent program, and for an MCP case it serves the reference server on go-sdk, instrumented through this SDK's
+public API. Its capability manifest, `sdk/go/conformance/manifest.json`, declares that a tool handler's error becomes a
+tool error and that progress notifications are counted. CI runs the suite (`.github/workflows/sdk-conformance.yml`) on
+every pull request that touches the SDKs or the suite. To run it as CI does, on Linux with Rust and the SDK's own
+toolchain, from the repository root:
 
 ```sh
 cargo build -p crucible-fake-collector
