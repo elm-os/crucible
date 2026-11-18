@@ -157,6 +157,20 @@ pub struct SavedParam {
     pub default: Option<String>,
 }
 
+impl SavedParam {
+    /// The parameters of a `jsonb` column.
+    pub fn list_from_json(text: &str) -> Result<Vec<Self>, TxError> {
+        serde_json::from_str(text)
+            .map_err(|error| TxError::Invalid(format!("saved query parameters: {error}")))
+    }
+
+    /// The parameters as the JSON text of a `jsonb` column.
+    pub fn list_to_json(parameters: &[Self]) -> Result<String, TxError> {
+        serde_json::to_string(parameters)
+            .map_err(|error| TxError::Invalid(format!("saved query parameters: {error}")))
+    }
+}
+
 /// Who made a row: a signed-in user or an API key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SqlActor {
@@ -226,7 +240,11 @@ pub struct SavedQuery {
 #[async_trait]
 pub trait SavedQueryRepo: Send + Sync {
     /// The query with this id in the project.
-    async fn get(&self, project_id: ProjectId, id: SavedQueryId) -> Result<Option<SavedQuery>, TxError>;
+    async fn get(
+        &self,
+        project_id: ProjectId,
+        id: SavedQueryId,
+    ) -> Result<Option<SavedQuery>, TxError>;
     /// The project's queries, ordered by id.
     async fn list(&self, project_id: ProjectId) -> Result<Vec<SavedQuery>, TxError>;
     /// Creates a query.
@@ -354,12 +372,12 @@ mod tests {
                 default: Some("10".to_owned()),
             },
         ];
-        let text = serde_json::to_string(&params).unwrap();
+        let text = SavedParam::list_to_json(&params).unwrap();
         assert_eq!(
             text,
             r#"[{"name":"user","type":"string"},{"name":"limit","type":"int","default":"10"}]"#
         );
-        assert_eq!(serde_json::from_str::<Vec<SavedParam>>(&text).unwrap(), params);
+        assert_eq!(SavedParam::list_from_json(&text).unwrap(), params);
     }
 
     #[test]

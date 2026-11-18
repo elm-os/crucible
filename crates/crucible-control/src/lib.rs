@@ -10,6 +10,7 @@
 mod error;
 mod lease;
 mod repo;
+mod sqlws;
 mod types;
 
 pub use error::TxError;
@@ -18,6 +19,11 @@ pub use repo::{
     ApiKeyRepo, Claims, ControlStore, ControlTx, CredentialRepo, KeyFeed, Leases, MembershipRepo,
     Migrations, OrgRepo, ProjectRepo, Repos, SecretRepo, SessionRepo, SigningKeyRepo,
     TRANSACTION_CAP, UserRepo, transaction,
+};
+pub use sqlws::{
+    AppliedRetention, SavedParam, SavedQuery, SavedQueryRepo, SqlActor, SqlIdentity,
+    SqlIdentityRepo, SqlIdentityState, SqlParamType, SqlRun, SqlRunEnd, SqlRunKind, SqlRunOutcome,
+    SqlRunRepo, SqlVisibility,
 };
 pub use types::{
     ApiKey, AuthMethod, Claim, Credential, Email, JsonDoc, KeyChange, KeyChangeKind, KeyScope,

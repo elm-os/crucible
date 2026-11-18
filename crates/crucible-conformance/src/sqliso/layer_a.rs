@@ -364,7 +364,8 @@ async fn w4(iso: &Iso) -> Result<String> {
     // empty `default` profile changes nothing and is accepted without effect.)
     iso.ctx
         .admin(
-            "CREATE SETTINGS PROFILE IF NOT EXISTS sqliso_loose SETTINGS readonly = 0, max_block_size = 7,              max_execution_time = 999",
+            "CREATE SETTINGS PROFILE IF NOT EXISTS sqliso_loose SETTINGS readonly = 0, max_block_size = 7, \
+             max_execution_time = 999",
         )
         .await?;
     // A setting the profile does not list is still immutable: that is `readonly = 1`, not a constraint.
@@ -401,7 +402,6 @@ async fn w4(iso: &Iso) -> Result<String> {
         ("allow_ddl", "1"),
         ("profile", "sqliso_loose"),
         ("role", "crucible_admin"),
-        ("session_id", "sqliso"),
     ] {
         let reply = iso.send(iso.a, "SELECT 1", &[(name, value)]).await?;
         expect(reply.code().is_some(), || {
@@ -412,6 +412,62 @@ async fn w4(iso: &Iso) -> Result<String> {
     iso.ctx
         .admin("DROP SETTINGS PROFILE IF EXISTS sqliso_loose")
         .await?;
+    // An HTTP session is not a setting and is accepted; inside it the session is as read-only as outside.
+    for sql in [
+        "SET max_block_size = 1",
+        "CREATE TEMPORARY TABLE sqliso_session (x UInt8)",
+    ] {
+        let reply = iso.send(iso.a, sql, &[("session_id", "sqliso")]).await?;
+        expect(reply.code().is_some(), || {
+            format!("inside an HTTP session, {sql:?} {}", reply.brief())
+        })?;
+        statements += 1;
+    }
+    // Switching among the roles the user already holds, or to none, is accepted and gains nothing: over HTTP
+    // it lasts for the one statement.
+    for sql in [
+        "SET ROLE NONE",
+        "SET ROLE ALL",
+        "SET ROLE crucible_sql_reader",
+        "SET ROLE DEFAULT",
+    ] {
+        iso.attack(sql).await?;
+        statements += 1;
+    }
+    // A SETTINGS clause inside a subquery is refused or ignored: the value it names never takes effect.
+    for (sql, unchanged) in [
+        (
+            "SELECT * FROM (SELECT getSetting('max_threads') SETTINGS max_threads = 64)",
+            "4",
+        ),
+        (
+            "SELECT * FROM (SELECT getSetting('readonly') SETTINGS readonly = 0)",
+            "1",
+        ),
+        (
+            "SELECT (SELECT getSetting('max_threads') SETTINGS max_threads = 64)",
+            "4",
+        ),
+        (
+            "SELECT * FROM view(SELECT getSetting('max_threads') SETTINGS max_threads = 64)",
+            "4",
+        ),
+        (
+            "WITH x AS (SELECT getSetting('max_result_rows') SETTINGS max_result_rows = 0) SELECT * FROM x",
+            "10001",
+        ),
+    ] {
+        iso.refused_or(sql, unchanged).await?;
+        statements += 1;
+    }
+    for sql in [
+        "SELECT * FROM (SELECT count() FROM numbers(3000000000) SETTINGS max_rows_to_read = 0)",
+        "SELECT * FROM (SELECT count() FROM crucible.span_core SETTINGS force_index_by_date = 0)",
+        "WITH x AS (SELECT sleep(3) SETTINGS function_sleep_max_microseconds_per_block = 0) SELECT * FROM x",
+    ] {
+        iso.refused(sql).await?;
+        statements += 1;
+    }
     // Nothing moved, with or without the empty default profile named.
     for settings in [&[][..], &[("profile", "default")][..]] {
         let reply = iso
@@ -421,7 +477,7 @@ async fn w4(iso: &Iso) -> Result<String> {
                 settings,
             )
             .await?;
-        expect(reply.rows() == Some("1	65409"), || {
+        expect(reply.rows() == Some("1\t65409"), || {
             format!(
                 "the session's settings with {settings:?}: {}",
                 reply.brief()
@@ -458,7 +514,8 @@ async fn w4(iso: &Iso) -> Result<String> {
         expect(reply.rows() == Some("0"), || {
             format!("after provisioning again the user {}", reply.brief())
         })?;
-        "SET DEFAULT ROLE NONE TO CURRENT_USER is accepted: the user then reads nothing (497) until it is          provisioned again, and no other identity is affected"
+        "SET DEFAULT ROLE NONE TO CURRENT_USER is accepted: the user then reads nothing (497) until it is \
+         provisioned again, and no other identity is affected"
     } else {
         "SET DEFAULT ROLE NONE TO CURRENT_USER is refused"
     };

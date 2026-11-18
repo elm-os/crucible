@@ -21,7 +21,9 @@ type Boxed = Box<dyn Error + Sync + Send>;
 #[derive(Debug)]
 pub(crate) enum P<'a> {
     Uuid(Uuid),
+    OptUuid(Option<Uuid>),
     Text(&'a str),
+    OptText(Option<&'a str>),
     Int(i64),
     OptInt4(Option<u32>),
     Int4(u32),
@@ -36,8 +38,8 @@ pub(crate) enum P<'a> {
 impl P<'_> {
     pub(crate) fn ty(&self) -> Type {
         match self {
-            Self::Uuid(_) => Type::UUID,
-            Self::Text(_) => Type::TEXT,
+            Self::Uuid(_) | Self::OptUuid(_) => Type::UUID,
+            Self::Text(_) | Self::OptText(_) => Type::TEXT,
             Self::Int(_) => Type::INT8,
             Self::OptInt4(_) | Self::Int4(_) => Type::INT4,
             Self::Bool(_) => Type::BOOL,
@@ -59,8 +61,8 @@ fn put_ts(ts: Timestamp, out: &mut BytesMut) {
 impl ToSql for P<'_> {
     fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Boxed> {
         match self {
-            Self::Uuid(id) => out.put_slice(id.as_bytes()),
-            Self::Text(text) => return text.to_sql(ty, out),
+            Self::Uuid(id) | Self::OptUuid(Some(id)) => out.put_slice(id.as_bytes()),
+            Self::Text(text) | Self::OptText(Some(text)) => return text.to_sql(ty, out),
             Self::Int(value) => return value.to_sql(ty, out),
             Self::Int4(value) => return int4(*value)?.to_sql(ty, out),
             Self::OptInt4(Some(value)) => return int4(*value)?.to_sql(ty, out),
@@ -68,7 +70,11 @@ impl ToSql for P<'_> {
             Self::Ts(ts) | Self::OptTs(Some(ts)) => put_ts(*ts, out),
             Self::Bytes(bytes) | Self::OptBytes(Some(bytes)) => return bytes.to_sql(ty, out),
             Self::TextArray(items) => return items.to_sql(ty, out),
-            Self::OptInt4(None) | Self::OptTs(None) | Self::OptBytes(None) => {
+            Self::OptInt4(None)
+            | Self::OptTs(None)
+            | Self::OptBytes(None)
+            | Self::OptUuid(None)
+            | Self::OptText(None) => {
                 return Ok(IsNull::Yes);
             }
         }
@@ -142,6 +148,14 @@ impl<'a> Cols<'a> {
 
     pub(crate) fn text(&mut self) -> Result<String, TxError> {
         self.take()
+    }
+
+    pub(crate) fn opt_text(&mut self) -> Result<Option<String>, TxError> {
+        self.take()
+    }
+
+    pub(crate) fn opt_uuid(&mut self) -> Result<Option<Uuid>, TxError> {
+        Ok(self.take::<Option<PgUuid>>()?.map(|id| id.0))
     }
 
     pub(crate) fn bool(&mut self) -> Result<bool, TxError> {
