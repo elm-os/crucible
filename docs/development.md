@@ -133,7 +133,7 @@ password_file = "/run/secrets/postgres"
 ```
 
 - A secret (`master_key`, `clickhouse.password`, `postgres.password`) is given as the value or as a path in its
-  `_file` twin. Giving both in one layer is an error.
+  `_file` twin. Given both in one layer, the file is used and a warning says so.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `crucible config check` loads the configuration and reports every problem at once; `crucible config print`

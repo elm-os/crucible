@@ -5,8 +5,8 @@
 //!   environment variable (`CRUCIBLE_SERVER_LISTEN`). [`SETTINGS`] is the whole list.
 //! - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*`
 //!   variable is a warning, because test harnesses and other tools share the prefix.
-//! - A secret is given as a value or as a path in its `_file` twin; the two forms in one layer are an error.
-//!   [`Secret`] never prints its value.
+//! - A secret is given as a value or as a path in its `_file` twin. Given both in one layer, the file is used
+//!   and a warning says so. [`Secret`] never prints its value.
 //! - Every problem is reported at once ([`ConfigErrors`]), and each message says how to fix it.
 //!
 //! [`resolve`] is pure; [`load`] feeds it the process environment and the file system, and is the only code

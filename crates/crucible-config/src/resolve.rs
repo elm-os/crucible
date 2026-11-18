@@ -202,11 +202,13 @@ fn read_file_layer(name: &str, text: &str, values: &mut Values, errors: &mut Vec
     }
 }
 
-/// Replaces each secret by the content of its `_file` twin where the twin is set in a higher layer, or alone.
+/// Replaces each secret by the content of its `_file` twin where the twin is set in the same layer, in a
+/// higher one, or alone.
 fn read_secret_files(
     values: &mut Values,
     read_file: &dyn Fn(&Path) -> io::Result<String>,
     errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> BTreeSet<&'static str> {
     let mut from_file = BTreeSet::new();
     for setting in SETTINGS.iter().filter(|setting| setting.secret) {
@@ -215,15 +217,15 @@ fn read_secret_files(
             continue;
         };
         if let Some((_, value_source)) = values.get(setting.key) {
-            if value_source.rank() == file_source.rank() {
-                errors.push(format!(
-                    "both `{}` and `{twin}` are set ({value_source} and {file_source}); set only one",
-                    setting.key
-                ));
-                continue;
-            }
             if value_source.rank() > file_source.rank() {
                 continue;
+            }
+            if value_source.rank() == file_source.rank() {
+                warnings.push(format!(
+                    "both `{}` and `{twin}` are set ({value_source} and {file_source}); the file is used. \
+                     Set only one",
+                    setting.key
+                ));
             }
         }
         match read_file(Path::new(&path)) {
@@ -270,7 +272,7 @@ impl<'a> Typed<'a> {
     }
 }
 
-fn typed(values: &Values, errors: &mut Vec<String>) -> Option<Config> {
+fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) -> Option<Config> {
     let mut t = Typed { values, errors };
     let address = "an address such as 0.0.0.0:8080";
     let listen = t.parsed("server.listen", address);
@@ -299,16 +301,20 @@ fn typed(values: &Values, errors: &mut Vec<String>) -> Option<Config> {
     }
     let pool_size = pool_size.filter(|size| *size > 0);
 
-    let master_key = t.secret("master_key");
+    let mut master_key = t.secret("master_key");
     let mut master_key_ok = true;
     if let Some(key) = &master_key {
         let key = key.expose().trim();
         if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            master_key_ok = false;
-            t.errors.push(
-                "`master_key` must be 64 hexadecimal characters (32 bytes); `openssl rand -hex 32` makes one"
-                    .to_owned(),
-            );
+            let problem = "`master_key` must be 64 hexadecimal characters (32 bytes); `openssl rand -hex 32` makes one";
+            if t.text("clickhouse.url").is_some() {
+                master_key_ok = false;
+                t.errors.push(problem.to_owned());
+            } else {
+                // Nothing uses the key without a telemetry store, and the first `serve` did not read it then.
+                warnings.push(format!("{problem}. It is ignored: nothing uses it yet"));
+                master_key = None;
+            }
         }
     }
 
@@ -429,11 +435,13 @@ pub fn resolve(
         .map(|setting| (setting.variable(), setting))
         .collect();
     for (name, value) in layers.env {
-        if !name.starts_with("CRUCIBLE_") || name == crate::CONFIG_FILE_VARIABLE || value.is_empty()
-        {
+        if !name.starts_with("CRUCIBLE_") || name == crate::CONFIG_FILE_VARIABLE {
             continue;
         }
         match variables.iter().find(|(variable, _)| variable == name) {
+            // An empty variable is unset, as compose files pass them; only a secret may be empty.
+            Some((_, setting)) if value.is_empty() && !setting.secret => {}
+            None if value.is_empty() => {}
             Some((_, setting)) => {
                 values.insert(setting.key, (value.clone(), Source::Env(name.clone())));
             }
@@ -460,8 +468,8 @@ pub fn resolve(
         }
     }
 
-    let from_file = read_secret_files(&mut values, read_file, &mut errors);
-    let config = typed(&values, &mut errors);
+    let from_file = read_secret_files(&mut values, read_file, &mut errors, &mut warnings);
+    let config = typed(&values, &mut errors, &mut warnings);
     match config {
         Some(config) if errors.is_empty() => Ok(Loaded {
             config,
@@ -686,14 +694,12 @@ directory_of_everything = "x"
         let env = env(&[
             ("CRUCIBLE_CLICKHOUSE_URL", "clickhouse:9000"),
             ("CRUCIBLE_MASTER_KEY", "too-short-secret"),
-            ("CRUCIBLE_MASTER_KEY_FILE", "/run/secrets/master"),
         ]);
         let error = load(Some(file), &env, &[]).unwrap_err();
         let text = error.to_string();
-        assert_eq!(error.0.len(), 9, "{text}");
+        assert_eq!(error.0.len(), 8, "{text}");
         for needle in [
-            "the configuration has 9 problems:",
-            "both `master_key` and `master_key_file` are set (env CRUCIBLE_MASTER_KEY and env CRUCIBLE_MASTER_KEY_FILE); set only one",
+            "the configuration has 8 problems:",
             "`server.listen` = \"nowhere\" is not an address such as 0.0.0.0:8080 (file)",
             "`data.wal_backend` = \"floppy\" is not one of auto, portable, uring (file)",
             "`recent.max_bytes` = \"lots\" is not a whole number of bytes (file)",
@@ -742,11 +748,61 @@ directory_of_everything = "x"
     }
 
     #[test]
+    fn both_forms_of_a_secret_in_one_layer_use_the_file_and_warn() {
+        // The first `serve` let the file win over the value variable.
+        let env = env(&[
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse:8123"),
+            ("CRUCIBLE_CLICKHOUSE_PASSWORD", "from-env"),
+            (
+                "CRUCIBLE_CLICKHOUSE_PASSWORD_FILE",
+                "/run/secrets/clickhouse",
+            ),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ]);
+        let loaded = load(None, &env, &[]).unwrap();
+        assert_eq!(
+            loaded.config.clickhouse.unwrap().password.expose(),
+            "s3cret-from-file"
+        );
+        assert_eq!(
+            loaded.warnings,
+            [
+                "both `clickhouse.password` and `clickhouse.password_file` are set (env CRUCIBLE_CLICKHOUSE_PASSWORD and env CRUCIBLE_CLICKHOUSE_PASSWORD_FILE); the file is used. Set only one"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_malformed_master_key_is_an_error_only_where_the_key_is_used() {
+        let env = env(&[("CRUCIBLE_MASTER_KEY", "too-short-secret")]);
+        let loaded = load(None, &env, &[]).unwrap();
+        assert_eq!(loaded.config.master_key, None);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(
+            loaded.warnings[0].contains("64 hexadecimal")
+                && !loaded.warnings[0].contains("too-short")
+        );
+    }
+
+    #[test]
+    fn an_empty_secret_variable_is_an_empty_secret() {
+        // A ClickHouse admin without a password, as the first `serve` accepted.
+        let env = env(&[
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse:8123"),
+            ("CRUCIBLE_CLICKHOUSE_PASSWORD", ""),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ]);
+        let clickhouse = load(None, &env, &[]).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.password.expose(), "");
+    }
+
+    #[test]
     fn unknown_variables_are_warnings_and_empty_ones_are_unset() {
         let env = env(&[
             ("CRUCIBLE_SERVER_LISTN", "0.0.0.0:1"),
             ("CRUCIBLE_SIM_SEED", "7"),
             ("CRUCIBLE_CLICKHOUSE_URL", ""),
+            ("CRUCIBLE_NOT_A_SETTING", ""),
             ("CRUCIBLE_CONFIG", "crucible.toml"),
         ]);
         let loaded = load(None, &env, &[]).unwrap();

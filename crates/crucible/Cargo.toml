@@ -41,7 +41,7 @@ crucible-wal = { workspace = true }
 crucible-wal-codec = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
-clap = { workspace = true, features = ["env"] }
+clap = { workspace = true }
 # HKDF-SHA256 for the passwords of the generated ClickHouse identities (contract 7.1).
 hkdf = "=0.13.0"
 serde = { workspace = true }
