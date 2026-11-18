@@ -1,20 +1,33 @@
 import { type Connection, connectionKey } from "@/lib/connection";
 import { fromHttpFailure, networkError, type UiError } from "./errors";
+import type { EntityParams } from "./generated/EntityParams";
+import type { SessionDetail } from "./generated/SessionDetail";
+import type { SessionListParams } from "./generated/SessionListParams";
+import type { SessionPage } from "./generated/SessionPage";
+import type { SpanListPage } from "./generated/SpanListPage";
+import type { SpanListParams } from "./generated/SpanListParams";
 import type { SpanPage } from "./generated/SpanPage";
 import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
 import type { TraceListParams } from "./generated/TraceListParams";
-import type { ProblemBody, TimeWindow } from "./types";
+import type { UserDetail } from "./generated/UserDetail";
+import type { UserListParams } from "./generated/UserListParams";
+import type { UserPage } from "./generated/UserPage";
+import type { UserSessionPage } from "./generated/UserSessionPage";
+import type { ListFilters, ProblemBody, TimeWindow } from "./types";
 
 const BASE = "/api/v1";
 
-type Query = Record<string, string | number | undefined>;
+// A list value is sent as the parameter repeated once per value.
+type Query = Record<string, string | number | readonly string[] | undefined>;
 
 export async function apiGet<T>(path: string, query: Query, signal?: AbortSignal): Promise<T> {
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(query)) {
-    if (value !== undefined) params.set(name, String(value));
+    if (value === undefined) continue;
+    if (typeof value === "object") for (const item of value) params.append(name, item);
+    else params.set(name, String(value));
   }
   const search = params.size > 0 ? `?${params}` : "";
   let response: Response;
@@ -67,10 +80,97 @@ function projectPath(project: string, rest: string): string {
 export function listTraces(
   project: string,
   timeWindow: TimeWindow,
+  filters: ListFilters = {},
+  signal?: AbortSignal,
+  cursor?: string,
+): Promise<TraceListPage> {
+  const query: TraceListParams = { ...filters, from: timeWindow.from, to: timeWindow.to, cursor };
+  return apiGet(projectPath(project, "/traces"), query, signal);
+}
+
+// Live tail: the traces whose head arrived after `since`, a head cursor of the same window and filters.
+export function listNewTraces(
+  project: string,
+  timeWindow: TimeWindow,
+  filters: ListFilters,
+  since: string,
   signal?: AbortSignal,
 ): Promise<TraceListPage> {
-  const query: TraceListParams = { from: timeWindow.from, to: timeWindow.to };
+  const query: TraceListParams = {
+    ...filters,
+    from: timeWindow.from,
+    to: timeWindow.to,
+    since,
+    limit: 1,
+  };
   return apiGet(projectPath(project, "/traces"), query, signal);
+}
+
+export function listSpans(
+  project: string,
+  timeWindow: TimeWindow,
+  filters: ListFilters,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<SpanListPage> {
+  const query: SpanListParams = {
+    ...filters,
+    from: timeWindow.from,
+    to: timeWindow.to,
+    cursor: cursor ?? undefined,
+  };
+  return apiGet(projectPath(project, "/spans"), query, signal);
+}
+
+export function listSessions(
+  project: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<SessionPage> {
+  const query: SessionListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, "/sessions"), query, signal);
+}
+
+export function getSession(
+  project: string,
+  session: string,
+  timeWindow: TimeWindow,
+  signal?: AbortSignal,
+): Promise<SessionDetail> {
+  const query: EntityParams = { ...timeWindow };
+  return apiGet(projectPath(project, `/sessions/${encodeURIComponent(session)}`), query, signal);
+}
+
+export function listUsers(
+  project: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<UserPage> {
+  const query: UserListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, "/users"), query, signal);
+}
+
+export function getUser(
+  project: string,
+  user: string,
+  timeWindow: TimeWindow,
+  signal?: AbortSignal,
+): Promise<UserDetail> {
+  const query: EntityParams = { ...timeWindow };
+  return apiGet(projectPath(project, `/users/${encodeURIComponent(user)}`), query, signal);
+}
+
+export function listUserSessions(
+  project: string,
+  user: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<UserSessionPage> {
+  const query: UserListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, `/users/${encodeURIComponent(user)}/sessions`), query, signal);
 }
 
 export function getTrace(

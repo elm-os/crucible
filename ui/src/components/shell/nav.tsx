@@ -9,6 +9,7 @@ import { Suspense } from "react";
 export const NAV_ITEMS = [
   { value: "home", label: "Home", href: "/home" },
   { value: "traces", label: "Traces", href: "/traces" },
+  { value: "spans", label: "Spans", href: "/spans" },
   { value: "sessions", label: "Sessions", href: "/sessions" },
   { value: "users", label: "Users", href: "/users" },
   { value: "search", label: "Search", href: "/search" },
@@ -19,7 +20,11 @@ export const NAV_ITEMS = [
   { value: "settings", label: "Settings", href: "/settings/project" },
 ] as const satisfies readonly { value: string; label: string; href: Route }[];
 
-const DETAIL_PARENT: Record<string, string> = { trace: "traces" };
+const DETAIL_PARENT: Record<string, string> = {
+  trace: "traces",
+  session: "sessions",
+  user: "users",
+};
 
 export function navValueFor(pathname: string): string | null {
   const segment = pathname.split("/")[1] ?? "";
