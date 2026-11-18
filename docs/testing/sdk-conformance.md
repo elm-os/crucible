@@ -126,7 +126,8 @@ JSON to its stdin, and reads its stdout as JSON lines: a line with an `id` and `
 every other line is a server message for the request in flight (progress notifications). After the last step the
 runner closes the server's stdin and waits for it to exit.
 
-**Streamable HTTP.** The runner starts the reference server on a loopback port with its MCP endpoint at `/mcp`, and
+**Streamable HTTP.** The runner starts the reference server on `127.0.0.1` (any free port) with its MCP endpoint at
+`/mcp`, and
 sends every message as its own `POST` with `Content-Type: application/json`,
 `Accept: application/json, text/event-stream` and the step's `headers`. When the response to the `initialize` step
 carries an `MCP-Session-Id` header, the runner sends that header on every later request of the case. A response is
@@ -263,7 +264,7 @@ span must. An unmatched span is a failure (double emission shows up this way).
 |---|---|
 | `id` | Name used in reports, `parent` and `checkpoints` |
 | `select` | Attribute values (or `name` for the span name) that pick the span |
-| `when` | Applies the expectation only in some cases: `era`, `transport`, or a manifest capability (`throw_outcome`, `progress_count`); a value or a list of values |
+| `when` | Applies the expectation only in some cases: an object whose conditions must all hold, or a list of such objects of which one must hold. Conditions test `era`, `transport` or a manifest capability (`throw_outcome`, `progress_count`) against a value or a list of values |
 | `kind` | Span kind (`server`, `client`, `internal`, ...) |
 | `parent` | `null` for a root span, or the `id` of the expectation whose span is the parent (same trace) |
 | `trace_id`, `parent_span_id` | Literal hex ids, for propagated trace context |
@@ -298,8 +299,22 @@ expectations the driver adds for the legacy handshake.
 - **Export.** Every request goes to `/v1/traces` as `application/x-protobuf` (gzip allowed) with
   `Authorization: Bearer <secret key>` or `Basic base64(public:secret)` (contracts 9.10 and 12.2), and decodes.
   Spans with all-zero ids are failures.
-- **Taint.** No export body (decompressed, canonical protobuf) contains the secret key, a planted secret, a raw
-  session id or a raw `requestState`.
+- **Taint.** No export body (decompressed, canonical protobuf) contains the secret key, the Basic credential, a
+  planted secret, a raw session id or a raw `requestState`.
+- **Every span.** No span, resource or event attribute is a forbidden key, and every key the registry knows has its
+  registry type, value set, pattern and bounds. Keys the registry does not know are allowed.
+
+## Scrub rules
+
+`conformance/scrub-rules.json` is the one rule list the four SDKs and the proxy apply to captured arguments, results
+and error messages (contract 9.10). Each rule has a `name`, a `pattern`, a `replacement` and optionally a
+`validator` (`luhn`), plus `positive` inputs the rule must change and `negative` inputs it must leave alone; each
+`example` is the output of the whole list. Rules run in file order, each replacing every non-overlapping match,
+leftmost first, and a match the validator rejects is left as it is. Patterns stay in a subset that matches the same
+way, in linear time, in RE2, Go, Rust, ECMAScript and Python: explicit ASCII classes instead of `.`, `d`, `w`, `s`
+and ``; no anchors, inline flags, lookaround, backreferences or capturing groups; no lazy or possessive
+quantifiers; counts up to 1,000; and no unbounded quantifier on a group that holds one. The driver refuses a rules
+file that breaks the subset or any of its vectors, so an SDK can load the file and trust it.
 
 ## Capability manifest
 
@@ -343,8 +358,9 @@ values and the contract section. `<out>/<sdk>.md` renders the matrix (scenarios 
 `crucible-sdk-driver selftest-runner` reads a run spec and emits, with `opentelemetry-proto`, the spans an SDK that
 follows this contract would emit, without any MCP server. It models the SDK from the run spec alone and never reads
 the goldens, so a passing self-test means the collector, the driver and the goldens agree with an independent
-encoding of the contract. Built with the `test-mutants` feature, `--mutant unscrubbed-secret` makes it skip
-scrubbing; the driver must fail exactly the `mcp-secret` cases. `.github/workflows/sdk-conformance.yml` runs both on
+encoding of the contract. Its defaults match `conformance/sdks/selftest.json`; `--throw-outcome tool_error` and
+`--progress-count unobserved` model the other capability choices. Built with the `test-mutants` feature,
+`--mutant unscrubbed-secret` makes it skip scrubbing; the driver must fail exactly the `mcp-secret` cases. `.github/workflows/sdk-conformance.yml` runs both on
 every pull request that touches `conformance/**`, `sdk/**` or the crate. An SDK joins CI by committing its manifest
 and adding an entry to the workflow's matrix.
 
@@ -354,6 +370,10 @@ and adding an entry to the workflow's matrix.
   driver reads annotations only through `crucible.mcp.error.class`, and no case covers a transport failure.
 - 9.4 says senders should send `mcp.session.id` hashed; the suite requires the hashed form.
 - 3.6 has no span keys for the tool inventory, so `tools/list` cases check the operation only.
+- 9.1 and 9.2 do not spell out how span keys feed the classifier; the mapping under "What the driver checks in every
+  case" is the driver's reading.
+- 9.1 says "senders must truncate IP addresses themselves"; the suite also forbids `network.peer.address`, which
+  would carry the raw client address on a server span.
 - The suite configures no `identify` hook, so identity keys must be absent and `identity_source` must derive to
   `none`.
 - Nothing has yet played these transcripts against a real MCP server; the first SDK runner is that check.

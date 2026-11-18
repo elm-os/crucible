@@ -943,10 +943,14 @@ impl<'a> Eval<'a> {
     }
 
     fn taint(&mut self) {
-        let mut forbidden: Vec<(String, String)> = vec![(
-            "the project secret key".to_owned(),
-            self.input.suite.constants.keys.secret_key.clone(),
-        )];
+        let keys = &self.input.suite.constants.keys;
+        let mut forbidden: Vec<(String, String)> = vec![
+            ("the project secret key".to_owned(), keys.secret_key.clone()),
+            (
+                "the Basic credential".to_owned(),
+                STANDARD.encode(format!("{}:{}", keys.public_key, keys.secret_key)),
+            ),
+        ];
         if let Some(golden) = self.golden {
             forbidden.extend(
                 golden
