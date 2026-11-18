@@ -32,5 +32,6 @@ document.head.append(
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
   window.history.replaceState(null, "", "/");
 });
