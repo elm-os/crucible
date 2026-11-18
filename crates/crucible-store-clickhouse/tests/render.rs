@@ -671,22 +671,42 @@ fn m2_search() {
     let request = SearchRequest {
         tokens: vec!["Rate".to_owned(), "limit".to_owned(), "exceeded".to_owned()],
         mode: TokenMode::All,
-        fields: vec![
-            SearchField::Input,
-            SearchField::Output,
-            SearchField::Metadata,
-        ],
+        fields: vec![SearchField::Input, SearchField::Output],
         filter: Filter::And(vec![
             metadata_filter(),
             Filter::Text(TextField::UserId, vec!["u1".to_owned()]),
             Filter::Level(vec![Level::Error]),
         ]),
         limit: 20,
+        cursor: None,
+        as_of: T0.saturating_add_micros(3_600_000_000),
     };
     let found = search(project(), window(), &clamp(), Caller::Session, &request)
         .unwrap()
         .unwrap();
     insta::assert_snapshot!("m2_search_hits", rendered(&found.hits));
+    // The next page, resuming after the key of the last hit; a phrase anchors its snippets on itself.
+    let next = SearchRequest {
+        mode: TokenMode::Phrase,
+        cursor: Some((T0, trace().trace_hash(), span(1))),
+        ..request.clone()
+    };
+    let next = search(project(), window(), &clamp(), Caller::Session, &next)
+        .unwrap()
+        .unwrap();
+    insta::assert_snapshot!("m2_search_phrase_after_cursor", rendered(&next.hits));
+    // Metadata entries, searched as they are written.
+    let entries = SearchRequest {
+        tokens: vec!["tenant=Acme".to_owned()],
+        mode: TokenMode::Any,
+        fields: vec![SearchField::Metadata],
+        filter: Filter::all(),
+        ..request.clone()
+    };
+    let entries = search(project(), window(), &clamp(), Caller::Session, &entries)
+        .unwrap()
+        .unwrap();
+    insta::assert_snapshot!("m2_search_metadata", rendered(&entries.hits));
     let hits = [
         (T0, trace().trace_hash(), span(1)),
         (T0.saturating_add_micros(61_000_000), 7, span(2)),
@@ -1091,6 +1111,7 @@ enum Shape {
         mode: usize,
         both_fields: bool,
         snippets: bool,
+        paged: bool,
     },
     TimeSeries {
         step: usize,
@@ -1122,6 +1143,7 @@ enum Shape {
         tokens: usize,
         metadata: bool,
         filtered: bool,
+        cursor: bool,
     },
     SearchSpans {
         hits: usize,
@@ -1171,14 +1193,15 @@ fn shape() -> impl Strategy<Value = Shape> {
         ),
         (0usize..7, flag()).prop_map(|(table, grouped)| Shape::AggregateRollup { table, grouped }),
         (flag(), pred_shape()).prop_map(|(right_scan, pred)| Shape::SemiJoin { right_scan, pred }),
-        (1usize..7, 0usize..3, flag(), flag()).prop_map(|(tokens, mode, both_fields, snippets)| {
-            Shape::TextSearch {
+        (1usize..7, 0usize..3, flag(), flag(), flag()).prop_map(
+            |(tokens, mode, both_fields, snippets, paged)| Shape::TextSearch {
                 tokens,
                 mode,
                 both_fields,
                 snippets,
+                paged,
             }
-        }),
+        ),
         (0usize..6, flag(), flag()).prop_map(|(step, grouped, zero)| Shape::TimeSeries {
             step,
             grouped,
@@ -1197,10 +1220,13 @@ fn shape() -> impl Strategy<Value = Shape> {
             metadata,
             cursor
         }),
-        (1usize..5, flag(), flag()).prop_map(|(tokens, metadata, filtered)| Shape::Search {
-            tokens,
-            metadata,
-            filtered
+        (1usize..5, flag(), flag(), flag()).prop_map(|(tokens, metadata, filtered, cursor)| {
+            Shape::Search {
+                tokens,
+                metadata,
+                filtered,
+                cursor,
+            }
         }),
         (1usize..6, flag()).prop_map(|(hits, filtered)| Shape::SearchSpans { hits, filtered }),
         Just(Shape::Payload),
@@ -1451,6 +1477,7 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             mode,
             both_fields,
             snippets,
+            paged,
         } => {
             let mut fields = vec![SpanPayloadCol::Input];
             if *both_fields {
@@ -1473,6 +1500,24 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
                     len: 1 + v.below(1_000) as u32,
                 };
                 search = search.with_snippets(snippet).unwrap();
+            }
+            if *paged {
+                let mut id = [0u8; 8];
+                id.copy_from_slice(&v.bytes(8));
+                let after = vec![
+                    Literal::Time(v.time().floor_minute()),
+                    Literal::UInt(u64::from(v.next() as u32)),
+                    Literal::Bytes(id.to_vec()),
+                ];
+                search = search
+                    .ordered(Direction::Desc)
+                    .after(after)
+                    .unwrap()
+                    .arrived(ArrivalBounds {
+                        as_of: Some(v.time()),
+                        since: None,
+                    })
+                    .unwrap();
             }
             plan(QueryClass::Search, Node::TextSearch(search))
         }
@@ -1575,17 +1620,30 @@ fn build(shape: &Shape, seed: u64) -> QueryPlan {
             tokens,
             metadata,
             filtered,
+            cursor,
         } => {
-            let mut fields = vec![SearchField::Output, SearchField::Input];
-            if *metadata {
-                fields.push(SearchField::Metadata);
-            }
+            // Metadata entries and text tokens are searched by separate plans.
+            let fields = if *metadata {
+                vec![SearchField::Metadata]
+            } else {
+                vec![SearchField::Output, SearchField::Input]
+            };
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&v.bytes(8));
             let request = SearchRequest {
                 tokens: (0..*tokens).map(|_| v.string()).collect(),
                 mode: TokenMode::All,
                 fields,
                 filter: filter(v, *filtered, *metadata),
                 limit: 1 + v.below(200) as u32,
+                cursor: cursor.then(|| {
+                    (
+                        v.time().floor_minute(),
+                        v.next() as u32,
+                        SpanId::from_bytes(id),
+                    )
+                }),
+                as_of: v.time(),
             };
             search(scope, window, &clamp(), Caller::Session, &request)
                 .unwrap()
