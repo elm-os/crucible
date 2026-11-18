@@ -1,6 +1,8 @@
 import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { TraceListItem } from "@/api/generated/TraceListItem";
+import type { TraceListPage } from "@/api/generated/TraceListPage";
 import { createQueryClient } from "@/components/providers";
 import { TracesSection } from "./traces-section";
 
@@ -40,6 +42,43 @@ const html = (status: number, headers: Record<string, string> = {}) =>
 
 const json = (body: unknown, status = 200, type = "application/json") =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": type } });
+
+function item(fields: Partial<TraceListItem> = {}): TraceListItem {
+  return {
+    trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+    name: "POST /checkout",
+    trace_name: "checkout agent",
+    head_kind: "root",
+    start_time: "2026-11-17T14:00:00.000000Z",
+    duration_us: 1_250_000,
+    status_code: "unset",
+    level: "default",
+    span_count: 12,
+    error_count: 0,
+    total_cost_usd: 0.0042,
+    input_tokens: 1_200,
+    output_tokens: 300,
+    total_tokens: 1_500,
+    user_id: "",
+    session_id: "",
+    environment: "prod",
+    release: "",
+    tags: [],
+    saturated: false,
+    ...fields,
+  };
+}
+
+function page(data: TraceListItem[], fields: Partial<TraceListPage> = {}): TraceListPage {
+  return {
+    data,
+    next_cursor: null,
+    has_more: false,
+    head_cursor: null,
+    meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
+    ...fields,
+  };
+}
 
 describe("with no backend, the section shows a designed error, never a blank or empty list", () => {
   test("a browser that reports offline still fetches and shows the error", async () => {
@@ -83,7 +122,7 @@ describe("with no backend, the section shows a designed error, never a blank or 
 
   test("retry refetches only this section", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    fetchMock.mockResolvedValue(json({ data: [], next_cursor: null, has_more: false }));
+    fetchMock.mockResolvedValue(json(page([])));
     renderSection();
     const retry = await screen.findByRole("button", { name: "Retry recent traces" });
     await act(async () => retry.click());
@@ -93,36 +132,84 @@ describe("with no backend, the section shows a designed error, never a blank or 
 });
 
 describe("with the API answering", () => {
-  test("rows render, and the request carries the project and an RFC 3339 window", async () => {
+  test("rows render every column, and the request carries the project and an RFC 3339 window", async () => {
     window.history.replaceState(null, "", "/traces/?project=p-1&range=7d");
-    fetchMock.mockResolvedValue(
-      json({
-        data: [
-          {
-            trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
-            name: "checkout agent",
-            start_time: "2026-11-17T14:00:00.000000Z",
-            duration_us: 1_250_000,
-            span_count: 12,
-            error_count: 2,
-          },
-        ],
-        next_cursor: null,
-        has_more: false,
-      }),
-    );
+    fetchMock.mockResolvedValue(json(page([item({ error_count: 2 })])));
     renderSection();
     const link = await screen.findByRole("link", { name: "checkout agent" });
-    expect(link.getAttribute("href")).toContain("trace=4bf92f3577b34da6a3ce929d0e0e4736");
-    expect(screen.getByText("2 errors")).toBeTruthy();
+    // The static export keeps the trailing slash (trailingSlash: true); here Link may drop it.
+    const href = new URL(link.getAttribute("href") ?? "", "http://localhost");
+    expect(href.pathname).toMatch(/^\/trace\/?$/);
+    expect(Object.fromEntries(href.searchParams)).toEqual({
+      project: "p-1",
+      trace: "4bf92f3577b34da6a3ce929d0e0e4736",
+    });
+    const headers = screen.getAllByRole("columnheader").map((cell) => cell.textContent);
+    expect(headers).toEqual(["Started", "Name", "Duration", "Spans", "Cost", "Status"]);
+    const status = screen.getByText("2 errors");
+    expect(status.getAttribute("data-status")).toBe("error");
+    expect(status.querySelector("svg")).toBeTruthy();
     expect(screen.getByText("1.3 s")).toBeTruthy();
+    expect(screen.getByText("12")).toBeTruthy();
+    expect(screen.getByText("$0.0042")).toBeTruthy();
+    expect(screen.queryByText(/may be missing/)).toBeNull();
 
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]), "http://localhost");
     expect(url.pathname).toBe("/api/v1/projects/p-1/traces");
+    expect([...url.searchParams.keys()]).toEqual(["from", "to"]);
     const from = Date.parse(url.searchParams.get("from") ?? "");
     const to = Date.parse(url.searchParams.get("to") ?? "");
     expect(url.searchParams.get("to")).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:00\.000000Z$/);
     expect(to - from).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  test("a trace without errors is OK, and an unnamed trace falls back to its head span", async () => {
+    fetchMock.mockResolvedValue(
+      json(page([item({ trace_name: "", total_cost_usd: 0, duration_us: 400 })])),
+    );
+    renderSection();
+    expect(await screen.findByRole("link", { name: "POST /checkout" })).toBeTruthy();
+    expect(screen.getByText("OK").getAttribute("data-status")).toBe("ok");
+    expect(screen.getByText("$0")).toBeTruthy();
+    expect(screen.getByText("<1 ms")).toBeTruthy();
+  });
+
+  test("a head span that failed without error-level spans still shows the error", async () => {
+    fetchMock.mockResolvedValue(json(page([item({ status_code: "error" })])));
+    renderSection();
+    const status = await screen.findByText("Error");
+    expect(status.getAttribute("data-status")).toBe("error");
+  });
+
+  test("a partial page says traces may be missing, and a lagging one that the newest may be", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        page([item()], {
+          meta: {
+            as_of: "2026-11-17T14:00:05.000000Z",
+            partial: true,
+            partial_reason: "store_unavailable",
+            consistency: "strong",
+          },
+        }),
+      ),
+    );
+    const { unmount } = renderSection();
+    expect(
+      await screen.findByText("Some traces may be missing. Part of the data couldn't be read."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/store_unavailable/)).toBeNull();
+    unmount();
+
+    fetchMock.mockResolvedValueOnce(
+      json(
+        page([item()], {
+          meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "lagging" },
+        }),
+      ),
+    );
+    renderSection();
+    expect(await screen.findByText("The newest traces may not be shown yet.")).toBeTruthy();
   });
 
   test("an entity 404 problem uses the not-found copy", async () => {
@@ -140,9 +227,7 @@ describe("with the API answering", () => {
   });
 
   test("an empty window offers a wider range, and the widest range invites the first trace", async () => {
-    fetchMock.mockImplementation(async () =>
-      json({ data: [], next_cursor: null, has_more: false }),
-    );
+    fetchMock.mockImplementation(async () => json(page([])));
     renderSection();
     const widen = await screen.findByRole("button", { name: "Show last 30 days" });
     expect(

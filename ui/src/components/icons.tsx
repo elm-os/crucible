@@ -28,6 +28,24 @@ export function AlertIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function CheckIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.5 2.5 2.5 4.5-5" />
+    </Icon>
+  );
+}
+
+export function UnsetIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 12h7" />
+    </Icon>
+  );
+}
+
 export function TodoIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Icon {...props}>

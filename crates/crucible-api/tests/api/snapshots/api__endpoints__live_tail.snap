@@ -1,0 +1,61 @@
+---
+source: crates/crucible-api/tests/api/endpoints.rs
+expression: tail.pretty()
+---
+{
+  "data": [
+    {
+      "duration_us": 1000,
+      "environment": "",
+      "error_count": 0,
+      "head_kind": "root",
+      "input_tokens": 1,
+      "level": "default",
+      "name": "span-30",
+      "output_tokens": 2,
+      "release": "",
+      "saturated": false,
+      "session_id": "",
+      "span_count": 1,
+      "start_time": "2026-11-17T09:29:40.000000Z",
+      "status_code": "ok",
+      "tags": [],
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000003",
+      "trace_name": "",
+      "user_id": ""
+    },
+    {
+      "duration_us": 1000,
+      "environment": "",
+      "error_count": 0,
+      "head_kind": "root",
+      "input_tokens": 1,
+      "level": "default",
+      "name": "span-20",
+      "output_tokens": 2,
+      "release": "",
+      "saturated": false,
+      "session_id": "",
+      "span_count": 1,
+      "start_time": "2026-11-17T09:29:30.000000Z",
+      "status_code": "ok",
+      "tags": [],
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000002",
+      "trace_name": "",
+      "user_id": ""
+    }
+  ],
+  "has_more": false,
+  "head_cursor": "tmp1.h.AQEBAQEBAQEBAQEBAQEBAQAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAAAAAAAAAD",
+  "meta": {
+    "as_of": "2026-11-17T09:30:00.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "new_count": 2,
+  "next_cursor": null
+}

@@ -1,0 +1,28 @@
+---
+source: crates/crucible-api/tests/api/endpoints.rs
+expression: bounds.pretty()
+---
+{
+  "max_window_days": 30,
+  "mcp": {
+    "client": {
+      "first": null,
+      "last": null
+    },
+    "server": {
+      "first": null,
+      "last": null
+    }
+  },
+  "meta": {
+    "as_of": "2026-11-17T09:30:04.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "retention_horizon": null,
+  "server_time": "2026-11-17T09:30:04.000000Z",
+  "spans": {
+    "first": "2026-11-17T09:29:00.000000Z",
+    "last": "2026-11-17T09:29:00.000000Z"
+  }
+}

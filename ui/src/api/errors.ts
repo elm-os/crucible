@@ -1,4 +1,4 @@
-import type { Problem } from "./types";
+import type { ProblemBody } from "./types";
 
 export type UiErrorKind =
   | "network"
@@ -133,7 +133,7 @@ export class UiError extends Error {
 export interface HttpFailure {
   status: number;
   /** The parsed problem+json body, or null when the response was not one. */
-  problem: Problem | null;
+  problem: ProblemBody | null;
   requestIdHeader: string | null;
   retryAfterHeader: string | null;
 }
@@ -187,7 +187,7 @@ function validRequestId(value: unknown): string | null {
   return typeof value === "string" && REQUEST_ID.test(value) ? value : null;
 }
 
-function retryAfter(header: string | null, problem: Problem | null): number | null {
+function retryAfter(header: string | null, problem: ProblemBody | null): number | null {
   if (header !== null && /^\d+$/.test(header.trim())) return Number(header.trim());
   const fromBody = problem?.retry_after_s;
   return typeof fromBody === "number" && Number.isFinite(fromBody) && fromBody >= 0
@@ -195,7 +195,7 @@ function retryAfter(header: string | null, problem: Problem | null): number | nu
     : null;
 }
 
-function fieldErrors(problem: Problem | null): FieldError[] {
+function fieldErrors(problem: ProblemBody | null): FieldError[] {
   if (!Array.isArray(problem?.errors)) return [];
   return problem.errors.flatMap((entry) =>
     typeof entry?.pointer === "string" && typeof entry.code === "string"
