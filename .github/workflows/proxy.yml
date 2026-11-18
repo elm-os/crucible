@@ -2,13 +2,16 @@ name: proxy
 
 # The MCP proxy on Windows (invariant I11, process tests). The Linux run of the same tests is part of ci-rust.
 # On Windows the proxy starts its child suspended, puts it in a Job Object with kill-on-close, resumes it, and
-# resolves commands through PATHEXT; only a Windows runner can exercise that against real processes.
+# resolves commands through PATHEXT; only a Windows runner can exercise that against real processes. The second
+# step runs the `crucible` binary itself and kills it, which is what kill-on-close is for.
 
 on:
   pull_request:
     paths:
       - crates/crucible-proxy/**
       - crates/crucible-env*/**
+      - crates/crucible/src/proxy.rs
+      - crates/crucible/tests/proxy*.rs
       - .github/workflows/proxy.yml
   workflow_dispatch:
 
@@ -27,7 +30,7 @@ env:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,3 +42,5 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Proxy tests
         run: cargo test -p crucible-proxy --locked
+      - name: The crucible binary as a proxy (kill-on-close of the Job Object)
+        run: cargo test -p crucible --test proxy_windows --locked

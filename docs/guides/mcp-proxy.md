@@ -46,8 +46,8 @@ Behaviour:
 - **Standard error** of the server will be inherited by default. `--capture-stderr` will copy it through the proxy
   instead.
 - **End of input.** When the client closes its end, the proxy will close the server's standard input.
-- **Exit.** The proxy will exit with the server's exit code. On Unix, when a signal ended the server, the proxy
-  will end by the same signal.
+- **Exit.** The proxy will exit with the server's exit code, after everything the server wrote has been
+  delivered to the client. On Unix, when a signal ended the server, the proxy will end by the same signal.
 - **Signals (Unix).** `SIGTERM`, `SIGINT` and `SIGHUP` will be forwarded to the server's process group. On Linux
   the server will also receive `SIGTERM` if the proxy itself is killed.
 - **Windows.** The server will start suspended, join a Job Object with kill-on-close and then resume, so the whole
@@ -151,9 +151,10 @@ are identical to a run with no telemetry, for every chunking, and added latency 
 | The proxy core as a state machine with no IO, over 10,000 seeds: a scripted server that stalls, crashes and exits, random chunk splits, analyser schedules, queue sizes and five collector states. Every chunk comes out as it went in, drops are counted, and every operation is accounted for | `crates/crucible-proxy/tests/core_dst.rs` |
 | Two seeded defects that those checks must catch: one changes a byte, one holds bytes back while the queue is full | the same file, feature `test-mutants` |
 | The scanner against a full JSON parse under arbitrary chunking and escaping | `crates/crucible-proxy/tests/scan_diff.rs` |
+| The pumps against a scripted server task behind the `ChildProcess` trait, 150 seeds: chunk splits on both sides, stalls, pipes of every size, crashes in mid line, exit codes, and a client that starts reading three seconds after the server exited | `crates/crucible-proxy/tests/stdio_scripted.rs` |
 | Real processes on Linux and Windows: collector healthy, refused, stalled and absent; lines over 1 MiB; exit codes; a crash in mid answer; signals; end of input; the process tree; a `.cmd` shim | `crates/crucible-proxy/tests/stdio_process.rs` |
 | Real sockets: the same requests with and without the proxy, event streams, the 401 challenge, a legacy session, client disconnect, identity modes, and a planted token that must appear in no export | `crates/crucible-proxy/tests/http_process.rs` |
-| The `crucible` binary itself: exit code, dying of the child's signal, the parent-death signal, a clean standard output | `crates/crucible/tests/proxy.rs` |
+| The `crucible` binary itself: exit code, dying of the child's signal, the parent-death signal, a clean standard output; on Windows, the server's process tree ending when the proxy process is killed | `crates/crucible/tests/proxy.rs`, `crates/crucible/tests/proxy_windows.rs` |
 | Every exported attribute against the key registry of the SDK conformance suite | the process tests, with `conformance/registry.json` |
 
 ### Overhead

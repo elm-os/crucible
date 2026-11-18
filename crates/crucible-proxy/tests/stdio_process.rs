@@ -372,7 +372,9 @@ async fn listening(env: &Env, port: u16) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_the_child_ends_the_processes_it_started() {
-    // Unix: the process group is killed. Windows: the Job Object closes with kill-on-close.
+    // Unix: the process group is killed. Windows: the Job Object is terminated. That the tree also ends when
+    // the proxy process itself dies (the parent-death signal, kill-on-close) is checked with the real binary, in
+    // `crates/crucible/tests`.
     let env = prod_env();
     let children: Arc<dyn ChildProcess> = Arc::new(TokioChildProcess::new());
     let mut child = children.spawn(server(&["--spawn-listener"])).await.unwrap();

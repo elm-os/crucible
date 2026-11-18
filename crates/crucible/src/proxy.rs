@@ -54,6 +54,22 @@ enum ProxyCommand {
     },
 }
 
+/// A secret from the command line or the environment. It never prints.
+#[derive(Clone)]
+struct SecretArg(String);
+
+impl From<String> for SecretArg {
+    fn from(secret: String) -> Self {
+        Self(secret)
+    }
+}
+
+impl std::fmt::Debug for SecretArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// Where the telemetry goes. Without an endpoint the proxy only forwards.
 #[derive(Debug, Args)]
 struct TelemetryArgs {
@@ -66,7 +82,7 @@ struct TelemetryArgs {
     #[arg(long, env = "CRUCIBLE_SECRET_KEY_FILE")]
     secret_key_file: Option<PathBuf>,
     #[arg(long, env = "CRUCIBLE_SECRET_KEY", hide = true, hide_env_values = true)]
-    secret_key: Option<String>,
+    secret_key: Option<SecretArg>,
     /// The name the server is reported under. Defaults to the command's file name (stdio) or the upstream
     /// host (http). Also read from CRUCIBLE_SERVER_NAME.
     #[arg(long, env = "CRUCIBLE_SERVER_NAME")]
@@ -190,7 +206,7 @@ fn telemetry(
     default_name: &str,
 ) -> anyhow::Result<Telemetry> {
     let key = match (&args.secret_key, &args.secret_key_file) {
-        (Some(key), _) => Some(key.trim().to_owned()),
+        (Some(key), _) => Some(key.0.trim().to_owned()),
         (None, Some(path)) => Some(
             std::fs::read_to_string(path)
                 .with_context(|| format!("reading the secret key file {}", path.display()))?
@@ -433,5 +449,53 @@ pub fn run(args: ProxyArgs) -> anyhow::Result<()> {
                 anyhow::bail!("this internal subcommand exists only on Unix")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use crate::{Cli, Command};
+
+    #[test]
+    fn the_proxy_subcommands_parse_and_the_secret_key_never_prints() {
+        let cli = Cli::parse_from([
+            "crucible",
+            "proxy",
+            "stdio",
+            "--endpoint",
+            "http://127.0.0.1:8080",
+            "--secret-key",
+            "csk_planted",
+            "--capture-stderr",
+            "--",
+            "npx",
+            "-y",
+            "--flag-of-the-server",
+        ]);
+        let printed = format!("{cli:?}");
+        assert!(!printed.contains("csk_planted"), "{printed}");
+        assert!(printed.contains("--flag-of-the-server"), "{printed}");
+        assert!(matches!(cli.command, Command::Proxy(_)));
+
+        let cli = Cli::parse_from([
+            "crucible",
+            "proxy",
+            "http",
+            "--listen",
+            "127.0.0.1:8090",
+            "--upstream",
+            "http://127.0.0.1:3000",
+            "--identity",
+            "claims",
+        ]);
+        assert!(format!("{cli:?}").contains("Claims"));
+        // The listen address and the upstream are required, and the server command must follow `--`.
+        assert!(
+            Cli::try_parse_from(["crucible", "proxy", "http", "--listen", "127.0.0.1:1"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["crucible", "proxy", "stdio"]).is_err());
+        assert!(Cli::try_parse_from(["crucible", "proxy", "stdio", "npx"]).is_err());
     }
 }
