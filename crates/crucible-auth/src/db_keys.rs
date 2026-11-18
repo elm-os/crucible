@@ -528,6 +528,9 @@ pub async fn run_feed(env: Env, keys: Arc<DbKeys>, feed: Arc<dyn KeyFeed>) {
 /// [`run_feed`] with the overlap window as a parameter, so that a test can show what a missing window costs.
 async fn feed_loop(env: Env, keys: Arc<DbKeys>, feed: Arc<dyn KeyFeed>, overlap: Duration) {
     let rng = env.rng.fork("crucible-auth/key-feed");
+    let age = env
+        .metrics
+        .gauge(&crucible_env::metrics::registry::AUTH_KEY_SNAPSHOT_AGE, &[]);
     let mut since_reload = Duration::ZERO;
     let mut loaded = keys.is_loaded();
     loop {
@@ -551,6 +554,10 @@ async fn feed_loop(env: Env, keys: Arc<DbKeys>, feed: Arc<dyn KeyFeed>, overlap:
         {
             tracing::warn!(first = %first, %error, "polling the key feed failed twice");
         }
+        age.set(
+            keys.age()
+                .map_or(-1, |age| i64::try_from(age.as_secs()).unwrap_or(i64::MAX)),
+        );
         let jitter = Duration::from_micros(rng.next_u64() % JITTER_MICROS);
         let pause = POLL_EVERY + jitter;
         env.clock.sleep(pause).await;

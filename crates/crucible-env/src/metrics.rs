@@ -291,10 +291,23 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Seconds since the API key snapshot last loaded or polled successfully (contract 11.8); -1 before the
+    /// first load.
+    pub static AUTH_KEY_SNAPSHOT_AGE: GaugeDef = GaugeDef {
+        name: "crucible_auth_key_snapshot_age_seconds",
+        help: "Seconds since the API key snapshot last loaded or polled successfully; -1 before the first load.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
             (BUILD_INFO.name, BUILD_INFO.labels, &[]),
+            (
+                AUTH_KEY_SNAPSHOT_AGE.name,
+                AUTH_KEY_SNAPSHOT_AGE.labels,
+                &[],
+            ),
             (WAL_BACKEND_INFO.name, WAL_BACKEND_INFO.labels, &[]),
             (HTTP_REQUESTS.name, HTTP_REQUESTS.labels, &[]),
             (
