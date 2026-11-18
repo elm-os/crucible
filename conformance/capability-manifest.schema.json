@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/elm-os/crucible/conformance/capability-manifest.schema.json",
+  "title": "Crucible SDK capability manifest",
+  "description": "What one SDK declares to the conformance driver (docs/testing/sdk-conformance.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "sdk", "language", "sdk_version", "runner", "kinds", "variants", "throw_outcome", "progress_count", "skips"],
+  "properties": {
+    "schema": { "const": "crucible.conformance.manifest/v1" },
+    "sdk": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$", "description": "Report name; the report files are <sdk>.jsonl and <sdk>.md" },
+    "language": { "type": "string", "minLength": 1 },
+    "sdk_version": { "type": "string", "minLength": 1 },
+    "runner": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Program and arguments, resolved against the driver's working directory. The program name crucible-sdk-driver means the running driver"
+    },
+    "kinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["agent", "mcp"] }
+    },
+    "variants": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"] }
+    },
+    "throw_outcome": {
+      "enum": ["tool_error", "internal"],
+      "description": "What a tool handler's exception becomes: an isError result (tool_error) or a JSON-RPC error -32603 (internal)"
+    },
+    "progress_count": {
+      "enum": ["observed", "unobserved"],
+      "description": "observed: crucible.mcp.progress.count equals the progress notifications sent; unobserved: the key is absent"
+    },
+    "skips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case", "reason"],
+        "properties": {
+          "case": { "type": "string", "minLength": 1, "description": "A case id (scenario@variant) or a scenario id" },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
