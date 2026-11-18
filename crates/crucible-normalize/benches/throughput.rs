@@ -162,8 +162,7 @@ fn stage_a_throughput() {
 
 /// Stage B on one thread over the frames of [`stage_a_throughput`], where every span carries usage and 15 of 16
 /// name a parent in the frame: the cost of one admission into fresh state, and what the usage descendant set
-/// adds to it. The second figure is the same frame with its usage removed, so that no span enters the set; the
-/// copy of the frame that each iteration needs is timed alone and subtracted.
+/// adds to it. The second figure is the same frame with its usage removed, so that no span enters the set.
 #[test]
 #[ignore = "timing test; run in release with --ignored --nocapture"]
 fn stage_b_usage_descendant_set() {
@@ -188,20 +187,24 @@ fn stage_b_usage_descendant_set() {
             span.core.usage.clear();
             span.core.total_cost_nusd = NanoUsd::ZERO;
         }
-        let budget = Duration::from_secs(3);
+        // Nanoseconds per span of one admission into fresh state; the copy each admission consumes is made
+        // outside the timed part.
         let admit = |frame: &NormalizedFrame| {
-            let mut copy = frame.clone();
-            StageB::default().admit(&mut copy).unwrap();
-            copy.spans.len()
+            let mut timed = Duration::ZERO;
+            let mut admissions = 0u32;
+            while timed < Duration::from_secs(2) {
+                let mut copy = frame.clone();
+                let mut stage = StageB::default();
+                let start = Instant::now();
+                black_box(stage.admit(black_box(&mut copy)).unwrap());
+                timed += start.elapsed();
+                admissions += 1;
+            }
+            timed.as_nanos() as f64 / (f64::from(admissions) * spans as f64)
         };
-        // Nanoseconds per span of one iteration.
-        let ns = |per_s: f64| 1e9 / (per_s * spans as f64);
-        let copy = ns(rate(budget, || black_box(&with_usage).clone().spans.len()));
-        let marked = ns(rate(budget, || admit(black_box(&with_usage)))) - copy;
-        let copy_plain = ns(rate(budget, || {
-            black_box(&without_usage).clone().spans.len()
-        }));
-        let plain = ns(rate(budget, || admit(black_box(&without_usage)))) - copy_plain;
+        admit(&with_usage);
+        let marked = admit(&with_usage);
+        let plain = admit(&without_usage);
         let flagged = {
             let mut copy = with_usage.clone();
             StageB::default().admit(&mut copy).unwrap();
