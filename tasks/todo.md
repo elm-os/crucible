@@ -112,6 +112,68 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [ ] Documentation: self-hosting (OSS and Cloud), SDK and MCP guides, API reference, integrations, migration,
       comparison -> verify: rightmodeler reads an export with zero dropped records; naming check green.
 
+## Performance work, scheduled by trigger
+
+Each item's first commit is a check that fails on main, bounded by work counts rather than wall-clock time; then the
+change; then the validation named here. Ids are stable.
+
+Now (touches none of the single-writer files):
+
+- [ ] SPD-03: a capture-overhead scenario in the shared SDK suite, with worst-case shapes and work bounds
+      -> verify: the scenario fails on main for the scrubbing and serialization shapes, in every SDK.
+- [ ] SPD-06: scrub captured text in time linear in its length (TypeScript, Python, Go, Rust, and the fake
+      collector's scrubber) -> verify: SPD-03's token-run shapes fall to a few substring searches.
+- [ ] SPD-07: serialize no more of a captured value than the 16 KiB cap needs -> verify: SPD-03's large-result
+      shape no longer grows with the result.
+- [ ] SPD-13: bound the SDK export queues by bytes as well as by spans (contract 9.10 wording from the lead)
+      -> verify: a stalled-collector test holds the queue under its byte ceiling.
+- [ ] SPD-08: keep idle store connections as long as the server keeps them, detecting the server's keep-alive at
+      start-up and staying under it with a margin -> verify: a connect counter shows reuse after an idle gap; no
+      reused dead connection turns an insert into an unknown outcome.
+- [ ] SPD-09: size memory-derived defaults from the container's memory limit, with a fallback on Windows
+      -> verify: a limited container gets a bound from its limit, not the host's memory.
+
+When the perf gate is on main:
+
+- [ ] SPD-01 (lanes): an end-to-end sustained lane (overload, drain, the zero-loss check), freshness p95 at a fixed
+      rate, a gzip lane, varied request shapes, and compression off the generator's runtime workers
+      -> verify: an A/A run over 5 pairs passes and a seeded slowdown is flagged.
+- [ ] SPD-02: a read-latency bench for trace by id and the 30-day list (the MCP dashboard lane once its endpoints
+      exist), with per-request store-read, connection and barrier-wait counters -> verify: p50/p95/p99 per endpoint.
+- [ ] SPD-15 (pre-ack items): trim the inflate and block-frame copies, bench first.
+- [ ] SPD-04 (first half): one CPU budget for blocking work: permits sized from the core count (with a Kani proof of
+      the counter), a blocking-thread ceiling, wait and hold timings, the ingest part -> verify: an A/B result with no
+      ack p99 regression.
+
+When the facts slice and SPD-08 are on main:
+
+- [ ] SPD-10: issue a request's independent store reads together, capturing the watermark and `as_of` once before
+      the wave -> verify: trace detail in two waves instead of six sequential reads; the read bench.
+
+Exclusive perf window (after MCP storage merges, before the next heavy launch):
+
+- [ ] The fsync probe and a full-rig A/A; the baseline with post-MCP rows per span; SPD-02's large datasets; SPD-14
+      (the fat-LTO profile) with the inflate-backend and target-CPU checks as extra arms.
+
+Shipper-throughput window (single writer, after MCP storage):
+
+- [ ] Phase timings on main; SPD-05 (constant-time provisional-head lookup); SPD-11 (wake the shipper when the
+      durable LSN moves).
+- [ ] Encoding off the shipper task and parallel stage A, under SPD-04's permits (its second half).
+- [ ] SPD-15 (WAL and handoff items), bench first.
+- [ ] Decide whether the columnar pair builders go in this window or in M6, from the re-measured phase split.
+
+With wave B:
+
+- [ ] SPD-17: a stable per-id offset for scheduled evaluations, in the alert evaluator.
+- [ ] Proxy opt-in content capture, after SPD-06, so it scrubs in linear time from the start.
+
+Conditional:
+
+- [ ] SPD-12: bound the work of re-reading one recent span's payload (after MCP storage merges).
+- [ ] SPD-16: cache settled time slices of dashboard aggregates, only if SPD-02 shows the dashboard lane over its
+      gate.
+
 ## M6: v0 hardening and release
 
 - [ ] Perf tuning to the gates; io_uring WAL backend benchmarked; nightly simulation of at least 10,000 seeds green.
