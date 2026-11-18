@@ -3,11 +3,11 @@
 
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use serde_json::Value;
 
 use crate::world::{GRACE, NOW, World, span, trace};
-use crate::{api, get, path, run, window};
+use crate::{api, api_without_store, get, other_key, path, run, send, window};
 
 const SECOND: i64 = 1_000_000;
 const HOUR: i64 = 3_600 * SECOND;
@@ -84,7 +84,7 @@ fn every_endpoint_answers_with_its_wire_shape() {
             list.body["head_cursor"]
                 .as_str()
                 .unwrap()
-                .starts_with("tmp1.h.")
+                .starts_with("v1.test.")
         );
         assert!(list.body.get("new_count").is_none());
         assert_whole(&list.body);
@@ -191,6 +191,110 @@ fn pages_follow_next_cursor_and_cursors_stay_with_their_request() {
         get(&api, &traces_uri(&format!("&cursor={head}")))
             .await
             .assert_problem(400, "cursor_invalid");
+    });
+}
+
+/// Changes the payload character at `at` to another base64url character.
+fn changed_at(cursor: &str, at: usize) -> String {
+    let mut bytes = cursor.as_bytes().to_vec();
+    bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+    String::from_utf8(bytes).unwrap()
+}
+
+#[test]
+fn tampered_expired_and_foreign_cursors_are_cursor_invalid() {
+    run(|env| async move {
+        let mut world = World::new(100);
+        for n in 1..=3 {
+            world.ack(vec![span(n, 10 * n, 0, ago(100 - n as i64))]);
+        }
+        world.settle();
+        let api = api(&env, &world);
+        let first = get(&api, &traces_uri("&limit=1")).await;
+        let next = first.body["next_cursor"].as_str().unwrap().to_owned();
+        let head = first.body["head_cursor"].as_str().unwrap().to_owned();
+        let page = |cursor: &str| traces_uri(&format!("&limit=1&cursor={cursor}"));
+        let refused = |reply: crate::Reply, reason: &str| {
+            reply.assert_problem(400, "cursor_invalid");
+            assert_eq!(
+                reply.body["detail"],
+                format!("{reason}; restart from the first page")
+            );
+        };
+        // As issued, the cursor opens.
+        let second = get(&api, &page(&next)).await;
+        assert_eq!(second.status, StatusCode::OK, "{:#}", second.body);
+        assert_eq!(
+            ids(&second.body["data"], "trace_id"),
+            [trace(2).to_string()]
+        );
+
+        // Any change to the text fails the MAC: here one character of the payload ("v1.test." is 8 long).
+        refused(
+            get(&api, &page(&changed_at(&next, 20))).await,
+            "the cursor's MAC does not verify",
+        );
+        refused(
+            get(
+                &api,
+                &traces_uri(&format!("&since={}", changed_at(&head, 20))),
+            )
+            .await,
+            "the cursor's MAC does not verify",
+        );
+        // A key id this node does not hold.
+        refused(
+            get(&api, &page(&next.replacen("v1.test.", "v1.retired.", 1))).await,
+            "the cursor names an unknown signing key",
+        );
+        // Project 2's key, on project 2's list, with project 1's cursor.
+        let foreign = send(
+            &api,
+            Method::GET,
+            &format!("{}?{}&limit=1&cursor={next}", path(2, "/traces"), day()),
+            Some(&other_key()),
+        )
+        .await;
+        refused(foreign, "the cursor belongs to another project");
+        // A head cursor is not a page cursor, and a page cursor of the trace list is not one of span children.
+        refused(
+            get(&api, &page(&head)).await,
+            "the cursor is of the other kind",
+        );
+        let children = path(
+            1,
+            &format!(
+                "/traces/{}/spans?parent_span_id=000000000000000a&cursor={next}",
+                trace(1)
+            ),
+        );
+        refused(
+            get(&api, &children).await,
+            "the cursor belongs to another list",
+        );
+
+        // Before a store is configured the cursor is still checked first: as issued it passes and the store is
+        // what is missing; changed, it is refused.
+        let without = api_without_store(&env);
+        get(&without, &page(&next))
+            .await
+            .assert_problem(503, "telemetry_store_unavailable");
+        refused(
+            get(&without, &page(&changed_at(&next, 20))).await,
+            "the cursor's MAC does not verify",
+        );
+
+        // A day after it was issued the cursor has expired, page and head cursors alike.
+        env.clock.sleep(Duration::from_secs(24 * 3_600)).await;
+        refused(get(&api, &page(&next)).await, "the cursor has expired");
+        refused(
+            get(&api, &traces_uri(&format!("&since={head}"))).await,
+            "the cursor has expired",
+        );
+        // A fresh first page issues fresh cursors.
+        let again = get(&api, &traces_uri("&limit=1")).await;
+        let next = again.body["next_cursor"].as_str().unwrap();
+        assert_eq!(get(&api, &page(next)).await.status, StatusCode::OK);
     });
 }
 

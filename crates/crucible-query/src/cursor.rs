@@ -1,9 +1,11 @@
-//! Cursors, as values. `crucible-cursor` (milestone 2) will encode each of these as the signed
-//! `v1.<kid>.<payload>.<mac>` string of contract 12.4 and add the route, filter hash, sort and expiry. This
+//! Cursors, as values. The API encodes each of these with `crucible-cursor` as the signed
+//! `v1.<kid>.<payload>.<mac>` string of contract 12.4, which adds the route, filter hash, sort and expiry. This
 //! module is the seam: the services mint and accept these values and check what a value can check (project,
-//! trace and window), and the codec will produce them with `from_parts` only after it verified the MAC.
+//! trace and window), and the API produces them with `from_parts` only after the MAC verified.
 
-use crucible_records::{Lsn, ProjectId, ProjectScope, SpanId, TimeWindow, Timestamp, TraceId};
+use crucible_records::{
+    Lsn, ProjectId, ProjectScope, SpanId, TimeWindow, Timestamp, TraceId, WalEpoch,
+};
 
 use crate::context::QueryServiceError;
 
@@ -54,13 +56,15 @@ impl PageCursor {
     }
 }
 
-/// A cursor of kind `head` for live tail: the newest position (`as_of`, and the LSN stage B had applied) of the
-/// response that issued it.
+/// A cursor of kind `head` for live tail: the newest position of the response that issued it, which is its
+/// `as_of` and the LSN that the issuing node's recent index had applied, with that node's `wal_epoch` (an LSN
+/// orders one WAL only).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct HeadCursor {
     project_id: ProjectId,
     window: TimeWindow,
     as_of: Timestamp,
+    wal_epoch: WalEpoch,
     lsn: Lsn,
 }
 
@@ -70,28 +74,37 @@ impl HeadCursor {
         project_id: ProjectId,
         window: TimeWindow,
         as_of: Timestamp,
+        wal_epoch: WalEpoch,
         lsn: Lsn,
     ) -> Self {
         Self {
             project_id,
             window,
             as_of,
+            wal_epoch,
             lsn,
         }
     }
 
-    /// The parts, for the cursor codec: project, window, `as_of` and the applied LSN.
-    pub const fn parts(&self) -> (ProjectId, TimeWindow, Timestamp, Lsn) {
-        (self.project_id, self.window, self.as_of, self.lsn)
+    /// The parts, for the cursor codec: project, window, `as_of`, the issuing node's `wal_epoch` and the LSN
+    /// its index had applied.
+    pub const fn parts(&self) -> (ProjectId, TimeWindow, Timestamp, WalEpoch, Lsn) {
+        (
+            self.project_id,
+            self.window,
+            self.as_of,
+            self.wal_epoch,
+            self.lsn,
+        )
     }
 
     pub(crate) fn check(
         &self,
         scope: ProjectScope,
         window: TimeWindow,
-    ) -> Result<(Timestamp, Lsn), QueryServiceError> {
+    ) -> Result<(Timestamp, WalEpoch, Lsn), QueryServiceError> {
         if (self.project_id, self.window) == (scope.project_id(), window) {
-            Ok((self.as_of, self.lsn))
+            Ok((self.as_of, self.wal_epoch, self.lsn))
         } else {
             Err(QueryServiceError::CursorInvalid)
         }
