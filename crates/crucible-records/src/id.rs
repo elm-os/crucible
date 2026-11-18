@@ -392,7 +392,10 @@ mod tests {
         let t = TraceId::parse("0af7651916cd43dd8448eb211c80319c").unwrap();
         let full = xxhash_rust::xxh3::xxh3_64(t.as_bytes());
         assert_eq!(u64::from(t.trace_hash()), full & 0xffff_ffff);
-        assert_ne!(t.trace_hash(), TraceId::ZERO.trace_hash());
+        // Pinned values, shared with crucible-plan's tests.
+        assert_eq!(TraceId::ZERO.trace_hash(), 3_344_075_112);
+        let counting = TraceId::from_bytes(core::array::from_fn(|i| i as u8));
+        assert_eq!(counting.trace_hash(), 4_128_731_355);
     }
 
     #[test]
