@@ -348,6 +348,14 @@ mod tests {
                 with(|i| {
                     later_rows(i);
                     i.jsonrpc_code = Some(-32602);
+                }),
+                C::Validation,
+                S::ProtocolError,
+            ),
+            (
+                8,
+                with(|i| {
+                    i.jsonrpc_code = Some(-32602);
                     i.annotations.mark_validation = true;
                 }),
                 C::Validation,
