@@ -13,7 +13,7 @@ include = ["src/**", "README.md"]
 # The SDK is its own workspace, separate from the server's: it is a published client library with its own lock
 # file, and the conformance runner is its only other member.
 [workspace]
-members = ["."]
+members = [".", "conformance/runner"]
 
 [features]
 default = []

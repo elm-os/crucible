@@ -28,7 +28,6 @@ const DEFAULT_EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Options of [`init`]. Only `endpoint` and `secret_key` are required.
 #[derive(Clone, Default)]
-#[non_exhaustive]
 pub struct Options {
     /// Base URL of the Crucible server, for example `http://localhost:4318`. Spans are sent to
     /// `endpoint + "/v1/traces"` as OTLP protobuf. Plain HTTP works.
@@ -52,17 +51,6 @@ pub struct Options {
     pub flush_interval: Duration,
     /// Bound on one export, and on each [`flush`] and [`shutdown`]. Zero means ten seconds.
     pub export_timeout: Duration,
-}
-
-impl Options {
-    /// Options with the two required fields set and every other field at its default.
-    pub fn new(endpoint: impl Into<String>, secret_key: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            secret_key: secret_key.into(),
-            ..Self::default()
-        }
-    }
 }
 
 impl fmt::Debug for Options {
