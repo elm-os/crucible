@@ -38,8 +38,8 @@ fails without it.
 
 | Step | Why | Test |
 |---|---|---|
-| Cut the last segment at the end of its valid prefix and extend it again at every recovery, not only after a torn frame | A crash can lose one block and keep a later one, so a clean end can be followed by frames of an earlier incarnation; and zeros that are readable may be a truncation whose sync failed | `stale_frames_after_a_clean_end_are_zeroed`, mutant `KeepTornTail`, realistic seed 4728 |
-| Read a torn tail, and an unreadable newest header, a second time before truncating or removing | One read can be wrong, and both actions destroy data | Realistic tier with bit flips |
+| Cut the last segment at the end of its valid prefix and extend it again at every recovery, not only after a torn frame | A crash can lose one block and keep a later one, so a clean end can be followed by frames of an earlier incarnation; and zeros that are readable may be a truncation whose sync failed | `stale_frames_after_a_clean_end_are_zeroed`, `a_tail_cut_by_a_recovery_whose_sync_failed_is_cut_again`, mutant `KeepTornTail` |
+| Read a torn tail, and an unreadable newest header, a second time before truncating or removing | One read can be wrong, and both actions destroy data | Realistic tier with bit flips (without the second read of the tail, seeds 12, 101, 261 and more of the first 1,000 lose acknowledged frames or fail recovery) |
 | Remove a newest segment whose header is zero, short or partly written and that holds nothing else | A rotation or a first start can crash, or fail in a write, before the header is durable | `an_unfinished_newest_segment_is_removed_and_any_other_bad_header_is_fatal` |
 | Write `EPOCH` and the header and frames of the last segment again from their verified bytes, sync them, and sync the directory, before accepting appends | After a process stop, readable does not mean durable, and a sync on a new handle does not cover bytes whose earlier sync failed | `a_restart_without_a_crash_does_not_trust_what_was_never_synced`, mutant `TrustRecoveredTail` |
 

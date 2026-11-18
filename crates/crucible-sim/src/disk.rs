@@ -200,6 +200,8 @@ struct State {
     failing_writes: u32,
     /// Syncs that fail regardless of the fault rates, for directed tests.
     failing_syncs: u32,
+    /// Syncs that still succeed before `failing_syncs` applies.
+    passing_syncs: u32,
 }
 
 impl State {
@@ -364,6 +366,7 @@ impl SimDisk {
         state.faults = DiskFaults::default();
         state.failing_writes = 0;
         state.failing_syncs = 0;
+        state.passing_syncs = 0;
         state.crash_at_op = None;
         state.frozen = false;
         Self::with_state(rng, Arc::new(Trace::new()), state)
@@ -386,7 +389,14 @@ impl SimDisk {
 
     /// Makes the next `n` syncs fail with EIO.
     pub fn fail_next_syncs(&self, n: u32) {
-        self.shared.lock().failing_syncs = n;
+        self.fail_syncs_after(0, n);
+    }
+
+    /// Lets `skip` syncs through, then makes the next `n` fail with EIO.
+    pub fn fail_syncs_after(&self, skip: u32, n: u32) {
+        let mut state = self.shared.lock();
+        state.passing_syncs = skip;
+        state.failing_syncs = n;
     }
 
     /// Operations started so far.
@@ -758,8 +768,11 @@ impl FileOps for SimFile {
             tokio::time::sleep(Duration::from_micros(micros)).await;
         }
         let mut state = self.shared.live(self.generation).await?;
-        let forced = state.failing_syncs > 0;
-        state.failing_syncs = state.failing_syncs.saturating_sub(1);
+        let forced = state.passing_syncs == 0 && state.failing_syncs > 0;
+        if forced {
+            state.failing_syncs -= 1;
+        }
+        state.passing_syncs = state.passing_syncs.saturating_sub(1);
         let error = forced || hit(streams.sync_error.as_ref(), state.faults.sync_error_ppm);
         let lie = !error && hit(streams.fsync_lie.as_ref(), state.faults.fsync_lie_ppm);
         let file = inode(&mut state, self.inode)?;

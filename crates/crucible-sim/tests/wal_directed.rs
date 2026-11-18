@@ -662,6 +662,44 @@ fn a_restart_without_a_crash_does_not_trust_what_was_never_synced() {
     });
 }
 
+/// Zeros that are readable are not durable zeros either: a recovery cut the tail, its sync failed, and
+/// the process stopped. The next recovery reads a clean tail, and must cut it again all the same, or the
+/// old bytes are back after a crash, behind whatever was appended since.
+#[test]
+fn a_tail_cut_by_a_recovery_whose_sync_failed_is_cut_again() {
+    run(21, |sim| async move {
+        let disk = sim.disk("disk");
+        let settings = config(16 << 10);
+        let node = start(&sim, &disk, "build", &settings).await;
+        node.fill(1..=3).await;
+        node.stop().await;
+        // A crash kept a block of an earlier incarnation: a valid frame with LSN 5, two blocks after the
+        // end of the log.
+        let stale_at = 2 * 4096;
+        let mut stale = Vec::new();
+        data(77).write_to(Lsn::new(5), Timestamp::from_micros(0), &mut stale);
+        assert!(disk.patch_file(&seg(1), stale_at, &stale));
+
+        // The first recovery cuts the tail; the sync of the segment, its second sync, fails.
+        disk.fail_syncs_after(1, 1);
+        assert!(try_start(&sim, &disk, "a", &settings).await.is_err());
+        // The second one reads zeros where the stale frame was.
+        let node = start(&sim, &disk, "b", &settings).await;
+        assert_eq!(node.report.tail_repair, None);
+        // LSN 4 ends exactly where the stale frame starts, and never touches its block.
+        let end_of_log = HEADER + 3 * FRAME;
+        let wide = vec![4; stale_at - end_of_log - FRAME_HEADER_LEN];
+        let wide = PreparedFrame::new(RecordType::Noop, wide, Compression::None).unwrap();
+        assert_eq!(node.wal.append(wide).await, Ok(Lsn::new(4)));
+        node.crash().await;
+
+        let node = start(&sim, &disk, "c", &settings).await;
+        assert_eq!(node.report.last_lsn, Lsn::new(4));
+        assert_eq!(node.tags().await, [1, 2, 3, 4]);
+        node.stop().await;
+    });
+}
+
 #[test]
 fn a_missing_or_invalid_checkpoint_hint_only_lengthens_recovery() {
     run(8, |sim| async move {
