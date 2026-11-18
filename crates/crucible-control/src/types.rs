@@ -218,6 +218,17 @@ text_enum! {
     }
 }
 
+impl ProviderKind {
+    /// The auth method of a session signed in through a provider of this kind.
+    pub const fn auth_method(self) -> AuthMethod {
+        match self {
+            Self::Github => AuthMethod::Github,
+            Self::Google => AuthMethod::Google,
+            Self::Oidc => AuthMethod::Oidc,
+        }
+    }
+}
+
 text_enum! {
     /// What a one-time token is for (contract 11.1).
     TokenKind {

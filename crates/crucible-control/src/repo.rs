@@ -14,7 +14,7 @@ use futures::future::BoxFuture;
 
 use crate::error::TxError;
 use crate::types::{
-    ApiKey, AuthFlow, AuthProvider, Claim, Credential, Invitation, KeyChange, KeyChangeKind,
+    ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, Invitation, KeyChange, KeyChangeKind,
     KeySnapshot, Lease, LeaseName, LedgerEntry, NewJob, OauthAccount, OneTimeToken, Org,
     OrgMembership, OrgRole, Project, ProjectMembership, Queue, Secret, Session, SigningKey,
     SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
@@ -255,6 +255,8 @@ pub trait InvitationRepo: Send + Sync {
     async fn get(&self, id: Uuid) -> Result<Option<Invitation>, TxError>;
     /// Every invitation, ordered by id.
     async fn list(&self) -> Result<Vec<Invitation>, TxError>;
+    /// The invitations of this case-folded email, open or not, ordered by id.
+    async fn list_for_email(&self, email: &Email) -> Result<Vec<Invitation>, TxError>;
     /// Creates an invitation.
     async fn insert(&self, invitation: &Invitation) -> Result<(), TxError>;
     /// Marks the invitation accepted at `now`, in one statement, if it is open at `now`. `false` when it is

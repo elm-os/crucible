@@ -326,6 +326,14 @@ impl InvitationRepo for Handle {
         every(&self.read(&sql, &[]).await?, invitation)
     }
 
+    async fn list_for_email(&self, email: &Email) -> Result<Vec<Invitation>, TxError> {
+        let sql = format!("SELECT {INVITATION} FROM invitations WHERE email = $1 ORDER BY id");
+        every(
+            &self.read(&sql, &[P::Text(email.as_str())]).await?,
+            invitation,
+        )
+    }
+
     async fn insert(&self, invitation: &Invitation) -> Result<(), TxError> {
         let sql = format!(
             "INSERT INTO invitations ({INVITATION}) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING 1"

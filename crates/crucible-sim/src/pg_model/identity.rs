@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use crucible_control::{
-    AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Invitation, InvitationRepo,
+    AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Email, Invitation, InvitationRepo,
     OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, TokenHash, TokenKind, TxError,
 };
 use crucible_records::{Timestamp, UserId, Uuid};
@@ -268,6 +268,17 @@ impl InvitationRepo for Runner {
     async fn list(&self) -> Result<Vec<Invitation>, TxError> {
         self.run(Pool::Main, false, |cx| {
             Ok(all!(cx, Tbl::Invitations, Row::Invitation))
+        })
+        .await
+    }
+
+    async fn list_for_email(&self, email: &Email) -> Result<Vec<Invitation>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let every: Vec<Invitation> = all!(cx, Tbl::Invitations, Row::Invitation);
+            Ok(every
+                .into_iter()
+                .filter(|invitation| invitation.email == *email)
+                .collect())
         })
         .await
     }
