@@ -50,8 +50,6 @@ export interface Shape {
   ids: string[];
   /** Which operations carry client info. */
   client: "all" | "initialize";
-  /** Which operations carry server info. */
-  server: "all" | "initialize" | "results";
   /** Raw session id, legacy session HTTP only. */
   sessionId?: string;
   /** Request sizes and user agents, HTTP only. */
@@ -78,7 +76,6 @@ export function workload(shape: Shape): Op[] {
     id: string | undefined,
     extra: Record<string, Value>,
     status: Op["status"] = OK,
-    isResult = true,
   ): void => {
     const initialize = method === "initialize";
     const attributes: Record<string, Value> = {
@@ -98,10 +95,9 @@ export function workload(shape: Shape): Op[] {
       attributes["crucible.mcp.client.name"] = CLIENT_NAME;
       attributes["crucible.mcp.client.version"] = CLIENT_VERSION;
     }
-    if (shape.server === "all" || initialize || (shape.server === "results" && isResult)) {
-      attributes["crucible.mcp.server.name"] = SERVER_NAME;
-      attributes["crucible.mcp.server.version"] = SERVER_VERSION;
-    }
+    // Server info is remembered per instrument() call, so every operation after the first result carries it.
+    attributes["crucible.mcp.server.name"] = SERVER_NAME;
+    attributes["crucible.mcp.server.version"] = SERVER_VERSION;
     if (shape.sessionId !== undefined) {
       attributes["mcp.session.id"] = sessionKey(shape.sessionId);
     }
@@ -126,7 +122,7 @@ export function workload(shape: Shape): Op[] {
   }
   if (legacy) {
     op("initialize", "initialize", take(), complete);
-    op("notifications/initialized", "notifications/initialized", undefined, {}, OK, false);
+    op("notifications/initialized", "notifications/initialized", undefined, {});
   }
   op("tools/list", "tools/list", take(), complete);
   op("tools/call echo", "tools/call", take(), tool("echo"));
@@ -158,7 +154,6 @@ export function workload(shape: Shape): Op[] {
       "error.type": "-32602",
     },
     { code: 2, message: "Tool missing not found" },
-    false,
   );
   return sortOps(list);
 }

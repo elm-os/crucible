@@ -87,6 +87,15 @@ describe("capture", () => {
     expect(result?.text).not.toContain("@example");
   });
 
+  test("a token longer than the scrub margin that straddles the cap leaves no prefix behind", () => {
+    const token = `eyJhbGciOiJIUzI1NiJ9.eyJ${"a".repeat(3_000)}.c2lnbmF0dXJl`;
+    const padding = "x".repeat(16_384 - 200);
+    const result = captured({ note: `${padding} ${token}` }, 16_384);
+    expect(result?.cut).toBe(true);
+    expect(result?.text).not.toContain("eyJ");
+    expect(result?.text.endsWith("[redacted:jwt]")).toBe(true);
+  });
+
   test("a value that does not serialize is not captured", () => {
     expect(captured({ big: 1n }, 16_384)).toBeUndefined();
   });

@@ -30,7 +30,7 @@
     {
       "rule": "jwt",
       "literal": "eyJ",
-      "regex": "eyJ[A-Za-z0-9_-]{2,4096}\\.eyJ[A-Za-z0-9_-]{2,8192}\\.[A-Za-z0-9_-]{0,4096}"
+      "regex": "eyJ[A-Za-z0-9_-]{2,4096}\\.eyJ[A-Za-z0-9_-]{2,8192}(?:\\.[A-Za-z0-9_-]{0,4096})?"
     },
     {
       "rule": "bearer",
@@ -94,6 +94,10 @@
     {
       "input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl end",
       "output": "token [redacted:jwt] end"
+    },
+    {
+      "input": "cut eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbGljZUBleGFtcGxlLmNvbSJ9",
+      "output": "cut [redacted:jwt]"
     },
     {
       "input": "key csk_0abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP end",

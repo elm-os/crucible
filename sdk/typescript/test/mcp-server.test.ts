@@ -120,7 +120,6 @@ describe("stdio", () => {
         protocolVersion: LEGACY,
         ids: LEGACY_IDS,
         client: "all",
-        server: "all",
       }),
     );
     expectSlowOverlap(collector.spans);
@@ -138,7 +137,6 @@ describe("stdio", () => {
         protocolVersion: LEGACY,
         ids: LEGACY_IDS,
         client: "all",
-        server: "all",
       }),
     );
     expectSlowOverlap(collector.spans);
@@ -154,7 +152,6 @@ describe("stdio", () => {
         protocolVersion: MODERN,
         ids: MODERN_IDS,
         client: "all",
-        server: "all",
       }),
     );
     expectSlowOverlap(collector.spans);
@@ -172,7 +169,6 @@ describe("streamable HTTP", () => {
         protocolVersion: LEGACY,
         ids: LEGACY_IDS,
         client: "all",
-        server: "all",
         sessionId,
         seen,
       }),
@@ -190,7 +186,6 @@ describe("streamable HTTP", () => {
       protocolVersion: LEGACY,
       ids: LEGACY_IDS,
       client: "all",
-      server: "all",
       sessionId,
       seen,
     });
@@ -218,7 +213,6 @@ describe("streamable HTTP", () => {
         ids: MODERN_IDS,
         discover: "server-discover-probe-1",
         client: "all",
-        server: "results",
         seen: stateless.seen,
       }),
     );
@@ -228,8 +222,8 @@ describe("streamable HTTP", () => {
     stateless.seen.clear();
     await statelessScenario(stateless.url, "legacy");
     await recorded(9);
-    // Each legacy request gets a fresh server instance, so the client and server info of `initialize` is gone
-    // by the time a tool call arrives. The refused GET stream (405) has no JSON-RPC method and is not recorded.
+    // Each legacy request gets a fresh server instance, so the client info of `initialize` is gone by the time a
+    // tool call arrives. The refused GET stream (405) has no JSON-RPC method and is not recorded.
     expect(ops(collector.spans)).toEqual(
       workload({
         era: "legacy",
@@ -237,7 +231,6 @@ describe("streamable HTTP", () => {
         protocolVersion: LEGACY,
         ids: LEGACY_IDS,
         client: "initialize",
-        server: "initialize",
         seen: stateless.seen,
       }),
     );
@@ -280,8 +273,9 @@ describe("streamable HTTP", () => {
         new Request(server.url, { method: "POST", headers, body: JSON.stringify(body) }),
       );
       await response.clone().text();
-      await flush();
-      await sleep(30);
+      await recorded(1);
+      // A second record would mean the exchange was counted twice; give one the chance to arrive.
+      await sleep(50);
       await flush();
       return { response, recorded: ops(collector.spans) };
     };
@@ -367,9 +361,7 @@ describe("streamable HTTP", () => {
         }),
       }),
     );
-    await flush();
-    await sleep(30);
-    await flush();
+    await recorded(1);
     expect(ops(collector.spans)).toEqual([
       {
         name: "subscriptions/listen",

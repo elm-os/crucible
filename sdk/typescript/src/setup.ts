@@ -1,6 +1,7 @@
 // SDK setup: one private tracer provider that exports OTLP/HTTP protobuf to Crucible's `/v1/traces`.
-// The provider is never registered globally, so an application's own OpenTelemetry setup is left alone,
-// and every option is passed explicitly, so `OTEL_*` variables cannot redirect or reconfigure the export.
+// The provider is never registered globally, so an application's own OpenTelemetry setup is left alone.
+// Every option is passed explicitly, so `OTEL_*` variables cannot redirect the export, replace its Bearer key or
+// turn sampling off; the OTLP exporter still adds any other headers named in `OTEL_EXPORTER_OTLP_HEADERS`.
 
 import { randomUUID } from "node:crypto";
 import { type Attributes, type Tracer, trace } from "@opentelemetry/api";

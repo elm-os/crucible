@@ -65,8 +65,15 @@ type Factory = (ctx: McpRequestContext) => Product | Promise<Product>;
 type Dispatch = NonNullable<Transport["onmessage"]>;
 type RequestId = string | number;
 
+/** What all instances built by one `instrument` call share: they are one server. */
+interface Shared {
+  /** The server's name and version, from the first `initialize` result or result `_meta` that carries them. */
+  server: Implementation | undefined;
+}
+
 interface Settings {
   readonly options: InstrumentOptions;
+  readonly shared: Shared;
   /** Era hint from the factory context. The per-message classification and envelope win. */
   readonly era: Era | undefined;
   /** Transport hint from the factory context. */
@@ -79,7 +86,6 @@ interface Connection {
   readonly label: TransportLabel;
   readonly pending: Map<RequestId, Operation>;
   client: Implementation | undefined;
-  server: Implementation | undefined;
   protocolVersion: string | undefined;
 }
 
@@ -110,16 +116,19 @@ export function instrument(
   target: Product | Factory,
   options: InstrumentOptions = {},
 ): Product | Factory {
+  const shared: Shared = { server: undefined };
   if (typeof target === "function") {
+    // A factory builds a fresh instance per HTTP request or stdio connection; they all share `shared`.
     return async (ctx: McpRequestContext) =>
       decorate(await target(ctx), {
         options,
+        shared,
         era: ctx.era,
         // `createMcpHandler` always passes the HTTP request; `serveStdio` never does.
         transport: ctx.requestInfo === undefined ? "stdio" : "streamable_http",
       });
   }
-  return decorate(target, { options, era: undefined, transport: undefined });
+  return decorate(target, { options, shared, era: undefined, transport: undefined });
 }
 
 function decorate<S extends Product>(product: S, settings: Settings): S {
@@ -154,7 +163,6 @@ function tap(transport: Transport, settings: Settings): void {
     label: settings.transport ?? (transport instanceof StdioServerTransport ? "stdio" : "unknown"),
     pending: new Map(),
     client: undefined,
-    server: undefined,
     protocolVersion: undefined,
   };
   interpose(transport, "onmessage", (next) => dispatch(next, connection));
@@ -334,14 +342,15 @@ function outbound(
 function observeResult(operation: Operation, result: Fields, connection: Connection): void {
   if (operation.method === "initialize") {
     connection.protocolVersion = text(result.protocolVersion);
-    connection.server = implementation(result.serverInfo);
+    connection.settings.shared.server =
+      implementation(result.serverInfo) ?? connection.settings.shared.server;
     if (connection.protocolVersion !== undefined) {
       operation.span.setAttribute("mcp.protocol.version", connection.protocolVersion);
     }
   }
   const announced = implementation(fields(result._meta)?.[SERVER_INFO_KEY]);
   if (announced !== undefined) {
-    connection.server = announced;
+    connection.settings.shared.server = announced;
   }
   const key = secretKey();
   const state = text(result.requestState);
@@ -407,7 +416,7 @@ function finish(operation: Operation, connection: Connection): void {
   if (operation.era === "legacy" && sessionId !== undefined) {
     attributes["mcp.session.id"] = sessionKey(sessionId);
   }
-  putImplementation(attributes, "crucible.mcp.server", connection.server);
+  putImplementation(attributes, "crucible.mcp.server", connection.settings.shared.server);
   Object.assign(
     attributes,
     identityAttributes(

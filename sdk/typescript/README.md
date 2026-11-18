@@ -161,13 +161,17 @@ child, so the agent's trace and the server's operation link up.
 
 - A tool handler that throws and one that returns `isError: true` look the same on the wire; both are tool errors
   unless the handler calls `annotateError` or a mark.
-- Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client or server info.
-- Exchanges recorded by `instrumentHandler` run no handler, so `annotateError` and `identify` cannot reach them.
+- Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client info. Server info
+  is remembered per `instrument` call, so it reaches every operation after the first result.
+- Exchanges recorded by `instrumentHandler` run no handler, so `annotateError` and `identify` cannot reach them,
+  and they carry no server name; Crucible then uses the resource `service.name`.
+- Headers named in `OTEL_EXPORTER_OTLP_HEADERS` other than `Authorization` are still sent with the export.
 - `serveStdio` answers its `server/discover` probe and a few errors before any server instance exists; those are
   not recorded.
 - Not observed: the client IP prefix, response sizes, the client capabilities hash, server-to-client requests and
   task results. Resource reads send the requested URI, not the registered template.
-- Tested on Node.js 24 with MCP SDK 2.4.0; the seam itself was checked on 2.0.0 to 2.4.0.
+- The test suite passes on Node.js 24 with MCP SDK 2.0.0 and 2.4.0; the seam spike also covered 2.1.0 to 2.3.1.
+  Other runtimes are untested.
 
 ## Development
 

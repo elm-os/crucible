@@ -1,10 +1,20 @@
 // Content capture and scrubbing, handle ids, the error marks, multi-round state hashes and identity sources.
 
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { createMcpHandler } from "@modelcontextprotocol/server";
+import {
+  createMcpHandler,
+  ProtocolError,
+  ProtocolErrorCode,
+  Server,
+} from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { flush, init, shutdown } from "../src/index.ts";
-import { type InstrumentOptions, instrument, instrumentHandler } from "../src/mcp/index.ts";
+import {
+  type InstrumentOptions,
+  instrument,
+  instrumentHandler,
+  markNotFound,
+} from "../src/mcp/index.ts";
 import { stateHash } from "../src/mcp/wire.ts";
 import { type Collector, startCollector } from "./support/collector.ts";
 import { ops } from "./support/expect.ts";
@@ -267,4 +277,62 @@ test("multi-round requests carry keyed hashes of the state, never the state", as
   for (const span of collector.spans) {
     expect(Object.values(span.attributes)).not.toContain(REQUEST_STATE);
   }
+});
+
+test("a low-level server: progress counts, prompt and resource targets, and not-found on invalid params", async () => {
+  const server = new Server(
+    { name: "low-level", version: "1.0.0" },
+    { capabilities: { tools: {}, prompts: {}, resources: {} } },
+  );
+  server.setRequestHandler("tools/call", async (request, ctx) => {
+    if (request.params.name === "progress") {
+      const progressToken = request.params._meta?.progressToken;
+      if (progressToken !== undefined) {
+        for (const progress of [1, 2]) {
+          await ctx.mcpReq.notify({
+            method: "notifications/progress",
+            params: { progressToken, progress, total: 2 },
+          });
+        }
+      }
+      return { content: [{ type: "text", text: "done" }] };
+    }
+    markNotFound();
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, "no such order");
+  });
+  server.setRequestHandler("prompts/get", async () => ({
+    messages: [{ role: "user", content: { type: "text", text: "hi" } }],
+  }));
+  server.setRequestHandler("resources/read", async (request) => ({
+    contents: [{ uri: request.params.uri, text: "data" }],
+  }));
+  const [clientSide, serverSide] = inMemoryPair();
+  await instrument(server).connect(serverSide);
+  const client = newClient("legacy");
+  await client.connect(clientSide);
+  let updates = 0;
+  await client.callTool(
+    { name: "progress", arguments: {} },
+    { onprogress: () => void (updates += 1) },
+  );
+  await client.callTool({ name: "lookup", arguments: {} }).catch(() => undefined);
+  await client.getPrompt({ name: "greet" });
+  await client.readResource({ uri: "orders://42" });
+  await client.close();
+  await flush();
+  expect(updates).toBe(2);
+  const byName = new Map(ops(collector.spans).map((op) => [op.name, op]));
+  expect(byName.get("tools/call progress")?.attributes["crucible.mcp.progress.count"]).toBe(2n);
+  const lookup = byName.get("tools/call lookup");
+  expect(lookup?.attributes["rpc.response.status_code"]).toBe("-32602");
+  expect(lookup?.attributes["crucible.mcp.error.class"]).toBe("not_found");
+  expect(lookup?.status.code).toBe(2);
+  expect(lookup?.status.message).toContain("no such order");
+  expect(byName.get("prompts/get greet")?.attributes["gen_ai.prompt.name"]).toBe("greet");
+  expect(byName.get("resources/read")?.attributes["crucible.mcp.resource.template"]).toBe(
+    "orders://42",
+  );
+  expect(byName.get("tools/call progress")?.attributes["crucible.mcp.server.name"]).toBe(
+    "low-level",
+  );
 });
