@@ -22,7 +22,7 @@ deletion, 14 media, 15 change control.
 |---|---|---|---|
 | OTel `trace_id` | 16 bytes | 32 lowercase hex characters | All-zero is rejected at ingest (partial success) |
 | OTel `span_id`, `parent_span_id` | 8 bytes | 16 lowercase hex characters | All-zero `span_id` is rejected; all-zero or absent parent means "no parent" |
-| Crucible ids (org, project, user, API key, session row, dashboard, widget, alert rule, channel, deletion request, export job, fact, comment, media object, saved query, SQL run, request id, `wal_epoch`) | UUIDv7, 16 bytes | Canonical hyphenated lowercase string | Minted only by `crucible_env::new_id(&Clock, &Rng)`; never by a database default |
+| Crucible ids (org, project, user, API key, session row, dashboard, widget, alert rule, channel, deletion request, export job, fact, comment, media object, saved query, SQL run, request id, `wal_epoch`) | UUIDv7, 16 bytes | Canonical hyphenated lowercase string | Minted only through `Env::new_id()` (an explicit `IdGen` keeps the monotonic state; ids draw from the `Rng` fork `crucible-env/new_id`); never by a database default |
 | Nil UUID (`00000000-0000-0000-0000-000000000000`) | 16 zero bytes | not exposed | Reserved for marker rows (section 5.5). It must never be a project id and `ProjectScope` must refuse it |
 | API keys | see section 11.3 | `cpk_...`, `csk_...` | |
 
@@ -385,6 +385,20 @@ that invariants can read.
 `get(path) -> Option<Asset { bytes, etag, content_type, encodings: { br?, gzip? } }>` and
 `manifest() -> AssetManifest { routes, csp_hashes }`. Sources: embedded (`embed-ui`), a directory (`--ui-dir`,
 through `Disk`), or empty. The serving code is identical for all three.
+
+### 2.14 Settled in code
+
+Decisions made while implementing the traits above; they bind every backend.
+
+| Topic | Rule |
+|---|---|
+| Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
+| Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
+| File operations | Per-file operations (`append`, `read_at`, `sync_data`, `truncate`, `preallocate`) are methods on `File`. `OpenMode::Write` creates a missing file and never truncates |
+| Unknown sync outcome | Dropping a `sync_data` future fails the file, because its outcome is unknown. Mutating disk operations run to completion even when their future is dropped; they are not cancel-safe |
+| Platform durability | Linux uses `fdatasync` and directory `fsync`; macOS uses `F_FULLFSYNC`; on Windows `sync_data` is `FlushFileBuffers` and `sync_dir` is not a durability barrier. I1 (no acked span lost across a crash) is guaranteed on Linux and macOS; Windows is a development platform |
+| Expired deadlines | `connect` with a deadline already past fails with `DeadlineElapsed` without connecting |
+| Metric handles | Calls take a typed metric definition, constructible only in `crucible-env`'s registry, plus label values. `Gauge::set` takes `i64`; histograms use fixed integer buckets, so recorded values are deterministic |
 
 ## 3. Records
 
@@ -919,6 +933,22 @@ Other proved kernels, each owned by the named crate:
 | Rate limiter arithmetic | `crucible-auth` | No overflow |
 
 Payload codecs and checksum strength over whole payloads are covered by property tests and simulation, not Kani.
+
+### 4.10 Encoding details settled in code
+
+| Topic | Rule |
+|---|---|
+| `EPOCH` | `wal_epoch` (16 bytes) then CRC32C (4 bytes); 20 bytes, no magic |
+| `CHECKPOINT` | `batch_seq`, `last_lsn`, `segment_no` (each `u64`) then CRC32C; 28 bytes, no magic |
+| Opaque payloads | `Noop` and `NativeBatch` payloads are opaque bytes with no `payload_version` byte; every other record type starts with `payload_version` |
+| Optional UUID | A presence byte (0 or 1) followed by the UUID when present (for example a score's `config_id`) |
+| Batch ranges | `BatchSeal` and `Quarantine` carry `first_lsn` and `last_lsn`; decoders reject `batch_seq != first_lsn` and `first_lsn > last_lsn` |
+| Value domains | Unknown flag bits, enum values outside their frozen set and bool bytes other than 0 and 1 are `InvalidValue`; header version 0 is `UnsupportedVersion` |
+| Bitmaps | The `rejected` bitmap is read least-significant bit first |
+| Caps | Field and list caps are enforced on encode and on decode |
+| Quarantine pairs | `table_id` is a `u16` that must name a known table; `partition_id` must parse as a partition id |
+| Classification order | The header CRC is checked first, so every other header error implies a valid header CRC. `payload_len` above `MAX_PAYLOAD` with a valid header CRC is `Corrupt`. A non-zero wrong magic with both CRCs valid is `Corrupt`. Fewer than four remaining bytes that are all zero are a clean end; otherwise a short header is a torn tail |
+| Kani obligation 4 | Discharged by four bounded proofs (every flip of a fixed header through the real encode and decode; every flip of the checksum field for any header; linearity of one CRC step; no single-bit difference cancels over 32 bytes) plus property tests on random headers and segments; the bitwise CRC model is tied to the production routine by a property test |
 
 ## 5. Insert protocol
 
@@ -2118,6 +2148,9 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   CSRF and origin, principal rate limit, handler.
 - Request id: UUIDv7. An inbound `X-Request-Id` is kept only from a trusted proxy and only if it matches
   `[A-Za-z0-9_-]{1,64}`. It is echoed as `X-Request-Id` and in every problem body.
+- `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
+  `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots) and `--wal-backend`
+  (`auto`, `portable`, `uring`).
 
 ### 12.2 Auth forms
 

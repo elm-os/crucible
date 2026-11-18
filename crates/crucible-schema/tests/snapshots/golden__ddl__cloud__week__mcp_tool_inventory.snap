@@ -1,0 +1,22 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.mcp_tool_inventory
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `server_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `deploy_id` String CODEC(ZSTD(1)),
+    `tool_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `schema_hash` UInt64 CODEC(ZSTD(1)),
+    `marker_epoch` UUID CODEC(ZSTD(1)),
+    `marker_batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `marker_at` SimpleAggregateFunction(max, DateTime('UTC')) CODEC(ZSTD(1)),
+    `first_seen` SimpleAggregateFunction(min, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1)),
+    `last_seen` SimpleAggregateFunction(max, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1)),
+    `capture_sources` SimpleAggregateFunction(groupUniqArrayArray(4), Array(UInt8)) CODEC(ZSTD(1))
+)
+ENGINE = AggregatingMergeTree
+PRIMARY KEY (project_id, server_name, deploy_id, tool_name, schema_hash)
+ORDER BY (project_id, server_name, deploy_id, tool_name, schema_hash, marker_epoch, marker_batch_seq)
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200

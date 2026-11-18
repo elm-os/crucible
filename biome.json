@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["ui/**", "sdk/typescript/**", "tools/**", "*.json", "!**/generated/**", "!ui/out/**", "!ui/.next/**"]
+    "includes": [
+      "ui/**",
+      "sdk/typescript/**",
+      "tools/**",
+      "*.json",
+      "!**/generated/**",
+      "!ui/out/**",
+      "!ui/.next/**"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -16,6 +24,11 @@
   },
   "linter": {
     "enabled": false
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
   },
   "assist": {
     "enabled": true,

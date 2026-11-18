@@ -1,0 +1,42 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.trace_heads
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `start_time` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    `trace_hash` UInt32 CODEC(ZSTD(1)),
+    `trace_id` FixedString(16) CODEC(ZSTD(1)),
+    `span_id` FixedString(8) CODEC(ZSTD(1)),
+    `head_kind` Enum8('root' = 1, 'provisional' = 2) CODEC(ZSTD(1)),
+    `end_time` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    `name` String CODEC(ZSTD(1)),
+    `level` Enum8('debug' = 0, 'default' = 1, 'warning' = 2, 'error' = 3) CODEC(ZSTD(1)),
+    `status_code` Enum8('unset' = 0, 'ok' = 1, 'error' = 2) CODEC(ZSTD(1)),
+    `user_id` String CODEC(ZSTD(1)),
+    `session_id` String CODEC(ZSTD(1)),
+    `tags` Array(String) CODEC(ZSTD(1)),
+    `environment` LowCardinality(String) CODEC(ZSTD(1)),
+    `release` String CODEC(ZSTD(1)),
+    `version` String CODEC(ZSTD(1)),
+    `input_preview` String CODEC(ZSTD(1)),
+    `output_preview` String CODEC(ZSTD(1)),
+    `wal_epoch` UUID CODEC(ZSTD(1)),
+    `batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `lsn` UInt64 CODEC(T64, ZSTD(1)),
+    `received_at` DateTime64(6, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    INDEX idx_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_user_id user_id TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_session_id session_id TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_name name TYPE text(tokenizer = ngrams(3), preprocessor = lower(name)) GRANULARITY 100000000,
+    INDEX idx_tags tags TYPE text(tokenizer = array) GRANULARITY 100000000,
+    INDEX idx_environment environment TYPE set(100) GRANULARITY 1,
+    INDEX idx_batch_seq batch_seq TYPE minmax GRANULARITY 1,
+    INDEX idx_received_at received_at TYPE minmax GRANULARITY 1
+)
+ENGINE = MergeTree
+PARTITION BY toMonday(toDate(start_time))
+PRIMARY KEY (project_id, start_time, trace_hash)
+ORDER BY (project_id, start_time, trace_hash, trace_id)
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200
