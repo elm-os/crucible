@@ -14,3 +14,10 @@
 | Background jobs: the simulation, its oracle and its mutants | [testing/jobs-simulation.md](testing/jobs-simulation.md) |
 | Development setup | [development.md](development.md) |
 | Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |
+| Guides for sending telemetry and reading it back | [guides/README.md](guides/README.md) |
+| Sending traces over OTLP from any OpenTelemetry SDK or the Collector | [guides/sending-traces.md](guides/sending-traces.md) |
+| TypeScript SDK | [guides/sdk-typescript.md](guides/sdk-typescript.md) |
+| Python SDK | [guides/sdk-python.md](guides/sdk-python.md) |
+| Go SDK | [guides/sdk-go.md](guides/sdk-go.md) |
+| REST API: auth, errors, windows, cursors | [api/README.md](api/README.md) |
+| MCP proxy | [guides/mcp-proxy.md](guides/mcp-proxy.md) |

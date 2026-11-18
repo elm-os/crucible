@@ -11,11 +11,12 @@
 //! Two modes:
 //!
 //! - **Ingest only** (no `--clickhouse-url`): requests are made durable in the WAL and nothing ships them; the
-//!   API authenticates each request and answers `telemetry_store_unavailable`.
+//!   API and the MCP server authenticate each request and answer `telemetry_store_unavailable`.
 //! - **With ClickHouse**: the `telemetry-store` task brings the store up ([`store::bring_up`]: migrations when
 //!   asked for, startup detection and the self-tests of contract 5.8), retrying until it succeeds. Until then
-//!   ingest answers 503 and `/readyz` says why. Then it builds the recent-span index, mounts the API over the
-//!   store, opens ingest, and runs the shipper, whose replay of the retained WAL prefix rebuilds the index.
+//!   ingest answers 503 and `/readyz` says why. Then it builds the recent-span index, mounts the API and the MCP
+//!   server over the store, opens ingest, and runs the shipper, whose replay of the retained WAL prefix
+//!   rebuilds the index.
 //!
 //! Shutdown is one signal to every task. The listeners stop accepting and wait for their open requests, whose
 //! appends resolve because the WAL committer outlives every handle to the log. The shipper stops at its next
@@ -49,6 +50,7 @@ use crucible_env::{
 };
 use crucible_env_prod::ProdConfig;
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
+use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
@@ -61,6 +63,7 @@ use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
 
 use crate::control::Control;
+use crate::mcp::McpGate;
 use crate::recent::WalSpans;
 use crate::store::{self, ClickHouse};
 
@@ -219,6 +222,8 @@ struct Gate {
     api: OnceLock<Router>,
     /// The API until then.
     api_without_store: Router,
+    /// The MCP server at `/mcp`, mounted over the store with the API.
+    mcp: Arc<McpGate>,
 }
 
 impl Gate {
@@ -345,6 +350,7 @@ async fn open_app(
             Arc::new(StaticProjectSettings::default()),
             cursors,
         ),
+        mcp: Arc::new(McpGate::new(env, Arc::clone(&keys))),
     });
     let app = App {
         ingest,
@@ -380,11 +386,12 @@ fn gated_ingest(app: &App) -> Router {
         .layer(from_fn_with_state(Arc::clone(&app.gate), ingest_gate))
 }
 
-/// The main listener's routes: health, readiness, OTLP ingest and the REST API; the UI answers whatever they do
-/// not match. Every response carries a request id and the security headers.
+/// The main listener's routes: health, readiness, OTLP ingest, the REST API and the MCP server; the UI answers
+/// whatever they do not match. Every response carries a request id and the security headers.
 ///
 /// Until a telemetry store is up the API authenticates and validates each request and then answers
-/// `telemetry_store_unavailable`; the gate then switches it to the API over the store.
+/// `telemetry_store_unavailable`, and so does the MCP server; the gate then switches both to their forms over
+/// the store.
 fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
     let (wal, gate) = (app.wal.clone(), Arc::clone(&app.gate));
     let api_path = format!("{}/{{*rest}}", crucible_api::BASE_PATH);
@@ -392,6 +399,9 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
         .route(crucible_api::BASE_PATH, any(serve_api))
         .route(&api_path, any(serve_api))
         .with_state(Arc::clone(&app.gate));
+    let mcp = Router::new()
+        .route(crucible_mcp_server::PATH, any(crate::mcp::serve))
+        .with_state(Arc::clone(&app.gate.mcp));
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
@@ -407,7 +417,8 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
             source: ui,
         })
         .merge(gated_ingest(app))
-        .merge(api);
+        .merge(api)
+        .merge(mcp);
     crucible_api::common_layers(observed(router, env, "api"), env)
 }
 
@@ -521,6 +532,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// The MCP server's rate limit.
+    mcp: McpConfig,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -601,6 +614,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        mcp,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -672,6 +686,9 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    let (mcp_keys, mcp_cursors) = (Arc::clone(&keys), Arc::clone(&cursors));
+    gate.mcp
+        .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
     gate.open(crucible_api::router(
         &env,
         service,
@@ -836,6 +853,10 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let recent_max_bytes = config
         .recent_max_bytes
         .unwrap_or_else(default_recent_max_bytes);
+    let mcp = McpConfig {
+        calls_per_second: config.mcp.calls_per_second,
+        burst: config.mcp.burst,
+    };
     // Without a store the task is one that never ends, so the wait below has one shape.
     let mut store = match clickhouse {
         Some(config) => {
@@ -849,6 +870,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                mcp,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1159,6 +1181,7 @@ mod tests {
                 closed: RwLock::new(None),
                 api: OnceLock::new(),
                 api_without_store: Router::new(),
+                mcp: Arc::new(McpGate::new(&host.env, Arc::new(no_keys(&host.env)))),
             };
             let readiness = |wal: &Wal| {
                 let (status, text) = readiness(wal, &gate);
@@ -1265,6 +1288,209 @@ mod tests {
         assert!(header(&headers, "x-request-id").is_some());
 
         shut_down(&prod, servers).await;
+    }
+
+    /// An MCP `initialize` of the session era.
+    const MCP_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+
+    /// A query service over an empty store model and a recent index that nothing feeds.
+    fn empty_store(env: &Env, app: &App) -> QueryService {
+        use crucible_normalize::{NormCtx, PriceTable};
+        use crucible_schema::Granularity;
+        use crucible_sim::ch_model::ChModel;
+
+        let flavour = crucible_env::StoreFlavour::SingleNode;
+        let model = ChModel::new(
+            env.rng.as_ref(),
+            flavour,
+            Granularity::Day,
+            Duration::from_secs(60),
+        );
+        let view = Arc::new(WalSpans {
+            wal: app.wal.clone(),
+            ctx: NormCtx::new(
+                PriceTable::bundled().unwrap(),
+                ShipperConfig::default().caps,
+            ),
+        });
+        let config = RecentConfig::new(1 << 20, flavour);
+        let (index, _writer) = RecentIndex::new(config, Arc::clone(&env.clock), view);
+        let stores = Stores::new(Arc::new(model));
+        QueryService::new(stores, Arc::clone(&env.clock), index, app.wal.epoch())
+    }
+
+    /// The MCP server at `/mcp` of the main router. Before a store it authenticates and then says which setting
+    /// provides one. Over a store, rmcp's own client of each protocol era (a session opened with `initialize`,
+    /// and self-contained requests after `server/discover`) lists the tools and calls them. Paths below `/mcp/`
+    /// stay the UI's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_mcp_server_answers_both_protocol_eras_at_mcp() {
+        use crucible_mcp_server::PATH;
+        use http_body_util::BodyExt as _;
+        use rmcp::model::{CallToolRequestParams, ProtocolVersion};
+        use rmcp::transport::StreamableHttpClientTransport;
+        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+        use rmcp::{ClientLifecycleMode, ClientServiceExt as _};
+        use serde_json::json;
+
+        use crate::mcp::client::RouterClient;
+
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let app = test_app_with(env, keys, Arc::clone(&cursors)).await;
+        let router = api_router(env, &app, Arc::new(Catalog::default()));
+        let post = |authorization: Option<String>| {
+            let mut request = axum::http::Request::post(PATH)
+                .header("host", "crucible.internal:8080")
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json");
+            if let Some(value) = authorization {
+                request = request.header("authorization", value);
+            }
+            request.body(Body::from(MCP_INITIALIZE)).unwrap()
+        };
+        let problem = |response: Response| async move {
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, body)
+        };
+
+        let (status, body) = problem(router.clone().oneshot(post(None)).await.unwrap()).await;
+        assert_eq!(
+            (status, &body["code"]),
+            (StatusCode::UNAUTHORIZED, &json!("unauthenticated"))
+        );
+        let bearer = format!("Bearer {}", secret());
+        let response = router.clone().oneshot(post(Some(bearer))).await.unwrap();
+        let (status, body) = problem(response).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["code"], "telemetry_store_unavailable");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("--clickhouse-url")
+        );
+        let ui_page = axum::http::Request::get("/mcp/tools")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = problem(router.clone().oneshot(ui_page).await.unwrap()).await;
+        assert_eq!(
+            (status, &body["code"]),
+            (StatusCode::NOT_FOUND, &json!("not_found"))
+        );
+
+        let service = empty_store(env, &app);
+        app.gate.mcp.open(
+            env,
+            service,
+            Arc::clone(&app.keys),
+            cursors,
+            McpConfig::default(),
+        );
+
+        let lifecycles = [
+            ClientLifecycleMode::Initialize,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        ];
+        for lifecycle in lifecycles {
+            let config =
+                StreamableHttpClientTransportConfig::with_uri("http://crucible.internal:8080/mcp")
+                    .auth_header(secret());
+            let transport =
+                StreamableHttpClientTransport::with_client(RouterClient(router.clone()), config);
+            let client = ().serve_with_lifecycle(transport, lifecycle).await.unwrap();
+            let tools: Vec<String> = client
+                .list_all_tools()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|tool| tool.name.into_owned())
+                .collect();
+            for name in [
+                "get_data_bounds",
+                "get_span_children",
+                "get_trace",
+                "list_traces",
+            ] {
+                assert!(tools.iter().any(|tool| tool == name), "{name}: {tools:?}");
+            }
+            let bounds = client
+                .call_tool(CallToolRequestParams::new("get_data_bounds"))
+                .await
+                .unwrap();
+            assert_eq!(bounds.is_error, Some(false));
+            let output = bounds.structured_content.unwrap();
+            assert_eq!(output["max_window_days"], 30);
+            assert_eq!(output["spans"]["first"], serde_json::Value::Null);
+            let arguments = json!({ "from": "yesterday", "to": "2026-11-17T00:00:00Z" });
+            let refused = client
+                .call_tool(
+                    CallToolRequestParams::new("list_traces")
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(refused.is_error, Some(true));
+            let text = &refused.content[0].as_text().unwrap().text;
+            let problem: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(problem["code"], "validation_failed");
+            assert_eq!(problem["errors"][0]["pointer"], "/from");
+            client.cancel().await.unwrap();
+        }
+    }
+
+    /// A graceful shutdown ends the MCP server's sessions and their open event streams, so a connected agent does
+    /// not hold the listeners past the grace period: `shut_down` fails when a task is still running after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_graceful_shutdown_closes_open_mcp_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let app = test_app_with(env, keys, Arc::clone(&cursors)).await;
+        let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
+        app.gate
+            .mcp
+            .open(env, service, keys, cursors, McpConfig::default());
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addr = servers.addrs.api;
+        let bearer = format!("Bearer {}", secret());
+        let posted = [
+            ("authorization", bearer.as_str()),
+            ("accept", "application/json, text/event-stream"),
+            ("content-type", "application/json"),
+        ];
+        let initialize = MCP_INITIALIZE.as_bytes();
+        let (status, headers, _) = exchange(env, addr, "POST", "/mcp", &posted, initialize).await;
+        assert_eq!(status, "HTTP/1.1 200 OK");
+        let session = header(&headers, "mcp-session-id").unwrap().to_owned();
+
+        // The session's event stream stays open until the server ends it.
+        let stream_env = env.clone();
+        let mut stream = env.spawn("mcp-stream", async move {
+            let headers = [
+                ("authorization", bearer.as_str()),
+                ("accept", "text/event-stream"),
+                ("mcp-session-id", session.as_str()),
+            ];
+            exchange(&stream_env, addr, "GET", "/mcp", &headers, b"").await
+        });
+        env.clock.sleep(Duration::from_millis(200)).await;
+        shut_down(&prod, servers).await;
+        let (status, headers, _) = stream.join().await.unwrap();
+        assert_eq!(status, "HTTP/1.1 200 OK");
+        assert_eq!(header(&headers, "content-type"), Some("text/event-stream"));
     }
 
     /// `crucible serve --ui-dir` over the fixture export: the directory source, read through the production
@@ -1388,11 +1614,20 @@ mod tests {
         for (method, path) in [
             ("GET", "/api/v1/nope"),
             ("POST", "/v1/logs"),
-            ("GET", "/mcp"),
+            ("GET", "/mcp/nope"),
         ] {
             let (status, headers, body) = http(env, addr, method, path, &[]).await;
             assert_not_found_problem(&status, &headers, &body);
         }
+        // `/mcp` is the MCP server, never the UI: without a key it is a 401 problem.
+        let (status, headers, body) = http(env, addr, "GET", "/mcp", &[]).await;
+        assert_problem(
+            &status,
+            &headers,
+            &body,
+            "401 Unauthorized",
+            "unauthenticated",
+        );
         // `/v1/traces` is ingest, never the UI.
         let (status, headers, _) = http(env, addr, "POST", "/v1/traces", &[]).await;
         assert_eq!(status, "HTTP/1.1 401 Unauthorized");

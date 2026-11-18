@@ -31,6 +31,8 @@ crucible-compat = { workspace = true }
 crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-ingest = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-mcp-server = { path = "../crucible-mcp-server" }
 crucible-normalize = { workspace = true }
 crucible-plan = { workspace = true }
 crucible-query = { workspace = true }
@@ -76,7 +78,12 @@ crucible-sim = { path = "../crucible-sim" }
 crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
 # The gzip body of the compat route send.
 flate2 = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
+http-body-util = { workspace = true }
+# The MCP client of both protocol eras that drives `/mcp` in process (`mcp::client`).
+rmcp = { version = "=3.11.0", default-features = false, features = ["client", "transport-streamable-http-client"] }
+sse-stream = "=0.2.6"
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["io-util", "time"] }
