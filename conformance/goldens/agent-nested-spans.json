@@ -1,0 +1,34 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "agent-nested-spans",
+  "spans": [
+    {
+      "id": "checkout",
+      "select": { "name": "checkout" },
+      "parent": null,
+      "fields": { "observation_type": "agent" },
+      "attributes": { "crucible.trace.name": "checkout-flow", "crucible.input": "Where is my refund?" }
+    },
+    {
+      "id": "plan",
+      "select": { "name": "plan" },
+      "parent": "checkout",
+      "fields": { "observation_type": "chain" },
+      "attributes": { "crucible.input": { "absent": true }, "crucible.output": { "absent": true } }
+    },
+    {
+      "id": "fetch-docs",
+      "select": { "name": "fetch-docs" },
+      "parent": "plan",
+      "fields": { "observation_type": "retriever" },
+      "attributes": { "crucible.input": { "json": { "query": "refund policy" } }, "crucible.output": { "json": ["doc-1", "doc-2"] } }
+    },
+    {
+      "id": "respond",
+      "select": { "name": "respond" },
+      "parent": "checkout",
+      "fields": { "observation_type": "span" },
+      "attributes": { "crucible.output": "Refunds take 5 days." }
+    }
+  ]
+}

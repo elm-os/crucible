@@ -1,0 +1,31 @@
+{
+  "schema": "crucible.conformance.suite/v1",
+  "keys": {
+    "public_key": "cpk_conformance00000000000000000000000000000000",
+    "secret_key": "csk_conformance00000000000000000000000000000000"
+  },
+  "client": {
+    "name": "crucible-conformance-client",
+    "version": "1.0.0",
+    "capabilities": { "elicitation": {}, "roots": { "listChanged": true } }
+  },
+  "eras": { "legacy": "2025-11-25", "modern": "2026-07-28" },
+  "mcp": {
+    "server": { "name": "crucible-conformance-server", "version": "1.2.0" },
+    "sdk": {
+      "service_name": "crucible-conformance-server",
+      "deploy_id": "conformance-deploy-1",
+      "flush_interval_ms": 60000,
+      "capture": [{ "tool": "secret", "args": true, "result": true, "sample_rate": 1.0, "max_bytes": 16384 }],
+      "handle_params": { "lookup_order": "order_id" }
+    }
+  },
+  "agent": {
+    "sdk": {
+      "service_name": "crucible-conformance-agent",
+      "environment": "conformance",
+      "release": "2.0.0-rc.1",
+      "flush_interval_ms": 60000
+    }
+  }
+}

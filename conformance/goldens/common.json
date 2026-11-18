@@ -1,0 +1,18 @@
+{
+  "schema": "crucible.conformance.common/v1",
+  "legacy_handshake": [
+    {
+      "id": "initialize",
+      "select": { "mcp.method.name": "initialize", "jsonrpc.request.id": "0" },
+      "kind": "server",
+      "parent": null
+    },
+    {
+      "id": "initialized",
+      "select": { "mcp.method.name": "notifications/initialized" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "crucible.mcp.is_notification": true }
+    }
+  ]
+}

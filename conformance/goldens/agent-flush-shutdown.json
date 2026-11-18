@@ -1,0 +1,10 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "agent-flush-shutdown",
+  "spans": [
+    { "id": "before-flush", "select": { "name": "before-flush" }, "parent": null },
+    { "id": "after-flush", "select": { "name": "after-flush" }, "parent": null }
+  ],
+  "checkpoints": { "flushed": ["before-flush"] },
+  "absent": [{ "name": "after-shutdown" }]
+}
