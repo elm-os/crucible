@@ -11,6 +11,8 @@ permissive	read_agent_within_ceiling	1
 permissive	read_agent_rows_ceiling	error 452
 permissive	read_agent_concurrency_is_const	error 452
 permissive	maint_reads_mutations	1
+permissive	maint_reads_engines	MergeTree
+permissive	maint_reads_server_settings	1
 permissive	maint_lightweight_delete	ok
 permissive	maint_rows_after_delete	0
 permissive	maint_apply_deleted_mask	ok
@@ -30,6 +32,8 @@ strict	read_agent_within_ceiling	1
 strict	read_agent_rows_ceiling	error 452
 strict	read_agent_concurrency_is_const	error 452
 strict	maint_reads_mutations	1
+strict	maint_reads_engines	MergeTree
+strict	maint_reads_server_settings	1
 strict	maint_lightweight_delete	ok
 strict	maint_rows_after_delete	0
 strict	maint_apply_deleted_mask	ok

@@ -660,6 +660,7 @@ name = "crucible-conformance"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
@@ -668,6 +669,8 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "crucible-store-clickhouse",
+ "futures",
+ "sha2",
  "thiserror",
  "tokio",
 ]
@@ -912,6 +915,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clickhouse",
+ "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
  "crucible-plan",
@@ -921,6 +925,8 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "insta",
+ "proptest",
  "thiserror",
  "tower",
  "tracing",

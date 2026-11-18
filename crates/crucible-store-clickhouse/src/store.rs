@@ -1,0 +1,1022 @@
+//! [`ClickHouseStore`]: the `TelemetryStore` over the ClickHouse HTTP interface (contract 2.6).
+
+use std::collections::VecDeque;
+use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use clickhouse::query::BytesCursor;
+use crucible_chfmt::{Block, Compression, EncodedBlock, UuidColumn};
+use crucible_env::{
+    ClockExt, EngineFamily, Env, InsertError, InsertSettings, Instant, MutationId, MutationStatus,
+    QueryError, RowStream, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
+    TelemetryStore, TlsRoots,
+};
+use crucible_plan::{
+    BatchProbe, CLASS_FIXED_SETTINGS, DeletePlan, OutputSchema, QueryPlan, RowBlock,
+};
+use crucible_records::{
+    BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
+};
+use crucible_schema::{DATABASE, IndexKind, MigrationStep, ServiceIdentity, table};
+use futures::Stream;
+
+use crate::codes::{Failure, parse_code};
+use crate::connect;
+use crate::decode::Decoder;
+use crate::render::{self, Binder, Statement};
+
+/// The Rust-side deadline of an insert: its `max_execution_time` plus slack for the round trip.
+const INSERT_DEADLINE: Duration =
+    Duration::from_secs(InsertSettings::MAX_EXECUTION_TIME_SECS as u64 + 5);
+/// `max_execution_time` of the store's own short reads (probe, catalogue lookups), in seconds.
+pub(crate) const LOOKUP_SECS: u64 = 30;
+/// `max_execution_time` of the health check and of the reads every identity runs in the visibility check: the
+/// smallest ceiling among the identities' settings profiles.
+const SHORT_SECS: u64 = 5;
+/// The Rust-side deadline of a read is its `max_execution_time` plus this.
+const DEADLINE_SLACK_SECS: u64 = crucible_plan::DEADLINE_SLACK_SECS as u64;
+/// The Rust-side deadline of `KILL QUERY`.
+const KILL_DEADLINE: Duration = Duration::from_secs(LOOKUP_SECS);
+/// The Rust-side deadline of a statement that changes data or schema. On expiry the outcome is unknown and the
+/// idempotent call is repeated.
+pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(300);
+
+/// Every query-level setting this crate sends, apart from the per-insert settings of
+/// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
+pub const QUERY_SETTINGS: [&str; 14] = [
+    "max_execution_time",
+    "max_memory_usage",
+    "max_rows_to_read",
+    "max_threads",
+    "timeout_overflow_mode",
+    "read_overflow_mode",
+    "cancel_http_readonly_queries_on_client_close",
+    "max_rows_in_set",
+    "set_overflow_mode",
+    "lightweight_deletes_sync",
+    "lightweight_delete_mode",
+    "mutations_sync",
+    "alter_sync",
+    "distributed_ddl_entry_format_version",
+];
+
+/// Every table-level setting the schema's DDL sets.
+pub const TABLE_SETTINGS: [&str; 5] = [
+    "index_granularity",
+    "index_granularity_bytes",
+    "non_replicated_deduplication_window",
+    "replicated_deduplication_window",
+    "replicated_deduplication_window_seconds",
+];
+
+/// The text-search functions the renderer uses.
+pub const TEXT_SEARCH_FUNCTIONS: [&str; 2] = ["hasAllTokens", "hasAnyTokens"];
+
+/// The user and password of one identity.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Credentials {
+    /// The user name.
+    pub user: String,
+    /// The password.
+    pub password: String,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credentials")
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the store needs to know. Everything comes from configuration; nothing is read from the environment.
+#[derive(Clone, Debug)]
+pub struct StoreConfig {
+    /// The HTTP endpoint, `http://host:port` or `https://host:port`.
+    pub url: String,
+    /// A separate endpoint for the two read identities (`clickhouse.read_url`).
+    pub read_url: Option<String>,
+    /// `crucible_admin`, supplied by the operator.
+    pub admin: Credentials,
+    /// `crucible_ingest`.
+    pub ingest: Credentials,
+    /// `crucible_read_ui`.
+    pub read_ui: Credentials,
+    /// `crucible_read_agent`.
+    pub read_agent: Credentials,
+    /// `crucible_maint`.
+    pub maint: Credentials,
+    /// The configured flavour (`clickhouse.flavor`); `None` is `auto`.
+    pub flavour: Option<StoreFlavour>,
+    /// The trust anchors for an `https` endpoint.
+    pub tls_roots: TlsRoots,
+    /// How long opening a connection may take.
+    pub connect_timeout: Duration,
+}
+
+struct Inner {
+    env: Env,
+    clients: [clickhouse::Client; 5],
+    configured_flavour: Option<StoreFlavour>,
+    flavour: Mutex<Option<StoreFlavour>>,
+}
+
+/// The production `TelemetryStore`: one client per service identity over one connection pool that runs on the
+/// `Env` network.
+#[derive(Clone)]
+pub struct ClickHouseStore {
+    inner: Arc<Inner>,
+}
+
+impl fmt::Debug for ClickHouseStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClickHouseStore")
+            .field("configured_flavour", &self.inner.configured_flavour)
+            .finish_non_exhaustive()
+    }
+}
+
+const fn slot(identity: ServiceIdentity) -> usize {
+    match identity {
+        ServiceIdentity::Admin => 0,
+        ServiceIdentity::Ingest => 1,
+        ServiceIdentity::ReadUi => 2,
+        ServiceIdentity::ReadAgent => 3,
+        ServiceIdentity::Maint => 4,
+    }
+}
+
+/// A tab-separated answer: one `Vec` of fields per line.
+fn lines(text: &str) -> Vec<Vec<&str>> {
+    text.lines().map(|line| line.split('\t').collect()).collect()
+}
+
+fn unexpected(what: &str, text: &str) -> StoreError {
+    StoreError::Internal(format!("unexpected answer for {what}: {text:?}"))
+}
+
+fn count(what: &str, text: &str) -> Result<u64, StoreError> {
+    text.trim().parse().map_err(|_| unexpected(what, text))
+}
+
+fn engine_family(engine: &str) -> EngineFamily {
+    if engine.starts_with("Shared") {
+        EngineFamily::Shared
+    } else if engine.starts_with("Replicated") {
+        EngineFamily::Replicated
+    } else {
+        EngineFamily::MergeTree
+    }
+}
+
+fn version(text: &str) -> Option<StoreVersion> {
+    let mut parts = text.trim().split('.');
+    Some(StoreVersion {
+        major: parts.next()?.parse().ok()?,
+        minor: parts.next()?.parse().ok()?,
+    })
+}
+
+/// A one-row block for `dedup_selftest`.
+fn selftest_block(id: Uuid, epoch: WalEpoch, now: Timestamp) -> Result<EncodedBlock, StoreError> {
+    let internal = |e: crucible_chfmt::EncodeError| StoreError::Internal(e.to_string());
+    let def = table(TableId::DedupSelftest);
+    let mut ids = UuidColumn::with_capacity(1);
+    ids.push(id.to_bytes());
+    let mut epochs = UuidColumn::with_capacity(1);
+    epochs.push(epoch.to_bytes());
+    let batch_seq = vec![Lsn::FIRST.get()];
+    let created_at = vec![now.micros()];
+    let mut block = Block::new(1).map_err(internal)?;
+    for column in def.columns {
+        let data: &dyn crucible_chfmt::Column = match column.name {
+            "id" => &ids,
+            "wal_epoch" => &epochs,
+            "batch_seq" => &batch_seq,
+            "created_at" => &created_at,
+            other => {
+                return Err(StoreError::Internal(format!(
+                    "dedup_selftest has an unknown column {other}"
+                )));
+            }
+        };
+        block
+            .push(column.name, &column.ty.to_string(), data)
+            .map_err(internal)?;
+    }
+    block.encode(Compression::Lz4).map_err(internal)
+}
+
+/// Issues `KILL QUERY` when a read is abandoned: on drop while the statement may still run.
+struct KillOnDrop {
+    inner: Arc<Inner>,
+    query_id: Uuid,
+    armed: bool,
+}
+
+impl KillOnDrop {
+    fn fire(&mut self) {
+        if std::mem::take(&mut self.armed) {
+            let store = ClickHouseStore {
+                inner: Arc::clone(&self.inner),
+            };
+            let query_id = self.query_id;
+            // Detached: the kill outlives the stream that asked for it.
+            drop(self.inner.env.spawn("clickhouse-kill", async move {
+                if let Err(error) = store.kill(query_id).await {
+                    tracing::warn!(%query_id, %error, "kill of an abandoned query failed");
+                }
+            }));
+        }
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        self.fire();
+    }
+}
+
+/// The state of one streaming read.
+pub(crate) struct Reading {
+    cursor: Option<BytesCursor>,
+    deadline: Instant,
+    kill: Option<KillOnDrop>,
+    inner: Arc<Inner>,
+}
+
+impl Reading {
+    /// The next chunk of the answer; `None` at its end. An error ends the read.
+    pub(crate) async fn next(&mut self) -> Option<Result<Bytes, QueryError>> {
+        let cursor = self.cursor.as_mut()?;
+        // The request is sent by the first poll, so from here on the statement may be running.
+        if let Some(kill) = &mut self.kill {
+            kill.armed = true;
+        }
+        let clock = Arc::clone(&self.inner.env.clock);
+        let outcome = clock.timeout_at(self.deadline, cursor.next()).await;
+        let finished = !matches!(outcome, Ok(Ok(Some(_))));
+        if finished {
+            // Dropping the cursor closes the connection, which cancels the statement on the server
+            // (contract 8.5).
+            self.cursor = None;
+        }
+        match outcome {
+            Ok(Ok(Some(chunk))) => Some(Ok(chunk)),
+            Ok(Ok(None)) => {
+                self.disarm();
+                None
+            }
+            Ok(Err(error)) => {
+                self.disarm();
+                Some(Err(Failure::from_client(error).into_query()))
+            }
+            Err(_elapsed) => {
+                self.abandon();
+                Some(Err(QueryError::Timeout))
+            }
+        }
+    }
+
+    /// The statement has ended on the server.
+    fn disarm(&mut self) {
+        if let Some(kill) = &mut self.kill {
+            kill.armed = false;
+        }
+    }
+
+    /// Stops reading a statement that may still run.
+    fn abandon(&mut self) {
+        self.cursor = None;
+        if let Some(kill) = &mut self.kill {
+            kill.fire();
+        }
+    }
+}
+
+impl ClickHouseStore {
+    /// A store over `env`. No connection is opened until the first call.
+    pub fn new(env: Env, config: StoreConfig) -> Self {
+        let base = connect::client(&env, config.tls_roots.clone(), config.connect_timeout);
+        let read_url = config.read_url.as_deref().unwrap_or(&config.url);
+        let client = |url: &str, credentials: &Credentials| {
+            base.clone()
+                .with_url(url)
+                .with_user(credentials.user.as_str())
+                .with_password(credentials.password.as_str())
+        };
+        // In the order of `slot`.
+        let clients = [
+            client(&config.url, &config.admin),
+            client(&config.url, &config.ingest),
+            client(read_url, &config.read_ui),
+            client(read_url, &config.read_agent),
+            client(&config.url, &config.maint),
+        ];
+        Self {
+            inner: Arc::new(Inner {
+                env,
+                clients,
+                configured_flavour: config.flavour,
+                flavour: Mutex::new(config.flavour),
+            }),
+        }
+    }
+
+    /// A query as `identity` with an explicit query id, its bound values and its settings.
+    fn query(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        settings: &[(&str, String)],
+    ) -> (Uuid, clickhouse::query::Query) {
+        let query_id = self.inner.env.new_id();
+        let mut query = self.inner.clients[slot(identity)]
+            .query_raw(&statement.sql)
+            .with_setting("query_id", query_id.to_string());
+        for (n, param) in statement.params.iter().enumerate() {
+            query = query.with_setting(format!("param_p{n}"), param.value.as_str());
+        }
+        for (name, value) in settings {
+            query = query.with_setting(*name, value.as_str());
+        }
+        for (name, value) in &statement.settings {
+            query = query.with_setting(*name, value.as_str());
+        }
+        (query_id, query)
+    }
+
+    /// Runs a statement that returns nothing.
+    pub(crate) async fn command(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        settings: &[(&str, String)],
+        deadline: Duration,
+    ) -> Result<(), Failure> {
+        let (_, query) = self.query(identity, statement, settings);
+        match self.inner.env.timeout(deadline, query.execute()).await {
+            Ok(result) => result.map_err(Failure::from_client),
+            Err(_elapsed) => Err(Failure::Timeout),
+        }
+    }
+
+    /// Runs a short read and returns its tab-separated answer.
+    pub(crate) async fn text(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        secs: u64,
+    ) -> Result<String, Failure> {
+        let deadline = Duration::from_secs(secs + DEADLINE_SLACK_SECS);
+        let settings = [("max_execution_time", secs.to_string())];
+        let (_, query) = self.query(identity, statement, &settings);
+        let read = async {
+            let mut cursor = query.fetch_bytes("TabSeparated")?;
+            cursor.collect().await
+        };
+        match self.inner.env.timeout(deadline, read).await {
+            Ok(Ok(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Ok(Err(error)) => Err(Failure::from_client(error)),
+            Err(_elapsed) => Err(Failure::Timeout),
+        }
+    }
+
+    async fn lookup(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+    ) -> Result<String, StoreError> {
+        self.text(identity, statement, LOOKUP_SECS)
+            .await
+            .map_err(Failure::into_store)
+    }
+
+    /// Sends one `INSERT ... FORMAT Native` whose body is the pre-compressed block, verbatim.
+    pub(crate) async fn insert(
+        &self,
+        sql: String,
+        body: Bytes,
+        settings: &[(&str, String)],
+    ) -> Result<(), Failure> {
+        let query_id = self.inner.env.new_id();
+        let mut insert = self.inner.clients[slot(ServiceIdentity::Ingest)]
+            .insert_formatted_with(sql)
+            .with_setting("query_id", query_id.to_string())
+            // The body is already in the server's framed compression, so the client compresses nothing.
+            .with_setting("decompress", "1");
+        for (name, value) in settings {
+            insert = insert.with_setting(*name, value.as_str());
+        }
+        let send = async {
+            insert.send(body).await?;
+            insert.end().await
+        };
+        match self.inner.env.timeout(INSERT_DEADLINE, send).await {
+            Ok(result) => result.map_err(Failure::from_client),
+            Err(_elapsed) => Err(Failure::Timeout),
+        }
+    }
+
+    /// Starts a streaming read. With `kill_on_drop`, abandoning it issues `KILL QUERY`.
+    pub(crate) fn read(
+        &self,
+        identity: ServiceIdentity,
+        statement: &Statement,
+        settings: &[(&str, String)],
+        format: &str,
+        deadline: Duration,
+        kill_on_drop: bool,
+    ) -> Result<(Uuid, Reading), QueryError> {
+        let (query_id, query) = self.query(identity, statement, settings);
+        let cursor = query
+            .fetch_bytes(format)
+            .map_err(|e| Failure::from_client(e).into_query())?;
+        let reading = Reading {
+            cursor: Some(cursor),
+            deadline: self.inner.env.clock.now().saturating_add(deadline),
+            kill: kill_on_drop.then(|| KillOnDrop {
+                inner: Arc::clone(&self.inner),
+                query_id,
+                armed: false,
+            }),
+            inner: Arc::clone(&self.inner),
+        };
+        Ok((query_id, reading))
+    }
+
+    /// The flavour: the configured one, or the detected one once [`TelemetryStore::detect`] has run.
+    async fn flavour(&self) -> Result<StoreFlavour, StoreError> {
+        let cached = *self
+            .inner
+            .flavour
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match cached {
+            Some(flavour) => Ok(flavour),
+            None => Ok(self.detect_catalogue().await?.flavour),
+        }
+    }
+
+    /// The value of one row of `system.settings` or `system.server_settings`; empty when it is not listed.
+    async fn setting_value(&self, system_table: &str, name: &str) -> Result<String, StoreError> {
+        let mut b = Binder::default();
+        let name = b.string(name);
+        let statement = b.finish(format!(
+            "SELECT value FROM system.{system_table} WHERE name = {name}"
+        ));
+        self.lookup(ServiceIdentity::Maint, &statement).await
+    }
+
+    /// The names of `names` that `system.<system_table>` does not list.
+    async fn missing(
+        &self,
+        system_table: &str,
+        names: &[&str],
+    ) -> Result<Vec<String>, StoreError> {
+        let mut b = Binder::default();
+        let list = b.strings(names);
+        let statement = b.finish(format!(
+            "SELECT name FROM system.{system_table} WHERE has({list}, name)"
+        ));
+        let found = self.lookup(ServiceIdentity::Maint, &statement).await?;
+        let found: Vec<&str> = found.lines().collect();
+        Ok(names
+            .iter()
+            .filter(|name| !found.contains(name))
+            .map(|name| (*name).to_owned())
+            .collect())
+    }
+
+    /// The part of detection that reads the server's catalogue as `crucible_maint`.
+    async fn detect_catalogue(&self) -> Result<StoreFacts, StoreError> {
+        let maint = ServiceIdentity::Maint;
+        let plain = |sql: &str| Binder::default().finish(sql.to_owned());
+
+        let answer = self.lookup(maint, &plain("SELECT version()")).await?;
+        let version = version(&answer).ok_or_else(|| unexpected("version()", &answer))?;
+
+        let mut b = Binder::default();
+        let text_index = b.string("TYPE text(");
+        let database = b.string(DATABASE);
+        let answer = self
+            .lookup(
+                maint,
+                &b.finish(format!(
+                    "SELECT name, engine, position(create_table_query, {text_index}) > 0 FROM system.tables WHERE \
+                     database = {database}"
+                )),
+            )
+            .await?;
+        let mut engines = Vec::new();
+        let mut text_indexes = Vec::new();
+        for line in lines(&answer) {
+            let [name, engine, has_text_index] = line.as_slice() else {
+                return Err(unexpected("system.tables", &answer));
+            };
+            if let Some(id) = TableId::from_name(name) {
+                engines.push((id, engine_family(engine)));
+                let wants_text_index = table(id)
+                    .indexes
+                    .iter()
+                    .any(|i| matches!(i.kind, IndexKind::Text { .. }));
+                if wants_text_index {
+                    text_indexes.push(*has_text_index == "1");
+                }
+            }
+        }
+        engines.sort_unstable_by_key(|(id, _)| id.id());
+
+        let mut session: Vec<&str> = InsertSettings::NAMES.to_vec();
+        session.extend(QUERY_SETTINGS);
+        let mut missing_settings = self.missing("settings", &session).await?;
+        missing_settings.extend(self.missing("merge_tree_settings", &TABLE_SETTINGS).await?);
+        missing_settings.sort_unstable();
+
+        let text_search_functions = self
+            .missing("functions", &TEXT_SEARCH_FUNCTIONS)
+            .await?
+            .is_empty();
+        // Once the tables exist their text indexes are the proof. Before the first migration the functions,
+        // which only serve that index type, stand in for it.
+        let text_index = if text_indexes.is_empty() {
+            text_search_functions
+        } else {
+            text_indexes.iter().all(|present| *present)
+        };
+
+        let flavour = match self.inner.configured_flavour {
+            Some(flavour) => flavour,
+            None => {
+                let cloud = self.setting_value("settings", "cloud_mode").await?;
+                if cloud.trim() == "1" || engines.iter().any(|(_, f)| *f == EngineFamily::Shared) {
+                    StoreFlavour::Cloud
+                } else if engines
+                    .iter()
+                    .any(|(_, f)| *f == EngineFamily::Replicated)
+                {
+                    StoreFlavour::Clustered
+                } else {
+                    StoreFlavour::SingleNode
+                }
+            }
+        };
+        *self
+            .inner
+            .flavour
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(flavour);
+
+        let ddl_initial_user_and_roles = if flavour == StoreFlavour::Clustered {
+            let value = self
+                .setting_value(
+                    "server_settings",
+                    "distributed_ddl_use_initial_user_and_roles",
+                )
+                .await?;
+            Some(value.trim() == "1")
+        } else {
+            None
+        };
+
+        Ok(StoreFacts {
+            version,
+            flavour,
+            engines,
+            missing_settings,
+            text_search_functions,
+            text_index,
+            ddl_initial_user_and_roles,
+        })
+    }
+
+    /// Inserts one row into `dedup_selftest` as `crucible_ingest`, `times` times with one token, and returns
+    /// its id.
+    async fn insert_selftest_row(&self, times: usize) -> Result<Uuid, StoreError> {
+        let env = &self.inner.env;
+        let id = env.new_id();
+        let epoch = WalEpoch::from_uuid(env.new_id());
+        let token = BatchToken::new(
+            epoch,
+            Lsn::FIRST,
+            Lsn::FIRST,
+            TableId::DedupSelftest,
+            PartitionId::UNPARTITIONED,
+        )
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let block = selftest_block(id, epoch, env.clock.wall_now())?;
+        let settings = InsertSettings::new(token, self.flavour().await?);
+        for _ in 0..times {
+            self.insert_block(block.clone(), settings)
+                .await
+                .map_err(|error| match error {
+                    InsertError::Retry { message, .. }
+                    | InsertError::UnknownOutcome { message, .. } => {
+                        StoreError::Unavailable(message)
+                    }
+                    InsertError::FatalConfig { code, message }
+                    | InsertError::Poison { code, message } => {
+                        StoreError::Rejected { code, message }
+                    }
+                })?;
+        }
+        Ok(id)
+    }
+
+    /// How many `dedup_selftest` rows with this id `identity` sees.
+    async fn selftest_rows(&self, identity: ServiceIdentity, id: Uuid) -> Result<u64, StoreError> {
+        let mut b = Binder::default();
+        let id = b.uuid(id);
+        let name = TableId::DedupSelftest.name();
+        let statement = b.finish(format!(
+            "SELECT count() FROM {DATABASE}.{name} WHERE id = {id}"
+        ));
+        let answer = self
+            .text(identity, &statement, SHORT_SECS)
+            .await
+            .map_err(Failure::into_store)?;
+        count("the self-test row count", &answer)
+    }
+
+    /// Confirms that every service identity sees a known row through its row policy (contracts 5.8 and 7.3).
+    async fn check_visibility(&self) -> Result<(), StoreError> {
+        let id = self.insert_selftest_row(1).await?;
+        for identity in ServiceIdentity::ALL {
+            let seen = self.selftest_rows(identity, id).await?;
+            if seen != 1 {
+                return Err(StoreError::SelfTest(format!(
+                    "{} sees {seen} of 1 known row: its service row policy is missing",
+                    identity.name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The newest mutation of a table. Mutations of a table finish in order, so when this one is done every
+    /// earlier one is, including the one the caller just started.
+    async fn latest_mutation(&self, id: TableId) -> Result<MutationId, StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(id.name());
+        let digits = b.string("[0-9]+");
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT mutation_id FROM system.mutations WHERE database = {database} AND table = {name} \
+                     ORDER BY toUInt64OrZero(extract(mutation_id, {digits})) DESC LIMIT 1"
+                )),
+            )
+            .await?;
+        Ok(MutationId::new(id, answer.trim().to_owned()))
+    }
+
+    async fn change(
+        &self,
+        statement: &Statement,
+        settings: &[(&str, String)],
+    ) -> Result<(), StoreError> {
+        self.command(ServiceIdentity::Maint, statement, settings, CHANGE_DEADLINE)
+            .await
+            .map_err(Failure::into_store)
+    }
+
+    /// `alter_sync`: on a replicated target a partition change waits for every replica.
+    async fn alter_sync(&self) -> Result<String, StoreError> {
+        Ok(match self.flavour().await? {
+            StoreFlavour::SingleNode => "1",
+            StoreFlavour::Clustered | StoreFlavour::Cloud => "2",
+        }
+        .to_owned())
+    }
+}
+
+/// A streaming read being decoded.
+struct Decoding {
+    reading: Reading,
+    decoder: Decoder,
+    schema: OutputSchema,
+    ready: VecDeque<RowBlock>,
+    done: bool,
+}
+
+impl Decoding {
+    /// The blocks of one chunk, each checked against the plan's output schema.
+    fn decode(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let blocks = self.decoder.push(chunk).map_err(|e| e.to_string())?;
+        for block in &blocks {
+            self.schema.check_block(block).map_err(|e| e.to_string())?;
+        }
+        self.ready.extend(blocks);
+        Ok(())
+    }
+}
+
+/// Decodes the chunks of a read into validated row blocks. The first error is terminal.
+fn rows(
+    reading: Reading,
+    schema: OutputSchema,
+) -> impl Stream<Item = Result<RowBlock, QueryError>> + Send + 'static {
+    let state = Decoding {
+        reading,
+        decoder: Decoder::new(&schema),
+        schema,
+        ready: VecDeque::new(),
+        done: false,
+    };
+    futures::stream::unfold(state, |mut s| async move {
+        loop {
+            if let Some(block) = s.ready.pop_front() {
+                return Some((Ok(block), s));
+            }
+            if s.done {
+                return None;
+            }
+            match s.reading.next().await {
+                Some(Ok(chunk)) => {
+                    if let Err(message) = s.decode(&chunk) {
+                        // A result that does not follow the plan's schema is a defect: stop reading it.
+                        s.done = true;
+                        s.ready.clear();
+                        s.reading.abandon();
+                        return Some((Err(QueryError::Internal(message)), s));
+                    }
+                }
+                Some(Err(error)) => {
+                    s.done = true;
+                    return Some((Err(error), s));
+                }
+                None => {
+                    s.done = true;
+                    if let Err(error) = s.decoder.finish() {
+                        return Some((Err(QueryError::Internal(error.to_string())), s));
+                    }
+                }
+            }
+        }
+    })
+}
+
+#[async_trait]
+impl TelemetryStore for ClickHouseStore {
+    async fn insert_block(
+        &self,
+        block: EncodedBlock,
+        settings: InsertSettings,
+    ) -> Result<(), InsertError> {
+        if block.rows() == 0 {
+            // Empty blocks are never sent: a zero-row block is a header only and creates no part.
+            return Err(InsertError::Poison {
+                code: 27,
+                message: "an empty block is never sent".to_owned(),
+            });
+        }
+        self.insert(
+            render::insert(settings.table()),
+            block.compressed().clone(),
+            &settings.pairs(),
+        )
+        .await
+        .map_err(Failure::into_insert)
+    }
+
+    async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        let statement =
+            render::plan(&plan).map_err(|error| QueryError::Internal(error.to_string()))?;
+        let limits = plan.class().limits();
+        let mut settings = vec![
+            (
+                "max_execution_time",
+                limits.max_execution_time_secs.to_string(),
+            ),
+            ("max_memory_usage", limits.max_memory_usage.to_string()),
+            ("max_threads", limits.max_threads.to_string()),
+        ];
+        if let Some(rows) = limits.max_rows_to_read {
+            settings.push(("max_rows_to_read", rows.to_string()));
+        }
+        settings.extend(
+            CLASS_FIXED_SETTINGS
+                .iter()
+                .map(|(name, value)| (*name, (*value).to_owned())),
+        );
+        let (query_id, reading) = self.read(
+            plan.identity(),
+            &statement,
+            &settings,
+            "RowBinaryWithNamesAndTypes",
+            Duration::from_secs(u64::from(plan.class().deadline_secs())),
+            true,
+        )?;
+        Ok(RowStream::new(query_id, rows(reading, plan.output())))
+    }
+
+    async fn probe(&self, probe: BatchProbe) -> Result<bool, StoreError> {
+        let answer = self
+            .lookup(ServiceIdentity::Ingest, &render::probe(&probe))
+            .await?;
+        Ok(count("the probe", &answer)? > 0)
+    }
+
+    async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
+        let statement =
+            render::delete(&plan).map_err(|error| StoreError::Internal(error.to_string()))?;
+        // The delete returns once the rows are masked on every replica, so they are hidden from reads at once.
+        let settings = [
+            ("lightweight_deletes_sync", "2".to_owned()),
+            ("lightweight_delete_mode", "alter_update".to_owned()),
+        ];
+        self.change(&statement, &settings).await?;
+        self.latest_mutation(plan.table()).await
+    }
+
+    async fn drop_partition(
+        &self,
+        table: TableId,
+        partition: PartitionId,
+    ) -> Result<(), StoreError> {
+        let mut b = Binder::default();
+        let partition = b.string(&partition.to_string());
+        let statement = b.finish(format!(
+            "ALTER TABLE {DATABASE}.{} DROP PARTITION ID {partition}",
+            table.name()
+        ));
+        let settings = [("alter_sync", self.alter_sync().await?)];
+        self.change(&statement, &settings).await
+    }
+
+    async fn apply_deleted_mask(
+        &self,
+        table: TableId,
+        partition: PartitionId,
+    ) -> Result<MutationId, StoreError> {
+        let mut b = Binder::default();
+        let partition = b.string(&partition.to_string());
+        let statement = b.finish(format!(
+            "ALTER TABLE {DATABASE}.{} APPLY DELETED MASK IN PARTITION ID {partition}",
+            table.name()
+        ));
+        // The mutation runs in the background; `mutation_status` follows it.
+        let settings = [("mutations_sync", "0".to_owned())];
+        self.change(&statement, &settings).await?;
+        self.latest_mutation(table).await
+    }
+
+    async fn mutation_status(&self, id: &MutationId) -> Result<MutationStatus, StoreError> {
+        if id.name().is_empty() {
+            return Ok(MutationStatus::Done);
+        }
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(id.table().name());
+        let mutation = b.string(id.name());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT is_done, is_killed, latest_fail_reason FROM system.mutations WHERE database = \
+                     {database} AND table = {name} AND mutation_id = {mutation}"
+                )),
+            )
+            .await?;
+        // A mutation the server no longer lists has finished, or its partition was dropped.
+        let Some(line) = lines(&answer).into_iter().next() else {
+            return Ok(MutationStatus::Done);
+        };
+        Ok(match line.as_slice() {
+            ["1", ..] => MutationStatus::Done,
+            ["0", "0", ""] => MutationStatus::Pending,
+            ["0", _, reason] => MutationStatus::Failed {
+                code: parse_code(reason).unwrap_or(0),
+                reason: if reason.is_empty() {
+                    "the mutation was killed".to_owned()
+                } else {
+                    (*reason).to_owned()
+                },
+            },
+            _ => return Err(unexpected("system.mutations", &answer)),
+        })
+    }
+
+    async fn partition_projects(
+        &self,
+        table: TableId,
+        partition: PartitionId,
+    ) -> Result<Vec<ProjectId>, StoreError> {
+        if !crucible_schema::table(table).is_scoped() {
+            return Err(StoreError::Internal(format!(
+                "{} has no project column",
+                table.name()
+            )));
+        }
+        let mut b = Binder::default();
+        let partition = b.string(&partition.to_string());
+        let nil = b.uuid(Uuid::NIL);
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT DISTINCT project_id FROM {DATABASE}.{} WHERE _partition_id = {partition} AND \
+                     project_id != {nil}",
+                    table.name()
+                )),
+            )
+            .await?;
+        let mut projects = answer
+            .lines()
+            .map(|line| ProjectId::parse(line).map_err(|_| unexpected("project ids", &answer)))
+            .collect::<Result<Vec<_>, _>>()?;
+        projects.sort_unstable();
+        Ok(projects)
+    }
+
+    async fn masked_parts(
+        &self,
+        table: TableId,
+        partition: PartitionId,
+    ) -> Result<u64, StoreError> {
+        let mut b = Binder::default();
+        let database = b.string(DATABASE);
+        let name = b.string(table.name());
+        let partition = b.string(&partition.to_string());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Maint,
+                &b.finish(format!(
+                    "SELECT count() FROM system.parts WHERE database = {database} AND table = {name} AND \
+                     partition_id = {partition} AND active AND has_lightweight_delete"
+                )),
+            )
+            .await?;
+        count("the masked part count", &answer)
+    }
+
+    async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
+        let settings: Vec<(&str, String)> = step
+            .settings
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned()))
+            .collect();
+        for sql in &step.statements {
+            let statement = Binder::default().finish(sql.clone());
+            self.command(
+                ServiceIdentity::Admin,
+                &statement,
+                &settings,
+                CHANGE_DEADLINE,
+            )
+            .await
+            .map_err(Failure::into_store)?;
+        }
+        Ok(())
+    }
+
+    async fn detect(&self) -> Result<StoreFacts, StoreError> {
+        let facts = self.detect_catalogue().await?;
+        // The check needs the table and the identities, so it starts with the first migration.
+        let migrated = facts
+            .engines
+            .iter()
+            .any(|(id, _)| *id == TableId::DedupSelftest);
+        if migrated {
+            self.check_visibility().await?;
+        }
+        Ok(facts)
+    }
+
+    async fn dedup_selftest(&self) -> Result<(), StoreError> {
+        let id = self.insert_selftest_row(2).await?;
+        match self.selftest_rows(ServiceIdentity::Ingest, id).await? {
+            1 => Ok(()),
+            rows => Err(StoreError::SelfTest(format!(
+                "one block inserted twice with one token left {rows} rows, not 1"
+            ))),
+        }
+    }
+
+    async fn kill(&self, query_id: Uuid) -> Result<(), StoreError> {
+        let mut b = Binder::default();
+        let id = b.string(&query_id.to_string());
+        let statement = b.finish(format!("KILL QUERY WHERE query_id = {id} ASYNC"));
+        self.command(ServiceIdentity::Maint, &statement, &[], KILL_DEADLINE)
+            .await
+            .map_err(Failure::into_store)
+    }
+
+    async fn health(&self) -> StoreHealth {
+        let statement = Binder::default().finish("SELECT 1".to_owned());
+        match self
+            .text(ServiceIdentity::Maint, &statement, SHORT_SECS)
+            .await
+        {
+            Ok(_) => StoreHealth::Healthy,
+            Err(failure) => StoreHealth::Unavailable {
+                reason: failure.into_store().to_string(),
+            },
+        }
+    }
+}

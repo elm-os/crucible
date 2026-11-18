@@ -14,10 +14,13 @@ crucible-env-prod = { workspace = true }
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
-crucible-plan = { workspace = true }
-crucible-store-clickhouse = { workspace = true }
+crucible-plan = { workspace = true, features = ["test-support"] }
+crucible-store-clickhouse = { workspace = true, features = ["test-support"] }
 crucible-auth = { workspace = true, features = ["test-support"] }
 anyhow = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
