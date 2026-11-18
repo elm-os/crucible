@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
@@ -260,6 +261,29 @@ impl Ctx {
     }
 }
 
+/// When a failed garbage collection is logged: the first failure after a success, then at most one per
+/// interval, each with the number of failures since the line before it.
+#[derive(Debug, Default)]
+struct GcFailures {
+    logged_at: Option<Instant>,
+    unreported: u64,
+}
+
+impl GcFailures {
+    /// Counts a failure at `now`. Returns the failures to report when this one is logged.
+    fn failed(&mut self, now: Instant, every: Duration) -> Option<u64> {
+        self.unreported += 1;
+        if self
+            .logged_at
+            .is_some_and(|at| now.saturating_duration_since(at) < every)
+        {
+            return None;
+        }
+        self.logged_at = Some(now);
+        Some(std::mem::take(&mut self.unreported))
+    }
+}
+
 /// A pair that a durable `Quarantine` frame names.
 type QuarantinedPair = (Lsn, Lsn, TableId, PartitionId);
 
@@ -331,6 +355,7 @@ pub struct Shipper {
     /// restart may or may not find it. No frame is admitted until a collection succeeds, because stage B could
     /// not say what a restart will remember.
     gc_in_doubt: bool,
+    gc_failures: GcFailures,
     read_failures: u32,
     drain: DrainRate,
 }
@@ -422,6 +447,7 @@ impl Shipper {
             done_rx,
             last_gc: ctx.env.clock.now(),
             gc_in_doubt: false,
+            gc_failures: GcFailures::default(),
             read_failures: 0,
             drain: DrainRate::new(ctx.env.clock.now()),
             ctx,
@@ -800,16 +826,25 @@ impl Shipper {
         self.relied_on = self
             .relied_on
             .split_off(&Lsn::new(watermark.get().saturating_add(1)));
-        let floor = self
-            .relied_on
-            .values()
-            .copied()
-            .chain(self.ctx.recent.floor())
-            .min();
+        let relied_on = if self.ctx.config.collects_what_frames_rely_on() {
+            None
+        } else {
+            self.relied_on.values().copied().min()
+        };
+        let floor = relied_on.into_iter().chain(self.ctx.recent.floor()).min();
         let collected = self.ctx.wal.gc(floor).await;
         self.gc_in_doubt = collected.is_err();
-        if let Err(e) = collected {
-            tracing::warn!(error = %e, "wal garbage collection failed");
+        match collected {
+            Ok(_) => self.gc_failures = GcFailures::default(),
+            // A collection in doubt is tried again at every tail poll; the log gets one line per interval.
+            Err(e) => {
+                if let Some(failures) = self
+                    .gc_failures
+                    .failed(self.last_gc, self.ctx.config.gc_interval)
+                {
+                    tracing::warn!(error = %e, failures, "wal garbage collection failed");
+                }
+            }
         }
         // A failed collection may have removed segments too.
         if let Some(oldest) = self.ctx.wal.segments().first() {
@@ -893,4 +928,28 @@ async fn ship_batch(
         }
     }
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failing_collection_is_logged_once_per_interval_with_its_count() {
+        let every = Duration::from_millis(10);
+        let at = |millis: u64| Instant::from_nanos(millis * 1_000_000);
+        let mut failures = GcFailures::default();
+        // The first failure is logged at once.
+        assert_eq!(failures.failed(at(0), every), Some(1));
+        // The retries of the following tail polls are counted, not logged.
+        for millis in 1..10 {
+            assert_eq!(failures.failed(at(millis), every), None);
+        }
+        assert_eq!(failures.failed(at(10), every), Some(10));
+        assert_eq!(failures.failed(at(19), every), None);
+        assert_eq!(failures.failed(at(25), every), Some(2));
+        // A success starts over.
+        failures = GcFailures::default();
+        assert_eq!(failures.failed(at(26), every), Some(1));
+    }
 }
