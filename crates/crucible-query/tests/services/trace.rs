@@ -195,10 +195,8 @@ fn the_read_barrier_waits_250_ms_for_stage_b_and_then_answers_lagging() {
         assert!(poll(read.as_mut()).is_pending());
         world.clock.advance(Duration::from_millis(249));
         assert!(poll(read.as_mut()).is_pending());
-        assert!(
-            world.store.executed().is_empty(),
-            "no store read before the barrier resolves"
-        );
+        // The time bounds are read from the store in parallel; the spans are not read before the barrier.
+        assert_eq!(world.store.executed().len(), 1);
         world.clock.advance(Duration::from_millis(1));
         let Poll::Ready(Ok(found)) = poll(read.as_mut()) else {
             panic!("the barrier has expired");

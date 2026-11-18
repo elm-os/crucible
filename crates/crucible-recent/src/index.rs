@@ -31,7 +31,8 @@ pub struct RecentConfig {
     pub max_bytes: u64,
     /// How long after its checkpoint an entry stays, so that the store serves it before the index forgets it.
     pub visibility_grace: Duration,
-    /// `recent.read_barrier`: the longest a trace-by-id read waits for stage B.
+    /// `recent.read_barrier`: the longest a trace-by-id read waits for stage B. It must stay shorter than the
+    /// visibility grace: a reader may start its store read up to one barrier before it snapshots the index.
     pub read_barrier: Duration,
 }
 

@@ -185,9 +185,9 @@ impl QueryService {
     /// Trace by id (contract 8.7): the recent index behind the read barrier, the time bounds from
     /// `trace_stats`, then the spans from `span_core` inside them, merged and de-duplicated by `span_id`.
     ///
-    /// The index is read when the barrier resolves and before any store read, so an entry cannot be evicted
-    /// between the two: a span this node acknowledged is in the response, or the response says why it may not
-    /// be (`partial`, or `consistency: lagging`). A trace that neither source knows is `not_found` only when
+    /// The index is read when the barrier resolves, never after a store read has returned, so an entry cannot
+    /// be evicted between the two: a span this node acknowledged is in the response, or the response says why
+    /// it may not be (`partial`, or `consistency: lagging`). A trace that neither source knows is `not_found` only when
     /// the response would be whole and strong: with an open gap, a quarantined pair or an expired barrier the
     /// answer is an empty trace that carries the marker, because the trace may exist.
     pub async fn trace_by_id(
@@ -197,15 +197,23 @@ impl QueryService {
     ) -> Result<TraceDetail, QueryServiceError> {
         let mut read = self.read(ctx);
         let (scope, caller) = (ctx.scope, ctx.caller);
-        let consistency = self.index.read_barrier().await;
-        let (entries, state) = self.index.trace(scope, trace_id);
+        // The index read (barrier, then snapshot) runs in parallel with the first store read. It is polled
+        // first, so a node that is caught up snapshots the index before it touches the store. A node that is
+        // behind snapshots at most one read barrier later, which is safe because the barrier is shorter than
+        // the visibility grace: an entry cannot be applied, checkpointed and evicted inside it.
+        let index_read = async {
+            let consistency = self.index.read_barrier().await;
+            let (entries, state) = self.index.trace(scope, trace_id);
+            (consistency, entries, state)
+        };
+        let ((consistency, entries, state), trace) =
+            futures::join!(index_read, read.stored_trace(trace_id));
+        let trace = trace?;
         let entries = read.retained(entries)?;
         let unconfirmed = entries
             .iter()
             .filter(|span| span.lsn > state.watermark)
             .count() as u64;
-
-        let trace = read.stored_trace(trace_id).await?;
         let stored_count = trace.as_ref().map_or(0, |trace| trace.span_count);
         let inline_limit = u64::from(TRACE_INLINE_SPAN_LIMIT);
         let mut inline = None;
