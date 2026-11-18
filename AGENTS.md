@@ -26,10 +26,10 @@ or docs. The `commit-msg` hook and CI reject them. Generator banners from build 
 
 ### Determinism
 Product crates never touch ambient time, randomness, task spawning, the filesystem, the network or process
-environment directly. They take an `Env` (crate `crucible-env`) and use its traits: `Clock`, `Rng`, `Spawner`,
-`Disk`, `Net`, `TelemetryStore`, `ControlStore` and the later `SqlWorkspaceStore`, `ObjectStore`, `Mailer`,
-`Metrics`, `AssetSource`. `clippy.toml` bans the ambient APIs; only `crucible-env-prod`, binary `main` functions,
-`xtask` and benches may allow them. Use `DetMap`/`DetSet` (fixed-seed hashing), `BTreeMap` or `IndexMap`, never the
+environment directly. They take an `Env` (crate `crucible-env`: `Clock`, `Rng`, `Spawner`, `Disk`, `Net`,
+`Metrics`) and, where they need storage, `Stores` (`TelemetryStore` now; `ControlStore`, `SqlWorkspaceStore`,
+`ObjectStore` and `Mailer` later). `clippy.toml` bans the ambient APIs; only `crucible-env-prod`, `crucible-sim`
+(the simulated Env), the binary crate, `xtask` and benches may allow them. Use `DetMap`/`DetSet` (fixed-seed hashing), `BTreeMap` or `IndexMap`, never the
 default-hasher `HashMap`. `tokio::select!` must be `biased`.
 
 ### Verification
