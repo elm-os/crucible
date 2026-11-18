@@ -6,8 +6,8 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use crucible_normalize::{IngestFrame, NormCtx, PriceTable, normalize};
-use crucible_records::{ApiKeyId, Lsn, PayloadCaps, ProjectId, Timestamp, WalEpoch};
+use crucible_normalize::{IngestFrame, NormCtx, NormalizedFrame, PriceTable, StageB, normalize};
+use crucible_records::{ApiKeyId, Lsn, NanoUsd, PayloadCaps, ProjectId, Timestamp, WalEpoch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -156,6 +156,58 @@ fn stage_a_throughput() {
              {:.0} spans/s, {:.0} MB/s",
             per_s * spans as f64,
             per_s * mb
+        );
+    }
+}
+
+/// Stage B on one thread over the frames of [`stage_a_throughput`], where every span carries usage and 15 of 16
+/// name a parent in the frame: the cost of one admission into fresh state, and what the usage descendant set
+/// adds to it. The second figure is the same frame with its usage removed, so that no span enters the set; the
+/// copy of the frame that each iteration needs is timed alone and subtracted.
+#[test]
+#[ignore = "timing test; run in release with --ignored --nocapture"]
+fn stage_b_usage_descendant_set() {
+    for (label, spans, size) in [("1 KB", 10_000, 1_024), ("10 KB", 2_000, 10 * 1_024)] {
+        let body = request(spans, size);
+        let frame = IngestFrame {
+            wal_epoch: WalEpoch::from_bytes([1; 16]),
+            lsn: Lsn::new(1),
+            received_at: Timestamp::from_micros(1_794_907_801_000_000),
+            project_id: ProjectId::from_bytes([2; 16]),
+            api_key_id: ApiKeyId::from_bytes([3; 16]),
+            compat_dialect: 0,
+            sdk_name: "sdk",
+            sdk_version: "1.0.0",
+            rejected: &[],
+            otlp: &body,
+        };
+        let ctx = NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT);
+        let with_usage = normalize(&frame, &ctx).unwrap();
+        let mut without_usage = with_usage.clone();
+        for span in &mut without_usage.spans {
+            span.core.usage.clear();
+            span.core.total_cost_nusd = NanoUsd::ZERO;
+        }
+        let budget = Duration::from_secs(3);
+        let admit = |frame: &NormalizedFrame| {
+            let mut copy = frame.clone();
+            StageB::default().admit(&mut copy).unwrap();
+            copy.spans.len()
+        };
+        // Nanoseconds per span of one iteration.
+        let ns = |per_s: f64| 1e9 / (per_s * spans as f64);
+        let copy = ns(rate(budget, || black_box(&with_usage).clone().spans.len()));
+        let marked = ns(rate(budget, || admit(black_box(&with_usage)))) - copy;
+        let copy_plain = ns(rate(budget, || black_box(&without_usage).clone().spans.len()));
+        let plain = ns(rate(budget, || admit(black_box(&without_usage)))) - copy_plain;
+        let flagged = {
+            let mut copy = with_usage.clone();
+            StageB::default().admit(&mut copy).unwrap();
+            copy.spans.iter().filter(|s| s.core.usage_aggregate).count()
+        };
+        println!(
+            "{label} spans ({spans} per frame, {flagged} flagged): stage B on one thread: {marked:.0} ns/span with the usage descendant set at work, {plain:.0} ns/span without; the set costs {:.0} ns/span",
+            marked - plain
         );
     }
 }
