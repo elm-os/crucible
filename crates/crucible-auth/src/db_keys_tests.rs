@@ -215,6 +215,55 @@ fn outage_modes() {
 }
 
 #[test]
+fn keys_from_the_file_work_beside_the_postgres_keys_also_during_an_outage() {
+    crate::testing::sim(5, async |env| {
+        let rng = ChaChaRng::from_u64(5);
+        let lookup = LookupKey::new(LOOKUP);
+        let (db_key, file_key, unknown) = (
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+            mint(&rng, &lookup),
+        );
+        let db = Arc::new(DbKeys::new(&env, lookup, OutageMode::default()));
+        db.load(&snapshot(&[row(1, &db_key, &[KeyScope::Ingest])]));
+        let file = crate::StaticKeys::new(
+            &rng,
+            vec![crate::StaticKey {
+                id: ApiKeyId::from_uuid(Uuid::from_v7_parts(1_800_000_000_002, 9)),
+                project_id: project(2),
+                public_key: crate::PublicKey::parse(&file_key.public_key).unwrap(),
+                secret: crate::SecretKey::parse(&file_key.secret).unwrap(),
+            }],
+        )
+        .unwrap();
+        let keys = WithFileKeys {
+            db,
+            file: Arc::new(file),
+        };
+        assert!(keys.verify(&db_key.secret).is_some());
+        assert_eq!(
+            keys.verify(&file_key.secret).map(|p| p.scope.project_id()),
+            Some(project(2))
+        );
+        assert!(
+            keys.verify_pair(&file_key.public_key, &file_key.secret)
+                .is_ok()
+        );
+        assert_eq!(
+            keys.verify_pair(&db_key.public_key, &file_key.secret),
+            Err(crate::PairError::Mismatch)
+        );
+        assert_eq!(keys.verify(&unknown.secret), None);
+        assert_eq!(keys.retry_after(&unknown.secret), None);
+        // During an outage an unknown key waits for Postgres; a key from the file never does.
+        env.clock.sleep(OUTAGE_AFTER).await;
+        assert_eq!(keys.retry_after(&unknown.secret), Some(RETRY_AFTER));
+        assert!(keys.verify(&file_key.secret).is_some());
+        assert_eq!(keys.retry_after(&file_key.secret), None);
+    });
+}
+
+#[test]
 fn uses_are_written_in_batches() {
     crate::testing::sim(4, async |env| {
         let rng = ChaChaRng::from_u64(4);

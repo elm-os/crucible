@@ -1127,8 +1127,17 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     let out = std::env::var_os("CRUCIBLE_E2E_OUT")
         .map_or_else(|| dir.clone(), |o| PathBuf::from(o).join("control-plane"));
     std::fs::create_dir_all(&out).unwrap();
-    // No keys file: with a control plane the keys come from Postgres.
-    std::fs::write(dir.join("keys.toml"), "").unwrap();
+    // The keys file keeps working beside the keys made through the API, as in the Compose files.
+    let file_project = env.new_id().to_string();
+    std::fs::write(
+        dir.join("keys.toml"),
+        format!(
+            "[[project_key]]\nproject_id = \"{file_project}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n",
+            public('c'),
+            secret('c')
+        ),
+    )
+    .unwrap();
     std::fs::write(dir.join("master-key"), format!("{MASTER_KEY}\n")).unwrap();
     std::fs::write(dir.join("clickhouse-password"), &admin.password).unwrap();
     let password = "e2e owner password 1";
@@ -1262,7 +1271,37 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    // 6. Revoking the key stops it at once; signing out ends the session.
+    // 6. A key from the keys file ingests and reads beside the Postgres keys.
+    let file_bearer = format!("Bearer {}", secret('c'));
+    let file_trace = Trace::new(env, "e2e keys-file trace");
+    let (status, body) = http(
+        server.ingest,
+        "POST",
+        "/v1/traces",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &file_bearer),
+        ],
+        file_trace.json().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let file_api = Api {
+        addr: server.api,
+        project: file_project.clone(),
+        bearer: file_bearer.clone(),
+        pair: basic('c'),
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !file_api.lists(&file_trace) {
+        assert!(
+            Instant::now() < deadline,
+            "the keys-file trace was not listed"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // 7. Revoking the key stops it at once; signing out ends the session.
     let key_id = created["key"]["id"].as_str().unwrap();
     let etag = format!("\"{}\"", created["key"]["version"]);
     let (status, _, body) = {

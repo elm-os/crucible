@@ -120,8 +120,9 @@ The trace list takes a time window of at most 30 days: `.../traces?from=<RFC 333
 ## With Postgres: sign-in, members and API keys
 
 With a Postgres 15 or newer configured (`postgres.url`, `CRUCIBLE_POSTGRES_URL`), the server has a control plane:
-people sign in, projects and members live in Postgres, and API keys are made in the UI instead of `keys.toml`. The
-master key is required then; it also seals stored secrets.
+people sign in, projects and members live in Postgres, and API keys are made in the UI. The keys in `keys.toml` keep
+working beside them, with the scopes of a new key (`ingest`, `read`, `write`). The master key is required then; it also
+seals stored secrets.
 
 - Start with `--migrate` once, so the Postgres tables exist. Until the API key snapshot has loaded from Postgres,
   `/readyz` answers 503 and ingest is closed.

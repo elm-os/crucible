@@ -49,7 +49,8 @@ pub(crate) fn build(
     identity.require_https = config.auth.require_https;
     if !identity.origins.public_is_https() {
         tracing::info!(
-            "sign-in works over plain HTTP and the session cookie is not Secure; set server.public_url to the              server's https:// address to use Secure cookies, and security.require_https = true to refuse plain HTTP"
+            "sign-in works over plain HTTP and the session cookie is not Secure; set server.public_url to the \
+             server's https:// address to use Secure cookies, and security.require_https = true to refuse plain HTTP"
         );
     }
     identity.hash_permits = hash_permits();

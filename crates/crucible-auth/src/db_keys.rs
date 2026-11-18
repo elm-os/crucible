@@ -494,6 +494,37 @@ impl KeyVerifier for DbKeys {
     }
 }
 
+/// The Postgres keys with the keys file beside them: a server that gains a control plane keeps accepting the keys
+/// its operator listed in configuration, with the scopes of a new key. A key in the file never waits for Postgres.
+#[derive(Debug)]
+pub struct WithFileKeys {
+    /// The Postgres key snapshot.
+    pub db: Arc<DbKeys>,
+    /// The keys file.
+    pub file: Arc<dyn KeyVerifier>,
+}
+
+impl KeyVerifier for WithFileKeys {
+    fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
+        self.db.verify(secret).or_else(|| self.file.verify(secret))
+    }
+
+    fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError> {
+        match self.db.verify_pair(public, secret) {
+            Err(PairError::Secret) => self.file.verify_pair(public, secret),
+            decided => decided,
+        }
+    }
+
+    fn retry_after(&self, secret: &str) -> Option<Duration> {
+        if self.file.verify(secret).is_some() {
+            None
+        } else {
+            self.db.retry_after(secret)
+        }
+    }
+}
+
 /// A [`KeyFeed`] over a whole control store.
 #[derive(Debug)]
 pub struct StoreFeed(pub Arc<dyn ControlStore>);
