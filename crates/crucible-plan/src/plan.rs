@@ -11,6 +11,10 @@ use crate::value::{self, OutputSchema};
 
 /// A telemetry read. It cannot be built without a scope and a window: the renderer turns the scope into
 /// `project_id = {scope}` on every table reference and the window into the sort-key and partition predicates.
+///
+/// Product code obtains plans only from the builders of this crate, which clamp the window to the project's
+/// retention ([`crate::RetentionClamp`]); there is no public constructor. Tests of stores build unclamped plans
+/// through `crucible_plan::test_support::query_plan`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct QueryPlan {
     scope: ProjectScope,
@@ -20,8 +24,8 @@ pub struct QueryPlan {
 }
 
 impl QueryPlan {
-    /// A plan for one project and one time window.
-    pub const fn new(
+    /// A plan for one project and one time window. The caller has clamped the window.
+    pub(crate) const fn new(
         scope: ProjectScope,
         window: TimeWindow,
         class: QueryClass,

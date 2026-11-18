@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cde3e9b2124fed3582bdf97816e7443cb701ad69e43e52204eecb88b448c5bdd # shrinks to shapes = [TraceShape { provisional: Some((3, Store)), root: Some((3, Index)) }], limit = 1
+cc 5fc0f94f80edfdea8cef58fd5bf280c2e64b14c0e623e281207f4402841b3341 # shrinks to shapes = [TraceShape { provisional: Some((2, Store)), root: Some((4, Store)) }, TraceShape { provisional: Some((2, Store)), root: Some((0, Store)) }, TraceShape { provisional: Some((3, Store)), root: None }, TraceShape { provisional: None, root: Some((1, Store)) }, TraceShape { provisional: Some((3, Store)), root: Some((3, Store)) }, TraceShape { provisional: None, root: Some((3, Store)) }, TraceShape { provisional: Some((0, Store)), root: Some((2, Store)) }, TraceShape { provisional: Some((1, Store)), root: Some((2, Store)) }, TraceShape { provisional: Some((2, Store)), root: None }, TraceShape { provisional: Some((0, Store)), root: None }, TraceShape { provisional: Some((0, Store)), root: None }, TraceShape { provisional: None, root: Some((2, Store)) }, TraceShape { provisional: Some((1, Store)), root: Some((1, Store)) }, TraceShape { provisional: Some((2, Store)), root: Some((1, Store)) }, TraceShape { provisional: Some((1, Store)), root: Some((0, Store)) }, TraceShape { provisional: Some((2, Store)), root: Some((3, Store)) }, TraceShape { provisional: Some((2, Store)), root: Some((0, Store)) }], limit = 3

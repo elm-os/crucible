@@ -1,0 +1,11 @@
+//! The read services against an in-memory store and a real recent index (contract 8.2, 8.6 to 8.8, invariant
+//! I3).
+
+// Test code throughout: lets the helpers use `unwrap`, `expect` and `panic!` under the workspace lints.
+#![cfg(test)]
+
+mod list;
+mod properties;
+mod store;
+mod trace;
+mod world;

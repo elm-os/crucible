@@ -7,9 +7,10 @@ use crucible_auth::test_support;
 use crucible_plan::{
     AggOutput, Aggregate, Caller, CmpOp, DeletePlan, DeleteTarget, Direction, Having, Literal,
     MAX_LIST, Measure, Node, Order, PlanError, PointLookup, Pred, ProbeKind, QueryClass, QueryPlan,
-    Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest, data_bounds,
-    effective_window, pad_in_list, padded_in_len, span_children, trace_bounds_window, trace_list,
-    trace_spans, trace_time_bounds,
+    RetentionClamp, Scan, SemiJoin, TRACE_LIST_MAX_LIMIT, TraceBounds, TraceListRequest,
+    child_counts, data_bounds, effective_window, pad_in_list, padded_in_len, span_children,
+    spans_of_parents, trace_bounds_window, trace_list, trace_page_stats, trace_roots, trace_spans,
+    trace_time_bounds,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -73,6 +74,11 @@ fn window_strategy() -> impl Strategy<Value = TimeWindow> {
         let to = from.saturating_add(len).min(max);
         TimeWindow::new(Timestamp::from_micros(from), Timestamp::from_micros(to)).unwrap()
     })
+}
+
+/// A project that keeps its data forever: the clamp leaves every window as it is.
+fn keep() -> RetentionClamp {
+    RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH)
 }
 
 fn caller_strategy() -> impl Strategy<Value = Caller> {
@@ -527,16 +533,28 @@ fn trace_bounds_include_a_span_that_starts_at_the_end() {
 
     let scope = test_support::scope(ProjectId::from_bytes([9; 16])).unwrap();
     let trace_id = TraceId::from_bytes([3; 16]);
-    let plan = trace_spans(scope, start, start, Caller::Session, trace_id).unwrap();
+    let plan = trace_spans(scope, start, start, &keep(), Caller::Session, trace_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(plan.window(), instant);
-    let reversed = trace_spans(scope, end, start, Caller::Session, trace_id);
+    let reversed = trace_spans(scope, end, start, &keep(), Caller::Session, trace_id);
     assert_eq!(reversed, Err(PlanError::Bounds));
     let trace = TraceBounds {
         trace_id,
         min_start: start,
         max_end: end,
     };
-    let children = span_children(scope, trace, Caller::Agent, SpanId::ZERO, None, None).unwrap();
+    let children = span_children(
+        scope,
+        trace,
+        &keep(),
+        Caller::Agent,
+        SpanId::ZERO,
+        None,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(children.window(), window);
 }
 
@@ -661,14 +679,14 @@ proptest! {
         let parent = SpanId::from_bytes(parent);
         let hash = Pred::Cmp(SpanCoreCol::TraceHash.into(), CmpOp::Eq, trace_id.trace_hash().into());
 
-        let bounds = trace_time_bounds(scope, window, caller, trace_id).unwrap();
+        let bounds = trace_time_bounds(scope, window, &keep(), caller, trace_id).unwrap().unwrap();
         assert_scoped(&bounds, scope, window, caller, QueryClass::Point, TableId::TraceStats)?;
         let (_, preds) = names(bounds.root());
         prop_assert!(preds.contains(&&Pred::eq(TraceStatsCol::TraceId, trace_id)));
 
         // The bounds of a trace whose last span starts at the last instant of the window.
         let last = Timestamp::from_micros(window.to().micros() - 1);
-        let spans = trace_spans(scope, window.from(), last, caller, trace_id).unwrap();
+        let spans = trace_spans(scope, window.from(), last, &keep(), caller, trace_id).unwrap().unwrap();
         assert_scoped(&spans, scope, window, caller, QueryClass::Point, TableId::SpanCore)?;
         let (_, preds) = names(spans.root());
         prop_assert!(preds.contains(&&Pred::eq(SpanCoreCol::TraceId, trace_id)));
@@ -681,7 +699,7 @@ proptest! {
             as_of,
             since,
         };
-        let list = trace_list(scope, window, caller, request).unwrap();
+        let list = trace_list(scope, window, &keep(), caller, request).unwrap().unwrap();
         assert_scoped(&list, scope, window, caller, QueryClass::List, TableId::TraceHeads)?;
         let Node::Scan(scan) = list.root() else { panic!("a scan") };
         prop_assert_eq!(scan.limit(), Some(limit * 3));
@@ -696,7 +714,7 @@ proptest! {
         let child_cursor = child_cursor.map(|(t, id)| (t, SpanId::from_bytes(id)));
         let trace_bounds = TraceBounds { trace_id, min_start: window.from(), max_end: last };
         let children =
-            span_children(scope, trace_bounds, caller, parent, child_cursor, child_limit).unwrap();
+            span_children(scope, trace_bounds, &keep(), caller, parent, child_cursor, child_limit).unwrap().unwrap();
         assert_scoped(&children, scope, window, caller, QueryClass::Point, TableId::SpanCore)?;
         let Node::Scan(scan) = children.root() else { panic!("a scan") };
         prop_assert_eq!(scan.limit(), Some(child_limit.unwrap_or(500) + 1));
@@ -706,9 +724,9 @@ proptest! {
         prop_assert!(preds.contains(&&Pred::eq(SpanCoreCol::TraceId, trace_id)));
         prop_assert!(preds.contains(&&hash));
 
-        let data = data_bounds(scope, window, caller).unwrap();
-        assert_scoped(&data.spans, scope, window, caller, QueryClass::Analytics, TableId::SpanMetrics)?;
-        assert_scoped(&data.mcp, scope, window, caller, QueryClass::Analytics, TableId::McpToolRollup)?;
+        let data = data_bounds(scope, window, &keep(), caller).unwrap();
+        assert_scoped(&data.spans.unwrap(), scope, window, caller, QueryClass::Analytics, TableId::SpanMetrics)?;
+        assert_scoped(&data.mcp.unwrap(), scope, window, caller, QueryClass::Analytics, TableId::McpToolRollup)?;
     }
 
     #[test]
@@ -725,14 +743,14 @@ proptest! {
             as_of: Timestamp::EPOCH,
             since: None,
         };
-        prop_assert_eq!(trace_list(scope, window, Caller::Session, request), Err(PlanError::Limit));
+        prop_assert_eq!(trace_list(scope, window, &keep(), Caller::Session, request), Err(PlanError::Limit));
         let trace = TraceBounds {
             trace_id: TraceId::ZERO,
             min_start: window.from(),
             max_end: window.from(),
         };
         let children =
-            span_children(scope, trace, Caller::Session, SpanId::ZERO, None, Some(child_limit));
+            span_children(scope, trace, &keep(), Caller::Session, SpanId::ZERO, None, Some(child_limit));
         prop_assert_eq!(children, Err(PlanError::Limit));
     }
 
@@ -813,5 +831,67 @@ proptest! {
         prop_assert!(padded[list.len()..].iter().all(|v| Some(v) == list.last()));
         // A padded length is its own padded length: one statement shape per arity class.
         prop_assert_eq!(padded_in_len(n), n);
+    }
+
+    /// No builder returns a plan that reads expired rows: every plan's window is the requested one with `from`
+    /// clamped to the cut-off of the table it reads, and a fully expired window gives no plan at all.
+    #[test]
+    fn every_builder_clamps_its_window_to_retention(
+        scope in scope_strategy(),
+        window in window_strategy(),
+        now in time_strategy(),
+        days in prop::option::of(0u32..800),
+        trace in any::<[u8; 16]>(),
+    ) {
+        let settings = RetentionSettings { retention_days: days, ..RetentionSettings::default() };
+        let clamp = RetentionClamp::new(settings, now);
+        let trace_id = TraceId::from_bytes(trace);
+        let last = Timestamp::from_micros(window.to().micros() - 1);
+        let trace_bounds = TraceBounds { trace_id, min_start: window.from(), max_end: last };
+        let request = TraceListRequest {
+            filter: Pred::all(),
+            limit: 10,
+            cursor: None,
+            as_of: now,
+            since: None,
+        };
+        let parents = [SpanId::from_bytes([1; 8])];
+        let caller = Caller::Session;
+        let data = data_bounds(scope, window, &clamp, caller).unwrap();
+        let plans = [
+            trace_time_bounds(scope, window, &clamp, caller, trace_id).unwrap(),
+            trace_page_stats(scope, window, &clamp, caller, &[trace_id]).unwrap(),
+            trace_spans(scope, window.from(), last, &clamp, caller, trace_id).unwrap(),
+            trace_list(scope, window, &clamp, caller, request).unwrap(),
+            span_children(scope, trace_bounds, &clamp, caller, parents[0], None, None).unwrap(),
+            trace_roots(scope, trace_bounds, &clamp, caller).unwrap(),
+            spans_of_parents(scope, trace_bounds, &clamp, caller, &parents, 10).unwrap(),
+            child_counts(scope, trace_bounds, &clamp, caller, &parents).unwrap(),
+            data.spans,
+            data.mcp,
+        ];
+        let tables = [
+            TableId::TraceStats,
+            TableId::TraceStats,
+            TableId::SpanCore,
+            TableId::TraceHeads,
+            TableId::SpanCore,
+            TableId::SpanCore,
+            TableId::SpanCore,
+            TableId::SpanCore,
+            TableId::SpanMetrics,
+            TableId::McpToolRollup,
+        ];
+        for (plan, table_id) in plans.into_iter().zip(tables) {
+            let expected = effective_window(table_id, window, &settings, now).unwrap();
+            prop_assert_eq!(plan.as_ref().map(QueryPlan::window), expected);
+            prop_assert_eq!(clamp.window(table_id, window), Ok(expected));
+            if let Some(plan) = plan {
+                prop_assert_eq!(plan.root().tables(), vec![table_id]);
+                let cutoff = clamp.cutoff(table_id).unwrap();
+                prop_assert!(cutoff.is_none_or(|cutoff| plan.window().from() >= cutoff));
+                prop_assert_eq!(cutoff.is_some(), days.is_some());
+            }
+        }
     }
 }
