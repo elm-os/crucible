@@ -136,7 +136,7 @@ impl Registry {
             tracing::info!(
                 jobs = ?skipped,
                 "Postgres is not configured, so leader and claimed-work jobs do not run; set postgres.url \
-                 to run them"
+                 (CRUCIBLE_POSTGRES_URL) to run them"
             );
         }
         Running { tasks }

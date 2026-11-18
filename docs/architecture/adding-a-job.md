@@ -60,6 +60,8 @@ the local acquire or renew time plus the TTL minus 2 s.
    with it the open transaction, which rolls back.
 6. **Return errors, do not retry in a loop.** A failed run is logged with the job's name and the job runs again at
    its next cadence. `JobError::LeaseLost` is not a failure of the job.
+7. **Bound every wait.** The runner sets no time limit on a run. A run that never returns keeps the other jobs of
+   its lease from running, so wrap a wait that could hang in `ctx.env.timeout(..)`.
 
 Jobs that share a lease name run one at a time, in the order they come due.
 
