@@ -16,16 +16,24 @@
 mod data_bounds;
 mod enums;
 mod meta;
+mod payload;
 mod problem;
+mod search;
 mod spans;
 mod trace_detail;
 mod traces;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
-pub use enums::{Consistency, HeadKind, Level, ObservationType, PartialReason, StatusCode};
+pub use enums::{
+    Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason, StatusCode,
+};
 pub use meta::Meta;
+pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
+pub use search::{
+    SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
+};
 pub use spans::{SpanPage, SpanPageParams};
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
@@ -36,7 +44,10 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 /// not change the output, one file per type.
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<DataBounds>();
+    visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
+    visitor.visit::<SearchPage>();
+    visitor.visit::<SearchRequest>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<TraceDetail>();

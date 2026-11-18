@@ -69,6 +69,10 @@ pub enum PlanError {
     /// A zero-filled time series over an aggregate with a condition, an order, a limit or a cursor.
     #[error("a zero-filled time series takes no condition, order, limit or cursor")]
     ZeroFill,
+    /// A text search over fields whose indexes split or case their tokens differently, which one token list
+    /// cannot serve: `metadata` with `input` or `output`.
+    #[error("one text search cannot cover fields whose indexes tokenize differently")]
+    Tokenizers,
     /// A filter condition on a field the read cannot evaluate. The request must drop the condition on `field`
     /// or use an endpoint whose data carries it.
     #[error("the filter field {field} is not available for {target}")]
