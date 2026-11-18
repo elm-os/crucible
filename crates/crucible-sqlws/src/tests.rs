@@ -1,196 +1,27 @@
-//! The workspace over a scripted SQL store and the control-store model, on the simulated clock: authorization,
+//! The workspace over the simulation's scripted SQL store and the control-store model, on the simulated clock: authorization,
 //! the lexical gate, limits, the audit rows, cancellation, lazy provisioning, the self-probe gate and the
 //! reconciler. Isolation itself is verified only against real ClickHouse, by the `sqliso` suite.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use crucible_control::{
     ControlStore, JsonDoc, LEASE_TTL, LeaseName, Project, Repos as _, SavedParam, SqlActor,
     SqlIdentityState, SqlParamType, SqlRunKind, SqlRunOutcome, SqlVisibility,
 };
-use crucible_env::{
-    Env, ProbeBreach, ProbeReport, SqlCell, SqlColumn, SqlError, SqlEstimate, SqlExportFormat,
-    SqlGrid, SqlLimits, SqlQuery, SqlStats, SqlWorkspaceStore,
-};
-use crucible_records::{ApiKeyId, ProjectId, ProjectScope, Timestamp, UserId, Uuid};
-use crucible_schema::RetentionSettings;
+use crucible_env::{Env, ProbeBreach, SqlError};
+use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
 use crucible_sim::pg_model::{PgFaults, PgModel};
+use crucible_sim::sql_stub::{ScriptedSqlStore, SqlScript};
 
 use crate::reconciler::{CONFIRM_EVERY, IDLE_DROP};
 use crate::{ExportFormat, RunInput, SavedInput, SqlCaller, SqlProblemCode, SqlRole, SqlWorkspace};
 
-/// What the scripted store does on its next `run` or `export`.
-#[derive(Clone, Debug)]
-enum Script {
-    Rows,
-    Fail(SqlError),
-    /// Answers after this long on the simulated clock.
-    Slow(Duration),
-}
-
-#[derive(Debug, Default)]
-struct Calls {
-    provisions: Vec<(ProjectId, u32, RetentionSettings)>,
-    deprovisions: Vec<ProjectId>,
-    validated: Vec<SqlQuery>,
-    ran: Vec<(ProjectId, SqlQuery)>,
-    cancelled: Vec<Uuid>,
-}
-
-#[derive(Debug)]
-struct Stub {
-    env: Env,
-    calls: Mutex<Calls>,
-    script: Mutex<VecDeque<Script>>,
-    probe: Mutex<Result<Vec<ProbeBreach>, SqlError>>,
-}
-
-impl Stub {
-    fn new(env: &Env) -> Arc<Self> {
-        Arc::new(Self {
-            env: env.clone(),
-            calls: Mutex::default(),
-            script: Mutex::default(),
-            probe: Mutex::new(Ok(Vec::new())),
-        })
-    }
-
-    fn script(&self, steps: impl IntoIterator<Item = Script>) {
-        self.script.lock().unwrap().extend(steps);
-    }
-
-    async fn next(&self) -> Result<(), SqlError> {
-        let step = self.script.lock().unwrap().pop_front();
-        match step.unwrap_or(Script::Rows) {
-            Script::Rows => Ok(()),
-            Script::Fail(error) => Err(error),
-            Script::Slow(d) => {
-                self.env.clock.sleep(d).await;
-                Ok(())
-            }
-        }
-    }
-}
-
-fn grid() -> SqlGrid {
-    SqlGrid {
-        columns: vec![
-            SqlColumn {
-                name: "name".to_owned(),
-                ty: "String".to_owned(),
-            },
-            SqlColumn {
-                name: "n".to_owned(),
-                ty: "Int64".to_owned(),
-            },
-        ],
-        rows: vec![
-            vec![
-                SqlCell::String("=cmd()".to_owned()),
-                SqlCell::String("-3".to_owned()),
-            ],
-            vec![
-                SqlCell::String("plain".to_owned()),
-                SqlCell::String("4".to_owned()),
-            ],
-        ],
-        truncated: false,
-        cut_cells: 0,
-        stats: SqlStats {
-            rows_read: 10,
-            bytes_read: 100,
-            elapsed_ms: 3,
-        },
-    }
-}
-
-#[async_trait]
-impl SqlWorkspaceStore for Stub {
-    async fn validate(&self, _: ProjectScope, query: &SqlQuery) -> Result<SqlEstimate, SqlError> {
-        self.calls.lock().unwrap().validated.push(query.clone());
-        Ok(SqlEstimate {
-            parts: 1,
-            rows: 10,
-            marks: 1,
-        })
-    }
-
-    async fn run(
-        &self,
-        scope: ProjectScope,
-        query: &SqlQuery,
-        _: SqlLimits,
-    ) -> Result<SqlGrid, SqlError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .ran
-            .push((scope.project_id(), query.clone()));
-        self.next().await?;
-        Ok(grid())
-    }
-
-    async fn export(
-        &self,
-        scope: ProjectScope,
-        query: &SqlQuery,
-        format: SqlExportFormat,
-        _: SqlLimits,
-    ) -> Result<Bytes, SqlError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .ran
-            .push((scope.project_id(), query.clone()));
-        self.next().await?;
-        Ok(Bytes::from(format!("{format:?}")))
-    }
-
-    async fn cancel(&self, _: ProjectScope, query_id: Uuid) -> Result<(), SqlError> {
-        self.calls.lock().unwrap().cancelled.push(query_id);
-        Ok(())
-    }
-
-    async fn provision(
-        &self,
-        project_id: ProjectId,
-        generation: u32,
-        retention: &RetentionSettings,
-    ) -> Result<(), SqlError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .provisions
-            .push((project_id, generation, *retention));
-        Ok(())
-    }
-
-    async fn deprovision(&self, project_id: ProjectId) -> Result<(), SqlError> {
-        self.calls.lock().unwrap().deprovisions.push(project_id);
-        Ok(())
-    }
-
-    async fn probe(&self) -> Result<ProbeReport, SqlError> {
-        self.probe
-            .lock()
-            .unwrap()
-            .clone()
-            .map(|breaches| ProbeReport {
-                version: "26.3.1.1".to_owned(),
-                statements: 29,
-                breaches,
-            })
-    }
-}
-
 struct World {
     env: Env,
     model: PgModel,
-    stub: Arc<Stub>,
+    stub: Arc<ScriptedSqlStore>,
     workspace: SqlWorkspace,
     project: ProjectId,
 }
@@ -253,7 +84,7 @@ fn sim<T>(body: impl AsyncFnOnce(World) -> T + 'static) -> T {
             .insert(&project(project_id, "a"))
             .await
             .unwrap();
-        let stub = Stub::new(&env);
+        let stub = ScriptedSqlStore::new(&env);
         let control: Arc<dyn ControlStore> = Arc::new(model.clone());
         let workspace = SqlWorkspace::new(env.clone(), stub.clone(), control, true);
         workspace.probe().await;
@@ -295,21 +126,23 @@ fn the_probe_gates_the_workspace() {
         assert_eq!(problem.code, SqlProblemCode::Unavailable);
         assert_eq!(problem.reason.as_deref(), Some("probe_pending"));
         // A probe that cannot run leaves it disabled, with its own reason.
-        *w.stub.probe.lock().unwrap() = Err(SqlError::Unavailable("down".to_owned()));
+        w.stub
+            .set_probe(Err(SqlError::Unavailable("down".to_owned())));
         assert_eq!(fresh.probe().await.reason, Some("probe_unavailable"));
         // A clean probe enables it and records the version.
-        *w.stub.probe.lock().unwrap() = Ok(Vec::new());
+        w.stub.set_probe(Ok(Vec::new()));
         let status = fresh.probe().await;
         assert!(status.enabled && status.reason.is_none());
         assert_eq!(status.version.as_deref(), Some("26.3.1.1"));
         // A probe that cannot run does not disable a working workspace.
-        *w.stub.probe.lock().unwrap() = Err(SqlError::Unavailable("down".to_owned()));
+        w.stub
+            .set_probe(Err(SqlError::Unavailable("down".to_owned())));
         assert!(fresh.probe().await.enabled);
         // Any breach disables it, names the check, and stays until a clean probe.
-        *w.stub.probe.lock().unwrap() = Ok(vec![ProbeBreach {
+        w.stub.set_probe(Ok(vec![ProbeBreach {
             check: "cross_project_read",
             detail: "the statement answered something else".to_owned(),
-        }]);
+        }]));
         let status = fresh.probe().await;
         assert_eq!(
             (status.enabled, status.reason),
@@ -319,10 +152,11 @@ fn the_probe_gates_the_workspace() {
         let problem = fresh.run(w.member(), &input(TEXT)).await.unwrap_err();
         assert_eq!(problem.reason.as_deref(), Some("isolation_probe_failed"));
         assert!(problem.retry_after.is_none());
-        assert!(w.stub.calls.lock().unwrap().ran.is_empty());
-        *w.stub.probe.lock().unwrap() = Err(SqlError::Unavailable("down".to_owned()));
+        assert!(w.stub.calls().ran.is_empty());
+        w.stub
+            .set_probe(Err(SqlError::Unavailable("down".to_owned())));
         assert_eq!(fresh.probe().await.reason, Some("isolation_probe_failed"));
-        *w.stub.probe.lock().unwrap() = Ok(Vec::new());
+        w.stub.set_probe(Ok(Vec::new()));
         assert!(fresh.probe().await.enabled);
     });
 }
@@ -334,7 +168,7 @@ fn a_run_provisions_on_first_use_sends_the_text_verbatim_and_is_recorded() {
         assert_eq!(output.grid.rows.len(), 2);
         assert_eq!(output.estimate.rows, 10);
         {
-            let calls = w.stub.calls.lock().unwrap();
+            let calls = w.stub.calls();
             assert_eq!(calls.provisions.len(), 1);
             assert_eq!(calls.provisions[0].0, w.project);
             assert_eq!(calls.provisions[0].1, 0);
@@ -354,8 +188,9 @@ fn a_run_provisions_on_first_use_sends_the_text_verbatim_and_is_recorded() {
                 ]
             );
             // The server validated the same text as the same identity generation, under another query id.
-            assert_eq!(calls.validated[0].sql, TEXT);
-            assert_ne!(calls.validated[0].query_id, query.query_id);
+            assert_eq!(calls.validated[0].1.sql, TEXT);
+            assert_eq!(calls.validated[0].0, w.project);
+            assert_ne!(calls.validated[0].1.query_id, query.query_id);
         }
         let identity = w
             .model
@@ -380,7 +215,7 @@ fn a_run_provisions_on_first_use_sends_the_text_verbatim_and_is_recorded() {
         // The second run finds the identity.
         w.env.clock.sleep(Duration::from_secs(1)).await;
         w.workspace.run(w.member(), &input(TEXT)).await.unwrap();
-        assert_eq!(w.stub.calls.lock().unwrap().provisions.len(), 1);
+        assert_eq!(w.stub.calls().provisions.len(), 1);
     });
 }
 
@@ -431,7 +266,7 @@ fn a_refused_text_never_reaches_the_store_and_says_how_to_fix_it() {
             SqlProblemCode::Validation
         );
         // Only the one accepted run reached the store or the audit table.
-        assert_eq!(w.stub.calls.lock().unwrap().ran.len(), 1);
+        assert_eq!(w.stub.calls().ran.len(), 1);
         assert_eq!(
             w.model.sql_runs().list(w.project, 10).await.unwrap().len(),
             1
@@ -477,7 +312,7 @@ fn store_errors_keep_their_class_and_are_recorded() {
             ),
         ];
         for (n, (error, code)) in errors.into_iter().enumerate() {
-            w.stub.script([Script::Fail(error)]);
+            w.stub.script([SqlScript::Fail(error)]);
             // Another actor each time, so the per-actor rate is not what refuses.
             let caller = w.caller(SqlRole::Member, 10 + n as u8);
             let problem = w.workspace.run(caller, &input(TEXT)).await.unwrap_err();
@@ -496,13 +331,13 @@ fn store_errors_keep_their_class_and_are_recorded() {
 fn an_identity_missing_in_clickhouse_is_provisioned_again_once() {
     sim(async |w| {
         w.workspace.run(w.member(), &input(TEXT)).await.unwrap();
-        w.stub.script([Script::Fail(SqlError::Unavailable(
+        w.stub.script([SqlScript::Fail(SqlError::Unavailable(
             "the project's workspace identity is not provisioned".to_owned(),
         ))]);
         assert!(w.workspace.run(w.member(), &input(TEXT)).await.is_ok());
-        assert_eq!(w.stub.calls.lock().unwrap().provisions.len(), 2);
+        assert_eq!(w.stub.calls().provisions.len(), 2);
         // A store that stays down is reported, not retried forever.
-        let down = || Script::Fail(SqlError::Unavailable("connection refused".to_owned()));
+        let down = || SqlScript::Fail(SqlError::Unavailable("connection refused".to_owned()));
         w.stub.script([down(), down()]);
         let problem = w.workspace.run(w.member(), &input(TEXT)).await.unwrap_err();
         assert_eq!(problem.code, SqlProblemCode::Unavailable);
@@ -584,7 +419,7 @@ fn viewers_run_only_project_visible_saved_queries_with_declared_parameters() {
             .await
             .unwrap();
         {
-            let calls = w.stub.calls.lock().unwrap();
+            let calls = w.stub.calls();
             let (_, query) = calls.ran.last().unwrap();
             assert_eq!(query.sql, shared.sql, "the stored text, not the caller's");
             assert_eq!(query.params[2].value, "chat");
@@ -666,7 +501,7 @@ fn viewers_run_only_project_visible_saved_queries_with_declared_parameters() {
 #[test]
 fn limits_refuse_a_second_run_and_a_dropped_run_is_recorded_as_cancelled() {
     sim(async |w| {
-        w.stub.script([Script::Slow(Duration::from_secs(20))]);
+        w.stub.script([SqlScript::Slow(Duration::from_secs(20))]);
         let workspace = w.workspace.clone();
         let caller = w.member();
         let slow = w.env.spawn("slow-run", async move {
@@ -699,7 +534,7 @@ fn limits_refuse_a_second_run_and_a_dropped_run_is_recorded_as_cancelled() {
             SqlProblemCode::Forbidden
         );
         w.workspace.cancel(w.member(), running.id).await.unwrap();
-        assert_eq!(w.stub.calls.lock().unwrap().cancelled, [running.query_id]);
+        assert_eq!(w.stub.calls().cancelled, [(w.project, running.query_id)]);
         // The client goes away: the run's future is dropped, and the audit row says cancelled.
         slow.abort();
         w.env.clock.sleep(Duration::from_secs(1)).await;
@@ -790,7 +625,7 @@ fn the_reconciler_provisions_rewrites_rotates_and_drops_under_its_lease() {
         let report = w.workspace.reconcile_once("node-a").await.unwrap();
         assert_eq!(report.rewritten, 1);
         {
-            let calls = w.stub.calls.lock().unwrap();
+            let calls = w.stub.calls();
             let (_, generation, retention) = calls.provisions.last().unwrap();
             assert_eq!((*generation, retention.retention_days), (0, Some(30)));
         }
@@ -806,20 +641,9 @@ fn the_reconciler_provisions_rewrites_rotates_and_drops_under_its_lease() {
             .unwrap()
             .unwrap();
         assert_eq!((identity.generation, identity.target_generation), (1, 1));
-        assert_eq!(w.stub.calls.lock().unwrap().provisions.last().unwrap().1, 1);
+        assert_eq!(w.stub.calls().provisions.last().unwrap().1, 1);
         w.workspace.run(w.member(), &input(TEXT)).await.unwrap();
-        assert_eq!(
-            w.stub
-                .calls
-                .lock()
-                .unwrap()
-                .ran
-                .last()
-                .unwrap()
-                .1
-                .generation,
-            1
-        );
+        assert_eq!(w.stub.calls().ran.last().unwrap().1.generation, 1);
         // Nothing to do, then a confirmation after an hour.
         assert_eq!(
             w.workspace
@@ -846,16 +670,16 @@ fn the_reconciler_provisions_rewrites_rotates_and_drops_under_its_lease() {
             .await
             .unwrap()
             .unwrap();
-        let before = w.stub.calls.lock().unwrap().provisions.len();
+        let before = w.stub.calls().provisions.len();
         let report = w.workspace.reconcile_once("node-a").await.unwrap();
         assert!(!report.leader);
-        assert_eq!(w.stub.calls.lock().unwrap().provisions.len(), before);
+        assert_eq!(w.stub.calls().provisions.len(), before);
         w.model.leases().release(&other).await.unwrap();
         // Thirty idle days: the identity is dropped, and the next use provisions it again.
         w.env.clock.sleep(IDLE_DROP).await;
         let report = w.workspace.reconcile_once("node-a").await.unwrap();
         assert_eq!(report.dropped, 1);
-        assert_eq!(w.stub.calls.lock().unwrap().deprovisions, [w.project]);
+        assert_eq!(w.stub.calls().deprovisions, [w.project]);
         assert!(
             w.model
                 .sql_identities()
@@ -887,7 +711,7 @@ fn the_reconciler_provisions_rewrites_rotates_and_drops_under_its_lease() {
         );
         let report = w.workspace.reconcile_once("node-a").await.unwrap();
         assert_eq!(report.dropped, 1);
-        assert_eq!(w.stub.calls.lock().unwrap().deprovisions.len(), 2);
+        assert_eq!(w.stub.calls().deprovisions.len(), 2);
         let problem = w.workspace.run(w.member(), &input(TEXT)).await.unwrap_err();
         assert_eq!(problem.code, SqlProblemCode::NotFound);
     });
@@ -914,5 +738,44 @@ fn the_schema_browser_lists_the_curated_views_with_their_window_column() {
                 relation.example
             );
         }
+    });
+}
+
+#[test]
+fn a_hang_ends_at_the_callers_deadline_and_a_disconnect_is_reported_as_unavailable() {
+    sim(async |w| {
+        // The store never answers: the request's deadline drops the run, and the audit row says cancelled.
+        w.stub.script([SqlScript::Hang]);
+        let text = input(TEXT);
+        let run = w.workspace.run(w.member(), &text);
+        assert!(w.env.timeout(Duration::from_secs(40), run).await.is_err());
+        w.env.clock.sleep(Duration::from_secs(1)).await;
+        let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+        assert_eq!(
+            runs[0].end.as_ref().unwrap().outcome,
+            SqlRunOutcome::Cancelled
+        );
+        // A lost connection: the identity is provisioned again and the run retried once; a second loss is
+        // reported with its reason, and the row says failed.
+        w.stub
+            .script([SqlScript::Disconnect, SqlScript::Disconnect]);
+        let problem = w.workspace.run(w.member(), &input(TEXT)).await.unwrap_err();
+        assert_eq!(problem.code, SqlProblemCode::Unavailable);
+        assert_eq!(problem.reason.as_deref(), Some("store_unavailable"));
+        let runs = w.model.sql_runs().list(w.project, 1).await.unwrap();
+        let end = runs[0].end.as_ref().unwrap();
+        assert_eq!(end.outcome, SqlRunOutcome::Failed);
+        assert_eq!(end.error_code.as_deref(), Some("sql_workspace_unavailable"));
+        // One loss, then an answer: the caller never sees it.
+        w.stub.script([SqlScript::Disconnect]);
+        assert!(w.workspace.run(w.member(), &input(TEXT)).await.is_ok());
+        // Every call reached the store as the requesting project.
+        assert!(
+            w.stub
+                .calls()
+                .ran
+                .iter()
+                .all(|(project, _)| *project == w.project)
+        );
     });
 }

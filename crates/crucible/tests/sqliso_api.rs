@@ -558,7 +558,7 @@ async fn the_sql_workspace_holds_through_the_api() {
     let started = Instant::now();
     let body = alice.refused(
         &format!(
-            "SELECT count() FROM numbers(1000000) ARRAY JOIN range(100000) AS x WHERE sipHash64(x, number) = 0 AND \
+            "SELECT count() FROM numbers(900000000) ARRAY JOIN range(100) AS x WHERE sipHash64(x, number, 1) = 0 AND \
              {always}"
         ),
         504,

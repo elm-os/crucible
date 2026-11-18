@@ -32,6 +32,7 @@ pub mod lease_sim;
 pub mod pg_model;
 mod runtime;
 pub mod ship_sim;
+pub mod sql_stub;
 pub mod swarm;
 mod system_oracle;
 pub mod system_sim;
