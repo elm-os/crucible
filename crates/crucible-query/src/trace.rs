@@ -187,9 +187,9 @@ impl QueryService {
     ///
     /// The index is read when the barrier resolves, never after a store read has returned, so an entry cannot
     /// be evicted between the two: a span this node acknowledged is in the response, or the response says why
-    /// it may not be (`partial`, or `consistency: lagging`). A trace that neither source knows is `not_found` only when
-    /// the response would be whole and strong: with an open gap, a quarantined pair or an expired barrier the
-    /// answer is an empty trace that carries the marker, because the trace may exist.
+    /// it may not be (`partial`, or `consistency: lagging`). A trace that neither source knows is `not_found`
+    /// only when the response would be whole and strong: with an open gap, a quarantined pair or an expired
+    /// barrier the answer is an empty trace that carries the marker, because the trace may exist.
     pub async fn trace_by_id(
         &self,
         ctx: &ReadContext,
