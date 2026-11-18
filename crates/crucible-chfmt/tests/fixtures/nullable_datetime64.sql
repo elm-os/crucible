@@ -1,0 +1,1 @@
+SELECT * FROM values('nullable_datetime64 Nullable(DateTime64(6, \'UTC\'))', fromUnixTimestamp64Micro(toInt64(1794907800123456), 'UTC'), NULL, fromUnixTimestamp64Micro(toInt64(0), 'UTC'), NULL, NULL, fromUnixTimestamp64Micro(toInt64(-1), 'UTC'), fromUnixTimestamp64Micro(toInt64(4102444799999999), 'UTC'), NULL) FORMAT Native

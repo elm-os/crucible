@@ -1,0 +1,1 @@
+SELECT * FROM values('date Date', 0, 1, 11016, 20774, 24855, 47482, 65534, 65535) FORMAT Native

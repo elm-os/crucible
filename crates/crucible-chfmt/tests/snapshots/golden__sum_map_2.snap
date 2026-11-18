@@ -1,0 +1,6 @@
+---
+source: crates/crucible-chfmt/tests/golden.rs
+expression: "rollup_block(&second, Compression::Zstd)"
+extension: zstd
+snapshot_kind: binary
+---

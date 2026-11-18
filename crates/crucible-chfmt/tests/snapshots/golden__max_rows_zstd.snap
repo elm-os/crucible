@@ -1,0 +1,6 @@
+---
+source: crates/crucible-chfmt/tests/golden.rs
+expression: zstd.compressed().to_vec()
+extension: zstd
+snapshot_kind: binary
+---

@@ -1,0 +1,1 @@
+SELECT * FROM values('saf_group_uniq_array_string_8 SimpleAggregateFunction(groupUniqArrayArray(8), Array(String))', [], [''], ['a'], ['a', 'bc', 'def'], ['héllo ✓'], [repeat('x', 128)], [], ['\x00\r\n', '\xff']) FORMAT Native
