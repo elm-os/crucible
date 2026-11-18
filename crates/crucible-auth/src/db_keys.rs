@@ -463,11 +463,13 @@ impl DbKeys {
     }
 }
 
+/// The verifier of ingest: only keys with the `ingest` scope pass (contract 11.3). The API checks each route's
+/// own permission through [`DbKeys::check_secret`] and [`DbKeys::check_pair`] instead.
 impl KeyVerifier for DbKeys {
     fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
         match self.check_secret(secret) {
-            KeyVerdict::Valid(grant) => Some(grant.principal),
-            KeyVerdict::Invalid | KeyVerdict::Unavailable { .. } => None,
+            KeyVerdict::Valid(grant) if grant.scopes.has(KeyScope::Ingest) => Some(grant.principal),
+            KeyVerdict::Valid(_) | KeyVerdict::Invalid | KeyVerdict::Unavailable { .. } => None,
         }
     }
 }

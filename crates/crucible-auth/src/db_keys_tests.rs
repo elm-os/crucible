@@ -84,10 +84,12 @@ fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
             keys.check_pair(&stranger.public_key, &stranger.secret),
             KeyVerdict::Invalid
         );
+        // Ingest takes only keys with the ingest scope.
         assert_eq!(
             keys.verify(&a.secret).map(|p| p.api_key_id),
             Some(rows[0].id)
         );
+        assert_eq!(keys.verify(&b.secret), None);
     });
 }
 
