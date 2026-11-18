@@ -116,7 +116,8 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/pr
 }
 ```
 
-`spans` and `mcp` give the first and last minute with data. `retention_horizon` is null while the project keeps its
+`spans` and `mcp` give the first and last minute with data; the server does not record MCP operations yet, which
+is planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its
 data forever, which is the only retention in this preview; retention settings are planned. `max_window_days` is the
 widest window a list or search may ask for.
 

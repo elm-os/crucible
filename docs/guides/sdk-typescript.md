@@ -265,6 +265,11 @@ classifier of [contract 9.2](../architecture/contracts.md#92-error-taxonomy) rea
 the multi-round state hashes, the request size and user agent on HTTP, and the number of content blocks of each
 type. A `traceparent` in `params._meta` makes the span a child of the caller's span; baggage is never read.
 
+On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
+tool error with status `error`, and the MCP keys, with any captured content, stay among the span's attributes
+(the payload route's `attributes` field). Recording them as MCP operations, and the MCP analytics routes and
+pages that read them, are planned.
+
 | Option of `instrument` | Effect |
 |---|---|
 | `capture` | Content capture rules by tool glob; see below |
