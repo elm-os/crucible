@@ -1,0 +1,41 @@
+name: proxy
+
+# The MCP proxy on Windows (invariant I11, process tests). The Linux run of the same tests is part of ci-rust.
+# On Windows the proxy starts its child suspended, puts it in a Job Object with kill-on-close, resumes it, and
+# resolves commands through PATHEXT; only a Windows runner can exercise that against real processes.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-proxy/**
+      - crates/crucible-env*/**
+      - .github/workflows/proxy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Proxy tests
+        run: cargo test -p crucible-proxy --locked
