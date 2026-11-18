@@ -896,7 +896,8 @@ fn the_reconciler_provisions_rewrites_rotates_and_drops_under_its_lease() {
 #[test]
 fn the_schema_browser_lists_the_curated_views_with_their_window_column() {
     sim(async |w| {
-        let schema = w.workspace.schema();
+        let _ = &w;
+        let schema = crate::schema();
         assert_eq!(schema.len(), crucible_schema::CURATED_VIEWS.len());
         let spans = schema
             .iter()

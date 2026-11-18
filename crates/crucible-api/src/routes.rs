@@ -6,6 +6,7 @@
 
 mod data_bounds;
 mod spans;
+pub(crate) mod sql;
 mod trace_detail;
 mod traces;
 
@@ -25,6 +26,7 @@ pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(data_bounds::routes())
         .merge(spans::routes())
+        .merge(sql::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
 }
@@ -34,6 +36,7 @@ pub(crate) fn router() -> Router<ApiState> {
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(data_bounds::Paths::openapi());
     doc.merge(spans::Paths::openapi());
+    doc.merge(sql::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
     doc

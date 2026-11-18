@@ -14,7 +14,8 @@ use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
-use crucible_records::{ProjectId, RequestId};
+use crucible_records::{ApiKeyId, ProjectId, RequestId};
+use crucible_sqlws::SqlWorkspace;
 
 use crate::cursor::Cursors;
 use crate::problem::{ApiError, request_id};
@@ -31,6 +32,8 @@ pub(crate) struct ApiState {
     pub(crate) settings: Arc<dyn ProjectSettingsSource>,
     /// The cursor-signing keys.
     pub(crate) cursors: Arc<KeyRing>,
+    /// The SQL workspace; `None` when it is not configured.
+    pub(crate) sql: Option<SqlWorkspace>,
 }
 
 impl ApiState {
@@ -71,6 +74,8 @@ pub(crate) struct Project {
     pub(crate) request_id: RequestId,
     pub(crate) ctx: ReadContext,
     pub(crate) settings: ProjectSettings,
+    /// The key that authenticated the request.
+    pub(crate) api_key_id: ApiKeyId,
     /// The path parameters, `project_id` included.
     pub(crate) path: BTreeMap<String, String>,
 }
@@ -98,6 +103,7 @@ impl FromRequestParts<ApiState> for Project {
             request_id,
             ctx: ReadContext::new(principal.scope, settings.retention, Caller::Agent),
             settings,
+            api_key_id: principal.api_key_id,
             path,
         })
     }

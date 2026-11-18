@@ -34,7 +34,10 @@ impl Modify for ProjectKey {
         license(name = "MIT"),
     ),
     modifiers(&ProjectKey),
-    tags((name = "traces", description = "Traces, their spans and the project's data bounds.")),
+    tags(
+        (name = "traces", description = "Traces, their spans and the project's data bounds."),
+        (name = "sql", description = "The read-only SQL workspace: runs, exports, history and saved queries."),
+    ),
 )]
 struct ApiDoc;
 

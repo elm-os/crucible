@@ -78,12 +78,12 @@ pub(crate) fn cursor_keys() -> Arc<KeyRing> {
 /// The API over the world's query service.
 pub(crate) fn api(env: &Env, world: &World) -> Router {
     let service = world.service.clone();
-    crucible_api::router(env, service, keys(env), settings(), cursor_keys())
+    crucible_api::router(env, service, keys(env), settings(), cursor_keys(), None)
 }
 
 /// The API before a telemetry store is configured.
 pub(crate) fn api_without_store(env: &Env) -> Router {
-    crucible_api::router_without_store(env, keys(env), settings(), cursor_keys())
+    crucible_api::router_without_store(env, keys(env), settings(), cursor_keys(), None)
 }
 
 /// A response, its body parsed as JSON (`Null` when it is not JSON).

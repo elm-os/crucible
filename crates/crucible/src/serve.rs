@@ -56,6 +56,7 @@ use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
+use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
@@ -344,6 +345,7 @@ async fn open_app(
             Arc::clone(&keys),
             Arc::new(StaticProjectSettings::default()),
             cursors,
+            None,
         ),
     });
     let app = App {
@@ -660,10 +662,34 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("reading the quarantine manifests")?;
     hook.restore_quarantined(pairs);
     hook.restore_unshippable(frames);
+    // The SQL workspace needs the control plane: its identities, saved queries and audit rows live there.
+    let sql = match &control {
+        Some(control) => {
+            let sql_store = Arc::new(config.sql_store(&store)?);
+            let workspace = SqlWorkspace::new(
+                env.clone(),
+                sql_store.clone(),
+                Arc::new(control.store.clone()),
+                true,
+            );
+            // Dropping a handle detaches its task; both loops end with the host's shutdown scope.
+            drop(env.spawn("sql-probe", workspace.clone().run_probe_loop()));
+            drop(env.spawn(
+                "sql-reconciler",
+                workspace.clone().run_reconciler(report.epoch.to_string()),
+            ));
+            Some((workspace, sql_store))
+        }
+        None => None,
+    };
     let stores = Stores::new(Arc::new(store));
     let stores = match control {
         Some(control) => stores.with_control(Arc::new(control.store)),
         None => stores,
+    };
+    let (sql, stores) = match sql {
+        Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
+        None => (None, stores),
     };
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
@@ -678,6 +704,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         keys,
         Arc::new(StaticProjectSettings::default()),
         cursors,
+        sql,
     ));
     tracing::info!(
         watermark = %watermark,

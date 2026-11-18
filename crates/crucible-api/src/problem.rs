@@ -1,6 +1,6 @@
 //! Error responses: problem documents (contract 12.3) that carry the request id.
 
-use axum::http::header::{CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{Extensions, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use crucible_api_types::{FieldError, Problem, ProblemCode, ProblemLimit};
@@ -32,6 +32,17 @@ pub(crate) struct ApiError {
     detail: String,
     errors: Vec<FieldError>,
     limit: Option<ProblemLimit>,
+    /// The members only the SQL workspace sets, boxed so that the common error stays small.
+    sql: Option<Box<SqlExtras>>,
+}
+
+/// The optional members of a SQL workspace problem.
+#[derive(Clone, PartialEq, Debug, Default)]
+struct SqlExtras {
+    retry_after_s: Option<u32>,
+    line: Option<u32>,
+    column: Option<u32>,
+    reason: Option<String>,
 }
 
 impl ApiError {
@@ -42,7 +53,44 @@ impl ApiError {
             detail: detail.into(),
             errors: Vec::new(),
             limit: None,
+            sql: None,
         }
+    }
+
+    fn extras(&mut self) -> &mut SqlExtras {
+        self.sql.get_or_insert_with(Box::default)
+    }
+
+    /// The same problem with these entries in `errors`.
+    pub(crate) fn with_errors(self, errors: Vec<FieldError>) -> Self {
+        Self { errors, ..self }
+    }
+
+    /// The same problem with the place of the error in a query text.
+    pub(crate) fn with_position(mut self, line: Option<u32>, column: Option<u32>) -> Self {
+        if line.is_some() || column.is_some() {
+            let extras = self.extras();
+            extras.line = line;
+            extras.column = column;
+        }
+        self
+    }
+
+    /// The same problem with `retry_after_s` and the `Retry-After` header, rounded up to whole seconds.
+    pub(crate) fn with_retry_after(mut self, after: Option<std::time::Duration>) -> Self {
+        if let Some(d) = after {
+            let whole = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+            self.extras().retry_after_s = Some(u32::try_from(whole.max(1)).unwrap_or(u32::MAX));
+        }
+        self
+    }
+
+    /// The same problem with the reason a module is unavailable.
+    pub(crate) fn with_reason(mut self, reason: Option<String>) -> Self {
+        if reason.is_some() {
+            self.extras().reason = reason;
+        }
+        self
     }
 
     pub(crate) fn unauthenticated(request_id: RequestId) -> Self {
@@ -147,6 +195,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let extras = self.sql.map(|extras| *extras).unwrap_or_default();
+        let retry_after_s = extras.retry_after_s;
         let body = Problem {
             problem_type: Problem::type_uri(self.code),
             title: title(self.code),
@@ -155,9 +205,12 @@ impl IntoResponse for ApiError {
             code: self.code,
             request_id: self.request_id.to_string(),
             errors: (!self.errors.is_empty()).then_some(self.errors),
-            retry_after_s: None,
+            retry_after_s,
             limit: self.limit,
             suggested_granularity: None,
+            line: extras.line,
+            column: extras.column,
+            reason: extras.reason,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();
@@ -166,6 +219,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        if let Some(seconds) = retry_after_s {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(seconds));
         }
         response
     }

@@ -36,7 +36,7 @@ request_id: string,
  */
 errors?: Array<FieldError>, 
 /**
- * Seconds to wait before retrying, for `rate_limited`.
+ * Seconds to wait before retrying, for `rate_limited` and `sql_quota_exceeded`.
  */
 retry_after_s?: number, 
 /**
@@ -46,4 +46,17 @@ limit?: ProblemLimit,
 /**
  * A coarser granularity that fits the caps, for `query_too_broad` on metrics.
  */
-suggested_granularity?: string, };
+suggested_granularity?: string, 
+/**
+ * The line of the error in a query text, one-based, for `sql_invalid`.
+ */
+line?: number, 
+/**
+ * The column of the error in a query text, one-based, for `sql_invalid`.
+ */
+column?: number, 
+/**
+ * Why a module is unavailable, for `sql_workspace_unavailable`: a stable word such as
+ * `isolation_probe_failed`.
+ */
+reason?: string, };

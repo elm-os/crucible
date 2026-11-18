@@ -2,8 +2,8 @@
 //! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
 //!
 //! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
-//!   and `.../data-bounds` over a [`QueryService`], one module per route group; DTOs come from
-//!   `crucible-api-types`.
+//!   and `.../data-bounds` over a [`QueryService`], and the SQL workspace under `.../sql/` over a
+//!   [`SqlWorkspace`]; one module per route group; DTOs come from `crucible-api-types`.
 //! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
 //!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
 //!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
@@ -40,6 +40,7 @@ use crucible_auth::KeyVerifier;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
+use crucible_sqlws::SqlWorkspace;
 
 pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
@@ -61,8 +62,9 @@ pub fn router(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
-    build(env, Some(service), keys, settings, cursors)
+    build(env, Some(service), keys, settings, cursors, sql)
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -72,8 +74,9 @@ pub fn router_without_store(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
-    build(env, None, keys, settings, cursors)
+    build(env, None, keys, settings, cursors, sql)
 }
 
 fn build(
@@ -82,6 +85,7 @@ fn build(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
     let state = ApiState {
         env: env.clone(),
@@ -89,6 +93,7 @@ fn build(
         keys,
         settings,
         cursors,
+        sql,
     };
     let api = routes::router()
         .fallback(unknown_path)
@@ -113,16 +118,18 @@ async fn unknown_path(State(state): State<ApiState>, request: Request) -> Respon
     problem(id, ProblemCode::NotFound, "no resource exists at this path")
 }
 
-/// Every route of milestone 1 is a read.
+/// A route exists at the path, for other methods; `Allow` names them. The telemetry routes are reads; the SQL
+/// workspace's routes name their own methods.
 async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
     let id = request_id(request.extensions(), &state.env);
+    let allow = routes::sql::allowed_methods(request.uri().path()).unwrap_or("GET, HEAD");
     let mut response = problem(
         id,
         ProblemCode::MethodNotAllowed,
-        "the resource supports GET and HEAD only",
+        &format!("the resource supports {allow} only"),
     );
     response
         .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
+        .insert(ALLOW, HeaderValue::from_static(allow));
     response
 }

@@ -24,12 +24,20 @@ pub mod reconciler;
 mod service;
 
 pub use access::{SqlAction, SqlRole, allowed};
+pub use crucible_control::{
+    SavedParam, SavedQuery, SqlActor, SqlParamType, SqlRun, SqlRunKind, SqlRunOutcome,
+    SqlVisibility,
+};
+pub use crucible_env::SqlLimits;
 pub use problem::{SqlProblem, SqlProblemCode};
 pub use reconciler::{ReconcileError, ReconcileReport};
 pub use service::{
     ExportFormat, MAX_HISTORY, PROBE_EVERY, PROBE_RETRY, RunInput, RunOutput, SavedInput,
-    SchemaRelation, SqlCaller, SqlStatus, SqlWorkspace,
+    SchemaRelation, SqlCaller, SqlStatus, SqlWorkspace, schema,
 };
+
+/// The limits of an interactive run (contract 7.4).
+pub const INTERACTIVE_LIMITS: SqlLimits = SqlLimits::INTERACTIVE;
 
 #[cfg(test)]
 mod tests;

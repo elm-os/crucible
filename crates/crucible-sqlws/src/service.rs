@@ -239,6 +239,33 @@ enum Output {
     Bytes(Bytes),
 }
 
+/// The relations a query may read, for the schema browser.
+pub fn schema() -> Vec<SchemaRelation> {
+    CURATED_VIEWS
+        .iter()
+        .map(|view| {
+            let def = table(view.table);
+            let name = format!("{SQL_DATABASE}.{}", view.name);
+            let time = def.retention.time_column;
+            let example = format!(
+                "SELECT *\nFROM {name}\nWHERE {time} >= {{from:DateTime64(6)}}\n  AND {time} < {{to:DateTime64(6)}}\nLIMIT 100"
+            );
+            SchemaRelation {
+                description: view.description,
+                time_column: time,
+                window_required: def.partition.column().is_some(),
+                columns: view
+                    .columns()
+                    .into_iter()
+                    .map(|column| (column.name, column.ty))
+                    .collect(),
+                example,
+                name,
+            }
+        })
+        .collect()
+}
+
 impl SqlWorkspace {
     /// A workspace over the SQL store and the control store. It refuses runs until [`SqlWorkspace::probe`] has
     /// completed without a breach.
@@ -372,33 +399,6 @@ impl SqlWorkspace {
             retry_after: (reason != "isolation_probe_failed").then_some(PROBE_RETRY),
             ..SqlProblem::unavailable(reason, fix)
         })
-    }
-
-    /// The relations a query may read, for the schema browser.
-    pub fn schema(&self) -> Vec<SchemaRelation> {
-        CURATED_VIEWS
-            .iter()
-            .map(|view| {
-                let def = table(view.table);
-                let name = format!("{SQL_DATABASE}.{}", view.name);
-                let time = def.retention.time_column;
-                let example = format!(
-                    "SELECT *\nFROM {name}\nWHERE {time} >= {{from:DateTime64(6)}}\n  AND {time} < {{to:DateTime64(6)}}\nLIMIT 100"
-                );
-                SchemaRelation {
-                    description: view.description,
-                    time_column: time,
-                    window_required: def.partition.column().is_some(),
-                    columns: view
-                        .columns()
-                        .into_iter()
-                        .map(|column| (column.name, column.ty))
-                        .collect(),
-                    example,
-                    name,
-                }
-            })
-            .collect()
     }
 
     /// The generation of the project's identity, provisioning it on first use (contract 7.4).
