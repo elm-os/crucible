@@ -382,20 +382,22 @@ fn the_rollups_put_every_measure_in_its_column() {
     assert!(span_metrics(&child).ttft_hist.is_empty());
 }
 
-/// Token and cost sums take a generation or an embedding that does not repeat the usage of a descendant, and
-/// nothing else. Every span is still counted, and its own row keeps its usage.
+/// Token and cost sums take every span, whatever its type, except a usage aggregate. Every span is still counted,
+/// and its own row keeps its usage.
 #[test]
-fn sums_count_generations_and_embeddings_that_are_not_usage_aggregates() {
+fn sums_count_every_span_that_is_not_a_usage_aggregate() {
     use crucible_records::{NanoUsd, ObservationType as T};
-    for (kind, aggregate, counted) in [
-        (T::Generation, false, true),
-        (T::Embedding, false, true),
-        (T::Generation, true, false),
-        (T::Embedding, true, false),
-        (T::Span, false, false),
-        (T::Agent, false, false),
-        (T::Tool, true, false),
+    for (kind, aggregate) in [
+        (T::Generation, false),
+        (T::Embedding, false),
+        (T::Span, false),
+        (T::Tool, false),
+        (T::Agent, false),
+        (T::Generation, true),
+        (T::Span, true),
+        (T::Agent, true),
     ] {
+        let counted = !aggregate;
         let mut record = distinct();
         record.core.observation_type = kind;
         record.core.usage_aggregate = aggregate;
@@ -722,7 +724,7 @@ proptest! {
         }
         prop_assert_eq!(core_rows, spans);
         // Every span is counted once in the trace stats and once in the metrics, and the tokens of the spans
-        // that count usage (generations and embeddings that are not usage aggregates) are summed; the session
+        // that count usage (every span that is not a usage aggregate) are summed; the session
         // and user rollups count the spans that name one.
         let of = |table| counted.get(&table).copied().unwrap_or_default();
         prop_assert_eq!(of(TableId::TraceStats), (spans, tokens));

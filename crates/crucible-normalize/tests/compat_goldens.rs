@@ -7,7 +7,7 @@
 //! 2. both encodings are normalized, and give the same records (`event_bytes`, the size of a span in its own
 //!    canonical body, is the one field that may differ);
 //! 3. every expected field of every span holds, on the finished records (after the request-local forward-fill,
-//!    usage, cost and caps);
+//!    usage, cost and caps, and after stage B has flagged the usage aggregates of the request);
 //! 4. the residual span attributes are exactly the expected keys;
 //! 5. normalizing again gives the same records.
 //!
@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use common::{ctx, frame};
 use crucible_compat::{FIXTURES, Fixture, ROUTES, TABLES};
-use crucible_normalize::{NormalizedFrame, normalize};
+use crucible_normalize::{NormalizedFrame, StageB, normalize};
 use crucible_otlp::transcode_json;
 use crucible_records::{SpanRecord, Timestamp};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -83,6 +83,9 @@ fn run(case: &Case, body: &[u8]) -> NormalizedFrame {
     f.sdk_name = &case.sdk_name;
     f.sdk_version = &case.sdk_version;
     let mut out = normalize(&f, &ctx()).unwrap();
+    // Stage B flags the usage aggregates of the request; nothing of a fixture is a repeat.
+    let admission = StageB::new(1_024, 1_024).admit(&mut out).unwrap();
+    assert_eq!(admission.duplicates, 0);
     for span in &mut out.spans {
         span.core.event_bytes = 0;
     }

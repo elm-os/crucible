@@ -134,8 +134,9 @@ pub struct SpanCore {
     pub price_model_id: Option<Uuid>,
     /// The price tier used.
     pub price_tier_id: Option<Uuid>,
-    /// The span repeats usage that a descendant of it in the same request also carries, so token and cost sums
-    /// leave it out ([`SpanCore::counts_usage`]). The span still stores and shows its own usage.
+    /// The span has a descendant that carries usage or cost, seen in the same request or earlier in the LSN
+    /// stream, so token and cost sums leave the span out ([`SpanCore::counts_usage`]). Stage B sets it; the
+    /// span still stores and shows its own usage. It is outside the row digest.
     pub usage_aggregate: bool,
     /// Prompt reference; [`caps::PROMPT_NAME_BYTES`].
     pub prompt_name: Box<str>,
@@ -184,14 +185,16 @@ pub struct SpanCore {
 }
 
 impl SpanCore {
-    /// Whether the span's tokens and cost enter the trace, session, user and metrics sums: only generations and
-    /// embeddings do, and not one that repeats the usage of a descendant (`usage_aggregate`), so each model call
-    /// is counted once, on the span that carries the model it is priced with.
+    /// Whether the span's tokens and cost enter the trace, session, user and metrics sums: every span's do,
+    /// whatever its type, unless it has a descendant that carries usage or cost (`usage_aggregate`), which is
+    /// then what is counted.
     pub const fn counts_usage(&self) -> bool {
-        matches!(
-            self.observation_type,
-            ObservationType::Generation | ObservationType::Embedding
-        ) && !self.usage_aggregate
+        !self.usage_aggregate
+    }
+
+    /// Whether the span carries usage or cost: a usage count above zero, or a cost above zero.
+    pub fn carries_usage(&self) -> bool {
+        self.total_cost_nusd.nanos() > 0 || self.usage.iter().any(|entry| entry.units > 0)
     }
 
     /// `duration_us`: `end_time - start_time`, or zero when `end_time` is not after `start_time`.

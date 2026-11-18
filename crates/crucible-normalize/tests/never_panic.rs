@@ -112,8 +112,8 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
             c.source_format == crucible_records::SourceFormat::Otel,
             c.compat_dialect == 0
         );
-        // A usage aggregate carries usage itself.
-        prop_assert!(!c.usage_aggregate || p.usage_provided.iter().any(|(_, n)| *n > 0));
+        // Only stage B flags a usage aggregate.
+        prop_assert!(!c.usage_aggregate);
     }
     Ok(())
 }

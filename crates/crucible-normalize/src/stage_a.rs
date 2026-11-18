@@ -46,8 +46,7 @@ pub fn normalize(
 /// 2. Skip each span the envelope's bitmap marks, and any span with a missing id.
 /// 3. Build each draft: ids, kind, name, times, status, scope, links, trace state and the envelope and ingestion
 ///    values; then the chosen mapper fills the rest from the attributes.
-/// 4. Forward-fill trace-level attributes within the request (contract 3.3), and flag the spans that repeat the
-///    usage of a descendant (`usage_aggregate`).
+/// 4. Forward-fill trace-level attributes within the request (contract 3.3).
 /// 5. Finish each record: level, the default environment, usage and cost, payload caps, then the row digest.
 ///
 /// Times: `start_time` and `end_time` are clamped into the valid range, `end_time` is raised to at least
@@ -111,7 +110,6 @@ fn run(
         drafts.push(draft);
     }
     fill::forward_fill(&mut drafts);
-    fill::usage_aggregates(&mut drafts);
     let mut matches = Matches::default();
     let spans = drafts
         .into_iter()

@@ -48,7 +48,7 @@ pub enum Mutant {
     /// Quarantine a frame that does not normalize without copying it to the quarantine root.
     #[cfg(feature = "test-mutants")]
     FrameQuarantineWithoutCopy,
-    /// Count the tokens and cost of a span that repeats the usage of a descendant in the rollup sums.
+    /// Count the tokens and cost of a usage aggregate (a span with a descendant that carries usage) in the sums.
     #[cfg(feature = "test-mutants")]
     CountAggregateUsage,
 }

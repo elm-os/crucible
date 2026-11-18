@@ -3,7 +3,8 @@
 //! The contract fixes the hash and the excluded group but not the bytes that are hashed; this module fixes them as
 //! encoding version [`DIGEST_ENCODING`]. The row is both tiers of the [`SpanRecord`], so two spans that differ only
 //! in a payload body digest differently. The excluded ingestion group is `wal_epoch`, `lsn`, `batch_seq`,
-//! `received_at`, `api_key_id`, `row_digest` itself and `event_bytes`.
+//! `received_at`, `api_key_id`, `row_digest` itself and `event_bytes`. `usage_aggregate` is excluded too: stage B
+//! sets it from the LSN stream after the digest is taken, so a re-sent span keeps its digest.
 //!
 //! The encoding is the version byte, then every other field in declaration order, core tier first: integers
 //! little-endian at their own width; `bool` and enums one byte (the stored value); timestamps as `i64`
@@ -18,7 +19,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 /// The version of the encoding that [`row_digest`] hashes. A change to it changes digests, so it ships with a new
 /// normalizer version.
-pub const DIGEST_ENCODING: u8 = 2;
+pub const DIGEST_ENCODING: u8 = 1;
 
 /// Where encoded bytes go.
 trait Sink {
@@ -162,7 +163,8 @@ fn encode<S: Sink>(record: &SpanRecord, sink: &mut S) {
         cost_source,
         price_model_id,
         price_tier_id,
-        usage_aggregate,
+        // Set by stage B from the LSN stream, after the digest is taken.
+        usage_aggregate: _,
         prompt_name,
         prompt_version,
         tool_names,
@@ -275,7 +277,6 @@ fn encode<S: Sink>(record: &SpanRecord, sink: &mut S) {
     e.u8(cost_source.value());
     e.uuid(*price_model_id);
     e.uuid(*price_tier_id);
-    e.bool(*usage_aggregate);
     e.bytes(prompt_name.as_bytes());
     e.bytes(prompt_version.as_bytes());
     e.strs(tool_names);
@@ -365,7 +366,7 @@ mod tests {
     fn the_ingestion_group_does_not_change_the_digest() {
         let base = record();
         let digest = row_digest(&base);
-        let mutations: [fn(&mut SpanRecord); 7] = [
+        let mutations: [fn(&mut SpanRecord); 8] = [
             |r| r.core.ingestion.wal_epoch = WalEpoch::from_bytes([9; 16]),
             |r| r.core.ingestion.lsn = Lsn::new(77),
             |r| r.core.ingestion.batch_seq = Lsn::new(70),
@@ -373,6 +374,7 @@ mod tests {
             |r| r.core.api_key_id = ApiKeyId::from_bytes([8; 16]),
             |r| r.core.row_digest = 12345,
             |r| r.core.event_bytes = 999,
+            |r| r.core.usage_aggregate = true,
         ];
         for mutate in mutations {
             let mut r = base.clone();
@@ -422,13 +424,12 @@ mod tests {
             cost: NanoUsd::ZERO,
         }];
         let digest = row_digest(&base);
-        let mutations: [fn(&mut SpanRecord); 6] = [
+        let mutations: [fn(&mut SpanRecord); 5] = [
             |r| r.core.usage[0].cost = NanoUsd::from_nanos(1),
             |r| r.core.total_cost_nusd = NanoUsd::from_nanos(1),
             |r| r.core.cost_source = CostSource::Calculated,
             |r| r.core.price_model_id = Some(Uuid::from_bytes([7; 16])),
             |r| r.core.price_tier_id = Some(Uuid::from_bytes([7; 16])),
-            |r| r.core.usage_aggregate = true,
         ];
         for (i, mutate) in mutations.into_iter().enumerate() {
             let mut r = base.clone();

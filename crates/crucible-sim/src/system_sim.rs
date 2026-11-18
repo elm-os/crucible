@@ -134,7 +134,8 @@ pub enum Mutant {
     DropFactOnRetry,
     /// `crucible-shipper` quarantines a frame that does not normalize without copying it.
     FrameQuarantineWithoutCopy,
-    /// `crucible-shipper` counts the tokens and cost of a span that repeats the usage of a descendant.
+    /// `crucible-shipper` counts the tokens and cost of a usage aggregate, a span with a descendant that carries
+    /// usage or cost.
     CountAggregateUsage,
 }
 
@@ -928,6 +929,8 @@ struct ClientState {
     traces: Vec<[u8; 16]>,
     /// Recent spans, which later requests send again beside their own.
     spans: Vec<SentSpan>,
+    /// Parent ids that sent spans name and no request has sent yet, as (project, trace, span id).
+    awaited: Vec<(usize, [u8; 16], [u8; 8])>,
 }
 
 /// Builds one request: a few spans, mostly of one new or recent trace. Spans report a session, a user, an
@@ -959,12 +962,10 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let mut wire = Vec::new();
     // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
     // window still holds it, which shifts the spans after it in the frame.
-    // A span that repeats the usage of a descendant is not sent again alone: without its descendants it would
-    // not be an aggregate, so it would be another row and not a repeat.
     let again = state
         .spans
         .iter()
-        .filter(|sent| sent.project == project && !sent.info.sent.aggregate)
+        .filter(|sent| sent.project == project)
         .nth(pick(rng, 4) as usize)
         .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
         .cloned();
@@ -974,9 +975,8 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         wire.push(sent.wire);
     }
     let session = (pick(rng, 3) > 0).then(|| format!("session-{}", pick(rng, 3)));
-    // The spans this request adds, each with the position in `spans` of its parent when that is one of them.
+    // The position in `spans` of the first span this request adds.
     let first_new = spans.len();
-    let mut parents: Vec<Option<usize>> = Vec::new();
     let mut sent_now: Vec<SentSpan> = Vec::new();
     for ordinal in 0..count {
         let other = traces.len() > 1 && pick(rng, 5) == 0;
@@ -985,10 +985,23 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         } else {
             main
         };
-        let span = random::<8>(rng);
-        let root = !other && !rootless;
-        // One root per trace.
-        rootless = true;
+        // With nested usage, a span may be the parent that an earlier request of this client named for one of its
+        // spans: the child was exported first, as a child that ends before its parent is.
+        let awaited = (has(Dim::NestedUsage) && pick(rng, 3) == 0)
+            .then(|| {
+                let at = state.awaited.iter().position(|(p, ..)| *p == project)?;
+                Some(state.awaited.remove(at))
+            })
+            .flatten();
+        let (trace, span, root) = match awaited {
+            Some((_, trace, span)) => (trace, span, false),
+            None => {
+                let root = !other && !rootless;
+                // One root per trace.
+                rootless = true;
+                (trace, random::<8>(rng), root)
+            }
+        };
         // With nested usage, half of the spans below the root hang under the latest span of their trace in this
         // request, so chains form.
         let parent = (has(Dim::NestedUsage) && !root && coin(rng))
@@ -1002,6 +1015,16 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
                     .map(|(at, _)| at)
             })
             .flatten();
+        // Or it names a parent that a later request will send.
+        let later_parent =
+            (has(Dim::NestedUsage) && !root && parent.is_none() && pick(rng, 3) == 0)
+                .then(|| random::<8>(rng));
+        if let Some(id) = later_parent {
+            state.awaited.push((project, trace, id));
+            if state.awaited.len() > 8 {
+                state.awaited.remove(0);
+            }
+        }
         let day = if has(Dim::MultiDay) { pick(rng, 3) } else { 1 };
         let start_micros =
             START_BASE_MICROS + (day * 86_400_000_000 + pick(rng, 3_600_000_000)) as i64;
@@ -1060,11 +1083,6 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
                     "crucible.completion_start_time",
                     int(start_nanos + 1_000 * pick(rng, 900)),
                 ));
-            } else if has(Dim::NestedUsage) && coin(rng) {
-                attributes.push(attribute(
-                    "gen_ai.operation.name",
-                    text("embeddings".to_owned()),
-                ));
             }
             if coin(rng) {
                 // A provided cost in whole micro-dollars, as a decimal string of USD.
@@ -1089,7 +1107,7 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             parent_span_id: match parent.and_then(|at| spans.get(at)) {
                 Some(parent) => parent.span.to_vec(),
                 None if root => Vec::new(),
-                None => vec![7; 8],
+                None => later_parent.map_or_else(|| vec![7; 8], |id| id.to_vec()),
             },
             name,
             kind: 1,
@@ -1107,28 +1125,10 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             info,
             wire: span.clone(),
         });
-        parents.push(parent);
         spans.push(info);
         wire.push(span);
     }
-    // A span that reports usage is a usage aggregate when a descendant of it in this request reports usage
-    // too. A parent always comes before its children here, so one pass from the last span up marks them all.
-    let carries = |info: &SpanInfo| info.sent.input > 0 || info.sent.output > 0;
-    let mut below = vec![false; spans.len()];
-    for at in (first_new..spans.len()).rev() {
-        let Some(parent) = parents.get(at - first_new).copied().flatten() else {
-            continue;
-        };
-        let usage_here = below[at] || spans.get(at).is_some_and(carries);
-        if let Some(mark) = below.get_mut(parent) {
-            *mark |= usage_here;
-        }
-    }
-    for (at, mut sent) in (first_new..).zip(sent_now) {
-        if let Some(info) = spans.get_mut(at) {
-            info.sent.aggregate = below[at] && carries(info);
-            sent.info = *info;
-        }
+    for sent in sent_now {
         state.spans.push(sent);
         if state.spans.len() > 16 {
             state.spans.remove(0);

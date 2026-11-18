@@ -1,5 +1,15 @@
-//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It drops exact repeats through the duplicate window
-//! and marks provisional trace heads through the first-seen set.
+//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It drops exact repeats through the duplicate window,
+//! marks provisional trace heads through the first-seen set, and flags usage aggregates through the usage-parent
+//! set.
+//!
+//! **Usage aggregates.** A span's usage and cost count toward trace, session, user and metrics totals unless it
+//! has `usage_aggregate`: at least one descendant that carries usage or cost, seen in the same frame or earlier
+//! in the LSN stream. The usage-parent set holds the span ids that have such a descendant. For every kept span
+//! that carries usage or cost, or is itself in the set, its parent id joins the set; within one frame this runs
+//! over all spans before any is flagged, so wire order inside a frame does not matter. Across frames it relies
+//! on children ending, and so being exported, no later than their parents. A span is flagged when its id is in
+//! the set, whatever its type. Known limit: a descendant that arrives after its ancestor, or after the set
+//! evicted the ancestor's id, is counted beside the ancestor.
 //!
 //! Both are defined over the LSN stream, never over wall time: the state after a sequence of frames is a function
 //! of that sequence alone. Replaying the WAL's retained prefix in LSN order through a fresh [`StageB`] (and
@@ -7,7 +17,7 @@
 
 use std::collections::VecDeque;
 
-use crucible_records::{DetMap, DetSet, Lsn, SpanCore, det_map, det_set};
+use crucible_records::{DetMap, DetSet, Lsn, SpanCore, SpanId, det_map, det_set};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::NormalizedFrame;
@@ -18,6 +28,18 @@ pub const DUPLICATE_WINDOW_KEYS: usize = 4_000_000;
 /// Traces the first-seen set holds. The contract bounds only the duplicate window; the first-seen set takes the
 /// same bound so that its memory is bounded too.
 pub const FIRST_SEEN_TRACES: usize = 4_000_000;
+
+/// Span ids the usage-parent set holds; when full, the id that joined earliest in the LSN stream is evicted.
+pub const USAGE_PARENT_SPANS: usize = 4_000_000;
+
+/// The usage-parent key of a span's parent: as [`span_key`], with the parent's span id.
+fn parent_key(core: &SpanCore) -> u64 {
+    let mut bytes = [0u8; 40];
+    bytes[..16].copy_from_slice(&core.project_id.to_bytes());
+    bytes[16..32].copy_from_slice(core.trace_id.as_bytes());
+    bytes[32..].copy_from_slice(core.parent_span_id.as_bytes());
+    xxh3_64(&bytes)
+}
 
 /// The duplicate-window key: xxh3-64 of `project_id`, `trace_id` and `span_id` (16, 16 and 8 bytes).
 fn span_key(core: &SpanCore) -> u64 {
@@ -114,8 +136,8 @@ impl DuplicateWindow {
     }
 }
 
-/// The trace keys stage B has seen, for at most `capacity` traces; when full, the trace first seen earliest is
-/// evicted.
+/// A bounded set of keys in arrival order: the trace keys stage B has seen, or the span keys that have a
+/// descendant carrying usage. When full, the key that joined earliest is evicted.
 #[derive(Debug)]
 struct FirstSeen {
     capacity: usize,
@@ -146,6 +168,10 @@ impl FirstSeen {
         }
         true
     }
+
+    fn contains(&self, key: u64) -> bool {
+        self.keys.contains(&key)
+    }
 }
 
 /// What stage B did with one frame.
@@ -175,32 +201,78 @@ pub struct OutOfOrder {
     pub frame: Lsn,
 }
 
-/// Stage B state: the duplicate window, the first-seen set and the last LSN admitted.
+/// Stage B state: the duplicate window, the first-seen set, the usage-parent set and the last LSN admitted.
 #[derive(Debug)]
 pub struct StageB {
     window: DuplicateWindow,
     first_seen: FirstSeen,
+    usage_parents: FirstSeen,
     last: Option<Lsn>,
 }
 
 impl Default for StageB {
-    /// The contract's bounds: [`DUPLICATE_WINDOW_KEYS`] and [`FIRST_SEEN_TRACES`].
+    /// The contract's bounds: [`DUPLICATE_WINDOW_KEYS`], [`FIRST_SEEN_TRACES`] and [`USAGE_PARENT_SPANS`].
     fn default() -> Self {
         Self::new(DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES)
     }
 }
 
 impl StageB {
-    /// Empty state with the given bounds.
+    /// Empty state with the given bounds, and [`USAGE_PARENT_SPANS`] for the usage-parent set.
     pub fn new(window_keys: usize, first_seen_traces: usize) -> Self {
         Self {
             window: DuplicateWindow::new(window_keys),
             first_seen: FirstSeen::new(first_seen_traces),
+            usage_parents: FirstSeen::new(USAGE_PARENT_SPANS),
             last: None,
         }
     }
 
-    /// Admits the next frame of the LSN stream: drops its exact repeats in place and marks its provisional heads.
+    /// The state with another bound on the usage-parent set.
+    #[must_use]
+    pub fn with_usage_parents(mut self, spans: usize) -> Self {
+        self.usage_parents = FirstSeen::new(spans);
+        self
+    }
+
+    /// Flags the usage aggregates of a frame's kept spans and records their parents.
+    fn mark_usage_aggregates(&mut self, frame: &mut NormalizedFrame) {
+        // The frame's spans by their own key; a span id that repeats resolves to its first occurrence.
+        let mut by_key: DetMap<u64, usize> = det_map();
+        for (i, span) in frame.spans.iter().enumerate() {
+            by_key.entry(span_key(&span.core)).or_insert(i);
+        }
+        for start in 0..frame.spans.len() {
+            let core = &frame.spans[start].core;
+            if !core.carries_usage() && !self.usage_parents.contains(span_key(core)) {
+                continue;
+            }
+            // Climb while a parent newly joins the set: a parent that was in it already has been climbed from,
+            // or is a start of its own, so the work is linear and a parent cycle ends.
+            let mut at = start;
+            loop {
+                let core = &frame.spans[at].core;
+                // A span that names itself as its parent is not its own descendant.
+                if core.parent_span_id == SpanId::ZERO || core.parent_span_id == core.span_id {
+                    break;
+                }
+                let parent = parent_key(core);
+                if !self.usage_parents.insert(parent) {
+                    break;
+                }
+                match by_key.get(&parent) {
+                    Some(&next) => at = next,
+                    None => break,
+                }
+            }
+        }
+        for span in &mut frame.spans {
+            span.core.usage_aggregate = self.usage_parents.contains(span_key(&span.core));
+        }
+    }
+
+    /// Admits the next frame of the LSN stream: drops its exact repeats in place, flags its usage aggregates and
+    /// marks its provisional heads.
     /// A frame whose LSN is not above the previous one is refused and leaves the state unchanged.
     pub fn admit(&mut self, frame: &mut NormalizedFrame) -> Result<Admission, OutOfOrder> {
         if let Some(last) = self.last.filter(|&last| frame.lsn <= last) {
@@ -223,6 +295,7 @@ impl StageB {
             ordinal = ordinal.saturating_add(1);
             kept
         });
+        self.mark_usage_aggregates(frame);
         let mut first: Vec<(u64, usize)> = Vec::new();
         let mut noted: DetSet<u64> = det_set();
         let mut rooted: DetSet<u64> = det_set();

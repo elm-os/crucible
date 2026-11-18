@@ -1,10 +1,10 @@
 //! The reference side of the system simulation's oracle for the tables of milestone 2: the reference
-//! aggregation that the rollups must equal exactly (invariant I7; token and cost sums count only the generations
-//! and embeddings that are not usage aggregates) and the fact rows with their reference
+//! aggregation that the rollups must equal exactly (invariant I7; token and cost sums leave out the usage
+//! aggregates, whose flags are checked against a model of the rule over the LSN stream) and the fact rows with their reference
 //! resolution (invariants I2 and I4). Everything is read from the parts of [`ChModel`], as the store holds
 //! them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_records::{Bucket, FactId, FactVersion, TableId, fold_facts};
 
@@ -22,17 +22,14 @@ pub(crate) struct Sent {
     /// The provided cost; zero when the span reports none.
     pub(crate) cost_nusd: i64,
     pub(crate) error: bool,
-    /// Whether the span reports usage and a descendant of it in the same request reports usage too.
-    pub(crate) aggregate: bool,
 }
 
 const STATUS_ERROR: i8 = 2;
 const LEVEL_ERROR: i8 = 3;
 const GENERATION: i8 = 1;
-const EMBEDDING: i8 = 3;
 
-/// Whether a `span_core` row carries exactly what its span reported: tokens, cost in nano-USD, the error
-/// status, and whether it repeats the usage of a descendant (I7 at the core tier).
+/// Whether a `span_core` row carries exactly what its span reported: tokens, cost in nano-USD and the error
+/// status (I7 at the core tier).
 pub(crate) fn span_matches(block: &DecodedBlock, row: usize, sent: &Sent) -> bool {
     let error = i8_at(block, "status_code", row) == Some(STATUS_ERROR)
         || i8_at(block, "level", row) == Some(LEVEL_ERROR);
@@ -40,7 +37,6 @@ pub(crate) fn span_matches(block: &DecodedBlock, row: usize, sent: &Sent) -> boo
         && u64_at(block, "output_tokens", row) == Some(sent.output)
         && u64_at(block, "total_tokens", row) == Some(sent.input + sent.output)
         && i64_at(block, "total_cost_nusd", row) == Some(sent.cost_nusd)
-        && u8_at(block, "usage_aggregate", row) == Some(u8::from(sent.aggregate))
         && error == sent.error
 }
 
@@ -134,10 +130,8 @@ fn reference(model: &ChModel) -> Option<BTreeMap<TableId, Aggs>> {
             let error = i8_at(block, "status_code", row)? == STATUS_ERROR
                 || i8_at(block, "level", row)? == LEVEL_ERROR;
             let kind = i8_at(block, "observation_type", row)?;
-            // Token and cost sums count generations and embeddings only, and not one that repeats the usage
-            // of a descendant: the leaf carries it.
-            let counted = matches!(kind, GENERATION | EMBEDDING)
-                && u8_at(block, "usage_aggregate", row)? == 0;
+            // Token and cost sums count every span that is not a usage aggregate, whatever its type.
+            let counted = u8_at(block, "usage_aggregate", row)? == 0;
             let of = |value: u64| if counted { value } else { 0 };
             let sums = Agg {
                 spans: 1,
@@ -279,14 +273,104 @@ fn stored(model: &ChModel, table: TableId) -> Option<Aggs> {
     Some(out)
 }
 
-/// I7: compares every rollup with the reference aggregation over `span_core`. Returns the number of keys
+/// One `span_core` row as the usage-aggregate rule reads it.
+struct UsageRow {
+    lsn: u64,
+    /// (project, trace, span id).
+    key: Vec<u8>,
+    /// (project, trace, parent span id); `None` for a span without a parent.
+    parent: Option<Vec<u8>>,
+    carries: bool,
+    flagged: bool,
+}
+
+/// Runs the usage-aggregate rule over `rows` on top of `set`: the keys with a descendant that carries usage.
+fn usage_parents(rows: &[&UsageRow], set: &mut BTreeSet<Vec<u8>>) {
+    // A fixed point: a parent joins when a child carries usage or is in the set itself.
+    loop {
+        let before = set.len();
+        for row in rows {
+            if (row.carries || set.contains(&row.key))
+                && let Some(parent) = &row.parent
+            {
+                set.insert(parent.clone());
+            }
+        }
+        if set.len() == before {
+            return;
+        }
+    }
+}
+
+/// I7 for `usage_aggregate`, from the rows of `span_core` alone. The flag is stage B state, rebuilt from the
+/// retained WAL prefix after a restart, so a restart may forget an earlier frame's descendants. What holds in
+/// every run:
+///
+/// - **never flagged without cause**: a flagged span has a descendant that carries usage or cost in its own
+///   frame or in an earlier one (the rule over the whole LSN stream);
+/// - **always flagged within a frame**: a span with a descendant that carries usage or cost in its own frame is
+///   flagged, whatever a restart forgot, and whatever the wire order.
+fn check_usage_flags(model: &ChModel) -> Option<Vec<String>> {
+    let mut rows = Vec::new();
+    for part in model.parts(TableId::SpanCore) {
+        let block = &part.block;
+        for row in 0..block.rows {
+            let project = uuid_at(block, "project_id", row)?;
+            let trace = bytes_at(block, "trace_id", row)?;
+            let parent = bytes_at(block, "parent_span_id", row)?;
+            let span = bytes_at(block, "span_id", row)?;
+            rows.push(UsageRow {
+                lsn: u64_at(block, "lsn", row)?,
+                key: key(&[&project, trace, span]),
+                // A span that names itself as its parent is not its own descendant.
+                parent: (parent.iter().any(|b| *b != 0) && parent != span)
+                    .then(|| key(&[&project, trace, parent])),
+                carries: u64_at(block, "input_tokens", row)? > 0
+                    || u64_at(block, "output_tokens", row)? > 0
+                    || u64_at(block, "total_tokens", row)? > 0
+                    || i64_at(block, "total_cost_nusd", row)? > 0,
+                flagged: u8_at(block, "usage_aggregate", row)? == 1,
+            });
+        }
+    }
+    rows.sort_by_key(|row| row.lsn);
+    let mut wrong = Vec::new();
+    let mut stream = BTreeSet::new();
+    for frame in rows.chunk_by(|a, b| a.lsn == b.lsn) {
+        let frame: Vec<&UsageRow> = frame.iter().collect();
+        let mut alone = BTreeSet::new();
+        usage_parents(&frame, &mut alone);
+        usage_parents(&frame, &mut stream);
+        for row in &frame {
+            if row.flagged && !stream.contains(&row.key) {
+                wrong.push(format!(
+                    "a span of frame {} is a usage aggregate without a descendant that carries usage",
+                    row.lsn
+                ));
+            }
+            if !row.flagged && alone.contains(&row.key) {
+                wrong.push(format!(
+                    "a span of frame {} has a descendant in its frame that carries usage and is not a usage \
+                     aggregate",
+                    row.lsn
+                ));
+            }
+        }
+    }
+    Some(wrong)
+}
+
+/// I7: compares every rollup with the reference aggregation over `span_core`, and the usage-aggregate flags
+/// with the rule. Returns the number of keys
 /// compared and what differs. Valid once every pair of every batch has landed.
 pub(crate) fn check_aggregates(model: &ChModel) -> (u64, Vec<String>) {
     let Some(reference) = reference(model) else {
         return (0, vec!["a span_core row does not read".to_owned()]);
     };
     let mut keys = 0;
-    let mut wrong = Vec::new();
+    let Some(mut wrong) = check_usage_flags(model) else {
+        return (0, vec!["a span_core row does not read".to_owned()]);
+    };
     for (table, expected) in reference {
         let Some(found) = stored(model, table) else {
             wrong.push(format!("a row of {} does not read", table.name()));

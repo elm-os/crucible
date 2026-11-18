@@ -3,12 +3,12 @@
 //! **Stage A** ([`normalize`]) is a pure function of one WAL frame and a [`NormCtx`]: no clock, randomness or IO,
 //! so frames may be normalized in parallel and a replay gives byte-identical records. It re-scans the canonical
 //! OTLP body, skips the spans the envelope marks as rejected, detects the dialect of each span and maps it with
-//! every dialect table as a layer (contract 10.2), forward-fills trace-level attributes within the request, flags
-//! the spans that repeat the usage of a descendant, and applies the time rules, defaults, cost, payload caps and
-//! the row digest.
+//! every dialect table as a layer (contract 10.2), forward-fills trace-level attributes within the request, and
+//! applies the time rules, defaults, cost, payload caps and the row digest.
 //!
-//! **Stage B** ([`StageB`]) is sequential in LSN order: the duplicate window drops exact repeats and the first-seen
-//! set marks provisional trace heads.
+//! **Stage B** ([`StageB`]) is sequential in LSN order: the duplicate window drops exact repeats, the first-seen
+//! set marks provisional trace heads, and the usage-parent set flags the spans that have a descendant carrying
+//! usage or cost (`usage_aggregate`), which token and cost sums leave out.
 //!
 //! The shipper stamps `batch_seq` when it seals a batch ([`NormalizedFrame::stamp_batch_seq`]); until then it is
 //! [`Lsn::ZERO`]. The ingestion group is outside the row digest, so stamping never changes a digest.
@@ -46,7 +46,9 @@ pub use price::{
     PriceTableError, PriceTier,
 };
 pub use stage_a::{normalize, normalize_with};
-pub use stage_b::{Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrder, StageB};
+pub use stage_b::{
+    Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrder, StageB, USAGE_PARENT_SPANS,
+};
 
 /// The version of this normalizer. Every record carries it, and a `BatchSeal` pins it (contract 4.4). Any change
 /// to the records stage A produces for some input ships with a new version.
@@ -59,8 +61,8 @@ pub use stage_b::{Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrde
 ///   `crucible.output`, the prompt reference, provided cost, `completion_start_time` and the model parameters).
 /// - 4: the dialect tables are layers and every span is mapped with all of them (dialects 1 to 7 map; a request
 ///   hint is a detection at confidence 60); maps merge every source in rank order; tool calls, tool names and
-///   finish reasons are derived from message bodies; previews replace media tokens; `usage_aggregate` flags a
-///   span that repeats the usage of a descendant, and enters the row digest (digest encoding 2).
+///   finish reasons are derived from message bodies; previews replace media tokens. Stage B sets
+///   `usage_aggregate` on a span that has a descendant carrying usage or cost; the flag is outside the row digest.
 pub const NORMALIZER_VERSION: u32 = 4;
 
 /// One `IngestRequest` WAL frame as the normalizer reads it: the frame header values and the envelope (contracts

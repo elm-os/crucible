@@ -238,10 +238,9 @@ pub fn is_error(c: &SpanCore) -> bool {
     c.status_code == StatusCode::Error || c.level == Level::Error
 }
 
-/// The tokens and cost a span adds to the trace, session, user and metrics sums (contracts 3.9 and 3.10): its own
-/// when it is a generation or an embedding that does not repeat the usage of a descendant
-/// ([`SpanCore::counts_usage`]), else nothing. Every model call is so counted once, on the span that names the
-/// model it is priced with.
+/// The tokens and cost a span adds to the trace, session, user and metrics sums (contracts 3.9 and 3.10): its
+/// own, whatever its type, unless it has a descendant that carries usage or cost ([`SpanCore::counts_usage`]),
+/// in which case nothing: the descendant is counted.
 struct Counted {
     input_tokens: u64,
     output_tokens: u64,
@@ -563,7 +562,7 @@ pub fn derive(
 }
 
 /// [`derive`], with the defect of the mutant that counts the usage of aggregate spans when `count_aggregates` is
-/// set: the sums then take every generation and embedding, while `span_core` keeps the flag.
+/// set: the sums then take every span, while `span_core` keeps the flag.
 pub(crate) fn derive_rows(
     frame: &NormalizedFrame,
     admission: &Admission,

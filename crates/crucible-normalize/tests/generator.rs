@@ -1,6 +1,6 @@
 //! The request generator the properties share reaches the mapping, not only the residual path: over a fixed-seed
 //! sample, every field of every dialect layer receives a value, every dialect is chosen, every observation type is
-//! seen, a span is flagged as a usage aggregate, and usage is priced from the bundled table.
+//! seen, and usage is priced from the bundled table.
 
 // Test code throughout: lets the helpers below use `unwrap` under the workspace lints.
 #![cfg(test)]
@@ -81,10 +81,9 @@ fn generated_requests_reach_every_mapped_field_and_type_rule() {
             rule.target
         );
     }
-    // Every dialect is chosen for some span, and some span repeats the usage of a descendant.
+    // Every dialect is chosen for some span.
     let dialects: BTreeSet<u8> = records.iter().map(|r| r.core.compat_dialect).collect();
     assert_eq!(dialects.len(), crucible_compat::TABLES.len());
-    assert!(records.iter().any(|r| r.core.usage_aggregate));
     // Every type is seen; five of them only the explicit rule can yield.
     let types: BTreeSet<u8> = records
         .iter()
