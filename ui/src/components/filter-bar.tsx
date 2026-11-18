@@ -151,14 +151,14 @@ export function FilterBar({
         </p>
       ) : null}
       {active.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <ul aria-label="Active filters" className="flex flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <ul aria-label="Active filters" className="flex min-w-0 max-w-full flex-wrap gap-2">
             {active.map((condition) => (
-              <li key={`${condition.key}=${condition.value}`}>
+              <li key={`${condition.key}=${condition.value}`} className="min-w-0 max-w-full">
                 <Button
                   aria-label={`Remove filter ${condition.label}`}
                   onClick={() => onChange(withoutCondition(filters, condition))}
-                  className="text-data"
+                  className="max-w-full truncate text-data"
                 >
                   {condition.label}
                   <span aria-hidden="true"> ×</span>
