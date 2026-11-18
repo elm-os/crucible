@@ -383,7 +383,7 @@ mod tests {
                 if kept.iter().any(|i| of_trace(i) && spans[*i].4) {
                     continue;
                 }
-                if let Some(pos) = kept.iter().position(|i| of_trace(i)) {
+                if let Some(pos) = kept.iter().position(of_trace) {
                     heads.push(pos);
                 }
             }
