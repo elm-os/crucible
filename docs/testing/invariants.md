@@ -125,7 +125,11 @@ No response to a principal of project A contains data of project B, and no respo
 
 ### I7. Aggregates match the reference
 
-Counts, error counts, token sums and cost sums (integer nano-USD) are exact against the oracle. One exception: a
+Counts, error counts, token sums and cost sums (integer nano-USD) are exact against the oracle. Token and cost
+sums follow the sums rule of contract 3.1 in every aggregating table and on every read path: the oracle counts
+only spans whose `observation_type` is `generation` or `embedding` and whose `usage_aggregate` is false, and it
+derives `usage_aggregate` itself (a descendant in the same request also carries usage) instead of trusting the
+stored column. Counts include every span. One exception: a
 batch whose pairs straddle a crash and a binary upgrade that changed the price table or the normalizer may carry
 costs from two versions across its tables (section 5.3 of the contract); a metric counts such batches, and the
 oracle compares each pair against the version it was built with. Percentiles equal
