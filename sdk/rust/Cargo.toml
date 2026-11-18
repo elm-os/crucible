@@ -1,0 +1,78 @@
+[package]
+name = "crucible-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "Crucible SDK for Rust: agent tracing helpers and MCP server and client instrumentation over OpenTelemetry."
+license = "MIT"
+repository = "https://github.com/elm-os/crucible"
+readme = "README.md"
+keywords = ["mcp", "opentelemetry", "tracing", "agents", "observability"]
+categories = ["development-tools::debugging", "development-tools::profiling"]
+include = ["src/**", "README.md"]
+
+# The SDK is its own workspace, separate from the server's: it is a published client library with its own lock
+# file, and the conformance runner is its only other member.
+[workspace]
+members = [".", "conformance/runner"]
+
+[features]
+default = []
+# Instrumentation for MCP servers built on rmcp.
+mcp = ["dep:hmac", "dep:regex", "dep:rmcp", "dep:sha2", "rmcp/server"]
+# Trace context propagation for MCP clients built on rmcp.
+mcp-client = ["dep:hmac", "dep:regex", "dep:rmcp", "dep:sha2", "rmcp/client"]
+
+[dependencies]
+hmac = { version = "0.13.0", optional = true }
+http = "1.4.0"
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry-http = { version = "0.33.1", default-features = false, features = ["hyper"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "trace"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+regex = { version = "1.12.2", default-features = false, features = ["perf", "std"], optional = true }
+# rmcp adds ServerHandler methods in minor releases, and the server wrapper must forward each of them, so the
+# supported line is pinned to 3.11.
+rmcp = { version = "~3.11.0", default-features = false, optional = true }
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"
+sha2 = { version = "0.11.0", optional = true }
+tokio = { version = "1.54.0", default-features = false, features = ["macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+bytes = "1.10.1"
+http = "1.4.0"
+http-body-util = "0.1.3"
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["server", "tokio"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace"] }
+prost = "0.14.1"
+rmcp = { version = "~3.11.0", default-features = false, features = ["client", "server"] }
+tokio = { version = "1.54.0", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+
+[[test]]
+name = "mcp"
+required-features = ["mcp"]
+
+[[test]]
+name = "mcp_client"
+required-features = ["mcp", "mcp-client"]

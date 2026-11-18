@@ -43,6 +43,8 @@ jobs:
             manifest: sdk/python/conformance/manifest.json
           - sdk: typescript
             manifest: sdk/typescript/conformance/manifest.json
+          - sdk: rust
+            manifest: sdk/rust/conformance/manifest.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,6 +77,11 @@ jobs:
         # only links.
         if: matrix.sdk == 'go'
         run: go -C sdk/go build -o "$RUNNER_TEMP/go-runner" ./conformance/runner
+      - name: Build the Rust runner
+        # The manifest runs the runner with `cargo run`; building it once first keeps the first case inside the
+        # per-case time limit, and each case then only checks that the build is fresh.
+        if: matrix.sdk == 'rust'
+        run: cargo build --locked --manifest-path sdk/rust/Cargo.toml -p crucible-sdk-conformance
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: matrix.sdk == 'python'
         with:
