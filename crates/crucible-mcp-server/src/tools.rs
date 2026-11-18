@@ -8,8 +8,10 @@
 
 mod get_data_bounds;
 mod get_span_children;
+mod get_span_payload;
 mod get_trace;
 mod list_traces;
+mod search_spans;
 
 use std::future::Future;
 
@@ -32,8 +34,10 @@ use crate::error::{ToolError, field_error};
 pub(crate) const TOOLS: &[Entry] = &[
     entry::<get_data_bounds::GetDataBounds>(),
     entry::<get_span_children::GetSpanChildren>(),
+    entry::<get_span_payload::GetSpanPayload>(),
     entry::<get_trace::GetTrace>(),
     entry::<list_traces::ListTraces>(),
+    entry::<search_spans::SearchSpans>(),
 ];
 
 /// One read-only tool.
@@ -144,7 +148,8 @@ pub(crate) struct Check {
 }
 
 impl Check {
-    fn error(&mut self, name: &str, code: &str, message: &str) {
+    /// Refuses the argument `name` with a stable code and a message that says what it expects.
+    pub(crate) fn error(&mut self, name: &str, code: &str, message: &str) {
         self.errors.push(field_error(name, code, message));
     }
 

@@ -27,9 +27,10 @@ use crate::tools::{self, Call};
 /// What the server tells an agent at `initialize` and `server/discover`.
 const INSTRUCTIONS: &str = "Crucible holds the traces of AI agents and MCP servers. Every tool reads the project \
     of the key you connected with, and never writes. Start with get_data_bounds to see where the data lies, list \
-    traces in a window with list_traces, then read one with get_trace and, for large traces, get_span_children. \
-    Results carry previews of inputs and outputs, never whole payloads, and stay under 64 KiB: when one is cut, \
-    pass its `next_cursor` back as `cursor`.";
+    traces in a window with list_traces or find spans by their text with search_spans, then read one trace with \
+    get_trace and, for large traces, get_span_children. Results carry previews of inputs and outputs and stay \
+    under 64 KiB: when one is cut, pass its `next_cursor` back as `cursor`. get_span_payload reads a whole input, \
+    output or other payload field, 32 KiB at a time.";
 
 /// The server, shared by every session and stateless request.
 #[derive(Clone, Debug)]

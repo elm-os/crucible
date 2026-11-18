@@ -16,6 +16,7 @@ mod world;
 mod auth;
 mod caps;
 mod eras;
+mod text;
 mod tools;
 
 use std::future::Future;
