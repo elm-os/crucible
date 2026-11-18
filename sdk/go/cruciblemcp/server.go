@@ -165,6 +165,10 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 			}
 		}
 		out := observe(ctx, res, err, true)
+		// In the modern era over HTTP, closing the response stream is the cancellation signal.
+		if out.cancel != "" && transport == TransportStreamableHTTP && version >= modernVersion {
+			out.cancel = "stream_close"
+		}
 		okv, class := outcomeAttrs(out, o, notification)
 		kv = append(kv, okv...)
 		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {

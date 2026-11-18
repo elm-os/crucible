@@ -104,3 +104,49 @@ func TestStreamableHTTP(t *testing.T) {
 		})
 	}
 }
+
+// In the modern era over HTTP a cancelled call closes its response stream, which the server records as a
+// stream close; the progress notifications sent before it are counted.
+func TestModernHTTPCancellationIsAStreamClose(t *testing.T) {
+	c := startCrucible(t)
+	srv := newServer(t, cruciblemcp.Options{})
+	opts := &mcp.StreamableHTTPOptions{Stateless: true, PropagateRequestCancellation: true}
+	hs := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, opts))
+	t.Cleanup(hs.Close)
+	got := make(chan float64, 4)
+	cs, err := newClient(t, got).Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: hs.URL}, &mcp.ClientSessionOptions{ProtocolVersion: modern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	if v := cs.InitializeResult().ProtocolVersion; v != modern {
+		t.Fatalf("negotiated %s", v)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		params := &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}}
+		params.SetProgressToken("progress-1")
+		_, err := cs.CallTool(ctx, params)
+		done <- err
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-got:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no progress notification")
+		}
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("a cancelled call succeeded")
+	}
+	expect(t, server(t, c, "tools/call slow"), map[string]any{
+		"crucible.mcp.transport":      "streamable_http",
+		"crucible.mcp.era":            "modern",
+		"crucible.mcp.cancel.source":  "stream_close",
+		"crucible.mcp.error.class":    "cancelled",
+		"crucible.mcp.progress.count": int64(2),
+	})
+}
