@@ -11,6 +11,8 @@ publish.workspace = true
 [features]
 # A manual clock and a WAL view for tests of the index and of its readers. Product builds never enable it.
 test-support = []
+# A seeded defect for the simulation suite, which must catch it. Never enabled by the binary.
+test-mutants = []
 
 [dependencies]
 crucible-env = { workspace = true }

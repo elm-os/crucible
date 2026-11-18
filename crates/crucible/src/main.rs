@@ -1,7 +1,9 @@
 //! The Crucible server binary. Subcommands are wired as their crates land.
 
 mod keys;
+mod recent;
 mod serve;
+mod store;
 
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -28,7 +30,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the server.
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
     Openapi,
 }
@@ -58,6 +60,33 @@ struct ServeArgs {
     /// The files are read once at startup.
     #[arg(long)]
     ui_dir: Option<PathBuf>,
+    /// HTTP endpoint of the ClickHouse telemetry store, `http://host:8123` or `https://host:8443`. Without
+    /// it the server only ingests: requests are made durable and wait in the WAL, and the API answers 503.
+    #[arg(long, env = "CRUCIBLE_CLICKHOUSE_URL")]
+    clickhouse_url: Option<String>,
+    /// The ClickHouse admin user that the operator created; it runs the migrations.
+    #[arg(
+        long,
+        env = "CRUCIBLE_CLICKHOUSE_USER",
+        default_value = "crucible_admin"
+    )]
+    clickhouse_user: String,
+    /// File that holds the admin user's password. Without it the password is read from the environment
+    /// variable CRUCIBLE_CLICKHOUSE_PASSWORD.
+    #[arg(long, env = "CRUCIBLE_CLICKHOUSE_PASSWORD_FILE")]
+    clickhouse_password_file: Option<PathBuf>,
+    /// File that holds the master key as 64 hexadecimal characters. The passwords of the four service
+    /// identities are derived from it. Without it the key is read from the environment variable
+    /// CRUCIBLE_MASTER_KEY.
+    #[arg(long, env = "CRUCIBLE_MASTER_KEY_FILE")]
+    master_key_file: Option<PathBuf>,
+    /// Apply the ClickHouse schema and create the service identities before the startup checks. The steps
+    /// are idempotent.
+    #[arg(long)]
+    migrate: bool,
+    /// Bound on the memory of the recent-span index, in bytes. The default is 10% of RAM, at most 1 GiB.
+    #[arg(long)]
+    recent_max_bytes: Option<u64>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -71,7 +100,7 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .thread_name("crucible-worker")
                 .build()?;
-            runtime.block_on(serve::run(args))
+            runtime.block_on(serve::run(*args))
         }
         Command::Openapi => {
             let json = crucible_api::openapi_json()?;
@@ -99,7 +128,7 @@ mod tests {
 
     fn serve_args(argv: &[&str]) -> ServeArgs {
         match Cli::parse_from(argv).command {
-            Command::Serve(args) => args,
+            Command::Serve(args) => *args,
             other => panic!("{argv:?} parsed as {other:?}"),
         }
     }
@@ -116,6 +145,38 @@ mod tests {
         assert!(Cli::try_parse_from(["crucible", "serve", "--wal-backend", "floppy"]).is_err());
         let args = serve_args(&["crucible", "serve", "--ui-dir", "ui/out"]);
         assert_eq!(args.ui_dir, Some(PathBuf::from("ui/out")));
+    }
+
+    #[test]
+    fn serve_takes_the_telemetry_store_from_flags() {
+        let args = serve_args(&[
+            "crucible",
+            "serve",
+            "--clickhouse-url",
+            "http://clickhouse:8123",
+            "--clickhouse-password-file",
+            "/run/secrets/clickhouse",
+            "--master-key-file",
+            "/run/secrets/master",
+            "--migrate",
+            "--recent-max-bytes",
+            "1048576",
+        ]);
+        assert_eq!(
+            args.clickhouse_url.as_deref(),
+            Some("http://clickhouse:8123")
+        );
+        assert_eq!(args.clickhouse_user, "crucible_admin");
+        assert_eq!(
+            args.clickhouse_password_file,
+            Some(PathBuf::from("/run/secrets/clickhouse"))
+        );
+        assert_eq!(
+            args.master_key_file,
+            Some(PathBuf::from("/run/secrets/master"))
+        );
+        assert!(args.migrate);
+        assert_eq!(args.recent_max_bytes, Some(1 << 20));
     }
 
     #[test]

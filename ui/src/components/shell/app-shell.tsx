@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { ConnectDialog } from "./connect-dialog";
 import { MobileNav } from "./mobile-nav";
 import { Nav } from "./nav";
 import { ProjectSwitcher } from "./project-switcher";
@@ -18,6 +19,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ash-border px-4 py-3 md:px-8">
           <MobileNav />
           <ProjectSwitcher />
+          <ConnectDialog />
           <div className="ms-auto">
             <TimeRangeControl />
           </div>

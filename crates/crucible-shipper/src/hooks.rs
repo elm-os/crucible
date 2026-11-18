@@ -5,6 +5,7 @@ use std::fmt;
 
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_records::{Lsn, PartitionId, TableId};
+use crucible_wal::WalFrame;
 use futures::future::{self, BoxFuture};
 
 /// A crash barrier of the insert protocol (contract 5.9): a labelled point between two steps whose order
@@ -48,12 +49,19 @@ impl Barriers for NoBarriers {
     }
 }
 
-/// The recent-span index as the shipper sees it (contract 8.6). `crucible-recent` implements it; the shipper has
-/// no dependency on that crate (contract 1.5).
+/// The recent-span index as the shipper sees it (contract 8.6). [`crate::RecentHook`] implements it over the
+/// writer of `crucible-recent`.
+///
+/// Stage B reports every frame it reads, in LSN order, starting with the retained prefix that recovery replays
+/// (contract 4.6, steps 6 and 7): an `IngestRequest` frame through [`RecentIndex::applied`] and every other
+/// frame through [`RecentIndex::passed`].
 pub trait RecentIndex: fmt::Debug + Send + Sync {
-    /// Stage B applied this frame. Calls arrive in LSN order, starting with the retained prefix that recovery
-    /// replays (contract 4.6, steps 6 and 7).
-    fn applied(&self, frame: &NormalizedFrame, admission: &Admission);
+    /// Stage B applied the `IngestRequest` frame `source`, which normalized to `frame`.
+    fn applied(&self, source: &WalFrame, frame: &NormalizedFrame, admission: &Admission);
+
+    /// Stage B passed a frame that carries no spans. The index needs the `Checkpoint` and `Quarantine` frames
+    /// (eviction, gap closure and the quarantine marks), and the LSN of every frame for its read barrier.
+    fn passed(&self, source: &WalFrame);
 
     /// The lowest LSN the index still references, which pins WAL segments against garbage collection
     /// (contract 4.7).
@@ -65,7 +73,9 @@ pub trait RecentIndex: fmt::Debug + Send + Sync {
 pub struct NoRecent;
 
 impl RecentIndex for NoRecent {
-    fn applied(&self, _frame: &NormalizedFrame, _admission: &Admission) {}
+    fn applied(&self, _source: &WalFrame, _frame: &NormalizedFrame, _admission: &Admission) {}
+
+    fn passed(&self, _source: &WalFrame) {}
 
     fn floor(&self) -> Option<Lsn> {
         None
