@@ -19,21 +19,23 @@ use utoipa::openapi::OpenApi;
 use crate::access::ApiState;
 use crate::problem::ApiError;
 
-/// The routes of every group, relative to the base path.
+/// The routes of every group, relative to the base path. The groups' paths are disjoint, so their order does
+/// not matter; the list is kept sorted.
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
-        .merge(traces::routes())
-        .merge(trace_detail::routes())
-        .merge(spans::routes())
         .merge(data_bounds::routes())
+        .merge(spans::routes())
+        .merge(trace_detail::routes())
+        .merge(traces::routes())
 }
 
-/// `doc` with the paths of every group, and the schemas they use.
+/// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
+/// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(doc: OpenApi) -> OpenApi {
-    doc.merge_from(traces::Paths::openapi())
-        .merge_from(trace_detail::Paths::openapi())
+    doc.merge_from(data_bounds::Paths::openapi())
         .merge_from(spans::Paths::openapi())
-        .merge_from(data_bounds::Paths::openapi())
+        .merge_from(trace_detail::Paths::openapi())
+        .merge_from(traces::Paths::openapi())
 }
 
 fn cursor_invalid(request_id: RequestId) -> impl FnOnce(CursorError) -> ApiError {
