@@ -35,8 +35,17 @@ struct Entry {
 
 /// Parses a keys file. Error messages never quote the file, so they cannot echo a key.
 pub(crate) fn parse(text: &str, env: &Env) -> anyhow::Result<StaticKeys> {
-    let file: KeysFile = toml::from_str(text)
-        .map_err(|e| anyhow::anyhow!("the keys file is not valid: {}", e.message()))?;
+    let file: KeysFile = toml::from_str(text).map_err(|e| {
+        let message = e.message();
+        // Keys files written before Basic auth have no public keys.
+        let hint = if message.contains("missing field `public_key`") {
+            "; every [[project_key]] needs the public key of its pair as public_key = \"cpk_...\" \
+             (docs/development.md shows how to make a pair)"
+        } else {
+            ""
+        };
+        anyhow::anyhow!("the keys file is not valid: {message}{hint}")
+    })?;
     let keys = file
         .project_key
         .into_iter()

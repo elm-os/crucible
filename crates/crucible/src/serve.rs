@@ -1586,22 +1586,26 @@ mod tests {
         )
     }
 
-    /// A gRPC export of `body` with `authorization`, over HTTP/2 to `addr`, gzip-compressed, as an OTLP
-    /// exporter whose user agent is `e2e-grpc/2.0` sends it.
-    async fn grpc_export(
-        addr: SocketAddr,
-        authorization: &str,
-        body: &[u8],
-    ) -> Result<ExportTraceServiceResponse, tonic::Status> {
-        let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+    /// An HTTP/2 connection to the gRPC listener at `addr`, as an OTLP exporter whose user agent is
+    /// `e2e-grpc/2.0` keeps one open.
+    async fn grpc_channel(addr: SocketAddr) -> tonic::transport::Channel {
+        tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
             .unwrap()
             .user_agent("e2e-grpc/2.0")
             .unwrap()
             .connect()
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    /// A gRPC export of `body` with `authorization` on `channel`, gzip-compressed.
+    async fn grpc_export(
+        channel: &tonic::transport::Channel,
+        authorization: &str,
+        body: &[u8],
+    ) -> Result<ExportTraceServiceResponse, tonic::Status> {
         let mut client =
-            TraceServiceClient::new(channel).send_compressed(CompressionEncoding::Gzip);
+            TraceServiceClient::new(channel.clone()).send_compressed(CompressionEncoding::Gzip);
         let mut request = tonic::Request::new(ExportTraceServiceRequest::decode(body).unwrap());
         request
             .metadata_mut()
@@ -1702,14 +1706,16 @@ mod tests {
             assert_eq!(status, "HTTP/1.1 200 OK");
             expected.push((routing.dialect, IngestTransport::Http, pb, agent));
         }
+        // One connection for every export, held open across the shutdown as an exporter holds it.
+        let channel = grpc_channel(addrs.grpc).await;
         for authorization in [&bearer, &pair] {
-            let response = grpc_export(addrs.grpc, authorization, &protobuf)
+            let response = grpc_export(&channel, authorization, &protobuf)
                 .await
                 .unwrap();
             assert_eq!(response.partial_success, None);
             expected.push((0, IngestTransport::Grpc, pb, ("e2e-grpc", "2.0")));
         }
-        let refused = grpc_export(addrs.grpc, "Bearer csk_short", &protobuf)
+        let refused = grpc_export(&channel, "Bearer csk_short", &protobuf)
             .await
             .unwrap_err();
         assert_eq!(refused.code(), tonic::Code::Unauthenticated);
@@ -1753,7 +1759,9 @@ mod tests {
             3,
             "the refused export is a gRPC status on HTTP 200"
         );
+        // The idle connection does not hold up the shutdown: `shut_down` checks that nothing was aborted.
         shut_down(&prod, servers).await;
+        drop(channel);
         drop(prod);
 
         let prod = prod_with(data_roots(dir.path()));
@@ -1809,9 +1817,8 @@ mod tests {
         let start_nanos = u64::try_from(env.clock.wall_now().micros()).unwrap() * 1_000;
         let protobuf = crucible_otlp::transcode_json(span_json(start_nanos).as_bytes()).unwrap();
         let bearer = format!("Bearer {}", secret());
-        let status = grpc_export(servers.addrs.grpc, &bearer, &protobuf)
-            .await
-            .unwrap_err();
+        let channel = grpc_channel(servers.addrs.grpc).await;
+        let status = grpc_export(&channel, &bearer, &protobuf).await.unwrap_err();
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(
             status.message(),
@@ -1952,7 +1959,10 @@ mod tests {
                 entry.replace("{public}", &other_secret),
                 "project_key 1: public_key",
             ),
-            (without_public.to_owned(), "missing field `public_key`"),
+            (
+                without_public.to_owned(),
+                "missing field `public_key`; every [[project_key]] needs the public key of its pair",
+            ),
             (format!("{entry}note = \"x\"\n"), "unknown field"),
             (format!("{entry}{entry}"), "same secret"),
             (
