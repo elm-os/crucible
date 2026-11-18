@@ -822,6 +822,7 @@ dependencies = [
 name = "crucible-recent"
 version = "0.0.0"
 dependencies = [
+ "crucible-auth",
  "crucible-env",
  "crucible-plan",
  "crucible-records",
