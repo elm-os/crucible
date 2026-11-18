@@ -29,6 +29,13 @@ tokio-rustls = { workspace = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true }
 
+# Safe wrappers for space reservation and free-space queries on every platform (unsafe code is denied here).
+fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+tempfile = "=3.27.0"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true, optional = true }
 
