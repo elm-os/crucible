@@ -8,15 +8,21 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
+
 [dependencies]
 crucible-records = { workspace = true }
 crucible-otlp = { workspace = true }
 crucible-compat = { workspace = true }
 bytes = { workspace = true }
+hmac = { workspace = true }
 memchr = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 xxhash-rust = { workspace = true }
@@ -26,7 +32,6 @@ proptest = { workspace = true }
 insta = { workspace = true }
 prost = { workspace = true }
 opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
-sha2 = { workspace = true }
 
 [lints]
 workspace = true

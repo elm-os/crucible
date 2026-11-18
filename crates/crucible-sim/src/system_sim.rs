@@ -2362,6 +2362,7 @@ impl Run<'_> {
         let hooks = Hooks {
             barriers: barriers.clone(),
             recent: hook,
+            ..Hooks::default()
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let shipper = match Shipper::new(

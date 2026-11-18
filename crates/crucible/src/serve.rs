@@ -668,6 +668,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
         recent: hook,
+        ..Hooks::default()
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;

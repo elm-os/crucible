@@ -1015,6 +1015,7 @@ dependencies = [
  "crucible-compat",
  "crucible-otlp",
  "crucible-records",
+ "hmac",
  "insta",
  "memchr",
  "opentelemetry-proto",
