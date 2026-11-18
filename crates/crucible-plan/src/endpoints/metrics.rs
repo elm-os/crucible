@@ -1,5 +1,6 @@
-//! The metrics query (contract 8.8) over the `spans` source: the compiler from a `MetricsQuery` to time series
-//! over `span_metrics`, with its caps.
+//! The metrics query (contract 8.8): the compiler from a `MetricsQuery` to time series, with its caps. The
+//! `spans` source is read from `span_metrics` in class `analytics`; the `traces` source counts the root heads of
+//! `trace_heads` in class `analytics_raw` (tier `core`).
 //!
 //! A query without dimensions is one plan, [`metrics_series`]. A query with dimensions is read in two steps:
 //! [`metrics_ranking`] returns the dimension keys with the largest values, one more than `top_n`; the caller
@@ -9,8 +10,8 @@
 //!
 //! Buckets are aligned to UTC. The `timezone` of `MetricsQuery` is not compiled yet.
 
-use crucible_records::{ProjectScope, TimeWindow};
-use crucible_schema::{Column, SpanMetricsCol};
+use crucible_records::{HeadKind, ProjectScope, TableId, TimeWindow};
+use crucible_schema::{Column, ColumnRef, SpanMetricsCol, TraceHeadsCol};
 
 use crate::build::RetentionClamp;
 use crate::class::{Caller, QueryClass};
@@ -21,8 +22,8 @@ use crate::node::{AggOutput, Aggregate, Direction, Fill, Measure, Node, Step, Ti
 use crate::plan::QueryPlan;
 use crate::pred::Pred;
 use crate::registry::{
-    Aggregation, DimensionId, METRICS_MAX_BUCKETS, METRICS_MAX_DIMENSIONS, METRICS_MAX_MEASURES,
-    METRICS_MAX_POINTS, METRICS_MAX_SERIES, MeasureId, Source,
+    Aggregation, DimensionId, METRICS_MAX_BUCKETS, METRICS_MAX_MEASURES, METRICS_MAX_POINTS,
+    METRICS_MAX_SERIES, MeasureId, Source, SourceSchema,
 };
 use crate::value::Row;
 
@@ -38,7 +39,7 @@ pub enum Granularity {
 /// `MetricsQuery` v1, without its window (which every builder takes) and its timezone.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MetricsQuery {
-    /// The source. Only `spans` is compiled.
+    /// The source: `spans` or `traces`; `mcp_ops` is not compiled yet.
     pub source: Source,
     /// One to [`METRICS_MAX_MEASURES`] measures, each with an aggregation it allows.
     pub measures: Vec<(MeasureId, Aggregation)>,
@@ -128,14 +129,18 @@ pub fn metrics_shape(
     window: TimeWindow,
     query: &MetricsQuery,
 ) -> Result<MetricsShape, MetricsError> {
-    if query.source != Source::Spans {
-        return Err(invalid("source", "only the spans source has metrics"));
-    }
+    let Some(schema) = SourceSchema::of(query.source) else {
+        return Err(invalid("source", "the source has no metrics yet"));
+    };
     if query.measures.is_empty() || query.measures.len() > METRICS_MAX_MEASURES {
         return Err(invalid("measures", "one to four measures are required"));
     }
-    if query.dimensions.len() > METRICS_MAX_DIMENSIONS {
-        return Err(invalid("dimensions", "at most two dimensions are allowed"));
+    if query.dimensions.len() > schema.limits.max_dimensions {
+        let reason = match schema.limits.max_dimensions {
+            0 => "the source has no dimensions",
+            _ => "at most two dimensions are allowed",
+        };
+        return Err(invalid("dimensions", reason));
     }
     if let [first, second] = query.dimensions.as_slice()
         && first == second
@@ -160,17 +165,16 @@ pub fn metrics_shape(
             }
         };
     for (id, aggregation) in &query.measures {
+        if id.source() != query.source {
+            return Err(invalid("measures", "the measure belongs to another source"));
+        }
         if !id.aggregations().contains(aggregation) {
             return Err(invalid(
                 "measures",
                 "the measure does not allow the aggregation",
             ));
         }
-        let measure = if id.additive() {
-            Measure::Sum(id.column())
-        } else {
-            Measure::HistogramMerge(id.column())
-        };
+        let measure = id.measure();
         columns.push(place(&mut measures, measure));
         other_columns.push(id.additive().then(|| place(&mut other, measure)));
     }
@@ -178,7 +182,7 @@ pub fn metrics_shape(
     let rank = other
         .first()
         .copied()
-        .unwrap_or(Measure::Sum(SpanMetricsCol::Count.column_ref()));
+        .unwrap_or(MeasureId::Count.measure());
 
     // One series per measure and dimension key; the `other` series counts as a key.
     let per_key = query.measures.len() as u64;
@@ -270,12 +274,42 @@ fn among(query: &MetricsQuery, keys: &[Vec<Literal>]) -> Result<Pred, MetricsErr
     })
 }
 
+/// The table a source is read from, its time column and the class of the read.
+fn source_table(source: Source) -> (TableId, ColumnRef, QueryClass) {
+    match source {
+        Source::Traces => (
+            TraceHeadsCol::TABLE,
+            TraceHeadsCol::StartTime.column_ref(),
+            QueryClass::AnalyticsRaw,
+        ),
+        Source::Spans | Source::McpOps => (
+            SpanMetricsCol::TABLE,
+            SpanMetricsCol::Minute.column_ref(),
+            QueryClass::Analytics,
+        ),
+    }
+}
+
 fn filtered(query: &MetricsQuery, extra: Option<Pred>) -> Result<Pred, MetricsError> {
-    let filter = query.filter.pred(FilterTarget::SpanMetrics)?;
-    Ok(match extra {
-        Some(extra) if query.filter.is_all() => extra,
-        Some(extra) => Pred::And(vec![filter, extra]),
-        None => filter,
+    let mut parts = Vec::new();
+    match query.source {
+        _ if query.filter.is_all() => {}
+        Source::Spans => parts.push(query.filter.pred(FilterTarget::SpanMetrics)?),
+        Source::Traces | Source::McpOps => {
+            return Err(invalid("filter", "the source has no filter fields yet"));
+        }
+    }
+    // A trace is counted once, by its root head: a provisional head stands for a trace whose root is missing.
+    if query.source == Source::Traces {
+        parts.push(Pred::eq(
+            TraceHeadsCol::HeadKind,
+            Literal::Enum(HeadKind::Root.value()),
+        ));
+    }
+    parts.extend(extra);
+    Ok(match parts.len() {
+        1 => parts.swap_remove(0),
+        _ => Pred::And(parts),
     })
 }
 
@@ -318,23 +352,24 @@ fn series(
     window: TimeWindow,
     clamp: &RetentionClamp,
     caller: Caller,
+    query: &MetricsQuery,
     aggregate: Aggregate,
     step: Step,
-    fill: Fill,
 ) -> Result<Option<QueryPlan>, MetricsError> {
-    let series = TimeSeries::new(aggregate, SpanMetricsCol::Minute, step, fill)?;
+    let (_, time, class) = source_table(query.source);
+    let series = TimeSeries::new(aggregate, time, step, query.fill)?;
     Ok(clamp.plan(
         scope,
         window,
-        caller.class(QueryClass::Analytics),
+        caller.class(class),
         Node::TimeSeries(series),
     )?)
 }
 
 /// The series of a query: `bucket`, the dimensions, then the plan measures that [`MetricsShape::columns`]
 /// maps the query's measures to (a sum per additive measure, one histogram merge per percentile measure, whose
-/// quantiles are a post-operator). A query with dimensions takes the keys to return, from [`metrics_ranking`];
-/// a query without takes `None`.
+/// quantiles are a post-operator, and the count of root heads for `traces`). A query with dimensions takes the
+/// keys to return, from [`metrics_ranking`]; a query without takes `None`.
 pub fn metrics_series(
     scope: ProjectScope,
     window: TimeWindow,
@@ -358,15 +393,14 @@ pub fn metrics_series(
         }
         (_, Some(keys)) => Some(among(query, keys)?),
     };
+    let (table, _, _) = source_table(query.source);
     let aggregate = Aggregate::new(
-        SpanMetricsCol::TABLE,
+        table,
         filtered(query, among)?,
         dimensions(query),
         shape.measures,
     )?;
-    series(
-        scope, window, clamp, caller, aggregate, shape.step, query.fill,
-    )
+    series(scope, window, clamp, caller, query, aggregate, shape.step)
 }
 
 /// The `other` series of a query with dimensions: `bucket`, then the sums of the additive measures
@@ -390,7 +424,5 @@ pub fn metrics_other(
         [] as [SpanMetricsCol; 0],
         shape.other,
     )?;
-    series(
-        scope, window, clamp, caller, aggregate, shape.step, query.fill,
-    )
+    series(scope, window, clamp, caller, query, aggregate, shape.step)
 }

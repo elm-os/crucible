@@ -6,12 +6,13 @@
 use crucible_auth::test_support;
 use crucible_plan::{
     AggOutput, Aggregate, Aggregation, Caller, CmpOp, DeletePlan, DeleteTarget, DimensionId,
-    Direction, Fill, Filter, Granularity, Having, Literal, MAX_LIST, Measure, MeasureId,
+    Direction, FILTER_VALUES_MAX_LIMIT, FactTable, FactsOf, Fill, Filter, FilterField,
+    FilterValuesRequest, Granularity, Having, Literal, MAX_LIST, Measure, MeasureId,
     MetricsError, MetricsQuery, Node, Order, PayloadField, PayloadRangeRequest, PlanError,
     PointLookup, Pred, ProbeKind, QueryClass, QueryPlan, RetentionClamp, Scan, SearchField,
     SearchRequest, SemiJoin, SessionListRequest, Source, SpanListRequest, Step,
     TRACE_LIST_MAX_LIMIT, TextField, TokenMode, TraceBounds, TraceListRequest, UserListRequest,
-    child_counts, data_bounds, effective_window, metrics_other, metrics_ranking, metrics_series,
+    child_counts, data_bounds, effective_window, fact_page, fact_rows, filter_values, metrics_other, metrics_ranking, metrics_series,
     pad_in_list, padded_in_len, payload_range, search, search_spans, session_detail, session_list,
     span_children, span_list, spans_of_parents, trace_bounds_window, trace_list, trace_page_stats,
     trace_roots, trace_spans, trace_time_bounds, user_detail, user_list, user_session_counts,
@@ -891,6 +892,45 @@ proptest! {
                 Err(other) => prop_assert!(false, "{other:?}"),
             }
         }
+
+        // Facts: one candidate scan per fact table, by target; the fold is the service's.
+        let traces = [trace_id];
+        for table in FactTable::ALL {
+            for of in [FactsOf::Traces(&traces), FactsOf::Span(trace_id, parent), FactsOf::Session(&user)] {
+                let rows = fact_rows(scope, window, &keep(), caller, table, of).unwrap().unwrap();
+                assert_scoped(&rows, scope, window, caller, QueryClass::Point, table.table())?;
+                let Node::Scan(scan) = rows.root() else { panic!("a scan") };
+                prop_assert!(scan.order().is_none() && scan.limit().is_none());
+            }
+            let page = fact_page(scope, window, &keep(), caller, table, &traces).unwrap().unwrap();
+            assert_scoped(&page, scope, window, caller, QueryClass::List, table.table())?;
+            let (_, preds) = names(page.root());
+            prop_assert!(preds.iter().any(|p| matches!(p, Pred::In(c, ids) if c.name() == "trace_id" && ids.len() == 1)));
+        }
+        let values = FilterValuesRequest {
+            source: Source::Spans,
+            field: FilterField::Text(TextField::Release),
+            prefix: Some(user.clone()),
+            limit: limit.min(FILTER_VALUES_MAX_LIMIT),
+        };
+        let values = filter_values(scope, window, &keep(), caller, &values).unwrap().unwrap();
+        assert_scoped(&values, scope, window, caller, QueryClass::List, TableId::SpanMetrics)?;
+        let Node::Aggregate(aggregate) = values.root() else { panic!("an aggregate") };
+        prop_assert_eq!(aggregate.limit(), Some(limit.min(FILTER_VALUES_MAX_LIMIT) + 1));
+        let traces_query = MetricsQuery {
+            source: Source::Traces,
+            measures: vec![(MeasureId::Traces, Aggregation::Sum)],
+            dimensions: Vec::new(),
+            filter: Filter::all(),
+            granularity: Granularity::Step(Step::Week),
+            fill: Fill::Zero,
+            top_n: None,
+        };
+        match metrics_series(scope, window, &keep(), caller, &traces_query, None) {
+            Ok(plan) => assert_scoped(&plan.unwrap(), scope, window, caller, QueryClass::AnalyticsRaw, TableId::TraceHeads)?,
+            Err(MetricsError::TooBroad { .. }) => prop_assert!(Step::Week.buckets(window).1 > 500),
+            Err(other) => prop_assert!(false, "{other:?}"),
+        }
     }
 
     #[test]
@@ -1079,6 +1119,16 @@ proptest! {
             child_counts(scope, trace_bounds, &clamp, caller, &parents).unwrap(),
             data.spans,
             data.mcp,
+            fact_rows(scope, window, &clamp, caller, FactTable::Scores, FactsOf::Traces(&[trace_id])).unwrap(),
+            fact_rows(scope, window, &clamp, caller, FactTable::Tags, FactsOf::Span(trace_id, parents[0])).unwrap(),
+            fact_rows(scope, window, &clamp, caller, FactTable::Flags, FactsOf::Session("id")).unwrap(),
+            fact_page(scope, window, &clamp, caller, FactTable::Corrections, &[trace_id]).unwrap(),
+            filter_values(scope, window, &clamp, caller, &FilterValuesRequest {
+                source: Source::Spans,
+                field: FilterField::Level,
+                prefix: None,
+                limit: 10,
+            }).unwrap(),
         ];
         // The metrics plans, when the window fits a granularity at all.
         let expected = effective_window(TableId::SpanMetrics, window, &settings, now).unwrap();
@@ -1111,6 +1161,11 @@ proptest! {
             TableId::SpanCore,
             TableId::SpanMetrics,
             TableId::McpToolRollup,
+            TableId::FactScores,
+            TableId::FactTags,
+            TableId::FactFlags,
+            TableId::FactCorrections,
+            TableId::SpanMetrics,
         ];
         for (plan, table_id) in plans.into_iter().zip(tables) {
             let expected = effective_window(table_id, window, &settings, now).unwrap();

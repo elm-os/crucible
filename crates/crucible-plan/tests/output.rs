@@ -727,3 +727,98 @@ fn metrics_outputs() {
         ])
     );
 }
+
+#[test]
+fn fact_and_filter_value_outputs() {
+    use crucible_plan::{FactTable, FactsOf, FilterField, FilterValuesRequest, Source, TextField};
+
+    let envelope = [
+        ("target_kind", "Enum8('trace' = 1, 'span' = 2, 'session' = 3)"),
+        ("trace_id", "FixedString(16)"),
+        ("span_id", "FixedString(8)"),
+        ("session_id", "String"),
+        ("key", "String"),
+        ("version", "UInt64"),
+        ("fact_id", "UUID"),
+        ("retracted", "UInt8"),
+        ("author_kind", "Enum8('user' = 1, 'api_key' = 2, 'system' = 3)"),
+        ("author_id", "UUID"),
+        ("created_at", "DateTime64(6, 'UTC')"),
+    ];
+    let with = |body: &[(&'static str, &'static str)]| {
+        let mut all = envelope.to_vec();
+        all.extend_from_slice(body);
+        pairs(&all)
+    };
+    let trace = [TraceId::from_bytes([1; 16])];
+    let rows = |table, of| {
+        let plan = crucible_plan::fact_rows(scope(), window(), &keep(), Caller::Session, table, of);
+        shape(&plan.unwrap().unwrap().output())
+    };
+    let source = "Enum8('feedback' = 1, 'api' = 2, 'annotation' = 3, 'eval' = 4)";
+    let data_type = "Enum8('numeric' = 1, 'categorical' = 2, 'boolean' = 3, 'text' = 4)";
+    assert_eq!(
+        rows(FactTable::Scores, FactsOf::Traces(&trace)),
+        with(&[
+            ("data_type", data_type),
+            ("value_num", "Float64"),
+            ("value_str", "String"),
+            ("comment", "String"),
+            ("source", source),
+            ("metadata", "String"),
+            ("config_id", "UUID"),
+        ])
+    );
+    let span = FactsOf::Span(trace[0], SpanId::from_bytes([2; 8]));
+    assert_eq!(
+        rows(FactTable::Tags, span),
+        with(&[("op", "Enum8('add' = 1, 'remove' = 2)")])
+    );
+    assert_eq!(
+        rows(FactTable::Flags, FactsOf::Session("s1")),
+        with(&[("value", "UInt8")])
+    );
+    assert_eq!(
+        rows(FactTable::Corrections, span),
+        with(&[("corrected", "String"), ("note", "String")])
+    );
+    // A list page leaves out the large score fields and every correction body.
+    let page = |table| {
+        let plan =
+            crucible_plan::fact_page(scope(), window(), &keep(), Caller::Session, table, &trace);
+        shape(&plan.unwrap().unwrap().output())
+    };
+    assert_eq!(
+        page(FactTable::Scores),
+        with(&[
+            ("data_type", data_type),
+            ("value_num", "Float64"),
+            ("value_str", "String"),
+            ("source", source),
+        ])
+    );
+    assert_eq!(page(FactTable::Corrections), with(&[]));
+
+    let values = |field| {
+        let request = FilterValuesRequest {
+            source: Source::Spans,
+            field,
+            prefix: Some("pr".to_owned()),
+            limit: 10,
+        };
+        let plan =
+            crucible_plan::filter_values(scope(), window(), &keep(), Caller::Session, &request);
+        shape(&plan.unwrap().unwrap().output())
+    };
+    assert_eq!(
+        values(FilterField::Text(TextField::Environment)),
+        pairs(&[("environment", "String"), ("sum_count", "UInt64")])
+    );
+    assert_eq!(
+        values(FilterField::Level),
+        pairs(&[
+            ("level", "Enum8('debug' = 0, 'default' = 1, 'warning' = 2, 'error' = 3)"),
+            ("sum_count", "UInt64")
+        ])
+    );
+}

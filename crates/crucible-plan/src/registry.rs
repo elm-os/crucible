@@ -3,14 +3,15 @@
 //! fields, granularities and limits. The metrics schema endpoint and the compiler (`endpoints::metrics`) read
 //! this one registry, so the schema cannot describe a query the compiler refuses.
 //!
-//! The `spans` source is compiled to `span_metrics` (tier `rollup`). `mcp_ops` and `traces` have no measures
-//! here yet: they join the registry with the MCP analytics and the core-tier compiler.
+//! The `spans` source is compiled to `span_metrics` (tier `rollup`). The `traces` source counts traces, the
+//! root heads of `trace_heads` (tier `core`), without dimensions or filter fields yet. `mcp_ops` has no
+//! measures here yet: it joins the registry with the MCP analytics.
 
 use crucible_records::TableId;
 use crucible_schema::{Column, ColumnRef, McpToolRollupCol, SpanMetricsCol};
 
 use crate::filter::{FilterField, FilterTarget};
-use crate::node::Step;
+use crate::node::{Measure, Step};
 
 /// A metrics source.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -153,7 +154,7 @@ const PERCENTILES: &[Aggregation] = &[
     Aggregation::P99,
 ];
 
-/// A measure of the `spans` source.
+/// A measure of a source: the `spans` measures, then the `traces` one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum MeasureId {
     /// The number of spans.
@@ -172,11 +173,13 @@ pub enum MeasureId {
     Duration,
     /// Time to first token, of generations.
     Ttft,
+    /// The number of traces: root spans, counted from their trace heads.
+    Traces,
 }
 
 impl MeasureId {
     /// Every measure.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Count,
         Self::ErrorCount,
         Self::InputTokens,
@@ -185,7 +188,16 @@ impl MeasureId {
         Self::TotalCost,
         Self::Duration,
         Self::Ttft,
+        Self::Traces,
     ];
+
+    /// The source the measure belongs to.
+    pub const fn source(self) -> Source {
+        match self {
+            Self::Traces => Source::Traces,
+            _ => Source::Spans,
+        }
+    }
 
     /// The wire id.
     pub const fn as_str(self) -> &'static str {
@@ -198,6 +210,7 @@ impl MeasureId {
             Self::TotalCost => "total_cost",
             Self::Duration => "duration",
             Self::Ttft => "ttft",
+            Self::Traces => "traces",
         }
     }
 
@@ -217,6 +230,7 @@ impl MeasureId {
             Self::TotalCost => "Total cost",
             Self::Duration => "Duration",
             Self::Ttft => "Time to first token",
+            Self::Traces => "Traces",
         }
     }
 
@@ -224,7 +238,7 @@ impl MeasureId {
     /// (microseconds).
     pub const fn unit(self) -> &'static str {
         match self {
-            Self::Count | Self::ErrorCount => "count",
+            Self::Count | Self::ErrorCount | Self::Traces => "count",
             Self::InputTokens | Self::OutputTokens | Self::TotalTokens => "tokens",
             Self::TotalCost => "nusd",
             Self::Duration | Self::Ttft => "us",
@@ -244,22 +258,27 @@ impl MeasureId {
 
     /// The tier the measure is read from.
     pub const fn tier(self) -> Tier {
-        Tier::Rollup
+        match self {
+            Self::Traces => Tier::Core,
+            _ => Tier::Rollup,
+        }
     }
 
-    /// The rollup column that holds the measure's partial.
-    pub fn column(self) -> ColumnRef {
+    /// The plan measure that computes it: the sum of a rollup partial, the merge of a rollup histogram, or the
+    /// count of the root heads.
+    pub fn measure(self) -> Measure {
+        let column = |c: SpanMetricsCol| c.column_ref();
         match self {
-            Self::Count => SpanMetricsCol::Count,
-            Self::ErrorCount => SpanMetricsCol::ErrorCount,
-            Self::InputTokens => SpanMetricsCol::InputTokens,
-            Self::OutputTokens => SpanMetricsCol::OutputTokens,
-            Self::TotalTokens => SpanMetricsCol::TotalTokens,
-            Self::TotalCost => SpanMetricsCol::TotalCostNusd,
-            Self::Duration => SpanMetricsCol::DurHist,
-            Self::Ttft => SpanMetricsCol::TtftHist,
+            Self::Count => Measure::Sum(column(SpanMetricsCol::Count)),
+            Self::ErrorCount => Measure::Sum(column(SpanMetricsCol::ErrorCount)),
+            Self::InputTokens => Measure::Sum(column(SpanMetricsCol::InputTokens)),
+            Self::OutputTokens => Measure::Sum(column(SpanMetricsCol::OutputTokens)),
+            Self::TotalTokens => Measure::Sum(column(SpanMetricsCol::TotalTokens)),
+            Self::TotalCost => Measure::Sum(column(SpanMetricsCol::TotalCostNusd)),
+            Self::Duration => Measure::HistogramMerge(column(SpanMetricsCol::DurHist)),
+            Self::Ttft => Measure::HistogramMerge(column(SpanMetricsCol::TtftHist)),
+            Self::Traces => Measure::Count,
         }
-        .column_ref()
     }
 }
 
@@ -381,20 +400,35 @@ pub struct SourceSchema {
     pub limits: MetricsLimits,
 }
 
-/// The metrics schema: one entry per source the compiler covers.
+impl SourceSchema {
+    /// The schema of a source the compiler covers, or `None`.
+    pub fn of(source: Source) -> Option<Self> {
+        let (dimensions, filter_fields) = match source {
+            Source::Spans => (DimensionId::ALL.to_vec(), FilterTarget::SpanMetrics.fields()),
+            Source::Traces => (Vec::new(), Vec::new()),
+            Source::McpOps => return None,
+        };
+        Some(Self {
+            source,
+            measures: MeasureId::ALL
+                .into_iter()
+                .filter(|m| m.source() == source)
+                .collect(),
+            limits: MetricsLimits {
+                max_buckets: METRICS_MAX_BUCKETS,
+                max_series: METRICS_MAX_SERIES,
+                max_points: METRICS_MAX_POINTS,
+                max_measures: METRICS_MAX_MEASURES,
+                max_dimensions: dimensions.len().min(METRICS_MAX_DIMENSIONS),
+            },
+            dimensions,
+            filter_fields,
+            granularities: Step::ALL.to_vec(),
+        })
+    }
+}
+
+/// The metrics schema: one entry per source the compiler covers, in the order of [`Source::ALL`].
 pub fn metrics_schema() -> Vec<SourceSchema> {
-    vec![SourceSchema {
-        source: Source::Spans,
-        measures: MeasureId::ALL.to_vec(),
-        dimensions: DimensionId::ALL.to_vec(),
-        filter_fields: FilterTarget::SpanMetrics.fields(),
-        granularities: Step::ALL.to_vec(),
-        limits: MetricsLimits {
-            max_buckets: METRICS_MAX_BUCKETS,
-            max_series: METRICS_MAX_SERIES,
-            max_points: METRICS_MAX_POINTS,
-            max_measures: METRICS_MAX_MEASURES,
-            max_dimensions: METRICS_MAX_DIMENSIONS,
-        },
-    }]
+    Source::ALL.into_iter().filter_map(SourceSchema::of).collect()
 }
