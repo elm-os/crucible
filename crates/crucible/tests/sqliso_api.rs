@@ -123,7 +123,6 @@ fn dechunk(mut raw: &[u8]) -> Vec<u8> {
 
 struct Server {
     child: Child,
-    api: SocketAddr,
     log: PathBuf,
 }
 
@@ -298,7 +297,7 @@ async fn the_sql_workspace_holds_through_the_api() {
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
-    let mut server = Server { child, api, log };
+    let mut server = Server { child, log };
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if matches!(http(api, "GET", "/readyz", &[], b""), Ok((200, _, _))) {
@@ -430,16 +429,10 @@ async fn the_sql_workspace_holds_through_the_api() {
             "SELECT name FROM crucible.span_core WHERE {WINDOW} UNION ALL SELECT name FROM crucible.span_core WHERE {WINDOW}"
         ),
         format!("SELECT query FROM system.query_log WHERE {WINDOW}"),
-        format!(
-            "SELECT query FROM system.processes WHERE {{from:DateTime64(6)}} < {{to:DateTime64(6)}}"
-        ),
+        "SELECT query FROM system.processes WHERE {from:DateTime64(6)} < {to:DateTime64(6)}".to_owned(),
         format!("SELECT * FROM remote('127.0.0.1', 'crucible', 'span_core') WHERE {WINDOW}"),
-        format!(
-            "SELECT * FROM url('http://127.0.0.1:8123/?query=SELECT+name+FROM+crucible.span_core', 'LineAsString', 'l String') WHERE {{from:DateTime64(6)}} < {{to:DateTime64(6)}}"
-        ),
-        format!(
-            "SELECT * FROM mergeTreeIndex('crucible', 'span_core') WHERE {{from:DateTime64(6)}} < {{to:DateTime64(6)}}"
-        ),
+        "SELECT * FROM url('http://127.0.0.1:8123/?query=SELECT+name+FROM+crucible.span_core', 'LineAsString', 'l String') WHERE {from:DateTime64(6)} < {to:DateTime64(6)}".to_owned(),
+        "SELECT * FROM mergeTreeIndex('crucible', 'span_core') WHERE {from:DateTime64(6)} < {to:DateTime64(6)}".to_owned(),
         format!("SELECT name, wal_epoch FROM crucible.span_core WHERE {WINDOW}"),
         format!("SELECT throwIf(1, name) FROM crucible.span_core WHERE {WINDOW}"),
         format!("SELECT toUInt64(name) FROM crucible.span_core WHERE {WINDOW}"),

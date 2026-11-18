@@ -67,16 +67,21 @@ fn sha256_hex(text: &str) -> String {
         .collect()
 }
 
-/// `(line N, col M)` in a syntax error.
+/// The place of a syntax error: `(line N, col M)`, which the server writes for a text of several lines, or
+/// `failed at position P` on the one line of a single-line text.
 fn position(message: &str) -> (Option<u32>, Option<u32>) {
-    let Some(start) = message.find("(line ") else {
-        return (None, None);
-    };
-    let rest = &message[start + "(line ".len()..];
     let number = |text: &str| -> Option<u32> {
         let digits = text.bytes().take_while(u8::is_ascii_digit).count();
         text[..digits].parse().ok()
     };
+    let Some(start) = message.find("(line ") else {
+        let marker = "failed at position ";
+        let column = message
+            .find(marker)
+            .and_then(|at| number(&message[at + marker.len()..]));
+        return (column.map(|_| 1), column);
+    };
+    let rest = &message[start + "(line ".len()..];
     let line = number(rest);
     let column = rest
         .find(", col ")
@@ -685,12 +690,28 @@ impl SqlWorkspaceStore for ClickHouseSqlStore {
         query: &SqlQuery,
     ) -> Result<SqlEstimate, SqlError> {
         let project = scope.project_id();
-        for explain in ["EXPLAIN AST ", "EXPLAIN ESTIMATE "] {
-            let sql = format!("{explain}{}", query.sql);
+        // The keyword sits on a line of its own, so the server reports a syntax error by line and column, and
+        // the user's first line keeps its columns. The line is corrected below.
+        for explain in ["EXPLAIN AST", "EXPLAIN ESTIMATE"] {
+            let sql = format!("{explain}\n{}", query.sql);
             let text = self
                 .text(project, query.generation, &sql, &query.params, None)
-                .await?;
-            if explain == "EXPLAIN ESTIMATE " {
+                .await
+                .map_err(|error| match error {
+                    SqlError::Invalid {
+                        code,
+                        message,
+                        line: Some(line),
+                        column,
+                    } => SqlError::Invalid {
+                        code,
+                        message,
+                        line: Some(line.saturating_sub(1).max(1)),
+                        column,
+                    },
+                    other => other,
+                })?;
+            if explain == "EXPLAIN ESTIMATE" {
                 return Ok(estimate(&text));
             }
         }
@@ -941,6 +962,16 @@ mod tests {
         assert_eq!((code, line, column), (62, Some(2), Some(3)));
         assert!(message.starts_with("Syntax error"));
         assert!(!message.contains("version"));
+        // A single-line text has a position only.
+        let single = "Code: 62. DB::Exception: Syntax error: failed at position 13 (FROMM): FROMM x. Expected one of";
+        assert!(matches!(
+            classify_sql(62, single),
+            SqlError::Invalid {
+                line: Some(1),
+                column: Some(13),
+                ..
+            }
+        ));
     }
 
     #[test]

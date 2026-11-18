@@ -26,6 +26,8 @@ fn the_document_matches_the_committed_file() {
 fn concrete(path: &str) -> String {
     path.replace("{project_id}", "01010101-0101-0101-0101-010101010101")
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
+        .replace("{run_id}", "01010101-0101-7101-8101-010101010102")
+        .replace("{query_id}", "01010101-0101-7101-8101-010101010103")
 }
 
 #[test]
@@ -40,6 +42,8 @@ fn every_documented_operation_reaches_a_handler() {
             let methods = [
                 (Method::GET, item.get.is_some()),
                 (Method::POST, item.post.is_some()),
+                (Method::PATCH, item.patch.is_some()),
+                (Method::DELETE, item.delete.is_some()),
             ];
             for (method, documented) in methods {
                 if !documented {
@@ -56,6 +60,7 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        assert_eq!(operations, 4);
+        // Four telemetry reads and the eleven operations of the SQL workspace.
+        assert_eq!(operations, 15);
     });
 }
