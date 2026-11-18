@@ -829,9 +829,11 @@ dependencies = [
 name = "crucible-records"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "hashbrown",
  "proptest",
  "rustc-hash",
+ "sha2",
  "thiserror",
  "xxhash-rust",
 ]
