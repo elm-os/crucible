@@ -34,15 +34,17 @@ thiserror = { workspace = true }
 subtle = { version = "=2.6.1", default-features = false }
 # Exact versions until the root [workspace.dependencies] table lists them.
 # Argon2id password hashing (contract 11.4); salts come from `Rng`, so no randomness feature is enabled.
-argon2 = { version = "=0.6.0", default-features = false, features = ["alloc"] }
-# Sealing of secrets at rest (contract 11.2): HKDF-SHA256 subkeys and XChaCha20-Poly1305.
-hkdf = "=0.13.0"
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "password-hash"] }
+# Sealing of secrets at rest (contract 11.2): XChaCha20-Poly1305 under a subkey the binary derives.
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
 # OAuth 2.0 and OpenID Connect clients (contract 11.4), without their bundled HTTP clients: requests go through `Net`.
 oauth2 = { version = "=5.0.0", default-features = false }
 openidconnect = { version = "=4.1.0", default-features = false }
 
 [dev-dependencies]
+# The simulated `Env` and `PgModel`. The cycle through crucible-sim's own dependency on this crate is the one
+# cargo permits for dev-dependencies; tests here never pass this crate's types through it.
+crucible-sim = { path = "../crucible-sim" }
 proptest = { workspace = true }
 
 [lints]

@@ -7,9 +7,36 @@
 mod key;
 mod scope;
 
+// The control plane (milestone 4).
+pub mod cookie;
+pub mod csrf;
+mod mint;
+mod next_path;
+pub mod password;
+pub mod roles;
+mod seal;
+pub mod token;
+
+pub use mint::{LookupKey, MintedKey, mint, secret_hash};
+pub use next_path::safe_next;
+pub use seal::{Sealed, Sealer, Unsealable};
+
 pub use key::{
     KeyConfigError, KeyPrincipal, KeyVerifier, MalformedKey, SecretKey, StaticKey, StaticKeys,
 };
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+
+#[cfg(test)]
+mod testing {
+    use crucible_env::Env;
+
+    /// Runs `body` on a simulated host with seed `seed`.
+    pub(crate) fn sim<T: 'static>(seed: u64, body: impl AsyncFnOnce(Env) -> T + 'static) -> T {
+        crucible_sim::run(seed, |sim| async move {
+            let host = sim.host("node", &sim.disk("node"), 0);
+            body(host.env.clone()).await
+        })
+    }
+}
