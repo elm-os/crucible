@@ -1,10 +1,11 @@
 //! Pressure responses (contract 5.1 and 5.6): the seal limits widen by AIMD, the connection gate halves on a
 //! memory rejection, and retries back off with full jitter.
 
+use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use crucible_env::Rng;
+use crucible_env::{Instant, Rng};
 use tokio::sync::Notify;
 
 use crate::config::ShipperConfig;
@@ -61,6 +62,47 @@ impl SealLimits {
             .rows
             .saturating_sub(self.base_rows / 10)
             .max(self.base_rows);
+    }
+}
+
+/// The window the drain rate is measured over.
+const DRAIN_WINDOW: Duration = Duration::from_secs(10);
+
+/// The rate at which checkpoints resolve raw WAL bytes: the bytes of the last ten seconds, per second. A
+/// shipper that started less than ten seconds ago divides by its age, at least one second. Without a
+/// checkpoint in the window the rate is zero, so a 503 for WAL space then waits the longest (contract 4.8).
+#[derive(Debug)]
+pub(crate) struct DrainRate {
+    since: Instant,
+    drained: VecDeque<(Instant, u64)>,
+}
+
+impl DrainRate {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            drained: VecDeque::new(),
+        }
+    }
+
+    /// A checkpoint resolved `bytes` of raw frames.
+    pub(crate) fn record(&mut self, now: Instant, bytes: u64) {
+        self.drained.push_back((now, bytes));
+    }
+
+    /// Bytes per second over the window that ends at `now`.
+    pub(crate) fn rate(&mut self, now: Instant) -> u64 {
+        while let Some(&(at, _)) = self.drained.front() {
+            if now.saturating_duration_since(at) <= DRAIN_WINDOW {
+                break;
+            }
+            self.drained.pop_front();
+        }
+        let bytes: u64 = self.drained.iter().map(|&(_, b)| b).sum();
+        let age = now.saturating_duration_since(self.since);
+        let window = age.clamp(Duration::from_secs(1), DRAIN_WINDOW);
+        let micros = u64::try_from(window.as_micros()).unwrap_or(u64::MAX);
+        u64::try_from(u128::from(bytes) * 1_000_000 / u128::from(micros.max(1))).unwrap_or(u64::MAX)
     }
 }
 

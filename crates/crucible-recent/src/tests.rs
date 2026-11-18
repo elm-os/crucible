@@ -86,6 +86,7 @@ fn entry(lsn: u64) -> SpanEntry {
             user_id: Arc::from(""),
             session_id: Arc::from(""),
             model: Arc::from(""),
+            environment: Arc::from(""),
             total_cost_nusd: NanoUsd::ZERO,
             input_tokens: 0,
             output_tokens: 0,

@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use common::{ctx, frame, generate};
 use crucible_compat::{DIALECT_0, Target};
 use crucible_normalize::normalize;
-use crucible_records::{CostSource, ObservationType, SpanRecord};
+use crucible_records::{CostSource, Level, ObservationType, SpanRecord, TracePublic};
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use prost::Message;
@@ -26,6 +26,22 @@ fn filled(target: Target, r: &SpanRecord) -> bool {
         Target::TelemetrySdkLanguage => !c.telemetry_sdk_language.is_empty(),
         Target::TelemetrySdkVersion => !c.telemetry_sdk_version.is_empty(),
         Target::UserId => !c.user_id.is_empty(),
+        Target::SessionId => !c.session_id.is_empty(),
+        Target::TraceName => !c.trace_name.is_empty(),
+        // Every record has an environment: the default stands in for an absent one.
+        Target::Environment => &*c.environment != "default",
+        Target::Release => !c.release.is_empty(),
+        Target::Version => !c.version.is_empty(),
+        Target::Tags => !c.tags.is_empty(),
+        Target::TraceTags => !c.trace_tags.is_empty(),
+        Target::TracePublic => c.trace_public != TracePublic::Unset,
+        Target::Level => matches!(c.level, Level::Debug | Level::Warning),
+        Target::PromptVersion => !c.prompt_version.is_empty(),
+        Target::CompletionStartTime => c.completion_start_time.is_some(),
+        Target::Metadata => !p.metadata.is_empty() && !p.metadata_kv.is_empty(),
+        Target::TraceMetadata => !p.trace_metadata.is_empty(),
+        Target::ModelParameters => !p.model_parameters.is_empty(),
+        Target::CostProvided => !p.cost_provided.is_empty(),
         Target::ModelRequested => !c.model_requested.is_empty(),
         Target::ModelResponse => !c.model_response.is_empty(),
         Target::Provider => !c.provider.is_empty(),
@@ -44,7 +60,7 @@ fn generated_requests_reach_every_mapped_field_and_type_rule() {
     let mut runner = TestRunner::deterministic();
     let strategy = generate::request(false);
     let mut records = Vec::new();
-    for _ in 0..300 {
+    for _ in 0..1_000 {
         let request = strategy.new_tree(&mut runner).unwrap().current();
         let body = request.encode_to_vec();
         records.extend(normalize(&frame(&body, &[]), &ctx()).unwrap().spans);

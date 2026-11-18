@@ -26,6 +26,7 @@ mod disk;
 mod runtime;
 pub mod ship_sim;
 pub mod swarm;
+mod system_oracle;
 pub mod system_sim;
 mod trace;
 pub mod wal_sim;

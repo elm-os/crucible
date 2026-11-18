@@ -101,7 +101,7 @@ invariant it breaks, and the first seed that does so is recorded in `ship_dst.rs
 | `SendBeforeSeal` | Inserts are sent before the `BatchSeal` frame is durable | Two batch identities over the same frames | 31 |
 | `DropToken` | Every attempt carries a new deduplication identity | A block lands twice | 1 |
 | `CheckpointBeforeResolution` | The checkpoint is appended before the pairs are resolved | An acknowledged span below the watermark is nowhere | 0 |
-| `QuarantineWithoutProbe` | A pair in doubt is quarantined without a probe | A quarantined pair whose block the store had accepted | 4 |
+| `QuarantineWithoutProbe` | A pair in doubt is quarantined without a probe | A quarantined pair whose block the store had accepted | 6 |
 | `RejectionClearsDoubt` | A rejection after an unknown outcome clears the doubt (the model's finding, reverted) | A block lands twice: the first attempt lands late, the store sheds the retries until the probe's answer has expired, and the blind resend lands again | 44 |
 
 A change to the workload, the fault model or the product moves the recorded seeds. The failing assertion prints

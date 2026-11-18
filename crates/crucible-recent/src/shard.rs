@@ -82,8 +82,15 @@ impl Shard {
         let s = &span.summary;
         let (project, trace, id) = (span.project_id, s.trace_id, s.span_id);
         self.unlink(project, trace, id);
-        let mut strings = [0u32; 5];
-        let texts = [&s.name, &s.trace_name, &s.user_id, &s.session_id, &s.model];
+        let mut strings = [0u32; 6];
+        let texts = [
+            &s.name,
+            &s.trace_name,
+            &s.user_id,
+            &s.session_id,
+            &s.model,
+            &s.environment,
+        ];
         for (slot, text) in strings.iter_mut().zip(texts) {
             let (interned, added) = self.strings.intern(text);
             *slot = interned;
@@ -237,7 +244,7 @@ impl Shard {
     }
 
     fn resolve(&self, trace: TraceId, id: SpanId, entry: &Entry) -> RecentSpan {
-        let [name, trace_name, user_id, session_id, model] =
+        let [name, trace_name, user_id, session_id, model, environment] =
             entry.strings.map(|interned| self.strings.get(interned));
         RecentSpan {
             summary: SpanSummary {
@@ -255,6 +262,7 @@ impl Shard {
                 user_id,
                 session_id,
                 model,
+                environment,
                 total_cost_nusd: entry.total_cost_nusd,
                 input_tokens: entry.input_tokens,
                 output_tokens: entry.output_tokens,
@@ -407,6 +415,7 @@ mod tests {
                 user_id: Arc::from(user),
                 session_id: Arc::from("s1"),
                 model: Arc::from(""),
+                environment: Arc::from(""),
                 total_cost_nusd: NanoUsd::ZERO,
                 input_tokens: 1,
                 output_tokens: 2,

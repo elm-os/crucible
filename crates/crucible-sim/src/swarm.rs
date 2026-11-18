@@ -104,6 +104,10 @@ dimensions! {
     OneConnection, "one_connection", Config, "One insert connection and one batch in flight.";
     ReplayRetention, "replay_retention", Config, "The WAL keeps checkpointed segments for 15 minutes.";
     FsyncLie, "fsync_lie", Fault, "Stress tier only: the disk reports syncs that did not happen.";
+    Facts, "facts", Workload, "Clients write scores, tag and flag edits and corrections, some of them retractions.";
+    FrameFaults, "frame_faults", Fault, "Some durable frames do not normalize and are quarantined as frames.";
+    ProjectRate, "project_rate", Config, "A per-project byte rate, so some requests and fact writes get 429.";
+    SmallBudget, "small_budget", Config, "A `shipper.encoded_bytes` budget of a few KiB, so frames wait for batches in flight.";
 }
 
 /// A configuration: one bit per [`Dim`].
@@ -442,7 +446,7 @@ mod tests {
             unseen &= mask.0;
         }
         assert_eq!((seen, unseen), (ConfigMask::FULL.0, 0));
-        assert_eq!(Dim::ALL.len(), 41);
+        assert_eq!(Dim::ALL.len(), 45);
     }
 
     #[test]

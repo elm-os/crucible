@@ -47,8 +47,10 @@ use crucible_ingest::{Ingest, IngestConfig};
 use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
-use crucible_records::{Lsn, PartitionId, TableId};
-use crucible_shipper::{Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig};
+use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
+use crucible_shipper::{
+    FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
+};
 use crucible_store_clickhouse::Credentials;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
@@ -453,12 +455,17 @@ struct StoreTask {
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
 /// `Quarantine` frames of such pairs may be gone with their segments, and a read that could touch one must
 /// still answer `partial` (invariant I3). A directory without a whole manifest is a copy that never finished.
+///
+/// The second list holds the frames that were quarantined as frames (contract 5.6): `(lsn, project, facts)`.
+/// Stage B marks the ones the retained log still holds again when it replays them; the manifests cover the
+/// rest.
 async fn quarantined_pairs(
     env: &Env,
     watermark: Lsn,
-) -> anyhow::Result<Vec<(Lsn, TableId, PartitionId)>> {
+) -> anyhow::Result<(Vec<(Lsn, TableId, PartitionId)>, Vec<UnshippableFrame>)> {
     let root = DiskPath::root_dir(Root::Quarantine);
     let mut pairs = Vec::new();
+    let mut frames = Vec::new();
     for dir in env.disk.list(&root).await? {
         let dir = root.join(&dir.name)?;
         let Some(manifest) = env
@@ -477,6 +484,12 @@ async fn quarantined_pairs(
         let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
         let bytes = file.read_at(0, len).await?;
         let text = String::from_utf8_lossy(&bytes);
+        if let Some(frame) = FrameManifest::parse(&text) {
+            if frame.lsn <= watermark {
+                frames.push((frame.lsn, frame.project_id, frame.facts));
+            }
+            continue;
+        }
         let field = |name: &str| {
             text.lines()
                 .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
@@ -498,8 +511,11 @@ async fn quarantined_pairs(
             pairs.push((first, table, partition));
         }
     }
-    Ok(pairs)
+    Ok((pairs, frames))
 }
+
+/// A frame quarantined as a frame: its LSN, its project when known, and whether it is a `FactBatch`.
+type UnshippableFrame = (Lsn, Option<ProjectId>, bool);
 
 /// Brings the telemetry store up, retrying until it holds, then opens ingest and the API and runs the shipper.
 /// Returns on shutdown, or with the error that stopped the shipper.
@@ -566,11 +582,11 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         std::iter::empty(),
     );
     let hook = Arc::new(RecentHook::new(writer, Arc::clone(&env.clock), watermark));
-    hook.restore_quarantined(
-        quarantined_pairs(&env, watermark)
-            .await
-            .context("reading the quarantine manifests")?,
-    );
+    let (pairs, frames) = quarantined_pairs(&env, watermark)
+        .await
+        .context("reading the quarantine manifests")?;
+    hook.restore_quarantined(pairs);
+    hook.restore_unshippable(frames);
     let stores = Stores::new(Arc::new(store));
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
