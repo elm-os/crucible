@@ -1,0 +1,1176 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Crucible",
+    "description": "The REST API of Crucible, observability and analytics for AI agents and MCP servers. Errors are `application/problem+json` documents with a stable `code`.",
+    "license": {
+      "name": "MIT"
+    },
+    "version": "0.0.0"
+  },
+  "paths": {
+    "/api/v1/projects/{project_id}/data-bounds": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Get data bounds",
+        "description": "Where the project's data begins and ends inside its retention, with the retention horizon, the widest\nwindow a request may ask for and the server's clock.",
+        "operationId": "get_data_bounds",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The data bounds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataBounds"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/traces": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "List traces",
+        "description": "The traces whose head (the root span, or the earliest span while the root has not arrived) started in the\nwindow, newest first. With `since`, the traces whose head arrived after that head cursor instead.",
+        "operationId": "list_traces",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window over the traces' start times, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same window.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Live tail: the `head_cursor` of a first page or of the previous live-tail response, with the same\nwindow. Not combined with `cursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of traces.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceListPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Get a trace",
+        "description": "Every span of the trace up to 5,000 spans; above that, the root spans and their direct children with\n`paged: true`. An empty trace with `partial` or `lagging` in `meta` means the trace may exist but could not\nbe read in full.",
+        "operationId": "get_trace",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "The trace id (32 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hint_time",
+            "in": "query",
+            "description": "When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;\nthe read does not need it yet.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The trace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such trace, or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/traces/{trace_id}/spans": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "List the children of a span",
+        "description": "One page of the direct children of `parent_span_id`, in start order, each with `child_count`: how large\ntraces are read below their first two levels.",
+        "operationId": "list_span_children",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "The trace id (32 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent_span_id",
+            "in": "query",
+            "description": "The span whose direct children to list (16 hex characters).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 2,000, default 500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 2000,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of children.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpanPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such trace, or the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Consistency": {
+        "type": "string",
+        "description": "Whether a response reflects every span this node acknowledged before the request arrived.",
+        "enum": [
+          "strong",
+          "lagging"
+        ]
+      },
+      "DataBounds": {
+        "type": "object",
+        "description": "Where a project's data begins and ends, inside its retention, with minute precision.",
+        "required": [
+          "spans",
+          "mcp",
+          "retention_horizon",
+          "max_window_days",
+          "server_time",
+          "meta"
+        ],
+        "properties": {
+          "max_window_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The widest window a list or analytics request may ask for.",
+            "minimum": 0
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/McpBounds",
+            "description": "MCP operations."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the response is."
+          },
+          "retention_horizon": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The first instant that has not expired; null when the project keeps its data forever."
+          },
+          "server_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The server's clock when it answered."
+          },
+          "spans": {
+            "$ref": "#/components/schemas/TimeRange",
+            "description": "Spans."
+          }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "description": "One invalid part of a request.",
+        "required": [
+          "pointer",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "A stable code for the failure, such as `required` or `invalid_timestamp`."
+          },
+          "message": {
+            "type": "string",
+            "description": "A developer-facing message; clients show their own copy."
+          },
+          "pointer": {
+            "type": "string",
+            "description": "A JSON pointer to the invalid part: `/<name>` for a query or path parameter."
+          }
+        }
+      },
+      "HeadKind": {
+        "type": "string",
+        "description": "Why a trace appears in the list: its root span, or its earliest span while no root has\narrived.",
+        "enum": [
+          "root",
+          "provisional"
+        ]
+      },
+      "Level": {
+        "type": "string",
+        "description": "The level of a span.",
+        "enum": [
+          "debug",
+          "default",
+          "warning",
+          "error"
+        ]
+      },
+      "McpBounds": {
+        "type": "object",
+        "description": "MCP operations by the side that captured them.",
+        "required": [
+          "client",
+          "server"
+        ],
+        "properties": {
+          "client": {
+            "$ref": "#/components/schemas/TimeRange",
+            "description": "Operations captured on the client side."
+          },
+          "server": {
+            "$ref": "#/components/schemas/TimeRange",
+            "description": "Operations captured on the server side."
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "description": "How complete and how fresh a telemetry response is.",
+        "required": [
+          "as_of",
+          "partial",
+          "consistency"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant the response describes; for a list, the `as_of` its first page fixed."
+          },
+          "consistency": {
+            "$ref": "#/components/schemas/Consistency",
+            "description": "`strong` when the response reflects every span this node acknowledged before the request arrived."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Whether rows may be missing, for the reason in `partial_reason`."
+          },
+          "partial_reason": {
+            "$ref": "#/components/schemas/PartialReason",
+            "description": "Why rows may be missing; present only when `partial` is true."
+          }
+        }
+      },
+      "ObservationType": {
+        "type": "string",
+        "description": "What a span observes.",
+        "enum": [
+          "span",
+          "generation",
+          "event",
+          "embedding",
+          "agent",
+          "tool",
+          "chain",
+          "retriever",
+          "evaluator",
+          "guardrail"
+        ]
+      },
+      "PartialReason": {
+        "type": "string",
+        "description": "Why a response may be missing rows.",
+        "enum": [
+          "store_unavailable",
+          "deadline",
+          "quarantined"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error response, sent as `application/problem+json` (RFC 9457).",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code",
+          "request_id"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ProblemCode",
+            "description": "The stable code."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What went wrong with this request, for logs and developers."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "description": "The invalid parts of the request, for `validation_failed`."
+          },
+          "limit": {
+            "$ref": "#/components/schemas/ProblemLimit",
+            "description": "The limit the request exceeded, for `query_too_broad`."
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request id, also sent as `X-Request-Id`."
+          },
+          "retry_after_s": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds to wait before retrying, for `rate_limited`.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status.",
+            "minimum": 0
+          },
+          "suggested_granularity": {
+            "type": "string",
+            "description": "A coarser granularity that fits the caps, for `query_too_broad` on metrics."
+          },
+          "title": {
+            "type": "string",
+            "description": "A short summary of the problem type."
+          },
+          "type": {
+            "type": "string",
+            "description": "`urn:crucible:problem:<code>`."
+          }
+        }
+      },
+      "ProblemCode": {
+        "type": "string",
+        "description": "The stable code of a problem. Clients branch on it; `title` and `detail` are for logs\nand developers.",
+        "enum": [
+          "unauthenticated",
+          "invalid_credentials",
+          "forbidden",
+          "csrf_invalid",
+          "origin_invalid",
+          "not_found",
+          "method_not_allowed",
+          "request_timeout",
+          "conflict",
+          "idempotency_key_reused",
+          "precondition_failed",
+          "payload_too_large",
+          "unsupported_media_type",
+          "validation_failed",
+          "token_invalid",
+          "precondition_required",
+          "rate_limited",
+          "query_too_broad",
+          "query_timeout",
+          "query_memory_exceeded",
+          "cursor_invalid",
+          "control_plane_unavailable",
+          "telemetry_store_unavailable",
+          "ingest_unavailable",
+          "feature_disabled",
+          "ssrf_blocked",
+          "media_not_supported",
+          "media_too_large",
+          "media_hash_mismatch",
+          "sql_invalid",
+          "sql_forbidden",
+          "sql_time_window_required",
+          "sql_quota_exceeded",
+          "sql_workspace_unavailable",
+          "export_expired",
+          "internal_error"
+        ]
+      },
+      "ProblemLimit": {
+        "type": "object",
+        "description": "The limit a request exceeded.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The limit, for example `max_window_days`."
+          },
+          "value": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its value.",
+            "minimum": 0
+          }
+        }
+      },
+      "SafeU64": {
+        "type": "integer",
+        "description": "An unsigned integer at most 2^53 - 1.",
+        "maximum": 9007199254740991,
+        "minimum": 0
+      },
+      "Span": {
+        "type": "object",
+        "description": "One span of a trace.",
+        "required": [
+          "span_id",
+          "parent_span_id",
+          "name",
+          "observation_type",
+          "start_time",
+          "end_time",
+          "duration_us",
+          "status_code",
+          "level",
+          "model",
+          "total_cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "child_count",
+          "saturated"
+        ],
+        "properties": {
+          "child_count": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SafeU64",
+                "description": "The number of direct children, on paged traces and on children pages; null otherwise."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_us": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "`end_time - start_time` in microseconds."
+          },
+          "end_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The span end."
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Input tokens."
+          },
+          "level": {
+            "$ref": "#/components/schemas/Level",
+            "description": "The span's level."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model the provider reported; empty for spans without one."
+          },
+          "name": {
+            "type": "string",
+            "description": "The span name."
+          },
+          "observation_type": {
+            "$ref": "#/components/schemas/ObservationType",
+            "description": "What the span observes."
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Output tokens."
+          },
+          "parent_span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The parent span, or null for a root span."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "span_id": {
+            "type": "string",
+            "description": "16 lowercase hex characters."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The span start."
+          },
+          "status_code": {
+            "$ref": "#/components/schemas/StatusCode",
+            "description": "The span's status."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The span's cost in USD."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens."
+          }
+        }
+      },
+      "SpanPage": {
+        "type": "object",
+        "description": "One page of the direct children of a span, in start order. Each carries `child_count`.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "description": "The children."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "StatusCode": {
+        "type": "string",
+        "description": "The OTel status of a span.",
+        "enum": [
+          "unset",
+          "ok",
+          "error"
+        ]
+      },
+      "TimeRange": {
+        "type": "object",
+        "description": "The first and last minute with data; both null when there is none.",
+        "required": [
+          "first",
+          "last"
+        ],
+        "properties": {
+          "first": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The first minute with data."
+          },
+          "last": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The last minute with data."
+          }
+        }
+      },
+      "TraceDetail": {
+        "type": "object",
+        "description": "One trace. Up to 5,000 spans it holds every span; above that it holds the root spans and\ntheir direct children, and `GET .../spans` pages the rest.",
+        "required": [
+          "trace_id",
+          "span_count",
+          "paged",
+          "spans",
+          "meta",
+          "saturated"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the response is."
+          },
+          "paged": {
+            "type": "boolean",
+            "description": "False: `spans` holds every span. True: the root spans and their direct children, at most 1,000, each\nwith `child_count`."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether `span_count` saturated at 2^53 - 1."
+          },
+          "span_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans in the trace. Exact when `paged` is false."
+          },
+          "spans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "description": "The spans in start order. Empty only when `meta` says the response is partial or lagging."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "32 lowercase hex characters."
+          }
+        }
+      },
+      "TraceListItem": {
+        "type": "object",
+        "description": "One trace of the list: its head (the root span, or the earliest span while the root has not arrived) and\nthe trace's merged aggregates.",
+        "required": [
+          "trace_id",
+          "name",
+          "trace_name",
+          "head_kind",
+          "start_time",
+          "duration_us",
+          "status_code",
+          "level",
+          "span_count",
+          "error_count",
+          "total_cost_usd",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "user_id",
+          "session_id",
+          "environment",
+          "release",
+          "tags",
+          "saturated"
+        ],
+        "properties": {
+          "duration_us": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "From the trace's first span start to its last span end, in microseconds."
+          },
+          "environment": {
+            "type": "string",
+            "description": "The head span's environment; empty until the store serves the head."
+          },
+          "error_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans of level `error`."
+          },
+          "head_kind": {
+            "$ref": "#/components/schemas/HeadKind",
+            "description": "Whether the head is the root span."
+          },
+          "input_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Input tokens across the trace."
+          },
+          "level": {
+            "$ref": "#/components/schemas/Level",
+            "description": "The head span's level."
+          },
+          "name": {
+            "type": "string",
+            "description": "The head span's name."
+          },
+          "output_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Output tokens across the trace."
+          },
+          "release": {
+            "type": "string",
+            "description": "The head span's release; empty until the store serves the head."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count above saturated at 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The trace's session, picked like the trace name."
+          },
+          "span_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans in the trace."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The head span's start, the list's sort key."
+          },
+          "status_code": {
+            "$ref": "#/components/schemas/StatusCode",
+            "description": "The head span's status."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The trace tags; empty until the store serves the head."
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "format": "double",
+            "description": "The trace's total cost in USD."
+          },
+          "total_tokens": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Total tokens across the trace."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "32 lowercase hex characters."
+          },
+          "trace_name": {
+            "type": "string",
+            "description": "The trace name: the root span's, else the latest non-empty one; empty when no span set one."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The trace's user, picked like the trace name."
+          }
+        }
+      },
+      "TraceListPage": {
+        "type": "object",
+        "description": "One page of the trace list, newest first; or, for a `since` request, the traces that arrived after the\nhead cursor.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "head_cursor",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceListItem"
+            },
+            "description": "The traces."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists, or, for live tail, whether more traces arrived than `data` holds."
+          },
+          "head_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor to pass as `since` for live tail; set on first pages and live-tail responses, else null."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is."
+          },
+          "new_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "For live tail only: how many traces arrived, saturating at 100.",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page and on live-tail responses."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "project_key": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A project's secret key (`csk_...`) as `Authorization: Bearer <key>`."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "traces",
+      "description": "Traces, their spans and the project's data bounds."
+    }
+  ]
+}

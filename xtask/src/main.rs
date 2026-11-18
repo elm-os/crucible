@@ -6,6 +6,7 @@
     clippy::print_stderr
 )]
 
+mod gen_ts;
 mod ui;
 
 use std::path::PathBuf;
@@ -15,10 +16,12 @@ const USAGE: &str = "usage: cargo xtask <command>
 
 commands:
   help                 show this message
+  gen-ts               regenerate the TypeScript types of the REST API in ui/src/api/generated/ from the
+                       DTOs of crucible-api-types; commit the result (CI fails on any difference)
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
                        (default ui/out); run it after every UI build that will be embedded or served
 
-Planned: sim (run, replay), perf (gate, fsync-probe), conformance, authz-matrix, openapi.";
+Planned: sim (run, replay), perf (gate, fsync-probe), conformance, authz-matrix.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -27,6 +30,16 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Some("gen-ts") => match gen_ts::generate() {
+            Ok((dir, files)) => {
+                println!("{}: {files} files", dir.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("gen-ts: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("ui") if args.next().as_deref() == Some("compress") => {
             let dir = args
                 .next()

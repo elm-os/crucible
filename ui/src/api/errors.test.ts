@@ -8,15 +8,19 @@ import {
   shouldRetry,
   type UiError,
 } from "./errors";
-import type { Problem } from "./types";
+import type { ProblemBody } from "./types";
 
 const RAW = "SELECT secret FROM span_core: ClickHouse exception at node ch-3";
 
-function problem(fields: Problem): Problem {
+function problem(fields: ProblemBody): ProblemBody {
   return { type: "urn:crucible:problem:x", title: RAW, detail: RAW, ...fields };
 }
 
-function http(status: number, body: Problem | null, headers: Partial<HttpFailure> = {}): UiError {
+function http(
+  status: number,
+  body: ProblemBody | null,
+  headers: Partial<HttpFailure> = {},
+): UiError {
   return fromHttpFailure({
     status,
     problem: body,

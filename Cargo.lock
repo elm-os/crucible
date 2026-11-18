@@ -635,6 +635,8 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "crucible-api",
+ "crucible-api-types",
  "crucible-auth",
  "crucible-env",
  "crucible-env-prod",
@@ -665,10 +667,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-api"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "crucible-api-types",
+ "crucible-auth",
+ "crucible-chfmt",
+ "crucible-env",
+ "crucible-plan",
+ "crucible-query",
+ "crucible-recent",
+ "crucible-records",
+ "crucible-schema",
+ "crucible-sim",
+ "futures",
+ "http-body-util",
+ "insta",
+ "proptest",
+ "serde_json",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "crucible-api-types"
 version = "0.0.0"
 dependencies = [
  "crucible-records",
+ "proptest",
  "serde",
  "serde_json",
  "ts-rs",
@@ -3393,7 +3423,9 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "brotli",
+ "crucible-api-types",
  "flate2",
+ "ts-rs",
 ]
 
 [[package]]

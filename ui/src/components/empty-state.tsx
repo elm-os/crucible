@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 
 // first-use: nothing exists yet, so invite the first action. filtered: data may exist outside the
-// current range or filters, so offer to widen them. planned: the feature has not shipped.
-export type EmptyKind = "first-use" | "filtered" | "planned";
+// current range or filters, so offer to widen them. incomplete: the server said data may be missing
+// or not caught up yet, so offer to check again. planned: the feature has not shipped.
+export type EmptyKind = "first-use" | "filtered" | "incomplete" | "planned";
 
 export function EmptyState({
   kind,

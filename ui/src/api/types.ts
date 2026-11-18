@@ -1,33 +1,10 @@
-// Hand-written until the ts-rs types land in src/api/generated/. Wire rules: ids are strings,
-// timestamps are RFC 3339 UTC, durations are microseconds as JSON numbers.
+// Wire types are generated from the Rust DTOs into ./generated (cargo xtask gen-ts). This file only
+// derives the shapes the client needs on top of them.
+import type { Problem } from "./generated/Problem";
+import type { TraceListParams } from "./generated/TraceListParams";
 
-export interface Page<T> {
-  data: T[];
-  next_cursor: string | null;
-  has_more: boolean;
-}
+export type TimeWindow = Pick<TraceListParams, "from" | "to">;
 
-export interface TraceListItem {
-  trace_id: string;
-  name: string;
-  start_time: string;
-  duration_us: number;
-  span_count: number;
-  error_count: number;
-}
-
-export interface TimeWindow {
-  from: string;
-  to: string;
-}
-
-export interface Problem {
-  type?: string;
-  title?: string;
-  status?: number;
-  detail?: string;
-  code?: string;
-  request_id?: string;
-  errors?: { pointer?: string; code?: string; message?: string }[];
-  retry_after_s?: number;
-}
+// A problem body as received: a proxy or another server may have answered, so every member may be
+// missing or malformed and is checked before use.
+export type ProblemBody = { [K in keyof Problem]?: unknown };
