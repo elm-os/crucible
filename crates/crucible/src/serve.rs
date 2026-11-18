@@ -1286,6 +1286,35 @@ mod tests {
         shut_down(&prod, servers).await;
     }
 
+    /// An MCP `initialize` of the session era.
+    const MCP_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+
+    /// A query service over an empty store model and a recent index that nothing feeds.
+    fn empty_store(env: &Env, app: &App) -> QueryService {
+        use crucible_normalize::{NormCtx, PriceTable};
+        use crucible_schema::Granularity;
+        use crucible_sim::ch_model::ChModel;
+
+        let flavour = crucible_env::StoreFlavour::SingleNode;
+        let model = ChModel::new(
+            env.rng.as_ref(),
+            flavour,
+            Granularity::Day,
+            Duration::from_secs(60),
+        );
+        let view = Arc::new(WalSpans {
+            wal: app.wal.clone(),
+            ctx: NormCtx::new(
+                PriceTable::bundled().unwrap(),
+                ShipperConfig::default().caps,
+            ),
+        });
+        let config = RecentConfig::new(1 << 20, flavour);
+        let (index, _writer) = RecentIndex::new(config, Arc::clone(&env.clock), view);
+        let stores = Stores::new(Arc::new(model));
+        QueryService::new(stores, Arc::clone(&env.clock), index, app.wal.epoch())
+    }
+
     /// The MCP server at `/mcp` of the main router. Before a store it authenticates and then says which setting
     /// provides one. Over a store, rmcp's own client of each protocol era (a session opened with `initialize`,
     /// and self-contained requests after `server/discover`) lists the tools and calls them. Paths below `/mcp/`
@@ -1293,9 +1322,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_mcp_server_answers_both_protocol_eras_at_mcp() {
         use crucible_mcp_server::PATH;
-        use crucible_normalize::{NormCtx, PriceTable};
-        use crucible_schema::Granularity;
-        use crucible_sim::ch_model::ChModel;
         use http_body_util::BodyExt as _;
         use rmcp::model::{CallToolRequestParams, ProtocolVersion};
         use rmcp::transport::StreamableHttpClientTransport;
@@ -1320,8 +1346,7 @@ mod tests {
             if let Some(value) = authorization {
                 request = request.header("authorization", value);
             }
-            let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
-            request.body(Body::from(body)).unwrap()
+            request.body(Body::from(MCP_INITIALIZE)).unwrap()
         };
         let problem = |response: Response| async move {
             let status = response.status();
@@ -1355,24 +1380,7 @@ mod tests {
             (StatusCode::NOT_FOUND, &json!("not_found"))
         );
 
-        // Over an empty store model, with a recent index that nothing feeds.
-        let model = ChModel::new(
-            env.rng.as_ref(),
-            crucible_env::StoreFlavour::SingleNode,
-            Granularity::Day,
-            Duration::from_secs(60),
-        );
-        let view = Arc::new(WalSpans {
-            wal: app.wal.clone(),
-            ctx: NormCtx::new(
-                PriceTable::bundled().unwrap(),
-                ShipperConfig::default().caps,
-            ),
-        });
-        let config = RecentConfig::new(1 << 20, crucible_env::StoreFlavour::SingleNode);
-        let (index, _writer) = RecentIndex::new(config, Arc::clone(&env.clock), view);
-        let stores = Stores::new(Arc::new(model));
-        let service = QueryService::new(stores, Arc::clone(&env.clock), index, app.wal.epoch());
+        let service = empty_store(env, &app);
         app.gate.mcp.open(
             env,
             service,
@@ -1432,6 +1440,53 @@ mod tests {
             assert_eq!(problem["errors"][0]["pointer"], "/from");
             client.cancel().await.unwrap();
         }
+    }
+
+    /// A graceful shutdown ends the MCP server's sessions and their open event streams, so a connected agent does
+    /// not hold the listeners past the grace period: `shut_down` fails when a task is still running after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_graceful_shutdown_closes_open_mcp_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let app = test_app_with(env, keys, Arc::clone(&cursors)).await;
+        let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
+        app.gate
+            .mcp
+            .open(env, service, keys, cursors, McpConfig::default());
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addr = servers.addrs.api;
+        let bearer = format!("Bearer {}", secret());
+        let posted = [
+            ("authorization", bearer.as_str()),
+            ("accept", "application/json, text/event-stream"),
+            ("content-type", "application/json"),
+        ];
+        let initialize = MCP_INITIALIZE.as_bytes();
+        let (status, headers, _) = exchange(env, addr, "POST", "/mcp", &posted, initialize).await;
+        assert_eq!(status, "HTTP/1.1 200 OK");
+        let session = header(&headers, "mcp-session-id").unwrap().to_owned();
+
+        // The session's event stream stays open until the server ends it.
+        let stream_env = env.clone();
+        let mut stream = env.spawn("mcp-stream", async move {
+            let headers = [
+                ("authorization", bearer.as_str()),
+                ("accept", "text/event-stream"),
+                ("mcp-session-id", session.as_str()),
+            ];
+            exchange(&stream_env, addr, "GET", "/mcp", &headers, b"").await
+        });
+        env.clock.sleep(Duration::from_millis(200)).await;
+        shut_down(&prod, servers).await;
+        let (status, headers, _) = stream.join().await.unwrap();
+        assert_eq!(status, "HTTP/1.1 200 OK");
+        assert_eq!(header(&headers, "content-type"), Some("text/event-stream"));
     }
 
     /// `crucible serve --ui-dir` over the fixture export: the directory source, read through the production
