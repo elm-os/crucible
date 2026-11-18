@@ -303,13 +303,16 @@ fn usage_parents(rows: &[&UsageRow], set: &mut BTreeSet<Vec<u8>>) {
 }
 
 /// I7 for `usage_aggregate`, from the rows of `span_core` alone. The flag is stage B state, rebuilt from the
-/// retained WAL prefix after a restart, so a restart may forget an earlier frame's descendants. What holds in
-/// every run:
+/// retained WAL prefix after a restart, so a restart may forget an earlier frame's descendants. Stage B takes the
+/// mark over every span of a frame before it drops the exact repeats, and a dropped repeat leaves no row in its
+/// frame: it is a span whose equal row an earlier frame holds. What holds in every run:
 ///
 /// - **never flagged without cause**: a flagged span has a descendant that carries usage or cost in its own
-///   frame or in an earlier one (the rule over the whole LSN stream);
-/// - **always flagged within a frame**: a span with a descendant that carries usage or cost in its own frame is
-///   flagged, whatever a restart forgot, and whatever the wire order.
+///   frame or in an earlier one, where a row of an earlier frame may stand in any later frame as a dropped
+///   repeat and pass the mark on to its parent (the rule over the whole LSN stream, with every earlier row a
+///   possible repeat);
+/// - **always flagged within a frame**: a span with a descendant that carries usage or cost among the kept
+///   spans of its own frame is flagged, whatever a restart forgot, and whatever the wire order.
 fn check_usage_flags(model: &ChModel) -> Option<Vec<String>> {
     let mut rows = Vec::new();
     for part in model.parts(TableId::SpanCore) {
@@ -336,11 +339,14 @@ fn check_usage_flags(model: &ChModel) -> Option<Vec<String>> {
     rows.sort_by_key(|row| row.lsn);
     let mut wrong = Vec::new();
     let mut stream = BTreeSet::new();
+    let mut seen: Vec<&UsageRow> = Vec::new();
     for frame in rows.chunk_by(|a, b| a.lsn == b.lsn) {
         let frame: Vec<&UsageRow> = frame.iter().collect();
         let mut alone = BTreeSet::new();
         usage_parents(&frame, &mut alone);
-        usage_parents(&frame, &mut stream);
+        // Every row up to this frame: the frame's own, and the earlier ones as its possible dropped repeats.
+        seen.extend(&frame);
+        usage_parents(&seen, &mut stream);
         for row in &frame {
             if row.flagged && !stream.contains(&row.key) {
                 wrong.push(format!(

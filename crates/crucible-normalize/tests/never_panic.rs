@@ -25,7 +25,8 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
         prop_assert!(c.start_time.is_valid() && c.end_time.is_valid());
         prop_assert!(c.start_time <= c.end_time);
         prop_assert!(!c.trace_id.is_zero() && !c.span_id.is_zero());
-        prop_assert_eq!(c.is_root, c.parent_span_id.is_zero());
+        // A span without a parent is a root; a dialect's root flag makes one of a span that names a parent.
+        prop_assert!(c.is_root || !c.parent_span_id.is_zero());
         for (value, cap) in [
             (&c.name, caps::SPAN_NAME_BYTES),
             (&c.status_message, caps::STATUS_MESSAGE_BYTES),

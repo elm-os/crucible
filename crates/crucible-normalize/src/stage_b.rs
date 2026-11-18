@@ -1,15 +1,16 @@
-//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It drops exact repeats through the duplicate window,
-//! marks provisional trace heads through the first-seen set, and flags usage aggregates through the usage-parent
-//! set.
+//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It flags usage aggregates through the usage-parent
+//! set, drops exact repeats through the duplicate window, and marks provisional trace heads through the
+//! first-seen set.
 //!
 //! **Usage aggregates.** A span's usage and cost count toward trace, session, user and metrics totals unless it
 //! has `usage_aggregate`: at least one descendant that carries usage or cost, seen in the same frame or earlier
-//! in the LSN stream. The usage-parent set holds the span ids that have such a descendant. For every kept span
-//! that carries usage or cost, or is itself in the set, its parent id joins the set; within one frame this runs
-//! over all spans before any is flagged, so wire order inside a frame does not matter. Across frames it relies
-//! on children ending, and so being exported, no later than their parents. A span is flagged when its id is in
-//! the set, whatever its type. Known limit: a descendant that arrives after its ancestor, or after the set
-//! evicted the ancestor's id, is counted beside the ancestor.
+//! in the LSN stream. The usage-parent set holds the span ids that have such a descendant. Every span that carries
+//! usage or cost, or is itself in the set, adds its parent id to the set. Within one frame this runs to a fixed
+//! point over every span of the frame before any is flagged and before the duplicate drop, so wire order inside
+//! a frame does not matter, and an exact repeat that the window then drops still passes a mark on to its parent.
+//! Across frames it relies on children ending, and so being exported, no later than their parents. A span is
+//! flagged when its id is in the set, whatever its type. Known limit: a descendant that arrives after its
+//! ancestor, or after the set evicted the ancestor's id, is counted beside the ancestor.
 //!
 //! Both are defined over the LSN stream, never over wall time: the state after a sequence of frames is a function
 //! of that sequence alone. Replaying the WAL's retained prefix in LSN order through a fresh [`StageB`] (and
@@ -235,44 +236,65 @@ impl StageB {
         self
     }
 
-    /// Flags the usage aggregates of a frame's kept spans and records their parents.
-    fn mark_usage_aggregates(&mut self, frame: &mut NormalizedFrame) {
-        // The frame's spans by their own key; a span id that repeats resolves to its first occurrence.
-        let mut by_key: DetMap<u64, usize> = det_map();
-        for (i, span) in frame.spans.iter().enumerate() {
-            by_key.entry(span_key(&span.core)).or_insert(i);
+    /// Records the usage parents of a frame and flags its usage aggregates. It runs before the duplicate drop, over
+    /// every span of the frame: an exact repeat that the window is about to drop still passes a mark on to its
+    /// parent. `keys` holds the span key of each span.
+    fn mark_usage_aggregates(&mut self, frame: &mut NormalizedFrame, keys: &[u64]) {
+        const NONE: u32 = u32::MAX;
+        let spans = &mut frame.spans;
+        // The worklist: every span that carries usage or cost, or is in the set, in wire order. Each span joins
+        // it once, so the work is linear and a parent cycle ends.
+        let mut queued = vec![false; spans.len()];
+        let mut work: Vec<usize> = Vec::new();
+        for (i, span) in spans.iter().enumerate() {
+            if span.core.carries_usage() || self.usage_parents.contains(keys[i]) {
+                queued[i] = true;
+                work.push(i);
+            }
         }
-        for start in 0..frame.spans.len() {
-            let core = &frame.spans[start].core;
-            if !core.carries_usage() && !self.usage_parents.contains(span_key(core)) {
+        if work.is_empty() {
+            // No span of the frame is in the set, and none joins it.
+            for span in spans.iter_mut() {
+                span.core.usage_aggregate = false;
+            }
+            return;
+        }
+        // Every occurrence of each span key: the first by key, each naming the next.
+        let mut first: DetMap<u64, u32> = det_map();
+        let mut next = vec![NONE; spans.len()];
+        for (i, &key) in keys.iter().enumerate().rev() {
+            let at = u32::try_from(i).unwrap_or(NONE);
+            next[i] = first.insert(key, at).unwrap_or(NONE);
+        }
+        let mut at = 0;
+        while let Some(&i) = work.get(at) {
+            at += 1;
+            let core = &spans[i].core;
+            // A span that names itself as its parent is not its own descendant.
+            if core.parent_span_id == SpanId::ZERO || core.parent_span_id == core.span_id {
                 continue;
             }
-            // Climb while a parent newly joins the set: a parent that was in it already has been climbed from,
-            // or is a start of its own, so the work is linear and a parent cycle ends.
-            let mut at = start;
-            loop {
-                let core = &frame.spans[at].core;
-                // A span that names itself as its parent is not its own descendant.
-                if core.parent_span_id == SpanId::ZERO || core.parent_span_id == core.span_id {
-                    break;
+            let parent = parent_key(core);
+            self.usage_parents.insert(parent);
+            // Every occurrence of the parent in the frame passes the mark on in its turn. Taking the key out
+            // walks its chain once.
+            let mut occurrence = first.remove(&parent).unwrap_or(NONE);
+            while let Some(&following) = next.get(occurrence as usize) {
+                let j = occurrence as usize;
+                if !queued[j] {
+                    queued[j] = true;
+                    work.push(j);
                 }
-                let parent = parent_key(core);
-                if !self.usage_parents.insert(parent) {
-                    break;
-                }
-                match by_key.get(&parent) {
-                    Some(&next) => at = next,
-                    None => break,
-                }
+                occurrence = following;
             }
         }
-        for span in &mut frame.spans {
-            span.core.usage_aggregate = self.usage_parents.contains(span_key(&span.core));
+        for (span, &key) in spans.iter_mut().zip(keys) {
+            span.core.usage_aggregate = self.usage_parents.contains(key);
         }
     }
 
-    /// Admits the next frame of the LSN stream: drops its exact repeats in place, flags its usage aggregates and
-    /// marks its provisional heads.
+    /// Admits the next frame of the LSN stream: records its usage parents and flags its usage aggregates, drops
+    /// its exact repeats in place and marks its provisional heads.
     /// A frame whose LSN is not above the previous one is refused and leaves the state unchanged.
     pub fn admit(&mut self, frame: &mut NormalizedFrame) -> Result<Admission, OutOfOrder> {
         if let Some(last) = self.last.filter(|&last| frame.lsn <= last) {
@@ -282,12 +304,20 @@ impl StageB {
             });
         }
         self.last = Some(frame.lsn);
+        let keys: Vec<u64> = frame
+            .spans
+            .iter()
+            .map(|span| span_key(&span.core))
+            .collect();
+        self.mark_usage_aggregates(frame, &keys);
         let mut duplicates = 0u32;
         let window = &mut self.window;
         let mut stage_a_ordinals = Vec::with_capacity(frame.spans.len());
         let mut ordinal = 0u32;
+        let mut keys = keys.into_iter();
         frame.spans.retain(|span| {
-            let kept = window.admit(span_key(&span.core), span.core.row_digest);
+            let key = keys.next().unwrap_or_else(|| span_key(&span.core));
+            let kept = window.admit(key, span.core.row_digest);
             duplicates += u32::from(!kept);
             if kept {
                 stage_a_ordinals.push(ordinal);
@@ -295,7 +325,6 @@ impl StageB {
             ordinal = ordinal.saturating_add(1);
             kept
         });
-        self.mark_usage_aggregates(frame);
         let mut first: Vec<(u64, usize)> = Vec::new();
         let mut noted: DetSet<u64> = det_set();
         let mut rooted: DetSet<u64> = det_set();

@@ -121,6 +121,48 @@ fn a_child_in_an_earlier_frame_marks_its_parent_and_a_later_one_does_not() {
     );
 }
 
+/// The mark is taken before the duplicate drop: an exact repeat P, sent in the frame of its new child C that
+/// carries usage, passes the mark on to its parent G although stage B drops it.
+#[test]
+fn an_exact_repeat_passes_the_mark_on_to_its_parent() {
+    let p = || span(1, 2, Some(1), None);
+    let c = || span(1, 3, Some(2), Some(10));
+    let g = || span(1, 1, None, Some(10));
+    // G comes in a later frame. Frame 2 keeps C alone: P is a repeat.
+    for second in [vec![p(), c()], vec![c(), p()]] {
+        assert_eq!(
+            flags(&[vec![p()], second, vec![g()]]),
+            [vec![false], vec![false], vec![true]]
+        );
+    }
+    // G comes in the frame of the repeat, in any wire order; the kept spans are C and G.
+    assert_eq!(
+        flags(&[vec![p()], vec![g(), p(), c()]]),
+        [vec![false], vec![true, false]]
+    );
+    assert_eq!(
+        flags(&[vec![p()], vec![c(), p(), g()]]),
+        [vec![false], vec![false, true]]
+    );
+    // Without the repeat in C's frame, nothing of that frame names G: the mark stops at P.
+    assert_eq!(
+        flags(&[vec![p()], vec![c()], vec![g()]]),
+        [vec![false], vec![false], vec![false]]
+    );
+    // A repeat that carries usage itself marks its parent again after the set forgot it.
+    let mut small = StageB::default().with_usage_parents(2);
+    let frames = [
+        vec![c()],
+        vec![span(2, 9, Some(8), Some(1)), span(2, 7, Some(6), Some(1))],
+        vec![c()],
+        vec![p()],
+    ];
+    assert_eq!(
+        admit(&mut small, 1, &frames),
+        [vec![false], vec![false, false], vec![], vec![true]]
+    );
+}
+
 #[test]
 fn parent_cycles_end() {
     // A span that names itself as its parent is not its own descendant.
@@ -145,6 +187,52 @@ fn the_set_is_bounded_and_evicts_the_oldest_parent() {
     // With room for one parent, the first is forgotten: its span is counted beside its child.
     let mut small = StageB::default().with_usage_parents(1);
     assert_eq!(admit(&mut small, 1, &frames)[2], [false, true]);
+}
+
+/// A span of the model: (trace, id, parent, tokens).
+type Desc = (u8, u8, Option<u8>, Option<i64>);
+
+/// The rule as a loop to a fixed point, with no bound on the set and no hashing: every span of a frame that
+/// carries usage or is in the set adds its parent, over all the frame's spans, repeats included, until nothing
+/// joins; then the exact repeats drop. The flags of the kept spans, per frame.
+fn model(frames: &[Vec<Desc>]) -> Vec<Vec<bool>> {
+    let mut set: Vec<(u8, u8)> = Vec::new();
+    let mut remembered: Vec<Desc> = Vec::new();
+    frames
+        .iter()
+        .map(|spans| {
+            loop {
+                let before = set.len();
+                for &(trace, id, parent, tokens) in spans {
+                    let passes = tokens.is_some_and(|n| n > 0) || set.contains(&(trace, id));
+                    if let Some(parent) = parent.filter(|&parent| passes && parent != id)
+                        && !set.contains(&(trace, parent))
+                    {
+                        set.push((trace, parent));
+                    }
+                }
+                if set.len() == before {
+                    break;
+                }
+            }
+            let mut kept = Vec::new();
+            for &desc in spans {
+                let (trace, id, ..) = desc;
+                let at = remembered
+                    .iter()
+                    .position(|&(t, i, ..)| (t, i) == (trace, id));
+                if at.is_some_and(|at| remembered[at] == desc) {
+                    continue;
+                }
+                if let Some(at) = at {
+                    remembered.remove(at);
+                }
+                remembered.push(desc);
+                kept.push(set.contains(&(trace, id)));
+            }
+            kept
+        })
+        .collect()
 }
 
 proptest! {
@@ -174,5 +262,20 @@ proptest! {
                 }
             }
         }
+    }
+
+    /// Stage B agrees with the fixed-point model on every frame, exact repeats and changed repeats included.
+    #[test]
+    fn the_flags_match_the_fixed_point_model(
+        frames in vec(
+            vec((1u8..3, 1u8..6, proptest::option::of(1u8..6), proptest::option::of(0i64..2)), 0..8),
+            1..6,
+        ),
+    ) {
+        let wire: Vec<Vec<Span>> = frames
+            .iter()
+            .map(|f| f.iter().map(|&(t, id, parent, tokens)| span(t, id, parent, tokens)).collect())
+            .collect();
+        prop_assert_eq!(flags(&wire), model(&frames));
     }
 }
