@@ -15,7 +15,7 @@ use crucible_conformance::blocks::Rows;
 use crucible_env::{
     ChaChaRng, InsertSettings, MutationStatus, QueryError, StoreError, StoreFlavour, TelemetryStore,
 };
-use crucible_plan::test_support::{batch_probe, query_plan};
+use crucible_plan::test_support::{batch_probe, query_plan, with_limits};
 use crucible_plan::{
     Aggregate, CmpOp, DeletePlan, Fill, Measure, Node, Pred, QueryClass, QueryPlan, Row, Scan,
     Step, TimeSeries, Value,
@@ -754,5 +754,69 @@ fn reads_and_maintenance_fail_as_unavailable_under_an_outage_or_the_read_fault()
         );
         let stats = model.stats();
         assert_eq!((stats.reads, stats.read_errors), (3, 6));
+    });
+}
+
+/// The query-class guardrails (contract 8.4): a read above a limit its plan carries is refused with the class
+/// of error a server answers, and a read at the limit runs.
+#[test]
+fn a_read_above_a_limit_of_its_plan_is_refused_with_the_class_of_the_limit() {
+    block_on(async {
+        let model = model(17, 0);
+        insert(&model, ops(project(1), 1, T0), 1, T0).await;
+        let read = |project_id: ProjectId| {
+            let scan = Scan::new(TableId::McpOps, [McpOpsCol::DurationUs], Pred::all()).unwrap();
+            plan(project_id, QueryClass::List, Node::Scan(scan))
+        };
+        let limits = read(project(1)).limits();
+        let run = |project_id: ProjectId, limits| {
+            model
+                .read(&with_limits(read(project_id), limits))
+                .map(|answer| answer.into_rows().len())
+        };
+        assert_eq!(run(project(1), limits).unwrap(), 10);
+
+        let mut rows = limits;
+        rows.max_rows_to_read = Some(10);
+        assert_eq!(run(project(1), rows).unwrap(), 10);
+        rows.max_rows_to_read = Some(9);
+        assert!(matches!(run(project(1), rows), Err(QueryError::TooBroad)));
+        // The limit counts the rows a scan can touch, which is not less than a server's, so a project without
+        // rows is refused too.
+        assert!(matches!(run(project(2), rows), Err(QueryError::TooBroad)));
+
+        let mut bytes = limits;
+        bytes.max_bytes_to_read = Some(1);
+        assert!(matches!(run(project(1), bytes), Err(QueryError::TooBroad)));
+        bytes.max_bytes_to_read = Some(1 << 30);
+        assert_eq!(run(project(1), bytes).unwrap(), 10);
+
+        let mut memory = limits;
+        memory.max_memory_usage = 1;
+        assert!(matches!(
+            run(project(1), memory),
+            Err(QueryError::MemoryExceeded)
+        ));
+        // The rows of another project are filtered out and so are not held.
+        assert_eq!(run(project(2), memory).unwrap(), 0);
+
+        // Ten rows at one row a second take ten seconds.
+        model.set_scan_rows_per_sec(1);
+        let mut time = limits;
+        time.max_execution_time_secs = 10;
+        assert_eq!(run(project(1), time).unwrap(), 10);
+        time.max_execution_time_secs = 9;
+        assert!(matches!(run(project(1), time), Err(QueryError::Timeout)));
+
+        // The trait method refuses in the same way, and a dropped partition is no longer read.
+        let refused = model.execute(with_limits(read(project(1)), rows)).await;
+        assert!(matches!(refused, Err(QueryError::TooBroad)));
+        let partition = route(TableId::McpOps, Granularity::Day, T0).unwrap();
+        model
+            .drop_partition(TableId::McpOps, partition)
+            .await
+            .unwrap();
+        model.set_scan_rows_per_sec(u64::MAX);
+        assert_eq!(run(project(1), rows).unwrap(), 0);
     });
 }

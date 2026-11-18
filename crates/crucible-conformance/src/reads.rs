@@ -5,7 +5,7 @@
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
-use crucible_env::{QueryError, TelemetryStore};
+use crucible_env::QueryError;
 use crucible_plan::test_support::query_plan;
 use crucible_plan::{
     AggOutput, Aggregate, Caller, CmpOp, Direction, FieldRange, Fill, Having, Literal, Measure,
@@ -58,7 +58,13 @@ fn trace_bytes(n: u8) -> Value {
 }
 
 /// A block of an aggregating table: `data` data rows, then the marker row.
-fn rollup(table: TableId, project: ProjectId, epoch: WalEpoch, seq: u64, data: usize) -> Rows {
+pub(crate) fn rollup(
+    table: TableId,
+    project: ProjectId,
+    epoch: WalEpoch,
+    seq: u64,
+    data: usize,
+) -> Rows {
     Rows::new(table, data + 1)
         .each("project_id", |row| {
             uuid(if row < data {
@@ -675,12 +681,28 @@ async fn node_plans(ctx: &Ctx, f: &Fixture) -> Result<usize> {
             vec![hour(HOUR), Value::UInt(5)],
         ],
     )?;
-    for store in [&ctx.store as &dyn TelemetryStore, &ctx.model] {
-        let refused = store.execute(series(Fill::Zero)?).await;
-        expect(matches!(refused, Err(QueryError::Internal(_))), || {
-            "a zero-filled series was not refused".to_owned()
-        })?;
-    }
+    // The same series with every bucket of the window: the two hours without rows hold zero.
+    let filled = TimeSeries::new(
+        Aggregate::new(
+            TableId::SpanMetrics,
+            Pred::all(),
+            [] as [SpanMetricsCol; 0],
+            vec![Measure::Sum(SpanMetricsCol::Count.column_ref())],
+        )?,
+        SpanMetricsCol::Minute,
+        Step::Hour,
+        Fill::Zero,
+    )?;
+    same(
+        "zero-filled hourly series",
+        &values(&rows(ctx, plan(QueryClass::Analytics, Node::TimeSeries(filled))).await?),
+        &vec![
+            vec![hour(-HOUR), Value::UInt(0)],
+            vec![hour(0), Value::UInt(5)],
+            vec![hour(HOUR), Value::UInt(5)],
+            vec![hour(2 * HOUR), Value::UInt(0)],
+        ],
+    )?;
 
     // TextSearch over the payload's text index.
     let search = async |mode: TokenMode, tokens: &[&str]| -> Result<usize> {
@@ -977,7 +999,14 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
         .await
         .context("statement shapes")?;
     // Once more after the store model merged every partition down to one part: its answers must not move.
+    let m2_fixture = crate::m2::load(ctx).await.context("milestone 2 fixture")?;
+    let m2 = crate::m2::plans(ctx, &m2_fixture)
+        .await
+        .context("milestone 2 plans")?;
     ctx.model.merge_all();
+    crate::m2::plans(ctx, &m2_fixture)
+        .await
+        .context("milestone 2 plans over merged model parts")?;
     endpoint_plans(ctx, &fixture)
         .await
         .context("endpoint plans over merged model parts")?;
@@ -990,7 +1019,10 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     Ok(format!(
         "{endpoints} reads of the endpoint builders (trace bounds, trace spans, trace list, span children, \
          data bounds), {nodes} reads over every node kind and predicate form and {shapes} reads over every \
-         rollup table and time-series step returned the expected rows, each block valid under the plan's \
-         output schema"
+         rollup table and time-series step and {m2} reads of the milestone 2 builders (session and user lists and \
+         details, user session counts, the span list under every filter field, search with snippets, the \
+         payload range, the metrics ranking, series and other series) with zero-filled series, set merges, \
+         nullable outputs and the row and byte guardrails returned the expected rows, each block valid under \
+         the plan's output schema"
     ))
 }

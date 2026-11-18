@@ -34,6 +34,8 @@ pub struct ClassLimits {
     pub max_memory_usage: u64,
     /// `max_rows_to_read`; `None` is unlimited.
     pub max_rows_to_read: Option<u64>,
+    /// `max_bytes_to_read`; `None` is unlimited, which is the default of every class.
+    pub max_bytes_to_read: Option<u64>,
     /// `max_threads`.
     pub max_threads: u32,
     /// The ClickHouse identity that runs the class.
@@ -84,6 +86,7 @@ impl QueryClass {
                 max_execution_time_secs: secs,
                 max_memory_usage: gib * GIB,
                 max_rows_to_read: rows,
+                max_bytes_to_read: None,
                 max_threads: threads,
                 identity: ServiceIdentity::ReadUi,
             }

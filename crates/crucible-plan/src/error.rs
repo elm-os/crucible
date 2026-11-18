@@ -66,4 +66,16 @@ pub enum PlanError {
     /// The table is not one the operation applies to: for a read, a table without `project_id`.
     #[error("table {0:?} is not valid here")]
     Table(TableId),
+    /// A zero-filled time series over an aggregate with a condition, an order, a limit or a cursor.
+    #[error("a zero-filled time series takes no condition, order, limit or cursor")]
+    ZeroFill,
+    /// A filter condition on a field the read cannot evaluate. The request must drop the condition on `field`
+    /// or use an endpoint whose data carries it.
+    #[error("the filter field {field} is not available for {target}")]
+    UnsupportedFilter {
+        /// The wire name of the filter field.
+        field: &'static str,
+        /// What the read is over.
+        target: &'static str,
+    },
 }

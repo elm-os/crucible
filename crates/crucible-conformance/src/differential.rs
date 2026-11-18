@@ -158,7 +158,7 @@ pub(crate) async fn rows(ctx: &Ctx, plan: QueryPlan) -> Result<Vec<Row>> {
 }
 
 /// A plan both stores must refuse with an error of one class.
-async fn refused(ctx: &Ctx, plan: QueryPlan, class: &QueryError) -> Result<()> {
+pub(crate) async fn refused(ctx: &Ctx, plan: QueryPlan, class: &QueryError) -> Result<()> {
     match rows(ctx, plan).await {
         Ok(found) => bail!("a plan that must fail with {class:?} returned {found:?}"),
         Err(error) => match error.downcast_ref::<QueryError>() {
@@ -629,7 +629,8 @@ pub(crate) async fn extra(ctx: &Ctx) -> Result<usize> {
         refused(ctx, over, &QueryError::TooBroad)
             .await
             .context("a semi-join over its cap of distinct ids")?;
-        // The server's distinct count of a nullable column is nullable, which no plan output can carry.
+        // The server's distinct count of a nullable column is nullable, and so is the plan's output: four
+        // spans of the fixture carry a completion time, each its own.
         let distinct = Aggregate::new(
             TableId::SpanCore,
             Pred::all(),
@@ -642,9 +643,13 @@ pub(crate) async fn extra(ctx: &Ctx) -> Result<usize> {
             QueryClass::AnalyticsRaw,
             Node::Aggregate(distinct),
         );
-        refused(ctx, distinct, &QueryError::Internal(String::new()))
+        let counted = rows(ctx, distinct)
             .await
             .context("a distinct count of a nullable column")?;
+        expect(
+            counted.first().map(Row::values) == Some(&[Value::UInt(4)][..]),
+            || format!("a distinct count of a nullable column returned {counted:?}"),
+        )?;
         done += 2;
     }
     if !failures.is_empty() {
