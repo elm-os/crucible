@@ -22,8 +22,8 @@ uv pip install "./crucible/sdk/python[mcp]"   # or: pip install "./crucible/sdk/
 ```
 
 The `mcp` extra adds `crucible_sdk.mcp` and the `mcp` package; agent tracing alone needs only the core package.
-The examples on this page are complete files. Each was run as it is with Python 3.12 and `mcp` 2.3.0, in an
-environment installed this way, against the SDK's test collector.
+The examples on this page are complete files. Each was run with Python 3.12 and `mcp` 2.3.0, in an environment
+installed this way, with only the endpoint changed to the SDK's test collector.
 
 ## Set up
 
@@ -56,10 +56,10 @@ It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=
 |---|---|---|
 | `endpoint` | `CRUCIBLE_ENDPOINT`, then `http://localhost:4318` | Base URL of an OTLP listener |
 | `secret_key` | `CRUCIBLE_SECRET_KEY` | The project's secret key, sent as a Bearer token |
-| `service_name` | The OpenTelemetry resource's | Resource `service.name`; MCP spans fall back to it as the server name |
+| `service_name` | The OpenTelemetry resource's | Resource `service.name` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | Resource `service.version` |
-| `deploy_id` | | Resource `crucible.deploy.id`; without it Crucible uses the server version as the deploy id |
+| `deploy_id` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `sample_rate` | `1.0` | Share of traces exported, decided by trace id, so a trace is kept or dropped whole |
 | `queue_size` | `2048` | Spans waiting for export. A full queue drops new spans and counts them |
 | `flush_interval` | `1.0` | Seconds between exports of a partial batch |

@@ -24,7 +24,8 @@ go mod tidy
 ```
 
 The examples on this page are complete programs, one per directory of a module set up this way. Each passed
-`go vet` with Go 1.27.4 and was run against a Crucible server, whose API then returned the traces they sent.
+`go vet` with Go 1.27.4 and was run, with only the endpoint changed, against a Crucible server whose API then
+returned the traces they sent.
 
 ## Set up
 
@@ -77,14 +78,14 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0}`.
 |---|---|
 | `Endpoint` | Required. Base URL of the Crucible server's OTLP listener, `http` or `https` |
 | `SecretKey` | Required. The project's secret key (`csk_...`), sent as a Bearer token |
-| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. An MCP server's name and version fall back to them |
+| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible is designed to use them as an MCP server's name and version when `cruciblemcp.Options` gives none |
 | `Environment` | Resource `deployment.environment.name` |
 | `Release` | `crucible.release` on every span; when it is empty, Crucible uses the service version |
-| `DeployID` | Resource `crucible.deploy.id`; without it Crucible uses the server version as the deploy id |
+| `DeployID` | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `QueueSize` | Finished spans waiting for export; 0 means 2,048 |
 | `FlushInterval` | How often the queue is exported; 0 means one second |
 
-The SDK reads no environment variables: pass every value in `Options`. `Init` returns an error that says which
+The SDK reads no `CRUCIBLE_*` environment variables: pass every value in `Options`. `Init` returns an error that says which
 option to change when `Endpoint` is empty or not an `http` or `https` URL, when `SecretKey` is empty or does not
 start with `csk_` (a public key `cpk_...` cannot send telemetry), when a size or interval is negative, and when
 `Init` was already called; call `Shutdown` before calling `Init` again.
@@ -339,7 +340,7 @@ request size from `Content-Length`.
 
 | Option | Meaning |
 |---|---|
-| `ServerName`, `ServerVersion` | The server's name and version. When they are empty, Crucible uses the service name and version given to `crucible.Init` |
+| `ServerName`, `ServerVersion` | The server's name and version. When they are empty, the spans carry none, and Crucible is designed to use the service name and version given to `crucible.Init` |
 | `Transport` | The transport reported for requests that did not arrive over streamable HTTP: `stdio` (the default), `sse` or `unknown` |
 | `Capture` | Content capture rules; see below |
 | `HandleParams` | Tool name to one of its arguments whose string value becomes the handle id, scrubbed and cut at 256 bytes. A handle id from `Identify` takes precedence |
@@ -385,9 +386,9 @@ Arguments and results are not captured unless a rule opts a tool in. A `CaptureR
 `SampleRate`, the share of matching calls captured (0 means 1), decided before anything is copied; and `MaxBytes`,
 the cap per field (0 means 16 KiB). The first rule whose glob matches the tool applies.
 
-Each captured field is cut at `MaxBytes` on a character boundary, then the shared scrubbing rules replace PEM blocks,
-JWTs, bearer tokens, Crucible secret keys (`csk_`), card numbers that pass the Luhn check, email addresses, IP
-addresses and phone numbers, each match with a marker such as `[redacted:card]`. The rules are data:
+Each captured field is scrubbed with the shared rules, which replace PEM blocks, JWTs, bearer tokens, Crucible secret
+keys (`csk_`), card numbers that pass the Luhn check, email addresses, IP addresses and phone numbers, each match with
+a marker such as `[redacted:card]`, and then cut at `MaxBytes` on a character boundary. The rules are data:
 `internal/scrub/rules.json` is a copy of `conformance/scrub-rules.json`, which every Crucible SDK uses, and a test
 keeps the two identical. The SDK scrubs 1 KiB past the cap before cutting, so a secret that straddles the cap
 leaves no prefix behind. `Scrub` runs after the rules and is the place for anything they do not cover, such as
@@ -477,8 +478,8 @@ share one params value between concurrent calls. `ClientOptions.Transport` is th
 ## The export queue
 
 Finished spans go on a bounded queue that one goroutine exports in batches of up to 512: as soon as a batch is full,
-every `FlushInterval`, and whenever `Flush` asks. When the queue is full, a span is dropped and counted; ending a span never waits for the
-network.
+every `FlushInterval`, and whenever `Flush` asks. When the queue is full, a span is dropped and counted; ending a span
+never waits for the network.
 
 The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 or a 503, and waits for the server's
 `Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted.
@@ -496,7 +497,8 @@ The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 
 The SDK reads no environment variables of its own: the endpoint, the key and every other setting come from
 `crucible.Options` and `cruciblemcp.Options`, so the examples read `CRUCIBLE_ENDPOINT` and `CRUCIBLE_SECRET_KEY`
 themselves. The resource starts from the OpenTelemetry Go SDK's default resource, so `OTEL_SERVICE_NAME` and
-`OTEL_RESOURCE_ATTRIBUTES` still fill the resource keys that `Options` leave empty. Each export carries `User-Agent: crucible-sdk-go/<version>`; `crucible.Version` is the version.
+`OTEL_RESOURCE_ATTRIBUTES` still fill the resource keys that `Options` leave empty. Each export carries
+`User-Agent: crucible-sdk-go/<version>`; `crucible.Version` is the version.
 
 ## What the middleware cannot observe
 

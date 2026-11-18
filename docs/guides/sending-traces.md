@@ -234,4 +234,5 @@ keys is in [contract 10.6](../architecture/contracts.md#106-source-keys-for-fiel
 Spans that carry `mcp.method.name`, which the Crucible SDKs send with the keys of
 [contract 9.1](../architecture/contracts.md#91-wire-attribute-contract), are stored as spans like any other: a
 `tools/call` span is typed `tool`, a tool error that a Crucible SDK reports has status `error`, and the MCP keys stay
-among the span's `attributes`. Recording them as MCP operations, and the MCP analytics routes and pages that read those, are planned.
+among the span's `attributes`. Recording them as MCP operations, and the MCP analytics routes and pages that read
+those, are planned.

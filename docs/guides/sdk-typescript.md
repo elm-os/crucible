@@ -16,7 +16,7 @@ Servers on the 1.x line are designed to use the Crucible proxy, which is planned
 ## Install
 
 The package is not on npm yet; it will be published as `@elm-os/crucible`. Until then, build it from a checkout of
-the repository and install the packed file. The build needs pnpm 11:
+the repository and install the packed file. The build needs Node.js 24 and pnpm 11:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
@@ -33,8 +33,9 @@ npm install ../elm-os-crucible-0.0.0.tgz
 npm install @modelcontextprotocol/server@^2 @modelcontextprotocol/client@^2 zod@^4   # for the MCP examples
 ```
 
-The examples on this page are complete ES module files. Each was run as it is with `node <file>.ts` in such a
-project, with `"type": "module"` in its `package.json` and MCP SDK 2.4.0, against the SDK's test collector.
+The examples on this page are complete ES module files. Each was run with `node <file>.ts` in such a project, with
+`"type": "module"` in its `package.json` and MCP SDK 2.4.0, and with only the endpoint changed to the SDK's test
+collector; they also pass `tsc --noEmit` in strict mode.
 
 ## Set up
 
@@ -68,7 +69,7 @@ It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
 | `serviceName`, `serviceVersion` | | Resource `service.name` and `service.version` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | `crucible.release` on every span |
-| `deployId` | | Resource `crucible.deploy.id`; without it Crucible uses the service version as the deploy id |
+| `deployId` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `queueSize` | 2,048 | Spans the export queue holds, the batch being sent included |
 | `flushIntervalMs` | 1,000 | Longest wait before a partial batch is sent |
 | `exportTimeoutMs` | 10,000 | Bound on one export, and on `flush` and `shutdown` |
@@ -80,7 +81,7 @@ call `shutdown` before calling `init` again. Each `init` gives the process a new
 The SDK uses its own tracer provider and never registers it globally, so an application's own OpenTelemetry setup
 is left alone. When the application has a context manager registered, Crucible spans nest under the active span and
 the application's spans nest under Crucible spans. `OTEL_*` variables cannot redirect the export, replace its key
-or turn its sampling off; every span is sent.
+or turn its sampling off: sampling is always on.
 
 - `flush()` exports every queued span. It resolves within `exportTimeoutMs`, whether or not the collector answers,
   and never rejects.
@@ -212,7 +213,10 @@ server.registerTool(
   },
   async ({ order_id }) => {
     annotateError("upstream");
-    return { content: [{ type: "text", text: `the payment service refused ${order_id}` }], isError: true };
+    return {
+      content: [{ type: "text", text: `the payment service refused ${order_id}` }],
+      isError: true,
+    };
   },
 );
 
@@ -309,11 +313,12 @@ at `maxBytes` on a character boundary, with `crucible.mcp.content.captured`, `.c
 `.content.truncation` (`cap_exceeded` when a field was cut). Scrubbing sees 1 KiB past the cap, so a secret that
 straddles the cap is still matched, and a cut never keeps the prefix of a token it splits.
 
-The scrub rules are the shared list of `conformance/scrub-rules.json`, packaged as `src/scrub-rules.json`, which a
-test keeps equal: PEM blocks, JWTs, Bearer tokens, Crucible secret keys, card numbers that pass the Luhn check,
-email addresses, IP addresses and phone numbers. Each match is replaced with a marker such as `[redacted:card]`.
-Error messages and handle ids are scrubbed with the same rules. The rules match values only, so a secret under a key such as `password` is sent unless its value matches a rule. A
-`requestState` is never sent in any form other than its keyed hash.
+The scrub rules are the shared list of `conformance/scrub-rules.json`, packaged as `src/scrub-rules.json`, which a test
+keeps equal: PEM blocks, JWTs, Bearer tokens, Crucible secret keys, card numbers that pass the Luhn check, email
+addresses, IP addresses and phone numbers. Each match is replaced with a marker such as `[redacted:card]`. Error
+messages and handle ids are scrubbed with the same rules. The rules match values only, so a secret under a key such as
+`password` is sent unless its value matches a rule. A `requestState` is never sent in any form other than its keyed
+hash.
 
 ## Instrument an MCP client
 
@@ -326,7 +331,9 @@ import { instrumentClient } from "@elm-os/crucible/mcp-client";
 
 init({ serviceName: "support-agent" });
 
-const client = instrumentClient(new Client({ name: "support-agent", version: "1.0.0" }));
+const client = instrumentClient(new Client({ name: "support-agent", version: "1.0.0" }), {
+  transport: "stdio",
+});
 // The stdio transport starts the server with a minimal environment, so pass the Crucible settings on.
 await client.connect(
   new StdioClientTransport({
@@ -342,7 +349,10 @@ await client.connect(
 
 await withContext({ sessionId: "conv-42" }, () =>
   observe("handle refund request", { type: "agent" }, async () => {
-    const order = await client.callTool({ name: "lookup_order", arguments: { order_id: "A-1001" } });
+    const order = await client.callTool({
+      name: "lookup_order",
+      arguments: { order_id: "A-1001" },
+    });
     const refund = await client.callTool({
       name: "refund",
       arguments: { order_id: "A-1001", card: "4111 1111 1111 1111" },
@@ -399,7 +409,7 @@ Every other setting is an option of `init` or `instrument`. Each export carries
 - Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client info. Server info is
   remembered per `instrument` call, so it reaches every operation after the first result.
 - Exchanges that `instrumentHandler` records run no handler, so `annotateError` and `identify` cannot reach them,
-  and they carry no server name; Crucible then uses the resource `service.name`.
+  and they carry no server name; Crucible is designed to use the resource `service.name` instead.
 - Headers named in `OTEL_EXPORTER_OTLP_HEADERS`, other than `Authorization`, are still sent with each export.
 - `serveStdio` answers its `server/discover` probe and a few errors before any server instance exists; those are
   not recorded.

@@ -5,13 +5,15 @@ page covers what the server on main serves. The rest of the API that
 [contract 12](../architecture/contracts.md#12-api) describes, from sign-in to dashboards, alerts and exports, is
 planned.
 
-The examples use three shell variables: the server's main listener, a project's secret key and that project's id.
+The examples use four shell variables: the server's main listener, a project's secret and public keys, and that
+project's id.
 Every example on this page was run against a `crucible serve` binary with ClickHouse, and the responses are the
 ones it gave.
 
 ```sh
 export CRUCIBLE_URL=http://127.0.0.1:8080
 export CRUCIBLE_SECRET_KEY=csk_...
+export CRUCIBLE_PUBLIC_KEY=cpk_...
 export PROJECT_ID=0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
 ```
 
@@ -116,10 +118,10 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/pr
 }
 ```
 
-`spans` and `mcp` give the first and last minute with data; the server does not record MCP operations yet, which
-is planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its
-data forever, which is the only retention in this preview; retention settings are planned. `max_window_days` is the
-widest window a list or search may ask for.
+`spans` and `mcp` give the first and last minute with data; the server does not record MCP operations yet, which is
+planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its data forever, which is the only
+retention in this preview; retention settings are planned. `max_window_days` is the widest window a list or search may
+ask for.
 
 The newest trace in a window:
 
