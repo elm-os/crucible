@@ -1291,18 +1291,30 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     };
     let cli_bearer = format!("Bearer {}", field("secret_key"));
     let cli_trace = Trace::new(env, "e2e command-line key trace");
-    let (status, body) = http(
-        server.ingest,
-        "POST",
-        "/v1/traces",
-        &[
-            ("content-type", "application/json"),
-            ("authorization", &cli_bearer),
-        ],
-        cli_trace.json().as_bytes(),
-    )
-    .unwrap();
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    // A key made outside the server reaches it through the key feed, within 5 s.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, body) = http(
+            server.ingest,
+            "POST",
+            "/v1/traces",
+            &[
+                ("content-type", "application/json"),
+                ("authorization", &cli_bearer),
+            ],
+            cli_trace.json().as_bytes(),
+        )
+        .unwrap();
+        if status == 200 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ingest answered {status} for 20 s with the command-line key: {}",
+            String::from_utf8_lossy(&body)
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let cli_api = Api {
         addr: server.api,
         project: field("project_id"),
