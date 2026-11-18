@@ -1,0 +1,34 @@
+[package]
+name = "crucible-control-pg"
+description = "The Postgres adapter of the control plane: ControlStore over tokio-postgres through Net."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Statements that only tests and the conformance suite need (emptying the tables).
+test-support = []
+
+[dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-control = { path = "../crucible-control" }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+# Exact versions until the root [workspace.dependencies] table lists them.
+tokio-postgres = { workspace = true }
+# The pool that deadpool-postgres is built on, with a manager that connects through `Net` and runs the
+# connection task on the `Env` spawner (deadpool-postgres 0.14.2 itself requires `tokio::spawn`).
+deadpool = { workspace = true, features = ["managed"] }
+refinery = { workspace = true, features = ["tokio-postgres"] }
+
+[lints]
+workspace = true

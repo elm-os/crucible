@@ -1,0 +1,21 @@
+[package]
+name = "crucible-config"
+description = "Configuration: a TOML file, then CRUCIBLE_* environment variables, then flags. The only crate that reads the process environment."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+# Parsing only. The same exact version as the binary's keys-file parser, until the root
+# [workspace.dependencies] table lists it.
+toml = { workspace = true, features = ["std", "serde", "parse"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
