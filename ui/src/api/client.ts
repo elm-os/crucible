@@ -140,8 +140,11 @@ export function listSpanChildren(
   );
 }
 
+// 32 hex characters from `crypto.getRandomValues`, which, unlike `crypto.randomUUID`, also works outside a secure
+// context: over plain HTTP on an internal network (contract 1.7).
 export function newIdempotencyKey(): string {
-  return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function writeTag(project: string, body: TagRequest, key: string): Promise<FactWritten> {
