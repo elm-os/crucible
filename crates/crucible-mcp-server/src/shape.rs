@@ -199,6 +199,34 @@ impl SpanRow {
         self.output_preview = None;
         self.previews_omitted = true;
     }
+
+    /// The largest span row: its name, model and previews at the caps of contract 3.1 (1,024, 256 and 1,024
+    /// bytes), all control characters, which JSON escapes most.
+    #[cfg(test)]
+    pub(crate) fn at_caps() -> Self {
+        let control = |bytes: usize| "\u{1}".repeat(bytes);
+        Self {
+            span_id: "000000000000000a".to_owned(),
+            parent_span_id: Some("0000000000000001".to_owned()),
+            name: control(1_024),
+            observation_type: "generation",
+            start_time: "2026-11-17T09:29:00.000000Z".to_owned(),
+            end_time: "2026-11-17T09:29:01.250000Z".to_owned(),
+            duration_us: 1_250_000,
+            status_code: "error",
+            level: "error",
+            model: control(256),
+            total_cost_usd: 0.000_123_4,
+            input_tokens: 1_234,
+            output_tokens: 567,
+            total_tokens: 1_801,
+            child_count: Some(3),
+            input_preview: Some(control(1_024)),
+            output_preview: Some(control(1_024)),
+            previews_omitted: false,
+            saturated: false,
+        }
+    }
 }
 
 /// One trace of the trace list.
@@ -394,7 +422,7 @@ mod tests {
     #[test]
     fn a_row_at_the_field_caps_fits_a_result_on_its_own() {
         // The caps of contract 3.1: a name of 1,024 bytes, a model of 256 and previews of 1,024.
-        let span = span_row(control(1_024), control(256), Some(control(1_024)));
+        let span = SpanRow::at_caps();
         assert!(rows_per_result(&span) >= 1);
         // 64 tags of 256 bytes are what can outgrow a result; a trace without them fits.
         let mut trace = trace_row(control, vec![control(256); 64]);

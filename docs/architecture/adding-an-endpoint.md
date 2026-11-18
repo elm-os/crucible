@@ -158,9 +158,11 @@ A slice whose service an agent can use adds one tool for it: one module and one 
    Register it in `crates/crucible-mcp-server/src/tools.rs` with `mod <tool>;` and one `entry::<..>()` line in
    `TOOLS`, at its sorted place.
 
-   Verify: `crates/crucible-mcp-server/tests/mcp/tools.rs` gains a snapshot of the tool's output and its argument
-   refusals, `tests/mcp/caps.rs` its row cap and continuation, and `the_registry_is_sorted_and_every_tool_has_object_schemas`
-   checks its schemas; `cargo nextest run -p crucible-mcp-server`. Both protocol eras list every registered tool
+   Verify: a test module under `crates/crucible-mcp-server/tests/mcp/` (`tools.rs` for the trace tools, `text.rs`
+   for search and payloads) gains a snapshot of the tool's output and its argument refusals, `tests/mcp/caps.rs`
+   or the same module its row cap and the continuation of a cut result, and
+   `the_registry_is_sorted_and_every_tool_has_object_schemas` checks its schemas;
+   `cargo nextest run -p crucible-mcp-server`. Both protocol eras list every registered tool
    (`tests/mcp/eras.rs`, and rmcp's own client in `the_mcp_server_answers_both_protocol_eras_at_mcp` of
    `crates/crucible/src/serve.rs`), so those tests need no change.
 

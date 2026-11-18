@@ -315,3 +315,51 @@ fn open(
         _ => Err(CursorError::WrongKind),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crucible_query::{Consistency, Meta as QueryMeta};
+
+    use super::*;
+    use crate::shape::{MAX_RESULT_BYTES, result_bytes};
+
+    #[test]
+    fn a_hit_at_the_caps_fits_a_result_on_its_own_once_lightened() {
+        // A snippet of 240 bytes split into the most fragments: one-letter words between control characters,
+        // in both text fields, beside the largest span row.
+        let fragments: Vec<Fragment> = (0..240)
+            .map(|at| Fragment {
+                text: if at % 2 == 0 { "a" } else { "\u{1}" }.to_owned(),
+                highlighted: at % 2 == 0,
+            })
+            .collect();
+        let matches = ["input", "output"]
+            .map(|field| Match {
+                field,
+                fragments: fragments.clone(),
+                cut_before: true,
+                cut_after: true,
+            })
+            .to_vec();
+        let mut hit = Hit {
+            trace_id: "a5".repeat(16),
+            span: SpanRow::at_caps(),
+            matches,
+        };
+        let page = |hit: &Hit| Output {
+            data: vec![hit.clone()],
+            next_cursor: Some("v".repeat(200)),
+            has_more: true,
+            truncated: true,
+            meta: meta(&QueryMeta {
+                as_of: Timestamp::EPOCH,
+                partial: false,
+                partial_reason: None,
+                consistency: Consistency::Strong,
+            }),
+        };
+        assert!(result_bytes(&page(&hit)) > MAX_RESULT_BYTES);
+        hit.span.lighten();
+        assert!(result_bytes(&page(&hit)) <= MAX_RESULT_BYTES);
+    }
+}

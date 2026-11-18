@@ -21,7 +21,7 @@ fn ago(micros: i64) -> crucible_records::Timestamp {
 
 /// A span name of 1,024 bytes (the cap of contract 3.1) that JSON escapes heavily: quotes, backslashes,
 /// newlines and control characters, after a prefix that tells the spans apart.
-fn hostile(id: u64) -> String {
+pub(crate) fn hostile(id: u64) -> String {
     let mut name = format!("{id:06} ");
     while name.len() < 1_024 {
         name.push_str("\"\\\n\u{1}");

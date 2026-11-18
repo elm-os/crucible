@@ -1,10 +1,13 @@
 //! The text tools: search over inputs, outputs and metadata entries, and payload pieces that read a whole field
 //! under the result cap (contract 8.7 and 12.4).
 
+use std::sync::Arc;
+
 use crucible_recent::SpanEntry;
 use crucible_records::TableId;
 use serde_json::{Value, json};
 
+use crate::caps::hostile;
 use crate::world::{NOW, World, span, span_payload_row, trace};
 use crate::{Client, key, mcp, run, window};
 
@@ -97,6 +100,56 @@ fn search_finds_spans_by_their_words_and_their_metadata_entries() {
         paged["query"] = json!("declined");
         let problem = client.error("search_spans", paged).await;
         assert_eq!(problem["code"], "cursor_invalid");
+    });
+}
+
+#[test]
+fn a_search_too_large_for_one_result_is_cut_and_continues_newest_first() {
+    run(|env| async move {
+        // 30 hits in trace 1, three to a minute, each named with 1,024 bytes that JSON escapes heavily, so a
+        // result holds a few hits and the default page of 20 is cut.
+        let mut world = World::new(10_000);
+        let entries: Vec<SpanEntry> = (0..30u64)
+            .map(|i| {
+                let minutes = i64::try_from(i / 3).unwrap() + 1;
+                let start =
+                    NOW.saturating_add_micros(-minutes * MINUTE - i64::try_from(i).unwrap());
+                let mut entry = span(1, 100 + i, 0, start);
+                entry.summary.name = Arc::from(hostile(i));
+                entry
+            })
+            .collect();
+        let lsn = world.ack(entries.clone());
+        for entry in &entries {
+            let row = span_payload_row(entry, lsn, NOW, "refund requested", &[]);
+            world.store.insert(TableId::SpanPayload, row);
+        }
+        world.settle();
+        let mcp = mcp(&env, &world);
+        let mut client = Client::modern(&mcp, &key(1));
+
+        let mut arguments = search("refund");
+        let (mut read, mut cut) = (Vec::new(), 0);
+        loop {
+            let page = client.output("search_spans", arguments.clone()).await;
+            if page["truncated"] == true {
+                cut += 1;
+            }
+            read.extend(span_ids(&page).into_iter().map(str::to_owned));
+            match page["next_cursor"].as_str() {
+                Some(cursor) => arguments["cursor"] = json!(cursor),
+                None => break,
+            }
+        }
+        assert!(cut > 1, "{cut} cut pages");
+        // Every hit once, newest first along the hits' key: the start minute, then the span id.
+        let mut expected: Vec<_> = entries
+            .iter()
+            .map(|e| (e.summary.start_time.floor_minute(), e.summary.span_id))
+            .collect();
+        expected.sort_unstable_by(|a, b| b.cmp(a));
+        let expected: Vec<String> = expected.iter().map(|(_, id)| id.to_string()).collect();
+        assert_eq!(read, expected);
     });
 }
 
