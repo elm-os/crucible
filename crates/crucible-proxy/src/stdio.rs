@@ -5,10 +5,14 @@
 //! or joined on the way, so there is no line limit. When the client closes its end, the child's standard input
 //! is closed. The result is how the child ended, for the caller to exit the same way.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
-use crucible_env::{Child, ChildError, ChildProcess, ChildSignal, ChildSpec, Env, ExitStatus};
+use crucible_env::{
+    Child, ChildError, ChildProcess, ChildSignal, ChildSpec, Clock, Env, ExitStatus,
+    ShutdownSignal, shutdown_channel,
+};
 use crucible_records::Direction;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
@@ -19,8 +23,8 @@ use crate::live::LiveTap;
 
 /// The size of one read. A larger message simply takes several chunks.
 const CHUNK: usize = 64 * 1024;
-/// How long the child's last output is waited for after it exited. A process the child left behind can hold
-/// the pipe open; it must not hold the proxy.
+/// How long more output is waited for once the child has exited and its pipe is silent. A process the child
+/// left behind can hold the pipe open; it must not hold the proxy. Writing what was read is never cut short.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// The client's side: this process's standard streams in production.
@@ -50,16 +54,41 @@ pub enum StdioError {
     Wait(std::io::Error),
 }
 
-/// Copies `from` to `to` chunk by chunk through the tap until `from` ends or `to` fails.
+/// Ends a pump of the child's output when the child has exited and its pipe has been silent for the grace.
+#[derive(Clone)]
+struct Drain {
+    exited: ShutdownSignal,
+    clock: Arc<dyn Clock>,
+}
+
+impl Drain {
+    async fn silent_after_exit(&self) {
+        self.exited.clone().await;
+        self.clock.sleep(DRAIN_GRACE).await;
+    }
+}
+
+/// Copies `from` to `to` chunk by chunk through the tap until `from` ends or `to` fails. Every chunk that was
+/// read is written, however long the reader of `to` takes.
 async fn pump(
     mut from: Box<dyn AsyncRead + Send + Unpin>,
     mut to: Box<dyn AsyncWrite + Send + Unpin>,
     tap: Option<(LiveTap, Direction)>,
+    drain: Option<Drain>,
 ) -> std::io::Result<()> {
     let mut buffer = BytesMut::with_capacity(CHUNK);
     loop {
         buffer.reserve(CHUNK);
-        if from.read_buf(&mut buffer).await? == 0 {
+        let read = match &drain {
+            None => from.read_buf(&mut buffer).await?,
+            // `read_buf` is cancel-safe: when the grace wins, nothing was read.
+            Some(drain) => tokio::select! {
+                biased;
+                read = from.read_buf(&mut buffer) => read?,
+                () = drain.silent_after_exit() => 0,
+            },
+        };
+        if read == 0 {
             // End of input: dropping `to` closes the other side's pipe.
             return Ok(());
         }
@@ -73,7 +102,7 @@ async fn pump(
     }
 }
 
-/// Runs the proxy until the child exits and returns how it ended.
+/// Runs the proxy until the child exits and its output is delivered, and returns how the child ended.
 ///
 /// `signals` are forwarded to the child's process group as they arrive. Call this from a thread that lives as
 /// long as the process (see `TokioChildProcess::with_parent_death_trampoline`).
@@ -91,24 +120,33 @@ pub async fn run(
             "the child has no standard input or output",
         )));
     };
+    let (exited, has_exited) = shutdown_channel();
+    let drain = Drain {
+        exited: has_exited,
+        clock: Arc::clone(&env.clock),
+    };
     let to_child = env.spawn(
         "proxy-stdio-in",
         pump(
             client.input,
             stdin,
             Some((tap.clone(), Direction::ClientToServer)),
+            None,
         ),
     );
-    let stderr = child
-        .stderr
-        .take()
-        .map(|stderr| env.spawn("proxy-stdio-err", pump(stderr, client.error, None)));
+    let mut stderr = child.stderr.take().map(|stderr| {
+        env.spawn(
+            "proxy-stdio-err",
+            pump(stderr, client.error, None, Some(drain.clone())),
+        )
+    });
     let mut from_child = env.spawn(
         "proxy-stdio-out",
         pump(
             stdout,
             client.output,
             Some((tap.clone(), Direction::ServerToClient)),
+            Some(drain),
         ),
     );
 
@@ -138,16 +176,26 @@ pub async fn run(
             }
         }
     };
-    if !output_done && env.timeout(DRAIN_GRACE, from_child.join()).await.is_err() {
-        from_child.abort();
+    exited.trigger();
+    // What the child wrote before it exited still has to reach the client, at the client's pace. A signal to
+    // the proxy ends the wait: the child is gone, so there is nothing left to forward the signal to.
+    while !output_done {
+        tokio::select! {
+            biased;
+            signal = signals.next(), if !signals_done => match signal {
+                Some(_) => {
+                    from_child.abort();
+                    output_done = true;
+                }
+                None => signals_done = true,
+            },
+            _delivered = from_child.join() => output_done = true,
+        }
     }
     // The reader of the client's input may be parked in a read that never returns.
     to_child.abort();
-    if let Some(stderr) = stderr {
-        let mut stderr = stderr;
-        if env.timeout(DRAIN_GRACE, stderr.join()).await.is_err() {
-            stderr.abort();
-        }
+    if let Some(stderr) = &mut stderr {
+        let _copied = stderr.join().await;
     }
     tap.session_end();
     Ok(status)

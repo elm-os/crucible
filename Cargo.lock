@@ -1063,6 +1063,7 @@ dependencies = [
 name = "crucible-proxy"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
  "bytes",
  "crucible-env",

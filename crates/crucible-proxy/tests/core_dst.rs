@@ -2,8 +2,8 @@
 //!
 //! Each seed scripts an MCP client and server exchanging JSON-RPC lines, with the server stalling, crashing or
 //! exiting, splits both byte streams into random chunks, runs the analyser on a random schedule (including not
-//! at all) against random queue and buffer sizes, and puts the collector in one of five states. Whatever the
-//! seed:
+//! at all) against random queue and buffer sizes, and puts the collector in one of five states. The server's
+//! exit code is no input of the core; `stdio_scripted.rs` and the process tests cover it. Whatever the seed:
 //!
 //! - every chunk comes out of [`Tap::forward`] byte for byte as it went in, at the moment it goes in;
 //! - telemetry that does not fit is dropped and counted, and every finished operation is accounted for;
@@ -93,7 +93,6 @@ struct Script {
     expected: Vec<Expected>,
     /// Lines that are not JSON-RPC.
     malformed: u64,
-    exit_code: i32,
 }
 
 const C2S: Direction = Direction::ClientToServer;
@@ -404,7 +403,6 @@ fn script(rng: &dyn Rng) -> Script {
         lines,
         expected: done,
         malformed,
-        exit_code: [0, 0, 1, 2, 137][below(rng, 5) as usize],
     }
 }
 
@@ -611,7 +609,6 @@ fn run(seed: u64, mutant: Option<Mutant>) -> Result<Summary, String> {
     }
 
     // The server exits.
-    let _exit_code = script.exit_code;
     let now = run.now();
     run.tap.session_end(now);
     run.core.drain();
