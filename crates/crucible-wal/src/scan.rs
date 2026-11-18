@@ -69,6 +69,14 @@ impl WalFrame {
         load_payload(self.header.compressed, self.stored_payload())
     }
 
+    /// A copy that owns its bytes, so that keeping it does not keep the read window alive.
+    pub(crate) fn detached(&self) -> Self {
+        Self {
+            raw: Bytes::copy_from_slice(&self.raw),
+            ..self.clone()
+        }
+    }
+
     /// The header and stored payload exactly as read.
     pub(crate) fn raw(&self) -> &Bytes {
         &self.raw

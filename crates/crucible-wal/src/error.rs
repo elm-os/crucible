@@ -166,9 +166,10 @@ pub enum AppendError {
         /// Largest frame a segment holds.
         max: u64,
     },
-    /// A `Checkpoint` payload that does not decode, or whose watermark is above the durable LSN.
-    #[error("invalid checkpoint record")]
-    InvalidCheckpoint,
+    /// A `BatchSeal` or `Checkpoint` payload that does not decode, or whose range reaches above the
+    /// durable LSN. Recovery would refuse a log that holds such a record.
+    #[error("invalid control record")]
+    InvalidControl,
     /// The frame's group failed to append or sync. The caller answers 503 and the client may retry.
     #[error("wal group failed")]
     Unavailable,

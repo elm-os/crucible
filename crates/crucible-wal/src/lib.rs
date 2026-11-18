@@ -20,11 +20,9 @@ mod replay;
 mod scan;
 mod wal;
 
-#[cfg(feature = "test-mutants")]
-pub use config::Mutant;
 pub use config::{
     DEFAULT_MAX_BYTES, DEFAULT_MIN_FREE_BYTES, DEFAULT_REPLAY_RETENTION, DEFAULT_SEGMENT_BYTES,
-    Durability, GROUP_BYTES, MAX_REPLAY_RETENTION, WalConfig,
+    Durability, GROUP_BYTES, MAX_REPLAY_RETENTION, Mutant, WalConfig,
 };
 pub use error::{AppendError, GcError, RecoveryError, ReplayError, SegmentHeaderIssue, WalGap};
 pub use layout::SegmentMeta;

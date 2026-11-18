@@ -41,15 +41,23 @@ impl Durability {
 }
 
 /// A seeded defect. The simulation suite switches each one on and must catch it.
-#[cfg(feature = "test-mutants")]
+///
+/// Without the cargo feature `test-mutants` this type has no value, so [`WalConfig::mutant`] is always
+/// `None` and no defect can be switched on. Only `crucible-sim` enables the feature.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mutant {
     /// Complete a group's waiters before its `sync_data`.
+    #[cfg(feature = "test-mutants")]
     AckBeforeSync,
     /// Let garbage collection remove segments above the checkpoint watermark.
+    #[cfg(feature = "test-mutants")]
     GcAboveCheckpoint,
     /// Resume appending after a torn tail without zeroing it.
+    #[cfg(feature = "test-mutants")]
     KeepTornTail,
+    /// Trust the frames recovery read from the last segment without writing and syncing them again.
+    #[cfg(feature = "test-mutants")]
+    TrustRecoveredTail,
 }
 
 /// The settings of one WAL directory.
@@ -66,8 +74,7 @@ pub struct WalConfig {
     /// How long checkpointed segments are kept for replay; clamped to [`MAX_REPLAY_RETENTION`]. Retained
     /// segments also never exceed 25% of `max_bytes` and are evicted first above the high-water mark.
     pub replay_retention: Duration,
-    /// The seeded defect to run with.
-    #[cfg(feature = "test-mutants")]
+    /// The seeded defect to run with; always `None` outside the simulation suite (see [`Mutant`]).
     pub mutant: Option<Mutant>,
 }
 
@@ -79,7 +86,6 @@ impl Default for WalConfig {
             min_free_bytes: DEFAULT_MIN_FREE_BYTES,
             durability: Durability::Group,
             replay_retention: DEFAULT_REPLAY_RETENTION,
-            #[cfg(feature = "test-mutants")]
             mutant: None,
         }
     }
@@ -101,28 +107,30 @@ impl WalConfig {
         i64::try_from(capped.as_micros()).unwrap_or(i64::MAX)
     }
 
-    #[cfg(feature = "test-mutants")]
-    fn has(&self, mutant: Mutant) -> bool {
-        self.mutant == Some(mutant)
-    }
-
     pub(crate) fn ack_before_sync(&self) -> bool {
         #[cfg(feature = "test-mutants")]
-        return self.has(Mutant::AckBeforeSync);
+        return self.mutant == Some(Mutant::AckBeforeSync);
         #[cfg(not(feature = "test-mutants"))]
         false
     }
 
     pub(crate) fn gc_above_checkpoint(&self) -> bool {
         #[cfg(feature = "test-mutants")]
-        return self.has(Mutant::GcAboveCheckpoint);
+        return self.mutant == Some(Mutant::GcAboveCheckpoint);
         #[cfg(not(feature = "test-mutants"))]
         false
     }
 
     pub(crate) fn keep_torn_tail(&self) -> bool {
         #[cfg(feature = "test-mutants")]
-        return self.has(Mutant::KeepTornTail);
+        return self.mutant == Some(Mutant::KeepTornTail);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    pub(crate) fn trust_recovered_tail(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::TrustRecoveredTail);
         #[cfg(not(feature = "test-mutants"))]
         false
     }

@@ -2,6 +2,8 @@
 //! collection, disk faults and crashes at seeded await points, checked by an oracle for the WAL
 //! invariants.
 //!
+//! Incarnations end with a crash, or with a process stop that leaves unsynced bytes readable.
+//!
 //! - **I1** every acknowledged frame above the recovered watermark is in the recovered log, intact, at
 //!   its LSN; frames a recovery returned stay in the log; the log holds no frame that was not submitted
 //!   in the incarnation that owns its LSN, and no valid frame is left beyond the end of the recovered log;
@@ -149,6 +151,9 @@ pub struct Stats {
     pub incarnations: u64,
     /// Crashes applied, including crashes during recovery.
     pub crashes: u64,
+    /// Incarnations that ended with a process stop instead of a crash: the disk kept everything, synced
+    /// or not.
+    pub stops: u64,
     /// Recovery attempts, the reference recoveries not counted.
     pub recovery_attempts: u64,
     /// Recovery attempts that failed with an error or were cut by a crash.
@@ -194,6 +199,8 @@ struct Plan {
     crash_loops: bool,
     pin_recent: bool,
     tail_reader: bool,
+    /// Some incarnations end with a process stop instead of a crash.
+    clean_stops: bool,
     crash_in_recovery: bool,
     double_recovery: bool,
     wall_offset_micros: i64,
@@ -260,6 +267,7 @@ impl Plan {
             crash_loops,
             pin_recent: coin(rng),
             tail_reader: coin(rng),
+            clean_stops: coin(rng),
             crash_in_recovery: coin(rng),
             double_recovery: coin(rng),
             wall_offset_micros: pick(rng, 600_000_000) as i64 - 300_000_000,
@@ -708,6 +716,8 @@ struct Run<'a> {
     shared: Shared,
     rng: Arc<dyn Rng>,
     boots: u64,
+    /// The last incarnation ended with a stop, so the disk holds bytes that are readable and not durable.
+    stopped: bool,
 }
 
 impl Run<'_> {
@@ -753,18 +763,22 @@ impl Run<'_> {
             })
     }
 
-    /// What one uninterrupted recovery of the disk as it is now yields, computed on a fault-free copy.
-    async fn reference(&self) -> Result<(LogState, bool), RecoveryError> {
-        let label = format!("wal-sim/reference-{}", self.boots);
+    /// What one uninterrupted recovery of the disk as it is now yields, computed on a fault-free copy:
+    /// the state, whether a tail was repaired, and how many disk operations the recovery took.
+    async fn reference(&self) -> Result<(LogState, bool, u64), RecoveryError> {
+        let label = format!("wal-sim/reference-{}-{}", self.boots, self.disk.ops());
         let copy = self.disk.fork(self.sim.rng(&label).as_ref());
         let host = self.sim.host(&label, &copy, self.plan().wall_offset_micros);
+        let ops_before = copy.ops();
         let opened = Box::pin(Wal::open(&host.env, self.plan().config.clone())).await;
+        let ops = copy.ops() - ops_before;
         let state = match opened {
             Ok((wal, report)) => {
                 let log = read_log(&wal, report.first_retained_lsn())
                     .await
                     .unwrap_or_default();
-                Ok((LogState::new(&report, &log), report.tail_repair.is_some()))
+                let repaired = report.tail_repair.is_some();
+                Ok((LogState::new(&report, &log), repaired, ops))
             }
             Err(e) => Err(e),
         };
@@ -778,15 +792,22 @@ impl Run<'_> {
     async fn boot(&mut self) -> Option<(Host, Wal, RecoveryReport, bool)> {
         self.boots += 1;
         let workload_faults = self.disk.faults();
-        let (reference, repaired) = match self.reference().await {
-            Ok(reference) => reference,
-            Err(e) => {
-                self.violate(Violation::RecoveryFailed(e));
-                return None;
-            }
-        };
+        let mut reference = None;
         let mut attempt = 0u64;
         let (host, wal, report) = loop {
+            // After a stop, a crash during recovery loses what was readable and not durable, so the
+            // reference is taken again after that crash. From then on, and after a crash from the start,
+            // the disk holds durable bytes only and every later attempt must reach the one reference.
+            if reference.is_none() {
+                match self.reference().await {
+                    Ok(state) => reference = Some(state),
+                    Err(e) => {
+                        self.violate(Violation::RecoveryFailed(e));
+                        return None;
+                    }
+                }
+            }
+            let recovery_ops = reference.as_ref().map_or(1, |r| r.2);
             attempt += 1;
             // After three failures the faults are healed: a recovery must then succeed.
             let healed = attempt > 3;
@@ -798,8 +819,9 @@ impl Run<'_> {
                 .sim
                 .host(&name, &self.disk, self.plan().wall_offset_micros);
             if self.plan().crash_in_recovery && !healed && coin(self.rng.as_ref()) {
+                // Anywhere in the recovery, its last operation included.
                 self.disk
-                    .arm_crash_after_ops(1 + pick(self.rng.as_ref(), 60));
+                    .arm_crash_after_ops(1 + pick(self.rng.as_ref(), recovery_ops));
             }
             self.shared.oracle().stats.recovery_attempts += 1;
             let opened = {
@@ -820,17 +842,29 @@ impl Run<'_> {
                 }
                 failed => {
                     self.event("recovery.retry", &[attempt, u64::from(failed.is_some())]);
-                    {
-                        let mut oracle = self.shared.oracle();
-                        oracle.stats.recovery_retries += 1;
-                        oracle.stats.crashes += 1;
-                    }
+                    self.shared.oracle().stats.recovery_retries += 1;
+                    let errored = failed.is_some();
                     drop(failed);
-                    host.crash().await;
+                    if errored && self.plan().clean_stops && coin(self.rng.as_ref()) {
+                        // The process gives up and is started again; the machine stays up, so what
+                        // this attempt wrote is readable and not durable.
+                        self.shared.oracle().stats.stops += 1;
+                        host.stop().await;
+                        self.stopped = true;
+                        reference = None;
+                    } else {
+                        self.shared.oracle().stats.crashes += 1;
+                        host.crash().await;
+                        if std::mem::take(&mut self.stopped) {
+                            reference = None;
+                        }
+                    }
                 }
             }
         };
 
+        self.stopped = false;
+        let (reference, repaired, _) = reference?;
         // The checks read the log back, so they run on a healed disk.
         self.disk.set_faults(DiskFaults::default());
         self.event(
@@ -932,15 +966,26 @@ impl Run<'_> {
                 .arm_crash_after_ops(1 + pick(self.rng.as_ref(), ops));
         }
         let run_for = Duration::from_micros(500 + pick(self.rng.as_ref(), micros));
-        {
+        let at_crash_point = {
             let mut crash_point = Box::pin(self.disk.crash_point_reached()).fuse();
             let mut timer = host.env.clock.sleep(run_for).fuse();
             futures::select_biased! {
-                () = crash_point => {}
-                () = timer => {}
+                () = crash_point => true,
+                () = timer => false,
             }
+        };
+        if !at_crash_point && self.plan().clean_stops && coin(self.rng.as_ref()) {
+            // The process stops and the machine stays up: nothing is lost, and nothing that was not
+            // synced has become durable. The next recovery must not take the one for the other.
+            self.disk.disarm_crash();
+            self.event("stop", &[self.disk.ops()]);
+            self.shared.oracle().stats.stops += 1;
+            self.stopped = true;
+            drop(wal);
+            host.stop().await;
+        } else {
+            self.crash(host, wal).await;
         }
-        self.crash(host, wal).await;
         Some(())
     }
 
@@ -994,6 +1039,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         shared: shared.clone(),
         rng: sim.rng("wal-sim/driver"),
         boots: 0,
+        stopped: false,
     };
     let body = async {
         for _ in 0..plan.incarnations {

@@ -6,8 +6,8 @@
 //! CRUCIBLE_SIM_SEED=<n> cargo nextest run -p crucible-sim --test wal_dst replay_seed --run-ignored all --no-capture
 //! ```
 //!
-//! Add `CRUCIBLE_SIM_TIER=stress`, or `CRUCIBLE_SIM_MUTANT=ack-before-sync`, `gc-above-checkpoint` or
-//! `keep-torn-tail`, to replay the seed in that mode. The long run takes `CRUCIBLE_SIM_SEEDS=<count>` and
+//! Add `CRUCIBLE_SIM_TIER=stress`, or `CRUCIBLE_SIM_MUTANT=ack-before-sync`, `gc-above-checkpoint`,
+//! `keep-torn-tail` or `trust-recovered-tail`, to replay the seed in that mode. The long run takes `CRUCIBLE_SIM_SEEDS=<count>` and
 //! `CRUCIBLE_SIM_FIRST_SEED=<n>`.
 
 #![allow(
@@ -38,6 +38,7 @@ fn assert_holds(outcome: &Outcome) {
 fn add(total: &mut Stats, stats: &Stats) {
     total.incarnations += stats.incarnations;
     total.crashes += stats.crashes;
+    total.stops += stats.stops;
     total.recovery_attempts += stats.recovery_attempts;
     total.recovery_retries += stats.recovery_retries;
     total.submitted += stats.submitted;
@@ -59,7 +60,10 @@ fn realistic(seeds: Range<u64>) -> Stats {
     println!("realistic seeds {seeds:?}: {total:?}");
     // A shard that never acknowledged, crashed, retried a recovery, repaired a tail or reclaimed a
     // segment would prove nothing.
-    assert!(total.acked > 0 && total.crashes > 0, "{total:?}");
+    assert!(
+        total.acked > 0 && total.crashes > 0 && total.stops > 0,
+        "{total:?}"
+    );
     assert!(
         total.recovery_retries > 0 && total.tail_repairs > 0,
         "{total:?}"
@@ -136,13 +140,18 @@ const MUTANT_BUDGET: Range<u64> = 0..200;
 /// message, which prints the new first catching seed.
 const CAUGHT_ACK_BEFORE_SYNC: u64 = 0;
 const CAUGHT_GC_ABOVE_CHECKPOINT: u64 = 1;
-const CAUGHT_KEEP_TORN_TAIL: u64 = 3;
+const CAUGHT_KEEP_TORN_TAIL: u64 = 20;
+const CAUGHT_TRUST_RECOVERED_TAIL: u64 = 206;
 
 fn assert_caught(mutant: Mutant, recorded: u64) {
-    let caught = first_catching_seed(mutant, MUTANT_BUDGET);
+    assert_caught_within(mutant, recorded, MUTANT_BUDGET);
+}
+
+fn assert_caught_within(mutant: Mutant, recorded: u64, budget: Range<u64>) {
+    let caught = first_catching_seed(mutant, budget.clone());
     println!("{mutant:?}: {caught:?}");
     let Some((seed, violations)) = caught else {
-        panic!("{mutant:?} survived seeds {MUTANT_BUDGET:?}");
+        panic!("{mutant:?} survived seeds {budget:?}");
     };
     assert_eq!(
         seed, recorded,
@@ -163,6 +172,15 @@ fn mutant_gc_above_checkpoint_is_caught() {
 #[test]
 fn mutant_keep_torn_tail_is_caught() {
     assert_caught(Mutant::KeepTornTail, CAUGHT_KEEP_TORN_TAIL);
+}
+
+/// A fourth mutant, for the step recovery adds beyond the letter of the contract: writing the last
+/// segment's frames again before trusting them. It needs a failed sync, a failed rotation and a restart
+/// without a crash, so it gets the whole realistic budget; `wal_directed.rs` has the directed case.
+#[test]
+fn mutant_trust_recovered_tail_is_caught() {
+    let mutant = Mutant::TrustRecoveredTail;
+    assert_caught_within(mutant, CAUGHT_TRUST_RECOVERED_TAIL, 0..1000);
 }
 
 /// I14: one seed gives one trace hash, and different seeds give different hashes.
@@ -188,6 +206,7 @@ fn mutant_census() {
         Mutant::AckBeforeSync,
         Mutant::GcAboveCheckpoint,
         Mutant::KeepTornTail,
+        Mutant::TrustRecoveredTail,
     ] {
         let caught: Vec<u64> = MUTANT_BUDGET
             .filter(|&seed| {
@@ -239,6 +258,7 @@ fn replay_seed() {
         Ok("ack-before-sync") => Some(Mutant::AckBeforeSync),
         Ok("gc-above-checkpoint") => Some(Mutant::GcAboveCheckpoint),
         Ok("keep-torn-tail") => Some(Mutant::KeepTornTail),
+        Ok("trust-recovered-tail") => Some(Mutant::TrustRecoveredTail),
         Ok(other) => panic!("unknown CRUCIBLE_SIM_MUTANT {other}"),
         Err(_) => None,
     };

@@ -7,7 +7,7 @@ How `crucible-wal` is verified in `crucible-sim`, and how to replay a failing se
 
 | Piece | Where | What it is |
 |---|---|---|
-| Runtime | `crucible_sim::run`, `Sim`, `Host` | One thread, a paused virtual clock, a root ChaCha20 stream with labelled forks. A host is one process: `Host::crash` freezes its disk, aborts every task at its await point, waits until they are dropped, then applies the crash to the disk |
+| Runtime | `crucible_sim::run`, `Sim`, `Host` | One thread, a paused virtual clock, a root ChaCha20 stream with labelled forks. A host is one process: `Host::crash` freezes its disk, aborts every task at its await point, waits until they are dropped, then applies the crash to the disk. `Host::stop` ends the process and leaves the disk as it is, unsynced bytes included |
 | Disk | `crucible_sim::SimDisk` | The fault model of contract section 2.4 |
 | Workload and oracle | `crucible_sim::wal_sim` | Seeded clients, a stand-in shipper (seal, checkpoint, garbage collection), seeded crash points, and the ledger that checks I1, I12, I13 and I14 |
 | Suite | `crates/crucible-sim/tests/wal_dst.rs` | Tiers, mutants, the determinism meta-test, the long run and the replay tool |
@@ -31,6 +31,20 @@ gives `crucible-wal` no edge to a disk implementation.
   bit. A sync can fail, lie, or take seeded virtual time. A capacity budget yields ENOSPC.
 - Each fault type draws from its own forked stream.
 
+## What recovery does beyond the letter of the contract
+
+The fault model above forces four steps that contract section 4.6 does not spell out. Each has a test that
+fails without it.
+
+| Step | Why | Test |
+|---|---|---|
+| Zero the tail of the last segment whenever a byte after the valid prefix is not zero, not only after a torn frame | A crash can lose one block and keep a later one, so a clean end can be followed by frames of an earlier incarnation | `stale_frames_after_a_clean_end_are_zeroed`, mutant `KeepTornTail` |
+| Read a torn tail, and an unreadable newest header, a second time before truncating or removing | One read can be wrong, and both actions destroy data | Realistic tier with bit flips |
+| Remove a newest segment whose header is zero, short or partly written and that holds nothing else | A rotation or a first start can crash, or fail in a write, before the header is durable | `an_unfinished_newest_segment_is_removed_and_any_other_bad_header_is_fatal` |
+| Write `EPOCH` and the header and frames of the last segment again from their verified bytes, sync them, and sync the directory, before accepting appends | After a process stop, readable does not mean durable, and a sync on a new handle does not cover bytes whose earlier sync failed | `a_restart_without_a_crash_does_not_trust_what_was_never_synced`, mutant `TrustRecoveredTail` |
+
+## Limits of the model
+
 Two limits of the model are deliberate:
 
 - A flipped read is never followed by another flipped read of the same file. The simulation compresses the
@@ -46,15 +60,15 @@ Two limits of the model are deliberate:
 | Stress | Realistic plus the fsync lie | The oracle reports lost acknowledged frames, which shows that the realistic tier's silence means something |
 
 Each run flips a coin per workload feature and per fault (segment size, capacity, retention, compressible
-payloads, uniform frame sizes, bursts, crash loops, crashes during recovery, double recovery, wall-clock steps,
-the recent-index pin, and each fault type).
+payloads, uniform frame sizes, bursts, crash loops, process stops without a crash, crashes during recovery,
+double recovery, wall-clock steps, the recent-index pin, a reader that tails the log, and each fault type).
 
 ## What the oracle checks
 
 | Invariant | Check |
 |---|---|
-| I1 | Every acknowledged frame above the recovered watermark is in the recovered log, intact, at its LSN. Frames an earlier recovery returned are still there. Every frame above the previous end of the log was submitted in the incarnation that just ended, once. No valid frame is left beyond the end of the recovered log. The recovered watermark is at or above every acknowledged checkpoint. Garbage collection removes nothing above every submitted checkpoint |
-| I12 | The recovered state equals the state one uninterrupted recovery reaches on a fault-free copy of the crashed disk, although the real recovery is cut by crashes and faults. A second recovery with no append in between repairs nothing. Bytes scanned are at most the retained segment bytes |
+| I1 | Every acknowledged frame above the recovered watermark is in the recovered log, intact, at its LSN. Frames an earlier recovery returned are still there. Every frame above the previous end of the log was submitted in the incarnation that just ended, once. No valid frame is left beyond the end of the recovered log. The recovered watermark is at or above every acknowledged checkpoint. Garbage collection removes nothing above every submitted checkpoint. A reader that tails the running log never gets a frame that was not submitted, or one that differs from what was acknowledged |
+| I12 | The recovered state equals the state one uninterrupted recovery reaches on a fault-free copy of the crashed disk, although the real recovery is cut by crashes and faults. (After a process stop the disk holds bytes that are readable and not durable; a crash during that recovery loses them, so the reference is taken again after it.) A second recovery with no append in between repairs nothing. Bytes scanned are at most the retained segment bytes |
 | I13 | At quiescence (faults healed, everything checkpointed, retention elapsed) no segment wholly at or below the watermark is left |
 | I14 | The same seed gives the same outcome and trace hash; different seeds give different hashes |
 
@@ -62,14 +76,16 @@ A fatal recovery error on a healed disk is a violation.
 
 ## Mutants
 
-`crucible-wal` has a cargo feature `test-mutants` that only `crucible-sim` enables. Each mutant must be caught
-inside the per-pull-request seed budget, and its first catching seed is recorded in `wal_dst.rs`.
+`crucible-wal` has a cargo feature `test-mutants` that only `crucible-sim` enables; without it the `Mutant` type
+has no value. Each mutant must be caught inside its seed budget (200 seeds; 1,000 for the last one), and its
+first catching seed is recorded in `wal_dst.rs`.
 
 | Mutant | Defect | Caught by |
 |---|---|---|
 | `AckBeforeSync` | Waiters complete before `sync_data` | A lost acknowledged frame after a crash |
 | `GcAboveCheckpoint` | Garbage collection ignores the watermark | A removal above the watermark, then a `wal_gap` at recovery |
 | `KeepTornTail` | Recovery does not zero the tail | A valid stale frame beyond the end of the log, or a frame of an earlier incarnation in the log |
+| `TrustRecoveredTail` | Recovery does not write the last segment's frames again before it relies on them | After a failed sync, a failed rotation and a restart without a crash: a lost acknowledged frame, or an unreadable retained frame. `wal_directed.rs` has the directed case |
 
 A change to the workload, the fault model or the WAL moves the recorded seeds. The failing assertion prints the
 new first catching seed; `mutant_census` lists all of them.

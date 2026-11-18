@@ -322,10 +322,11 @@ impl Wal {
         }
         // The header fields the committer fills are not known yet; only the record type is read here.
         let record_type = frame.header(Lsn::ZERO, Timestamp::EPOCH).record_type;
-        let checkpoint = if record_type == RecordType::Checkpoint {
-            Some(self.checked_checkpoint(&frame)?)
-        } else {
-            None
+        let checkpoint = match record_type {
+            RecordType::BatchSeal | RecordType::Checkpoint => {
+                self.checked_control(record_type, &frame)?
+            }
+            _ => None,
         };
         let (done, receiver) = oneshot::channel();
         let item = Item {
@@ -337,18 +338,24 @@ impl Wal {
         Ok(receiver)
     }
 
-    /// Decodes a `Checkpoint` payload off the committer. A watermark above the durable LSN would let
-    /// garbage collection remove frames that were never resolved, so it is refused.
-    fn checked_checkpoint(&self, frame: &PreparedFrame) -> Result<Checkpoint, AppendError> {
+    /// Decodes a `BatchSeal` or `Checkpoint` payload off the committer and returns the checkpoint. A
+    /// seal or a watermark may only cover durable frames: a watermark above the durable LSN would let
+    /// garbage collection remove frames that were never resolved, and recovery refuses a log whose
+    /// control records reach their own LSN.
+    fn checked_control(
+        &self,
+        record_type: RecordType,
+        frame: &PreparedFrame,
+    ) -> Result<Option<Checkpoint>, AppendError> {
         let payload = load_payload(frame.is_compressed(), frame.stored_payload())
-            .map_err(|_| AppendError::InvalidCheckpoint)?;
-        match Record::decode(RecordType::Checkpoint, &payload) {
-            Ok(Record::Checkpoint(checkpoint))
-                if checkpoint.last_lsn <= self.shared.durable_lsn() =>
-            {
-                Ok(checkpoint)
+            .map_err(|_| AppendError::InvalidControl)?;
+        let durable = self.shared.durable_lsn();
+        match Record::decode(record_type, &payload) {
+            Ok(Record::Checkpoint(checkpoint)) if checkpoint.last_lsn <= durable => {
+                Ok(Some(checkpoint))
             }
-            _ => Err(AppendError::InvalidCheckpoint),
+            Ok(Record::BatchSeal(seal)) if seal.last_lsn <= durable => Ok(None),
+            _ => Err(AppendError::InvalidControl),
         }
     }
 

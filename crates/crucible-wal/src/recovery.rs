@@ -10,13 +10,16 @@
 //!   not only when the prefix ends in a torn frame. A crash can lose one block and keep a later one, so a
 //!   clean end may be followed by frames of an earlier incarnation; a later append would line them up
 //!   behind new frames.
-//! - The valid frames of the last segment are written again from their verified bytes and synced before
-//!   the log accepts appends. Their durability is unknown: the previous process may have died after a
-//!   failed sync, and a sync on a fresh handle says nothing about bytes written before it.
+//! - What the log relies on from now on is made durable again before the log accepts appends: the
+//!   `EPOCH` entry and the header and valid frames of the last segment are written again from their
+//!   verified bytes and synced, and the directory is synced. Their durability is unknown: the previous
+//!   process may have stopped after a failed sync or before a `sync_dir`, and a sync on a fresh handle
+//!   says nothing about bytes written before it. Earlier segments need no such step: a segment gets a
+//!   successor only after its own sync succeeded, or with a first LSN that supersedes what was in doubt.
 
 use bytes::Bytes;
 use crucible_env::{Clock, Disk, DiskError, Env, File, OpenMode};
-use crucible_records::{Lsn, WalEpoch};
+use crucible_records::{Lsn, Timestamp, WalEpoch};
 use crucible_wal_codec::{
     BatchSeal, Checkpoint, CheckpointHint, EPOCH_ENTRY_LEN, Record, RecordType, SEGMENT_HEADER_LEN,
     SegmentEnd, SegmentHeader, decode_epoch, encode_epoch,
@@ -78,6 +81,10 @@ pub struct RecoveryReport {
     /// Every `BatchSeal` whose `last_lsn` is above the watermark, in LSN order: sealed batches that no
     /// checkpoint covers. The shipper re-ships them with these boundaries.
     pub unchecked_seals: Vec<BatchSeal>,
+    /// `Quarantine` frames above the watermark, in LSN order. Each resolves only the pairs it lists.
+    pub quarantines: Vec<WalFrame>,
+    /// `Tombstone` frames above the watermark, in LSN order.
+    pub tombstones: Vec<WalFrame>,
     /// The retained segments, oldest first.
     pub segments: Vec<SegmentMeta>,
     /// The tail of the last segment that was zeroed.
@@ -191,7 +198,14 @@ async fn load_epoch(env: &Env, has_segments: bool) -> Result<(WalEpoch, bool), R
     // One byte more than the entry, so that a longer file fails the length check.
     let stored = read_entry(env.disk.as_ref(), EPOCH_NAME, EPOCH_ENTRY_LEN + 1).await?;
     match stored.as_deref().map(decode_epoch) {
-        Some(Ok(epoch)) => Ok((epoch, false)),
+        Some(Ok(epoch)) => {
+            // Readable is not durable: write the verified entry again and sync it.
+            let file = env.disk.open(&entry(EPOCH_NAME)?, OpenMode::Write).await?;
+            file.append(0, vec![Bytes::copy_from_slice(&encode_epoch(epoch))])
+                .await?;
+            file.sync_data().await?;
+            Ok((epoch, false))
+        }
         Some(Err(e)) if has_segments => Err(RecoveryError::InvalidEpoch(e)),
         None if has_segments => Err(RecoveryError::MissingEpoch),
         Some(Err(_)) => {
@@ -306,8 +320,7 @@ struct Scanned {
     last_lsn: Lsn,
     file: File,
     write_offset: u64,
-    watermark: Option<Watermark>,
-    seals: Vec<BatchSeal>,
+    control: Control,
     tail_repair: Option<TailRepair>,
     segments: u64,
     bytes: u64,
@@ -317,13 +330,24 @@ struct Scanned {
 struct Control {
     watermark: Option<Watermark>,
     seals: Vec<BatchSeal>,
+    quarantines: Vec<WalFrame>,
+    tombstones: Vec<WalFrame>,
 }
 
 impl Control {
     fn collect(&mut self, frame: &WalFrame) -> Result<(), RecoveryError> {
         let record_type = frame.record_type();
-        if !matches!(record_type, RecordType::BatchSeal | RecordType::Checkpoint) {
-            return Ok(());
+        match record_type {
+            RecordType::BatchSeal | RecordType::Checkpoint => {}
+            RecordType::Quarantine => {
+                self.quarantines.push(frame.detached());
+                return Ok(());
+            }
+            RecordType::Tombstone => {
+                self.tombstones.push(frame.detached());
+                return Ok(());
+            }
+            _ => return Ok(()),
         }
         let lsn = frame.lsn();
         let payload = frame.payload().map_err(|e| bad_compression(lsn, e))?;
@@ -444,6 +468,7 @@ struct Stats {
 async fn scan(
     disk: &dyn Disk,
     config: &WalConfig,
+    epoch: WalEpoch,
     earlier: &[SegmentMeta],
     last: &SegmentMeta,
 ) -> Result<Scanned, RecoveryError> {
@@ -481,21 +506,24 @@ async fn scan(
         .open(&segment_path(segment_no)?, OpenMode::Write)
         .await?;
     let mut reader = SegmentReader::new(file, segment_no, HEADER_LEN);
-    let mut rewrite = Rewrite {
-        start: HEADER_LEN,
-        len: 0,
-        bufs: Vec::new(),
+    // The header is encoded again from the fields that passed its checksum.
+    let header = SegmentHeader {
+        wal_epoch: epoch,
+        segment_no,
+        first_lsn: last.first_lsn,
+        created_at: Timestamp::from_micros(last.created_at_micros),
     };
-    let (expect, end) = read_frames(
-        &mut reader,
-        last,
-        None,
-        &mut control,
-        &mut stats,
-        Some(&mut rewrite),
-    )
-    .await?;
-    rewrite.flush(reader.file()).await?;
+    let mut rewrite = Rewrite {
+        start: 0,
+        len: SEGMENT_HEADER_LEN,
+        bufs: vec![Bytes::copy_from_slice(&header.encode())],
+    };
+    let rewriting = (!config.trust_recovered_tail()).then_some(&mut rewrite);
+    let (expect, end) =
+        read_frames(&mut reader, last, None, &mut control, &mut stats, rewriting).await?;
+    if !config.trust_recovered_tail() {
+        rewrite.flush(reader.file()).await?;
+    }
     let offset = reader.offset();
     let torn = matches!(end, Some(SegmentEnd::Torn { .. }));
     let dirty = torn || reader.tail_has_data().await?;
@@ -526,8 +554,7 @@ async fn scan(
         last_lsn: Lsn::new(expect.saturating_sub(1)),
         file,
         write_offset: offset,
-        watermark: control.watermark,
-        seals: control.seals,
+        control,
         tail_repair,
         segments: stats.segments,
         bytes: stats.bytes,
@@ -555,6 +582,8 @@ pub(crate) async fn recover(env: &Env, config: &WalConfig) -> Result<Recovered, 
                 last_lsn: Lsn::ZERO,
                 watermark: None,
                 unchecked_seals: Vec::new(),
+                quarantines: Vec::new(),
+                tombstones: Vec::new(),
                 segments: vec![meta],
                 tail_repair: None,
                 removed_unfinished_segment,
@@ -578,8 +607,16 @@ pub(crate) async fn recover(env: &Env, config: &WalConfig) -> Result<Recovered, 
         && let Some(start) = hint_start(&segments, hint)
         && start > 0
     {
-        let candidate = scan(disk, config, earlier.get(start..).unwrap_or_default(), last).await?;
+        let candidate = scan(
+            disk,
+            config,
+            epoch,
+            earlier.get(start..).unwrap_or_default(),
+            last,
+        )
+        .await?;
         if candidate
+            .control
             .watermark
             .is_some_and(|w| w.last_lsn() >= hint.last_lsn)
         {
@@ -589,10 +626,18 @@ pub(crate) async fn recover(env: &Env, config: &WalConfig) -> Result<Recovered, 
     }
     let scanned = match scanned {
         Some(scanned) => scanned,
-        None => scan(disk, config, earlier, last).await?,
+        None => scan(disk, config, epoch, earlier, last).await?,
     };
+    // Every entry the log relies on from here on, whoever created it, is durable after this.
+    disk.sync_dir(&wal_dir()).await?;
 
-    let watermark_lsn = scanned.watermark.map_or(Lsn::ZERO, |w| w.last_lsn());
+    let Control {
+        watermark,
+        seals: mut unchecked_seals,
+        mut quarantines,
+        mut tombstones,
+    } = scanned.control;
+    let watermark_lsn = watermark.map_or(Lsn::ZERO, |w| w.last_lsn());
     let oldest_first_lsn = segments.first().map_or(Lsn::FIRST, |s| s.first_lsn);
     if oldest_first_lsn.get() > watermark_lsn.get().saturating_add(1) {
         return Err(WalGap::MissingPrefix {
@@ -601,16 +646,19 @@ pub(crate) async fn recover(env: &Env, config: &WalConfig) -> Result<Recovered, 
         }
         .into());
     }
-    let mut unchecked_seals = scanned.seals;
     unchecked_seals.retain(|seal| seal.last_lsn > watermark_lsn);
+    quarantines.retain(|frame| frame.lsn() > watermark_lsn);
+    tombstones.retain(|frame| frame.lsn() > watermark_lsn);
 
     Ok(Recovered {
         report: RecoveryReport {
             epoch,
             created,
             last_lsn: scanned.last_lsn,
-            watermark: scanned.watermark,
+            watermark,
             unchecked_seals,
+            quarantines,
+            tombstones,
             segments,
             tail_repair: scanned.tail_repair,
             removed_unfinished_segment,

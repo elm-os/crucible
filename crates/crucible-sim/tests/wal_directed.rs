@@ -12,8 +12,8 @@ use crucible_env::{Disk, DiskPath, OpenMode, Root};
 use crucible_records::{Lsn, Timestamp};
 use crucible_sim::{DiskFaults, Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{
-    AppendError, Durability, RecoveryError, RecoveryReport, ReplayError, SegmentHeaderIssue, Wal,
-    WalConfig, WalFrame, WalGap,
+    AppendError, Durability, Mutant, RecoveryError, RecoveryReport, ReplayError,
+    SegmentHeaderIssue, Wal, WalConfig, WalFrame, WalGap,
 };
 use crucible_wal_codec::{
     BatchSeal, Checkpoint, CheckpointHint, Compression, FRAME_HEADER_LEN, FrameHeaderError,
@@ -532,6 +532,98 @@ fn a_failed_group_whose_rotation_also_fails_puts_the_wal_in_the_failed_state() {
     });
 }
 
+/// A process can stop while the machine stays up. What it wrote is then readable, whether or not it was
+/// ever synced, and a sync on a new handle does not cover it. Recovery must make what it relies on
+/// durable before it acknowledges anything behind it.
+#[test]
+fn a_restart_without_a_crash_does_not_trust_what_was_never_synced() {
+    run(19, |sim| async move {
+        // Frames whose sync failed. The wide frame spans a whole 4,096-byte block that no later write
+        // touches. The disk is full, so the rotation after the failed group fails before the next
+        // segment has a header, and the wide frame stays in the last segment.
+        let unsynced_frames = |name: &'static str, mutant: Option<Mutant>| {
+            let sim = &sim;
+            async move {
+                let disk = sim.disk(name);
+                let settings = WalConfig {
+                    mutant,
+                    ..config(32 << 10)
+                };
+                disk.set_faults(DiskFaults {
+                    capacity_bytes: Some((32 << 10) + 20),
+                    ..DiskFaults::default()
+                });
+                let node = start(sim, &disk, "a", &settings).await;
+                node.fill(1..=2).await;
+                let wide = vec![90; 9_000];
+                let wide = PreparedFrame::new(RecordType::Noop, wide, Compression::None).unwrap();
+                disk.fail_next_syncs(1);
+                assert_eq!(node.wal.append(wide).await, Err(AppendError::Unavailable));
+                assert!(node.wal.admission().failed);
+                node.stop().await;
+                // The frame is readable, so it is part of the log; the next frame is acknowledged
+                // behind it.
+                let node = start(sim, &disk, "b", &settings).await;
+                assert_eq!(node.report.removed_unfinished_segment, Some(2));
+                assert_eq!(node.report.last_lsn, Lsn::new(3));
+                assert_eq!(node.fill(4..=4).await, [4]);
+                node.crash().await;
+                let node = start(sim, &disk, "c", &settings).await;
+                let tags = node.tags().await;
+                node.stop().await;
+                tags
+            }
+        };
+        assert_eq!(unsynced_frames("frames", None).await, [1, 2, 90, 4]);
+        // Without the rewrite the crash takes the wide frame, and with it the acknowledged frame 4.
+        let trusting = Some(Mutant::TrustRecoveredTail);
+        assert_eq!(unsynced_frames("trusting", trusting).await, [1, 2]);
+
+        // An `EPOCH` whose sync failed. The first start gives up, the second finds the entry readable.
+        let disk = sim.disk("epoch");
+        disk.fail_next_syncs(1);
+        assert!(try_start(&sim, &disk, "a", &config(SEGMENT)).await.is_err());
+        let node = start(&sim, &disk, "b", &config(SEGMENT)).await;
+        let epoch = node.wal.epoch();
+        node.fill(1..=2).await;
+        node.crash().await;
+        let node = start(&sim, &disk, "c", &config(SEGMENT)).await;
+        assert_eq!(node.wal.epoch(), epoch);
+        assert_eq!(node.tags().await, [1, 2]);
+        node.stop().await;
+
+        // A segment whose directory entry was never synced: the process stopped between the header's
+        // `sync_data` and the `sync_dir`. A crash keeps or loses such an entry, so several disks are tried.
+        for round in 0..16 {
+            let disk = sim.disk(&format!("entry-{round}"));
+            let node = start(&sim, &disk, "a", &config(SEGMENT)).await;
+            node.fill(1..=4).await;
+            let header = SegmentHeader {
+                wal_epoch: node.wal.epoch(),
+                segment_no: 2,
+                first_lsn: Lsn::new(5),
+                created_at: Timestamp::from_micros(SIM_EPOCH_MICROS),
+            };
+            node.stop().await;
+            let file = disk.open(&seg(2), OpenMode::CreateNew).await.unwrap();
+            file.preallocate(SEGMENT).await.unwrap();
+            file.append(0, vec![Bytes::copy_from_slice(&header.encode())])
+                .await
+                .unwrap();
+            file.sync_data().await.unwrap();
+            drop(file);
+
+            let node = start(&sim, &disk, "b", &config(SEGMENT)).await;
+            assert_eq!(node.wal.segments().len(), 2);
+            assert_eq!(node.fill(5..=6).await, [5, 6]);
+            node.crash().await;
+            let node = start(&sim, &disk, "c", &config(SEGMENT)).await;
+            assert_eq!(node.tags().await, [1, 2, 3, 4, 5, 6], "round {round}");
+            node.stop().await;
+        }
+    });
+}
+
 #[test]
 fn a_missing_or_invalid_checkpoint_hint_only_lengthens_recovery() {
     run(8, |sim| async move {
@@ -1016,9 +1108,16 @@ fn invalid_frames_and_settings_are_refused() {
         let ahead = control(&Record::Checkpoint(checkpoint(3)));
         assert_eq!(
             node.wal.append(ahead).await,
-            Err(AppendError::InvalidCheckpoint)
+            Err(AppendError::InvalidControl)
         );
         assert_eq!(node.wal.watermark(), None);
+        // A seal may only cover durable frames too: recovery refuses a seal that reaches its own LSN.
+        let ahead = control(&Record::BatchSeal(seal(1, 3)));
+        assert_eq!(
+            node.wal.append(ahead).await,
+            Err(AppendError::InvalidControl)
+        );
+        assert_eq!(node.wal.durable_lsn(), Lsn::new(2));
         assert_eq!(node.append(&Record::Checkpoint(checkpoint(2))).await, 3);
         assert_eq!(node.wal.watermark().unwrap().last_lsn(), Lsn::new(2));
         // Checkpoints are monotonic: an older one does not lower the watermark.
