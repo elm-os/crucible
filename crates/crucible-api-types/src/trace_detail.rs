@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::enums::{Level, ObservationType, StatusCode};
+use crate::enums::{IoShape, Level, ObservationType, StatusCode};
 use crate::meta::Meta;
 use crate::wire::SafeU64;
 
@@ -45,6 +45,9 @@ pub struct Span {
     /// The number of direct children, on paged traces and on children pages; null otherwise.
     #[schema(required = true)]
     pub child_count: Option<SafeU64>,
+    /// How the span's input and output are structured; null for a span the store does not serve yet.
+    #[schema(required = true)]
+    pub io_shape: Option<IoShape>,
     /// Whether a count above saturated at 2^53 - 1.
     pub saturated: bool,
 }

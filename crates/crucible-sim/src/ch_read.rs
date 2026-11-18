@@ -14,7 +14,7 @@
 //!   three-valued predicate logic, the keyset cursor as a tuple comparison, `ORDER BY` with nulls last, the
 //!   server's `UUID` order (second half first), `sumMap` without zero sums, `argMax` that skips null arguments,
 //!   the semi-join id cap, the per-series fill of a zero-filled time series, the keyset of a grouped list and
-//!   the snippets of a text search. Distinct counts are exact.
+//!   the order, keyset, arrival bounds and snippets of a text search. Distinct counts are exact.
 //! - **Guardrails.** A read runs under the limits its plan carries (contract 8.4) and is refused as a server
 //!   refuses it: `query_too_broad` above the rows or the bytes to read, `query_timeout` above the execution
 //!   time, `query_memory_exceeded` above the memory. The model has no parts index, so each figure is an upper
@@ -37,9 +37,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crucible_chfmt::{DecodedBlock, Values};
 use crucible_env::{MutationId, MutationStatus, QueryError, Rng};
 use crucible_plan::{
-    AggOutput, Aggregate, CmpOp, DeletePlan, DeleteTarget, Direction, FieldRange, Fill, Literal,
-    Measure, Node, PointLookup, Pred, QueryPlan, Row, Scan, SemiJoin, Step, TextSearch, TimeSeries,
-    TokenMode, Value,
+    AggOutput, Aggregate, ArrivalBounds, CmpOp, DeletePlan, DeleteTarget, Direction, FieldRange,
+    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, Scan, SemiJoin, Step,
+    TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{
     CivilDate, PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str,
@@ -1065,6 +1065,17 @@ impl ReadSide {
 /// A row order.
 type By<'a, T> = &'a dyn Fn(&T, &T) -> Ordering;
 
+/// The order of stored rows by the columns at `columns`, all in `direction`, nulls last.
+fn row_order(columns: Vec<usize>, direction: Direction) -> impl Fn(&&Cells, &&Cells) -> Ordering {
+    move |a: &&Cells, b: &&Cells| {
+        columns
+            .iter()
+            .map(|at| sort_order(&a[*at], &b[*at], direction))
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal)
+    }
+}
+
 /// Orders `items`, cuts them at `limit` and groups the rows that tie into runs.
 fn finish<T>(
     mut items: Vec<T>,
@@ -1286,14 +1297,15 @@ impl<'a> Interp<'a> {
         Ok((rows, window))
     }
 
-    fn scan(
-        &self,
-        n: &Scan,
-        restriction: Option<(usize, &BTreeSet<Vec<u8>>)>,
-    ) -> Result<Answer, QueryError> {
-        let def = table(n.table());
-        let (mut rows, _) = self.rows(n.table(), n.pred())?;
-        let arrival = n.arrival();
+    /// Keeps the rows inside the arrival bounds and strictly after the keyset cursor, and returns the order
+    /// columns resolved to positions: what a scan and a text search share.
+    fn keyset(
+        def: &TableDef,
+        rows: &mut Vec<&'a Cells>,
+        arrival: ArrivalBounds,
+        order: Option<&Order>,
+        cursor: Option<&[Literal]>,
+    ) -> Result<Option<(Vec<usize>, Direction)>, QueryError> {
         if arrival.as_of.is_some() || arrival.since.is_some() {
             let at = index(def, "received_at")?;
             rows.retain(|row| {
@@ -1305,11 +1317,11 @@ impl<'a> Interp<'a> {
                 within(arrival.as_of, Ordering::is_le) && within(arrival.since, Ordering::is_gt)
             });
         }
-        let order = match n.order() {
+        let order = match order {
             Some(order) => Some((indexes(def, order.columns())?, order.direction())),
             None => None,
         };
-        if let (Some((columns, direction)), Some(cursor)) = (&order, n.cursor()) {
+        if let (Some((columns, direction)), Some(cursor)) = (&order, cursor) {
             let cursor: Vec<Value> = cursor.iter().map(literal).collect();
             let after = match direction {
                 Direction::Asc => Ordering::Greater,
@@ -1326,19 +1338,22 @@ impl<'a> Interp<'a> {
                 false
             });
         }
+        Ok(order)
+    }
+
+    fn scan(
+        &self,
+        n: &Scan,
+        restriction: Option<(usize, &BTreeSet<Vec<u8>>)>,
+    ) -> Result<Answer, QueryError> {
+        let def = table(n.table());
+        let (mut rows, _) = self.rows(n.table(), n.pred())?;
+        let order = Self::keyset(def, &mut rows, n.arrival(), n.order(), n.cursor())?;
         if let Some((on, ids)) = restriction {
             rows.retain(|row| !matches!(row[on], Value::Null) && ids.contains(&key_of([&row[on]])));
         }
         let out = indexes(def, n.columns())?;
-        let by = order.map(|(columns, direction)| {
-            move |a: &&Cells, b: &&Cells| {
-                columns
-                    .iter()
-                    .map(|at| sort_order(&a[*at], &b[*at], direction))
-                    .find(|o| o.is_ne())
-                    .unwrap_or(Ordering::Equal)
-            }
-        });
+        let by = order.map(|(columns, direction)| row_order(columns, direction));
         Ok(finish(
             rows,
             by.as_ref().map(|by| by as By<'_, &Cells>),
@@ -1479,7 +1494,8 @@ impl<'a> Interp<'a> {
 
     fn text_search(&self, n: &TextSearch) -> Result<Answer, QueryError> {
         let def = table(n.table());
-        let (rows, _) = self.rows(n.table(), n.pred())?;
+        let (mut rows, _) = self.rows(n.table(), n.pred())?;
+        let order = Self::keyset(def, &mut rows, n.arrival(), n.order(), n.cursor())?;
         let mut fields = Vec::new();
         for field in n.fields() {
             let text = def.indexes.iter().find_map(|i| match i.kind {
@@ -1513,12 +1529,14 @@ impl<'a> Interp<'a> {
         let snippets = indexes(def, &n.snippet_fields())?;
         // The needles of the position function: it folds ASCII case on both sides.
         let needles: Vec<Vec<u8>> = n
-            .tokens()
+            .needles()
             .iter()
-            .map(|token| token.as_bytes().to_ascii_lowercase())
+            .map(|needle| needle.as_bytes().to_ascii_lowercase())
             .collect();
         let found: Vec<&Cells> = rows.into_iter().filter(matches).collect();
-        Ok(finish(found, None, Some(n.limit()), |row| {
+        let by = order.map(|(columns, direction)| row_order(columns, direction));
+        let by = by.as_ref().map(|by| by as By<'_, &Cells>);
+        Ok(finish(found, by, Some(n.limit()), |row| {
             let mut values: Vec<Value> = out.iter().map(|at| row[*at].clone()).collect();
             if let Some(snippet) = n.snippet() {
                 for at in &snippets {

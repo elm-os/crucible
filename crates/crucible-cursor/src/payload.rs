@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | payload version, 1 |
 //! | 1 | kind: 1 `page`, 2 `head` |
-//! | 2 | route: 1 trace list, 2 span children |
+//! | 2 | route: 1 trace list, 2 span children, 3 search |
 //! | 3 | sort: 1 newest first, 2 oldest first |
 //! | 4..20 | project id |
 //! | 20..36 | filter hash |
@@ -18,9 +18,10 @@
 //! | page, trace list | window `from` and `to`, `as_of`, then the last row's `start_time`, `trace_hash` (`u32`) and `trace_id` | 104 |
 //! | head, trace list | window `from` and `to`, `as_of`, `wal_epoch`, LSN (`u64`) | 100 |
 //! | page, span children | `trace_id`, parent `span_id`, then the last child's `start_time` and `span_id` | 92 |
+//! | page, search | window `from` and `to`, `as_of`, then the last hit's `start_minute`, `trace_hash` (`u32`) and `span_id` | 96 |
 //!
-//! Decoding accepts exactly what encoding produces: another version, an unknown code, the pair head and span
-//! children, a window that is not `from < to`, or a length other than the layout's is an error. Values the
+//! Decoding accepts exactly what encoding produces: another version, an unknown code, a head cursor of span
+//! children or search, a window that is not `from < to`, or a length other than the layout's is an error. Values the
 //! layout cannot check (the hash, the times) are carried as they are; the MAC is what vouches for them.
 
 use crucible_records::{Lsn, ProjectId, SpanId, TimeWindow, Timestamp, TraceId, WalEpoch};
@@ -69,6 +70,8 @@ pub enum Route {
     TraceList,
     /// `GET projects/{id}/traces/{trace_id}/spans`.
     SpanChildren,
+    /// `POST projects/{id}/search`.
+    Search,
 }
 
 impl Route {
@@ -76,6 +79,7 @@ impl Route {
         match self {
             Self::TraceList => 1,
             Self::SpanChildren => 2,
+            Self::Search => 3,
         }
     }
 
@@ -83,6 +87,7 @@ impl Route {
         match code {
             1 => Some(Self::TraceList),
             2 => Some(Self::SpanChildren),
+            3 => Some(Self::Search),
             _ => None,
         }
     }
@@ -172,13 +177,22 @@ pub enum Position {
         /// The sort tuple `(start_time, span_id)` of the last child.
         last: (Timestamp, SpanId),
     },
+    /// The next page of a search.
+    SearchPage {
+        /// The window of the search.
+        window: TimeWindow,
+        /// Fixed by the first page; later pages read only rows that arrived by then.
+        as_of: Timestamp,
+        /// The key `(start_minute, trace_hash, span_id)` of the last hit.
+        last: (Timestamp, u32, SpanId),
+    },
 }
 
 impl Position {
     /// The kind of a cursor at this position.
     pub const fn kind(&self) -> Kind {
         match self {
-            Self::TracePage { .. } | Self::ChildPage { .. } => Kind::Page,
+            Self::TracePage { .. } | Self::ChildPage { .. } | Self::SearchPage { .. } => Kind::Page,
             Self::TraceHead { .. } => Kind::Head,
         }
     }
@@ -188,13 +202,16 @@ impl Position {
         match self {
             Self::TracePage { .. } | Self::TraceHead { .. } => Route::TraceList,
             Self::ChildPage { .. } => Route::SpanChildren,
+            Self::SearchPage { .. } => Route::Search,
         }
     }
 
     /// The window of the list, for lists that have one.
     pub const fn window(&self) -> Option<TimeWindow> {
         match self {
-            Self::TracePage { window, .. } | Self::TraceHead { window, .. } => Some(*window),
+            Self::TracePage { window, .. }
+            | Self::TraceHead { window, .. }
+            | Self::SearchPage { window, .. } => Some(*window),
             Self::ChildPage { .. } => None,
         }
     }
@@ -311,6 +328,17 @@ impl Cursor {
                 w.time(start);
                 w.put(span.as_bytes());
             }
+            Position::SearchPage {
+                window,
+                as_of,
+                last: (minute, hash, span),
+            } => {
+                w.window(window);
+                w.time(as_of);
+                w.time(minute);
+                w.put(&hash.to_be_bytes());
+                w.put(span.as_bytes());
+            }
         }
         Payload {
             bytes: w.bytes,
@@ -353,7 +381,16 @@ impl Cursor {
                 parent: SpanId::from_bytes(r.array()?),
                 last: (r.time()?, SpanId::from_bytes(r.array()?)),
             },
-            (Kind::Head, Route::SpanChildren) => return Err(DecodeError::Value),
+            (Kind::Page, Route::Search) => Position::SearchPage {
+                window: r.window()?,
+                as_of: r.time()?,
+                last: (
+                    r.time()?,
+                    u32::from_be_bytes(r.array()?),
+                    SpanId::from_bytes(r.array()?),
+                ),
+            },
+            (Kind::Head, Route::SpanChildren | Route::Search) => return Err(DecodeError::Value),
         };
         if !r.0.is_empty() {
             return Err(DecodeError::Length);
