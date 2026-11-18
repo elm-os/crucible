@@ -2,16 +2,15 @@
 //! recent index and retention (contract 8.7, 8.9 and 12.4).
 
 use crucible_env::QueryError;
-use crucible_plan::{Caller, SearchField, TokenMode, Value};
+use crucible_plan::{Caller, SearchField, TokenMode};
 use crucible_query::{
     Consistency, QueryServiceError, ReadContext, RetentionSettings, SearchCursor, SearchHit,
     SearchPage, SearchQuery,
 };
 use crucible_recent::SpanEntry;
-use crucible_records::{Lsn, SpanId, TableId, TimeWindow};
+use crucible_records::{SpanId, TableId, TimeWindow};
 
-use crate::store::stored_row;
-use crate::world::{DAY, NOW, World, ctx, project, run, scoped, span, span_id};
+use crate::world::{DAY, NOW, World, ctx, project, run, scoped, span, span_id, span_payload_row};
 
 const MINUTE: i64 = 60_000_000;
 
@@ -21,37 +20,6 @@ fn window() -> TimeWindow {
         NOW.saturating_add_micros(DAY),
     )
     .unwrap()
-}
-
-/// The `span_payload` row of a span, as the shipper writes it.
-fn payload_row(entry: &SpanEntry, lsn: Lsn, input: &str, metadata: &[&str]) -> Vec<Value> {
-    let s = &entry.summary;
-    stored_row(
-        TableId::SpanPayload,
-        &[
-            ("project_id", Value::Uuid(entry.project_id.uuid())),
-            ("start_minute", Value::Time(s.start_time.floor_minute())),
-            (
-                "trace_hash",
-                Value::UInt(u64::from(s.trace_id.trace_hash())),
-            ),
-            ("span_id", Value::Bytes(s.span_id.as_bytes().to_vec())),
-            ("trace_id", Value::Bytes(s.trace_id.as_bytes().to_vec())),
-            ("start_time", Value::Time(s.start_time)),
-            ("input", Value::String(input.to_owned())),
-            (
-                "metadata_kv",
-                Value::Array(
-                    metadata
-                        .iter()
-                        .map(|m| Value::String((*m).to_owned()))
-                        .collect(),
-                ),
-            ),
-            ("lsn", Value::UInt(lsn.get())),
-            ("received_at", Value::Time(NOW)),
-        ],
-    )
 }
 
 /// A node whose store holds one span per input, a minute apart, the first the newest, in trace 1.
@@ -69,7 +37,7 @@ fn world_with(inputs: &[(&str, &[&str])]) -> World {
     for (entry, (input, metadata)) in entries.iter().zip(inputs) {
         world.store.insert(
             TableId::SpanPayload,
-            payload_row(entry, lsn, input, metadata),
+            span_payload_row(entry, lsn, NOW, input, metadata),
         );
     }
     world.settle();
@@ -263,7 +231,7 @@ fn expired_payloads_are_not_searched() {
     let lsn = old.ack(vec![entry.clone()]);
     old.store.insert(
         TableId::SpanPayload,
-        payload_row(&entry, lsn, "refund then", &[]),
+        span_payload_row(&entry, lsn, NOW, "refund then", &[]),
     );
     old.settle();
     let wide = TimeWindow::new(

@@ -88,6 +88,18 @@ mirror! {
     }
 }
 
+mirror! {
+    /// How a span's input and output are structured, which tells a viewer how to show them.
+    IoShape {
+        /// Text or JSON as the source sent it.
+        Raw,
+        /// A JSON list of GenAI messages, each with a `role` and `parts`.
+        GenaiMessages,
+        /// A JSON list of messages rebuilt from numbered attribute keys, each with a `role` and `content`.
+        IndexedMessages,
+    }
+}
+
 /// Whether a response reflects every span this node acknowledged before the request arrived.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -136,6 +148,9 @@ mod tests {
         }
         for &value in records::HeadKind::ALL {
             assert_eq!(wire(HeadKind::from(value)), value.as_str());
+        }
+        for &value in records::IoShape::ALL {
+            assert_eq!(wire(IoShape::from(value)), value.as_str());
         }
     }
 

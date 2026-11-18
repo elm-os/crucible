@@ -3,12 +3,14 @@
 //! through the recent index (contract 8.6), so a payload is readable as soon as its span is.
 
 use crucible_env::QueryError;
-use crucible_plan::{PayloadField, PayloadRangeRequest, payload_range};
-use crucible_records::{SpanId, TableId, Timestamp, TraceId};
+use crucible_plan::{PayloadField, PayloadRangeRequest, Value, payload_range};
+use crucible_records::{IoShape, SpanId, TableId, Timestamp, TraceId};
+use crucible_schema::{Column, SpanCoreCol};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::decode::Fields;
 use crate::service::QueryService;
+use crate::spans::{SpanSource, TraceSpan};
 
 /// The tables a payload read depends on, for the quarantine rule.
 const PAYLOAD_TABLES: [TableId; 1] = [TableId::SpanPayload];
@@ -40,6 +42,23 @@ pub struct PayloadBytes {
     pub total: u64,
     /// The response metadata.
     pub meta: Meta,
+}
+
+impl TraceSpan {
+    /// How the span's input and output are structured, which tells the payload viewer how to show them. The
+    /// recent index does not keep it, so a span the store does not serve yet has none.
+    pub fn io_shape(&self) -> Option<IoShape> {
+        let SpanSource::Store(row) = &self.source else {
+            return None;
+        };
+        let at = SpanCoreCol::ALL
+            .iter()
+            .position(|c| *c == SpanCoreCol::IoShape)?;
+        match row.values().get(at)? {
+            Value::Enum(value) => IoShape::from_value(*value),
+            _ => None,
+        }
+    }
 }
 
 /// The record field of a plan field: the same body.

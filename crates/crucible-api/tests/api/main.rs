@@ -15,6 +15,8 @@ mod world;
 mod document;
 mod endpoints;
 mod errors;
+mod payload;
+mod search;
 
 use std::future::Future;
 use std::sync::Arc;

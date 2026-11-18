@@ -2,39 +2,17 @@
 //! serve yet, `not_found` only for a whole and strong miss, and payload retention (contract 8.6, 8.7 and 8.9).
 
 use crucible_env::QueryError;
-use crucible_plan::{Caller, PayloadField, Value};
+use crucible_plan::{Caller, PayloadField};
 use crucible_query::{
     PayloadBytes, PayloadQuery, QueryServiceError, ReadContext, RetentionSettings,
 };
 use crucible_recent::SpanEntry;
 use crucible_recent::test_support::span_record;
-use crucible_records::{Lsn, TableId};
+use crucible_records::TableId;
 
-use crate::store::stored_row;
-use crate::world::{DAY, NOW, World, ctx, run, scoped, span};
+use crate::world::{DAY, NOW, World, ctx, run, scoped, span, span_payload_row};
 
 const INPUT: &str = "{\"messages\":[{\"role\":\"user\",\"content\":\"h\u{e9}llo\"}]}";
-
-fn payload_row(entry: &SpanEntry, lsn: Lsn, input: &str) -> Vec<Value> {
-    let s = &entry.summary;
-    stored_row(
-        TableId::SpanPayload,
-        &[
-            ("project_id", Value::Uuid(entry.project_id.uuid())),
-            ("start_minute", Value::Time(s.start_time.floor_minute())),
-            (
-                "trace_hash",
-                Value::UInt(u64::from(s.trace_id.trace_hash())),
-            ),
-            ("span_id", Value::Bytes(s.span_id.as_bytes().to_vec())),
-            ("trace_id", Value::Bytes(s.trace_id.as_bytes().to_vec())),
-            ("start_time", Value::Time(s.start_time)),
-            ("input", Value::String(input.to_owned())),
-            ("lsn", Value::UInt(lsn.get())),
-            ("received_at", Value::Time(NOW)),
-        ],
-    )
-}
 
 fn query(entry: &SpanEntry, range: Option<(u64, u64)>) -> PayloadQuery {
     PayloadQuery {
@@ -55,9 +33,10 @@ fn shipped() -> (World, SpanEntry) {
     let mut world = World::new(100);
     let entry = span(1, 10, 0, NOW.saturating_add_micros(-1_500));
     let lsn = world.ack(vec![entry.clone()]);
-    world
-        .store
-        .insert(TableId::SpanPayload, payload_row(&entry, lsn, INPUT));
+    world.store.insert(
+        TableId::SpanPayload,
+        span_payload_row(&entry, lsn, NOW, INPUT, &[]),
+    );
     world.settle();
     (world, entry)
 }
@@ -134,9 +113,10 @@ fn expired_payloads_are_not_found() {
     let mut world = World::new(100);
     let entry = span(1, 10, 0, NOW.saturating_add_micros(-3 * DAY));
     let lsn = world.ack(vec![entry.clone()]);
-    world
-        .store
-        .insert(TableId::SpanPayload, payload_row(&entry, lsn, INPUT));
+    world.store.insert(
+        TableId::SpanPayload,
+        span_payload_row(&entry, lsn, NOW, INPUT, &[]),
+    );
     world.settle();
     assert!(read(&world, query(&entry, None)).is_ok());
     let retention = RetentionSettings {

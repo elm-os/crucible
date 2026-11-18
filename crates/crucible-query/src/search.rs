@@ -138,8 +138,8 @@ fn put(out: &mut Vec<u8>, text: &str) {
 
 /// The tokens `text` is searched for in `field`. For `input` and `output`: the runs of characters other than
 /// ASCII punctuation, spaces and controls, ASCII letters lowered, as their indexes split the stored text. For
-/// `metadata`: the whitespace-separated terms as written, each a whole `key=value` entry. Repeats are kept only
-/// in a phrase, whose tokens are its order.
+/// `metadata`: the whitespace-separated terms with an `=`, as written, each a whole `key=value` entry (a term
+/// without one can match no entry). Repeats are kept only in a phrase, whose tokens are its order.
 pub fn search_tokens(text: &str, field: SearchField, mode: TokenMode) -> Vec<String> {
     let mut tokens: Vec<String> = if field.lowered() {
         runs(text)
@@ -147,7 +147,10 @@ pub fn search_tokens(text: &str, field: SearchField, mode: TokenMode) -> Vec<Str
             .map(|(from, to)| text[from..to].to_ascii_lowercase())
             .collect()
     } else {
-        text.split_ascii_whitespace().map(str::to_owned).collect()
+        text.split_ascii_whitespace()
+            .filter(|term| term.contains('='))
+            .map(str::to_owned)
+            .collect()
     };
     if mode != TokenMode::Phrase || !field.lowered() {
         let mut seen = Vec::with_capacity(tokens.len());
@@ -484,9 +487,13 @@ impl QueryService {
             let Some(first) = fields.first() else {
                 continue;
             };
+            // A kind of field without tokens is not searched; a query must have tokens for one kind.
             let tokens = search_tokens(&query.text, *first, query.mode);
-            if tokens.is_empty() || tokens.len() > SEARCH_MAX_TOKENS {
+            if tokens.len() > SEARCH_MAX_TOKENS {
                 return Err(QueryServiceError::Validation("query"));
+            }
+            if tokens.is_empty() {
+                continue;
             }
             // Metadata entries have no order: a phrase over them is all of them.
             let mode = match (is_metadata, query.mode) {
@@ -511,6 +518,9 @@ impl QueryService {
                 .map(|row| Hit::decode(row, snippet_fields, is_metadata))
                 .collect::<Result<Vec<_>, _>>()?;
             sources.push(hits);
+        }
+        if sources.is_empty() {
+            return Err(QueryServiceError::Validation("query"));
         }
         let (page, has_more) = merge(sources, limit as usize);
 
@@ -649,7 +659,7 @@ mod tests {
         );
         assert_eq!(
             search_tokens(
-                " tenant=Acme  env=prod tenant=Acme",
+                " tenant=Acme  env=prod acme tenant=Acme",
                 SearchField::Metadata,
                 TokenMode::Phrase
             ),
