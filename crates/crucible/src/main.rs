@@ -359,6 +359,10 @@ fn main() -> anyhow::Result<()> {
                     args.import,
                 ))?;
                 std::io::stdout().lock().write_all(printed.as_bytes())?;
+                writeln!(
+                    std::io::stderr().lock(),
+                    "the secret key is shown only now; running servers accept the key within 5 seconds"
+                )?;
                 Ok(())
             }
             AdminCommand::ResetPassword(args) => {

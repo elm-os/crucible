@@ -37,7 +37,7 @@ function ScopedLinks() {
 
 export function SettingsNav() {
   return (
-    <nav aria-label="Settings" className="mb-6 border-b border-ash-border">
+    <nav aria-label="Settings">
       <Suspense fallback={<Links search={null} />}>
         <ScopedLinks />
       </Suspense>

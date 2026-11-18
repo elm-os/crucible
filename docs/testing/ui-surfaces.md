@@ -48,6 +48,7 @@ pnpm --filter crucible-ui exec playwright test
 | Settings: members | Three skeleton rows after 300 ms, announced; the invitations section loads on its own | Name, email, role and status. Owners and admins get a role menu (never owner) and Remove, which asks first, on other non-owner rows; nobody edits their own row | In-section card with the mapped copy, reference id and a retry that refetches only the members | "No members yet." Without a control plane, says which setting turns members on and requests nothing |
 | Settings: invitations | Three skeleton rows after 300 ms, announced | Email, role, status and expiry; Revoke, which asks first, on pending ones. "Invite member" creates one and shows its link once, until the dialog closes | In-section card with a retry that refetches only the invitations | First use: "No invitations yet." |
 | Settings: API keys | Three skeleton rows after 300 ms, announced | Public key, note, scopes, last use and status; Revoke on active keys asks first and sends `If-Match`. "Create key" shows the secret and public keys once, until the dialog closes | In-section card with a retry that refetches only the keys; a stale version (`precondition_failed`) refreshes the list | First use: "No API keys yet." Without the `manage` permission, for a project outside the session, with no projects, or without a control plane, the page explains and requests no keys |
+| Settings: new project | Not applicable: requests nothing until submitted | For organization owners and admins, "New project" beside the settings tabs opens a dialog; the slug follows the name until edited. Creating refreshes the session, selects the project and opens its API keys page | Checked before sending (slug of lowercase letters, digits and hyphens). `conflict` marks the slug as taken; `validation_failed` marks the field it points at; `forbidden` says to ask an owner or admin | Not applicable: members and viewers, and servers without a control plane, get no control |
 
 ## Tests per row
 
@@ -69,7 +70,8 @@ pnpm --filter crucible-ui exec playwright test
 | Password reset | `onboarding.spec.ts` "password reset": request, confirm, error (3) | `onboarding-forms.test.tsx`, `client.test.ts` |
 | Settings: members and invitations | `settings.spec.ts` "members": loading then success, role change, remove, invite link once, revoke, error with retry, read-only roles, no control plane (8); `phone.spec.ts` | `settings.test.tsx` |
 | Settings: API keys | `settings.spec.ts` "API keys": loading then success, secret once, revoke with `If-Match`, error with retry, no permission (5); `phone.spec.ts` | `settings.test.tsx`, `client.test.ts` |
-| Phone | `phone.spec.ts` (8) | |
+| Settings: new project | `projects.spec.ts`: create opens the API keys page, a taken slug, no control for a member (3); `phone.spec.ts` | `new-project.test.tsx`, `slug.test.ts` |
+| Phone | `phone.spec.ts` (9) | |
 
 ## Keyboard paths
 
@@ -86,6 +88,8 @@ pnpm --filter crucible-ui exec playwright test
   Cancel; Cancel or Escape returns focus to that row's button. Each row button's name carries its row, like
   "Remove Grace Hopper".
 - **Forms replaced by their result.** On the password reset pages, focus moves to the result's heading.
+- **New project.** The dialog opens with focus in Name; after a project is created, the dialog closes and a
+  status message says so.
 
 ## Phone width
 
@@ -104,5 +108,4 @@ new key's secret wraps inside its dialog.
   table then.
 - The account page, password change, organization settings, ownership transfer, project members and the
   sign-in provider settings have API routes (contract 12.6) but no pages yet.
-- Projects can't be created from the UI yet, and first-run setup creates none, so a new owner's API keys page
-  says the organization has no projects.
+

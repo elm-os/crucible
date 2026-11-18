@@ -53,9 +53,8 @@ export function ApiKeysSettings() {
     return (
       <SectionFrame title={TITLE}>
         {org.role === "owner" || org.role === "admin" ? (
-          <EmptyState kind="unavailable" title="This organization has no projects yet.">
-            API keys belong to a project, and projects can&apos;t be created from Crucible&apos;s
-            pages yet.
+          <EmptyState kind="first-use" title="This organization has no projects yet.">
+            API keys belong to a project. Create one with New project, and its keys page opens here.
           </EmptyState>
         ) : (
           <EmptyState kind="unavailable" title="You aren't in any project yet.">

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Compose smoke test, run by the compose-smoke job of .github/workflows/docker.yml: starts compose.yaml with the
-# given image, checks that the migrations are recorded in Postgres, sends one trace over OTLP/HTTP with curl and
-# reads it back through the REST API.
+# given image, checks that the migrations are recorded in Postgres, creates the organization and its owner with
+# `crucible admin init`, signs in, makes an API key with `crucible admin create-key`, sends one trace over OTLP/HTTP
+# with curl and reads it back through the REST API. It asks nothing: every step runs from this script.
 #
 #   deploy/compose/smoke-test.sh <image> [http port] [otlp port]
 #
@@ -45,15 +46,8 @@ services:
 EOF
 cd "$work"
 printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
-printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
-  "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
-  "$(key cpk_)" "$(key csk_)" > keys.toml
 printf 'CRUCIBLE_IMAGE=%s\nCRUCIBLE_BIND_ADDRESS=127.0.0.1\nCRUCIBLE_HTTP_PORT=%s\nCRUCIBLE_OTLP_HTTP_PORT=%s\n' \
   "$image" "$http_port" "$otlp_port" >> .env
-
-project_id=$(sed -n 's/^project_id = "\(.*\)"$/\1/p' keys.toml)
-secret=$(sed -n 's/^secret = "\(.*\)"$/\1/p' keys.toml)
 
 echo "starting $image"
 compose up --detach --wait --wait-timeout 240
@@ -68,16 +62,51 @@ encoding=$(curl --fail --silent --show-error --output /dev/null --write-out '%he
   --header 'Accept-Encoding: br' "http://127.0.0.1:$http_port/traces/")
 [ "$encoding" = br ] || { echo "GET /traces/ came back with content-encoding '$encoding', expected br" >&2; exit 1; }
 
+echo "creating the organization and its owner"
+owner_email=owner@smoke.example
+owner_password=$(openssl rand -hex 16)
+printf '%s\n' "$owner_password" | compose exec -T crucible crucible admin init \
+  --org-name Smoke --email "$owner_email" --name Owner
+
+echo "signing in from the server's own origin"
+base="http://127.0.0.1:$http_port"
+session=$(curl --fail --silent --show-error --output /dev/null --write-out '%header{set-cookie}' \
+  -X POST "$base/api/v1/auth/login" --header 'Content-Type: application/json' --header 'X-Crucible-CSRF: prelogin' \
+  --header "Origin: $base" --data '{"email":"'"$owner_email"'","password":"'"$owner_password"'"}')
+case "$session" in
+  crucible_session=*) ;;
+  *) echo "sign-in set no session cookie: '$session'" >&2; exit 1 ;;
+esac
+
+echo "making an API key for the first project, default"
+made=$(compose exec -T crucible crucible admin create-key --project default --note 'compose smoke')
+project_id=$(printf '%s\n' "$made" | sed -n 's/^project_id = "\(.*\)"$/\1/p')
+secret=$(printf '%s\n' "$made" | sed -n 's/^secret_key = "\(.*\)"$/\1/p')
+if [ -z "$project_id" ] || [ -z "$secret" ]; then
+  echo "crucible admin create-key printed no key: $made" >&2
+  exit 1
+fi
+
 trace_id=$(openssl rand -hex 16)
 span_id=$(openssl rand -hex 8)
 now=$(date +%s)
+# A key made outside the server reaches it through the key feed within a few seconds (contract 11.8).
 echo "sending trace $trace_id"
-curl --fail --silent --show-error -X POST "http://127.0.0.1:$otlp_port/v1/traces" \
-  --header "Authorization: Bearer $secret" --header 'Content-Type: application/json' \
-  --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"compose-smoke"}}]},
-    "scopeSpans":[{"spans":[{"traceId":"'"$trace_id"'","spanId":"'"$span_id"'","name":"compose smoke span","kind":1,
-    "startTimeUnixNano":"'"$now"'000000000","endTimeUnixNano":"'"$now"'250000000"}]}]}]}'
-echo
+for attempt in $(seq 1 20); do
+  status=$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST "http://127.0.0.1:$otlp_port/v1/traces" \
+    --header "Authorization: Bearer $secret" --header 'Content-Type: application/json' \
+    --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"compose-smoke"}}]},
+      "scopeSpans":[{"spans":[{"traceId":"'"$trace_id"'","spanId":"'"$span_id"'","name":"compose smoke span","kind":1,
+      "startTimeUnixNano":"'"$now"'000000000","endTimeUnixNano":"'"$now"'250000000"}]}]}]}' || true)
+  if [ "$status" = 200 ]; then
+    break
+  fi
+  if [ "$attempt" = 20 ]; then
+    echo "ingest answered $status for 20 s with the new key" >&2
+    exit 1
+  fi
+  sleep 1
+done
 
 echo "reading it back through the API"
 url="http://127.0.0.1:$http_port/api/v1/projects/$project_id/traces/$trace_id"

@@ -17,6 +17,8 @@ import type { OrgMemberList } from "./generated/OrgMemberList";
 import type { OrgMemberPatch } from "./generated/OrgMemberPatch";
 import type { PasswordResetConfirm } from "./generated/PasswordResetConfirm";
 import type { PasswordResetRequest } from "./generated/PasswordResetRequest";
+import type { Project } from "./generated/Project";
+import type { ProjectCreate } from "./generated/ProjectCreate";
 import type { SessionInfo } from "./generated/SessionInfo";
 import type { SetupRequest } from "./generated/SetupRequest";
 import type { SignInOptions } from "./generated/SignInOptions";
@@ -250,6 +252,10 @@ export async function listApiKeys(project: string, signal?: AbortSignal): Promis
 export async function createApiKey(project: string, body: ApiKeyCreate): Promise<ApiKeyCreated> {
   const path = projectPath(project, "/api-keys");
   return read<ApiKeyCreated>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function createProject(body: ProjectCreate): Promise<Project> {
+  return read<Project>(await call("/projects", "session", { method: "POST", body }));
 }
 
 export async function revokeApiKey(

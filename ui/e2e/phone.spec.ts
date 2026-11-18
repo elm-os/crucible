@@ -114,6 +114,17 @@ test.describe("phone at 390 px", () => {
     await expectAccessible(page, "sign in on a phone");
   });
 
+  test("the New project dialog fits, with the slug it suggests", async ({ page, api }) => {
+    signedIn(api);
+    await page.goto(`/settings/project/?project=${PROJECT}`);
+    await page.getByRole("button", { name: "New project" }).tap();
+    const dialog = page.getByRole("dialog", { name: "New project" });
+    await dialog.getByLabel("Name", { exact: true }).fill("A rather long project name for a phone");
+    await expect(dialog.getByLabel("Slug")).toHaveValue("a-rather-long-project-name-for-a-phone");
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "new project on a phone");
+  });
+
   test("setup and invitation pages read without sideways scrolling", async ({ page }) => {
     await page.goto("/setup/");
     await expect(page.getByLabel("Setup token")).toBeVisible();

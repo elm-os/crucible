@@ -107,11 +107,13 @@ pub(crate) fn start(env: &Env, identity: &Arc<Identity>, control: &Control, migr
         loop {
             match identity.issue_setup_token().await {
                 Ok(Some(link)) => {
+                    // Without a public URL the link is the server's own address, for example
+                    // http://127.0.0.1:8080, followed by this path.
                     let base = identity
                         .config()
                         .public_url
                         .clone()
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| "<this server's address>".to_owned());
                     tracing::warn!(
                         "no owner exists yet: open {}/setup/?token={} to create the organization and its owner \
                          (the link works once and for 24 hours; a restart makes a new one), or run `crucible \
