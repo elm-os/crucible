@@ -52,6 +52,7 @@ pub struct ShipperStats {
     pub(crate) unknown_outcomes: AtomicU64,
     pub(crate) probes: AtomicU64,
     pub(crate) probes_present: AtomicU64,
+    pub(crate) probes_expired: AtomicU64,
     pub(crate) quarantined: AtomicU64,
 }
 
@@ -72,6 +73,8 @@ pub struct StatsSnapshot {
     pub probes: u64,
     /// Probes that read present.
     pub probes_present: u64,
+    /// Absent probes whose answer expired before the send it would have authorized.
+    pub probes_expired: u64,
     /// Pairs quarantined.
     pub quarantined: u64,
 }
@@ -88,6 +91,7 @@ impl ShipperStats {
             unknown_outcomes: get(&self.unknown_outcomes),
             probes: get(&self.probes),
             probes_present: get(&self.probes_present),
+            probes_expired: get(&self.probes_expired),
             quarantined: get(&self.quarantined),
         }
     }

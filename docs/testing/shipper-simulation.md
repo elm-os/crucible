@@ -57,10 +57,17 @@ The plan interpreter, merges, deletes and partition drops are not part of this m
 ## Crash points
 
 An incarnation ends at the first of: a seeded number of disk operations, a seeded number of crash barriers of the
-shipper, a seeded virtual time (up to 150 s), or a process stop. The barriers are those of contract 5.9. The
+shipper (any barrier, or one chosen barrier so that the rare ones get their share), a seeded virtual time (up to
+150 s), or a process stop. The barriers are those of contract 5.9. The
 shipper awaits a hook at each one (`crucible_shipper::Barriers`); the simulation's hook freezes the disk and never
 completes at the barrier it picked, and the driver then aborts the host. Short incarnations (a few disk operations)
 put the crash inside the shipper's own recovery: the rebuild of stage B and the re-ship of sealed batches.
+
+`Stats::crashes_at` counts the crashes per barrier, and the suite fails unless the per-pull-request seeds crash at
+every one of them: before and after the seal append, before and after an insert, after the quarantine copy, and
+before and after the checkpoint append. It also fails unless the seeds reach a restart that ships sealed batches
+again, a probe that reads present, a probe whose answer expires before its send, a deduplicated insert, an insert
+that lands late, a window expiry and a quarantine.
 
 ## What the oracle checks
 
@@ -89,8 +96,8 @@ invariant it breaks, and the first seed that does so is recorded in `ship_dst.rs
 
 | Mutant | Defect | Caught as | Seed |
 |---|---|---|---|
-| `SkipProbeAfterUnknown` | A retry after an unknown outcome skips the probe | A block lands twice after its window entry expired | 2 |
-| `SendBeforeSeal` | Inserts are sent before the `BatchSeal` frame is durable | Two batch identities over the same frames | 0 |
+| `SkipProbeAfterUnknown` | A retry after an unknown outcome skips the probe | A block lands twice after its window entry expired | 4 |
+| `SendBeforeSeal` | Inserts are sent before the `BatchSeal` frame is durable | Two batch identities over the same frames | 31 |
 | `DropToken` | Every attempt carries a new deduplication identity | A block lands twice | 1 |
 | `CheckpointBeforeResolution` | The checkpoint is appended before the pairs are resolved | An acknowledged span below the watermark is nowhere | 0 |
 | `QuarantineWithoutProbe` | A pair in doubt is quarantined without a probe | A quarantined pair whose block the store had accepted | 4 |

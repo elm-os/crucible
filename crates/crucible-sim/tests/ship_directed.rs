@@ -238,7 +238,7 @@ fn a_batch_lands_once_per_table_and_is_checkpointed() {
 }
 
 #[test]
-fn a_seal_is_durable_before_any_insert_of_its_batch() {
+fn every_token_names_a_sealed_range_and_ranges_are_adjacent() {
     directed(|rig| async move {
         rig.model.set_script(Script::new(|_, _| None));
         let (node, _) = rig.boot().await;
@@ -519,6 +519,26 @@ fn a_poison_pair_is_quarantined_after_three_identical_failures() {
         node.sleep(200).await;
         assert_eq!(rig.model.stats().inserts, inserts);
         assert_eq!(rig.rows(TableId::TraceHeads), 0);
+        node.host.stop().await;
+    });
+}
+
+#[test]
+fn a_block_that_spans_partitions_is_quarantined_at_once() {
+    directed(|rig| async move {
+        // Code 252 in the poison class is the multi-partition refusal: a routing bug that no retry cures.
+        rig.model.set_script(Script::new(|token, _| {
+            (token.table() == TableId::TraceStats).then(|| InsertError::Poison {
+                code: 252,
+                message: "Too many partitions for single INSERT block".to_owned(),
+            })
+        }));
+        let (node, _) = rig.boot().await;
+        let lsn = node.ingest(1, 2).await;
+        node.sleep(300).await;
+        assert!(node.watermark() >= lsn.get());
+        assert_eq!(node.snapshot().quarantined, 1);
+        assert_eq!(rig.calls_by_pair()[&(TableId::TraceStats, lsn.get())], "I");
         node.host.stop().await;
     });
 }

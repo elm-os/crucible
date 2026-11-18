@@ -145,6 +145,8 @@ pub struct Stats {
     pub crashes: u64,
     /// Crashes at a crash barrier of the shipper.
     pub barrier_crashes: u64,
+    /// Those crashes by barrier, in the order of [`BARRIERS`].
+    pub crashes_at: [u64; 7],
     /// Incarnations that ended with a process stop.
     pub stops: u64,
     /// Requests submitted.
@@ -164,6 +166,20 @@ pub struct Stats {
     /// Virtual microseconds the run took.
     pub virtual_micros: u64,
 }
+
+/// The crash barriers, by the names of contract 5.9, in the order of [`Stats::crashes_at`].
+pub const BARRIERS: [&str; 7] = [
+    "before seal.appended",
+    "seal.appended",
+    "before insert.sent",
+    "insert.sent",
+    "quarantine.copied",
+    "before checkpoint.appended",
+    "checkpoint.appended",
+];
+
+/// The index of `quarantine.copied` in [`BARRIERS`].
+const QUARANTINE_COPIED: u64 = 4;
 
 /// The result of one run.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -533,7 +549,10 @@ struct SimBarriers {
     trace: Arc<Trace>,
     /// Barriers still to pass before the crash; zero when not armed.
     countdown: AtomicU64,
-    tripped: AtomicBool,
+    /// One plus the index in [`BARRIERS`] of the only barrier that counts; zero when every barrier does.
+    only: AtomicU64,
+    /// One plus the index in [`BARRIERS`] of the barrier the crash fell at; zero until then.
+    tripped: AtomicU64,
     signal: Notify,
 }
 
@@ -543,18 +562,27 @@ impl SimBarriers {
             disk: disk.clone(),
             trace: Arc::clone(trace),
             countdown: AtomicU64::new(0),
-            tripped: AtomicBool::new(false),
+            only: AtomicU64::new(0),
+            tripped: AtomicU64::new(0),
             signal: Notify::new(),
         }
     }
 
-    fn arm(&self, after: u64) {
+    /// Arms the crash at the `after`-th barrier from now; with `only`, at the `after`-th barrier of that index
+    /// in [`BARRIERS`], so that the rare barriers get their share of crashes.
+    fn arm(&self, only: Option<u64>, after: u64) {
+        self.only
+            .store(only.map_or(0, |index| index + 1), Ordering::SeqCst);
         self.countdown.store(after.max(1), Ordering::SeqCst);
     }
 
-    async fn tripped(&self) {
-        while !self.tripped.load(Ordering::SeqCst) {
-            self.signal.notified().await;
+    /// Resolves with the index in [`BARRIERS`] of the barrier the crash fell at.
+    async fn tripped(&self) -> usize {
+        loop {
+            match self.tripped.load(Ordering::SeqCst) {
+                0 => self.signal.notified().await,
+                code => return (code - 1) as usize,
+            }
         }
     }
 }
@@ -570,14 +598,18 @@ impl Barriers for SimBarriers {
             Barrier::BeforeCheckpointAppend => 6,
             Barrier::CheckpointAppended => 7,
         };
-        if self.tripped.load(Ordering::SeqCst) {
+        if self.tripped.load(Ordering::SeqCst) != 0 {
             return Box::pin(futures::future::pending());
+        }
+        let only = self.only.load(Ordering::SeqCst);
+        if only != 0 && only != code {
+            return Box::pin(futures::future::ready(()));
         }
         let left = self.countdown.load(Ordering::SeqCst);
         if left == 1 {
             self.trace.event("barrier.crash", &[code]);
             self.disk.freeze();
-            self.tripped.store(true, Ordering::SeqCst);
+            self.tripped.store(code, Ordering::SeqCst);
             self.signal.notify_one();
             return Box::pin(futures::future::pending());
         }
@@ -650,6 +682,7 @@ fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.unknown_outcomes += s.unknown_outcomes;
     total.probes += s.probes;
     total.probes_present += s.probes_present;
+    total.probes_expired += s.probes_expired;
     total.quarantined += s.quarantined;
 }
 
@@ -1072,7 +1105,15 @@ impl Run<'_> {
             self.disk.arm_crash_after_ops(1 + pick(rng, ops));
         }
         if self.plan().barrier_crashes && coin(rng) {
-            shipping.barriers.arm(1 + pick(rng, barriers));
+            if coin(rng) {
+                shipping.barriers.arm(None, 1 + pick(rng, barriers));
+            } else if self.plan().faults.poison_pair_ppm > 0 && coin(rng) {
+                // The rarest barrier: it needs a pair that is being quarantined.
+                shipping.barriers.arm(Some(QUARANTINE_COPIED), 1);
+            } else {
+                let only = pick(rng, BARRIERS.len() as u64);
+                shipping.barriers.arm(Some(only), 1 + pick(rng, 3));
+            }
         }
         let run_for = 500 + pick(rng, micros);
         let outage = (self.plan().outages && coin(rng)).then(|| {
@@ -1095,8 +1136,10 @@ impl Run<'_> {
             loop {
                 futures::select_biased! {
                     () = crash_point => break true,
-                    () = barrier => {
-                        self.shared.ledger().stats.barrier_crashes += 1;
+                    at = barrier => {
+                        let stats = &mut self.shared.ledger().stats;
+                        stats.barrier_crashes += 1;
+                        stats.crashes_at[at] += 1;
                         break true;
                     }
                     () = outage_start => {

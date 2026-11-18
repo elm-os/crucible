@@ -22,7 +22,7 @@
 use std::ops::Range;
 
 use crucible_shipper::Mutant;
-use crucible_sim::ship_sim::{Options, Outcome, Stats, Violation, run_ship_sim};
+use crucible_sim::ship_sim::{BARRIERS, Options, Outcome, Stats, Violation, run_ship_sim};
 
 const REPLAY: &str =
     "cargo nextest run -p crucible-sim --test ship_dst replay_seed --run-ignored all --no-capture";
@@ -52,6 +52,9 @@ fn add(total: &mut Stats, stats: &Stats) {
     total.incarnations += stats.incarnations;
     total.crashes += stats.crashes;
     total.barrier_crashes += stats.barrier_crashes;
+    for (total, n) in total.crashes_at.iter_mut().zip(stats.crashes_at) {
+        *total += n;
+    }
     total.stops += stats.stops;
     total.submitted += stats.submitted;
     total.acked += stats.acked;
@@ -67,6 +70,7 @@ fn add(total: &mut Stats, stats: &Stats) {
     ship.unknown_outcomes += s.unknown_outcomes;
     ship.probes += s.probes;
     ship.probes_present += s.probes_present;
+    ship.probes_expired += s.probes_expired;
     ship.quarantined += s.quarantined;
     let (store, s) = (&mut total.store, &stats.store);
     store.inserts += s.inserts;
@@ -90,19 +94,27 @@ fn realistic(seeds: Range<u64>) -> Stats {
         add(&mut total, &outcome.stats);
     }
     println!("ship seeds {seeds:?}: {total:#?}");
-    // A shard in which nothing was acknowledged, crashed at a barrier, shipped again after a restart, probed
-    // present, deduplicated, landed late, expired from a window or was quarantined would prove nothing.
+    // A shard in which nothing was acknowledged, some barrier never saw a crash, nothing was shipped again after
+    // a restart, probed present, probed too early to count, deduplicated, landed late, expired from a window or
+    // was quarantined would prove nothing.
     let (ship, store) = (&total.shipper, &total.store);
     assert!(
         total.acked > 0 && total.crashes > 0 && total.stops > 0,
         "{total:?}"
     );
-    assert!(total.barrier_crashes > 0 && total.outages > 0, "{total:?}");
+    assert!(total.outages > 0, "{total:?}");
+    for (barrier, crashes) in BARRIERS.iter().zip(total.crashes_at) {
+        assert!(crashes > 0, "no crash at `{barrier}`: {total:?}");
+    }
     assert!(
         ship.sealed > 0 && ship.reshipped > 0 && ship.checkpoints > 0,
         "{total:?}"
     );
     assert!(ship.probes_present > 0 && ship.quarantined > 0, "{total:?}");
+    assert!(
+        ship.probes_expired > 0 && ship.unknown_outcomes > 0,
+        "{total:?}"
+    );
     assert!(
         store.landed > 0 && store.deduplicated > 0 && store.late > 0,
         "{total:?}"
@@ -173,8 +185,8 @@ const MUTANT_BUDGET: Range<u64> = 0..500;
 /// Each mutant must be caught inside the budget through the invariant it breaks, and the first seed that does so
 /// is recorded here. A change to the workload, the fault model or the product moves these seeds: update them
 /// from the failure message, which prints the new first catching seed.
-const CAUGHT_SKIP_PROBE_AFTER_UNKNOWN: u64 = 2;
-const CAUGHT_SEND_BEFORE_SEAL: u64 = 0;
+const CAUGHT_SKIP_PROBE_AFTER_UNKNOWN: u64 = 4;
+const CAUGHT_SEND_BEFORE_SEAL: u64 = 31;
 const CAUGHT_DROP_TOKEN: u64 = 1;
 const CAUGHT_CHECKPOINT_BEFORE_RESOLUTION: u64 = 0;
 const CAUGHT_QUARANTINE_WITHOUT_PROBE: u64 = 4;

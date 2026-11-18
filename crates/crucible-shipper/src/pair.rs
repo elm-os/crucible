@@ -33,9 +33,14 @@ pub(crate) enum PairEnd {
     Confirmed,
     /// The pair is named by a durable `Quarantine` frame.
     Quarantined,
-    /// The store refuses the table's inserts for its configuration. The pair stays unresolved.
+    /// The store refuses the table's inserts for its configuration. The pair stays unresolved, so its batch is
+    /// never checkpointed in this process and the WAL keeps it.
     Stopped,
 }
+
+/// The one data error that quarantines at once (contract 5.6): code 252 in the poison class is a block that spans
+/// partitions. The store reports the too-many-parts form of 252 as a retry.
+const MULTI_PARTITION_CODE: u32 = 252;
 
 /// The data errors of one pair so far: the code and how many identical failures in a row.
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +131,7 @@ pub(crate) async fn ship_pair(
             .is_some_and(|at| now.saturating_duration_since(at) >= ctx.config.probe_valid_for)
         {
             // The wait for a connection outlived the probe's answer.
+            ctx.stats.probes_expired.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         let token = if ctx.config.drops_token() {
@@ -187,15 +193,20 @@ pub(crate) async fn ship_pair(
                     table = pair.0.name(),
                     code,
                     %message,
-                    "the store refuses inserts for its configuration; shipping of this table has stopped"
+                    "the store refuses inserts for its configuration; the batch stays unresolved until a restart"
                 );
                 return Ok(PairEnd::Stopped);
             }
             Ok(Err(InsertError::Poison { code, message })) => {
                 known_rejection = true;
-                let count = poison
-                    .filter(|p| p.code == code)
-                    .map_or(1, |p| p.count.saturating_add(1));
+                let count = if code == MULTI_PARTITION_CODE {
+                    // A routing bug: no retry can cure it.
+                    ctx.config.poison_limit
+                } else {
+                    poison
+                        .filter(|p| p.code == code)
+                        .map_or(1, |p| p.count.saturating_add(1))
+                };
                 reason = message;
                 poison = Some(Poison {
                     code,
