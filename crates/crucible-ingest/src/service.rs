@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, USER_AGENT};
 use axum::response::Response;
 use axum::routing::post;
-use crucible_admission::UNAVAILABLE_MIN_S;
+use crucible_admission::{BucketConfig, UNAVAILABLE_MIN_S};
 use crucible_auth::{KeyPrincipal, KeyVerifier};
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env};
@@ -56,6 +56,11 @@ pub struct IngestConfig {
     pub max_event_age: Duration,
     /// `wal.compression` for the frames that ingest prepares.
     pub compression: Compression,
+    /// `ingest.project_bytes_per_s` and its burst: the per-project token bucket of contract 4.8, in request
+    /// bytes as received (and fact payload bytes). The default is `None`: ingest is not rate-limited and
+    /// backpressure governs (contract 11.9). An operator who sets a rate should keep the burst at or above the
+    /// largest body a client sends, because a request larger than the burst can never pass.
+    pub project_rate: Option<BucketConfig>,
     /// A seeded defect; `None` outside the simulation suite.
     pub mutant: Option<Mutant>,
 }
@@ -75,6 +80,7 @@ impl Default for IngestConfig {
             inflight_bytes: DEFAULT_INFLIGHT_BYTES,
             max_event_age: DEFAULT_MAX_EVENT_AGE,
             compression: Compression::Lz4,
+            project_rate: None,
             mutant: None,
         }
     }
@@ -83,18 +89,19 @@ impl Default for IngestConfig {
 /// OTLP/HTTP trace ingest in front of one WAL. Cloning gives another handle to the same service.
 #[derive(Clone, Debug)]
 pub struct Ingest {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 #[derive(Debug)]
-struct Inner {
-    env: Env,
+pub(crate) struct Inner {
+    pub(crate) env: Env,
     keys: Arc<dyn KeyVerifier>,
-    admission: Arc<Admission>,
+    pub(crate) admission: Arc<Admission>,
     max_event_age_micros: i64,
-    compression: Compression,
+    pub(crate) compression: Compression,
     acks_before_append: bool,
     metrics: Metrics,
+    pub(crate) facts: crate::facts::FactMetrics,
 }
 
 /// The labels of `crucible_ingest_spans_total`, in the order of
@@ -237,6 +244,8 @@ impl Ingest {
             env.rng.fork("crucible-ingest/retry-after"),
             config.inflight_bytes,
             gauge,
+            config.project_rate,
+            Arc::clone(&env.clock),
         );
         let max_age = i64::try_from(config.max_event_age.as_micros()).unwrap_or(i64::MAX);
         Self {
@@ -248,6 +257,7 @@ impl Ingest {
                 compression: config.compression,
                 acks_before_append: config.acks_before_append(),
                 metrics: Metrics::new(env),
+                facts: crate::facts::FactMetrics::new(env),
             }),
         }
     }
@@ -320,9 +330,19 @@ impl Inner {
         if declared.is_some_and(|len| len > cap as u64) {
             return Err(body::too_large("the request body", cap));
         }
-        let mut held = self.admission.admit(declared.unwrap_or(0))?;
+        let project = principal.scope.project_id();
+        let mut held = self.admission.admit(project, declared.unwrap_or(0))?;
+        let wire = body::read(body, cap, declared, &mut held).await?;
+        // A body without a declared length is charged to the project's rate once its size is known.
+        let undeclared = (wire.len() as u64).saturating_sub(declared.unwrap_or(0));
+        if undeclared > 0
+            && !self.admission.take(project, undeclared)
+            && let Some(reject) = self.admission.refusal(false, true)
+        {
+            return Err(reject);
+        }
         let job = Job {
-            wire: body::read(body, cap, declared, &mut held).await?,
+            wire,
             gzip,
             format,
             principal,
@@ -427,7 +447,7 @@ impl Inner {
         Ok(Prepared { frame, acked, held })
     }
 
-    fn append_failed(&self, error: AppendError) -> Reject {
+    pub(crate) fn append_failed(&self, error: AppendError) -> Reject {
         match error {
             AppendError::TooLarge { len, max } => Reject::TooLarge(format!(
                 "the request's WAL frame of {len} bytes is above the segment capacity of {max} bytes"

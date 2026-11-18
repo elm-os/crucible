@@ -20,10 +20,12 @@ pub(crate) enum Reject {
     TooLarge(String),
     /// Not a well-formed request (400).
     Malformed(String),
-    /// The in-flight byte budget is exhausted (429).
+    /// The in-flight byte budget or the project's byte rate is exhausted (429).
     TooManyRequests {
         /// Seconds for `Retry-After`.
         retry_after_s: u32,
+        /// The developer-facing reason: the setting that refused the request.
+        detail: &'static str,
     },
     /// The WAL cannot take the request, or failed to make it durable (503).
     Unavailable {
@@ -93,16 +95,16 @@ impl Reject {
             Self::UnsupportedMediaType(detail)
             | Self::TooLarge(detail)
             | Self::Malformed(detail) => detail.clone(),
-            Self::TooManyRequests { .. } => "the in-flight byte budget is exhausted".to_owned(),
-            Self::Unavailable { detail, .. } | Self::Internal(detail) => (*detail).to_owned(),
+            Self::TooManyRequests { detail, .. }
+            | Self::Unavailable { detail, .. }
+            | Self::Internal(detail) => (*detail).to_owned(),
         }
     }
 
     const fn retry_after_s(&self) -> Option<u32> {
         match self {
-            Self::TooManyRequests { retry_after_s } | Self::Unavailable { retry_after_s, .. } => {
-                Some(*retry_after_s)
-            }
+            Self::TooManyRequests { retry_after_s, .. }
+            | Self::Unavailable { retry_after_s, .. } => Some(*retry_after_s),
             _ => None,
         }
     }

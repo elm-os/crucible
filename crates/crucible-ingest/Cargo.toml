@@ -33,6 +33,7 @@ tower = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-env-prod = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 # The seeded ack-before-sync defect, which the durability test must catch.
