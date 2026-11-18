@@ -54,8 +54,7 @@ type orderIn struct {
 }
 
 type noteIn struct {
-	Password string `json:"password"`
-	Note     string `json:"note"`
+	Note string `json:"note"`
 }
 
 func text(s string) []mcp.Content { return []mcp.Content{&mcp.TextContent{Text: s}} }

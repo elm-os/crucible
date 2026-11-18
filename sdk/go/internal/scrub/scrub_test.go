@@ -10,54 +10,93 @@ import (
 	"unicode/utf8"
 )
 
-func TestVectors(t *testing.T) {
-	var f struct {
-		Vectors []struct {
-			Input  string `json:"input"`
-			Output string `json:"output"`
-		} `json:"vectors"`
-	}
-	if err := json.Unmarshal(rulesJSON, &f); err != nil {
+type vectors struct {
+	Rules []struct {
+		Name     string   `json:"name"`
+		Positive []string `json:"positive"`
+		Negative []string `json:"negative"`
+	} `json:"rules"`
+	Examples []struct {
+		Input  string `json:"input"`
+		Output string `json:"output"`
+	} `json:"examples"`
+}
+
+func loadVectors(t *testing.T) vectors {
+	t.Helper()
+	var v vectors
+	if err := json.Unmarshal(rulesJSON, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Vectors) == 0 {
-		t.Fatal("rules.json has no vectors")
+	if len(v.Rules) != len(rules) {
+		t.Fatalf("%d rules with vectors, %d compiled", len(v.Rules), len(rules))
 	}
-	for _, v := range f.Vectors {
-		if got := String(v.Input); got != v.Output {
-			t.Errorf("String(%q)\n got %q\nwant %q", v.Input, got, v.Output)
+	return v
+}
+
+// Every rule changes its positive inputs and leaves its negative ones alone, on its own.
+func TestRuleVectors(t *testing.T) {
+	v := loadVectors(t)
+	for i, r := range v.Rules {
+		if len(r.Positive) == 0 || len(r.Negative) == 0 {
+			t.Errorf("rule %s lacks positive or negative inputs", r.Name)
+		}
+		for _, in := range r.Positive {
+			if rules[i].apply(in) == in {
+				t.Errorf("rule %s left its positive input %q unchanged", r.Name, in)
+			}
+		}
+		for _, in := range r.Negative {
+			if out := rules[i].apply(in); out != in {
+				t.Errorf("rule %s changed its negative input %q to %q", r.Name, in, out)
+			}
 		}
 	}
 }
 
-func TestEveryRuleHasAVector(t *testing.T) {
-	var f struct {
-		Vectors []struct {
-			Input string `json:"input"`
-		} `json:"vectors"`
+// Each example is the output of the whole rule list.
+func TestExamples(t *testing.T) {
+	v := loadVectors(t)
+	if len(v.Examples) == 0 {
+		t.Fatal("no examples")
 	}
-	if err := json.Unmarshal(rulesJSON, &f); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range rules {
-		hit := false
-		for _, v := range f.Vectors {
-			if r.apply(v.Input) != v.Input {
-				hit = true
-				break
-			}
-		}
-		if !hit {
-			t.Errorf("no vector exercises rule %s", r.name)
+	for _, e := range v.Examples {
+		if got := String(e.Input); got != e.Output {
+			t.Errorf("String(%q)\n got %q\nwant %q", e.Input, got, e.Output)
 		}
 	}
+}
+
+// After a rejected match, the search resumes after the match's first separator, so a card that starts at a
+// later group of a rejected run is still found.
+func TestResumeAfterRejection(t *testing.T) {
+	card := rules[ruleIndex(t, "card")]
+	if got := card.apply("0134 4111 1111 1111 1111"); got != "0134 [redacted:card]" {
+		t.Fatalf("card rule gave %q", got)
+	}
+	if got := resume("4111-x", 0, 6); got != 5 {
+		t.Fatalf("resume = %d, want 5", got)
+	}
+	if got := resume("41111111", 0, 8); got != 8 {
+		t.Fatalf("resume without a separator = %d, want 8", got)
+	}
+}
+
+func ruleIndex(t *testing.T, name string) int {
+	t.Helper()
+	for i := range rules {
+		if rules[i].name == name {
+			return i
+		}
+	}
+	t.Fatalf("no rule %s", name)
+	return 0
 }
 
 func TestParseRefusesBadRules(t *testing.T) {
 	for _, data := range []string{
 		`{"rules":[{"name":"x","pattern":"(","replacement":"r"}]}`,
-		`{"rules":[{"name":"x","pattern":"a","group":1,"replacement":"r"}]}`,
-		`{"rules":[{"name":"x","pattern":"a","check":"crc","replacement":"r"}]}`,
+		`{"rules":[{"name":"x","pattern":"a","validator":"crc","replacement":"r"}]}`,
 	} {
 		if _, err := parse([]byte(data)); err == nil {
 			t.Errorf("parse(%s) accepted invalid rules", data)
@@ -85,12 +124,13 @@ func TestPlantedSecretsAreRemoved(t *testing.T) {
 		"ada@example.com",
 		"csk_0123456789abcdefghijABCDEFGHIJ0123456789abc",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln",
+		"Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
 		"4111 1111 1111 1111",
 		"+44 20 7946 0958",
 		"198.51.100.23",
-		"AKIAABCDEFGHIJKLMNOP",
+		"2001:db8::8a2e:370:7334",
 	}
-	const filler = "abcxyz ,;:"
+	const filler = "abcxyz ,;"
 	r := rand.New(rand.NewPCG(1, 2))
 	word := func() string {
 		b := make([]byte, r.IntN(40))
@@ -145,25 +185,25 @@ func TestCappedScrubsAcrossTheCap(t *testing.T) {
 	}
 }
 
-// When the shared rules land in conformance/scrub-rules.json, this copy must be identical to them.
-func TestMatchesTheSharedRulesWhenPresent(t *testing.T) {
+// rules.json is a copy of the shared conformance/scrub-rules.json and must stay identical to it.
+func TestRulesAreTheSharedFile(t *testing.T) {
 	shared, err := os.ReadFile("../../../../conformance/scrub-rules.json")
 	if os.IsNotExist(err) {
-		t.Skip("conformance/scrub-rules.json does not exist yet")
+		t.Skip("conformance/scrub-rules.json is not in this checkout")
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(bytes.TrimSpace(shared), bytes.TrimSpace(rulesJSON)) {
+	if !bytes.Equal(shared, rulesJSON) {
 		t.Fatal("internal/scrub/rules.json differs from conformance/scrub-rules.json; copy the shared file here")
 	}
 }
 
 func FuzzString(f *testing.F) {
 	f.Add("ada@example.com")
-	f.Add(`{"password":"x`)
 	f.Add("-----BEGIN KEY-----")
 	f.Add("4111 1111 1111 1111")
+	f.Add("+1 415 555 0134 4111 1111 1111 1111")
 	f.Fuzz(func(t *testing.T, s string) {
 		out := String(s)
 		if utf8.ValidString(s) && !utf8.ValidString(out) {

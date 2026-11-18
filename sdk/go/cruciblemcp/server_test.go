@@ -229,7 +229,7 @@ func TestContentCaptureIsScrubbedAndCapped(t *testing.T) {
 		},
 	}
 	cs := connect(t, newServer(t, opts), newClient(t, nil), modern)
-	if _, err := call(t, cs, "secret", map[string]any{"password": "hunter2", "note": "card 4111 1111 1111 1111"}); err != nil {
+	if _, err := call(t, cs, "secret", map[string]any{"note": "card 4111 1111 1111 1111 for ada@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := call(t, cs, "echo", map[string]any{"text": strings.Repeat("x", 100)}); err != nil {
@@ -241,13 +241,13 @@ func TestContentCaptureIsScrubbedAndCapped(t *testing.T) {
 
 	secret := server(t, c, "tools/call secret")
 	expect(t, secret, map[string]any{
-		"gen_ai.tool.call.arguments":       `{"note":"card [redacted:card]","password":"[redacted]"}`,
+		"gen_ai.tool.call.arguments":       `{"note":"card [redacted:card] for [redacted:email]"}`,
 		"crucible.mcp.content.captured":    true,
 		"crucible.mcp.content.sample_rate": 1.0,
 		"crucible.mcp.content.truncation":  "none",
 	})
 	result, _ := secret.Attrs["gen_ai.tool.call.result"].(string)
-	for _, want := range []string{"[redacted:email]", "[redacted:key]", "[codename]", `"type":"text"`} {
+	for _, want := range []string{"[redacted:email]", "[redacted:secret_key]", "[codename]", `"type":"text"`} {
 		if !strings.Contains(result, want) {
 			t.Errorf("result %q does not contain %q", result, want)
 		}
@@ -267,7 +267,7 @@ func TestContentCaptureIsScrubbedAndCapped(t *testing.T) {
 
 	// Taint: no planted secret reaches the collector in any form.
 	bodies := c.Bodies()
-	for _, planted := range []string{"hunter2", "ada@example.com", "csk_0123456789abcdefghij", "4111 1111 1111 1111", "internal-codename", testKey} {
+	for _, planted := range []string{"ada@example.com", "csk_0123456789abcdefghij", "4111 1111 1111 1111", "internal-codename", testKey} {
 		if bytes.Contains(bodies, []byte(planted)) {
 			t.Errorf("the exported bodies contain %q", planted)
 		}

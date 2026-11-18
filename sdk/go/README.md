@@ -143,11 +143,13 @@ cruciblemcp.Options{
 ```
 
 The first rule whose glob matches the tool applies. The sampling decision is made before anything is copied, and each
-field is cut at `MaxBytes` (default 16 KiB) on a character boundary. Built-in rules then replace email addresses,
-phone numbers, card numbers that pass the Luhn check, bearer tokens and JWTs, common API key formats including
-Crucible's `csk_` keys, IP addresses, PEM blocks, and the values of fields named like passwords, tokens and cookies.
-The rules are data in `internal/scrub/rules.json` and use Go's linear-time regular expressions. `Scrub` runs after
-them on every captured field, error message and handle id from `HandleParams`; returning false sends nothing.
+field is cut at `MaxBytes` (default 16 KiB) on a character boundary. The shared scrubbing rules then replace PEM
+blocks, JWTs, bearer tokens, Crucible secret keys (`csk_`), card numbers that pass the Luhn check, email addresses,
+IP addresses and phone numbers. The rules are data: `internal/scrub/rules.json` is a copy of
+`conformance/scrub-rules.json`, which every Crucible SDK uses, and a test keeps the two identical. The SDK scrubs 1 KiB
+past the cap before cutting, so a secret that straddles the cap leaves no prefix behind. `Scrub` runs after the rules on
+every captured field, error message and handle id from `HandleParams`, and is the place for anything the shared rules
+do not cover, such as values of fields named like passwords; returning false sends nothing.
 
 Authorization headers, cookies, `requestState`, raw session ids, client IP addresses and baggage are never sent.
 

@@ -1,9 +1,10 @@
 // Package scrub removes secrets and personal data from text before it leaves the process (contract 9.10).
 //
-// The rules are data in rules.json, compiled with Go's regexp package, whose matching is linear in the input
-// size. A rule replaces the whole match, or only one capture group when it names one, so the key in
-// `"password": "..."` survives and only the value is replaced. A rule with the luhn check replaces a match
-// only when its digits pass the Luhn checksum.
+// The rules are the shared conformance/scrub-rules.json, copied byte for byte into rules.json because a Go
+// module cannot embed files outside its directory; a test keeps the two identical. Rules run in file order, each
+// replacing every non-overlapping match, leftmost first. After a match its validator rejects, the search resumes
+// after the match's first character that is neither an ASCII letter nor a digit, or after the match when it has
+// none. Go's regexp package matches in time linear in the input.
 package scrub
 
 import (
@@ -21,7 +22,6 @@ var rulesJSON []byte
 type rule struct {
 	name        string
 	re          *regexp.Regexp
-	group       int
 	luhn        bool
 	replacement string
 }
@@ -30,9 +30,8 @@ type ruleFile struct {
 	Rules []struct {
 		Name        string `json:"name"`
 		Pattern     string `json:"pattern"`
-		Group       int    `json:"group"`
-		Check       string `json:"check"`
 		Replacement string `json:"replacement"`
+		Validator   string `json:"validator"`
 	} `json:"rules"`
 }
 
@@ -49,13 +48,10 @@ func parse(data []byte) ([]rule, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rule %s: %w", r.Name, err)
 		}
-		if r.Group < 0 || r.Group > re.NumSubexp() {
-			return nil, fmt.Errorf("rule %s: group %d does not exist", r.Name, r.Group)
+		if r.Validator != "" && r.Validator != "luhn" {
+			return nil, fmt.Errorf("rule %s: unknown validator %q", r.Name, r.Validator)
 		}
-		if r.Check != "" && r.Check != "luhn" {
-			return nil, fmt.Errorf("rule %s: unknown check %q", r.Name, r.Check)
-		}
-		out = append(out, rule{name: r.Name, re: re, group: r.Group, luhn: r.Check == "luhn", replacement: r.Replacement})
+		out = append(out, rule{name: r.Name, re: re, luhn: r.Validator == "luhn", replacement: r.Replacement})
 	}
 	return out, nil
 }
@@ -68,7 +64,7 @@ func mustParse(data []byte) []rule {
 	return rs
 }
 
-// String returns s with every match of every rule replaced, applying the rules in file order.
+// String returns s with every rule applied in file order.
 func String(s string) string {
 	for i := range rules {
 		s = rules[i].apply(s)
@@ -77,26 +73,46 @@ func String(s string) string {
 }
 
 func (r *rule) apply(s string) string {
-	matches := r.re.FindAllStringSubmatchIndex(s, -1)
-	if matches == nil {
-		return s
-	}
 	var b strings.Builder
-	last := 0
-	for _, m := range matches {
-		start, end := m[2*r.group], m[2*r.group+1]
-		if start < 0 || (r.luhn && !luhn(s[m[0]:m[1]])) {
+	last, pos := 0, 0
+	for pos <= len(s) {
+		loc := r.re.FindStringIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		start, end := pos+loc[0], pos+loc[1]
+		if r.luhn && !luhn(s[start:end]) {
+			pos = resume(s, start, end)
 			continue
 		}
 		b.WriteString(s[last:start])
 		b.WriteString(r.replacement)
 		last = end
+		if end == start {
+			end++
+		}
+		pos = end
 	}
-	if last == 0 && b.Len() == 0 {
+	if last == 0 {
 		return s
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// resume is where the search continues after a rejected match s[start:end]: after its first character that is
+// neither an ASCII letter nor a digit, or after the match when it has none.
+func resume(s string, start, end int) int {
+	for i := start; i < end; i++ {
+		c := s[i]
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z') {
+			return i + 1
+		}
+	}
+	if end == start {
+		return end + 1
+	}
+	return end
 }
 
 // luhn reports whether the digits of s pass the Luhn checksum. Characters other than digits are skipped.
@@ -120,13 +136,13 @@ func luhn(s string) bool {
 	return n > 0 && sum%10 == 0
 }
 
-// lookahead is how far past the cap Capped scrubs, so that a secret which starts before the cap and ends
-// after it is still recognised whole and its visible prefix replaced.
+// lookahead is how far past the cap Capped scrubs, so that a secret which starts before the cap and ends after
+// it is still recognised whole and its visible prefix replaced.
 const lookahead = 1024
 
-// Capped returns at most max bytes of s, scrubbed, ending on a character boundary. Only the first
-// max+lookahead bytes of s are read, so the cost is bounded by the cap and not by the size of s. truncated
-// reports whether anything was cut.
+// Capped returns at most max bytes of s, scrubbed, ending on a character boundary. Only the first max+lookahead
+// bytes of s are read, so the cost is bounded by the cap and not by the size of s. truncated reports whether
+// anything was cut.
 func Capped(s string, max int) (out string, truncated bool) {
 	window, cut := Prefix(s, max+lookahead)
 	out, cut2 := Prefix(String(window), max)
