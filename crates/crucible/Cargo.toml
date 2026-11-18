@@ -45,12 +45,17 @@ crucible-wal = { workspace = true }
 crucible-wal-codec = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
-clap = { workspace = true }
+# `env`: the proxy subcommand reads its CRUCIBLE_* variables through clap.
+clap = { workspace = true, features = ["env"] }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-proxy = { path = "../crucible-proxy" }
+futures = { workspace = true }
 # HKDF-SHA256 for the passwords of the generated ClickHouse identities (contract 7.1).
 hkdf = "=0.13.0"
 serde = { workspace = true }
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync"] }
+# `io-std`: the stdio proxy reads and writes this process's standard streams.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "io-std"] }
 # The `--keys-file` parser; reading only.
 toml = { workspace = true, features = ["std", "serde", "parse"] }
 tower = { workspace = true, features = ["util"] }
@@ -83,6 +88,10 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 
 [target.'cfg(not(windows))'.dependencies]
 mimalloc = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# The stdio proxy ends by the signal that ended its child: restores the default disposition and raises it.
+signal-hook = { version = "=0.3.18", default-features = false }
 
 # The one package cargo-dist releases (dist-workspace.toml); without this, `publish = false` hides it.
 [package.metadata.dist]

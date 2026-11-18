@@ -134,6 +134,10 @@ pub struct SpanCore {
     pub price_model_id: Option<Uuid>,
     /// The price tier used.
     pub price_tier_id: Option<Uuid>,
+    /// The span has a descendant that carries usage or cost, seen in the same request or earlier in the LSN
+    /// stream, so token and cost sums leave the span out ([`SpanCore::counts_usage`]). Stage B sets it; the
+    /// span still stores and shows its own usage. It is outside the row digest.
+    pub usage_aggregate: bool,
     /// Prompt reference; [`caps::PROMPT_NAME_BYTES`].
     pub prompt_name: Box<str>,
     /// Prompt reference; [`caps::PROMPT_VERSION_BYTES`].
@@ -181,6 +185,18 @@ pub struct SpanCore {
 }
 
 impl SpanCore {
+    /// Whether the span's tokens and cost enter the trace, session, user and metrics sums: every span's do,
+    /// whatever its type, unless it has a descendant that carries usage or cost (`usage_aggregate`), which is
+    /// then what is counted.
+    pub const fn counts_usage(&self) -> bool {
+        !self.usage_aggregate
+    }
+
+    /// Whether the span carries usage or cost: a usage count above zero, or a cost above zero.
+    pub fn carries_usage(&self) -> bool {
+        self.total_cost_nusd.nanos() > 0 || self.usage.iter().any(|entry| entry.units > 0)
+    }
+
     /// `duration_us`: `end_time - start_time`, or zero when `end_time` is not after `start_time`.
     pub const fn duration_us(&self) -> u64 {
         let micros = self
@@ -587,6 +603,7 @@ mod tests {
             cost_source: CostSource::None,
             price_model_id: None,
             price_tier_id: None,
+            usage_aggregate: false,
             prompt_name: "".into(),
             prompt_version: "".into(),
             tool_names: Vec::new(),
