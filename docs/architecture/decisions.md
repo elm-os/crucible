@@ -175,4 +175,9 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     always on; friction-adding hardening (Secure-only cookies, private-network egress bans, fail-closed sessions
     during a Postgres outage, a mandatory public URL) is an operator switch. Set after the owner asked that security
     not degrade the experience.
+82. **Configuration loads TOML, then `CRUCIBLE_*` variables, then flags, in `crucible-config` alone.** Unknown file
+    keys are errors naming the nearest key, every problem is reported in one run, and secrets never print. Unknown
+    `CRUCIBLE_*` variables only warn.
+83. **The control store is optional.** A node without Postgres still ingests, stores and serves telemetry; platform
+    features (sessions, keys in Postgres, alerts, dashboards, the SQL workspace) require it.
 
