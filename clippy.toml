@@ -56,6 +56,7 @@ disallowed-methods = [
   { path = "hashbrown::HashSet::new", reason = "randomly seeded hasher; use crucible_records::det_set", allow-invalid = true },
   { path = "hashbrown::HashSet::with_capacity", reason = "randomly seeded hasher; use crucible_records::det_set_with_capacity", allow-invalid = true },
   { path = "crucible_records::ProjectScope::mint", reason = "only crucible-auth mints scopes (contract 1.4); tests use crucible_auth::test_support", allow-invalid = true },
+  { path = "crucible_plan::BatchProbe::for_shipper", reason = "only the shipper probes for batch existence (contract 5.5)", allow-invalid = true },
 ]
 
 disallowed-types = [

@@ -13,6 +13,7 @@ publish = false
 [workspace]
 
 [dependencies]
+crucible-plan = { path = "../../crates/crucible-plan" }
 crucible-records = { path = "../../crates/crucible-records" }
 getrandom = "=0.4.3"
 getrandom02 = { package = "getrandom", version = "=0.2.17" }

@@ -1,0 +1,55 @@
+name: quint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "specs/**"
+      - ".github/workflows/quint.yml"
+  pull_request:
+    paths:
+      - "specs/**"
+      - ".github/workflows/quint.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quint-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QUINT_VERSION: "0.33.1"
+  THREADS: "4"
+
+jobs:
+  ingest-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install Quint
+        run: npm install -g "@informalsystems/quint@${QUINT_VERSION}"
+      - name: Typecheck
+        run: sh specs/check.sh typecheck
+      - name: Simulate the contract (no violation, every witness reached)
+        run: sh specs/check.sh simulate
+      - name: Simulate every mutant (the named property is violated)
+        run: sh specs/check.sh mutants
+      - name: Replay the recorded mutant seeds
+        run: sh specs/check.sh seeds
+      - name: Bounded model checking (Apalache)
+        run: sh specs/check.sh verify
+      - name: Exhaustive model checking of the tiny instance, safety and liveness (TLC)
+        run: sh specs/check.sh exhaustive

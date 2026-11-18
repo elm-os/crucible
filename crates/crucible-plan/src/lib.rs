@@ -15,11 +15,14 @@ mod node;
 mod plan;
 mod pred;
 mod registry;
+#[cfg(feature = "test-support")]
+pub mod test_support;
+mod value;
 
 pub use build::{
     DataBoundsPlans, SPAN_CHILDREN_DEFAULT_LIMIT, SPAN_CHILDREN_MAX_LIMIT, TRACE_INLINE_SPAN_LIMIT,
     TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceBounds, TraceListRequest, data_bounds,
-    effective_window, span_children, trace_bounds_window, trace_hash, trace_list, trace_spans,
+    effective_window, span_children, trace_bounds_window, trace_list, trace_spans,
     trace_time_bounds,
 };
 pub use class::{
@@ -34,3 +37,4 @@ pub use node::{
 pub use plan::{BatchProbe, DeletePlan, DeleteTarget, ProbeKind, QueryPlan};
 pub use pred::{CmpOp, MAX_LIST, Pred};
 pub use registry::{Rollup, Source};
+pub use value::{MAX_ROWS_PER_BLOCK, OutputColumn, OutputSchema, Row, RowBlock, ShapeError, Value};
