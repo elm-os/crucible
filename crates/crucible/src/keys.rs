@@ -3,16 +3,18 @@
 //! ```toml
 //! [[project_key]]
 //! project_id = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+//! public_key = "cpk_..."
 //! secret = "csk_..."
 //! ```
 //!
-//! Each key gets an id from `Env::new_id` at startup; the secrets are kept only as salted hashes. Key rows in
-//! the control plane replace this file in a later milestone.
+//! The secret authenticates alone as `Authorization: Bearer`, or with the public key as
+//! `Authorization: Basic` (contract 12.2). Each key gets an id from `Env::new_id` at startup; the secrets are
+//! kept only as salted hashes. Key rows in the control plane replace this file in a later milestone.
 
 use std::path::Path;
 
 use anyhow::Context as _;
-use crucible_auth::{SecretKey, StaticKey, StaticKeys};
+use crucible_auth::{PublicKey, SecretKey, StaticKey, StaticKeys};
 use crucible_env::Env;
 use crucible_records::{ApiKeyId, ProjectId};
 
@@ -27,13 +29,23 @@ struct KeysFile {
 #[serde(deny_unknown_fields)]
 struct Entry {
     project_id: String,
+    public_key: String,
     secret: String,
 }
 
-/// Parses a keys file. Error messages never quote the file, so they cannot echo a secret.
+/// Parses a keys file. Error messages never quote the file, so they cannot echo a key.
 pub(crate) fn parse(text: &str, env: &Env) -> anyhow::Result<StaticKeys> {
-    let file: KeysFile = toml::from_str(text)
-        .map_err(|e| anyhow::anyhow!("the keys file is not valid: {}", e.message()))?;
+    let file: KeysFile = toml::from_str(text).map_err(|e| {
+        let message = e.message();
+        // Keys files written before Basic auth have no public keys.
+        let hint = if message.contains("missing field `public_key`") {
+            "; every [[project_key]] needs the public key of its pair as public_key = \"cpk_...\" \
+             (docs/development.md shows how to make a pair)"
+        } else {
+            ""
+        };
+        anyhow::anyhow!("the keys file is not valid: {message}{hint}")
+    })?;
     let keys = file
         .project_key
         .into_iter()
@@ -44,6 +56,8 @@ pub(crate) fn parse(text: &str, env: &Env) -> anyhow::Result<StaticKeys> {
                 id: ApiKeyId::from_uuid(env.new_id()),
                 project_id: ProjectId::parse(&entry.project_id)
                     .with_context(|| format!("project_key {n}: project_id"))?,
+                public_key: PublicKey::parse(&entry.public_key)
+                    .with_context(|| format!("project_key {n}: public_key"))?,
                 secret: SecretKey::parse(&entry.secret)
                     .with_context(|| format!("project_key {n}: secret"))?,
             })

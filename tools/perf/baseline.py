@@ -116,8 +116,12 @@ def cmd_keys(a):
     alphabet = string.digits + string.ascii_uppercase + string.ascii_lowercase
     # 43 base62 digits encode 32 bytes only below 2^256; a leading zero keeps the value in range.
     secret = "csk_0" + "".join(secrets.choice(alphabet) for _ in range(42))
+    public = "cpk_0" + "".join(secrets.choice(alphabet) for _ in range(42))
     project = str(uuid.uuid4())
-    write(os.path.join(rig, "keys.toml"), f'[[project_key]]\nproject_id = "{project}"\nsecret = "{secret}"\n')
+    write(
+        os.path.join(rig, "keys.toml"),
+        f'[[project_key]]\nproject_id = "{project}"\npublic_key = "{public}"\nsecret = "{secret}"\n',
+    )
     dump(os.path.join(rig, "project.json"), {"project_id": project})
     write(os.path.join(rig, "secret"), secret + "\n")
     write(os.path.join(rig, "clickhouse-password"), secrets.token_hex(16) + "\n")
