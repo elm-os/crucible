@@ -249,6 +249,39 @@ pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
         .collect()
 }
 
+/// The `span_payload` row of a span with this input and these `metadata_kv` entries, as the shipper writes
+/// it; every other payload field is empty.
+pub fn span_payload_row(
+    entry: &SpanEntry,
+    lsn: Lsn,
+    received_at: Timestamp,
+    input: &str,
+    metadata: &[&str],
+) -> Vec<Value> {
+    let s = &entry.summary;
+    stored_row(
+        TableId::SpanPayload,
+        &[
+            ("project_id", Value::Uuid(entry.project_id.uuid())),
+            ("start_minute", Value::Time(s.start_time.floor_minute())),
+            (
+                "trace_hash",
+                Value::UInt(u64::from(s.trace_id.trace_hash())),
+            ),
+            ("span_id", bytes(s.span_id.as_bytes())),
+            ("trace_id", bytes(s.trace_id.as_bytes())),
+            ("start_time", Value::Time(s.start_time)),
+            ("input", text(input)),
+            (
+                "metadata_kv",
+                Value::Array(metadata.iter().map(|item| text(item)).collect()),
+            ),
+            ("lsn", Value::UInt(lsn.get())),
+            ("received_at", Value::Time(received_at)),
+        ],
+    )
+}
+
 /// One accepted frame of the WAL.
 #[derive(Clone, Debug)]
 struct Logged {
