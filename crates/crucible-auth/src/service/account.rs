@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use crucible_control::{
-    AuthMethod, Credential, Email, Org, OrgMembership, OrgRole, OrgSettings, ProjectMembership,
-    Session, TokenKind, User, UserStatus, transaction,
+    AuthMethod, Credential, Email, JsonDoc, Org, OrgMembership, OrgRole, OrgSettings, Project,
+    ProjectMembership, Session, TokenKind, User, UserStatus, transaction,
 };
-use crucible_records::{OrgId, Timestamp, UserId};
+use crucible_records::{OrgId, ProjectId, Timestamp, UserId};
 
 use super::sessions::SessionPrincipal;
 use super::{AuthError, Identity, RESET_TTL, SESSION_ABSOLUTE, SESSION_IDLE, SETUP_TTL};
@@ -176,8 +176,9 @@ impl Identity {
         Ok(Some(SetupLink { token }))
     }
 
-    /// Creates the organization and its first owner. With `token` (the setup page), the one-time setup token
-    /// is consumed in the same transaction; without it (`crucible admin init`), the caller has local access.
+    /// Creates the organization, its first owner and a first project, `default`. With `token` (the setup page),
+    /// the one-time setup token is consumed in the same transaction; without it (`crucible admin init`), the
+    /// caller has local access.
     async fn create_owner(
         &self,
         token: Option<&str>,
@@ -209,6 +210,19 @@ impl Identity {
             name,
             status: UserStatus::Active,
             email_verified_at: None,
+        };
+        // A first project, so the owner can make a key and send telemetry at once.
+        let project = Project {
+            id: ProjectId::from_uuid(self.env.new_id()),
+            name: "Default".to_owned(),
+            slug: "default".to_owned(),
+            settings: JsonDoc::empty(),
+            retention_days: None,
+            payload_retention_days: None,
+            mcp_content_retention_days: None,
+            config_version: 1,
+            version: 1,
+            deleted_at: None,
         };
         let token_hash = token.map(token::hash);
         let user_id = user.id;
@@ -245,6 +259,7 @@ impl Identity {
                         role: OrgRole::Owner,
                     })
                     .await?;
+                tx.projects().insert(&project).await?;
                 Ok(Ok(()))
             })
         })

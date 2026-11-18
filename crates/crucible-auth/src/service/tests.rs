@@ -116,6 +116,13 @@ fn first_owner_setup_then_password_sign_in() {
             .unwrap();
         assert_eq!(session.principal.org_role, OrgRole::Owner);
         assert_eq!(session.principal.user.email.as_str(), "owner@example.com");
+        // The owner starts with a project to make keys for.
+        let projects: Vec<_> = session.principal.projects.values().collect();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            (projects[0].0.slug.as_str(), projects[0].1),
+            ("default", ProjectRole::Admin)
+        );
         assert!(!identity.setup_required().await.unwrap());
         assert!(identity.issue_setup_token().await.unwrap().is_none());
         // The setup token works once.

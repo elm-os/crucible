@@ -2,7 +2,7 @@ import { TodoIcon } from "@/components/icons";
 import { SectionFrame } from "@/components/section";
 
 const SETUP_STEPS = [
-  { id: "api-key", title: "Create an API key", body: "Keys will be created in Settings." },
+  { id: "api-key", title: "Create an API key", body: "Create one in Settings, under API keys." },
   {
     id: "first-trace",
     title: "Send your first trace",
@@ -13,7 +13,7 @@ const SETUP_STEPS = [
     title: "Instrument an MCP server",
     body: "Wrap the server with a Crucible SDK, or run it behind the Crucible proxy.",
   },
-  { id: "invite", title: "Invite your team", body: "Members will be managed in Settings." },
+  { id: "invite", title: "Invite your team", body: "Invite people in Settings, under Members." },
 ] as const;
 
 const KPIS = [

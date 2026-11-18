@@ -126,7 +126,8 @@ master key is required then; it also seals stored secrets.
   `/readyz` answers 503 and ingest is closed.
 - While no owner exists, the log prints a one-time link, `/setup/?token=...`, valid for 24 hours. Open it to create the
   organization and its owner, or run `crucible admin init --org-name <name> --email <email> --name <name>` with the
-  password on standard input or in `--password-file`.
+  password on standard input or in `--password-file`. Either way the server also creates a first project,
+  `default`, so the owner can make an API key in Settings at once.
 - Invite people from Settings: the invitation link is shown once, to pass on. This version sends no email, so a
   forgotten password is reset with `crucible admin reset-password <email>`, which prints a link valid for 30 minutes.
 - Sign-in through GitHub, Google or an OpenID Connect provider needs `server.public_url` (the address people use,

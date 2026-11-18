@@ -561,7 +561,15 @@ fn invitations_through_the_api() {
         )
         .await;
         assert_eq!(accepted.status, StatusCode::OK, "{:#}", accepted.body);
-        assert_eq!(accepted.body["projects"][0]["role"], "admin");
+        let granted = accepted.body["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == project(1).to_string().as_str())
+            .unwrap();
+        assert_eq!(granted["role"], "admin");
+        // Every project is visible to an org member (project access `all`), with the org role elsewhere.
+        assert_eq!(accepted.body["projects"].as_array().unwrap().len(), 2);
         call(
             &p.router,
             Method::POST,
