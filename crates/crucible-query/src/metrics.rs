@@ -136,11 +136,14 @@ fn measure_value(
 /// The buckets of one series key: each bucket's first instant with the plan's measures.
 type Buckets = Vec<(Timestamp, Vec<Value>)>;
 
+/// The series of a plan: each dimension key with its buckets.
+type Keyed = Vec<(Vec<Arc<str>>, Buckets)>;
+
 /// Splits the rows of a series plan into the buckets of each dimension key, in the order the keys first appear.
 fn by_key(
     rows: Vec<Row>,
     dimensions: &[DimensionId],
-) -> Result<Vec<(Vec<Arc<str>>, Buckets)>, QueryServiceError> {
+) -> Result<Keyed, QueryServiceError> {
     let mut keys: Vec<Vec<Arc<str>>> = Vec::new();
     let mut buckets: BTreeMap<usize, Buckets> = BTreeMap::new();
     for row in rows {

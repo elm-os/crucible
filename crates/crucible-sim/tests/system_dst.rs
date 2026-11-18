@@ -33,7 +33,7 @@ const MUTANTS: [(Mutant, u64, &str); 9] = [
     (Mutant::SkipWalSync, 0, "I3"),
     (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 14000, "I12"),
-    (Mutant::SilentEviction, 5000, "I3"),
+    (Mutant::SilentEviction, 17001, "I3"),
     (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
     (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 0, "I7"),
@@ -146,7 +146,7 @@ fn live_reads_are_whole_without_store_stalls() {
         Dim::SmallBudget,
     ];
     let (mut reads, mut whole) = (0, 0);
-    for (mask, seed) in budget(0, 12, 1) {
+    for (mask, seed) in budget(0, 16, 1) {
         let calm = stalls.iter().fold(mask, |mask, &dim| mask.without(dim));
         let outcome = run_system_sim(seed, Options::realistic(calm));
         assert_holds(&outcome);
