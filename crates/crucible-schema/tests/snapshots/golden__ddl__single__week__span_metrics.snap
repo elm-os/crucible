@@ -1,0 +1,30 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.span_metrics
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `minute` DateTime('UTC') CODEC(ZSTD(1)),
+    `environment` LowCardinality(String) CODEC(ZSTD(1)),
+    `observation_type` Enum8('span' = 0, 'generation' = 1, 'event' = 2, 'embedding' = 3, 'agent' = 4, 'tool' = 5, 'chain' = 6, 'retriever' = 7, 'evaluator' = 8, 'guardrail' = 9) CODEC(ZSTD(1)),
+    `model_response` LowCardinality(String) CODEC(ZSTD(1)),
+    `level` Enum8('debug' = 0, 'default' = 1, 'warning' = 2, 'error' = 3) CODEC(ZSTD(1)),
+    `release` String CODEC(ZSTD(1)),
+    `marker_epoch` UUID CODEC(ZSTD(1)),
+    `marker_batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `marker_at` SimpleAggregateFunction(max, DateTime('UTC')) CODEC(ZSTD(1)),
+    `count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `error_count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `input_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `output_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `total_tokens` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `total_cost_nusd` SimpleAggregateFunction(sum, Int64) CODEC(T64, ZSTD(1)),
+    `dur_hist` SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64))) CODEC(ZSTD(1)),
+    `ttft_hist` SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64))) CODEC(ZSTD(1))
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(minute)
+PRIMARY KEY (project_id, minute)
+ORDER BY (project_id, minute, environment, observation_type, model_response, level, release, marker_epoch, marker_batch_seq)
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 20000

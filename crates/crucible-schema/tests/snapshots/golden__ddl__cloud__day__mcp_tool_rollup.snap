@@ -1,0 +1,33 @@
+---
+source: crates/crucible-schema/tests/golden.rs
+expression: sql
+---
+CREATE TABLE IF NOT EXISTS crucible.mcp_tool_rollup
+(
+    `project_id` UUID CODEC(ZSTD(1)),
+    `side` Enum8('none' = 0, 'client' = 1, 'server' = 2) CODEC(ZSTD(1)),
+    `minute` DateTime('UTC') CODEC(ZSTD(1)),
+    `server_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `deploy_id` String CODEC(ZSTD(1)),
+    `capture_source` Enum8('sdk' = 1, 'proxy_stdio' = 2, 'proxy_http' = 3, 'otlp' = 4) CODEC(ZSTD(1)),
+    `era` Enum8('legacy' = 1, 'modern' = 2) CODEC(ZSTD(1)),
+    `method` LowCardinality(String) CODEC(ZSTD(1)),
+    `target_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `client_name` LowCardinality(String) CODEC(ZSTD(1)),
+    `error_class` Enum8('none' = 0, 'protocol' = 1, 'validation' = 2, 'not_found' = 3, 'tool_execution' = 4, 'auth' = 5, 'rate_limit' = 6, 'timeout' = 7, 'transport' = 8, 'cancelled' = 9, 'internal' = 10) CODEC(ZSTD(1)),
+    `caller_fault` UInt8 CODEC(ZSTD(1)),
+    `marker_epoch` UUID CODEC(ZSTD(1)),
+    `marker_batch_seq` UInt64 CODEC(T64, ZSTD(1)),
+    `marker_at` SimpleAggregateFunction(max, DateTime('UTC')) CODEC(ZSTD(1)),
+    `count` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `request_bytes` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `response_bytes` SimpleAggregateFunction(sum, UInt64) CODEC(T64, ZSTD(1)),
+    `dur_hist` SimpleAggregateFunction(sumMap, Tuple(Array(UInt16), Array(UInt64))) CODEC(ZSTD(1)),
+    `semconv_hist` SimpleAggregateFunction(sumMap, Tuple(Array(UInt8), Array(UInt64))) CODEC(ZSTD(1)),
+    `last_seen` SimpleAggregateFunction(max, DateTime64(6, 'UTC')) CODEC(Delta(8), ZSTD(1))
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(minute)
+PRIMARY KEY (project_id, side, minute)
+ORDER BY (project_id, side, minute, server_name, deploy_id, capture_source, era, method, target_name, client_name, error_class, caller_fault, marker_epoch, marker_batch_seq)
+SETTINGS index_granularity = 8192, replicated_deduplication_window = 20000, replicated_deduplication_window_seconds = 7200

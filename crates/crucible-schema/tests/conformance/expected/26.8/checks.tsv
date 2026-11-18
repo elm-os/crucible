@@ -1,0 +1,38 @@
+permissive	service_policies_present	18
+permissive	ingest_probe_plain	1
+permissive	ingest_probe_marker	1
+permissive	ingest_reads_no_other_column	error 497
+permissive	ingest_execution_time_ceiling	error 452
+permissive	read_ui_within_ceiling	1
+permissive	read_ui_execution_time_ceiling	error 452
+permissive	read_ui_unlimited_time_refused	error 452
+permissive	read_ui_cannot_insert	error 497
+permissive	read_agent_within_ceiling	1
+permissive	read_agent_rows_ceiling	error 452
+permissive	read_agent_concurrency_is_const	error 452
+permissive	maint_reads_mutations	1
+permissive	maint_lightweight_delete	ok
+permissive	maint_rows_after_delete	0
+permissive	maint_apply_deleted_mask	ok
+permissive	maint_drop_partition	ok
+permissive	maint_rows_after_drop	0
+permissive	maint_cannot_create	error 497
+strict	service_policies_present	18
+strict	ingest_probe_plain	1
+strict	ingest_probe_marker	1
+strict	ingest_reads_no_other_column	error 497
+strict	ingest_execution_time_ceiling	error 452
+strict	read_ui_within_ceiling	1
+strict	read_ui_execution_time_ceiling	error 452
+strict	read_ui_unlimited_time_refused	error 452
+strict	read_ui_cannot_insert	error 497
+strict	read_agent_within_ceiling	1
+strict	read_agent_rows_ceiling	error 452
+strict	read_agent_concurrency_is_const	error 452
+strict	maint_reads_mutations	1
+strict	maint_lightweight_delete	ok
+strict	maint_rows_after_delete	0
+strict	maint_apply_deleted_mask	ok
+strict	maint_drop_partition	ok
+strict	maint_rows_after_drop	0
+strict	maint_cannot_create	error 497
