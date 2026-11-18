@@ -9,20 +9,24 @@ use crucible_api_types::{
     DataBounds, Problem, ProblemCode, SpanPage, SpanPageParams, TraceDetail, TraceDetailParams,
     TraceListPage, TraceListParams,
 };
+use crucible_cursor::CursorError;
 use crucible_plan::{Pred, SPAN_CHILDREN_MAX_LIMIT, TRACE_LIST_MAX_LIMIT};
 use crucible_query::{SpanChildrenQuery, TraceListQuery, TraceTailQuery};
+use crucible_records::RequestId;
 
 use crate::access::{ApiState, Project};
+use crate::convert;
 use crate::params::{Params, check_window};
 use crate::problem::{ApiError, field_error};
-use crate::{convert, cursor};
 
-fn cursor_invalid(project: &Project) -> ApiError {
-    ApiError::new(
-        project.request_id,
-        ProblemCode::CursorInvalid,
-        "the cursor is malformed; restart from the first page",
-    )
+fn cursor_invalid(request_id: RequestId) -> impl FnOnce(CursorError) -> ApiError {
+    move |error| {
+        ApiError::new(
+            request_id,
+            ProblemCode::CursorInvalid,
+            format!("{error}; restart from the first page"),
+        )
+    }
 }
 
 /// List traces
@@ -69,9 +73,13 @@ pub(crate) async fn list_traces(
         return Err(ApiError::validation(rid, vec![error]));
     }
     check_window(rid, window, project.settings.max_window_days)?;
+    let cursors = state.cursors(&project);
+    let since = since.map(|text| cursors.open_head(&text, window));
+    let since = since.transpose().map_err(cursor_invalid(rid))?;
+    let cursor = page.map(|text| cursors.open_page(&text, window));
+    let cursor = cursor.transpose().map_err(cursor_invalid(rid))?;
     let service = state.service(rid)?;
     if let Some(since) = since {
-        let since = cursor::decode_head(&since).ok_or_else(|| cursor_invalid(&project))?;
         let query = TraceTailQuery {
             window,
             filter: Pred::all(),
@@ -80,12 +88,8 @@ pub(crate) async fn list_traces(
         };
         let tail = service.trace_list_since(&project.ctx, query).await;
         let tail = tail.map_err(|e| ApiError::query(rid, &e))?;
-        return Ok(Json(convert::trace_tail(&tail)));
+        return Ok(Json(convert::trace_tail(&tail, &cursors)));
     }
-    let cursor = match page {
-        Some(text) => Some(cursor::decode_page(&text).ok_or_else(|| cursor_invalid(&project))?),
-        None => None,
-    };
     let query = TraceListQuery {
         window,
         filter: Pred::all(),
@@ -94,7 +98,7 @@ pub(crate) async fn list_traces(
     };
     let page = service.trace_list(&project.ctx, query).await;
     let page = page.map_err(|e| ApiError::query(rid, &e))?;
-    Ok(Json(convert::trace_list(&page)))
+    Ok(Json(convert::trace_list(&page, &cursors)))
 }
 
 /// Get a trace
@@ -183,11 +187,10 @@ pub(crate) async fn list_span_children(
     let (Some(trace_id), Some(parent)) = (trace_id, parent) else {
         return Err(ApiError::validation(rid, Vec::new()));
     };
+    let cursors = state.cursors(&project);
+    let cursor = page.map(|text| cursors.open_child(&text, trace_id, parent));
+    let cursor = cursor.transpose().map_err(cursor_invalid(rid))?;
     let service = state.service(rid)?;
-    let cursor = match page {
-        Some(text) => Some(cursor::decode_child(&text).ok_or_else(|| cursor_invalid(&project))?),
-        None => None,
-    };
     let query = SpanChildrenQuery {
         trace_id,
         parent,
@@ -196,7 +199,7 @@ pub(crate) async fn list_span_children(
     };
     let page = service.span_children(&project.ctx, query).await;
     let page = page.map_err(|e| ApiError::query(rid, &e))?;
-    Ok(Json(convert::span_page(&page)))
+    Ok(Json(convert::span_page(&page, &cursors)))
 }
 
 /// Get data bounds

@@ -72,6 +72,16 @@ impl MasterKey {
         let _ = Hkdf::<Sha256>::new(None, &self.0).expand(info.as_bytes(), &mut okm);
         hex(&okm)
     }
+
+    /// The cursor-signing key (contract 12.4) until signing keys live in the control plane: the HKDF-SHA256
+    /// subkey with the info string `crucible/cursor-signing/v1/<generation>`.
+    pub(crate) fn cursor_key(&self, generation: u32) -> [u8; 32] {
+        let info = format!("crucible/cursor-signing/v1/{generation}");
+        let mut okm = [0u8; 32];
+        // 32 bytes is within what HKDF-SHA256 can give, so `expand` cannot fail.
+        let _ = Hkdf::<Sha256>::new(None, &self.0).expand(info.as_bytes(), &mut okm);
+        okm
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -317,6 +327,21 @@ mod tests {
         assert_eq!(passwords.len(), 8);
         let other = MasterKey::parse(&KEY.replace("00", "ff")).unwrap();
         assert_ne!(other.identity_password(ServiceIdentity::Ingest, 0), ingest);
+    }
+
+    /// The expected key comes from a separate HKDF-SHA256 (Python's `hmac`), so the info layout is pinned.
+    #[test]
+    fn the_cursor_key_is_a_subkey_of_its_own() {
+        let key = MasterKey::parse(KEY).unwrap();
+        assert_eq!(
+            hex(&key.cursor_key(0)),
+            "1dea993f14702c1e428e5bef7c99f27b38442a1b47505aab32a5a16f383cefd1"
+        );
+        assert_ne!(key.cursor_key(1), key.cursor_key(0));
+        assert_ne!(
+            hex(&key.cursor_key(0)),
+            key.identity_password(ServiceIdentity::Ingest, 0)
+        );
     }
 
     #[test]

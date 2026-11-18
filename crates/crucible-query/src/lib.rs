@@ -11,8 +11,8 @@
 //! - **`meta`.** Every response carries [`Meta`]: `partial` with its reason when the store did not answer, when
 //!   the project has an open index gap, or when it has rows in a quarantined pair; and `consistency`, which is
 //!   `lagging` when stage B had not applied every acknowledged frame.
-//! - **Cursors** are plain values ([`PageCursor`], [`HeadCursor`], [`ChildCursor`]); `crucible-cursor` will
-//!   sign and encode them.
+//! - **Cursors** are plain values ([`PageCursor`], [`HeadCursor`], [`ChildCursor`]); the API signs and encodes
+//!   them with `crucible-cursor`.
 //! - **Errors** are [`QueryServiceError`], one problem code of contract 12.3 each.
 
 mod bounds;

@@ -16,7 +16,7 @@ use crucible_recent::{
 };
 use crucible_records::{
     HeadKind, Level, Lsn, NO_HEAD_START, NanoUsd, ObservationType, Pick, ProjectId, ProjectScope,
-    SpanId, StatusCode, TableId, Timestamp, TraceId,
+    SpanId, StatusCode, TableId, Timestamp, TraceId, WalEpoch,
 };
 use crucible_schema::RetentionSettings;
 
@@ -26,6 +26,8 @@ use crate::store::{FakeStore, stored_row};
 pub const NOW: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
 pub const DAY: i64 = 86_400_000_000;
 pub const GRACE: Duration = Duration::from_secs(2);
+/// The epoch of the node's WAL.
+pub const EPOCH: WalEpoch = WalEpoch::from_bytes([0xe0; 16]);
 
 pub fn project(n: u8) -> ProjectId {
     ProjectId::from_bytes([n; 16])
@@ -157,6 +159,7 @@ pub fn trace_head_row(
             ("user_id", text(&s.user_id)),
             ("session_id", text(&s.session_id)),
             ("environment", text("prod")),
+            ("wal_epoch", Value::Uuid(EPOCH.uuid())),
             ("lsn", Value::UInt(lsn.get())),
             ("received_at", Value::Time(received_at)),
         ],
@@ -273,6 +276,7 @@ impl World {
             Stores::new(Arc::clone(&store) as _),
             Arc::new(clock.clone()),
             Arc::clone(&index),
+            EPOCH,
         );
         Self {
             clock,
@@ -396,6 +400,7 @@ impl World {
             Stores::new(Arc::clone(&self.store) as _),
             Arc::new(self.clock.clone()),
             Arc::clone(&index),
+            EPOCH,
         );
         self.index = index;
         self.writer = writer;

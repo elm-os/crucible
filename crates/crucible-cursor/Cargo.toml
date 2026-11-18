@@ -1,0 +1,23 @@
+[package]
+name = "crucible-cursor"
+description = "Signed pagination cursors: the v1.<kid>.<payload>.<mac> codec and the signing key ring."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+crucible-records = { workspace = true }
+base64 = { workspace = true }
+# The cursor MAC is HMAC-SHA256 (contract 12.4); planned in the root table at this version.
+hmac = "=0.13.0"
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
