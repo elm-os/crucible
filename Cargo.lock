@@ -868,11 +868,13 @@ name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "bytes",
  "crucible-admission",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
+ "crucible-env-prod",
  "crucible-ingest",
  "crucible-normalize",
  "crucible-otlp",
@@ -890,6 +892,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "shuttle",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
