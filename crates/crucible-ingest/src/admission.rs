@@ -3,9 +3,12 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crucible_admission::{ByteBudget, Decision, Signals, UNAVAILABLE_MIN_S, decide};
-use crucible_env::{Gauge, Rng};
-use crucible_wal::Wal;
+use crucible_admission::{
+    BucketConfig, ByteBudget, Decision, ProjectBuckets, Signals, UNAVAILABLE_MIN_S, decide,
+};
+use crucible_env::{Clock, Gauge, Instant, Rng};
+use crucible_records::ProjectId;
+use crucible_wal::{Wal, WalConfig};
 
 use crate::reply::Reject;
 
@@ -21,27 +24,60 @@ pub(crate) struct Admission {
     /// The budget's metric. Updated under `lock` together with the budget, so that it never lags behind.
     gauge: Gauge,
     lock: Mutex<()>,
+    /// The per-project byte rate, when the operator set one; `None` leaves ingest to backpressure alone
+    /// (contract 11.9).
+    buckets: Option<Mutex<ProjectBuckets>>,
+    clock: Arc<dyn Clock>,
+    origin: Instant,
 }
+
+/// What a refused request is told, by the condition that refused it.
+const INFLIGHT: &str =
+    "the server holds too many request bytes at once (ingest.inflight_bytes); retry shortly";
+const PROJECT_RATE: &str =
+    "the project sends more bytes per second than its configured rate (ingest.project_bytes_per_s)";
+const WAL_FAILED: &str = "the write-ahead log failed and stays closed until the server restarts";
+const WAL_FULL: &str = "the write-ahead log is above 90% of wal.max_bytes; it reopens as shipping to \
+                        the telemetry store drains it";
+const DISK_FLOOR: &str = "free disk space is below wal.min_free_bytes";
 
 impl Admission {
     pub(crate) fn new(
         wal: Wal,
-        wal_max_bytes: u64,
-        wal_min_free_bytes: u64,
+        wal_config: &WalConfig,
         jitter: Arc<dyn Rng>,
         inflight_bytes: u64,
         gauge: Gauge,
+        project_rate: Option<BucketConfig>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         gauge.set(0);
         Self {
             wal,
-            wal_max_bytes,
-            wal_min_free_bytes,
+            wal_max_bytes: wal_config.max_bytes,
+            wal_min_free_bytes: wal_config.min_free_bytes,
             jitter,
             budget: ByteBudget::new(inflight_bytes),
             gauge,
             lock: Mutex::new(()),
+            buckets: project_rate.map(|config| Mutex::new(ProjectBuckets::new(config))),
+            origin: clock.now(),
+            clock,
         }
+    }
+
+    /// Takes `bytes` from the project's bucket. `true` when no rate is set or the bucket covered them.
+    pub(crate) fn take(&self, project: ProjectId, bytes: u64) -> bool {
+        let Some(buckets) = &self.buckets else {
+            return true;
+        };
+        let elapsed = self.clock.now().saturating_duration_since(self.origin);
+        let now_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        buckets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_take(project, bytes, now_ns)
+            .is_ok()
     }
 
     /// Reserves (`grow`) or releases bytes in the budget and publishes the total. Returns whether a reservation
@@ -60,40 +96,50 @@ impl Admission {
         ok
     }
 
-    /// The decision table of contract 4.8 over the WAL's current signals. No shipper drains the WAL in
-    /// milestone 1, so the drain rate is zero and a 503 for WAL space waits the longest.
-    fn decide(&self, inflight_exceeded: bool) -> Decision {
+    /// The decision table of contract 4.8 over the WAL's current signals, with the reason for a refusal. The
+    /// drain rate is what the shipper last reported to the WAL, so a 503 for WAL space waits only as long as
+    /// the backlog takes to drain.
+    pub(crate) fn refusal(&self, inflight_exceeded: bool, bucket_exceeded: bool) -> Option<Reject> {
         let wal = self.wal.admission();
-        decide(&Signals {
+        let decision = decide(&Signals {
             key_unknown_control_plane_down: false,
             wal_failed: wal.failed,
             wal_bytes: wal.segment_bytes,
             wal_max_bytes: self.wal_max_bytes,
             disk_free_bytes: wal.free_bytes,
             disk_min_free_bytes: self.wal_min_free_bytes,
-            drain_bytes_per_s: 0,
+            drain_bytes_per_s: wal.drain_bytes_per_s,
             inflight_exceeded,
-            bucket_exceeded: false,
+            bucket_exceeded,
             jitter: self.jitter.next_u64(),
-        })
-    }
-
-    fn refusal(&self, inflight_exceeded: bool) -> Option<Reject> {
-        match self.decide(inflight_exceeded) {
+        });
+        match decision {
             Decision::Admit => None,
-            Decision::TooManyRequests { retry_after_s } => {
-                Some(Reject::TooManyRequests { retry_after_s })
-            }
+            Decision::TooManyRequests { retry_after_s } => Some(Reject::TooManyRequests {
+                retry_after_s,
+                detail: if inflight_exceeded {
+                    INFLIGHT
+                } else {
+                    PROJECT_RATE
+                },
+            }),
             Decision::Unavailable { retry_after_s } => Some(Reject::Unavailable {
                 retry_after_s,
-                detail: "the write-ahead log cannot take more data now",
+                detail: if wal.failed {
+                    WAL_FAILED
+                } else if wal.free_bytes < self.wal_min_free_bytes {
+                    DISK_FLOOR
+                } else {
+                    WAL_FULL
+                },
             }),
         }
     }
 
-    /// Admits a request that declares `bytes`: reserves them and consults the decision table. The returned
-    /// reservation grows as the request is read and decoded.
-    pub(crate) fn admit(self: &Arc<Self>, bytes: u64) -> Result<Held, Reject> {
+    /// Admits a request of `project` that declares `bytes`: reserves them in the in-flight budget, takes them
+    /// from the project's bucket when a rate is set, and consults the decision table. The returned reservation
+    /// grows as the request is read and decoded.
+    pub(crate) fn admit(self: &Arc<Self>, project: ProjectId, bytes: u64) -> Result<Held, Reject> {
         let mut held = Held {
             admission: Arc::clone(self),
             bytes: 0,
@@ -102,7 +148,8 @@ impl Admission {
         if !exceeded {
             held.bytes = bytes;
         }
-        match self.refusal(exceeded) {
+        let throttled = !exceeded && !self.take(project, bytes);
+        match self.refusal(exceeded, throttled) {
             None => Ok(held),
             Some(reject) => Err(reject),
         }
@@ -111,7 +158,7 @@ impl Admission {
     /// The answer to an append that failed (contract 4.5): 503 with the `Retry-After` that the WAL's state calls
     /// for, and at least the shortest one.
     pub(crate) fn append_failed(&self) -> Reject {
-        match self.refusal(false) {
+        match self.refusal(false, false) {
             Some(reject @ Reject::Unavailable { .. }) => reject,
             _ => Reject::Unavailable {
                 retry_after_s: UNAVAILABLE_MIN_S,
@@ -141,9 +188,10 @@ impl Held {
         }
         Err(self
             .admission
-            .refusal(true)
+            .refusal(true, false)
             .unwrap_or(Reject::TooManyRequests {
                 retry_after_s: crucible_admission::THROTTLED_MIN_S,
+                detail: INFLIGHT,
             }))
     }
 

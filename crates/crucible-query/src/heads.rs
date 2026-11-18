@@ -52,7 +52,8 @@ fn recent_head(span: &RecentSpan) -> Option<Candidate> {
             user_id: Arc::clone(&s.user_id),
             session_id: Arc::clone(&s.session_id),
             tags: Vec::new(),
-            environment: empty(),
+            // The head span's own value, which is what its `trace_heads` row will carry.
+            environment: Arc::clone(&s.environment),
             release: empty(),
             version: empty(),
             input_preview: empty(),
@@ -92,7 +93,8 @@ pub(crate) struct RecentHeads {
     /// Whether the index gave the read anything it could use.
     pub(crate) used: bool,
     /// Whether heads the store may not serve yet were left out, because the request has a filter that the
-    /// index cannot evaluate (it keeps no tags, environment, release or version).
+    /// index cannot evaluate (it keeps no tags, release or version, and of the environment only each
+    /// span's own value).
     left_out: bool,
 }
 

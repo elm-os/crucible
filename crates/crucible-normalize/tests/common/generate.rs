@@ -7,7 +7,7 @@
 //! valid range and ahead of `received_at`. With `finite` set, doubles are finite: OTLP/JSON has no lossless form for
 //! the others. Model keys mostly carry names that bundled price rows match, so usage meets the calculated cost path.
 
-use crucible_compat::{Location, TABLES, Target};
+use crucible_compat::{Decoder, KeyMatch, Location, TABLES, Target};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -22,22 +22,56 @@ use proptest::sample::select;
 
 use super::BASE_NANOS;
 
-/// Every key the tables read at `location`, with the observation-type keys for span attributes.
-pub fn table_keys(location: Location) -> Vec<&'static str> {
+/// Every key the tables read at `location`, with the observation-type keys for span attributes. A prefix source
+/// gives the bare prefix (which names no member) and the prefix with two member names.
+pub fn table_keys(location: Location) -> Vec<String> {
     let mut keys = Vec::new();
     for table in TABLES {
         for rule in table.fields {
             for source in rule.sources {
-                if source.location == location {
-                    keys.push(source.key.text());
+                if source.location != location {
+                    continue;
+                }
+                let text = source.key.text();
+                keys.push(text.to_owned());
+                if matches!(source.key, KeyMatch::Prefix(_)) {
+                    keys.push(format!("{text}total"));
+                    keys.push(format!("{text}a.b"));
                 }
             }
         }
         if location == Location::Span {
-            keys.extend(table.observation_types.iter().map(|rule| rule.key));
+            keys.extend(
+                table
+                    .observation_types
+                    .iter()
+                    .map(|rule| rule.key.to_owned()),
+            );
         }
     }
     keys
+}
+
+/// Values that the decoder of a source reading `key` accepts, for the decoders random values rarely satisfy.
+fn decoder_values_of(key: &str) -> Vec<&'static str> {
+    let decoders = TABLES
+        .iter()
+        .flat_map(|t| t.fields)
+        .flat_map(|rule| rule.sources)
+        .filter(|source| source.key.matches(key))
+        .map(|source| source.decoder);
+    let mut values = Vec::new();
+    for decoder in decoders {
+        match decoder {
+            Decoder::Level => values.extend(["debug", "default", "warning", "error"]),
+            Decoder::Time => {
+                values.extend(["2026-11-17T09:30:00.125Z", "2026-11-17t09:30:00+02:00"])
+            }
+            Decoder::Usd => values.extend(["0.0125", "3", "-1", "1e-3"]),
+            _ => {}
+        }
+    }
+    values
 }
 
 /// Model names that bundled price rows match; `gemini-2.5-pro` has a tier chosen by input size.
@@ -82,7 +116,7 @@ fn key(location: Location) -> BoxedStrategy<String> {
     if keys.is_empty() {
         return text();
     }
-    prop_oneof![3 => select(keys).prop_map(str::to_owned), 1 => text()].boxed()
+    prop_oneof![3 => select(keys), 1 => text()].boxed()
 }
 
 fn double(finite: bool) -> BoxedStrategy<f64> {
@@ -172,11 +206,25 @@ fn pair(location: Location, finite: bool) -> BoxedStrategy<KeyValue> {
     key(location)
         .prop_flat_map(move |key| {
             let mut known = type_values_of(&key);
+            known.extend(decoder_values_of(&key));
             if model_keys().contains(&key.as_str()) {
                 known.extend(PRICED_MODELS);
             }
             let any = option::weighted(0.9, value(finite));
-            let value = if known.is_empty() {
+            let flag = TABLES
+                .iter()
+                .flat_map(|t| t.fields)
+                .flat_map(|rule| rule.sources)
+                .any(|source| source.decoder == Decoder::Bool && source.key.matches(&key));
+            let value = if flag {
+                prop_oneof![
+                    3 => proptest::bool::ANY.prop_map(|b| Some(AnyValue {
+                        value: Some(any_value::Value::BoolValue(b)),
+                    })),
+                    1 => any,
+                ]
+                .boxed()
+            } else if known.is_empty() {
                 any.boxed()
             } else {
                 prop_oneof![

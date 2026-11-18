@@ -114,9 +114,26 @@ fn the_first_page_merges_the_store_and_the_index_newest_first() {
     );
     // Trace 2 is in both places, and its checkpoint has confirmed it: counted once.
     assert_eq!(first.data[1].summary.span_count, 1);
-    // A store head carries the columns the index does not keep.
-    assert_eq!(&*first.data[2].head.environment, "prod");
-    assert_eq!(&*first.data[0].head.environment, "");
+    // A head names the same environment whether it is read from the store or from the index: the default of
+    // a span that names none, and the span's own value otherwise.
+    assert_eq!(&*first.data[2].head.environment, "default");
+    assert_eq!(&*first.data[0].head.environment, "default");
+    let mut staged = span(4, 40, 0, at(-5));
+    staged.summary.environment = "staging".into();
+    let lsn = world.ack(vec![staged]);
+    let from_index = page(&world, 10, None).data[0].head.clone();
+    assert_eq!(
+        (from_index.trace_id, &*from_index.environment),
+        (trace(4), "staging")
+    );
+    world.ship(lsn);
+    world.checkpoint(lsn);
+    world.settle();
+    let from_store = page(&world, 10, None).data[0].head.clone();
+    assert_eq!(
+        (from_store.trace_id, &*from_store.environment),
+        (trace(4), "staging")
+    );
     assert_eq!(first.data[0].head.head_kind, HeadKind::Root);
 }
 

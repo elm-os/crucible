@@ -1,11 +1,13 @@
-//! The rows a span yields in the milestone-1 tables (contract sections 3.9 and 6.4): `span_core`, `span_payload`,
-//! `trace_heads` and `trace_stats`. Each function lists the cells in `TableDef` column order; a test checks every
-//! row against its table's column types.
+//! The rows a span yields (contract sections 3.9, 3.10 and 6.4): `span_core`, `span_payload`, `trace_heads`,
+//! `trace_stats` and the rollup partials `session_rollup`, `user_rollup` and `span_metrics`; and the row a fact
+//! yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a test
+//! checks every row against its table's column types.
 
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_records::{
-    HeadKind, Ingestion, Level, McpSide, NO_HEAD_START, ObservationType, PartitionId, Pick,
-    SpanRecord, StatusCode, TableId, Timestamp, TraceHead, TraceStatsRow, Uuid,
+    Fact, FactBody, HeadKind, Histogram, Ingestion, Level, McpSide, NO_HEAD_START, ObservationType,
+    PartitionId, Pick, SessionRollupRow, SpanCore, SpanMetricsRow, SpanRecord, StatusCode, TableId,
+    Timestamp, TraceHead, TraceStatsRow, UserRollupRow, Uuid,
 };
 use crucible_schema::{Granularity, OutOfRange, route};
 
@@ -230,12 +232,16 @@ pub fn trace_head_row(head: &TraceHead) -> Vec<Value> {
     cells
 }
 
-/// The partial one span contributes to its trace's stats (contract 3.9). A span counts as an error when its status
-/// or its level is `error`.
+/// Whether a span counts as an error in every aggregate: its status or its level is `error`.
+pub fn is_error(c: &SpanCore) -> bool {
+    c.status_code == StatusCode::Error || c.level == Level::Error
+}
+
+/// The partial one span contributes to its trace's stats (contract 3.9).
 pub fn trace_stats(span: &SpanRecord, is_head: bool) -> TraceStatsRow {
     let c = &span.core;
     let pick = |value: &str| Pick::new(c.is_root, c.end_time, c.span_id, value);
-    let is_error = c.status_code == StatusCode::Error || c.level == Level::Error;
+    let is_error = is_error(c);
     TraceStatsRow {
         project_id: c.project_id,
         trace_id: c.trace_id,
@@ -295,6 +301,209 @@ pub fn trace_stats_row(row: &TraceStatsRow) -> Vec<Value> {
     ]
 }
 
+/// The zero marker columns of a data row of an aggregating table.
+fn no_marker(cells: &mut Vec<Value>) {
+    cells.extend([Value::Uuid([0; 16]), Value::U64(0), Value::U32(0)]);
+}
+
+/// A histogram as its `sumMap` cell: bucket indexes and counts, ascending by bucket.
+fn histogram(h: &Histogram) -> Value {
+    let (buckets, counts): (Vec<Value>, Vec<Value>) = h
+        .iter()
+        .map(|(bucket, count)| (Value::U16(bucket.index()), Value::U64(count)))
+        .unzip();
+    Value::Tuple(Box::new((Value::Array(buckets), Value::Array(counts))))
+}
+
+/// The partial one span contributes to its session's day (contract 3.10), or `None` for a span without a
+/// session. `trace_count` counts root spans only.
+pub fn session_rollup(span: &SpanRecord) -> Option<SessionRollupRow> {
+    let c = &span.core;
+    (!c.session_id.is_empty()).then(|| SessionRollupRow {
+        project_id: c.project_id,
+        day: c.start_time.date(),
+        session_id: c.session_id.clone(),
+        first_seen: c.start_time,
+        last_seen: c.end_time,
+        trace_count: u64::from(c.is_root),
+        span_count: 1,
+        error_count: u64::from(is_error(c)),
+        input_tokens: c.input_tokens,
+        output_tokens: c.output_tokens,
+        total_tokens: c.total_tokens,
+        total_cost_nusd: c.total_cost_nusd,
+        user_ids: if c.user_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![c.user_id.clone()]
+        },
+    })
+}
+
+/// The `session_rollup` data row of a partial.
+pub fn session_rollup_row(row: &SessionRollupRow) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        date(row.day.start()),
+        Value::str(&row.session_id),
+    ];
+    no_marker(&mut cells);
+    cells.extend([
+        Value::time(row.first_seen),
+        Value::time(row.last_seen),
+        Value::U64(row.trace_count),
+        Value::U64(row.span_count),
+        Value::U64(row.error_count),
+        Value::U64(row.input_tokens),
+        Value::U64(row.output_tokens),
+        Value::U64(row.total_tokens),
+        Value::I64(row.total_cost_nusd.nanos()),
+        Value::strs(&row.user_ids),
+    ]);
+    cells
+}
+
+/// The partial one span contributes to its user's day (contract 3.10), or `None` for a span without a user.
+/// `trace_count` counts root spans only.
+pub fn user_rollup(span: &SpanRecord) -> Option<UserRollupRow> {
+    let c = &span.core;
+    (!c.user_id.is_empty()).then(|| UserRollupRow {
+        project_id: c.project_id,
+        day: c.start_time.date(),
+        user_id: c.user_id.clone(),
+        first_seen: c.start_time,
+        last_seen: c.end_time,
+        trace_count: u64::from(c.is_root),
+        span_count: 1,
+        error_count: u64::from(is_error(c)),
+        input_tokens: c.input_tokens,
+        output_tokens: c.output_tokens,
+        total_tokens: c.total_tokens,
+        total_cost_nusd: c.total_cost_nusd,
+    })
+}
+
+/// The `user_rollup` data row of a partial.
+pub fn user_rollup_row(row: &UserRollupRow) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        date(row.day.start()),
+        Value::str(&row.user_id),
+    ];
+    no_marker(&mut cells);
+    cells.extend([
+        Value::time(row.first_seen),
+        Value::time(row.last_seen),
+        Value::U64(row.trace_count),
+        Value::U64(row.span_count),
+        Value::U64(row.error_count),
+        Value::U64(row.input_tokens),
+        Value::U64(row.output_tokens),
+        Value::U64(row.total_tokens),
+        Value::I64(row.total_cost_nusd.nanos()),
+    ]);
+    cells
+}
+
+/// The partial one span contributes to the metrics of its minute (contract 3.10). `ttft_hist` takes
+/// `completion_start_time - start_time` of generations that carry one.
+pub fn span_metrics(span: &SpanRecord) -> SpanMetricsRow {
+    let c = &span.core;
+    let mut dur_hist = Histogram::new();
+    dur_hist.record(c.duration_us());
+    let mut ttft_hist = Histogram::new();
+    if let Some(first) = c
+        .completion_start_time
+        .filter(|_| c.observation_type == ObservationType::Generation)
+    {
+        let micros = first.micros().saturating_sub(c.start_time.micros());
+        ttft_hist.record(u64::try_from(micros).unwrap_or(0));
+    }
+    SpanMetricsRow {
+        project_id: c.project_id,
+        minute: Timestamp::from_micros(i64::from(c.start_minute()) * 1_000_000),
+        environment: c.environment.clone(),
+        observation_type: c.observation_type,
+        model_response: c.model_response.clone(),
+        level: c.level,
+        release: c.release.clone(),
+        count: 1,
+        error_count: u64::from(is_error(c)),
+        input_tokens: c.input_tokens,
+        output_tokens: c.output_tokens,
+        total_tokens: c.total_tokens,
+        total_cost_nusd: c.total_cost_nusd,
+        dur_hist,
+        ttft_hist,
+    }
+}
+
+/// The `span_metrics` data row of a partial.
+pub fn span_metrics_row(row: &SpanMetricsRow) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        Value::U32(row.minute.start_minute()),
+        Value::str(&row.environment),
+        en(row.observation_type.value()),
+        Value::str(&row.model_response),
+        en(row.level.value()),
+        Value::str(&row.release),
+    ];
+    no_marker(&mut cells);
+    cells.extend([
+        Value::U64(row.count),
+        Value::U64(row.error_count),
+        Value::U64(row.input_tokens),
+        Value::U64(row.output_tokens),
+        Value::U64(row.total_tokens),
+        Value::I64(row.total_cost_nusd.nanos()),
+        histogram(&row.dur_hist),
+        histogram(&row.ttft_hist),
+    ]);
+    cells
+}
+
+/// The row of a fact in its fact table (contract 6.4): the shared columns, the body columns of the table, then
+/// the ingestion columns.
+pub fn fact_row(fact: &Fact) -> Vec<Value> {
+    let e = &fact.envelope;
+    let mut cells = vec![
+        uuid(e.project_id.uuid()),
+        Value::str(&e.key),
+        date(e.target_time),
+        Value::bytes(e.trace_id.as_bytes()),
+        Value::bytes(e.span_id.as_bytes()),
+        Value::str(&e.session_id),
+        Value::U64(e.version),
+        uuid(e.fact_id.uuid()),
+        en(e.target_kind.value()),
+        Value::time(e.target_time),
+        Value::flag(e.retracted),
+        en(e.author_kind.value()),
+        uuid(e.author_id),
+        Value::time(e.created_at),
+    ];
+    match &fact.body {
+        FactBody::Score(score) => cells.extend([
+            en(score.data_type.value()),
+            Value::F64(score.value_num),
+            Value::str(&score.value_str),
+            Value::str(&score.comment),
+            en(score.source.value()),
+            Value::bytes(&score.metadata),
+            uuid(score.config_id.unwrap_or(Uuid::NIL)),
+        ]),
+        FactBody::Tag(tag) => cells.push(en(tag.op.value())),
+        FactBody::Flag(flag) => cells.push(Value::flag(flag.value)),
+        FactBody::Correction(correction) => cells.extend([
+            Value::bytes(&correction.corrected),
+            Value::str(&correction.note),
+        ]),
+    }
+    ingestion(&mut cells, &e.ingestion);
+    cells
+}
+
 /// One row with the (table, partition) pair it routes to.
 #[derive(Clone, PartialEq, Debug)]
 pub struct RoutedRow {
@@ -307,14 +516,16 @@ pub struct RoutedRow {
 }
 
 /// Every row the spans of one frame yield, after stage B: one `span_core` and one `span_payload` row per span, a
-/// `trace_heads` row per root span and per provisional head, and one `trace_stats` partial per span. Every row
-/// of a span routes by the span's `start_time`, read verbatim (contract 5.2).
+/// `trace_heads` row per root span and per provisional head, one `trace_stats` and one `span_metrics` partial
+/// per span, and a `session_rollup` and a `user_rollup` partial per span that names a session or a user. Every
+/// row of a span routes by the span's `start_time`, read verbatim (contract 5.2). The MCP tables join in
+/// milestone 3.
 pub fn derive(
     frame: &NormalizedFrame,
     admission: &Admission,
     granularity: Granularity,
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
-    let mut out = Vec::with_capacity(frame.spans.len() * 4);
+    let mut out = Vec::with_capacity(frame.spans.len() * 7);
     for (index, span) in frame.spans.iter().enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
         let start = span.core.start_time;
@@ -346,6 +557,37 @@ pub fn derive(
             TableId::TraceStats,
             trace_stats_row(&trace_stats(span, head_kind.is_some())),
         )?;
+        if let Some(row) = session_rollup(span) {
+            push(TableId::SessionRollup, session_rollup_row(&row))?;
+        }
+        if let Some(row) = user_rollup(span) {
+            push(TableId::UserRollup, user_rollup_row(&row))?;
+        }
+        push(TableId::SpanMetrics, span_metrics_row(&span_metrics(span)))?;
     }
     Ok(out)
+}
+
+/// The rows of the facts of one `FactBatch` frame: one row per fact in its fact table, routed by the fact's
+/// `target_time`, read verbatim (contract 5.2).
+pub fn derive_facts(
+    facts: &[Fact],
+    granularity: Granularity,
+) -> Result<Vec<RoutedRow>, OutOfRange> {
+    facts
+        .iter()
+        .enumerate()
+        .map(|(index, fact)| {
+            let table = fact.body.table();
+            Ok(RoutedRow {
+                table,
+                partition: route(table, granularity, fact.envelope.target_time)?,
+                row: Row {
+                    cells: fact_row(fact),
+                    lsn: fact.envelope.ingestion.lsn,
+                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                },
+            })
+        })
+        .collect()
 }

@@ -327,6 +327,68 @@ pub fn bytes_at<'a>(block: &'a DecodedBlock, name: &str, row: usize) -> Option<&
     }
 }
 
+/// An `Int64` or `DateTime64` cell.
+pub fn i64_at(block: &DecodedBlock, name: &str, row: usize) -> Option<i64> {
+    match column(block, name)? {
+        Values::Int64(v) => v.get(row).copied(),
+        _ => None,
+    }
+}
+
+/// A `UInt16` or `Date` cell.
+pub fn u16_at(block: &DecodedBlock, name: &str, row: usize) -> Option<u16> {
+    match column(block, name)? {
+        Values::UInt16(v) => v.get(row).copied(),
+        _ => None,
+    }
+}
+
+/// A `UInt32` or `DateTime` cell.
+pub fn u32_at(block: &DecodedBlock, name: &str, row: usize) -> Option<u32> {
+    match column(block, name)? {
+        Values::UInt32(v) => v.get(row).copied(),
+        _ => None,
+    }
+}
+
+/// A `Nullable(DateTime64)` cell: `Some(None)` for a null.
+pub fn nullable_i64_at(block: &DecodedBlock, name: &str, row: usize) -> Option<Option<i64>> {
+    match column(block, name)? {
+        Values::Nullable(nulls, inner) => match (nulls.get(row)?, &**inner) {
+            (true, _) => Some(None),
+            (false, Values::Int64(v)) => v.get(row).copied().map(Some),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A histogram cell (`Tuple(Array(UInt16), Array(UInt64))`) as bucket index to count.
+pub fn histogram_at(block: &DecodedBlock, name: &str, row: usize) -> Option<BTreeMap<u16, u64>> {
+    let Values::Tuple(elements) = column(block, name)? else {
+        return None;
+    };
+    let (Values::Array(key_ends, keys), Values::Array(count_ends, counts)) =
+        (elements.first()?, elements.get(1)?)
+    else {
+        return None;
+    };
+    let (Values::UInt16(keys), Values::UInt64(counts)) = (&**keys, &**counts) else {
+        return None;
+    };
+    let range = |ends: &[u64]| {
+        let start = if row == 0 {
+            0
+        } else {
+            *ends.get(row - 1)? as usize
+        };
+        Some(start..*ends.get(row)? as usize)
+    };
+    let keys = keys.get(range(key_ends)?)?;
+    let counts = counts.get(range(count_ends)?)?;
+    Some(keys.iter().copied().zip(counts.iter().copied()).collect())
+}
+
 /// The instant of a time cell (`Date`, `DateTime` or `DateTime64`).
 fn time_at(values: &Values, ty: &Ty, row: usize) -> Option<Timestamp> {
     let micros = match (ty.scalar(), values) {

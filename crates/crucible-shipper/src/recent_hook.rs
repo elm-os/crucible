@@ -8,7 +8,7 @@ use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_recent::{
     Frame, QuarantineReach, QuarantinedPair, RecentWriter, SpanEntry, SpanSummary, WalLocator,
 };
-use crucible_records::{HeadKind, Lsn, PartitionId, TableId};
+use crucible_records::{HeadKind, Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
 use crucible_wal_codec::{Record, RecordType};
 
@@ -25,6 +25,8 @@ use crate::hooks::RecentIndex;
 /// - a `Checkpoint` frame moves the index's watermark, which makes entries evictable after the grace and closes
 ///   gaps;
 /// - a `Quarantine` frame marks its pairs. The frame does not name projects, so the mark reaches every project;
+/// - a frame that does not normalize and is quarantined as a frame marks every table its rows would have
+///   reached, for its project when the envelope names one;
 /// - every frame moves the applied LSN that the read barrier waits for.
 ///
 /// Milestone 1 writes no `Tombstone` frames; they pass like any other control frame until deletion lands.
@@ -70,6 +72,55 @@ impl RecentHook {
             pairs,
         });
     }
+
+    /// Marks frames that were quarantined as frames before this incarnation and that the retained log no
+    /// longer holds: `(lsn, project, facts)` as [`crate::FrameManifest`] reads them from the quarantine root.
+    /// Frames the log still holds are marked again when stage B replays them.
+    pub fn restore_unshippable(
+        &self,
+        frames: impl IntoIterator<Item = (Lsn, Option<ProjectId>, bool)>,
+    ) {
+        let pairs = frames
+            .into_iter()
+            .flat_map(|(lsn, project, facts)| frame_marks(lsn, project, facts))
+            .collect();
+        self.writer().apply(Frame::Quarantine {
+            lsn: Lsn::ZERO,
+            pairs,
+        });
+    }
+}
+
+/// The tables a frame's rows reach: what a quarantined frame withholds from the store.
+const SPAN_TABLES: [TableId; 7] = [
+    TableId::SpanCore,
+    TableId::SpanPayload,
+    TableId::TraceHeads,
+    TableId::TraceStats,
+    TableId::SessionRollup,
+    TableId::UserRollup,
+    TableId::SpanMetrics,
+];
+const FACT_TABLES: [TableId; 4] = [
+    TableId::FactScores,
+    TableId::FactTags,
+    TableId::FactFlags,
+    TableId::FactCorrections,
+];
+
+/// The marks of a frame quarantined as a frame: one per table its rows would have reached. The frame's own LSN
+/// stands for the batch and the partition is left open, because the frame never joined a pair.
+fn frame_marks(lsn: Lsn, project: Option<ProjectId>, facts: bool) -> Vec<QuarantinedPair> {
+    let tables: &[TableId] = if facts { &FACT_TABLES } else { &SPAN_TABLES };
+    tables
+        .iter()
+        .map(|&table| QuarantinedPair {
+            batch_seq: lsn,
+            table,
+            partition: PartitionId::UNPARTITIONED,
+            reach: project.map_or(QuarantineReach::All, |p| QuarantineReach::Projects(vec![p])),
+        })
+        .collect()
 }
 
 fn control(source: &WalFrame) -> Frame {
@@ -133,8 +184,13 @@ impl RecentIndex for RecentHook {
                 locator: WalLocator {
                     segment: source.segment_no(),
                     offset: source.offset(),
-                    // The span's position among the frame's admitted spans.
-                    ordinal: u32::try_from(position).unwrap_or(u32::MAX),
+                    // The span's position in stage A's output, which is where a re-read of the frame through
+                    // the normalizer finds it, whatever stage B dropped before it.
+                    ordinal: admission
+                        .stage_a_ordinals
+                        .get(position)
+                        .copied()
+                        .unwrap_or(u32::MAX),
                 },
             })
             .collect();
@@ -147,6 +203,14 @@ impl RecentIndex for RecentHook {
 
     fn passed(&self, source: &WalFrame) {
         self.writer().apply(control(source));
+    }
+
+    fn unshippable(&self, source: &WalFrame, project: Option<ProjectId>, facts: bool) {
+        let lsn = source.lsn();
+        self.writer().apply(Frame::Quarantine {
+            lsn,
+            pairs: frame_marks(lsn, project, facts),
+        });
     }
 
     fn floor(&self) -> Option<Lsn> {

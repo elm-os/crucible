@@ -51,6 +51,9 @@ pub struct SpanSummary {
     pub session_id: Arc<str>,
     /// The response model.
     pub model: Arc<str>,
+    /// The environment, a trace-level attribute (contract 3.3): what the span's row in the store carries, so
+    /// that a head read from the index names the environment its `trace_heads` row will.
+    pub environment: Arc<str>,
     /// The total cost.
     pub total_cost_nusd: NanoUsd,
     /// Input tokens.
@@ -78,6 +81,7 @@ impl SpanSummary {
             trace_name: Arc::from(&*core.trace_name),
             user_id: Arc::from(&*core.user_id),
             session_id: Arc::from(&*core.session_id),
+            environment: Arc::from(&*core.environment),
             model: Arc::from(&*core.model_response),
             total_cost_nusd: core.total_cost_nusd,
             input_tokens: core.input_tokens,
@@ -129,7 +133,7 @@ pub(crate) struct Entry {
     pub(crate) output_tokens: u64,
     pub(crate) total_tokens: u64,
     pub(crate) locator: WalLocator,
-    pub(crate) strings: [u32; 5],
+    pub(crate) strings: [u32; 6],
     pub(crate) observation_type: ObservationType,
     pub(crate) level: Level,
     pub(crate) status_code: StatusCode,
@@ -146,7 +150,7 @@ struct Slot {
     refs: u32,
 }
 
-/// Reference-counted strings: one copy of each distinct name, user, session and model per shard.
+/// Reference-counted strings: one copy of each distinct name, user, session, model and environment per shard.
 #[derive(Debug)]
 pub(crate) struct Interner {
     ids: DetMap<Arc<str>, u32>,

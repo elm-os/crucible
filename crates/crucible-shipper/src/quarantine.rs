@@ -10,18 +10,33 @@
 //!
 //! `quarantine_ref` is the pair's token with `:` replaced by `_`, so a pair has one directory, and a copy
 //! repeated after a crash overwrites the earlier one (contract 5.9).
+//!
+//! **Frame quarantine.** A durable frame that this binary cannot decode or normalize is copied by itself to
+//! `quarantine/frame-<wal_epoch>-<lsn>/`, and then counts as a frame without rows. No WAL record announces it:
+//! a replay with the same binary decides the same, finds the copy and moves on.
+//!
+//! | Entry | Contents |
+//! |---|---|
+//! | `frames` | The one frame, as above |
+//! | `manifest` | Text, one `key=value` per line: `version`, `kind=frame`, `wal_epoch`, `lsn`, `record_type`, `project_id` (when the envelope decodes), `normalizer_version`, `stage`, `reason`, `frames=1`, `bytes` |
+//!
+//! `bytes` is the last line of a whole manifest. The manifest is created with `CreateNew` before the frame is
+//! copied and filled in after the frames file is synced. A repeat of the copy (after a failed sync, a crash or
+//! a stop) finds the manifest, empties it and writes the same bytes again, because a file that reads back whole
+//! need not be durable; every file and both directories are synced before the frame counts as quarantined.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use crucible_env::{DiskError, DiskPath, File, OpenMode, Root};
-use crucible_records::Lsn;
-use crucible_wal::ReplayError;
+use crucible_normalize::NORMALIZER_VERSION;
+use crucible_records::{Lsn, ProjectId, WalEpoch};
+use crucible_wal::{ReplayError, WalFrame};
 use crucible_wal_codec::{Quarantine, QuarantinePair, Record};
 
 use crate::batch::{BatchId, Pair, pair_token};
 use crate::error::ShipError;
+use crate::frames::Unshippable;
 use crate::hooks::Barrier;
 use crate::limits::backoff;
 use crate::shipper::Ctx;
@@ -170,7 +185,7 @@ pub(crate) async fn quarantine_pair(
         reason,
     });
     ctx.append_durable(&record).await?;
-    ctx.stats.quarantined.fetch_add(1, Ordering::Relaxed);
+    ctx.stats.quarantined.add(1);
     // The operator alert of contract 5.6.
     tracing::error!(
         quarantine = %name,
@@ -178,6 +193,141 @@ pub(crate) async fn quarantine_pair(
         error_code,
         attempts,
         "pair quarantined after repeated data errors"
+    );
+    Ok(())
+}
+
+/// The directory name of a frame's quarantine (contract 5.6).
+pub fn frame_quarantine_ref(epoch: WalEpoch, lsn: Lsn) -> String {
+    format!("frame-{epoch}-{lsn}")
+}
+
+/// What the manifest of a frame quarantine says, as the host reads it at start to mark the frames whose log
+/// segments are gone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FrameManifest {
+    /// The frame's LSN.
+    pub lsn: Lsn,
+    /// The frame's project, when its envelope decoded.
+    pub project_id: Option<ProjectId>,
+    /// Whether the frame is a `FactBatch`.
+    pub facts: bool,
+    /// The declared length of the frames file.
+    pub bytes: u64,
+}
+
+impl FrameManifest {
+    /// Parses a whole manifest of a frame quarantine. `None` for the manifest of a pair, and for one that a
+    /// crash cut short.
+    pub fn parse(text: &str) -> Option<Self> {
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+        };
+        if field("kind") != Some("frame") {
+            return None;
+        }
+        Some(Self {
+            lsn: Lsn::new(field("lsn")?.parse().ok()?),
+            project_id: field("project_id").and_then(|id| ProjectId::parse(id).ok()),
+            facts: field("record_type")? == "fact_batch",
+            bytes: field("bytes")?.parse().ok()?,
+        })
+    }
+}
+
+/// One attempt at the copy of a frame. `Ok` once the frame, a whole manifest and their directory entries are
+/// durable.
+async fn copy_frame(
+    ctx: &Ctx,
+    dir: &DiskPath,
+    frame: &WalFrame,
+    manifest: &str,
+) -> Result<(), CopyError> {
+    let disk = &ctx.env.disk;
+    disk.create_dir_all(dir).await?;
+    let manifest_path = dir.join(MANIFEST_FILE)?;
+    match disk.open(&manifest_path, OpenMode::CreateNew).await {
+        Ok(_) => {}
+        // A repeat: an earlier attempt, or an incarnation before a crash or a stop, left a manifest. A copy
+        // that reads back whole need not be durable, so it is written and synced again. The manifest is
+        // emptied first: it must not describe the frames file while that is rewritten.
+        Err(DiskError::AlreadyExists) => write_file(ctx, &manifest_path, Vec::new()).await?,
+        Err(e) => return Err(e.into()),
+    }
+    let header = frame.header().encode().map_err(|_| CopyError::Header)?;
+    let chunks = vec![
+        Bytes::copy_from_slice(&header),
+        Bytes::copy_from_slice(frame.stored_payload()),
+    ];
+    write_file(ctx, &dir.join(FRAMES_FILE)?, chunks).await?;
+    let chunks = vec![Bytes::copy_from_slice(manifest.as_bytes())];
+    write_file(ctx, &manifest_path, chunks).await?;
+    disk.sync_dir(dir).await?;
+    disk.sync_dir(&DiskPath::root_dir(Root::Quarantine)).await?;
+    Ok(())
+}
+
+/// Quarantines one frame that this binary cannot decode or normalize (contract 5.6). Returns once the copy is
+/// durable; disk errors are retried with backoff, so the frame joins no batch, and the watermark stays below
+/// it, until then.
+pub(crate) async fn quarantine_frame(
+    ctx: &Arc<Ctx>,
+    frame: &WalFrame,
+    why: &Unshippable,
+) -> Result<(), ShipError> {
+    let lsn = frame.lsn();
+    let name = frame_quarantine_ref(ctx.wal.epoch(), lsn);
+    let dir = DiskPath::new(Root::Quarantine, &name).map_err(|e| ShipError::Frame {
+        lsn,
+        reason: e.to_string(),
+    })?;
+    let one_line: String = crucible_records::truncate_str(
+        &why.reason,
+        crucible_wal_codec::MAX_QUARANTINE_REASON_BYTES,
+    )
+    .chars()
+    .map(|c| if c.is_control() { ' ' } else { c })
+    .collect();
+    let project = why
+        .project
+        .map(|p| format!("project_id={p}\n"))
+        .unwrap_or_default();
+    let bytes = crucible_wal_codec::FRAME_HEADER_LEN + frame.stored_payload().len();
+    let manifest = format!(
+        "version=1\nkind=frame\nwal_epoch={}\nlsn={lsn}\nrecord_type={}\n{project}\
+         normalizer_version={NORMALIZER_VERSION}\nstage={}\nreason={one_line}\nframes=1\nbytes={bytes}\n",
+        ctx.wal.epoch(),
+        if why.facts {
+            "fact_batch"
+        } else {
+            "ingest_request"
+        },
+        why.stage,
+    );
+    let mut attempt = 0;
+    while !ctx.config.quarantines_frames_without_copy() {
+        let Err(e) = copy_frame(ctx, &dir, frame, &manifest).await else {
+            break;
+        };
+        tracing::warn!(quarantine = %name, error = %e, "frame quarantine copy failed; retrying");
+        let delay = backoff(
+            ctx.config.backoff_min,
+            ctx.config.backoff_max,
+            attempt,
+            ctx.rng.as_ref(),
+        );
+        ctx.env.clock.sleep(delay).await;
+        attempt = attempt.saturating_add(1);
+    }
+    ctx.stats.quarantined_frames.add(1);
+    // The operator alert of contract 5.6.
+    tracing::error!(
+        quarantine = %name,
+        lsn = %lsn,
+        stage = why.stage,
+        reason = %one_line,
+        "a durable frame does not normalize with this binary; it is quarantined and yields no rows"
     );
     Ok(())
 }

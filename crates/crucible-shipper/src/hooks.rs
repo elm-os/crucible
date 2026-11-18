@@ -4,7 +4,7 @@
 use std::fmt;
 
 use crucible_normalize::{Admission, NormalizedFrame};
-use crucible_records::{Lsn, PartitionId, TableId};
+use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
 use futures::future::{self, BoxFuture};
 
@@ -62,6 +62,15 @@ pub trait RecentIndex: fmt::Debug + Send + Sync {
     /// Stage B passed a frame that carries no spans. The index needs the `Checkpoint` and `Quarantine` frames
     /// (eviction, gap closure and the quarantine marks), and the LSN of every frame for its read barrier.
     fn passed(&self, source: &WalFrame);
+
+    /// Stage B passed a frame that this binary cannot decode or normalize and that is quarantined as a frame
+    /// (contract 5.6): its rows reach neither the index nor the store, so reads that could touch them must say
+    /// so. `project` is the frame's project when its envelope decodes; `facts` tells a `FactBatch` frame from
+    /// an `IngestRequest` frame. Without an override the frame passes like a control frame.
+    fn unshippable(&self, source: &WalFrame, project: Option<ProjectId>, facts: bool) {
+        let _ = (project, facts);
+        self.passed(source);
+    }
 
     /// The lowest LSN the index still references, which pins WAL segments against garbage collection
     /// (contract 4.7).

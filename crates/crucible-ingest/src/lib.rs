@@ -16,12 +16,19 @@
 //! 6. [`crucible_wal::Wal::append`]. Only after it resolves, which under `wal.durability = group` means the
 //!    frame is durable, does the client get 200 with an `ExportTraceServiceResponse` (contract 4.5).
 //!
+//! Facts take the same path without HTTP: [`Ingest::append_facts`] validates a write, admits it under the same
+//! budget and decision table, appends it as `FactBatch` frames and returns once they are durable (contract 3.8).
+//! The routes of contract 12.6 call it.
+//!
 //! Responses match the request's format: protobuf or JSON. Refusals carry a `google.rpc.Status`, the body
 //! OTLP/HTTP specifies for every 4xx and 5xx.
 
 mod admission;
 mod body;
+mod facts;
 mod reply;
 mod service;
 
+pub use crucible_admission::BucketConfig;
+pub use facts::{AcceptedFact, FactAuthor, FactWriteError, NewFact};
 pub use service::{DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, Ingest, IngestConfig, Mutant};

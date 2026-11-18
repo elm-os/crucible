@@ -153,6 +153,10 @@ impl FirstSeen {
 pub struct Admission {
     /// Spans dropped as exact repeats.
     pub duplicates: u32,
+    /// For each remaining span, its position among the spans stage A made of the frame. A re-read of the frame
+    /// through [`crate::normalize`] finds the span there, whatever stage B dropped before it, so this is the
+    /// ordinal of the recent-span index's WAL locator (contract 8.6).
+    pub stage_a_ordinals: Vec<u32>,
     /// Positions in the frame's remaining spans of the provisional heads: for each trace first seen in this frame
     /// with no root span in it, the trace's first span in wire order. Root heads need no marking: every span with
     /// `is_root` heads its trace (contract 3.9).
@@ -208,9 +212,15 @@ impl StageB {
         self.last = Some(frame.lsn);
         let mut duplicates = 0u32;
         let window = &mut self.window;
+        let mut stage_a_ordinals = Vec::with_capacity(frame.spans.len());
+        let mut ordinal = 0u32;
         frame.spans.retain(|span| {
             let kept = window.admit(span_key(&span.core), span.core.row_digest);
             duplicates += u32::from(!kept);
+            if kept {
+                stage_a_ordinals.push(ordinal);
+            }
+            ordinal = ordinal.saturating_add(1);
             kept
         });
         let mut first: Vec<(u64, usize)> = Vec::new();
@@ -232,6 +242,7 @@ impl StageB {
             .collect();
         Ok(Admission {
             duplicates,
+            stage_a_ordinals,
             provisional_heads,
         })
     }
@@ -349,6 +360,9 @@ mod tests {
                 let expected: Vec<SpanRecord> = kept.iter().map(|&i| span(&spans[i])).collect();
                 prop_assert_eq!(&f.spans, &expected);
                 prop_assert_eq!(admission.duplicates as usize, spans.len() - kept.len());
+                // Each kept span names its position in the frame as stage A made it.
+                let ordinals: Vec<u32> = kept.iter().map(|&i| i as u32).collect();
+                prop_assert_eq!(&admission.stage_a_ordinals, &ordinals);
                 prop_assert_eq!(&admission.provisional_heads, &heads);
                 let model: Vec<(u64, u64)> = oracle
                     .window

@@ -242,6 +242,34 @@ impl Stored {
                 "span_core_distinct_traces",
                 one(from("span_core", "uniqExact(trace_id)")).await,
             ),
+            (
+                "span_metrics_count",
+                one(from("span_metrics", "sum(count)")).await,
+            ),
+            (
+                "span_metrics_durations",
+                one(from(
+                    "span_metrics",
+                    "sum(arraySum(tupleElement(dur_hist, 2)))",
+                ))
+                .await,
+            ),
+            (
+                "span_core_in_sessions",
+                one(from("span_core", "countIf(session_id != '')")).await,
+            ),
+            (
+                "session_rollup_span_count",
+                one(from("session_rollup", "sum(span_count)")).await,
+            ),
+            (
+                "span_core_of_users",
+                one(from("span_core", "countIf(user_id != '')")).await,
+            ),
+            (
+                "user_rollup_span_count",
+                one(from("user_rollup", "sum(span_count)")).await,
+            ),
         ])
     }
 }
@@ -286,9 +314,20 @@ fn assert_no_duplicate_rows(counts: &BTreeMap<&'static str, u64>, at_least: u64,
         "span_payload_rows",
         "span_payload_distinct_spans",
         "trace_stats_span_count",
+        "span_metrics_count",
+        "span_metrics_durations",
     ] {
         assert_eq!(counts[name], spans, "{when}: {name} in {counts:?}");
     }
+    // The session and user rollups count exactly the spans that name one (invariant I7).
+    assert_eq!(
+        counts["session_rollup_span_count"], counts["span_core_in_sessions"],
+        "{when}: {counts:?}"
+    );
+    assert_eq!(
+        counts["user_rollup_span_count"], counts["span_core_of_users"],
+        "{when}: {counts:?}"
+    );
     assert_eq!(
         counts["trace_heads_rows"], counts["trace_heads_distinct_traces"],
         "{when}: {counts:?}"
@@ -334,7 +373,12 @@ impl Trace {
                     "kind": 1,
                     "startTimeUnixNano": (self.start_nanos + offset).to_string(),
                     "endTimeUnixNano": (self.start_nanos + offset + nanos).to_string(),
-                    "attributes": [{"key": "e2e.case", "value": {"stringValue": self.name}}],
+                    // The session and the user give the session and user rollups rows to hold.
+                    "attributes": [
+                        {"key": "e2e.case", "value": {"stringValue": self.name}},
+                        {"key": "crucible.session.id", "value": {"stringValue": "e2e-session"}},
+                        {"key": "user.id", "value": {"stringValue": "e2e-user"}},
+                    ],
                 });
                 if let Some(parent) = parent {
                     span["parentSpanId"] = json!(parent);
