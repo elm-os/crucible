@@ -1034,6 +1034,14 @@ fn grpc_refusals_carry_the_contract_codes() {
             .await
             .unwrap_err();
         assert_eq!(status.code(), Code::Unimplemented);
+        // OTLP over HTTP sent to the gRPC routes gets 415 and where to send it: a gRPC status on HTTP 200 would
+        // read as success to an HTTP exporter.
+        for path in [EXPORT, "/v1/traces"] {
+            let reply = send(&node.grpc, Req::protobuf(&request).to(path)).await;
+            assert_eq!(reply.status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{path}");
+            assert_eq!(reply.header("grpc-status"), None);
+            assert!(String::from_utf8_lossy(&reply.body).contains("POST /v1/traces"));
+        }
 
         let written = payloads(&node.wal).await;
         assert_eq!(written.len(), 2);
@@ -1045,6 +1053,7 @@ fn grpc_refusals_carry_the_contract_codes() {
         assert_eq!(requests(&node, "unauthenticated"), 2);
         assert_eq!(requests(&node, "malformed"), 1);
         assert_eq!(requests(&node, "payload_too_large"), 2);
+        assert_eq!(requests(&node, "unsupported_media_type"), 1);
         assert_eq!(inflight(&node), Some(0));
     });
 }

@@ -11,12 +11,17 @@
 //! size and decoding failures come back to this module, which answers them with `INVALID_ARGUMENT` as
 //! contract 4.8 asks. tonic's own codes for them are `OUT_OF_RANGE` and `RESOURCE_EXHAUSTED`, which OTLP
 //! exporters would retry.
+//!
+//! A request that is not gRPC, such as an OTLP/HTTP export sent to the gRPC port, gets 415. A gRPC status
+//! travels on HTTP 200, which an HTTP exporter would take for success.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::response::Response;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse as _, Response};
 use bytes::{Buf as _, BufMut as _};
 use crucible_auth::KeyPrincipal;
 use crucible_otlp::MAX_BODY_BYTES;
@@ -141,9 +146,36 @@ fn decode_reject(status: &Status) -> Reject {
     }
 }
 
+/// Whether a request is gRPC: its media type is `application/grpc`, alone or with a `+` subtype.
+fn is_grpc(headers: &HeaderMap) -> bool {
+    let value = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let media = value.split(';').next().unwrap_or_default().trim();
+    let base = media.split_once('+').map_or(media, |(base, _)| base);
+    base.eq_ignore_ascii_case("application/grpc")
+}
+
+/// The answer to a request on the gRPC listener that is not gRPC: 415 with where OTLP/HTTP goes.
+fn not_grpc() -> Response {
+    (
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "this listener takes OTLP over gRPC (Content-Type: application/grpc); send OTLP over HTTP to \
+         POST /v1/traces on the HTTP ingest listener\n",
+    )
+        .into_response()
+}
+
 /// `TraceService/Export`.
 pub(crate) async fn export(State(ingest): State<Ingest>, request: Request) -> Response {
     let inner = Arc::clone(&ingest.inner);
+    if !is_grpc(request.headers()) {
+        inner
+            .metrics
+            .refused(&Reject::UnsupportedMediaType(String::new()));
+        return not_grpc();
+    }
     let (parts, body) = request.into_parts();
     let admitted = inner.authenticate(&parts.headers).and_then(|principal| {
         let held = inner.admission.admit(principal.scope.project_id(), 0)?;
@@ -178,17 +210,24 @@ pub(crate) async fn export(State(ingest): State<Ingest>, request: Request) -> Re
     grpc.client_streaming(service, request).await.map(Body::new)
 }
 
-/// Any other gRPC method.
-pub(crate) async fn unimplemented() -> Response {
+/// Any other path: `UNIMPLEMENTED` for a gRPC request.
+pub(crate) async fn unimplemented(request: Request) -> Response {
+    if !is_grpc(request.headers()) {
+        return not_grpc();
+    }
     Status::unimplemented(
         "this listener serves opentelemetry.proto.collector.trace.v1.TraceService/Export only",
     )
     .into_http()
 }
 
-/// The gRPC answer while ingest is closed: `UNAVAILABLE` with a `RetryInfo` of `retry_after_s` seconds and
-/// `message` as the reason.
-pub fn grpc_unavailable(retry_after_s: u32, message: &str) -> Response {
+/// The answer on the gRPC listener while ingest is closed, for a request with `headers`: `UNAVAILABLE` with
+/// `message` as the reason and a `RetryInfo` of `retry_after_s` seconds, or 415 for a request that is not
+/// gRPC.
+pub fn grpc_unavailable(headers: &HeaderMap, retry_after_s: u32, message: &str) -> Response {
+    if !is_grpc(headers) {
+        return not_grpc();
+    }
     reply::grpc_status(Code::Unavailable, message.to_owned(), Some(retry_after_s)).into_http()
 }
 

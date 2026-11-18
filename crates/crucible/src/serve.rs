@@ -259,6 +259,7 @@ async fn grpc_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next) 
     match gate.closed() {
         None => next.run(request).await,
         Some(reason) => crucible_ingest::grpc_unavailable(
+            request.headers(),
             CLOSED_RETRY_AFTER,
             &format!("ingest is closed: {reason}"),
         ),
@@ -1683,6 +1684,14 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+        // OTLP over HTTP/1.1 sent to the gRPC port.
+        let headers = [
+            ("authorization", bearer.as_str()),
+            ("content-type", protobuf_type),
+        ];
+        let (status, ..) =
+            exchange(env, addrs.grpc, "POST", "/v1/traces", &headers, &protobuf).await;
+        assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
 
         // Paths under a route's first segment that name no route, and the signals v0 does not ingest, answer
         // problem 404 on both HTTP listeners; the ingest listener answers it for every other path too.
@@ -1782,6 +1791,22 @@ mod tests {
             http(env, servers.addrs.ingest, "POST", "/v1/traces", &headers).await;
         assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
         assert_eq!(header(&headers, "retry-after"), Some("5"));
+        // OTLP over HTTP sent to the gRPC port is refused as such, closed or not, never with HTTP 200.
+        let headers = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/x-protobuf"),
+        ];
+        let (status, headers, _) = exchange(
+            env,
+            servers.addrs.grpc,
+            "POST",
+            "/v1/traces",
+            &headers,
+            &protobuf,
+        )
+        .await;
+        assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
+        assert_eq!(header(&headers, "grpc-status"), None);
         shut_down(&prod, servers).await;
     }
 
