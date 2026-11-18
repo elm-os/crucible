@@ -685,6 +685,11 @@ rows with `side = server`. It backs `mcp/deploys` and `mcp/compare` (section 9.9
 
 ### 3.8 Facts
 
+Facts resolve by one comparator, `crucible_records::fact_order`: `version` first, then `fact_id` in RFC 9562 byte
+order (time order for UUIDv7). No SQL ordering of UUIDs ever picks a winner, because ClickHouse compares UUIDs by
+their second half first: plans fetch candidate facts, and the Rust fold, `ChModel` and the differential check use
+the same comparator.
+
 Facts are later-written, append-only, versioned rows. They are never updated or deleted in place; a retraction is a
 new row. Facts written through the API go through the WAL (`FactBatch`) and are acknowledged after the fsync.
 
@@ -1058,7 +1063,7 @@ every table, base and derived, is written by this protocol.
 |---|---|
 | Batch boundaries | `BatchSeal`, durable before any send |
 | Normalizer version | Recorded in the seal. If the binary changed, the new version is used; safe because routing is frozen and pairs land wholesale |
-| Price table | `price_table_version` in the seal; versions are immutable |
+| Price table | `price_table_version` in the seal records the table the first attempt used; versions are immutable. As with the normalizer version, a replay after a binary change prices with the current bundled table; pairs land wholesale, so costs never mix inside a pair. A batch whose pairs straddle a crash and an upgrade can carry two table versions across its tables, which I7 states as an exception |
 | Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys, oldest LSN evicted first |
 | Tombstones | A replay may drop more rows, never fewer. The deletion executor acts only after the node's checkpoint passes the tombstone (section 13.3) |
 | Partition routing | Section 5.2 |
@@ -1140,6 +1145,14 @@ resolved for the watermark; an operator alert fires. Other pairs of the batch la
 `crucible wal requeue <quarantine_ref>` re-ships the named pairs with the original identity and tokens, probing
 first. A quarantined batch counts as durable for invariant I1. A pair with an attempt in doubt may be quarantined
 only after a probe reads absent; otherwise a quarantined pair could also be present.
+
+**Frame quarantine.** A durable frame that the current binary cannot decode or normalize must not stop shipping.
+The shipper copies the frame's bytes to `quarantine/frame-<wal_epoch>-<lsn>/` with a manifest (identity, decoder
+or normalizer version, error), syncs it (`CreateNew`, so a repeat after a crash finds the copy and moves on), raises
+an operator alert and a metric, and treats the frame as producing no rows. No WAL record is needed: the decision is
+recomputed deterministically on replay with the same binary, and a newer binary that can normalize the frame ships
+it normally. The frame then counts as durable for I1 through its quarantine copy, and `crucible wal requeue`
+re-ingests it.
 
 ### 5.7 Checkpoint
 
@@ -1801,6 +1814,12 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   case-insensitive substring match.
 - `SemiJoin` enforces `max_ids` through `max_rows_in_set`, which applies to every set in the statement.
 - Mutation ids are the newest mutation of the table and partition; lifecycle work is leader-only and sequential.
+- Output columns are nullable wherever a value can be absent: zero-filled `TimeSeries` buckets (for `min`, `max`,
+  `uniq`, histogram and pick measures) and `uniq` over a nullable column. The closed measure set gains `set_merge`
+  for the `groupUniqArrayArray` columns, returning an array. One IR change carries both (milestone 2.1).
+- `TextSearch` tokens are lowered by the caller; the server lowers the column only. `Pred::TextMatch` is
+  case-insensitive for ASCII. A histogram merge carries no zero-count keys (`sumMap` drops them). A block resent after
+  its partition was dropped lands again.
 - `KILL QUERY` is sent to one node, not `ON CLUSTER`.
 - The window on `mcp_tool_inventory` and `mcp_deploys` applies after grouping (`max(last_seen) >= from` and
   `min(first_seen) < to`), because their time columns are aggregated.
@@ -2094,6 +2113,32 @@ Mapping must be total (never panics), idempotent, and identical for the protobuf
 | Dropped in milestone 1 | Instrumentation-scope attributes (name and version are kept), link `trace_state`, span flags, dropped counts and schema URLs |
 | Stage B | A changed repeat moves its key to the newest position; the first-seen set is bounded at 4,000,000 traces; the provisional head is the first kept span, in wire order, of a trace first seen in a frame without its root; an out-of-order LSN is refused |
 
+### 10.6 Source keys for fields without a semantic convention
+
+Crucible SDKs (milestone 3) and hand instrumentation set these keys; dialect 0 reads them, and they take priority
+1 in section 10.3. Where an OpenTelemetry semantic convention exists, it is the second source, so unmodified OTel
+applications fill the field too. These names are wire contract: renaming one is a breaking change.
+
+| Field | Sources, in priority order |
+|---|---|
+| `trace_name` | `crucible.trace.name`; when no span of the trace sets it, displays use the root span's `name` |
+| `session_id` | `crucible.session.id`, `session.id`, `gen_ai.conversation.id` |
+| `user_id` | `crucible.user.id`, `user.id` |
+| `environment` | `crucible.environment`, resource `deployment.environment.name`, resource `deployment.environment` |
+| `release` | `crucible.release`, resource `service.version` |
+| `version` | `crucible.version` |
+| `tags` | `crucible.tags` (string array) |
+| `metadata` | `crucible.metadata.*` (prefix-flattened to a map) |
+| `level` | `crucible.level` (`debug`, `default`, `warning`, `error`) |
+| `trace_tags`, `trace_metadata`, `trace_public` | `crucible.trace.tags`, `crucible.trace.metadata.*`, `crucible.trace.public` (bool) |
+| `input`, `output` (non-GenAI spans) | `crucible.input`, `crucible.output` (JSON or string); GenAI spans keep the message keys of 10.3 |
+| `prompt_name`, `prompt_version` | `crucible.prompt.name`, `crucible.prompt.version` |
+| Provided cost | `crucible.cost.total` and `crucible.cost.<usage key>`, in USD as a decimal string or a double |
+| `completion_start_time` | `crucible.completion_start_time` (RFC 3339 string or Unix nanoseconds) |
+| `model_parameters` | `crucible.model_parameters.*`, then every `gen_ai.request.*` key other than the model (temperature, top_p, max_tokens and the rest), then `openai.request.service_tier` as `service_tier` |
+
+Trace-level fields follow 3.3: never backfilled, forward-filled within one request, picked by rank across requests.
+
 ## 11. Control plane
 
 Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-control`, the adapter in
@@ -2318,7 +2363,13 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `[A-Za-z0-9_-]{1,64}`. It is echoed as `X-Request-Id` and in every problem body.
 - `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
   `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots), `--wal-backend`
-  (`auto`, `portable`, `uring`) and `--ui-dir` (serve a UI build from a directory instead of the embedded one).
+  (`auto`, `portable`, `uring`), `--ui-dir` (serve a UI build from a directory instead of the embedded one),
+  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `id`,
+  `project_id` and `secret`; error messages never echo the file).
+- Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
+  code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product.
+- `/api/v1` defaults: 30 s request timeout and 1 MiB body limit (default; revisit). A malformed project id answers 404
+  (visibility); malformed trace and span ids answer 422.
 - UI serving: try-files ignores the query string; slashless routes serve the page directly; under `/api/`, `/v1/`,
   `/mcp` and the health paths only the 404 fallback is replaced by a problem 404 (the UI's own pages under `/mcp/`
   still resolve); the empty source answers `/` with 404 and a build hint. Each page's CSP carries its inline-script

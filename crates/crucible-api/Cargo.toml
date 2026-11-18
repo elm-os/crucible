@@ -10,7 +10,7 @@ publish.workspace = true
 
 [dependencies]
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
-crucible-api-types = { path = "../crucible-api-types" }
+crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
 crucible-env = { workspace = true }
 crucible-plan = { workspace = true }

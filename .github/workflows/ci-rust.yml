@@ -43,6 +43,12 @@ jobs:
           bad=$(grep -rlnP --include='*.rs' '(allow|expect)\([^)]*(clippy::(disallowed_(methods|types|macros)|style|all)\b|\bwarnings\b)' crates sdk 2>/dev/null \
             | grep -vE '^crates/(crucible-env-prod|crucible-sim|crucible)/|^crates/crucible-auth/src/scope\.rs$|^crates/crucible-shipper/src/probe\.rs$|/benches/|/src/main\.rs$' || true)
           if [ -n "$bad" ]; then echo "disallowed-lint allows outside the allowlist:"; echo "$bad"; exit 1; fi
+      - name: Release builds carry no test-only features
+        run: |
+          # A workspace build unifies test-only features (test-mutants, test-support); the shipped binary must not.
+          if cargo tree -p crucible -e normal,build,features --target all --locked | grep -E 'feature "(test-mutants|test-support)"'; then
+            echo "test-only features reach the crucible binary"; exit 1
+          fi
       - name: Tests
         run: cargo nextest run --workspace --locked --no-tests=pass
       - name: Dependency policy
