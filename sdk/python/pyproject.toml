@@ -1,0 +1,67 @@
+[project]
+name = "crucible-sdk"
+version = "0.1.0"
+description = "Crucible SDK for Python: agent tracing helpers and MCP server instrumentation over OpenTelemetry."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = [
+    "opentelemetry-api>=1.45.2,<2",
+    "opentelemetry-sdk>=1.45.2,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2,<2",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.3,<3"]
+
+[project.urls]
+Repository = "https://github.com/elm-os/crucible"
+
+[dependency-groups]
+dev = [
+    "mcp==2.3.0",
+    "mypy==2.4.1",
+    "pytest==9.2.0",
+    "ruff==0.17.5",
+]
+
+[build-system]
+requires = ["uv_build==0.13.9"]
+build-backend = "uv_build"
+
+[tool.uv]
+required-version = ">=0.13.1,<0.14"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT", "ASYNC", "S", "BLE", "C4", "PIE", "RET"]
+ignore = [
+    # Tests assert freely and use fixed strings that look like secrets on purpose.
+    "S101",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+mypy_path = "src"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["error"]

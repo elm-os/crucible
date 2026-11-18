@@ -1,0 +1,104 @@
+{
+  "schema": "crucible.scrub-rules/v1",
+  "comment": "Content scrubbing rules (contract 9.10). Patterns use the RE2 syntax subset, are matched with ASCII classes, and keep every repetition bounded so a backtracking matcher stays linear. Rules apply in order. key_names are compared after lowercasing and removing '-', '_' and '.'; the value under a matching JSON key is replaced whole.",
+  "patterns": [
+    {
+      "name": "pem",
+      "pattern": "-----BEGIN [A-Z0-9 ]{1,64}-----[A-Za-z0-9+/=\\t\\n\\r]{0,65536}(?:-----END [A-Z0-9 ]{1,64}-----)?",
+      "replacement": "[REDACTED:pem]"
+    },
+    {
+      "name": "jwt",
+      "pattern": "eyJ[A-Za-z0-9_-]{2,8192}\\.eyJ[A-Za-z0-9_-]{2,16384}\\.[A-Za-z0-9_-]{0,8192}",
+      "replacement": "[REDACTED:jwt]"
+    },
+    {
+      "name": "authorization",
+      "pattern": "(?i)\\b(?:bearer|basic)[\\t ]{1,8}[A-Za-z0-9._~+/=-]{8,8192}",
+      "replacement": "[REDACTED:authorization]"
+    },
+    {
+      "name": "crucible_key",
+      "pattern": "\\b(?:csk|cpk)_[0-9A-Za-z]{43}\\b",
+      "replacement": "[REDACTED:key]"
+    },
+    {
+      "name": "secret_key",
+      "pattern": "\\b(?:sk|rk|pk)[-_](?:[A-Za-z0-9]{2,16}[-_]){0,2}[A-Za-z0-9]{20,256}\\b",
+      "replacement": "[REDACTED:key]"
+    },
+    {
+      "name": "access_key",
+      "pattern": "\\b(?:AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,250}|gh[pousr]_[A-Za-z0-9]{30,250})\\b",
+      "replacement": "[REDACTED:key]"
+    },
+    {
+      "name": "email",
+      "pattern": "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){1,8}",
+      "replacement": "[REDACTED:email]"
+    },
+    {
+      "name": "ipv6",
+      "pattern": "\\b(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})\\b",
+      "replacement": "[REDACTED:ip]"
+    },
+    {
+      "name": "ipv4",
+      "pattern": "\\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\b",
+      "replacement": "[REDACTED:ip]"
+    },
+    {
+      "name": "card",
+      "pattern": "\\b(?:[0-9]{13,19}|[0-9]{4}(?:[ -][0-9]{4}){2,3}|[0-9]{4}[ -][0-9]{6}[ -][0-9]{5})\\b",
+      "check": "luhn",
+      "replacement": "[REDACTED:card]"
+    },
+    {
+      "name": "phone",
+      "pattern": "(?:\\+[0-9]{1,3}(?:[ .-]?[0-9]{2,4}){2,4}|(?:\\([0-9]{2,4}\\)[ .-]?|\\b[0-9]{2,4}[ .-])[0-9]{3,4}[ .-][0-9]{3,4})\\b",
+      "replacement": "[REDACTED:phone]"
+    }
+  ],
+  "key_names": [
+    "accesstoken",
+    "apikey",
+    "apitoken",
+    "authorization",
+    "authtoken",
+    "clientsecret",
+    "cookie",
+    "idtoken",
+    "passphrase",
+    "passwd",
+    "password",
+    "privatekey",
+    "proxyauthorization",
+    "pwd",
+    "refreshtoken",
+    "requeststate",
+    "secret",
+    "secretkey",
+    "sessiontoken",
+    "setcookie",
+    "token",
+    "xapikey"
+  ],
+  "key_replacement": "[REDACTED]",
+  "vectors": [
+    {"input": "mail jane.doe@example.com now", "output": "mail [REDACTED:email] now"},
+    {"input": "call +1 415 555 0100 today", "output": "call [REDACTED:phone] today"},
+    {"input": "call (415) 555-0100 today", "output": "call [REDACTED:phone] today"},
+    {"input": "card 4111 1111 1111 1111 ok", "output": "card [REDACTED:card] ok"},
+    {"input": "card 4111111111111111 ok", "output": "card [REDACTED:card] ok"},
+    {"input": "not a card 4111111111111112", "output": "not a card 4111111111111112"},
+    {"input": "Authorization: Bearer abc.def-ghi_jkl", "output": "Authorization: [REDACTED:authorization]"},
+    {"input": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl end", "output": "token [REDACTED:jwt] end"},
+    {"input": "key csk_conformance00000000000000000000000000000000 end", "output": "key [REDACTED:key] end"},
+    {"input": "key sk-proj-AbCdEfGhIjKlMnOpQrStUvWx end", "output": "key [REDACTED:key] end"},
+    {"input": "from 203.0.113.42 port 8080", "output": "from [REDACTED:ip] port 8080"},
+    {"input": "from 2001:db8::8a2e:370:7334 now", "output": "from [REDACTED:ip] now"},
+    {"input": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7\n-----END PRIVATE KEY-----", "output": "[REDACTED:pem]"},
+    {"input": "at 2026-11-18 10:30:45 order 1234567 shipped", "output": "at 2026-11-18 10:30:45 order 1234567 shipped"},
+    {"input": "std::vector and v1.2", "output": "std::vector and v1.2"}
+  ]
+}
