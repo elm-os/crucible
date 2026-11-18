@@ -175,4 +175,8 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     always on; friction-adding hardening (Secure-only cookies, private-network egress bans, fail-closed sessions
     during a Postgres outage, a mandatory public URL) is an operator switch. Set after the owner asked that security
     not degrade the experience.
+84. **OAuth and OIDC use the `oauth2` and `openidconnect` crates, with two advisories ignored and reviewed at every
+    release.** The rsa timing advisory concerns private-key operations, while Crucible only verifies ID-token
+    signatures with public keys; the chrono advisory reports it unmaintained, with no alternative yet. Hand-written
+    OIDC verification would be the larger risk.
 
