@@ -1,0 +1,84 @@
+name: ci-sdk-rust
+
+# The Rust SDK, crate crucible-sdk in sdk/rust: its own Cargo workspace (the crate and its conformance runner) with
+# its own lock file and toolchain file. A change to the shared scrub rules runs it too, because the crate keeps a
+# copy that a test holds identical.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - sdk/rust/**
+      - conformance/scrub-rules.json
+      - .github/workflows/ci-sdk-rust.yml
+  pull_request:
+    paths:
+      - sdk/rust/**
+      - conformance/scrub-rules.json
+      - .github/workflows/ci-sdk-rust.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-sdk-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from sdk/rust/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy, for each feature set
+        run: |
+          cargo clippy -p crucible-sdk --all-targets --locked -- -D warnings
+          cargo clippy -p crucible-sdk --all-targets --locked --features mcp -- -D warnings
+          cargo clippy -p crucible-sdk --all-targets --locked --features mcp-client -- -D warnings
+          cargo clippy --workspace --all-targets --locked --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+      - name: No OpenSSL, native-tls or aws-lc
+        run: |
+          tree=$(cargo tree -p crucible-sdk --all-features -e normal --prefix none --locked)
+          if echo "$tree" | grep -E '^(openssl|openssl-sys|native-tls|aws-lc-rs|aws-lc-sys) '; then
+            echo "a TLS stack other than rustls with the ring provider entered the dependency tree"; exit 1
+          fi
+      - name: The crate packages and builds on its own
+        run: cargo package -p crucible-sdk --locked
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from sdk/rust/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build --workspace --all-targets --all-features --locked
