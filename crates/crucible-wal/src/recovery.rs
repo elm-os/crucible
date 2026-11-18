@@ -6,10 +6,10 @@
 //!
 //! Two rules go beyond the letter of the contract and are what its fault model requires:
 //!
-//! - The bytes after the valid prefix of the last segment are zeroed whenever any of them is not zero,
-//!   not only when the prefix ends in a torn frame. A crash can lose one block and keep a later one, so a
-//!   clean end may be followed by frames of an earlier incarnation; a later append would line them up
-//!   behind new frames.
+//! - The last segment is always cut at the end of its valid prefix and extended again, so that only zeros
+//!   follow, whether or not the prefix ends in a torn frame. A crash can lose one block and keep a later
+//!   one, so a clean end may be followed by frames of an earlier incarnation; a later append would line
+//!   them up behind new frames.
 //! - What the log relies on from now on is made durable again before the log accepts appends: the
 //!   `EPOCH` entry and the header and valid frames of the last segment are written again from their
 //!   verified bytes and synced, and the directory is synced. Their durability is unknown: the previous
@@ -544,9 +544,13 @@ async fn scan(
     }
     let file = reader.into_file();
     let mut tail_repair = None;
-    if dirty && !config.keep_torn_tail() {
+    if !config.keep_torn_tail() {
+        // Always, not only when the tail holds data: zeros that are readable now may be a truncation
+        // whose sync failed in an earlier attempt, and the old bytes would be back after a crash.
         file.truncate(offset).await?;
-        tail_repair = Some(TailRepair { segment_no, offset });
+        if dirty {
+            tail_repair = Some(TailRepair { segment_no, offset });
+        }
     }
     file.preallocate(config.segment_bytes).await?;
     file.sync_data().await?;

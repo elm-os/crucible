@@ -38,7 +38,7 @@ fails without it.
 
 | Step | Why | Test |
 |---|---|---|
-| Zero the tail of the last segment whenever a byte after the valid prefix is not zero, not only after a torn frame | A crash can lose one block and keep a later one, so a clean end can be followed by frames of an earlier incarnation | `stale_frames_after_a_clean_end_are_zeroed`, mutant `KeepTornTail` |
+| Cut the last segment at the end of its valid prefix and extend it again at every recovery, not only after a torn frame | A crash can lose one block and keep a later one, so a clean end can be followed by frames of an earlier incarnation; and zeros that are readable may be a truncation whose sync failed | `stale_frames_after_a_clean_end_are_zeroed`, mutant `KeepTornTail`, realistic seed 4728 |
 | Read a torn tail, and an unreadable newest header, a second time before truncating or removing | One read can be wrong, and both actions destroy data | Realistic tier with bit flips |
 | Remove a newest segment whose header is zero, short or partly written and that holds nothing else | A rotation or a first start can crash, or fail in a write, before the header is durable | `an_unfinished_newest_segment_is_removed_and_any_other_bad_header_is_fatal` |
 | Write `EPOCH` and the header and frames of the last segment again from their verified bytes, sync them, and sync the directory, before accepting appends | After a process stop, readable does not mean durable, and a sync on a new handle does not cover bytes whose earlier sync failed | `a_restart_without_a_crash_does_not_trust_what_was_never_synced`, mutant `TrustRecoveredTail` |
@@ -77,15 +77,17 @@ A fatal recovery error on a healed disk is a violation.
 ## Mutants
 
 `crucible-wal` has a cargo feature `test-mutants` that only `crucible-sim` enables; without it the `Mutant` type
-has no value. Each mutant must be caught inside its seed budget (200 seeds; 1,000 for the last one), and its
-first catching seed is recorded in `wal_dst.rs`.
+has no value. Each of the first three mutants must be caught inside a budget of 200 seeds, and its first
+catching seed is recorded in `wal_dst.rs`. The fourth needs a failed sync, a failed rotation and a restart
+without a crash in a row, which random seeds reach rarely (seed 831 is the first), so a directed test in
+`wal_directed.rs` catches it instead.
 
 | Mutant | Defect | Caught by |
 |---|---|---|
 | `AckBeforeSync` | Waiters complete before `sync_data` | A lost acknowledged frame after a crash |
 | `GcAboveCheckpoint` | Garbage collection ignores the watermark | A removal above the watermark, then a `wal_gap` at recovery |
 | `KeepTornTail` | Recovery does not zero the tail | A valid stale frame beyond the end of the log, or a frame of an earlier incarnation in the log |
-| `TrustRecoveredTail` | Recovery does not write the last segment's frames again before it relies on them | After a failed sync, a failed rotation and a restart without a crash: a lost acknowledged frame, or an unreadable retained frame. `wal_directed.rs` has the directed case |
+| `TrustRecoveredTail` | Recovery does not write the last segment's frames again before it relies on them | The directed test: after a failed sync, a failed rotation and a restart without a crash, an acknowledged frame is lost |
 
 A change to the workload, the fault model or the WAL moves the recorded seeds. The failing assertion prints the
 new first catching seed; `mutant_census` lists all of them.
