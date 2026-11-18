@@ -1,0 +1,56 @@
+---
+source: crates/crucible-mcp-server/tests/mcp/tools.rs
+expression: pretty(&children)
+---
+{
+  "data": [
+    {
+      "child_count": 1,
+      "duration_us": 1000,
+      "end_time": "2026-11-17T09:29:01.001000Z",
+      "input_preview": "preview",
+      "input_tokens": 1,
+      "level": "default",
+      "model": "",
+      "name": "span-11",
+      "observation_type": "span",
+      "output_preview": "",
+      "output_tokens": 2,
+      "parent_span_id": "000000000000000a",
+      "saturated": false,
+      "span_id": "000000000000000b",
+      "start_time": "2026-11-17T09:29:01.000000Z",
+      "status_code": "ok",
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3
+    },
+    {
+      "child_count": 0,
+      "duration_us": 1000,
+      "end_time": "2026-11-17T09:29:02.001000Z",
+      "input_preview": "preview",
+      "input_tokens": 1,
+      "level": "default",
+      "model": "",
+      "name": "span-12",
+      "observation_type": "span",
+      "output_preview": "",
+      "output_tokens": 2,
+      "parent_span_id": "000000000000000a",
+      "saturated": false,
+      "span_id": "000000000000000c",
+      "start_time": "2026-11-17T09:29:02.000000Z",
+      "status_code": "ok",
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3
+    }
+  ],
+  "has_more": false,
+  "meta": {
+    "as_of": "2026-11-17T09:30:04.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": null,
+  "truncated": false
+}

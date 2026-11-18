@@ -1,0 +1,60 @@
+---
+source: crates/crucible-mcp-server/tests/mcp/tools.rs
+expression: pretty(&traces)
+---
+{
+  "data": [
+    {
+      "duration_us": 1001000,
+      "environment": "default",
+      "error_count": 0,
+      "head_kind": "root",
+      "input_tokens": 2,
+      "level": "default",
+      "name": "span-20",
+      "output_tokens": 4,
+      "release": "",
+      "saturated": false,
+      "session_id": "",
+      "span_count": 2,
+      "start_time": "2026-11-17T09:29:30.000000Z",
+      "status_code": "ok",
+      "tags": [],
+      "total_cost_usd": 1.4e-8,
+      "total_tokens": 6,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000002",
+      "trace_name": "",
+      "user_id": ""
+    },
+    {
+      "duration_us": 3001000,
+      "environment": "default",
+      "error_count": 0,
+      "head_kind": "root",
+      "input_tokens": 4,
+      "level": "default",
+      "name": "span-10",
+      "output_tokens": 8,
+      "release": "",
+      "saturated": false,
+      "session_id": "",
+      "span_count": 4,
+      "start_time": "2026-11-17T09:29:00.000000Z",
+      "status_code": "ok",
+      "tags": [],
+      "total_cost_usd": 2.8e-8,
+      "total_tokens": 12,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000001",
+      "trace_name": "",
+      "user_id": ""
+    }
+  ],
+  "has_more": false,
+  "meta": {
+    "as_of": "2026-11-17T09:30:04.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": null,
+  "truncated": false
+}
