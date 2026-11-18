@@ -146,6 +146,38 @@ fn a_leader_releases_its_lease_on_shutdown_and_another_node_takes_over() {
 }
 
 #[test]
+fn a_shutdown_during_the_acquisition_gives_the_lease_back() {
+    world(8, async |w| {
+        // Every statement takes half a second to answer.
+        w.model.set_faults(PgFaults {
+            latency_micros: (500_000, 500_000),
+            ..PgFaults::default()
+        });
+        let node = w.node("a", 0);
+        let runs = Arc::new(AtomicU64::new(0));
+        let mut running = counting(&runs, Duration::from_secs(1), Duration::ZERO).start(
+            &node.env,
+            w.store(),
+            "a#1",
+        );
+        // The acquisition is on its way when the node is asked to stop.
+        w.sleep(Duration::from_millis(100)).await;
+        node.spawner.request_shutdown();
+        running.join().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        let lease = w
+            .model
+            .leases()
+            .get(LeaseName::Lifecycle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((lease.holder.as_str(), lease.fencing_token), ("a#1", 1));
+        assert_eq!(lease.expires_at, Timestamp::from_micros(0), "released");
+    });
+}
+
+#[test]
 fn work_stops_when_the_local_window_ends_and_resumes_under_a_new_token() {
     world(2, async |w| {
         let node = w.node("a", 0);

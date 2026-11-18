@@ -191,23 +191,36 @@ pub(crate) struct LeaderRunner {
     pub(crate) skip_margin: bool,
 }
 
-/// Logs a failure that keeps repeating as one warning, at its third occurrence in a row, and at debug level
-/// otherwise: a store that is still starting or failing over does not fill the log.
-#[derive(Default)]
-struct Quiet(u32);
+/// Logs a failure that keeps repeating as one warning, at its `warn_at`-th occurrence in a row, and at debug
+/// level otherwise: a store that is still starting, migrating or failing over does not fill the log.
+struct Quiet {
+    warn_at: u32,
+    failures: u32,
+}
 
 impl Quiet {
+    const fn new(warn_at: u32) -> Self {
+        Self {
+            warn_at,
+            failures: 0,
+        }
+    }
+
     fn failed(&mut self, lease: LeaseName, what: &str, error: &TxError) {
-        self.0 = self.0.saturating_add(1);
-        if self.0 == 3 {
-            tracing::warn!(%lease, %error, "{what} three times in a row; still trying every few seconds");
+        self.failures = self.failures.saturating_add(1);
+        if self.failures == self.warn_at {
+            tracing::warn!(
+                %lease, %error, failures = self.failures,
+                "{what} repeatedly and is tried again every few seconds. If the error names a missing \
+                 relation, apply the migrations: `crucible migrate`, or `crucible serve --migrate`"
+            );
         } else {
             tracing::debug!(%lease, %error, "{what}");
         }
     }
 
     fn worked(&mut self) {
-        self.0 = 0;
+        self.failures = 0;
     }
 }
 
@@ -228,13 +241,27 @@ impl LeaderRunner {
             .rng
             .fork(&format!("crucible-jobs/leader/{}", self.name));
         let mut shutdown = self.env.shutdown().fuse();
-        let mut quiet = Quiet::default();
+        // About half a minute of failed attempts: longer than a first start takes to apply the migrations.
+        let mut quiet = Quiet::new(6);
         loop {
             // The clock is read before the call, so the local window ends before the database's.
             let asked = self.env.clock.now();
+            let acquire = self
+                .store
+                .leases()
+                .acquire(self.name, &self.holder, LEASE_TTL)
+                .fuse();
+            pin_mut!(acquire);
             let attempt = select_biased! {
-                () = shutdown => return,
-                attempt = self.store.leases().acquire(self.name, &self.holder, LEASE_TTL).fuse() => attempt,
+                () = shutdown => {
+                    // The statement is on its way: if it takes the lease, the lease is given back.
+                    let landed = self.env.timeout(RELEASE_TIMEOUT, acquire).await;
+                    if let Ok(Ok(Some(lease))) = landed {
+                        self.release(&lease).await;
+                    }
+                    return;
+                }
+                attempt = acquire => attempt,
             };
             match attempt {
                 Ok(Some(lease)) => {
@@ -299,18 +326,24 @@ impl LeaderRunner {
         let lease = lead.held().map(|held| held.lease);
         lead.lose();
         if let (true, Some(lease)) = (clean, lease) {
-            let release = self.store.leases().release(&lease);
-            match self.env.timeout(RELEASE_TIMEOUT, release).await {
-                Ok(Ok(_)) => tracing::info!(lease = %self.name, "lease released"),
-                Ok(Err(error)) => {
-                    tracing::debug!(lease = %self.name, %error, "releasing the lease failed; it expires");
-                }
-                Err(_) => {
-                    tracing::debug!(lease = %self.name, "releasing the lease timed out; it expires")
-                }
-            }
+            self.release(&lease).await;
         }
         true
+    }
+
+    /// Gives the lease back, within [`RELEASE_TIMEOUT`]. A release that fails only delays the next leader by
+    /// what is left of the TTL.
+    async fn release(&self, lease: &Lease) {
+        let release = self.store.leases().release(lease);
+        match self.env.timeout(RELEASE_TIMEOUT, release).await {
+            Ok(Ok(_)) => tracing::info!(lease = %self.name, "lease released"),
+            Ok(Err(error)) => {
+                tracing::debug!(lease = %self.name, %error, "releasing the lease failed; it expires");
+            }
+            Err(_) => {
+                tracing::debug!(lease = %self.name, "releasing the lease timed out; it expires");
+            }
+        }
     }
 
     /// Renews every 5 s. Returns when the lease is lost: the database says so, or the local window ends
@@ -318,7 +351,7 @@ impl LeaderRunner {
     async fn renew(&self, lead: &Leadership, asked: Instant) {
         let clock = &self.env.clock;
         let mut next = asked.saturating_add(LEASE_RENEW_EVERY);
-        let mut quiet = Quiet::default();
+        let mut quiet = Quiet::new(3);
         loop {
             let Some(until) = lead.valid_until() else {
                 return;

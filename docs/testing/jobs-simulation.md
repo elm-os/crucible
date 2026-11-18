@@ -87,6 +87,7 @@ window of the TTL from one of the TTL minus 2 s.
 | Release and takeover | A leader renews for four TTLs without a takeover; on shutdown its lease row is released, and the other node leads within 7 s under the next token |
 | The end of the window | With every store call failing from 20.5 s, work under a lease last renewed at 20 s stops at 33 s; after the outage the node works again under the next token |
 | Shutdown with a run in flight | A 3 s run ends and the lease is released; a 30 s run is cut after 5 s and its lease is left to expire |
+| Shutdown during the acquisition | An acquisition that is on its way at the shutdown and takes the lease is followed by a release |
 | Backoff and parking | A row that always fails is retried after 5, 10 and 20 s (less up to a tenth, plus at most one poll) and parked at a cap of 4, with the node's wall clock 5 min ahead of, behind and equal to the database's |
 | Dead attempts | A row whose attempts all ended without an answer is parked without its handler running |
 | Housekeeping | Feed rows are kept for 75 s and pruned by the pass after; a session that expired within the 10 min grace stays; a row written later outlives the pass |
