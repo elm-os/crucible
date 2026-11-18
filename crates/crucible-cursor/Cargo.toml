@@ -12,7 +12,7 @@ publish.workspace = true
 crucible-records = { workspace = true }
 base64 = { workspace = true }
 # The cursor MAC is HMAC-SHA256 (contract 12.4); planned in the root table at this version.
-hmac = "=0.13.0"
+hmac = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 
