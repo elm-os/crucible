@@ -56,7 +56,8 @@ case " $* " in
     ;;
 esac
 
-exec docker run --rm --cpus 3 --memory 2g \
+# --init forwards Ctrl-C to the gate. The label lets the cleanup in docs/testing/perf.md stop a running gate too.
+exec docker run --rm --init --label crucible.perf-gate=driver --cpus 3 --memory 2g \
   --volume /var/run/docker.sock:/var/run/docker.sock \
   --volume "$root:/work" --workdir /work \
   --volume "$common:/git:ro" --env "GIT_DIR=/git${gitdir#"$common"}" --env GIT_WORK_TREE=/work \

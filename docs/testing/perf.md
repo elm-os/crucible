@@ -176,14 +176,15 @@ cargo registry volume and the target volume `$TARGET_VOLUME` (default `crucible-
 `CARGO_BUILD_JOBS` when that is set, and with `--post` the host's `gh auth token`, so the status is posted as the
 account the host's `gh` is signed in to.
 
-The gate removes its rig on every exit it sees, errors included. A run that is killed, for example by stopping its
-container, leaves the rig running. Everything the gate starts carries the label `crucible.perf-gate`, so this
-removes what is left:
+The gate removes its rig on every exit it sees, errors included. A run that is interrupted, with Ctrl-C or by
+stopping its container, leaves the rig running. Everything the gate starts carries the label `crucible.perf-gate`,
+and so does the container `tools/perf/xtask.sh` runs it in, so this stops a running gate and removes its rig, for
+example to pause the machine's heavy work:
 
 ```sh
-docker rm --force --volumes $(docker ps --all --quiet --filter label=crucible.perf-gate)
-docker volume rm $(docker volume ls --quiet --filter label=crucible.perf-gate)
-docker network rm $(docker network ls --quiet --filter label=crucible.perf-gate)
+docker ps --all --quiet --filter label=crucible.perf-gate | xargs -r docker rm --force --volumes
+docker volume ls --quiet --filter label=crucible.perf-gate | xargs -r docker volume rm
+docker network ls --quiet --filter label=crucible.perf-gate | xargs -r docker network rm
 ```
 
 ### Report schema `crucible-perf.gate.v1`
