@@ -159,7 +159,14 @@ function TraceView({ project, trace }: { project: string; trace: string }) {
 
   const panel =
     tree && detail ? (
-      <SpanPanelBody tree={tree} paged={detail.paged} requested={spanParam} selected={selected} />
+      <SpanPanelBody
+        project={project}
+        trace={trace}
+        tree={tree}
+        paged={detail.paged}
+        requested={spanParam}
+        selected={selected}
+      />
     ) : null;
 
   return (
