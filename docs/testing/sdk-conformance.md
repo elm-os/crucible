@@ -105,6 +105,8 @@ makes the case an `error`; its findings are still reported.
   `keys`. `flush_interval_ms` is long on purpose: spans must leave only through `flush`, `shutdown` or a full batch.
 - `steps` are fully resolved: the driver has added the legacy handshake, merged the modern `_meta` fields and
   computed the HTTP headers. The runner adds nothing of its own to a message.
+- `otlp` and `checkpoint_url` point at a collector the driver starts for this case alone, so spans that arrive
+  after a case has ended never count toward the next one.
 
 ### MCP steps
 
@@ -310,8 +312,11 @@ expectations the driver adds for the legacy handshake.
 and error messages (contract 9.10). Each rule has a `name`, a `pattern`, a `replacement` and optionally a
 `validator` (`luhn`), plus `positive` inputs the rule must change and `negative` inputs it must leave alone; each
 `example` is the output of the whole list. Rules run in file order, each replacing every non-overlapping match,
-leftmost first, and a match the validator rejects is left as it is. Patterns stay in a subset that matches the same
-way, in linear time, in RE2, Go, Rust, ECMAScript and Python: explicit ASCII classes instead of `.`, `d`, `w`, `s`
+leftmost first; after a match the validator rejects, the search resumes after the match's first character that is
+neither an ASCII letter nor a digit (after the match when it has none), so a rejected run of digit groups cannot hide
+a card that starts at a later group.
+Patterns stay in a subset that matches the same way in RE2, Go, Rust, ECMAScript and Python, and in linear time in the
+first three (the backtracking engines of ECMAScript and Python stay polynomial on these patterns): explicit ASCII classes instead of `.`, `d`, `w`, `s`
 and ``; no anchors, inline flags, lookaround, backreferences or capturing groups; no lazy or possessive
 quantifiers; counts up to 1,000; and no unbounded quantifier on a group that holds one. The driver refuses a rules
 file that breaks the subset or any of its vectors, so an SDK can load the file and trust it.

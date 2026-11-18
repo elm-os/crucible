@@ -165,12 +165,6 @@ pub async fn run_suite(
     runner: &dyn Runner,
     options: &Options,
 ) -> Result<Report, DriverError> {
-    let collector = Collector::start(env).await?;
-    let endpoints = Endpoints {
-        endpoint: collector.endpoint(),
-        traces_url: collector.traces_url(),
-        checkpoint_url: collector.checkpoint_url(),
-    };
     let cases: Vec<_> = suite
         .cases()
         .into_iter()
@@ -206,12 +200,18 @@ pub async fn run_suite(
             results.push(result);
             continue;
         }
+        // A collector per case, so spans a slow sender exports after its case has ended cannot reach the next one.
+        let collector = Collector::start(env).await?;
+        let endpoints = Endpoints {
+            endpoint: collector.endpoint(),
+            traces_url: collector.traces_url(),
+            checkpoint_url: collector.checkpoint_url(),
+        };
         let spec =
             run_spec(&suite.constants, case, &endpoints).map_err(|message| DriverError::Case {
                 case: case.id.clone(),
                 message,
             })?;
-        drop(collector.take());
         let started = env.clock.now();
         let outcome = env
             .clock

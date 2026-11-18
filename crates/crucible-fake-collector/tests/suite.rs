@@ -8,12 +8,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_env::Env;
 use crucible_env_prod::ProdConfig;
+use crucible_fake_collector::golden::{self, CaseInput, Finding};
 use crucible_fake_collector::spec::{self, Case};
 use crucible_fake_collector::suite::{Kind, ProgressCount, Skip, ThrowOutcome, Variant};
+use crucible_fake_collector::value::{Value, get};
+use crucible_fake_collector::{Collector, Event, RecordedSpan};
 use crucible_fake_collector::{
     Manifest, Mutant, Options, Report, RunOutcome, RunSpec, Runner, SelfTestOptions,
     SelfTestRunner, Status, Suite, mrtr_hash, run_suite, session_hash,
 };
+use crucible_records::{SpanId, TraceId};
 use rust_embed::RustEmbed;
 use serde_json::{Value as Json, json};
 
@@ -498,5 +502,178 @@ fn every_case_has_a_run_spec_a_runner_can_parse() {
         assert_eq!(back, run);
         assert_eq!(run.schema, "crucible.conformance.run/v1");
         assert_eq!(run.server.is_some(), case.scenario.kind == Kind::Mcp);
+    }
+}
+
+/// Plays one case with the self-test runner against its own collector; returns the log and the responses.
+async fn record(
+    suite: &Suite,
+    case_id: &str,
+) -> (Vec<Event>, Vec<crucible_fake_collector::ResponseEvent>) {
+    let env = env();
+    let collector = Collector::start(&env).await.unwrap();
+    let endpoints = spec::Endpoints {
+        endpoint: collector.endpoint(),
+        traces_url: collector.traces_url(),
+        checkpoint_url: collector.checkpoint_url(),
+    };
+    let cases = suite.cases();
+    let case = cases.iter().find(|c| c.id == case_id).unwrap();
+    let run = spec::run_spec(&suite.constants, case, &endpoints).unwrap();
+    let responses = selftest(SelfTestOptions::default())
+        .play(&run)
+        .await
+        .unwrap();
+    (collector.take(), responses)
+}
+
+fn failures_of(
+    suite: &Suite,
+    case_id: &str,
+    events: &[Event],
+    responses: &[crucible_fake_collector::ResponseEvent],
+) -> Vec<Finding> {
+    let cases = suite.cases();
+    let case = cases.iter().find(|c| c.id == case_id).unwrap();
+    let manifest = manifest();
+    golden::evaluate(&CaseInput {
+        suite,
+        case,
+        manifest: &manifest,
+        events,
+        responses,
+    })
+    .failures
+}
+
+fn exports_mut(events: &mut [Event]) -> impl Iterator<Item = &mut crucible_fake_collector::Export> {
+    events.iter_mut().filter_map(|e| match e {
+        Event::Export(x) => Some(x),
+        Event::Checkpoint(_) => None,
+    })
+}
+
+fn span_mut(events: &mut [Event], pick: impl Fn(&RecordedSpan) -> bool) -> &mut RecordedSpan {
+    exports_mut(events)
+        .flat_map(|x| x.spans.iter_mut())
+        .find(|s| pick(s))
+        .unwrap()
+}
+
+fn has(span: &RecordedSpan, key: &str, value: &str) -> bool {
+    get(&span.attributes, key).and_then(Value::as_str) == Some(value)
+}
+
+fn set(span: &mut RecordedSpan, key: &str, value: Value) {
+    span.attributes.retain(|(k, _)| k != key);
+    span.attributes.push((key.to_owned(), value));
+}
+
+type Mutation = fn(&mut Vec<Event>);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_check_class_fails_when_its_rule_is_broken() {
+    let suite = suite();
+    let cases: [(&str, &str, Mutation); 13] = [
+        ("mcp-echo@modern-stdio", "exactly one span with", |events| {
+            let export = exports_mut(events).next().unwrap();
+            let mut copy = export.spans[0].clone();
+            copy.span_id = SpanId::from_bytes([7; 8]);
+            export.spans.push(copy);
+        }),
+        ("agent-nested-spans", "child of \"plan\"", |events| {
+            let checkout = span_mut(events, |s| s.name == "checkout").span_id;
+            span_mut(events, |s| s.name == "fetch-docs").parent_span_id = Some(checkout);
+        }),
+        (
+            "mcp-echo@legacy-http",
+            "attribute mcp.session.id",
+            |events| {
+                let raw = Value::String(crucible_fake_collector::SESSION_ID.to_owned());
+                set(
+                    span_mut(events, |s| has(s, "jsonrpc.request.id", "2")),
+                    "mcp.session.id",
+                    raw,
+                );
+            },
+        ),
+        (
+            "mcp-needs-input@modern-http",
+            "attribute crucible.mcp.mrtr.state_out",
+            |events| {
+                let wrong = Value::String("0".repeat(32));
+                set(
+                    span_mut(events, |s| has(s, "jsonrpc.request.id", "2")),
+                    "crucible.mcp.mrtr.state_out",
+                    wrong,
+                );
+            },
+        ),
+        (
+            "agent-flush-shutdown",
+            "arrived before checkpoint",
+            |events| {
+                let at = events
+                    .iter()
+                    .position(|e| matches!(e, Event::Checkpoint(_)))
+                    .unwrap();
+                let checkpoint = events.remove(at);
+                events.insert(0, checkpoint);
+            },
+        ),
+        ("mcp-fail@legacy-stdio", "no forbidden keys", |events| {
+            let address = Value::String("203.0.113.9".to_owned());
+            set(
+                span_mut(events, |s| has(s, "jsonrpc.request.id", "2")),
+                "client.address",
+                address,
+            );
+        }),
+        ("mcp-slow@modern-stdio", "registry types", |events| {
+            set(
+                span_mut(events, |s| has(s, "jsonrpc.request.id", "2")),
+                "crucible.mcp.era",
+                Value::Int(2),
+            );
+        }),
+        ("mcp-lookup-order@legacy-stdio", "Authorization", |events| {
+            exports_mut(events).next().unwrap().authorization = Some("Bearer csk_wrong".to_owned());
+        }),
+        ("agent-tool", "Content-Type", |events| {
+            exports_mut(events).next().unwrap().content_type = Some("application/json".to_owned());
+        }),
+        ("mcp-fail@modern-http", "outcome status", |events| {
+            let span = span_mut(events, |s| has(s, "jsonrpc.request.id", "2"));
+            span.attributes
+                .retain(|(k, _)| k != "error.type" && k != "crucible.mcp.error.class");
+        }),
+        ("agent-context", "field session_id", |events| {
+            let span = span_mut(events, |s| s.name == "turn-2");
+            span.attributes.retain(|(k, _)| k != "crucible.session.id");
+        }),
+        ("mcp-slow@legacy-stdio", "duration", |events| {
+            let span = span_mut(events, |s| has(s, "jsonrpc.request.id", "2"));
+            span.end = span.start;
+        }),
+        (
+            "mcp-echo@modern-http",
+            "trace id from the propagated traceparent",
+            |events| {
+                span_mut(events, |s| has(s, "jsonrpc.request.id", "3")).trace_id =
+                    TraceId::from_bytes([9; 16]);
+            },
+        ),
+    ];
+    for (case, check, mutate) in cases {
+        let (events, responses) = record(&suite, case).await;
+        let clean = failures_of(&suite, case, &events, &responses);
+        assert!(clean.is_empty(), "{case} must pass unmodified: {clean:#?}");
+        let mut broken = events.clone();
+        mutate(&mut broken);
+        let failures = failures_of(&suite, case, &broken, &responses);
+        assert!(
+            failures.iter().any(|f| f.check.starts_with(check)),
+            "{case}: no {check:?} failure in {failures:#?}"
+        );
     }
 }

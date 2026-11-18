@@ -2,9 +2,9 @@
   "schema": "crucible.conformance.scrub/v1",
   "contract": "9.10",
   "semantics": [
-    "Rules run in file order over the captured text (arguments and results after the size cap, and error messages). Each rule replaces every non-overlapping match, leftmost first, with its replacement, and the next rule runs on the result.",
+    "Rules run in file order over the captured text (arguments and results after the size cap, and error messages). Each rule replaces every non-overlapping match, leftmost first, with its replacement, and the next rule runs on the result. After a match its validator rejects, the search resumes after the match's first character that is neither an ASCII letter nor a digit, or after the match when it has none.",
     "A rule with a validator replaces a match only when the validator accepts it. luhn: the match's digits, separators removed, pass the Luhn checksum.",
-    "Patterns use a subset that matches identically and in linear time in RE2, Go regexp, the Rust regex crate, ECMAScript and Python re: literal characters, escaped punctuation, bracket classes of explicit ASCII characters and ranges, (?:...) groups, alternation, and the quantifiers ?, *, +, {n}, {n,} and {n,m} with counts up to 1000. Not allowed: ., \\d, \\w, \\s, \\b and their negations, anchors, inline flags, lookaround, backreferences, named or capturing groups, POSIX and Unicode classes, lazy or possessive quantifiers, and an unbounded quantifier on a group that itself holds an unbounded quantifier.",
+    "Patterns use a subset that matches identically in RE2, Go regexp, the Rust regex crate, ECMAScript and Python re, and in linear time in the first three (ECMAScript and Python backtrack, so their worst case is polynomial for these patterns, not exponential): literal characters, escaped punctuation, bracket classes of explicit ASCII characters and ranges, (?:...) groups, alternation, and the quantifiers ?, *, +, {n}, {n,} and {n,m} with counts up to 1000. Not allowed: ., \\d, \\w, \\s, \\b and their negations, anchors, inline flags, lookaround, backreferences, named or capturing groups, POSIX and Unicode classes, lazy or possessive quantifiers, and an unbounded quantifier on a group that itself holds an unbounded quantifier.",
     "positive inputs are changed by the rule alone; negative inputs are left unchanged by it. Each example is the output of the whole rule list."
   ],
   "rules": [
@@ -41,11 +41,17 @@
     },
     {
       "name": "card",
-      "pattern": "[0-9](?:[ -]?[0-9]){12,18}",
+      "pattern": "[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}|[0-9]{4}[ -]?[0-9]{6}[ -]?[0-9]{4,5}",
       "validator": "luhn",
       "replacement": "[redacted:card]",
-      "positive": ["4111 1111 1111 1111", "pay with 5500-0000-0000-0004 today", "378282246310005"],
-      "negative": ["4111 1111 1111 1112", "order 1042"]
+      "positive": [
+        "4111 1111 1111 1111",
+        "pay with 5500-0000-0000-0004 today",
+        "378282246310005",
+        "4111111111111111 123",
+        "+1 415 555 0134 4111 1111 1111 1111"
+      ],
+      "negative": ["4111 1111 1111 1112", "order 1042", "build 2026 1118 0930 1234"]
     },
     {
       "name": "email",
@@ -80,6 +86,10 @@
     {
       "input": "Reach ada.lovelace@example.com or +1 415 555 0134; card 4111 1111 1111 1111; header Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0; token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl; key csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo; host 203.0.113.42 and 2001:db8::8a2e:370:7334; -----BEGIN PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END PRIVATE KEY-----",
       "output": "Reach [redacted:email] or [redacted:phone]; card [redacted:card]; header [redacted:bearer]; token [redacted:jwt]; key [redacted:secret_key]; host [redacted:ip] and [redacted:ip]; [redacted:pem]"
+    },
+    {
+      "input": "call +1 415 555 0134 4111 1111 1111 1111 now, card 4111 1111 1111 1111 203.0.113.42",
+      "output": "call [redacted:phone] [redacted:card] now, card [redacted:card] [redacted:ip]"
     },
     {
       "input": "Order 1042 shipped on 2026-11-18 at 12:30:45 by build 1.2.3, card 4111 1111 1111 1112",

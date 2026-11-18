@@ -45,19 +45,39 @@ pub struct ScrubRule {
 }
 
 impl ScrubRule {
-    /// Replaces every accepted match, leftmost first, without overlaps.
+    /// Replaces every accepted match, leftmost first, without overlaps. After a match the validator rejects, the
+    /// search resumes after the match's first character that is neither an ASCII letter nor a digit (after the match
+    /// when it has none): a rejected run of digit groups cannot hide an accepted one that starts at a later group,
+    /// and a run without separators is not searched for sub-windows.
     pub fn apply(&self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for m in self.pattern.find_iter(text) {
+        let mut copied = 0;
+        let mut at = 0;
+        while let Some(m) = self.pattern.find_at(text, at) {
             if self.validator.is_some_and(|v| !v.accepts(m.as_str())) {
+                at = m
+                    .as_str()
+                    .find(|c: char| !c.is_ascii_alphanumeric())
+                    .map_or(m.end(), |i| m.start() + i + 1);
                 continue;
             }
-            out.push_str(&text[last..m.start()]);
+            out.push_str(&text[copied..m.start()]);
             out.push_str(&self.replacement);
-            last = m.end();
+            copied = m.end();
+            // An empty match would not advance; step over one character.
+            at = if m.is_empty() {
+                text[m.end()..]
+                    .chars()
+                    .next()
+                    .map_or(text.len(), |c| m.end() + c.len_utf8())
+            } else {
+                m.end()
+            };
+            if at >= text.len() {
+                break;
+            }
         }
-        out.push_str(&text[last..]);
+        out.push_str(&text[copied..]);
         out
     }
 }
@@ -455,12 +475,12 @@ mod tests {
     }
 
     proptest! {
-        /// Scrubbing twice changes nothing more: no replacement is itself a match. Fragments are separated by "; ",
-        /// because a rejected card match can swallow the start of a valid one that follows without a separator.
+        /// Scrubbing twice changes nothing more: no replacement is itself a match, and a rejected match never
+        /// hides an accepted one.
         #[test]
         fn scrubbing_is_idempotent(parts in prop::collection::vec(fragment(), 0..8)) {
             let rules = ScrubRules::builtin().unwrap();
-            let once = rules.scrub(&parts.join("; "));
+            let once = rules.scrub(&parts.join(" "));
             prop_assert_eq!(rules.scrub(&once), once);
         }
     }

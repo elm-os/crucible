@@ -1611,13 +1611,16 @@ impl<'a> Eval<'a> {
     }
 }
 
-/// Equal value and type: strings, booleans, integers, doubles and string arrays.
+/// Equal values: strings, booleans, numbers (by value) and string arrays.
 fn equals(value: Option<&Value>, want: &Json) -> bool {
     match (value, want) {
         (Some(Value::String(s)), Json::String(w)) => s == w,
         (Some(Value::Bool(b)), Json::Bool(w)) => b == w,
-        (Some(Value::Int(i)), Json::Number(n)) if !n.is_f64() => n.as_i64() == Some(*i),
-        (Some(Value::Double(d)), Json::Number(n)) if n.is_f64() => n.as_f64() == Some(*d),
+        // Numbers compare by value: the registry type check is separate, and some exporters send an integral
+        // double as an integer.
+        (Some(Value::Int(i)), Json::Number(n)) if n.is_f64() => n.as_f64() == Some(*i as f64),
+        (Some(Value::Int(i)), Json::Number(n)) => n.as_i64() == Some(*i),
+        (Some(Value::Double(d)), Json::Number(n)) => n.as_f64() == Some(*d),
         (Some(Value::Array(items)), Json::Array(w)) => {
             items.len() == w.len()
                 && items
