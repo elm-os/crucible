@@ -37,3 +37,5 @@ Thumbs.db
 # Formal tools
 _apalache-out/
 specs/tmp/
+# Fuzz crates resolve their own dependencies; a committed lock drifts whenever a fuzzed crate's dependencies change.
+/crates/*/fuzz/Cargo.lock

@@ -867,6 +867,7 @@ dependencies = [
  "crucible-chfmt",
  "crucible-env",
  "crucible-normalize",
+ "crucible-plan",
  "crucible-records",
  "crucible-schema",
  "crucible-wal",

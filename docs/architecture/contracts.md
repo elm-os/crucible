@@ -116,7 +116,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
 | `crucible-recent` | `crucible-env`, `crucible-records`, `crucible-plan` |
 | `crucible-query` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-recent`, `crucible-schema` |
-| `crucible-shipper` | `crucible-env`, `crucible-records`, `crucible-wal`, `crucible-wal-codec`, `crucible-schema`, `crucible-chfmt`, `crucible-normalize` |
+| `crucible-shipper` | `crucible-env`, `crucible-records`, `crucible-wal`, `crucible-wal-codec`, `crucible-schema`, `crucible-chfmt`, `crucible-normalize`, `crucible-plan` (to build `BatchProbe`) |
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
@@ -315,7 +315,7 @@ No method takes SQL text and returns rows, and no method reads across projects: 
 - single-partition insert enforcement (a block that spans partitions is rejected);
 - a finite deduplication log per table with the configured count window and, for replicated variants, the age
   window; window expiry as a fault;
-- the marker-row existence probe and the `batch_seq` probe;
+- the marker-row existence probe and the `batch_seq` probe, answered through `probe(BatchProbe)`;
 - `SimpleAggregateFunction` merges for `min`, `max`, `sum`, `sumMap` and `groupUniqArrayArray`, applied on a seeded
   merge schedule, with reads that aggregate correctly whether or not a merge has happened;
 - lightweight-delete masking (rows hidden at once), `APPLY DELETED MASK` and `DROP PARTITION`;
@@ -1079,9 +1079,19 @@ connections. No order is required between tables.
 
 ### 5.5 Existence probe
 
-The probe (`BatchProbe` plan node, identity `crucible_ingest`) must run before every retry whose previous outcome
-is unknown, and for every pair on recovery, requeue and drain. It is the one plan rendered without a project
-predicate; it returns only a boolean and can be built only inside `crucible-shipper`.
+The probe (`BatchProbe`, which is not a plan `Node`; `TelemetryStore::probe`, identity `crucible_ingest`) must run
+before every retry whose previous outcome is unknown, and for every pair on recovery, requeue and drain. It is the
+one read rendered without a project predicate; it returns only a boolean and can be built only inside
+`crucible-shipper` (`crates/crucible-shipper/src/probe.rs`).
+
+**Once in doubt, always probe.** After any attempt of a pair has had an unknown outcome, every later send of that
+pair must be preceded by a probe that reads absent, even when a later attempt was definitively rejected: a
+rejection after an unknown outcome returns the pair to unknown, because the earlier attempt may still land. The
+ingest model found the counterexample where skipping this probe lands a block twice after a window expiry
+(`docs/testing/formal-model.md`).
+
+**Probe results expire.** A probe that reads absent authorizes a resend only for `PROBE_VALID_FOR` (default 60 s;
+always well under half of the shortest deduplication window in section 6.2). Past it, probe again before sending.
 
 | Table kind | Probe | Present when |
 |---|---|---|
@@ -1096,8 +1106,9 @@ commit atomically with their block. They are invisible to every scoped read beca
 `ProjectScope`. `crucible-lifecycle` purges markers whose `marker_at` is older than 7 days, except markers of
 batches named by an open quarantine.
 
-The token covers the remaining race, where the probe reads "absent" while the first attempt is still committing.
-That is why every table sets a deduplication window (section 6.2).
+The token covers the remaining race, where the probe reads "absent" while an earlier attempt is still committing.
+That is why every table sets a deduplication window (section 6.2), and why the window must outlast both the longest
+in-flight insert and the probe-to-resend gap.
 
 Every service identity must hold a `USING 1` row policy before any workspace policy exists (section 7.3);
 otherwise a probe could read "absent" for a landed block and re-insert it.
@@ -1119,7 +1130,8 @@ data in `crucible-store-clickhouse` and its stability across versions is pinned 
 failing pairs, error), synced; a `Quarantine` frame is appended and synced; the failing pairs then count as
 resolved for the watermark; an operator alert fires. Other pairs of the batch land normally. Data is never dropped.
 `crucible wal requeue <quarantine_ref>` re-ships the named pairs with the original identity and tokens, probing
-first. A quarantined batch counts as durable for invariant I1.
+first. A quarantined batch counts as durable for invariant I1. A pair with an attempt in doubt may be quarantined
+only after a probe reads absent; otherwise a quarantined pair could also be present.
 
 ### 5.7 Checkpoint
 
@@ -1137,7 +1149,8 @@ Before a node accepts ingest it must, through `TelemetryStore::detect` and `dedu
   text-search functions exist;
 - insert one block twice with one token into `dedup_selftest` and read back exactly one row;
 - confirm that each service identity sees a known row through its row policy (the "service identities see all rows
-  after access migrations" conformance row, also run at startup).
+  after access migrations" conformance row, also run at startup). This runs inside `detect` and is reported in
+  `StoreFacts`; a failure refuses ingest like a failed deduplication self-test.
 
 Ingest is refused, loudly, when the version is below 26.3, the text index is unavailable, a required setting is
 missing, or either self-test fails. All behaviour-affecting settings are sent per query, so a Cloud service's
@@ -1198,8 +1211,11 @@ no insert is asynchronous and no lightweight update is used.
 | Clustered (1 shard, N replicas; no sharding in v0) | `ReplicatedMergeTree` | `ReplicatedAggregatingMergeTree`; every DDL `ON CLUSTER` | `replicated_deduplication_window = 20000`, `replicated_deduplication_window_seconds = 7200` |
 | Cloud | written as `MergeTree` | written as `AggregatingMergeTree`; the service converts both to its shared engines; no `ON CLUSTER` | The replicated settings above. Whether the shared engines honour them is pinned by conformance (row "shared-engine dedup settings") and checked by the startup self-test |
 
-The window only has to cover the in-flight race, because unknown outcomes are always probed (section 5.5). On
-clustered and Cloud targets every DDL sets `alter_sync` and uses `wait_end_of_query`.
+Unknown outcomes are always probed (section 5.5), so the window only has to cover two races: an insert still in
+flight when the probe runs, and the gap between a probe that reads absent and the resend (bounded by
+`PROBE_VALID_FOR`). The count window of 20,000 inserts per table and the age window of 7,200 s are both far larger
+than either bound at the insert rates in section 5.1. On clustered and Cloud targets every DDL sets `alter_sync` and
+uses `wait_end_of_query`.
 
 ### 6.3 Tables
 
@@ -1445,7 +1461,7 @@ exist.
 | `crucible_ingest` | Access step A1 | `insert_block`, `BatchProbe`, `dedup_selftest` | `INSERT` on every `crucible` table except `sql_probe`; column-level `SELECT` on the probe columns only (`_partition_id`, `project_id`, `wal_epoch`, `batch_seq`, `marker_epoch`, `marker_batch_seq`, and `id` on `dedup_selftest`) | `crucible_ingest_profile`: `max_execution_time` at most 60 |
 | `crucible_read_ui` | A1 | Typed plans for session-authenticated requests, alert evaluation, exports and jobs. Classes `point`, `list`, `search`, `analytics`, `analytics_raw`, `alert`, `export` | `SELECT` on `crucible.*` | `crucible_read_ui_profile`: `readonly = 2`; maximum constraints equal to the largest class values in section 8.4 |
 | `crucible_read_agent` | A1 | Typed plans for API-key principals and the MCP server. Class `agent` | `SELECT` on `crucible.*` | `crucible_read_agent_profile`: `readonly = 2`; maximum constraints equal to the `agent` class; `max_concurrent_queries_for_user = 16` (default; revisit). Quota `crucible_agent_quota`: per hour 100,000 queries and 7,200 s of execution time (default; revisit) |
-| `crucible_maint` | A1 | `crucible-lifecycle` (deletes, partition drops, mask application, marker purge), `detect`, `kill`, health | `ALTER DELETE` on `crucible.*` (it covers mutations, partition drops and `APPLY DELETED MASK`) and per-table `ALTER UPDATE(_row_exists)` (a lightweight `DELETE` needs it); `SELECT` on `crucible.*`; `KILL QUERY`; `SELECT` on `system.mutations`, `system.parts`, `system.settings`, `system.merge_tree_settings`, `system.functions`, `system.processes` | `crucible_maint_profile` |
+| `crucible_maint` | A1 | `crucible-lifecycle` (deletes, partition drops, mask application, marker purge), `detect`, `kill`, health | `ALTER DELETE` on `crucible.*` (it covers mutations, partition drops and `APPLY DELETED MASK`) and per-table `ALTER UPDATE(_row_exists)` (a lightweight `DELETE` needs it); `SELECT` on `crucible.*`; `KILL QUERY`; `SELECT` on `system.mutations`, `system.parts`, `system.settings`, `system.server_settings`, `system.merge_tree_settings`, `system.functions`, `system.processes`, `system.tables` (`detect` reads engine families and the clustered server setting) | `crucible_maint_profile` |
 | `crucible_sql_<project hex>` | The reconciler (section 7.4) | `SqlWorkspaceStore` for one project | Role `crucible_sql_reader` | `crucible_sql_profile`, quota `crucible_sql_quota` |
 
 `<project hex>` is the project id as 32 lowercase hex characters without hyphens.
@@ -1588,7 +1604,7 @@ A plan cannot be constructed without a scope and a window.
 | `Aggregate` | Input table, `Pred`, group dimensions, measures from a closed set (`count`, `sum`, `min`, `max`, `uniq`, histogram merge, pick merge, latest-by-version), having, order, limit |
 | `SemiJoin` | A left `Scan` restricted to ids produced by a right node, with `max_ids` (default 10,000; exceeding it is `query_too_broad`) |
 | `TextSearch` | Payload table, fields, token query (`all`, `any`, `phrase`), `Pred`, limit |
-| `TimeSeries` | An `Aggregate` bucketed by a granularity, with gap fill |
+| `TimeSeries` | An `Aggregate` bucketed by a granularity, with gap fill. A zero-filled bucket carries the series' dimension values, 0 for `count` and `sum`, and null for `min`, `max`, `uniq`, histogram and pick measures |
 | `FieldRange` | Point lookup of one payload field with a byte range |
 
 `Pred` is a closed AST: `And`, `Or`, `Not`, comparisons (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) between a column from
@@ -2644,3 +2660,6 @@ advised to add a bucket lifecycle rule as a backstop.
 | Version | Date | Change |
 |---|---|---|
 | v2 | 2026-11-17 | First frozen contract; reconciles the six track designs |
+| v2 | 2026-11-17 | Additive: internal dependency edges, `ProjectScope` minting by lint, settled-in-code tables (2.14, 3.11, 4.10, 6.7, 8.9), pico-USD prices, frozen MCP duration bounds, real-server grants |
+| v2 | 2026-11-17 | Additive: `TelemetryStore` final shape with `probe(BatchProbe)`, typed result rows and `Stores` (2, 2.6, 8.1, 8.5) |
+| v2 | 2026-11-17 | Clarification from the ingest model: probe once in doubt, probe results expire, quarantine only after an absent probe, quarantined pairs are read gaps (5.5, 5.6, 6.2, I3) |
