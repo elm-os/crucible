@@ -61,6 +61,11 @@ impl TraceId {
             Err(IdParseError { kind: "trace" })
         }
     }
+
+    /// `trace_hash` (contract 6.1): the low 32 bits of xxh3-64 of the 16 raw bytes.
+    pub fn trace_hash(&self) -> u32 {
+        xxhash_rust::xxh3::xxh3_64(&self.0) as u32
+    }
 }
 
 impl fmt::Display for TraceId {
@@ -380,6 +385,14 @@ mod tests {
         assert_eq!(s.to_string(), "b7ad6b7169203331");
         assert_eq!(SpanId::ZERO.non_zero(), None);
         assert_eq!(s.non_zero(), Some(s));
+    }
+
+    #[test]
+    fn trace_hash_is_the_low_half_of_xxh3() {
+        let t = TraceId::parse("0af7651916cd43dd8448eb211c80319c").unwrap();
+        let full = xxhash_rust::xxh3::xxh3_64(t.as_bytes());
+        assert_eq!(u64::from(t.trace_hash()), full & 0xffff_ffff);
+        assert_ne!(t.trace_hash(), TraceId::ZERO.trace_hash());
     }
 
     #[test]
