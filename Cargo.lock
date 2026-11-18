@@ -839,6 +839,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-fake-collector"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "clap",
+ "crucible-env",
+ "crucible-env-prod",
+ "crucible-fake-collector",
+ "crucible-otlp",
+ "crucible-records",
+ "flate2",
+ "hmac",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "opentelemetry-proto",
+ "proptest",
+ "prost",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "crucible-ingest"
 version = "0.0.0"
 dependencies = [

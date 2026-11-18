@@ -1,0 +1,210 @@
+{
+  "schema": "crucible.conformance.registry/v1",
+  "keys": [
+    { "key": "mcp.method.name", "type": "string", "contract": "9.1" },
+    { "key": "mcp.protocol.version", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", "contract": "9.1" },
+    { "key": "mcp.session.id", "type": "string", "pattern": "^[0-9a-f]{32}$", "contract": "9.4" },
+    { "key": "crucible.mcp.side", "type": "string", "enum": ["client", "server"], "contract": "9.1" },
+    { "key": "crucible.mcp.capture_source", "type": "string", "enum": ["sdk", "proxy_stdio", "proxy_http", "otlp"], "contract": "9.1" },
+    { "key": "gen_ai.tool.name", "type": "string", "contract": "9.1" },
+    { "key": "gen_ai.prompt.name", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.resource.template", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.era", "type": "string", "enum": ["legacy", "modern"], "contract": "9.1" },
+    { "key": "crucible.mcp.transport", "type": "string", "enum": ["unknown", "stdio", "streamable_http", "sse"], "contract": "9.1" },
+    { "key": "network.transport", "type": "string", "enum": ["tcp", "udp", "pipe", "unix", "quic"], "contract": "9.1" },
+    { "key": "jsonrpc.request.id", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.direction", "type": "string", "enum": ["client_to_server", "server_to_client"], "contract": "9.1" },
+    { "key": "crucible.mcp.is_notification", "type": "bool", "contract": "9.1" },
+    { "key": "crucible.mcp.is_batch", "type": "bool", "contract": "9.1" },
+    { "key": "error.type", "type": "string", "contract": "9.2" },
+    { "key": "rpc.response.status_code", "type": "string", "pattern": "^-?[0-9]+$", "contract": "9.2" },
+    {
+      "key": "crucible.mcp.error.class",
+      "type": "string",
+      "enum": ["none", "protocol", "validation", "not_found", "tool_execution", "auth", "rate_limit", "timeout", "transport", "cancelled", "internal"],
+      "contract": "9.2"
+    },
+    { "key": "crucible.mcp.error.subclass", "type": "string", "enum": ["none", "auth", "rate_limit", "upstream", "business"], "contract": "9.2" },
+    { "key": "crucible.mcp.result_type", "type": "string", "enum": ["none", "complete", "input_required", "task"], "contract": "9.1" },
+    { "key": "crucible.mcp.mrtr.round", "type": "int", "min": 0, "max": 65535, "contract": "9.6" },
+    { "key": "crucible.mcp.mrtr.state_in", "type": "string", "pattern": "^[0-9a-f]{32}$", "contract": "9.6" },
+    { "key": "crucible.mcp.mrtr.state_out", "type": "string", "pattern": "^[0-9a-f]{32}$", "contract": "9.6" },
+    { "key": "crucible.mcp.task.id", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.subscription.id", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.progress.count", "type": "int", "min": 0, "max": 4294967295, "contract": "9.1" },
+    { "key": "crucible.mcp.cancel.source", "type": "string", "enum": ["none", "notification", "stream_close"], "contract": "9.1" },
+    { "key": "crucible.mcp.timed_out", "type": "bool", "contract": "9.1" },
+    { "key": "crucible.mcp.client.name", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.client.version", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.client.capabilities_hash", "type": ["int", "string"], "contract": "9.1" },
+    { "key": "crucible.mcp.oauth.client_id", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.tenant", "type": "string", "contract": "9.3" },
+    { "key": "user.id", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.handle.id", "type": "string", "contract": "9.8" },
+    { "key": "crucible.mcp.user.issuer", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.user.subject", "type": "string", "contract": "9.3" },
+    { "key": "crucible.mcp.identity.source", "type": "string", "enum": ["none", "identify_hook", "token_claims", "token_verified"], "contract": "9.3" },
+    { "key": "crucible.mcp.request.bytes", "type": "int", "min": 0, "contract": "9.1" },
+    { "key": "crucible.mcp.response.bytes", "type": "int", "min": 0, "contract": "9.1" },
+    { "prefix": "crucible.mcp.content.blocks.", "type": "int", "min": 0, "contract": "9.1" },
+    { "key": "gen_ai.tool.call.arguments", "type": "string", "contract": "9.10" },
+    { "key": "gen_ai.tool.call.result", "type": "string", "contract": "9.10" },
+    { "key": "crucible.mcp.content.captured", "type": "bool", "contract": "9.10" },
+    { "key": "crucible.mcp.content.sample_rate", "type": "number", "min": 0, "max": 1, "contract": "9.10" },
+    { "key": "crucible.mcp.content.truncation", "type": "string", "enum": ["none", "cap_exceeded"], "contract": "9.10" },
+    { "key": "crucible.mcp.server.name", "type": "string", "contract": "9.1" },
+    { "key": "crucible.mcp.server.version", "type": "string", "contract": "9.1" },
+    { "key": "crucible.deploy.id", "type": "string", "contract": "9.7" },
+    { "key": "service.instance.id", "type": "string", "contract": "9.1" },
+    { "key": "service.name", "type": "string", "contract": "3.1" },
+    { "key": "service.version", "type": "string", "contract": "3.1" },
+    { "key": "crucible.mcp.client.ip_prefix", "type": "string", "pattern": "^[0-9A-Fa-f.:]+/(24|48)$", "contract": "9.1" },
+    { "key": "user_agent.original", "type": "string", "contract": "9.1" },
+    { "key": "http.response.status_code", "type": "int", "min": 100, "max": 599, "contract": "9.1" },
+    { "key": "gen_ai.operation.name", "type": "string", "contract": "10.4" },
+    { "key": "telemetry.sdk.name", "type": "string", "contract": "3.1" },
+    { "key": "telemetry.sdk.language", "type": "string", "contract": "3.1" },
+    { "key": "telemetry.sdk.version", "type": "string", "contract": "3.1" },
+    { "key": "deployment.environment.name", "type": "string", "contract": "10.6" },
+    { "key": "deployment.environment", "type": "string", "contract": "10.6" },
+    {
+      "key": "crucible.observation.type",
+      "type": "string",
+      "enum": ["span", "generation", "event", "embedding", "agent", "tool", "chain", "retriever", "evaluator", "guardrail"],
+      "contract": "10.4"
+    },
+    { "key": "crucible.trace.name", "type": "string", "contract": "10.6" },
+    { "key": "crucible.session.id", "type": "string", "contract": "10.6" },
+    { "key": "session.id", "type": "string", "contract": "10.6" },
+    { "key": "gen_ai.conversation.id", "type": "string", "contract": "10.6" },
+    { "key": "crucible.user.id", "type": "string", "contract": "10.6" },
+    { "key": "crucible.environment", "type": "string", "contract": "10.6" },
+    { "key": "crucible.release", "type": "string", "contract": "10.6" },
+    { "key": "crucible.version", "type": "string", "contract": "10.6" },
+    { "key": "crucible.tags", "type": "string_array", "contract": "10.6" },
+    { "prefix": "crucible.metadata.", "type": ["string", "int", "double", "bool"], "contract": "10.6" },
+    { "key": "crucible.level", "type": "string", "enum": ["debug", "default", "warning", "error"], "contract": "10.6" },
+    { "key": "crucible.trace.tags", "type": "string_array", "contract": "10.6" },
+    { "prefix": "crucible.trace.metadata.", "type": ["string", "int", "double", "bool"], "contract": "10.6" },
+    { "key": "crucible.trace.public", "type": "bool", "contract": "10.6" },
+    { "key": "crucible.input", "type": "string", "contract": "10.6" },
+    { "key": "crucible.output", "type": "string", "contract": "10.6" },
+    { "key": "crucible.prompt.name", "type": "string", "contract": "10.6" },
+    { "key": "crucible.prompt.version", "type": ["string", "int"], "contract": "10.6" },
+    { "prefix": "crucible.cost.", "type": ["string", "number"], "pattern": "^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$", "contract": "10.6" },
+    { "key": "crucible.completion_start_time", "type": ["string", "int"], "contract": "10.6" },
+    { "prefix": "crucible.model_parameters.", "type": ["string", "int", "double", "bool"], "contract": "10.6" },
+    { "key": "gen_ai.request.model", "type": "string", "contract": "3.1" },
+    { "key": "gen_ai.response.model", "type": "string", "contract": "3.1" },
+    { "key": "gen_ai.provider.name", "type": "string", "contract": "3.1" },
+    { "key": "gen_ai.usage.input_tokens", "type": "int", "min": 0, "contract": "3.1" },
+    { "key": "gen_ai.usage.output_tokens", "type": "int", "min": 0, "contract": "3.1" },
+    { "key": "gen_ai.usage.cache_read.input_tokens", "type": "int", "min": 0, "contract": "10.5" },
+    { "key": "gen_ai.usage.cache_creation.input_tokens", "type": "int", "min": 0, "contract": "10.5" },
+    { "key": "gen_ai.usage.reasoning.output_tokens", "type": "int", "min": 0, "contract": "10.5" },
+    { "key": "gen_ai.input.messages", "type": "string", "contract": "10.6" },
+    { "key": "gen_ai.output.messages", "type": "string", "contract": "10.6" },
+    { "key": "gen_ai.system_instructions", "type": "string", "contract": "3.1" },
+    { "key": "gen_ai.response.finish_reasons", "type": "string_array", "contract": "3.1" }
+  ],
+  "fields": {
+    "side": {
+      "contract": "9.1",
+      "sources": [{ "span_kind": { "server": "server", "client": "client" } }, { "span": "crucible.mcp.side" }, { "default": "server" }]
+    },
+    "capture_source": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.capture_source" }, { "default": "otlp" }] },
+    "era": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.era" }, { "era_from_version": "mcp.protocol.version" }] },
+    "transport": {
+      "contract": "9.1",
+      "sources": [
+        { "span": "crucible.mcp.transport" },
+        { "span": "network.transport", "map": { "pipe": "stdio", "tcp": "streamable_http" } },
+        { "default": "unknown" }
+      ]
+    },
+    "direction": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.direction" }, { "default": "client_to_server" }] },
+    "is_notification": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.is_notification" }, { "default": false }] },
+    "result_type": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.result_type" }] },
+    "identity_source": {
+      "contract": "9.3",
+      "sources": [{ "span": "crucible.mcp.identity.source" }, { "if_present": "user.id", "value": "identify_hook" }, { "default": "none" }]
+    },
+    "server_name": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.server.name" }, { "resource": "service.name" }] },
+    "server_version": { "contract": "9.1", "sources": [{ "span": "crucible.mcp.server.version" }, { "resource": "service.version" }] },
+    "deploy_id": { "contract": "9.7", "sources": [{ "resource": "crucible.deploy.id" }, { "field": "server_version" }] },
+    "session_id": {
+      "contract": "10.6",
+      "sources": [{ "span": "crucible.session.id" }, { "span": "session.id" }, { "span": "gen_ai.conversation.id" }]
+    },
+    "user_id": { "contract": "10.6", "sources": [{ "span": "crucible.user.id" }, { "span": "user.id" }] },
+    "environment": {
+      "contract": "10.6",
+      "sources": [
+        { "span": "crucible.environment" },
+        { "resource": "deployment.environment.name" },
+        { "resource": "deployment.environment" }
+      ]
+    },
+    "release": { "contract": "10.6", "sources": [{ "span": "crucible.release" }, { "resource": "service.version" }] }
+  },
+  "forbidden": {
+    "contract": "9.1",
+    "keys": ["client.address", "http.request.header.authorization", "http.request.header.cookie", "http.response.header.set-cookie"],
+    "prefixes": ["http.request.header.mcp-param-"]
+  },
+  "export": {
+    "contract": "9.10",
+    "path": "/v1/traces",
+    "media_type": "application/x-protobuf",
+    "authorization_scheme": "Bearer"
+  },
+  "hashes": {
+    "session_id": {
+      "contract": "9.4",
+      "rule": "The first 16 bytes of SHA-256 of the raw session id, as 32 lowercase hex characters.",
+      "vectors": [
+        { "input": "3f8e1c2a-5b7d-4e9f-a1c3-d5e7f9a1b3c5", "output": "84757436d5e0791bd4a8eaa6f1d05986" },
+        { "input": "conformance-session", "output": "b1427bda7462603423a9e4a7b73fbdd0" }
+      ]
+    },
+    "mrtr_state": {
+      "contract": "9.6",
+      "rule": "The first 16 bytes of HMAC-SHA256 keyed with the UTF-8 bytes of the sender's secret key string over \"crucible.mrtr.v1\", one 0x00 byte and the requestState bytes, as 32 lowercase hex characters.",
+      "vectors": [
+        {
+          "key": "csk_conformance00000000000000000000000000000000",
+          "input": "crucible-conformance-request-state-1",
+          "output": "59c50f1c773bc1354d420d974c06c5af"
+        },
+        {
+          "key": "csk_conformance00000000000000000000000000000000",
+          "input": "eyJzdGVwIjoiY29uZmlybWVkIn0.c2ln",
+          "output": "bec039d76aab792bd526d369321fb0c0"
+        }
+      ]
+    }
+  },
+  "mcp_rules": [
+    { "field": "side", "equals": "server", "contract": "9.1" },
+    { "field": "capture_source", "equals": "sdk", "contract": "9.1" },
+    { "field": "era", "equals": "$era", "contract": "9.1" },
+    { "field": "transport", "equals": "$transport", "contract": "9.1" },
+    { "field": "server_name", "equals": "$server_name", "contract": "9.1" },
+    { "field": "server_version", "equals": "$server_version", "contract": "9.1" },
+    { "field": "deploy_id", "equals": "$deploy_id", "contract": "9.7" },
+    { "key": "mcp.protocol.version", "equals": "2026-07-28", "when": { "era": "modern" }, "contract": "9.1" },
+    { "key": "mcp.protocol.version", "matches": "^(2024-11-05|2025-03-26|2025-06-18|2025-11-25)$", "when": { "era": "legacy" }, "contract": "9.1" },
+    { "key": "mcp.session.id", "absent": true, "when": { "era": "modern" }, "contract": "9.1" },
+    { "key": "jsonrpc.request.id", "absent": true, "if": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
+    { "key": "jsonrpc.request.id", "present": true, "unless": { "crucible.mcp.is_notification": true }, "contract": "9.1" },
+    { "key": "gen_ai.tool.name", "absent": true, "unless": { "mcp.method.name": "tools/call" }, "contract": "9.1" },
+    { "key": "gen_ai.tool.call.arguments", "absent": true, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
+    { "key": "gen_ai.tool.call.result", "absent": true, "unless": { "crucible.mcp.content.captured": true }, "contract": "9.10" },
+    { "key": "crucible.mcp.mrtr.state_out", "absent": true, "unless": { "crucible.mcp.result_type": "input_required" }, "contract": "9.6" },
+    { "key": "http.response.status_code", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "user_agent.original", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "crucible.mcp.client.ip_prefix", "absent": true, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "network.transport", "equals": "pipe", "optional": true, "when": { "transport": "stdio" }, "contract": "9.1" },
+    { "key": "network.transport", "equals": "tcp", "optional": true, "when": { "transport": "streamable_http" }, "contract": "9.1" }
+  ]
+}
