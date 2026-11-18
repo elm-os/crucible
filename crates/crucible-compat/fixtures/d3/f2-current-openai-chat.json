@@ -1,0 +1,158 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "traceloop/openllmetry tag 0.63.1 packages/opentelemetry-instrumentation-openai/tests/traces/test_chat.py lines 21-62",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD3, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "Only weak project keys detect the dialect; the fields come from the native layer, and the total from the dialect 3 key."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "opentelemetry.instrumentation.openai.v1",
+              "version": "0.63.1"
+            },
+            "spans": [
+              {
+                "traceId": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+                "spanId": "0000000000000001",
+                "name": "openai.chat",
+                "kind": 3,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "chat"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.provider.name",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.is_streaming",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "gen_ai.openai.api_base",
+                    "value": {
+                      "stringValue": "https://api.northwind.example/v1/"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.input.messages",
+                    "value": {
+                      "stringValue": "[{\"role\": \"user\", \"parts\": [{\"content\": \"Tell me a joke about tracing\", \"type\": \"text\"}]}]"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "nw-chat-small-0301"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.id",
+                    "value": {
+                      "stringValue": "chatcmpl-invented03"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.finish_reasons",
+                    "value": {
+                      "arrayValue": {
+                        "values": [
+                          {
+                            "stringValue": "stop"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "key": "gen_ai.openai.response.system_fingerprint",
+                    "value": {
+                      "stringValue": "fp_invented01"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.total_tokens",
+                    "value": {
+                      "intValue": "29"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.output_tokens",
+                    "value": {
+                      "intValue": "17"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.usage.input_tokens",
+                    "value": {
+                      "intValue": "12"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.output.messages",
+                    "value": {
+                      "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"content\": \"A span walks into a trace and asks for context.\", \"type\": \"text\"}], \"finish_reason\": \"stop\"}]"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 3,
+      "observation_type": "generation",
+      "provider": "northwind",
+      "model_requested": "nw-chat-small",
+      "model_response": "nw-chat-small-0301",
+      "finish_reasons": [
+        "stop"
+      ],
+      "input": "[{\"role\": \"user\", \"parts\": [{\"content\": \"Tell me a joke about tracing\", \"type\": \"text\"}]}]",
+      "output": "[{\"role\": \"assistant\", \"parts\": [{\"content\": \"A span walks into a trace and asks for context.\", \"type\": \"text\"}], \"finish_reason\": \"stop\"}]",
+      "io_shape": "genai_messages",
+      "usage_provided": {
+        "input": 12,
+        "output": 17,
+        "total": 29
+      },
+      "model_parameters": {
+        "stream": false
+      },
+      "residual": [
+        "gen_ai.operation.name",
+        "gen_ai.openai.api_base",
+        "gen_ai.response.id",
+        "gen_ai.openai.response.system_fingerprint"
+      ]
+    }
+  }
+}

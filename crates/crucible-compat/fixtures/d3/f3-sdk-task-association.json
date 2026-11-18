@@ -1,0 +1,118 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "traceloop/openllmetry tag 0.63.1 packages/traceloop-sdk/tests/test_association_properties.py lines 9-52",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD3, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The integer user id is read in decimal, and also stays a number in the metadata map."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "batch"
+              }
+            },
+            {
+              "key": "something",
+              "value": {
+                "stringValue": "yes"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "traceloop.tracer"
+            },
+            "spans": [
+              {
+                "traceId": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+                "spanId": "0000000000000001",
+                "name": "nightly_task.task",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "traceloop.workflow.name",
+                    "value": {
+                      "stringValue": "nightly_workflow"
+                    }
+                  },
+                  {
+                    "key": "traceloop.association.properties.user_id",
+                    "value": {
+                      "intValue": "42"
+                    }
+                  },
+                  {
+                    "key": "traceloop.association.properties.user_name",
+                    "value": {
+                      "stringValue": "Sam Example"
+                    }
+                  },
+                  {
+                    "key": "traceloop.span.kind",
+                    "value": {
+                      "stringValue": "task"
+                    }
+                  },
+                  {
+                    "key": "traceloop.entity.name",
+                    "value": {
+                      "stringValue": "nightly_task"
+                    }
+                  },
+                  {
+                    "key": "traceloop.entity.input",
+                    "value": {
+                      "stringValue": "{\"args\": [], \"kwargs\": {}}"
+                    }
+                  },
+                  {
+                    "key": "traceloop.entity.output",
+                    "value": {
+                      "stringValue": "null"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 3,
+      "observation_type": "chain",
+      "trace_name": "nightly_workflow",
+      "user_id": "42",
+      "metadata": {
+        "user_id": 42,
+        "user_name": "Sam Example"
+      },
+      "input": "{\"args\": [], \"kwargs\": {}}",
+      "output": "null",
+      "io_shape": "raw",
+      "service_name": "batch",
+      "residual": [
+        "traceloop.entity.name"
+      ],
+      "resource_residual": [
+        "something"
+      ]
+    }
+  }
+}

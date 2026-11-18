@@ -1,0 +1,102 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "mlflow/mlflow v3.18.0 tests/tracing/export/genai_semconv/test_translator.py lines 233-254",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD5, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "Every value is JSON text; the scalar ones are unwrapped. The scope and the resource are the ones mlflow/mlflow v3.18.0 mlflow/tracing/provider.py sets (lines 284, 592-599 and 764-773); the test builds the span alone."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "python"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "mlflow"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "3.17.2"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "mlflow.tracing.provider",
+              "version": ""
+            },
+            "spans": [
+              {
+                "traceId": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+                "spanId": "0000000000000001",
+                "name": "op",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "mlflow.spanType",
+                    "value": {
+                      "stringValue": "\"CHAT_MODEL\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.llm.model",
+                    "value": {
+                      "stringValue": "\"nw-chat-small\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.llm.provider",
+                    "value": {
+                      "stringValue": "\"northwind\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.chat.tokenUsage",
+                    "value": {
+                      "stringValue": "{\"input_tokens\": 80, \"output_tokens\": 25, \"total_tokens\": 105}"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 5,
+      "source_format": "compat",
+      "observation_type": "generation",
+      "model_requested": "nw-chat-small",
+      "provider": "northwind",
+      "usage_provided": {
+        "input": 80,
+        "output": 25,
+        "total": 105
+      },
+      "telemetry_sdk_name": "mlflow",
+      "residual": [],
+      "resource_residual": []
+    }
+  }
+}

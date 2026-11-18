@@ -1,0 +1,89 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "mlflow/mlflow v3.18.0 tests/tracing/export/genai_semconv/test_translator.py lines 257-272",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD5, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "Bodies are never unwrapped: the output keeps its quotes. The scope and the resource are the ones mlflow/mlflow v3.18.0 mlflow/tracing/provider.py sets (lines 284, 592-599 and 764-773); the test builds the span alone."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "python"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "mlflow"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "3.17.2"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "mlflow.tracing.provider",
+              "version": ""
+            },
+            "spans": [
+              {
+                "traceId": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+                "spanId": "0000000000000001",
+                "name": "op",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "mlflow.spanType",
+                    "value": {
+                      "stringValue": "\"TOOL\""
+                    }
+                  },
+                  {
+                    "key": "mlflow.spanInputs",
+                    "value": {
+                      "stringValue": "{\"zip\": \"1000\"}"
+                    }
+                  },
+                  {
+                    "key": "mlflow.spanOutputs",
+                    "value": {
+                      "stringValue": "\"rainy\""
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 5,
+      "observation_type": "tool",
+      "input": "{\"zip\": \"1000\"}",
+      "output": "\"rainy\"",
+      "io_shape": "raw",
+      "residual": []
+    }
+  }
+}

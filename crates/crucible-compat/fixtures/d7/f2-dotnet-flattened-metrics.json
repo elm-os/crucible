@@ -1,0 +1,144 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "braintrust-sdk-dotnet commit 3f6267ebe8830cda21575422199db5edd9801d0f tests/Braintrust.Sdk.OpenAI.Tests/BraintrustOpenAITest.cs lines 62-195 and src/Braintrust.Sdk.OpenAI/InstrumentedChatClient.cs lines 143-210",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The provider member of the metadata object outranks the bare provider key, which stays residual."
+  },
+  "request": {
+    "path": "/otel/v1/traces",
+    "headers": {
+      "x-bt-parent": "project_name:demo"
+    }
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "sample-service"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "braintrust-dotnet"
+            },
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "Chat Completion",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "provider",
+                    "value": {
+                      "stringValue": "northwind"
+                    }
+                  },
+                  {
+                    "key": "braintrust.span_attributes",
+                    "value": {
+                      "stringValue": "{\"type\":\"llm\"}"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.request.model",
+                    "value": {
+                      "stringValue": "nw-chat-small"
+                    }
+                  },
+                  {
+                    "key": "braintrust.input_json",
+                    "value": {
+                      "stringValue": "[{\"role\":\"system\",\"content\":\"Be brief\"},{\"role\":\"user\",\"content\":\"Name a prime\"}]"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metadata",
+                    "value": {
+                      "stringValue": "{\"provider\":\"northwind\",\"model\":\"nw-chat-small\"}"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.response.model",
+                    "value": {
+                      "stringValue": "nw-chat-small-2026-01"
+                    }
+                  },
+                  {
+                    "key": "braintrust.output_json",
+                    "value": {
+                      "stringValue": "[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Seven.\"},\"finish_reason\":\"stop\"}]"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics.prompt_tokens",
+                    "value": {
+                      "intValue": "18"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics.completion_tokens",
+                    "value": {
+                      "intValue": "4"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics.tokens",
+                    "value": {
+                      "intValue": "22"
+                    }
+                  },
+                  {
+                    "key": "braintrust.metrics.time_to_first_token",
+                    "value": {
+                      "doubleValue": 0.125
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "observation_type": "generation",
+      "model_requested": "nw-chat-small",
+      "model_response": "nw-chat-small-2026-01",
+      "provider": "northwind",
+      "metadata": {
+        "provider": "northwind",
+        "model": "nw-chat-small"
+      },
+      "usage_provided": {
+        "input": 18,
+        "output": 4,
+        "total": 22
+      },
+      "completion_start_offset_us": 125000,
+      "input": "[{\"role\":\"system\",\"content\":\"Be brief\"},{\"role\":\"user\",\"content\":\"Name a prime\"}]",
+      "output": "[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Seven.\"},\"finish_reason\":\"stop\"}]",
+      "io_shape": "raw",
+      "service_name": "sample-service",
+      "residual": [
+        "provider",
+        "braintrust.span_attributes"
+      ],
+      "resource_residual": []
+    }
+  }
+}
