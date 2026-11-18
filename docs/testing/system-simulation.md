@@ -86,7 +86,7 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 | Invariant | Continuous (after every ack and at every restart) | Quiescence |
 |---|---|---|
 | I1 | At every restart: every span of every acknowledged request is in `span_core` and `span_payload`, or in a durable frame above the recovered watermark, or in a quarantine copy: the frames of a quarantined pair, or the copy of a frame that does not normalize, which must hold the frame its manifest names. A frame quarantined as a frame has no row anywhere | The same after the drain, and the watermark has passed the last frame that warrants a seal |
-| I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without repeats and quarantines: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
+| I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
 | I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain |
 | I5 | A refusal for load is a 429 or a 503 with `Retry-After`, a 429 only with `project_rate`; a fact write is refused only for load. The rows the shipper holds stay within `shipper.encoded_bytes` plus one frame | |
 | I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
@@ -104,6 +104,27 @@ faults, poison pairs, the tiny index bound, frame faults, the small row budget) 
 of 708). The smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
 every later read of its project, and a small row budget holds stage B behind the batches in flight.
 
+### Repeats and restarts
+
+A batch may land some pairs before a crash and the rest after it, so the restart must normalize the batch to
+the same spans: the same repeats dropped, the same provisional heads. Stage B is rebuilt from the retained
+prefix of the log, and garbage collection shortens that prefix. Three rules of the shipper and stage B keep
+the two attempts equal, and I7 and the quiescence half of I2 check them in every run with `client_retries`:
+
+- every sighting of a span key or a trace moves it to the newest position of its set, and after each
+  collection stage B forgets what was last sighted below the first retained LSN, so the live state is what a
+  rebuild from the retained prefix gives (a property test of `crucible-normalize`);
+- a frame whose admission used an earlier sighting keeps the log from that sighting on until the frame's batch
+  is checkpointed, and nothing is collected while a batch that recovery found waits for its frames
+  (`ship_directed.rs`, `a_restart_drops_the_repeats_that_the_first_attempt_dropped`);
+- after a failed collection no frame is admitted until one succeeds, because a removal that is not durable
+  leaves open what a restart will find (`ship_directed.rs`: a hint that cannot be replaced, and a removal
+  whose directory sync fails). While it retries at every tail poll, the failure is logged once per
+  `gc_interval` with a count.
+
+Nine corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
+the rollups counted a repeat that `span_core` did not hold, or the reverse.
+
 ## Mutants
 
 Each defect is behind a `test-mutants` cargo feature that only `crucible-sim` enables. Each must be caught inside
@@ -118,9 +139,12 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5000 | `0x48461657e2` |
 | `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x1c5fa7b02ff` |
 | `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace read right after the ack answers `not_found` (110 other runs report I1) | 0 | `0xaeca437a47` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x911e418a948` |
 
-Of the 600 runs of the budget, the mutants are caught by 589, 131, 38, 35, 96 and 480 runs, in the order of the
-table.
+Of the 600 runs of the budget, the first six mutants are caught by 589, 131, 38, 35, 96 and 480 runs, in the
+order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a repeat, a collection
+and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run is a line of the
+regression corpus, and six of the nine corpus lines of this defect catch it.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.

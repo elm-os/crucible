@@ -22,7 +22,7 @@ use crucible_shipper::{
     StatsSnapshot, frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
-use crucible_sim::ship_sim::request_payload;
+use crucible_sim::ship_sim::{SpanSpec, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{
@@ -65,17 +65,12 @@ impl Node {
 
     /// Appends one request with `spans` root spans of fresh traces and returns its LSN once durable.
     async fn ingest(&self, tag: u8, spans: u8) -> Lsn {
-        let specs: Vec<_> = (0..spans)
-            .map(|i| {
-                (
-                    [tag; 16],
-                    [tag, i, 1, 1, 1, 1, 1, 1],
-                    SIM_EPOCH_MICROS + i64::from(i),
-                    true,
-                )
-            })
-            .collect();
-        let payload = request_payload([1; 16], &specs, 0).unwrap();
+        self.ingest_spans(&root_spans(tag, spans)).await
+    }
+
+    /// Appends one request with these spans and returns its LSN once durable.
+    async fn ingest_spans(&self, specs: &[SpanSpec]) -> Lsn {
+        let payload = request_payload([1; 16], specs, 0).unwrap();
         let frame = PreparedFrame::new(RecordType::IngestRequest, payload, Compression::Lz4);
         self.wal.append(frame.unwrap()).await.unwrap()
     }
@@ -93,6 +88,20 @@ impl Node {
     }
 }
 
+/// `spans` root spans of the traces of `tag`.
+fn root_spans(tag: u8, spans: u8) -> Vec<SpanSpec> {
+    (0..spans)
+        .map(|i| {
+            (
+                [tag; 16],
+                [tag, i, 1, 1, 1, 1, 1, 1],
+                SIM_EPOCH_MICROS + i64::from(i),
+                true,
+            )
+        })
+        .collect()
+}
+
 fn config() -> ShipperConfig {
     ShipperConfig {
         linger: Duration::from_millis(10),
@@ -107,6 +116,12 @@ fn config() -> ShipperConfig {
 impl Rig {
     /// Starts a node on the disk: recovers the WAL and runs the shipper.
     async fn boot(&self) -> (Node, RecoveryReport) {
+        self.boot_retaining(WalConfig::default().replay_retention)
+            .await
+    }
+
+    /// As [`Rig::boot`], with a WAL that keeps checkpointed segments for `replay_retention`.
+    async fn boot_retaining(&self, replay_retention: Duration) -> (Node, RecoveryReport) {
         let boot = {
             let mut boots = self.boots.lock().unwrap();
             *boots += 1;
@@ -117,6 +132,7 @@ impl Rig {
             segment_bytes: 64 << 10,
             max_bytes: 64 << 20,
             min_free_bytes: 0,
+            replay_retention,
             ..WalConfig::default()
         };
         let (wal, report) = Box::pin(Wal::open(&host.env, wal_config)).await.unwrap();
@@ -148,6 +164,15 @@ impl Rig {
 
     fn rows(&self, table: TableId) -> usize {
         self.model.parts(table).iter().map(|p| p.block.rows).sum()
+    }
+
+    /// The spans an aggregating table counts: the sum of its count column, which is zero in a marker row.
+    fn counted(&self, table: TableId, column: &str) -> u64 {
+        self.model
+            .parts(table)
+            .iter()
+            .flat_map(|p| (0..p.block.rows).map(|row| u64_at(&p.block, column, row).unwrap()))
+            .sum()
     }
 
     /// The calls of each pair, in order: `I` for an insert, `P` for a probe.
@@ -440,6 +465,159 @@ fn a_restart_probes_every_pair_and_resends_with_the_same_token() {
         assert!(before.contains(last));
         assert_eq!(rig.rows(TableId::SpanCore), 3);
         assert_eq!(rig.rows(TableId::SpanPayload), 3);
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        node.host.stop().await;
+    });
+}
+
+/// A batch whose pairs land on both sides of a restart holds the same spans in every table, although the WAL
+/// collected garbage in between: the log keeps what the batch's dropped repeat relied on until the batch is
+/// checkpointed, so the restart rebuilds the duplicate window to drop the repeat again. Without that the
+/// aggregating tables, which land after the restart, count the repeat that `span_core` does not hold.
+#[test]
+fn a_restart_drops_the_repeats_that_the_first_attempt_dropped() {
+    directed(|rig| async move {
+        let retention = Duration::from_secs(60);
+        // A request, then others until its segment is closed and wholly checkpointed: only replay retention
+        // keeps that segment now.
+        let (node, _) = rig.boot_retaining(retention).await;
+        let first = node.ingest(1, 3).await;
+        let mut tag = 10;
+        while node.wal.segments().len() < 3 {
+            node.ingest(tag, 250).await;
+            tag += 1;
+        }
+        node.sleep(500).await;
+        let segments = node.wal.segments();
+        assert!(segments[0].first_lsn <= first && first < segments[1].first_lsn);
+        assert!(segments[1].first_lsn.get() <= node.watermark());
+        let shipped = rig.rows(TableId::SpanCore);
+        assert_eq!(rig.counted(TableId::SpanMetrics, "count"), shipped as u64);
+
+        // One request repeats the three spans of the first and adds two. `span_metrics` never answers: the
+        // other tables land without the repeats, and the batch stays unchecked.
+        rig.model.set_script(Script::new(|token, _| {
+            (token.table() == TableId::SpanMetrics).then(retry)
+        }));
+        let mut spans = root_spans(1, 3);
+        spans.extend(root_spans(2, 5).split_off(3));
+        let repeat = node.ingest_spans(&spans).await;
+        node.sleep(200).await;
+        assert_eq!(rig.rows(TableId::SpanCore), shipped + 2);
+        assert_eq!(rig.counted(TableId::SpanMetrics, "count"), shipped as u64);
+
+        // Replay retention ends. The first request's segment stays, because the unchecked batch relies on it.
+        node.sleep(retention.as_millis() as u64 + 1_000).await;
+        let kept = node.wal.segments()[0].first_lsn <= first;
+        let Node { host, wal, .. } = node;
+        drop(wal);
+        host.crash().await;
+
+        rig.model.set_script(Script::new(|_, _| None));
+        let (node, report) = rig.boot_retaining(retention).await;
+        assert_eq!(report.unchecked_seals.len(), 1);
+        node.sleep(300).await;
+        assert!(node.watermark() >= repeat.get());
+        assert_eq!(node.snapshot().reshipped, 1);
+        // Every table holds the two new spans and no repeat.
+        assert_eq!(rig.rows(TableId::SpanCore), shipped + 2);
+        assert_eq!(
+            rig.counted(TableId::SpanMetrics, "count"),
+            shipped as u64 + 2
+        );
+        assert_eq!(
+            rig.counted(TableId::TraceStats, "span_count"),
+            shipped as u64 + 2
+        );
+        assert!(kept, "the segment of the first request was collected");
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        // Once the batch is checkpointed nothing relies on the segment any more.
+        node.sleep(100).await;
+        assert!(node.wal.segments()[0].first_lsn > first);
+        node.host.stop().await;
+    });
+}
+
+/// A garbage collection that fails holds the admission of frames: the hint cannot be replaced, so the
+/// collection after a checkpoint fails before it removes anything. A request acknowledged meanwhile stays in
+/// the log. The collection of the next tail poll after the disk heals succeeds, and the request lands.
+#[test]
+fn a_collection_that_cannot_write_the_hint_holds_admission_until_one_succeeds() {
+    directed(|rig| async move {
+        let (node, _) = rig.boot().await;
+        node.ingest(1, 3).await;
+        node.sleep(100).await;
+        assert_eq!(rig.rows(TableId::SpanCore), 3);
+
+        rig.disk.fail_renames(true);
+        let checked = node.ingest(2, 3).await;
+        node.sleep(100).await;
+        // The batch is checkpointed; the collection that follows its checkpoint is the one that fails.
+        assert!(node.watermark() >= checked.get());
+        assert_eq!(rig.rows(TableId::SpanCore), 6);
+        let held = node.ingest(3, 3).await;
+        node.sleep(200).await;
+        assert_eq!(node.ended(), None);
+        assert_eq!(rig.rows(TableId::SpanCore), 6);
+        assert!(node.watermark() < held.get());
+
+        rig.disk.fail_renames(false);
+        node.sleep(100).await;
+        assert_eq!(rig.rows(TableId::SpanCore), 9);
+        assert_eq!(rig.rows(TableId::SpanPayload), 9);
+        assert!(node.watermark() >= held.get());
+        assert!(
+            rig.model.violations().is_empty(),
+            "{:?}",
+            rig.model.violations()
+        );
+        node.host.stop().await;
+    });
+}
+
+/// The same for a removal that is not durable: the segment is unlinked and the directory sync fails, so a
+/// restart may or may not find the segment, and stage B cannot say what a restart would remember. No frame
+/// is admitted until the removal is durable.
+#[test]
+fn a_removal_that_is_not_durable_holds_admission_until_it_is() {
+    directed(|rig| async move {
+        let retention = Duration::from_secs(60);
+        let (node, _) = rig.boot_retaining(retention).await;
+        let mut tag = 10;
+        while node.wal.segments().len() < 3 {
+            node.ingest(tag, 250).await;
+            tag += 1;
+        }
+        node.sleep(500).await;
+        let segments = node.wal.segments();
+        assert!(segments[1].first_lsn.get() <= node.watermark());
+        let oldest = segments[0].segment_no;
+        let shipped = rig.rows(TableId::SpanCore);
+
+        // Replay retention ends while directory syncs fail: the oldest segment is unlinked, not durably.
+        rig.disk.fail_dir_syncs(true);
+        node.sleep(retention.as_millis() as u64 + 1_000).await;
+        assert_eq!(node.wal.segments()[0].segment_no, oldest);
+        let held = node.ingest(1, 3).await;
+        node.sleep(200).await;
+        assert_eq!(node.ended(), None);
+        assert_eq!(rig.rows(TableId::SpanCore), shipped);
+        assert!(node.watermark() < held.get());
+
+        rig.disk.fail_dir_syncs(false);
+        node.sleep(100).await;
+        assert!(node.wal.segments()[0].segment_no > oldest);
+        assert_eq!(rig.rows(TableId::SpanCore), shipped + 3);
+        assert_eq!(rig.rows(TableId::SpanPayload), shipped + 3);
+        assert!(node.watermark() >= held.get());
         assert!(
             rig.model.violations().is_empty(),
             "{:?}",
