@@ -103,14 +103,60 @@ ships them. The API answers 503 as described above.
 
 Secrets have no flag that takes the value itself, so they never appear in a process list.
 
+### Configuration
+
+Every setting can come from three places, each overriding the one before: a TOML file (`--config` or
+`CRUCIBLE_CONFIG`), a `CRUCIBLE_*` environment variable, and a flag. A setting's key is its place in the file, and
+its variable is the key in upper case: `server.listen` is `listen` under `[server]` and `CRUCIBLE_SERVER_LISTEN`.
+The crate `crucible-config` holds the list (`SETTINGS`) and is the only code that reads the process environment.
+
+```toml
+master_key_file = "/run/secrets/master"   # top-level keys come before the first section
+
+[server]
+listen = "0.0.0.0:8080"
+ingest_listen = "0.0.0.0:4318"
+metrics_listen = "127.0.0.1:9464"
+keys_file = "keys.toml"
+
+[data]
+dir = "data"
+wal_backend = "auto"
+
+[clickhouse]
+url = "http://clickhouse:8123"
+password_file = "/run/secrets/clickhouse"
+
+[postgres]
+url = "postgres://crucible@postgres:5432/crucible"
+password_file = "/run/secrets/postgres"
+```
+
+- A secret (`master_key`, `clickhouse.password`, `postgres.password`) is given as the value or as a path in its
+  `_file` twin. Giving both in one layer is an error.
+- An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
+  warning.
+- `crucible config check` loads the configuration and reports every problem at once; `crucible config print`
+  shows the effective configuration with the source of each value and with secrets redacted. Both take the same
+  flags as `serve`.
+
+### Postgres and the migrations ledger
+
+`[postgres]` is optional in this milestone: without it `serve` runs exactly as before. With it,
+`crucible migrate` (or `serve --migrate`) applies the Postgres migrations of `crates/crucible-control-pg/migrations`
+and then the ClickHouse steps, and records each in the ledger table `schema_migrations` (contract 6.6). A step that
+the ledger holds with the same checksum is skipped. The ClickHouse steps run under the `migrations` lease, and each
+is recorded in a transaction fenced by the lease's token (contract 11.7), so two nodes that migrate at once do not
+interleave. `crucible migrate` with only `[postgres]` migrates Postgres alone.
+
 Startup, in order:
 
 1. The WAL is opened and recovered, and the listeners start. Ingest answers 503 and `/readyz` answers 503 with the
    reason until step 4 has finished.
 2. With `--migrate`, schema step `0001_schema_base` and access step `0002_access_service` are applied as the admin
-   user. Both are idempotent, so the flag can stay on. The migration ledger will live in Postgres with the control
-   plane; until then nothing records which steps ran (`MigrationLedger` in `crates/crucible/src/store.rs` is where
-   it will plug in). This preview migrates a single-node server only.
+   user. Both are idempotent, so the flag can stay on. Without Postgres nothing records which steps ran and both
+   are applied each time; with Postgres the ledger decides (see above). This preview migrates a single-node
+   server only.
 3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
    one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
    logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.
