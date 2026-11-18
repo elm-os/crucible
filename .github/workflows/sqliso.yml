@@ -113,7 +113,7 @@ jobs:
           run --switch strict --fuzz "$FUZZ" --seed "$SEED" --identities "$IDENTITIES" | tee strict.tsv || status=1
 
           start true
-          run --switch permissive --layers a,b --fuzz $((FUZZ / 5)) --seed "$SEED" --identities 20 \
+          run --switch permissive --layers a,b,d --fuzz $((FUZZ / 5)) --seed "$SEED" --identities 20 \
             | tee permissive.tsv || status=1
 
           # Layer D, the switch flipped: this server is permissive and the deployment is declared strict.

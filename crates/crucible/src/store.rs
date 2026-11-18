@@ -192,7 +192,7 @@ impl ClickHouse {
 
     /// The inputs of access step A2: the profile's deployment defaults and the two probe identities at
     /// generation 0.
-    fn workspace_params(&self) -> anyhow::Result<WorkspaceParams> {
+    fn workspace_params(&self, profile: SqlProfile) -> anyhow::Result<WorkspaceParams> {
         let hash = |project| {
             let password = self.master_key.user_password(&workspace_user(project), 0);
             PasswordHash::new(&hex(&Sha256::digest(password.as_bytes())))
@@ -201,18 +201,19 @@ impl ClickHouse {
         Ok(WorkspaceParams {
             admin_user: Ident::new(&self.admin.user)
                 .context("the ClickHouse admin user is not a plain identifier")?,
-            profile: SqlProfile::default(),
+            profile,
             probe: [hash(PROBE_PROJECTS[0])?, hash(PROBE_PROJECTS[1])?],
         })
     }
 
-    /// The steps `--migrate` applies, in ledger order, for a single-node server.
-    fn steps(&self) -> anyhow::Result<[MigrationStep; 3]> {
+    /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
+    /// workspace's settings profile, fitted to the server.
+    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 3]> {
         let variant = Variant::SingleNode;
         Ok([
             schema_base(&variant, Granularity::Day),
             access_service(&variant, &self.access_params()?),
-            access_workspace(&variant, &self.workspace_params()?),
+            access_workspace(&variant, &self.workspace_params(profile)?),
         ])
     }
 }
@@ -241,7 +242,12 @@ pub(crate) async fn apply_migrations(
     store: &ClickHouseStore,
     control: Option<&Control>,
 ) -> anyhow::Result<()> {
-    let steps = config.steps()?;
+    let profile = config
+        .sql_store(store)?
+        .server_profile(SqlProfile::default())
+        .await
+        .context("reading which settings the server knows")?;
+    let steps = config.steps(profile)?;
     match control {
         Some(control) => control.migrate(env, &steps, store).await,
         None => {
@@ -410,7 +416,7 @@ mod tests {
             },
             master_key: MasterKey::parse(KEY).unwrap(),
         };
-        let steps = config.steps().unwrap();
+        let steps = config.steps(SqlProfile::default()).unwrap();
         assert_eq!(
             steps.each_ref().map(|step| step.id),
             [

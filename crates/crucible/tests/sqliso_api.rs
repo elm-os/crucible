@@ -553,6 +553,23 @@ async fn the_sql_workspace_holds_through_the_api() {
         403,
         "sql_forbidden",
     );
+    // A statement that outlives the profile's 30 s ends with its own problem, not with the request deadline,
+    // and its audit row says failed.
+    let started = Instant::now();
+    let body = alice.refused(
+        &format!(
+            "SELECT count() FROM numbers(1000000) ARRAY JOIN range(100000) AS x WHERE sipHash64(x, number) = 0 AND \
+             {always}"
+        ),
+        504,
+        "query_timeout",
+    );
+    assert!(fix(&body).contains("30 s"));
+    assert!(
+        started.elapsed() >= Duration::from_secs(25),
+        "{:?}",
+        started.elapsed()
+    );
     // The result cap cuts instead of failing.
     let (status, grid) = alice.run(&format!("SELECT number FROM numbers(50000) WHERE {always}"));
     assert_eq!(status, 200, "{grid:#}");
@@ -610,6 +627,12 @@ async fn the_sql_workspace_holds_through_the_api() {
     let outcome = |code: &str| runs.iter().filter(|run| run["error_code"] == code).count();
     assert!(outcome("sql_forbidden") >= 3, "{runs:#?}");
     assert!(outcome("query_too_broad") >= 2);
+    let timed_out: Vec<&Value> = runs
+        .iter()
+        .filter(|run| run["error_code"] == "query_timeout")
+        .collect();
+    assert_eq!(timed_out.len(), 1, "{runs:#?}");
+    assert_eq!(timed_out[0]["outcome"], "failed");
     assert!(
         outcome("sql_invalid") >= 2,
         "server-side syntax errors are recorded"

@@ -19,9 +19,9 @@ use crucible_env::{
 };
 use crucible_records::{ProjectId, ProjectScope, Uuid};
 use crucible_schema::{
-    Ident, PROBE_PROJECTS, PasswordHash, RetentionSettings, ServiceIdentity, SqlProfile, TABLES,
-    Variant, WorkspaceParams, deprovision_identity, probe_canary, provision_identity,
-    service_policy_check, workspace_user,
+    Ident, JOIN_SPILL_SETTINGS, PROBE_PROJECTS, PasswordHash, RetentionSettings, ServiceIdentity,
+    SqlProfile, TABLES, Variant, WorkspaceParams, deprovision_identity, probe_canary,
+    provision_identity, service_policy_check, workspace_user,
 };
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
@@ -493,6 +493,31 @@ impl ClickHouseSqlStore {
             .passwords
             .password(&workspace_user(project), generation);
         PasswordHash::new(&sha256_hex(&password)).map_err(|e| SqlError::Internal(e.to_string()))
+    }
+
+    /// `base` fitted to this server: the settings that only newer servers know are switched on when the server
+    /// lists them.
+    pub async fn server_profile(&self, base: SqlProfile) -> Result<SqlProfile, SqlError> {
+        let mut b = Binder::default();
+        let names = b.strings(&JOIN_SPILL_SETTINGS);
+        let statement = b.finish(format!(
+            "SELECT count() FROM system.settings WHERE has({names}, name)"
+        ));
+        let known = self
+            .store
+            .text(ServiceIdentity::Admin, &statement, LOOKUP_SECS)
+            .await
+            .map_err(admin_error)?;
+        Ok(SqlProfile {
+            no_join_spill: known.trim().parse::<usize>().ok() == Some(JOIN_SPILL_SETTINGS.len()),
+            ..base
+        })
+    }
+
+    /// Brings the existing settings profile to `profile`, as `crucible_admin`. A server upgrade can add
+    /// settings the profile should pin; this repairs that without a new migration step.
+    pub async fn apply_profile(&self, profile: &SqlProfile) -> Result<(), SqlError> {
+        self.admin(&[profile.alter(&self.config.variant)]).await
     }
 
     /// The inputs of access step A2: the admin user, the profile and the digests of the two probe identities'

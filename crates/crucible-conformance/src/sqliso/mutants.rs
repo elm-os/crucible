@@ -12,7 +12,7 @@
 
 use anyhow::{Result, bail};
 use crucible_schema::{
-    SQL_PROFILE, SQL_READER_ROLE, SqlProfile, project_policy_name, static_policy, workspace_user,
+    SQL_PROFILE, SQL_READER_ROLE, project_policy_name, static_policy, workspace_user,
 };
 
 use super::{FORMS, Iso, layer_a};
@@ -29,7 +29,7 @@ fn mutants(iso: &Iso) -> Vec<Mutant> {
     let variant = &iso.ctx.variant;
     let table_id = crucible_records::TableId::SpanCore;
     let a = workspace_user(iso.a);
-    let profile = SqlProfile::default();
+    let profile = iso.profile;
     let const_clause = profile
         .settings()
         .iter()
@@ -162,7 +162,7 @@ async fn one(iso: &Iso, mutant: &Mutant) -> Result<String> {
     // Access step A2 and provisioning are idempotent: they restore whatever grant or policy the revert left out.
     let params = iso
         .sql
-        .workspace_params(SqlProfile::default())
+        .workspace_params(iso.profile)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let workspace = crucible_schema::access_workspace(&iso.ctx.variant, &params);
     crucible_env::TelemetryStore::apply_migration(&iso.ctx.store, &workspace).await?;
@@ -179,11 +179,22 @@ async fn one(iso: &Iso, mutant: &Mutant) -> Result<String> {
     if caught.is_empty() {
         bail!("no detector failed on this broken deployment: the suite would pass it");
     }
-    let probe = caught.contains(&"Runtime self-probe (7.5)");
     let leak = results
         .iter()
         .filter_map(|(_, result)| result.as_ref().err())
         .any(|error| format!("{error:#}").contains("LEAK"));
+    // With every policy of a table gone, a permissive server shows project A every row of that table. The
+    // canary oracle is what must say so; under the strict switch project A reads nothing instead.
+    let must_leak = mutant.name.starts_with("D7")
+        || (mutant.name.starts_with("D1") && iso.switch == super::Switch::Permissive);
+    if must_leak && !leak {
+        bail!(
+            "this deployment shows project A another project's rows, and the canary oracle did not report it \
+             (caught only by {})",
+            caught.join(", ")
+        );
+    }
+    let probe = caught.contains(&"Runtime self-probe (7.5)");
     Ok(format!(
         "caught by {} ({}the runtime self-probe{})",
         caught.join(", "),

@@ -5,8 +5,9 @@
 #
 # For each tag the suite runs twice, once per value of the server switch
 # users_without_row_policies_can_read_rows (strict, then permissive): the access scheme must behave the same
-# under both (contract 7.2). Layers A, B and D run under the strict value; layer A and a shorter layer B under
-# the permissive one. Then the sixth mutant of layer D, the switch flipped: the permissive server is checked
+# under both (contract 7.2). Layers A, B and D run under both values, with a shorter layer B under the
+# permissive one: there a table without its policies shows every row, so the canary oracle itself must catch
+# that mutant. Then the last mutant of layer D, the switch flipped: the permissive server is checked
 # against the strict declaration, and the suite must fail.
 #
 # The servers run one after another, each limited to 1500 MiB, and the suite runs in the dev container on the
@@ -89,7 +90,7 @@ for tag in "${tags[@]}"; do
   suite --label "$tag" --switch strict --fuzz "$FUZZ" --seed "$SEED" --identities "$IDENTITIES" || status=1
 
   start "$tag" permissive
-  suite --label "$tag" --switch permissive --layers a,b --fuzz $((FUZZ / 5)) --seed "$SEED" \
+  suite --label "$tag" --switch permissive --layers a,b,d --fuzz $((FUZZ / 5)) --seed "$SEED" \
     --identities "$IDENTITIES" || status=1
 
   # Layer D, the switch flipped: this server is permissive and the deployment is declared strict.

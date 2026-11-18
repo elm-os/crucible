@@ -129,6 +129,8 @@ pub(crate) struct Iso {
     pub canary_a: String,
     pub canary_b: String,
     pub canary_admin: String,
+    /// The settings profile, fitted to the server under test.
+    pub profile: SqlProfile,
     /// Set once the hourly quota is lifted for the run; W0 then skips the quota's limits.
     pub quota_lifted: std::sync::atomic::AtomicBool,
 }
@@ -156,6 +158,10 @@ impl Iso {
                 admin_user: Ident::new(&ctx.config.admin.user)?,
             },
         );
+        let profile = sql
+            .server_profile(SqlProfile::default())
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
         let token =
             |role: &str| format!("cnry_{role}_{}", env.new_id().to_string().replace('-', ""));
         Ok(Self {
@@ -165,6 +171,7 @@ impl Iso {
             canary_b: token("b"),
             canary_admin: token("admin"),
             quota_lifted: std::sync::atomic::AtomicBool::new(false),
+            profile,
             ctx,
             sql,
             switch,
@@ -178,7 +185,7 @@ impl Iso {
         let service = access_service(&self.ctx.variant, &self.ctx.access_params()?);
         let params = self
             .sql
-            .workspace_params(SqlProfile::default())
+            .workspace_params(self.profile)
             .map_err(|e| anyhow!("{e}"))?;
         let workspace = access_workspace(&self.ctx.variant, &params);
         for step in [&schema, &service, &workspace, &workspace] {
@@ -221,9 +228,17 @@ impl Iso {
                 rows += 1;
             }
         }
+        // Rule 1 of contract 7.3 with the workspace policies in place: every service identity still sees every
+        // row. Detection includes that check.
+        self.ctx
+            .store
+            .detect()
+            .await
+            .context("service identities after the workspace policies")?;
         Ok(format!(
             "schema, A1 and A2 applied (A2 twice), projects A and B provisioned twice each, {rows} fixture rows \
-             with canaries in every string column, an admin-only table and an admin query text"
+             with canaries in every string column, an admin-only table and an admin query text; every service \
+             identity still sees every row"
         ))
     }
 
@@ -385,7 +400,7 @@ impl Iso {
                  = '{SQL_PROFILE}' ORDER BY setting_name"
             ))
             .await?;
-        let expected = SqlProfile::default().settings();
+        let expected = self.profile.settings();
         for (name, value) in &expected {
             let value = value.trim_matches('\'');
             let line = elements

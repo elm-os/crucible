@@ -120,7 +120,17 @@ pub struct SqlProfile {
     pub max_partitions_to_read: u32,
     /// Whether the window backstops are rendered.
     pub window_backstops: bool,
+    /// Whether the settings that stop a join from spilling to disk are rendered. Servers from 26.8 spill joins
+    /// by default, which also lifts the join row cap; 26.3 does not know the settings, so the caller sets this
+    /// from what the server lists (`JOIN_SPILL_SETTINGS`).
+    pub no_join_spill: bool,
 }
+
+/// The settings that stop a join from spilling to disk, where the server has them.
+pub const JOIN_SPILL_SETTINGS: [&str; 2] = [
+    "max_bytes_before_external_join",
+    "max_bytes_ratio_before_external_join",
+];
 
 impl Default for SqlProfile {
     fn default() -> Self {
@@ -145,6 +155,7 @@ impl Default for SqlProfile {
             // A window of the default maximum, 30 days, with room for the retention term (default; revisit).
             max_partitions_to_read: 100,
             window_backstops: true,
+            no_join_spill: false,
         }
     }
 }
@@ -218,6 +229,9 @@ impl SqlProfile {
             ("output_format_json_quote_64bit_integers", n(1)),
             ("date_time_output_format", text("iso")),
         ];
+        if self.no_join_spill {
+            settings.extend(JOIN_SPILL_SETTINGS.map(|name| (name, n(0))));
+        }
         if self.window_backstops {
             settings.push(("force_index_by_date", n(1)));
             settings.push((
@@ -226,6 +240,16 @@ impl SqlProfile {
             ));
         }
         settings
+    }
+
+    /// The statement that brings the existing profile to these settings. Altering keeps the profile's id, so
+    /// every user stays attached to it.
+    pub fn alter(&self, variant: &Variant) -> String {
+        format!(
+            "ALTER SETTINGS PROFILE {SQL_PROFILE}{} SETTINGS {}",
+            variant.on_cluster(),
+            self.clause()
+        )
     }
 
     fn clause(&self) -> String {
@@ -579,6 +603,15 @@ impl CuratedView {
     }
 }
 
+/// The limits of [`SQL_QUOTA`], keyed by user name, as a quota statement writes them.
+fn quota_limits() -> String {
+    format!(
+        "KEYED BY user_name FOR INTERVAL 1 hour MAX queries = {SQL_QUOTA_QUERIES_PER_HOUR}, errors = \
+         {SQL_QUOTA_ERRORS_PER_HOUR}, read_rows = {SQL_QUOTA_READ_ROWS_PER_HOUR}, execution_time = \
+         {SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR}"
+    )
+}
+
 /// The idempotent insert of a probe project's canary row into `sql_probe`: nothing is written when the project
 /// already has a row.
 fn probe_canary_insert(project: ProjectId) -> String {
@@ -615,22 +648,12 @@ pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> Migratio
                 statements.push(format!(
                     "CREATE SETTINGS PROFILE IF NOT EXISTS {SQL_PROFILE}{on} SETTINGS {clause}"
                 ));
-                statements.push(format!(
-                    "ALTER SETTINGS PROFILE {SQL_PROFILE}{on} SETTINGS {clause}"
-                ));
+                statements.push(params.profile.alter(variant));
             }
-            WorkspaceAction::CreateQuota => {
-                let limits = format!(
-                    "KEYED BY user_name FOR INTERVAL 1 hour MAX queries = {SQL_QUOTA_QUERIES_PER_HOUR}, errors = \
-                     {SQL_QUOTA_ERRORS_PER_HOUR}, read_rows = {SQL_QUOTA_READ_ROWS_PER_HOUR}, execution_time = \
-                     {SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR} TO {SQL_READER_ROLE}"
-                );
-                statements.push(format!(
-                    "CREATE QUOTA IF NOT EXISTS {SQL_QUOTA}{on} {limits}"
-                ));
-                // Altering keeps the usage counters and brings a drifted quota back to its limits.
-                statements.push(format!("ALTER QUOTA {SQL_QUOTA}{on} {limits}"));
-            }
+            WorkspaceAction::CreateQuota => statements.push(format!(
+                "CREATE QUOTA IF NOT EXISTS {SQL_QUOTA}{on} {} TO {SQL_READER_ROLE}",
+                quota_limits()
+            )),
             WorkspaceAction::GrantColumns(id) => statements.push(grant_columns(table(id), variant)),
             WorkspaceAction::StaticPolicy(id, form) => {
                 statements.push(static_policy(id, form, variant));
@@ -651,6 +674,16 @@ pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> Migratio
                         variant,
                     ));
                 }
+                // Altering keeps the usage counters and brings a drifted quota back to its limits. The probe
+                // identities are outside the quota: a probe is about twenty refused statements every five
+                // minutes on every node, which would use up the hourly error allowance and then read as a
+                // probe that cannot run.
+                statements.push(format!(
+                    "ALTER QUOTA {SQL_QUOTA}{on} {} TO {SQL_READER_ROLE} EXCEPT {}, {}",
+                    quota_limits(),
+                    workspace_user(PROBE_PROJECTS[0]),
+                    workspace_user(PROBE_PROJECTS[1])
+                ));
             }
         }
     }

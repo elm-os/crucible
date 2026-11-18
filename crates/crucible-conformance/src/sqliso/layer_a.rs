@@ -9,8 +9,8 @@ use anyhow::{Result, anyhow, bail};
 use crucible_env::SqlWorkspaceStore as _;
 use crucible_records::ProjectId;
 use crucible_schema::{
-    CURATED_VIEWS, RetentionSettings, SQL_QUOTA, SQL_QUOTA_QUERIES_PER_HOUR, SqlProfile,
-    project_policy_name, sql_tables, table, workspace_user,
+    CURATED_VIEWS, RetentionSettings, SQL_QUOTA, SQL_QUOTA_QUERIES_PER_HOUR, project_policy_name,
+    sql_tables, table, workspace_user,
 };
 
 use super::{FORMS, Iso, Options, Reply, canary_column, fixture_row, view_of, window};
@@ -37,6 +37,29 @@ const BENIGN_TABLE_FUNCTIONS: &[&str] = &[
     "fuzzQuery",
     "loop",
     "timeSeriesSelector",
+    "SQLStandardValues",
+];
+
+/// Settings a workspace identity may change although it is read-only: the server marks them changeable for
+/// every user. They shape or encode the answer of the caller's own statement (the query-string forms `select`,
+/// `filter`, `sort`, `limit` and the output format) or name the default database; none reads another row. Any
+/// other changeable setting fails W9.
+const PRESENTATION_SETTINGS: &[&str] = &[
+    "compression",
+    "database",
+    "default_format",
+    "filter",
+    "format",
+    "http_x_clickhouse_format_overrides_output_format",
+    "implicit_table_at_top_level",
+    "input_format",
+    "limit",
+    "offset",
+    "order",
+    "output_format",
+    "page",
+    "select",
+    "sort",
 ];
 
 /// System tables that must be refused whatever else the server lets a granted user read: they show other
@@ -358,7 +381,7 @@ async fn w3(iso: &Iso) -> Result<String> {
 
 /// W4: setting changes by SET, SETTINGS clause and URL parameter; role switching; impersonation.
 async fn w4(iso: &Iso) -> Result<String> {
-    let profile = SqlProfile::default();
+    let profile = iso.profile;
     let mut statements = 0;
     // A profile is applied setting by setting, so one that changes anything is refused in read-only mode. (The
     // empty `default` profile changes nothing and is accepted without effect.)
@@ -680,7 +703,7 @@ async fn w6(iso: &Iso) -> Result<String> {
 
 /// W7: each resource guard trips its expected error while the admin ping stays healthy.
 async fn w7(iso: &Iso) -> Result<String> {
-    let profile = SqlProfile::default();
+    let profile = iso.profile;
     let code = async |sql: &str, expected: &[u32], what: &str| -> Result<()> {
         let code = iso.refused(sql).await?;
         expect(expected.contains(&code), || {
@@ -717,6 +740,13 @@ async fn w7(iso: &Iso) -> Result<String> {
         "max_rows_in_join",
     )
     .await?;
+    if profile.no_join_spill {
+        iso.answers(
+            "SELECT getSetting('max_bytes_ratio_before_external_join')",
+            "0",
+        )
+        .await?;
+    }
     code(
         "SELECT count() FROM (SELECT number FROM numbers(12000000) GROUP BY number)",
         &[158, 241],
@@ -842,36 +872,71 @@ async fn w8(iso: &Iso) -> Result<String> {
     ))
 }
 
-/// W9: no setting is changeable in read-only mode.
+/// W9: what a read-only identity may still change. No profile element is `changeable_in_readonly`; whatever
+/// the server itself leaves changeable must be on the presentation list, and none of it may show another
+/// project's rows.
 async fn w9(iso: &Iso) -> Result<String> {
-    let reply = iso
-        .attack("SELECT count(), countIf(readonly = 0) FROM system.settings")
+    let writable = iso
+        .ctx
+        .admin_count(
+            "SELECT count() FROM system.settings_profile_elements WHERE profile_name = 'crucible_sql_profile' AND \
+             writability != 'CONST'",
+        )
         .await?;
-    match reply.rows() {
-        Some(rows) => {
-            let (total, changeable) = rows.split_once('\t').unwrap_or((rows, "?"));
-            expect(changeable == "0", || {
-                format!("{changeable} of {total} settings are changeable by a workspace identity")
-            })?;
-            Ok(format!(
-                "system.settings marks all {total} settings read-only for a workspace identity; the profile \
-                 declares no changeable_in_readonly constraint"
-            ))
-        }
-        None => {
-            let writable = iso
-                .ctx
-                .admin_count(
-                    "SELECT count() FROM system.settings_profile_elements WHERE profile_name = \
-                     'crucible_sql_profile' AND writability != 'CONST'",
-                )
-                .await?;
-            expect(writable == 0, || {
-                format!("{writable} profile elements are not CONST")
-            })?;
-            Ok("system.settings is not readable; every profile element is CONST".to_owned())
-        }
+    expect(writable == 0, || {
+        format!("{writable} profile elements are not CONST")
+    })?;
+    let reply = iso
+        .attack("SELECT name FROM system.settings WHERE readonly = 0 ORDER BY name")
+        .await?;
+    let Some(rows) = reply.rows() else {
+        return Ok("system.settings is not readable; every profile element is CONST".to_owned());
+    };
+    let changeable: Vec<&str> = rows.lines().filter(|line| !line.is_empty()).collect();
+    for name in &changeable {
+        expect(PRESENTATION_SETTINGS.contains(name), || {
+            format!(
+                "the setting {name} is changeable by a workspace identity and is not a presentation setting"
+            )
+        })?;
     }
+    // The changeable ones, used against the caller's own table: they shape the answer and add no row.
+    let b = iso.b.uuid();
+    let read = "SELECT DISTINCT toString(project_id) FROM crucible.span_core WHERE start_time >= now() - INTERVAL 2 DAY";
+    let other = format!("project_id = toUUID('{b}')");
+    for (name, value) in [
+        ("filter", other.as_str()),
+        ("filter", "1"),
+        ("select", "*"),
+        ("limit", "1000000"),
+        ("offset", "0"),
+        ("sort", "project_id"),
+        ("implicit_table_at_top_level", "crucible.sqliso_admin_only"),
+        ("implicit_table_at_top_level", "crucible.span_core"),
+        ("database", "crucible"),
+    ] {
+        if !changeable.contains(&name) {
+            continue;
+        }
+        let reply = iso.send(iso.a, read, &[(name, value)]).await?;
+        expect(
+            reply
+                .rows()
+                .is_none_or(|rows| rows.is_empty() || rows == iso.a.uuid().to_string()),
+            || format!("with {name}={value} the read {}", reply.brief()),
+        )?;
+        iso.send(iso.a, "SELECT *", &[(name, value)]).await?;
+    }
+    Ok(format!(
+        "every profile element is CONST; the server leaves {} settings changeable for a read-only identity ({}), \
+         all of them presentation settings, and none shows another project's rows",
+        changeable.len(),
+        if changeable.is_empty() {
+            "none".to_owned()
+        } else {
+            changeable.join(", ")
+        }
+    ))
 }
 
 /// W10: error-text oracles, EXPLAIN outputs and cache reuse across users.
@@ -1185,7 +1250,7 @@ async fn w12(iso: &Iso) -> Result<String> {
 
 /// W13: the window backstops through the curated views.
 async fn w13(iso: &Iso) -> Result<String> {
-    let profile = SqlProfile::default();
+    let profile = iso.profile;
     let (mut enforced, mut free) = (Vec::new(), Vec::new());
     for view in &CURATED_VIEWS {
         let def = table(view.table);

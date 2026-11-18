@@ -25,6 +25,10 @@ pub const BODY_LIMIT: usize = 1 << 20;
 /// A request that has not answered after this long is answered with `request_timeout`. It sits above every
 /// query class deadline (contract 8.4), so a slow query ends with its own problem first (default; revisit).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The deadline of the SQL workspace's run and export routes. A statement may run for the profile's 30 s after
+/// the server validated it, and must then end with its own problem (`query_timeout`), so the request deadline
+/// sits above the store's (default; revisit).
+pub const SQL_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
 /// The Content Security Policy of API responses.
 const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'";
 
@@ -100,14 +104,31 @@ pub(crate) async fn body_limit(State(env): State<Env>, request: Request, next: N
     next.run(request).await
 }
 
-/// Answers `request_timeout` when the handler has not answered within [`REQUEST_TIMEOUT`] of the `Env` clock.
+/// The deadline of a request by its path: [`SQL_REQUEST_TIMEOUT`] for the routes that run user SQL,
+/// [`REQUEST_TIMEOUT`] for every other.
+fn request_deadline(path: &str) -> Duration {
+    let runs_sql = path.split_once("/sql/").is_some_and(|(_, rest)| {
+        let rest = rest.trim_end_matches('/');
+        rest == "run"
+            || rest == "export"
+            || (rest.starts_with("saved-queries/") && rest.ends_with("/run"))
+    });
+    if runs_sql {
+        SQL_REQUEST_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    }
+}
+
+/// Answers `request_timeout` when the handler has not answered within its deadline on the `Env` clock.
 pub(crate) async fn request_timeout(
     State(env): State<Env>,
     request: Request,
     next: Next,
 ) -> Response {
     let id = request_id(request.extensions(), &env);
-    match env.timeout(REQUEST_TIMEOUT, next.run(request)).await {
+    let deadline = request_deadline(request.uri().path());
+    match env.timeout(deadline, next.run(request)).await {
         Ok(response) => response,
         Err(_) => ApiError::new(
             id,
@@ -115,5 +136,42 @@ pub(crate) async fn request_timeout(
             "the request did not finish within the server's deadline",
         )
         .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_routes_that_run_sql_get_the_longer_deadline() {
+        let base = "/api/v1/projects/p/sql";
+        for path in ["run", "export", "saved-queries/q/run", "run/"] {
+            assert_eq!(
+                request_deadline(&format!("{base}/{path}")),
+                SQL_REQUEST_TIMEOUT,
+                "{path}"
+            );
+        }
+        for path in [
+            "schema",
+            "runs",
+            "runs/r",
+            "saved-queries",
+            "saved-queries/q",
+            "saved-queries/run",
+        ] {
+            assert_eq!(
+                request_deadline(&format!("{base}/{path}")),
+                REQUEST_TIMEOUT,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            request_deadline("/api/v1/projects/p/traces"),
+            REQUEST_TIMEOUT
+        );
+        // The store's own limits end first: two validations of 15 s and a run of 35 s.
+        assert!(SQL_REQUEST_TIMEOUT > Duration::from_secs(15 + 15 + 35));
     }
 }

@@ -53,6 +53,7 @@ use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
+use crucible_schema::SqlProfile;
 use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
@@ -666,6 +667,15 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let sql = match &control {
         Some(control) => {
             let sql_store = Arc::new(config.sql_store(&store)?);
+            // A server upgrade can add settings the workspace's profile should pin; the ledger would not apply
+            // access step A2 again, so the profile is brought up to date at every start.
+            let profile = async {
+                let profile = sql_store.server_profile(SqlProfile::default()).await?;
+                sql_store.apply_profile(&profile).await
+            };
+            if let Err(error) = profile.await {
+                tracing::warn!(%error, "the SQL workspace's settings profile was not updated; run with --migrate");
+            }
             let workspace = SqlWorkspace::new(
                 env.clone(),
                 sql_store.clone(),

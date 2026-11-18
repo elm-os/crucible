@@ -42,7 +42,7 @@ use crucible_env::Env;
 use crucible_query::QueryService;
 use crucible_sqlws::SqlWorkspace;
 
-pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
+pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use settings::{
