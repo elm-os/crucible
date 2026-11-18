@@ -15,6 +15,15 @@ export function StatusLabel({ status, label }: { status: StatusCode; label: stri
   );
 }
 
+// A trace with error-level spans counts them; otherwise its head span's status decides.
+export function TraceStatusLabel({ errors, status }: { errors: number; status: StatusCode }) {
+  if (errors > 0) {
+    return <StatusLabel status="error" label={errors === 1 ? "1 error" : `${errors} errors`} />;
+  }
+  if (status === "error") return <StatusLabel status="error" label="Error" />;
+  return <StatusLabel status="ok" label="OK" />;
+}
+
 // A response can be whole, or say that rows may be missing (the store didn't answer) or that the newest
 // rows may not be shown yet (ingest is catching up).
 export function isWhole(meta: Meta): boolean {

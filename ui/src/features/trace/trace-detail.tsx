@@ -1,49 +1,143 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui-sdk/react/button";
+import {
+  Drawer,
+  DrawerBackdrop,
+  DrawerClose,
+  DrawerContent,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@ui-sdk/react/drawer";
 import type { Route } from "next";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { type ReactNode, useState } from "react";
 import { getTrace } from "@/api/client";
-import type { Span } from "@/api/generated/Span";
+import { asUiError } from "@/api/errors";
+import type { TraceDetail as TraceDetailBody } from "@/api/generated/TraceDetail";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
-import { Section, SectionFrame } from "@/components/section";
-import { MetaNotice, StatusLabel } from "@/components/status";
-import { formatDuration, formatOffset, parseMicros } from "@/lib/format";
+import { Section, SectionFrame, useLoadingPhase } from "@/components/section";
+import { MetaNotice, TraceStatusLabel } from "@/components/status";
+import { formatCost, formatCount, formatDuration, formatTime } from "@/lib/format";
+import { parseSpanId, parseTraceId } from "@/lib/ids";
 import { useProject } from "@/lib/project";
+import { useUrlParam } from "@/lib/url-state";
+import {
+  childPagesKey,
+  type PageRequests,
+  useChildPages,
+  withFirstPage,
+  withNextPage,
+  withRestart,
+} from "./child-pages";
+import { SpanPanelBody, SpanPanelSkeleton } from "./span-panel";
+import { SpanWaterfall } from "./span-waterfall";
+import {
+  buildTraceTree,
+  initiallyExpanded,
+  type TraceTree,
+  traceTotals,
+  waterfallItems,
+} from "./trace-tree";
 
-const COLUMNS = ["Name", "Start", "Duration", "Status"] as const;
 const SKELETON_ROWS = Array.from({ length: 8 }, (_, row) => `skeleton-row-${row}`);
-const STATUS_LABEL = { error: "Error", ok: "OK", unset: "Unset" } as const;
+
+// The span panel sits beside the timeline from this width; below it, it opens as a sheet.
+const WIDE = "(min-width: 64rem)";
+const isWide = () => window.matchMedia?.(WIDE).matches !== false;
 
 export function TraceDetail() {
   const params = useSearchParams();
   const project = useProject();
-  const trace = params.get("trace");
-  const span = params.get("span");
+  const requested = params.get("trace");
+  const trace = parseTraceId(requested);
   const fromUrl = params.get("project");
   const tracesHref = (
     fromUrl ? `/traces?${new URLSearchParams({ project: fromUrl })}` : "/traces"
   ) as Route;
 
-  if (!trace) {
+  if (trace === null) {
     return (
       <>
         <PageHeader title="Trace" />
         <SectionFrame title="Trace">
-          <EmptyState
-            kind="filtered"
-            title="No trace selected."
-            action={<Link href={tracesHref}>Open the traces list</Link>}
-          >
-            Open a trace from the list to see its spans here.
-          </EmptyState>
+          {requested ? (
+            <EmptyState
+              kind="filtered"
+              title="This trace link isn't valid."
+              action={<Link href={tracesHref}>Open the traces list</Link>}
+            >
+              A trace id is 32 hexadecimal characters. Open the trace from the list instead.
+            </EmptyState>
+          ) : (
+            <EmptyState
+              kind="filtered"
+              title="No trace selected."
+              action={<Link href={tracesHref}>Open the traces list</Link>}
+            >
+              Open a trace from the list to see its spans here.
+            </EmptyState>
+          )}
         </SectionFrame>
       </>
     );
   }
+
+  return <TraceView key={`${project}/${trace}`} project={project} trace={trace} />;
+}
+
+function TraceView({ project, trace }: { project: string; trace: string }) {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: [project, "trace", trace],
+    queryFn: ({ signal }) => getTrace(project, trace, signal),
+  });
+  const [requests, setRequests] = useState<PageRequests>(new Map());
+  const children = useChildPages(project, trace, requests);
+  const [spanParam, setSpanParam] = useUrlParam("span");
+  const [expandedState, setExpanded] = useState<string[] | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const detail = query.data;
+  const tree = detail ? buildTraceTree(detail.spans, children.pages) : null;
+  const expanded = expandedState ?? (tree && detail ? initiallyExpanded(tree, detail.paged) : []);
+  const selected = parseSpanId(spanParam);
+
+  // An open span whose children have not been read yet requests their first page. Requests are
+  // state, not derived, so a page stays loaded after its span closes; once requested, a span is no
+  // longer unloaded, so this settles in one extra render.
+  const wanted = tree ? expanded.filter((id) => tree.nodes.get(id)?.more === "unloaded") : [];
+  if (wanted.length > 0) setRequests(wanted.reduce(withFirstPage, requests));
+
+  const loadMore = (parent: string) => {
+    const node = tree?.nodes.get(parent);
+    const last = children.pages.get(parent)?.at(-1);
+    if (node?.more === "error") {
+      // A cursor the server no longer accepts restarts that span's children from their first page.
+      if (last?.status === "error" && asUiError(last.error).kind === "cursor_reset") {
+        queryClient.removeQueries({ queryKey: childPagesKey(project, trace, parent) });
+        setRequests(withRestart(requests, parent));
+      } else {
+        children.retry(parent);
+      }
+      return;
+    }
+    const cursor = last?.status === "success" ? last.page.next_cursor : null;
+    if (node?.more === "more" && cursor) setRequests(withNextPage(requests, parent, cursor));
+  };
+
+  const select = (span: string | null) => {
+    setSpanParam(span);
+    if (span !== null && !isWide()) setSheetOpen(true);
+  };
+
+  const panel =
+    tree && detail ? (
+      <SpanPanelBody tree={tree} paged={detail.paged} requested={spanParam} selected={selected} />
+    ) : null;
 
   return (
     <>
@@ -51,97 +145,121 @@ export function TraceDetail() {
         title="Trace"
         description={<span className="font-mono break-all">{trace}</span>}
       />
+      <TraceSummary query={query} tree={tree} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <SpansSection project={project} trace={trace} />
-        <SectionFrame title="Span">
-          <EmptyState kind="planned" title="Span details will render here.">
-            {span ? (
-              <>
-                Selected span <span className="font-mono break-all text-midnight-ink">{span}</span>
-              </>
-            ) : (
-              "Selecting a span will show its input, output and attributes."
-            )}
-          </EmptyState>
-        </SectionFrame>
+        <Section
+          title="Spans"
+          className="min-w-0 lg:self-start"
+          query={query}
+          skeleton={<SpansSkeleton />}
+          isEmpty={(body) => body.spans.length === 0}
+          empty={
+            <EmptyState
+              kind="incomplete"
+              title="This trace has no spans to show yet."
+              action={<Button onClick={() => query.refetch()}>Check again</Button>}
+            >
+              Its spans may still be arriving, or part of the data couldn&apos;t be read.
+            </EmptyState>
+          }
+        >
+          {() =>
+            tree ? (
+              <SpanWaterfall
+                tree={tree}
+                items={waterfallItems(tree)}
+                expanded={expanded}
+                onExpandedChange={setExpanded}
+                selected={selected !== null && tree.nodes.has(selected) ? selected : null}
+                onSelect={select}
+                onMore={loadMore}
+              />
+            ) : null
+          }
+        </Section>
+        {query.isPending || panel ? (
+          <SectionFrame
+            title="Span"
+            busy={query.isPending}
+            className="max-lg:hidden lg:sticky lg:top-4 lg:self-start"
+          >
+            {panel ?? <SpanPanelSkeleton loading={query.isPending} />}
+          </SectionFrame>
+        ) : null}
       </div>
+      {panel && detail && detail.spans.length > 0 ? (
+        <Drawer side="bottom" open={sheetOpen} onOpenChange={setSheetOpen}>
+          {spanParam !== null ? (
+            <DrawerTrigger className="mt-4 lg:hidden">Show span details</DrawerTrigger>
+          ) : null}
+          <DrawerBackdrop className="bg-midnight-ink/20" />
+          <DrawerContent className="flex max-h-[85dvh] flex-col gap-3 rounded-t-xl border-t border-ash-border bg-parchment-white px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="flex items-center justify-between gap-3">
+              <DrawerTitle className="text-label font-medium text-ink-soft">Span</DrawerTitle>
+              <DrawerClose>Close</DrawerClose>
+            </div>
+            {/* A drag scrolls this area first; at its top, the same drag moves the sheet. */}
+            <div className="min-h-0 flex-1 overflow-y-auto">{panel}</div>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
     </>
   );
 }
 
-function SpansSection({ project, trace }: { project: string; trace: string }) {
-  const query = useQuery({
-    queryKey: [project, "trace", trace],
-    queryFn: ({ signal }) => getTrace(project, trace, signal),
-  });
+function TraceSummary({
+  query,
+  tree,
+}: {
+  query: UseQueryResult<TraceDetailBody>;
+  tree: TraceTree | null;
+}) {
+  const phase = useLoadingPhase(query.isPending);
+  if (query.isPending) {
+    return (
+      <div
+        aria-hidden="true"
+        data-loading="summary"
+        className={`mb-6 flex flex-col gap-2 ${phase === "hidden" ? "invisible" : ""}`}
+      >
+        <div className="skeleton h-5 w-1/3" />
+        <div className="skeleton h-3 w-2/3" />
+      </div>
+    );
+  }
+  const detail = query.data;
+  // Without a trace, the spans section shows the error or the empty state for both.
+  if (!detail || !tree || detail.spans.length === 0) return null;
+  const totals = traceTotals(tree);
   return (
-    <Section
-      title="Spans"
-      query={query}
-      skeleton={<SpansSkeleton />}
-      isEmpty={(detail) => detail.spans.length === 0}
-      empty={
-        <EmptyState
-          kind="incomplete"
-          title="This trace has no spans to show yet."
-          action={<Button onClick={() => query.refetch()}>Check again</Button>}
-        >
-          Its spans may still be arriving, or part of the data couldn&apos;t be read.
-        </EmptyState>
-      }
-    >
-      {(detail) => (
-        <>
-          <MetaNotice meta={detail.meta} noun="spans" />
-          <SpansTable spans={detail.spans} />
-          {detail.paged ? (
-            <p className="mt-3 text-label text-ink-soft">
-              Showing the root spans and their children, {detail.spans.length} of{" "}
-              {detail.span_count}. Deeper spans will load with the span tree.
-            </p>
-          ) : null}
-        </>
-      )}
-    </Section>
+    <div className="mb-6 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <p className="text-subheading font-medium break-all">{totals.name}</p>
+        <TraceStatusLabel errors={totals.errors} status={totals.root?.status_code ?? "unset"} />
+      </div>
+      <dl className="flex flex-wrap gap-x-6 gap-y-1 text-data">
+        {totals.start ? <Fact label="Started">{formatTime(totals.start)}</Fact> : null}
+        <Fact label="Duration">{formatDuration(totals.durationUs)}</Fact>
+        <Fact label="Cost">{formatCost(totals.costUsd)}</Fact>
+        <Fact label="Tokens">{formatCount(totals.tokens)}</Fact>
+        <Fact label="Spans">{formatCount(detail.span_count)}</Fact>
+      </dl>
+      {detail.paged ? (
+        <p className="text-label text-ink-soft">
+          This trace is large. Duration, cost and tokens cover the {formatCount(tree.nodes.size)}{" "}
+          spans loaded so far; expanding a span loads its children.
+        </p>
+      ) : null}
+      <MetaNotice meta={detail.meta} noun="spans" />
+    </div>
   );
 }
 
-function SpansTable({ spans }: { spans: Span[] }) {
-  const starts = spans.map((span) => parseMicros(span.start_time));
-  const known = starts.filter((start): start is number => start !== null);
-  const traceStart = known.length > 0 ? Math.min(...known) : null;
+function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[32rem] text-start text-data">
-        <thead>
-          <tr className="text-label text-ink-soft">
-            {COLUMNS.map((column) => (
-              <th key={column} scope="col" className="h-8 pe-4 text-start font-medium">
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {spans.map((span, index) => {
-            const start = starts[index];
-            return (
-              <tr key={span.span_id} className="h-8 border-t border-ash-border">
-                <td className="max-w-80 truncate pe-4">{span.name || "Unnamed span"}</td>
-                <td className="pe-4 whitespace-nowrap tabular-nums">
-                  {start !== null && traceStart !== null ? formatOffset(start - traceStart) : ""}
-                </td>
-                <td className="pe-4 whitespace-nowrap tabular-nums">
-                  {formatDuration(span.duration_us)}
-                </td>
-                <td className="whitespace-nowrap">
-                  <StatusLabel status={span.status_code} label={STATUS_LABEL[span.status_code]} />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="flex gap-1.5">
+      <dt className="text-ink-soft">{label}</dt>
+      <dd className="tabular-nums">{children}</dd>
     </div>
   );
 }
@@ -153,7 +271,7 @@ function SpansSkeleton() {
       {SKELETON_ROWS.map((id) => (
         <div key={id} className="flex h-8 items-center gap-4 border-t border-ash-border">
           <div className="skeleton h-3 w-2/5" />
-          <div className="skeleton h-3 w-1/12" />
+          <div className="skeleton h-3 w-1/4" />
           <div className="skeleton h-3 w-1/12" />
         </div>
       ))}

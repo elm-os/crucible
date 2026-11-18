@@ -8,7 +8,7 @@ import { listTraces } from "@/api/client";
 import type { TraceListItem } from "@/api/generated/TraceListItem";
 import { EmptyState } from "@/components/empty-state";
 import { Section } from "@/components/section";
-import { isWhole, MetaNotice, StatusLabel } from "@/components/status";
+import { isWhole, MetaNotice, TraceStatusLabel } from "@/components/status";
 import { formatCost, formatDuration, formatTime } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { RANGE_PHRASE, type Range, rangeWindow, useTimeRange } from "@/lib/time-range";
@@ -81,15 +81,6 @@ function traceHref(project: string, row: TraceListItem): Route {
   return `/trace/?${params}` as Route;
 }
 
-function TraceStatus({ row }: { row: TraceListItem }) {
-  const errors = row.error_count;
-  if (errors > 0) {
-    return <StatusLabel status="error" label={errors === 1 ? "1 error" : `${errors} errors`} />;
-  }
-  if (row.status_code === "error") return <StatusLabel status="error" label="Error" />;
-  return <StatusLabel status="ok" label="OK" />;
-}
-
 function TracesTable({ rows, project }: { rows: TraceListItem[]; project: string }) {
   return (
     <div className="overflow-x-auto">
@@ -120,7 +111,7 @@ function TracesTable({ rows, project }: { rows: TraceListItem[]; project: string
                 {formatCost(row.total_cost_usd)}
               </td>
               <td className="whitespace-nowrap">
-                <TraceStatus row={row} />
+                <TraceStatusLabel errors={row.error_count} status={row.status_code} />
               </td>
             </tr>
           ))}
