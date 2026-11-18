@@ -24,6 +24,8 @@ use crate::system_oracle::{self, FactRow};
 
 /// `Level::Error` as `span_core` stores it.
 const LEVEL_ERROR: i8 = 3;
+/// `StatusCode::Error` as `span_core` stores it.
+const STATUS_ERROR: i8 = 2;
 /// `HeadKind::Root` as `trace_heads` stores it.
 const ROOT: i8 = 1;
 
@@ -123,7 +125,10 @@ fn reference(model: &ChModel, window: TimeWindow) -> Option<BTreeMap<[u8; 16], T
             }
             let totals = out.entry(uuid_at(block, "project_id", row)?).or_default();
             totals.spans += 1;
-            totals.errors += u64::from(i8_at(block, "level", row)? == LEVEL_ERROR);
+            // An error as the rollups count it: an error status or an error level.
+            let error = i8_at(block, "status_code", row)? == STATUS_ERROR
+                || i8_at(block, "level", row)? == LEVEL_ERROR;
+            totals.errors += u64::from(error);
             // Token and cost sums leave out the usage aggregates, as the rollups do (contract 3.1).
             if u8_at(block, "usage_aggregate", row)? == 0 {
                 totals.input_tokens += u64_at(block, "input_tokens", row)?;
