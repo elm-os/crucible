@@ -1,0 +1,12 @@
+{
+  "schema": "crucible.conformance.manifest/v1",
+  "sdk": "go",
+  "language": "go",
+  "sdk_version": "0.1.0",
+  "runner": ["go", "-C", "sdk/go", "run", "./conformance/runner"],
+  "kinds": ["agent", "mcp"],
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "throw_outcome": "tool_error",
+  "progress_count": "observed",
+  "skips": []
+}
