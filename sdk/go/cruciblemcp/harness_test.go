@@ -105,6 +105,12 @@ func newServer(t *testing.T, opts cruciblemcp.Options) *mcp.Server {
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
 	})
+	mcp.AddTool(s, &mcp.Tool{Name: "deadline"}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer cancel()
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	})
 	mcp.AddTool(s, &mcp.Tool{Name: "needs_input"}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		if len(req.Params.InputResponses) == 0 {
 			return &mcp.CallToolResult{

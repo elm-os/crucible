@@ -207,6 +207,11 @@ func observe(ctx context.Context, res mcp.Result, err error, server bool) outcom
 		if r.IsError {
 			out.message = toolErrorText(r)
 		}
+		// mcp.AddTool turns a handler's error into an isError result; a deadline the handler hit is a
+		// server-side timeout all the same.
+		if out.cancel == "" && errors.Is(r.GetError(), context.DeadlineExceeded) {
+			out.timedOut = true
+		}
 	case *mcp.GetPromptResult:
 		if r != nil {
 			out.needsInput, out.state = r.NeedsInput(), r.RequestState

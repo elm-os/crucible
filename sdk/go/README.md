@@ -158,9 +158,11 @@ client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "1.0.0"}, ni
 err := cruciblemcp.InstrumentClient(client, cruciblemcp.ClientOptions{Transport: cruciblemcp.TransportStdio})
 ```
 
-Every request and notification the client sends becomes a CLIENT span, and its trace context (`traceparent`, `tracestate`) is
-written into the request's `params._meta`. An instrumented server then records its span in the same trace, so an
-agent's tool call and the server's handling of it link up.
+Every request and notification the client sends becomes a CLIENT span, and its trace context (`traceparent`,
+`tracestate`) is written into the request's `params._meta`. An instrumented server then records its span in the same
+trace, so an agent's tool call and the server's handling of it link up. The `_meta` map is replaced by a copy rather
+than edited in place, but the params value itself is updated, as the MCP SDK also does, so do not share one params
+value between concurrent calls.
 
 ## What the middleware cannot observe
 

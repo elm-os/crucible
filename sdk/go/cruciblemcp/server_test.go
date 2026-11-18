@@ -3,6 +3,8 @@ package cruciblemcp_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +145,11 @@ func TestErrorTaxonomy(t *testing.T) {
 				"crucible.mcp.error.class": "internal",
 				"rpc.response.status_code": "-32603",
 			})
+			// A plain Go error reaches the peer with code 0, which both sides report.
+			expect(t, client(t, c, "tools/call crash"), map[string]any{
+				"crucible.mcp.error.class": "internal",
+				"rpc.response.status_code": "0",
+			})
 		})
 	}
 }
@@ -260,7 +267,7 @@ func TestContentCaptureIsScrubbedAndCapped(t *testing.T) {
 
 	// Taint: no planted secret reaches the collector in any form.
 	bodies := c.Bodies()
-	for _, planted := range []string{"hunter2", "ada@example.com", "csk_0123456789abcdefghij", "4111 1111 1111 1111", "internal-codename"} {
+	for _, planted := range []string{"hunter2", "ada@example.com", "csk_0123456789abcdefghij", "4111 1111 1111 1111", "internal-codename", testKey} {
 		if bytes.Contains(bodies, []byte(planted)) {
 			t.Errorf("the exported bodies contain %q", planted)
 		}
@@ -355,6 +362,92 @@ func TestProgressAndCancellation(t *testing.T) {
 				"crucible.mcp.cancel.source": "notification",
 				"crucible.mcp.error.class":   "cancelled",
 			})
+		})
+	}
+}
+
+func TestTimeouts(t *testing.T) {
+	for _, era := range eras {
+		t.Run(era.name, func(t *testing.T) {
+			c := startCrucible(t)
+			cs := connect(t, newServer(t, cruciblemcp.Options{}), newClient(t, nil), era.version)
+			// A tool that hits its own deadline: mcp.AddTool reports it as an isError result.
+			if _, err := call(t, cs, "deadline", nil); err != nil {
+				t.Fatal(err)
+			}
+			expect(t, server(t, c, "tools/call deadline"), map[string]any{
+				"crucible.mcp.timed_out":   true,
+				"crucible.mcp.error.class": "timeout",
+				"crucible.mcp.result_type": nil,
+			})
+			// A client that stops waiting at its deadline.
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}}); err == nil {
+				t.Fatal("a call past its deadline succeeded")
+			}
+			expect(t, client(t, c, "tools/call slow"), map[string]any{
+				"crucible.mcp.timed_out":   true,
+				"crucible.mcp.error.class": "timeout",
+			})
+		})
+	}
+}
+
+// A connection that breaks while a request is in flight cancels it with the read error as the cause.
+func TestBrokenConnectionIsAStreamClose(t *testing.T) {
+	c := startCrucible(t)
+	toServer, fromClient := io.Pipe()
+	toClient, fromServer := io.Pipe()
+	ss, err := newServer(t, cruciblemcp.Options{}).Connect(t.Context(), &mcp.IOTransport{Reader: toServer, Writer: fromServer}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+	got := make(chan float64, 4)
+	cs, err := newClient(t, got).Connect(t.Context(), &mcp.IOTransport{Reader: toClient, Writer: fromClient}, &mcp.ClientSessionOptions{ProtocolVersion: legacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		params := &mcp.CallToolParams{Name: "slow", Arguments: map[string]any{}}
+		params.SetProgressToken("progress-1")
+		_, _ = cs.CallTool(context.Background(), params)
+	}()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not start")
+	}
+	broken := errors.New("connection reset by peer")
+	_ = fromClient.CloseWithError(broken)
+	_ = toClient.CloseWithError(broken)
+	<-done
+	expect(t, server(t, c, "tools/call slow"), map[string]any{
+		"crucible.mcp.cancel.source": "stream_close",
+		"crucible.mcp.error.class":   "cancelled",
+	})
+}
+
+func TestSampledOutCallsCaptureNothing(t *testing.T) {
+	c := startCrucible(t)
+	opts := cruciblemcp.Options{Capture: []cruciblemcp.CaptureRule{{Tool: "echo", Args: true, Result: true, SampleRate: 1e-12}}}
+	cs := connect(t, newServer(t, opts), newClient(t, nil), modern)
+	for i := 0; i < 20; i++ {
+		if _, err := call(t, cs, "echo", map[string]any{"text": "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, s := range spans(t, c, tracepb.Span_SPAN_KIND_SERVER, "tools/call echo", 20) {
+		expect(t, s, map[string]any{
+			"crucible.mcp.content.captured":    nil,
+			"crucible.mcp.content.sample_rate": nil,
+			"crucible.mcp.content.truncation":  nil,
+			"gen_ai.tool.call.arguments":       nil,
+			"gen_ai.tool.call.result":          nil,
+			"crucible.mcp.content.blocks.text": int64(1),
 		})
 	}
 }
