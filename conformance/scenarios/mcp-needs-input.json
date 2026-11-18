@@ -1,0 +1,27 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-needs-input",
+  "kind": "mcp",
+  "title": "A multi-round tool call: input_required, then a retry that echoes requestState",
+  "variants": ["modern-stdio", "modern-http"],
+  "steps": [
+    {
+      "step": "ask",
+      "send": { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "needs_input", "arguments": { "item": "blue-widget" } } }
+    },
+    {
+      "step": "answer",
+      "send": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "needs_input",
+          "arguments": { "item": "blue-widget" },
+          "inputResponses": { "confirm": { "action": "accept", "content": { "confirmed": true } } },
+          "requestState": { "$from": "ask/result/requestState" }
+        }
+      }
+    }
+  ]
+}

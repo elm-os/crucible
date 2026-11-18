@@ -29,16 +29,21 @@ http-body-util = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-tower = { workspace = true }
+# gRPC ingest (contract 12.1): tonic's server-side codec and status machinery behind an axum route, with gzip;
+# no transport, since the listener is the binary's.
+tonic = { version = "=0.14.9", default-features = false, features = ["gzip"] }
+tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-env-prod = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
 # The seeded ack-before-sync defect, which the durability test must catch.
 crucible-wal = { workspace = true, features = ["test-mutants"] }
-opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
+# `gen-tonic` adds the generated `TraceServiceClient` that the gRPC tests drive.
+opentelemetry-proto = { workspace = true, features = ["gen-tonic", "trace", "with-serde"] }
 proptest = { workspace = true }
 prost = { workspace = true }
 tempfile = "=3.27.0"

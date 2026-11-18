@@ -1,0 +1,32 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "mcp-notifications",
+  "spans": [
+    {
+      "id": "roots-changed",
+      "when": { "era": "legacy" },
+      "select": { "mcp.method.name": "notifications/roots/list_changed" },
+      "kind": "server",
+      "parent": null,
+      "attributes": { "crucible.mcp.is_notification": true }
+    },
+    {
+      "id": "progress-observed",
+      "when": { "progress_count": "observed" },
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "min_duration_ms": 300,
+      "attributes": { "gen_ai.tool.name": "slow", "crucible.mcp.progress.count": 3 }
+    },
+    {
+      "id": "progress-unobserved",
+      "when": { "progress_count": "unobserved" },
+      "select": { "mcp.method.name": "tools/call", "jsonrpc.request.id": "2" },
+      "kind": "server",
+      "parent": null,
+      "min_duration_ms": 300,
+      "attributes": { "gen_ai.tool.name": "slow", "crucible.mcp.progress.count": { "absent": true } }
+    }
+  ]
+}

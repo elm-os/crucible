@@ -49,6 +49,11 @@ pub const SETTINGS: &[Setting] = &[
         "address of the OTLP/HTTP ingest listener",
     ),
     plain(
+        "server.grpc_listen",
+        Some("0.0.0.0:4317"),
+        "address of the OTLP/gRPC ingest listener",
+    ),
+    plain(
         "server.metrics_listen",
         Some("127.0.0.1:9464"),
         "address of the Prometheus metrics listener",

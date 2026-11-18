@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 98adb0204d4afe60be93bb11a07d4db72c27182ff3ad521cc0608d6a029dfbbf # shrinks to shape = SpanList { filtered: true, metadata: false, cursor: false }, seeds = (0, 3085585524273410226)

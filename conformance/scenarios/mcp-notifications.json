@@ -1,0 +1,19 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "mcp-notifications",
+  "kind": "mcp",
+  "title": "Client notifications become operations; server progress notifications are counted on their request",
+  "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
+  "steps": [
+    { "step": "roots-changed", "eras": ["legacy"], "send": { "jsonrpc": "2.0", "method": "notifications/roots/list_changed" } },
+    {
+      "step": "progress",
+      "send": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "slow", "arguments": { "ms": 300, "steps": 3 }, "_meta": { "progressToken": "conformance-progress" } }
+      }
+    }
+  ]
+}

@@ -26,7 +26,7 @@ use axum::body::Body;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
-use crucible_auth::{KeyVerifier, SecretKey, StaticKey, StaticKeys};
+use crucible_auth::{KeyVerifier, PublicKey, SecretKey, StaticKey, StaticKeys};
 use crucible_cursor::{KeyRing, Kid, SigningKey};
 use crucible_env::Env;
 use crucible_records::{ApiKeyId, Timestamp};
@@ -60,6 +60,7 @@ fn keys(env: &Env) -> Arc<dyn KeyVerifier> {
     let key = |n: u8, secret: String| StaticKey {
         id: ApiKeyId::from_bytes([n; 16]),
         project_id: project(n),
+        public_key: PublicKey::parse(&secret.replace("csk_", "cpk_")).unwrap(),
         secret: SecretKey::parse(&secret).unwrap(),
     };
     let keys = vec![key(1, self::key()), key(2, other_key())];

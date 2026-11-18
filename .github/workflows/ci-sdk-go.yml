@@ -1,0 +1,49 @@
+name: ci-sdk-go
+
+# The Go SDK. Its module path, github.com/elm-os/crucible/sdk/go, fixes the directory to sdk/go. A change to the
+# shared scrub rules runs it too, because the SDK keeps a copy that a test holds identical.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - sdk/go/**
+      - conformance/scrub-rules.json
+      - .github/workflows/ci-sdk-go.yml
+  pull_request:
+    paths:
+      - sdk/go/**
+      - conformance/scrub-rules.json
+      - .github/workflows/ci-sdk-go.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-sdk-go-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: sdk/go/go.sum
+      - name: Module files are tidy
+        run: go mod tidy -diff
+      - name: Formatted
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - name: Tests
+        run: go test -race ./...

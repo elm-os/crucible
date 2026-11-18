@@ -1,0 +1,19 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "agent-context",
+  "every_span": {
+    "fields": { "session_id": "conformance-session", "user_id": "conformance-user" },
+    "attributes": {
+      "crucible.tags": ["conformance", "beta"],
+      "crucible.metadata.plan": "pro",
+      "crucible.metadata.seats": 3,
+      "crucible.metadata.trial": false
+    }
+  },
+  "spans": [
+    { "id": "conversation", "select": { "name": "conversation" }, "parent": null, "fields": { "observation_type": "agent" } },
+    { "id": "turn-1", "select": { "name": "turn-1" }, "parent": "conversation" },
+    { "id": "think", "select": { "name": "think" }, "parent": "turn-1", "fields": { "observation_type": "chain" } },
+    { "id": "turn-2", "select": { "name": "turn-2" }, "parent": "conversation" }
+  ]
+}

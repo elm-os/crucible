@@ -1,0 +1,116 @@
+name: sdk-conformance
+
+# The shared SDK conformance suite (docs/testing/sdk-conformance.md). Each matrix entry runs crucible-sdk-driver
+# against one SDK's runner, which the SDK's capability manifest names. The selftest entry needs no SDK: its runner
+# emits the expected spans directly. It also runs the seeded mutant, which the driver must fail on exactly the
+# mcp-secret cases. An SDK joins by adding a matrix entry with its manifest and the setup steps its runner needs.
+
+on:
+  pull_request:
+    paths:
+      - conformance/**
+      - sdk/**
+      - crates/crucible-fake-collector/**
+      - .github/workflows/sdk-conformance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  conformance:
+    name: ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: selftest
+            manifest: conformance/sdks/selftest.json
+          - sdk: go
+            manifest: sdk/go/conformance/manifest.json
+          - sdk: python
+            manifest: sdk/python/conformance/manifest.json
+          - sdk: typescript
+            manifest: sdk/typescript/conformance/manifest.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        if: matrix.sdk == 'typescript'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.sdk == 'typescript'
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the TypeScript SDK
+        if: matrix.sdk == 'typescript'
+        run: pnpm install --frozen-lockfile --filter @elm-os/crucible
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: sdk-conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the driver
+        run: cargo build --locked -p crucible-fake-collector --features test-mutants
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: matrix.sdk == 'go'
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: sdk/go/go.sum
+      - name: Build the Go runner
+        # The manifest runs the runner with `go run`; building it once first fills the build cache, so each case
+        # only links.
+        if: matrix.sdk == 'go'
+        run: go -C sdk/go build -o "$RUNNER_TEMP/go-runner" ./conformance/runner
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: matrix.sdk == 'python'
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: matrix.sdk == 'python'
+        with:
+          version: "0.13.9"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: sdk/python/uv.lock
+      - name: Python SDK environment
+        if: matrix.sdk == 'python'
+        run: uv sync --locked --project sdk/python
+      - name: Conformance
+        env:
+          MANIFEST: ${{ matrix.manifest }}
+          SDK: ${{ matrix.sdk }}
+        run: |
+          status=0
+          target/debug/crucible-sdk-driver run --manifest "$MANIFEST" --out target/sdk-conformance || status=$?
+          if [ -f "target/sdk-conformance/$SDK.md" ]; then cat "target/sdk-conformance/$SDK.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$status"
+      - name: The driver flags the seeded mutant
+        if: matrix.sdk == 'selftest'
+        run: |
+          status=0
+          target/debug/crucible-sdk-driver run --manifest conformance/sdks/selftest.json --out target/sdk-mutant \
+            -- crucible-sdk-driver selftest-runner --mutant unscrubbed-secret > /dev/null || status=$?
+          if [ "$status" -ne 1 ]; then echo "the mutant run exited $status; it must exit 1"; exit 1; fi
+          report=target/sdk-mutant/selftest.jsonl
+          failing=$(jq -r 'select(.status != "pass") | .case' "$report" | sort | tr '\n' ' ')
+          expected="mcp-secret@legacy-http mcp-secret@legacy-stdio mcp-secret@modern-http mcp-secret@modern-stdio "
+          if [ "$failing" != "$expected" ]; then echo "the mutant failed [$failing]; expected [$expected]"; exit 1; fi
+          leaks=$(jq -s '[.[] | select(.status == "fail") | .failures[]
+            | select(.check | endswith("never leaves the sender"))
+            | select(.actual | contains("gen_ai.tool.call.arguments"))] | length' "$report")
+          if [ "$leaks" -ne 36 ]; then echo "expected 36 leak findings on gen_ai.tool.call.arguments, found $leaks"; exit 1; fi
+          echo "the driver failed exactly the 4 mcp-secret cases, with 9 leak findings each"
