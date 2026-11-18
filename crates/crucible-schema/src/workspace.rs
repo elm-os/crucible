@@ -589,7 +589,7 @@ fn probe_canary_insert(project: ProjectId) -> String {
 /// Access step A2 (contracts 7.3 and 7.4), rendered from [`access_workspace_shape`]: the check that A1's
 /// service policies exist on every base table, the role, the profile, the quota, the column grants, the static
 /// policies in both forms, the curated views, and the two probe identities with their canary rows. Every
-/// statement is idempotent. The profile is created and then altered, never replaced: replacing it would give it
+/// statement is idempotent. The profile and the quota are created and then altered, never replaced: replacing it would give it
 /// a new id and detach every user from its limits.
 pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> MigrationStep {
     let on = variant.on_cluster();
@@ -614,12 +614,18 @@ pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> Migratio
                     "ALTER SETTINGS PROFILE {SQL_PROFILE}{on} SETTINGS {clause}"
                 ));
             }
-            WorkspaceAction::CreateQuota => statements.push(format!(
-                "CREATE QUOTA IF NOT EXISTS {SQL_QUOTA}{on} KEYED BY user_name FOR INTERVAL 1 hour MAX queries \
-                 = {SQL_QUOTA_QUERIES_PER_HOUR}, errors = {SQL_QUOTA_ERRORS_PER_HOUR}, read_rows = \
-                 {SQL_QUOTA_READ_ROWS_PER_HOUR}, execution_time = {SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR} TO \
-                 {SQL_READER_ROLE}"
-            )),
+            WorkspaceAction::CreateQuota => {
+                let limits = format!(
+                    "KEYED BY user_name FOR INTERVAL 1 hour MAX queries = {SQL_QUOTA_QUERIES_PER_HOUR}, errors = \
+                     {SQL_QUOTA_ERRORS_PER_HOUR}, read_rows = {SQL_QUOTA_READ_ROWS_PER_HOUR}, execution_time = \
+                     {SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR} TO {SQL_READER_ROLE}"
+                );
+                statements.push(format!(
+                    "CREATE QUOTA IF NOT EXISTS {SQL_QUOTA}{on} {limits}"
+                ));
+                // Altering keeps the usage counters and brings a drifted quota back to its limits.
+                statements.push(format!("ALTER QUOTA {SQL_QUOTA}{on} {limits}"));
+            }
             WorkspaceAction::GrantColumns(id) => statements.push(grant_columns(table(id), variant)),
             WorkspaceAction::StaticPolicy(id, form) => {
                 statements.push(static_policy(id, form, variant));

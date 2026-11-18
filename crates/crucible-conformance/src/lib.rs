@@ -20,6 +20,7 @@ mod differential;
 mod inserts;
 mod maintenance;
 mod reads;
+pub mod sqliso;
 mod startup;
 
 use std::sync::Arc;

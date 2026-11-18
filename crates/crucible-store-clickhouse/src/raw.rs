@@ -103,3 +103,56 @@ impl ClickHouseStore {
         Ok(RawRead { query_id, reading })
     }
 }
+
+/// What a statement sent as an arbitrary user came back with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RawReply {
+    /// The tab-separated answer.
+    Rows(String),
+    /// The server refused the statement.
+    Refused {
+        /// The server code.
+        code: u32,
+        /// The whole exception text.
+        message: String,
+    },
+}
+
+impl ClickHouseStore {
+    /// Sends `sql` verbatim as `user` on the read endpoint, with `settings` as URL parameters, and returns the
+    /// answer or the refusal. The isolation suite attacks the access scheme through this: no workspace code
+    /// is in the path.
+    pub async fn raw_as(
+        &self,
+        user: &str,
+        password: &str,
+        sql: &str,
+        settings: &[(&str, &str)],
+        deadline: Duration,
+    ) -> Result<RawReply, StoreError> {
+        let mut query = self
+            .workspace_client()
+            .clone()
+            .with_user(user)
+            .with_password(password)
+            .query_raw(sql);
+        for (name, value) in settings {
+            query = query.with_setting(*name, *value);
+        }
+        let read = async {
+            let mut cursor = query.fetch_bytes("TabSeparated")?;
+            cursor.collect().await
+        };
+        let outcome = match self.env().timeout(deadline, read).await {
+            Ok(Ok(bytes)) => {
+                return Ok(RawReply::Rows(String::from_utf8_lossy(&bytes).into_owned()));
+            }
+            Ok(Err(error)) => Failure::from_client(error),
+            Err(_elapsed) => Failure::Timeout,
+        };
+        match outcome {
+            Failure::Server { code, message } => Ok(RawReply::Refused { code, message }),
+            other => Err(other.into_store()),
+        }
+    }
+}

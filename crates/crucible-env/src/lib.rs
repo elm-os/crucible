@@ -31,6 +31,7 @@ pub mod metrics;
 mod net;
 mod rng;
 mod spawner;
+mod sqlws;
 mod store;
 #[cfg(test)]
 mod testing;
@@ -51,6 +52,10 @@ pub use net::{Listener, Net, NetError, Stream, StreamIo, TlsRoots};
 pub use rng::{ChaChaRng, Rng, RngAdapter};
 pub use spawner::{
     Cancelled, JoinHandle, ShutdownSignal, ShutdownTrigger, Spawner, TaskAbort, shutdown_channel,
+};
+pub use sqlws::{
+    CELL_CUT_MARKER, ProbeBreach, ProbeReport, SqlCell, SqlColumn, SqlError, SqlEstimate,
+    SqlExportFormat, SqlGrid, SqlLimits, SqlParam, SqlQuery, SqlStats, SqlWorkspaceStore,
 };
 pub use store::{
     EngineFamily, InsertClass, InsertError, InsertSettings, MutationId, MutationStatus, QueryError,
@@ -152,6 +157,8 @@ pub struct Stores {
     pub control: Option<Arc<dyn ControlStore>>,
     /// ClickHouse, or its simulation model.
     pub telemetry: Arc<dyn TelemetryStore>,
+    /// The SQL workspace's path to ClickHouse. `None` when the workspace is not configured.
+    pub sql: Option<Arc<dyn SqlWorkspaceStore>>,
 }
 
 impl Stores {
@@ -160,6 +167,7 @@ impl Stores {
         Self {
             control: None,
             telemetry,
+            sql: None,
         }
     }
 
@@ -167,6 +175,13 @@ impl Stores {
     #[must_use]
     pub fn with_control(mut self, control: Arc<dyn ControlStore>) -> Self {
         self.control = Some(control);
+        self
+    }
+
+    /// The same bundle with the SQL workspace store.
+    #[must_use]
+    pub fn with_sql(mut self, sql: Arc<dyn SqlWorkspaceStore>) -> Self {
+        self.sql = Some(sql);
         self
     }
 }

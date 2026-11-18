@@ -855,6 +855,7 @@ dependencies = [
  "proptest",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -1129,6 +1130,9 @@ dependencies = [
  "hyper-util",
  "insta",
  "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror",
  "tower",
  "tracing",
