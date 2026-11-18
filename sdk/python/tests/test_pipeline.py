@@ -219,7 +219,7 @@ provider.add_span_processor(SimpleSpanProcessor(own))
 trace.set_tracer_provider(provider)
 
 import crucible_sdk
-from tests import reference_server
+from conformance import reference_server
 from tests.test_mcp_server import connect
 
 crucible_sdk.init(endpoint=sys.argv[1], secret_key="csk_x", deploy_id="d-7", flush_interval=60)

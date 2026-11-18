@@ -21,10 +21,10 @@ from mcp_types import CallToolRequestParams, CallToolResult, ElicitResult, Imple
 
 import crucible_sdk
 import crucible_sdk.mcp
+from conformance import reference_server
 from crucible_sdk import _keys
 from crucible_sdk.mcp import _seam
 from crucible_sdk.mcp._middleware import CrucibleMiddleware
-from tests import reference_server
 from tests.collector import Collector, ExportedSpan
 from tests.conftest import SECRET_KEY
 

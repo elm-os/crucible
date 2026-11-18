@@ -20,8 +20,9 @@ SERVER_VERSION = "1.2.0"
 REQUEST_STATE = "crucible-conformance-request-state-1"
 
 
-def build() -> MCPServer:
-    server = MCPServer(SERVER_NAME, version=SERVER_VERSION)
+def build(name: str = SERVER_NAME, version: str = SERVER_VERSION) -> MCPServer:
+    """The server with the seven tools; `name` and `version` come from the run spec's `server`."""
+    server = MCPServer(name, version=version)
 
     @server.tool()
     def echo(text: str) -> str:
@@ -70,6 +71,7 @@ def build() -> MCPServer:
 
 
 def instrumented() -> MCPServer:
+    """The server instrumented with the suite's MCP options (`conformance/suite.json`)."""
     return crucible_sdk.mcp.instrument(
         build(),
         capture=[crucible_sdk.mcp.Capture(tool="secret")],

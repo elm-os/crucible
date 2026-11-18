@@ -10,7 +10,7 @@ from opentelemetry import trace
 
 import crucible_sdk
 import crucible_sdk.mcp
-from tests import reference_server
+from conformance import reference_server
 from tests.collector import Collector
 from tests.test_mcp_server import CLIENT, MODES, connect, edge_server, era, mcp_spans
 

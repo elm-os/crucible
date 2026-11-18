@@ -15,7 +15,7 @@ from mcp.server.mcpserver import MCPServer
 
 import crucible_sdk
 import crucible_sdk.mcp
-from tests import reference_server
+from conformance import reference_server
 from tests.collector import running
 
 ROUNDS, PER_ROUND, WARMUP = 20, 250, 50

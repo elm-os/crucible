@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -16,10 +17,11 @@ from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp.server.mcpserver import MCPServer
 
+from conformance import reference_server
 from crucible_sdk import _keys
 from crucible_sdk.mcp._middleware import session_hash
-from tests import reference_server
 from tests.collector import Collector
+from tests.conftest import SECRET_KEY
 from tests.test_mcp_server import CLIENT_INFO, mcp_spans
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,8 +89,15 @@ async def test_modern_http_calls_are_stateless(sdk: Collector) -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
 async def test_a_stdio_server_process_flushes_at_exit(collector: Collector, mode: str) -> None:
+    config = {
+        "transport": "stdio",
+        "endpoint": collector.url,
+        "secret_key": SECRET_KEY,
+        "sdk": {"service_name": "stdio-server", "flush_interval_ms": 60000},
+        "server": {"name": reference_server.SERVER_NAME, "version": reference_server.SERVER_VERSION},
+    }
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "tests.stdio_server", collector.url], cwd=str(ROOT)
+        command=sys.executable, args=["-m", "conformance.server", json.dumps(config)], cwd=str(ROOT)
     )
     async with Client(params, mode=mode, client_info=CLIENT_INFO) as client:
         await client.call_tool("echo", {"text": "over a pipe"})

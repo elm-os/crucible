@@ -212,6 +212,19 @@ uv run --locked mypy
 uv run --locked pytest
 ```
 
-The tests run a fake OTLP collector (`tests/collector.py`) and talk to the reference server (`tests/reference_server.py`)
-over the `mcp` library's in-memory transports and over streamable HTTP on a loopback port, in both eras.
-`crucible_sdk/mcp/_seam.py` holds every use of `mcp` internals and of its provisional middleware interface.
+The tests run a fake OTLP collector (`tests/collector.py`) and talk to the reference server
+(`conformance/reference_server.py`) over the `mcp` library's in-memory transports, over streamable HTTP on a loopback
+port and over stdio, in both eras. `crucible_sdk/mcp/_seam.py` holds every use of `mcp` internals and of its provisional
+middleware interface.
+
+### Conformance
+
+`conformance/` is this SDK's runner for the shared SDK conformance suite (`docs/testing/sdk-conformance.md` at the
+repository root). `runner.py` plays one run spec; `server.py` runs the reference server, instrumented with the run
+spec's options, over stdio or streamable HTTP; `manifest.json` declares that a raising tool becomes an `isError`
+result and that progress is not observed. From the repository root:
+
+```sh
+cargo build -p crucible-fake-collector
+target/debug/crucible-sdk-driver run --manifest sdk/python/conformance/manifest.json
+```

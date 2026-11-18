@@ -59,7 +59,7 @@ ignore = [
 strict = true
 python_version = "3.10"
 mypy_path = "src"
-files = ["src", "tests"]
+files = ["src", "tests", "conformance"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
