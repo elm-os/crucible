@@ -35,6 +35,7 @@ crucible-chfmt = { workspace = true }
 crucible-recent = { workspace = true, features = ["test-support"] }
 crucible-sim = { path = "../crucible-sim" }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 http-body-util = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }

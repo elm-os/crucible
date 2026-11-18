@@ -1015,6 +1015,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "crucible-api",
  "crucible-api-types",
  "crucible-auth",
