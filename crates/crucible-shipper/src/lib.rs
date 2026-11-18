@@ -1,1 +1,38 @@
-//! Batch sealing, deduplicated inserts, existence probes and checkpoints.
+//! The shipper (contract section 5): durable WAL frames become exactly-once ClickHouse inserts.
+//!
+//! One task, [`Shipper::run`], tails the durable log through `Wal::replay`, runs the normalizer (stage A, then
+//! stage B in LSN order), and fills per-(table, partition) row builders. A batch seals at the linger, row or byte
+//! threshold of contract 5.1; its `BatchSeal` frame is durable before any insert is sent. Each pair is then one
+//! Native block and one insert whose deduplication token is the batch identity plus the pair, sent through
+//! `Stores::telemetry` with the explicit settings of contract 5.4. Outcomes are handled per contract 5.6 under
+//! the probe rules of 5.5, including the two the ingest model found (`docs/testing/formal-model.md`): once an
+//! attempt of a pair is in doubt every later send is preceded by a probe, and a pair in doubt is quarantined only
+//! after a probe read absent. A `Checkpoint` frame follows once a batch and every earlier batch are resolved, and
+//! garbage collection of the WAL runs from there.
+//!
+//! After a restart, the sealed batches that no checkpoint covers are shipped again with their recorded boundaries
+//! and identical tokens, every pair probed first; pairs named by a `Quarantine` frame stay resolved; the unsealed
+//! tail is sealed with fresh boundaries.
+//!
+//! The row builders ([`value`]) are generic over `TableDef`: a table needs one function from its record to a row
+//! of cells ([`tables`] has those of milestone 1: `span_core`, `span_payload`, `trace_heads`, `trace_stats`).
+
+mod batch;
+mod config;
+mod error;
+mod hooks;
+mod limits;
+mod pair;
+mod probe;
+mod quarantine;
+mod shipper;
+pub mod tables;
+pub mod value;
+
+pub use batch::{BatchId, OpenBatch, Pair, pair_block, pair_token};
+pub use config::{Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig};
+pub use error::ShipError;
+pub use hooks::{Barrier, Barriers, NoBarriers, NoRecent, RecentIndex};
+pub use limits::SealLimits;
+pub use quarantine::{FRAMES_FILE, MANIFEST_FILE, quarantine_ref};
+pub use shipper::{Hooks, Shipper, ShipperStats, StatsSnapshot};

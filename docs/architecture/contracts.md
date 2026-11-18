@@ -116,7 +116,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-wal` | `crucible-env`, `crucible-records`, `crucible-wal-codec` |
 | `crucible-recent` | `crucible-env`, `crucible-records`, `crucible-plan` |
 | `crucible-query` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-recent`, `crucible-schema` |
-| `crucible-shipper` | `crucible-env`, `crucible-records`, `crucible-wal`, `crucible-wal-codec`, `crucible-schema`, `crucible-chfmt`, `crucible-normalize`, `crucible-plan` (to build `BatchProbe`) |
+| `crucible-shipper` | `crucible-env`, `crucible-records`, `crucible-wal`, `crucible-wal-codec`, `crucible-schema`, `crucible-chfmt`, `crucible-normalize`, `crucible-plan` (to build `BatchProbe`), `crucible-recent` (the shipper feeds the recent index through one adapter shared by the binary and the simulation) |
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |

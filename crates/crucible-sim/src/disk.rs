@@ -495,6 +495,17 @@ impl SimDisk {
         true
     }
 
+    /// Every file under a root, sorted, for assertions.
+    pub fn files(&self, root: Root) -> Vec<DiskPath> {
+        let state = self.shared.lock();
+        state
+            .names
+            .keys()
+            .filter(|path| path.root() == root)
+            .cloned()
+            .collect()
+    }
+
     /// The names in a directory, sorted, for assertions.
     pub fn names(&self, dir: &DiskPath) -> Vec<String> {
         let state = self.shared.lock();

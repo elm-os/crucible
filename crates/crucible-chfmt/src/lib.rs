@@ -66,6 +66,7 @@
 
 mod block;
 mod column;
+mod decode;
 mod frame;
 mod types;
 
@@ -76,4 +77,5 @@ pub use block::{Block, EncodeError, EncodedBlock, MAX_BLOCK_ROWS};
 pub use column::{
     ArrayColumn, Column, NullableColumn, Number, StringColumn, TupleColumn, UuidColumn,
 };
+pub use decode::{BlockDecodeError, DecodedBlock, DecodedColumn, Values, decode_block};
 pub use frame::{CHUNK_SIZE, Compression, DecodeError, decompress};
