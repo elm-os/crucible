@@ -17,5 +17,12 @@ crucible-schema = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-chfmt = { workspace = true }
+crucible-recent = { workspace = true, features = ["test-support"] }
+async-trait = { workspace = true }
+proptest = { workspace = true }
+
 [lints]
 workspace = true

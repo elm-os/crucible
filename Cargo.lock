@@ -809,12 +809,16 @@ dependencies = [
 name = "crucible-query"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "crucible-auth",
+ "crucible-chfmt",
  "crucible-env",
  "crucible-plan",
  "crucible-recent",
  "crucible-records",
  "crucible-schema",
  "futures",
+ "proptest",
  "thiserror",
 ]
 
