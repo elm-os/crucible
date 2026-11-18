@@ -79,8 +79,9 @@ the store reachable and no open gap, the span must be present.
 
 ### I4. Facts resolve deterministically
 
-For any set of fact rows, the read result equals the reference fold: per `(target, key)` the row with the greatest
-`(version, fact_id)`, with a retraction meaning "no value". The result does not depend on arrival order, merge
+For any set of fact rows, the read result equals the reference fold: per `(target, key)` the row that is greatest
+under `crucible_records::fact_order` (`version`, then `fact_id` in RFC 9562 byte order), with a retraction meaning
+"no value". The result does not depend on arrival order, merge
 timing, part layout or restarts. Effective tags equal ingest tags plus latest-add minus latest-remove.
 
 | Check | Kind |
@@ -124,7 +125,10 @@ No response to a principal of project A contains data of project B, and no respo
 
 ### I7. Aggregates match the reference
 
-Counts, error counts, token sums and cost sums (integer nano-USD) are exact against the oracle. Percentiles equal
+Counts, error counts, token sums and cost sums (integer nano-USD) are exact against the oracle. One exception: a
+batch whose pairs straddle a crash and a binary upgrade that changed the price table or the normalizer may carry
+costs from two versions across its tables (section 5.3 of the contract); a metric counts such batches, and the
+oracle compares each pair against the version it was built with. Percentiles equal
 the oracle histogram's answer exactly in simulation (one histogram implementation), and are within 1/32 (3.125%)
 of the exact quantile on real data. Distinct counts are within the error stated by C14.
 
