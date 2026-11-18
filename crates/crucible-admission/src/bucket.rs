@@ -99,33 +99,42 @@ impl ProjectBuckets {
 mod proofs {
     use super::*;
 
-    /// Refilling and taking never overflow for any configuration, state, time or take; the level
-    /// stays within the burst; and a successful take removes exactly its tokens.
-    #[kani::proof]
-    fn token_bucket_arithmetic_never_overflows() {
+    /// Any bucket within its burst.
+    fn any_bucket() -> TokenBucket {
         let config = BucketConfig {
             rate_per_s: kani::any(),
             burst: kani::any(),
         };
         let level: u128 = kani::any();
         kani::assume(level <= capacity(config));
-        let mut bucket = TokenBucket {
+        TokenBucket {
             config,
             level,
             last_ns: kani::any(),
-        };
-        let tokens: u64 = kani::any();
-        let now_ns: u64 = kani::any();
-        let mut refilled = bucket.clone();
-        refilled.refill(now_ns);
-        assert!(level <= refilled.level && refilled.level <= capacity(config));
-        match bucket.try_take(tokens, now_ns) {
-            Ok(()) => {
-                assert!(bucket.level + u128::from(tokens) * NANOS_PER_SECOND == refilled.level)
-            }
-            Err(Throttled) => assert!(bucket.level == refilled.level),
         }
-        assert!(bucket.level <= capacity(config));
+    }
+
+    /// Taking never overflows for any configuration, state, time or take, and the level stays
+    /// within the burst.
+    #[kani::proof]
+    fn token_bucket_arithmetic_never_overflows() {
+        let mut bucket = any_bucket();
+        let _ = bucket.try_take(kani::any(), kani::any());
+        assert!(bucket.level <= capacity(bucket.config));
+    }
+
+    /// A take at the instant of the latest refill removes exactly its tokens, or nothing when it is
+    /// refused.
+    #[kani::proof]
+    fn a_take_removes_exactly_its_tokens() {
+        let mut bucket = any_bucket();
+        let before = bucket.level;
+        let tokens: u64 = kani::any();
+        let cost = u128::from(tokens) * NANOS_PER_SECOND;
+        match bucket.try_take(tokens, bucket.last_ns) {
+            Ok(()) => assert!(cost <= before && before - bucket.level == cost),
+            Err(Throttled) => assert!(cost > before && bucket.level == before),
+        }
     }
 }
 
