@@ -124,6 +124,12 @@ async fn w1(iso: &Iso) -> Result<String> {
     for def in sql_tables().filter(|def| def.name() != "sql_probe") {
         let t = format!("crucible.{}", def.name());
         let w = window(def);
+        // The canary column first: if the table shows another project's row, the oracle is what reports it.
+        if let Some(column) = canary_column(def) {
+            iso.attack(&format!("SELECT {column} FROM {t} WHERE {w}"))
+                .await?;
+            statements += 1;
+        }
         // A reads its own row, and only that one, through every shape of read.
         iso.answers(&format!("SELECT count() FROM {t} WHERE {w}"), "1")
             .await?;
