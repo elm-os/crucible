@@ -93,6 +93,11 @@ func TestObservationsCarryTheSourceKeys(t *testing.T) {
 	ctx = crucible.WithUser(ctx, "user-1")
 	ctx = crucible.WithTags(ctx, "beta", "checkout")
 	ctx = crucible.WithTags(ctx, "beta", "eu")
+	ctx = crucible.WithMetadata(ctx, "plan", "pro")
+	ctx = crucible.WithMetadata(ctx, "seats", 3)
+	ctx = crucible.WithMetadata(ctx, "seats", 4)
+	ctx = crucible.WithMetadata(ctx, "trial", false)
+	ctx = crucible.WithMetadata(ctx, "limits", map[string]int{"rpm": 60})
 	ctx, run := crucible.Observe(ctx, "answer", crucible.Agent)
 	_, gen := crucible.Observe(ctx, "draft", crucible.Generation)
 	gen.SetModel("model-a")
@@ -123,6 +128,10 @@ func TestObservationsCarryTheSourceKeys(t *testing.T) {
 		"crucible.session.id":                  "session-1",
 		"crucible.user.id":                     "user-1",
 		"crucible.release":                     "r42",
+		"crucible.metadata.plan":               "pro",
+		"crucible.metadata.seats":              int64(4),
+		"crucible.metadata.trial":              false,
+		"crucible.metadata.limits":             `{"rpm":60}`,
 	}
 	for k, v := range want {
 		if draft.Attrs[k] != v {

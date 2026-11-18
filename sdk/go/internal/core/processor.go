@@ -25,7 +25,7 @@ type Stats struct {
 	ExportFailed uint64
 }
 
-// Processor is the SDK's span processor. At span start it copies the session, user and tags carried in the
+// Processor is the SDK's span processor. At span start it copies the session, user, tags and metadata carried in the
 // context onto the span. At span end it puts the span on a bounded queue without blocking: when the queue is
 // full the span is dropped and counted. One goroutine drains the queue in batches to the exporter.
 type Processor struct {
@@ -68,7 +68,7 @@ func NewProcessor(exporter sdktrace.SpanExporter, release string, queueSize, bat
 	return p
 }
 
-// OnStart copies the context's session, user and tags, and the configured release, onto the span.
+// OnStart copies the context's session, user, tags and metadata, and the configured release, onto the span.
 func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	a := attrsFrom(parent)
 	if a.session != "" {
@@ -80,6 +80,7 @@ func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	if len(a.tags) > 0 {
 		s.SetAttributes(attribute.StringSlice(KeyTags, a.tags))
 	}
+	s.SetAttributes(a.metadata...)
 	if p.release != "" {
 		s.SetAttributes(attribute.String(KeyRelease, p.release))
 	}

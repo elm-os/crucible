@@ -3,7 +3,12 @@ package core
 import (
 	"context"
 	"slices"
+
+	"go.opentelemetry.io/otel/attribute"
 )
+
+// KeyMetadataPrefix prefixes the metadata keys (contract 10.6).
+const KeyMetadataPrefix = "crucible.metadata."
 
 type attrsKey struct{}
 
@@ -12,6 +17,7 @@ type attrsKey struct{}
 type attrs struct {
 	session, user string
 	tags          []string
+	metadata      []attribute.KeyValue
 }
 
 func attrsFrom(ctx context.Context) attrs {
@@ -43,5 +49,15 @@ func WithTags(ctx context.Context, tags ...string) context.Context {
 		}
 	}
 	a.tags = merged
+	return context.WithValue(ctx, attrsKey{}, a)
+}
+
+// WithMetadata returns a context whose spans carry the metadata entry crucible.metadata.<key>, replacing an
+// entry of the same key.
+func WithMetadata(ctx context.Context, key string, value attribute.Value) context.Context {
+	a := attrsFrom(ctx)
+	k := attribute.Key(KeyMetadataPrefix + key)
+	md := slices.DeleteFunc(slices.Clone(a.metadata), func(kv attribute.KeyValue) bool { return kv.Key == k })
+	a.metadata = append(md, attribute.KeyValue{Key: k, Value: value})
 	return context.WithValue(ctx, attrsKey{}, a)
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/elm-os/crucible/sdk/go/internal/core"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Options configures the process-wide client.
@@ -153,4 +154,30 @@ func WithUser(ctx context.Context, id string) context.Context { return core.With
 // WithTags returns a context whose spans carry the tags (crucible.tags), added to those ctx carries.
 func WithTags(ctx context.Context, tags ...string) context.Context {
 	return core.WithTags(ctx, tags...)
+}
+
+// WithMetadata returns a context whose spans carry one metadata entry (crucible.metadata.<key>). A string, bool,
+// integer or float is sent as that type; any other value as JSON text.
+func WithMetadata(ctx context.Context, key string, value any) context.Context {
+	return core.WithMetadata(ctx, key, metadataValue(value))
+}
+
+func metadataValue(v any) attribute.Value {
+	switch x := v.(type) {
+	case string:
+		return attribute.StringValue(x)
+	case bool:
+		return attribute.BoolValue(x)
+	case int:
+		return attribute.IntValue(x)
+	case int32:
+		return attribute.Int64Value(int64(x))
+	case int64:
+		return attribute.Int64Value(x)
+	case float32:
+		return attribute.Float64Value(float64(x))
+	case float64:
+		return attribute.Float64Value(x)
+	}
+	return attribute.StringValue(encode(v))
 }

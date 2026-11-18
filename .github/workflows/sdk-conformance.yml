@@ -37,6 +37,8 @@ jobs:
         include:
           - sdk: selftest
             manifest: conformance/sdks/selftest.json
+          - sdk: go
+            manifest: sdk/go/conformance/manifest.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,6 +51,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the driver
         run: cargo build --locked -p crucible-fake-collector --features test-mutants
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: matrix.sdk == 'go'
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: sdk/go/go.sum
+      - name: Build the Go runner
+        # The manifest runs the runner with `go run`; building it once first fills the build cache, so each case
+        # only links.
+        if: matrix.sdk == 'go'
+        run: go -C sdk/go build -o "$RUNNER_TEMP/go-runner" ./conformance/runner
       - name: Conformance
         env:
           MANIFEST: ${{ matrix.manifest }}

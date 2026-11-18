@@ -5,7 +5,7 @@ server over OTLP/HTTP. It has two packages:
 
 | Package | What it does |
 |---|---|
-| `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user and tags of a trace carried in a `context.Context`, and `Observe` for spans with input, output, model, usage and cost |
+| `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user, tags and metadata of a trace carried in a `context.Context`, and `Observe` for spans with input, output, model, usage and cost |
 | `cruciblemcp` | Middleware for the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, tested at v1.8.0) in both protocol eras: one span per MCP operation on the server, and trace context propagation from the client |
 
 It needs Go 1.26 or later. The module is not tagged yet; releases are planned as tags `sdk/go/vX.Y.Z`, after which
@@ -29,6 +29,7 @@ defer crucible.Shutdown(context.Background())
 ctx = crucible.WithSession(ctx, sessionID)
 ctx = crucible.WithUser(ctx, userID)
 ctx = crucible.WithTags(ctx, "checkout")
+ctx = crucible.WithMetadata(ctx, "plan", "pro")
 
 ctx, run := crucible.Observe(ctx, "answer", crucible.Agent)
 defer run.End()
@@ -41,8 +42,8 @@ gen.SetUsage(crucible.Usage{Input: 1200, Output: 300, CacheRead: 1000})
 gen.End()
 ```
 
-Every span started under a context carries the session, user and tags set on it (`crucible.session.id`,
-`crucible.user.id`, `crucible.tags`). `SetInput` and `SetOutput` send a string as is and any other value as JSON
+Every span started under a context carries the session, user, tags and metadata set on it (`crucible.session.id`,
+`crucible.user.id`, `crucible.tags`, `crucible.metadata.<key>`). `SetInput` and `SetOutput` send a string as is and any other value as JSON
 (`crucible.input`, `crucible.output`). Usage goes out as the GenAI semantic-convention keys
 (`gen_ai.usage.input_tokens` and the rest), and Crucible prices it from its price table. When you already know the
 cost, `SetCost(crucible.Cost{Total: 0.0042})` sends it (`crucible.cost.total`, `crucible.cost.<usage key>`, in USD)
@@ -123,8 +124,8 @@ era over HTTP a closed response stream, is recorded as `stream_close`.
 
 ### Identity
 
-`Options.Identify` is called for every request and notification and returns what your server knows about the caller: user id,
-token issuer and subject, tenant and handle id. When it gives no subject and the request came over streamable HTTP
+`Options.Identify` is called for every request and notification and returns what your server knows about the
+caller: user id, token issuer and subject, tenant and handle id. When it gives no subject and the request came over streamable HTTP
 with a token your `auth.TokenVerifier` accepted, the token's `UserID` is the subject and the `iss` entry of
 `TokenInfo.Extra` its issuer. The token's `client_id` entry is sent as the OAuth client id. Crucible is designed to
 hash the subject with a per-project salt and keep only the hash and the issuer (contracts 9.3).
@@ -205,3 +206,15 @@ docker run --rm -v "$PWD:/work" -w /work/sdk/go golang:1.27.4 go run honnef.co/g
 The tests run an in-memory MCP transport in both eras and streamable HTTP against an `httptest` OTLP collector that
 decodes every export and keeps the raw bodies, so they can check that no planted secret is exported.
 `.github/workflows/ci-sdk-go.yml` runs the same checks.
+
+## Conformance
+
+The SDK passes the shared SDK conformance suite (`docs/testing/sdk-conformance.md`) in both eras over stdio and
+streamable HTTP, with no skipped case. `conformance/runner` is its runner: for an agent case it is the agent program,
+and for an MCP case it serves the reference server on go-sdk, instrumented through this SDK's public API. The manifest
+is `conformance/manifest.json`, and the `go` entry of `.github/workflows/sdk-conformance.yml` runs it. To run it
+locally, build the driver (`cargo build -p crucible-fake-collector`) and, from the repository root:
+
+```sh
+target/debug/crucible-sdk-driver run --manifest sdk/go/conformance/manifest.json
+```
