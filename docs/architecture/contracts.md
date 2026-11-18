@@ -121,9 +121,10 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
 | `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types` |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth` |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel differential) |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
+| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
 
 Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
 `crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
@@ -1806,6 +1807,12 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - Heads of one trace with the same `(start_time, trace_hash, trace_id)` collapse to one row; a trace with several
   roots at different start times appears once per root.
 - The read barrier must stay shorter than the visibility grace.
+- The shipper feeds the index through `RecentHook`: `applied(frame, normalized, admission)` for ingest frames and
+  `passed(frame)` for every other frame. After a restart the host restores quarantine marks from the manifests under
+  the quarantine root (the `Quarantine` frames may have been collected), with reach `All`.
+- `WalLocator.ordinal` is the span's position among the spans stage B admitted from the frame; a payload re-read must
+  apply the same admission (open: the binary's re-read path uses stage A positions, fixed in milestone 2).
+- `ChModel` does not yet apply query-class guardrails, so it is more permissive than ClickHouse there (milestone 2).
 - Live tail can miss a head that was durable but unapplied when the cursor was issued, or whose `received_at` equals
   the cursor's `as_of`; the head cursor gains `wal_epoch` and LSN with a `>=` arrival bound when `crucible-cursor`
   lands (milestone 2).
@@ -2368,6 +2375,15 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   `project_id` and `secret`; error messages never echo the file).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
   code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product.
+- With ClickHouse configured, `serve` also takes `--clickhouse-url`, `--clickhouse-user`, `--clickhouse-password-file`,
+  `--master-key-file`, `--migrate` and `--recent-max-bytes` (the first four also read `CRUCIBLE_*` variables; the
+  secrets have no value-taking flag). Listeners bind first with ingest closed (503 with `Retry-After`, `/readyz` gives
+  the reason) until migration (when asked), `detect`, `dedup_selftest`, the recent-index rebuild through the shipper's
+  replay, quarantine restore and shipper start have finished. Without ClickHouse, `serve` runs ingest only and the API
+  answers 503.
+- Service-identity passwords are HKDF-SHA256 of the 64-hex-character master key with info
+  `crucible/clickhouse-identity/v1/<user>/<generation>` and no salt, written as 64 hex characters; generation 0 until
+  rotation lands (milestone 4). A server migrated under another master key fails `detect`.
 - `/api/v1` defaults: 30 s request timeout and 1 MiB body limit (default; revisit). A malformed project id answers 404
   (visibility); malformed trace and span ids answer 422.
 - UI serving: try-files ignores the query string; slashless routes serve the page directly; under `/api/`, `/v1/`,

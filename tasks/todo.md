@@ -44,21 +44,25 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
       found nothing in 24M executions.
 - [x] Portable WAL with group commit, recovery and GC -> verify: torn-tail and fsync-lie DST seeds keep I1. Done in #16:
       61,000 long-run seeds with zero acked loss; the stress tier's fsync lie is detected; three mutants caught.
-- [ ] Minimal OTLP HTTP ingest, admission, normalizer stub -> verify: proto and JSON inputs map identically.
-- [ ] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
+- [x] Minimal OTLP HTTP ingest, admission, normalizer stub -> verify: proto and JSON inputs map identically. Done in
+      #11 (scanner and admission), #17 (normalizer, proto equals JSON over 1,000 cases) and #23 (ingest: the ack waits
+      for durability, and an ack-before-sync mutant is caught).
+- [x] Shipper (seal, token, probe, checkpoint) and the ClickHouse adapter with the own Native encoder
       -> verify: the same token three times yields one copy on single node and replicated; a two-partition block is
-         rejected.
+         rejected. Done in #24 (shipper: 5,000 seeds, six mutants caught) and #20 (adapter: C1 on single node and on a
+         one-shard, two-replica cluster; the two-partition block is rejected as poison).
 - [x] `crucible-schema` DDL-as-data for `span_core`, `span_payload`, `trace_heads`, `trace_stats`
       -> verify: golden SQL for three variants; `SHOW CREATE TABLE` matches on 26.3, 26.8, latest. Done in #8 for all
       18 tables, plus access step A1 and the service-identity row under both server switch values and on a cluster.
 - [x] `crucible-records` record types and kernels (histogram, MCP error classifier, batch token) with Kani proofs (#10).
 - [x] `crucible-chfmt` Native encoder and framing, byte-identical to ClickHouse 26.3, 26.8 and 26.10 output (#9).
-- [ ] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST. (Plan IR
-      #8; recent index and read services #18 with Shuttle and property tests; I3 under DST waits for the full
-      simulation harness.)
-- [ ] Simulation harness (turmoil, SimDisk, ChModel, oracle, I1-I3, I12-I14) and the swarm config generator
+- [x] Typed plan IR, trace-by-id and trace list; recent-span index with read barrier -> verify: I3 in DST. Plan IR #8,
+      recent index and read services #18, I3 checked after every ack and restart in the system simulation (#30).
+- [x] Simulation harness (turmoil, SimDisk, ChModel, oracle, I1-I3, I12-I14) and the swarm config generator
       -> verify: seeded mutants (skip sync, drop token, truncate early) caught within 200 configs; same seed, same
-         trace hash.
+         trace hash. Done in #30: 41 swarm dimensions, 612 runs per PR across four shards, six mutants caught, logs
+         byte-identical across thread counts, ChModel equal to ClickHouse on 184 plans per version. Single node, so no
+         turmoil yet.
 - [x] Quint spec of the ingest protocol -> verify: safety properties hold; an ack-before-sync variant is caught. Done
       in #13: five mutants caught; the model's three findings are in the contract (#15).
 - [x] Conformance C1-C4, startup dedup self-test, single-block rows -> verify: green on 26.3, 26.8, latest. Done in
@@ -71,8 +75,13 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 - [x] UI data layer: typed `/api/v1` client, problem+json mapper, TanStack Query provider, four-state `Section`
       -> verify: Vitest green (mapper rows, range hook, no-backend shapes, loading ladder, agent test); headless
       Chrome shows the designed error state on `/traces/` with no backend.
-- [ ] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract. (Serving
-      and try-files done in #19; the traces table needs the API routes.)
+- [x] One UI table in the embedded static export -> verify: the binary serves it with the try-files contract. Done in
+      #19 (serving), #26 (API and table) and #29 (end to end: the embedded UI shows real traces through the temporary
+      Connect dialog).
+- [x] End to end on real infrastructure (#29): freshness 13 to 28 ms from ack to the API; 100,000 acked spans across a
+      20,000-span burst, two `kill -9` rounds and a SIGTERM under load, with zero lost and zero duplicated.
+- [x] Close M1 on main: conformance, e2e, sim and quint dispatched on main's head and green; the release binary
+      carries no test-only features (CI guard).
 - [x] TypeScript MCP seam spike (3 days) -> verify: the five exit criteria or a recorded fallback. All five pass on SDK
       2.0.0 to 2.4.0 (#3); decision in `docs/architecture/mcp-typescript-seam.md`.
 - [x] CI for the UI (`ci-ui`: install, Biome, Oxlint, typecheck, Vitest, static export) -> verify: green on its PR.
@@ -111,4 +120,17 @@ Each item is `[step] -> verify: [check]`. Milestones end when every exit check i
 
 ## Review
 
-(Filled in at each milestone boundary.)
+### M1 (closed 2026-11-17)
+
+Every M1 exit check is green on main: one span flows end to end under simulation and on real ClickHouse; the seeded
+mutants are caught (WAL, shipper, ingest, recent index); the Quint safety properties hold and the model's five mutants
+are caught; the TypeScript seam spike met its five exit criteria; conformance passes on ClickHouse 26.3, 26.8 and 26.10,
+including a one-shard, two-replica cluster.
+
+What worked: freezing the contract first; the A0 foundation commit, which made the parallel waves merge cleanly;
+formal and empirical checks finding real defects before integration (the Quint model's probe rule, the WAL's two
+long-run bugs, ClickHouse's grants and UUID order, the data-bounds parameter format found end to end).
+
+Carried into M2 (see `docs/architecture/contracts.md` 8.9 and the decisions log): nullable outputs and `set_merge`;
+the recent-index locator ordinal and the environment default; ChModel query-class guardrails (the model is more
+permissive than ClickHouse there); frame quarantine; throughput, pending the first baseline.
