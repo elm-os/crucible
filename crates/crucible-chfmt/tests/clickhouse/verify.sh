@@ -11,9 +11,11 @@
 #   3. inserts the committed encoder snapshots (tests/snapshots/*.snap.lz4 and *.snap.zstd) with decompress=1 and the
 #      per-insert settings of contract section 5.4 into tables of matching column types, and compares what SELECT
 #      returns: each column of the all-types block against its fixture, the 262,144-row block by count, aggregates
-#      and part count, and the two aggregating blocks against tests/clickhouse/sum_map.tsv before and after a merge.
+#      and part count, and the two aggregating blocks against tests/clickhouse/sum_map.tsv before and after a merge;
+#   4. inserts each SimpleAggregateFunction column again with a block header that names the underlying type instead
+#      (the form crucible-schema's Ty::wire() renders) and compares the read-back with the fixture of the SAF type.
 # With --generate, steps 1 and 2 write each file from the first tag that produces it and compare it on the later
-# tags, and step 3 is skipped.
+# tags, and steps 3 and 4 are skipped.
 #
 # Requires docker and curl. The server listens on localhost:$CHFMT_PORT (default 18123). Exits non-zero on any
 # difference; any HTTP error or ClickHouse exception aborts the run.
@@ -216,6 +218,34 @@ sum_map() {
   fi
 }
 
+saf_headers() {
+  local name base ty
+  while read -r name base; do
+    ty=$(awk -F'	' -v name="$name" '$1 == name { print $2 }' tests/clickhouse/all_types.tsv)
+    sql "$work/out" "CREATE TABLE chfmt_header_$name ($base $ty) ENGINE = MergeTree ORDER BY tuple()"
+    post "$work/insert" --url-query "query=INSERT INTO chfmt_header_$name ($base) FORMAT Native" --data-binary @-       "$url/?wait_end_of_query=1&$settings" < "tests/fixtures/$base.native"
+    sql "$work/column" "SELECT $base AS $name FROM chfmt_header_$name FORMAT Native"
+    if cmp -s "$work/column" "tests/fixtures/$name.native"; then
+      ok "underlying-type header into $name"
+    else
+      bad "underlying-type header into $name: read-back differs from $name.native"
+    fi
+  done <<'COLUMNS'
+saf_max_datetime datetime
+saf_min_datetime64 datetime64
+saf_max_datetime64 datetime64
+saf_max_uint8 uint8
+saf_sum_uint64 uint64
+saf_sum_int64 int64
+saf_max_string string
+saf_group_uniq_array_string_16 array_string
+saf_group_uniq_array_string_8 array_string
+saf_group_uniq_array_uint8_4 array_uint8
+saf_sum_map_u16 tuple_u16_u64
+saf_sum_map_u8 tuple_u8_u64
+COLUMNS
+}
+
 for tag in "${tags[@]}"; do
   start "$tag"
   sql "$work/version" 'SELECT version()'
@@ -226,6 +256,7 @@ for tag in "${tags[@]}"; do
     all_types
     max_rows
     sum_map
+    saf_headers
   fi
   docker rm -f "$container" >/dev/null
 done
