@@ -171,25 +171,25 @@ each collector state, and exits with 1 when an added p99 is over 1 ms.
 
 Measured on 2026-11-18 on a laptop (Windows 11 host, Docker Desktop Linux container limited to 3 CPUs and 2 GiB,
 release build), 100,000 calls per path and collector state in 20 alternating rounds, while other builds ran on
-the same machine. Times are in milliseconds. The largest added p99 was 0.1953 ms.
+the same machine. Times are in milliseconds. The largest added p99 was 0.3956 ms (stdio: 0.1289 ms; HTTP: 0.3956 ms).
 
 | Path | Collector | Direct p50 ms | Direct p99 ms | Proxy p50 ms | Proxy p99 ms | Added p50 ms | Added p99 ms | Gate (added p99 at most 1 ms) |
 |---|---|---|---|---|---|---|---|---|
-| stdio, sequential | healthy | 0.0257 | 0.0681 | 0.0949 | 0.2196 | 0.0692 | 0.1515 | pass |
-| stdio, pipelined (per request) | healthy | 0.0009 | 0.0026 | 0.0021 | 0.0103 | 0.0012 | 0.0076 | pass |
-| stdio, sequential | refused | 0.0263 | 0.0718 | 0.0943 | 0.2322 | 0.0680 | 0.1604 | pass |
-| stdio, pipelined (per request) | refused | 0.0010 | 0.0025 | 0.0022 | 0.0051 | 0.0012 | 0.0026 | pass |
-| stdio, sequential | stalled | 0.0263 | 0.0693 | 0.0871 | 0.2167 | 0.0608 | 0.1474 | pass |
-| stdio, pipelined (per request) | stalled | 0.0009 | 0.0015 | 0.0018 | 0.0032 | 0.0010 | 0.0017 | pass |
-| http, JSON answer | healthy | 0.0341 | 0.1089 | 0.0993 | 0.2338 | 0.0652 | 0.1248 | pass |
-| http, SSE first byte | healthy | 0.0339 | 0.0927 | 0.1105 | 0.2438 | 0.0765 | 0.1511 | pass |
-| http, SSE whole stream | healthy | 0.0350 | 0.0994 | 0.1178 | 0.2947 | 0.0827 | 0.1953 | pass |
-| http, JSON answer | refused | 0.0432 | 0.1057 | 0.1192 | 0.2308 | 0.0761 | 0.1251 | pass |
-| http, SSE first byte | refused | 0.0452 | 0.1046 | 0.1270 | 0.2523 | 0.0818 | 0.1477 | pass |
-| http, SSE whole stream | refused | 0.0468 | 0.1124 | 0.1360 | 0.2953 | 0.0892 | 0.1828 | pass |
-| http, JSON answer | stalled | 0.0403 | 0.1010 | 0.1082 | 0.2432 | 0.0680 | 0.1423 | pass |
-| http, SSE first byte | stalled | 0.0425 | 0.1107 | 0.1200 | 0.2431 | 0.0775 | 0.1324 | pass |
-| http, SSE whole stream | stalled | 0.0439 | 0.1197 | 0.1307 | 0.3006 | 0.0867 | 0.1809 | pass |
+| stdio, sequential | healthy | 0.0277 | 0.0535 | 0.0944 | 0.1824 | 0.0667 | 0.1289 | pass |
+| stdio, pipelined (per request) | healthy | 0.0010 | 0.0023 | 0.0020 | 0.0037 | 0.0011 | 0.0015 | pass |
+| stdio, sequential | refused | 0.0274 | 0.0555 | 0.0941 | 0.1835 | 0.0667 | 0.1280 | pass |
+| stdio, pipelined (per request) | refused | 0.0009 | 0.0013 | 0.0018 | 0.0048 | 0.0010 | 0.0034 | pass |
+| stdio, sequential | stalled | 0.0276 | 0.0623 | 0.0981 | 0.1885 | 0.0705 | 0.1262 | pass |
+| stdio, pipelined (per request) | stalled | 0.0009 | 0.0015 | 0.0020 | 0.0038 | 0.0011 | 0.0023 | pass |
+| http, JSON answer | healthy | 0.0359 | 0.0962 | 0.1113 | 0.2246 | 0.0754 | 0.1284 | pass |
+| http, SSE first byte | healthy | 0.0390 | 0.0905 | 0.1169 | 0.2427 | 0.0779 | 0.1522 | pass |
+| http, SSE whole stream | healthy | 0.0407 | 0.1016 | 0.1248 | 0.2744 | 0.0841 | 0.1728 | pass |
+| http, JSON answer | refused | 0.0360 | 0.0960 | 0.1098 | 0.2294 | 0.0738 | 0.1333 | pass |
+| http, SSE first byte | refused | 0.0380 | 0.0893 | 0.1122 | 0.2329 | 0.0742 | 0.1437 | pass |
+| http, SSE whole stream | refused | 0.0396 | 0.0968 | 0.1213 | 0.2616 | 0.0818 | 0.1648 | pass |
+| http, JSON answer | stalled | 0.0488 | 0.1195 | 0.1313 | 0.2773 | 0.0825 | 0.1578 | pass |
+| http, SSE first byte | stalled | 0.0508 | 0.1358 | 0.1424 | 0.4691 | 0.0916 | 0.3333 | pass |
+| http, SSE whole stream | stalled | 0.0528 | 0.1510 | 0.1564 | 0.5466 | 0.1036 | 0.3956 | pass |
 
 "Added" is the difference of the percentiles, so it can be slightly negative where the two runs are within
 noise. Absolute times will differ on other hosts; the gate is on the added p99.
