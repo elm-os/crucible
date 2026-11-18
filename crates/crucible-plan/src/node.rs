@@ -4,7 +4,7 @@
 //! belong to its table, its literals fit their columns, and aggregating tables are only reachable through
 //! `Aggregate`. Nodes hold no SQL text; the renderer derives every identifier from the schema.
 
-use crucible_records::{TableId, Timestamp};
+use crucible_records::{TableId, TimeWindow, Timestamp};
 use crucible_schema::{AggFn, ColumnRef, IndexKind, TableKind, Ty, table};
 
 use crate::error::PlanError;
@@ -13,6 +13,8 @@ use crate::pred::{CmpOp, Pred};
 
 /// The default cap on the ids a semi-join may carry; exceeding it is `query_too_broad`.
 pub const DEFAULT_MAX_IDS: u32 = 10_000;
+/// The most tokens a text search with snippets may hold: the server's position function takes a bounded list.
+pub const MAX_SNIPPET_TOKENS: usize = 64;
 
 /// Ascending or descending.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -294,6 +296,10 @@ pub enum Measure {
     PickMerge(ColumnRef),
     /// The value of a fact column on the row with the greatest `(version, fact_id)` in each group.
     LatestByVersion(ColumnRef),
+    /// The merge of a bounded set partial (`groupUniqArrayArray(n)`): the union of the stored sets as an array
+    /// in ascending order, cut to the column's bound `n`. Which elements a stored partial kept above its bound
+    /// is the store's choice.
+    SetMerge(ColumnRef),
 }
 
 impl Measure {
@@ -306,7 +312,28 @@ impl Measure {
             | Self::Uniq(c)
             | Self::HistogramMerge(c)
             | Self::PickMerge(c)
-            | Self::LatestByVersion(c) => Some(c),
+            | Self::LatestByVersion(c)
+            | Self::SetMerge(c) => Some(c),
+        }
+    }
+
+    /// Whether `value` has the type of the measure's result, so that a condition or a cursor can compare them:
+    /// unsigned for a count, a distinct count or an unsigned sum, the column's type for a minimum, maximum or
+    /// latest value. Histogram, pick and set merges cannot be compared.
+    fn comparable(&self, value: &Literal) -> bool {
+        match self {
+            Self::Count | Self::Uniq(_) => matches!(value, Literal::UInt(_)),
+            Self::Sum(c) => matches!(
+                (c.ty().scalar(), value),
+                (Ty::Int32 | Ty::Int64, Literal::Int(_))
+                    | (Ty::Float32 | Ty::Float64, Literal::Float(_))
+                    | (
+                        Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64,
+                        Literal::UInt(_)
+                    )
+            ),
+            Self::Min(c) | Self::Max(c) | Self::LatestByVersion(c) => value.fits(c.ty()),
+            Self::HistogramMerge(_) | Self::PickMerge(_) | Self::SetMerge(_) => false,
         }
     }
 
@@ -349,6 +376,7 @@ impl Measure {
             Self::LatestByVersion(_) => {
                 def.column("version").is_some() && def.column("fact_id").is_some()
             }
+            Self::SetMerge(_) => matches!(partial, Some(AggFn::GroupUniqArrayArray(_))),
         };
         if ok {
             Ok(())
@@ -389,6 +417,7 @@ pub struct Aggregate {
     having: Vec<Having>,
     order: Vec<(AggOutput, Direction)>,
     limit: Option<u32>,
+    cursor: Option<Vec<Literal>>,
 }
 
 impl Aggregate {
@@ -423,34 +452,20 @@ impl Aggregate {
             having: Vec::new(),
             order: Vec::new(),
             limit: None,
+            cursor: None,
         })
     }
 
     /// Keeps the groups whose measures satisfy every condition. A condition's value must have the type of its
     /// measure: unsigned for a count, a distinct count or an unsigned sum, the column's type for a minimum,
-    /// maximum or latest value. Histogram and pick merges cannot be compared.
+    /// maximum or latest value. Histogram, pick and set merges cannot be compared.
     pub fn having(mut self, having: Vec<Having>) -> Result<Self, PlanError> {
         for condition in &having {
             let measure = self
                 .measures
                 .get(condition.measure)
                 .ok_or(PlanError::OutputIndex)?;
-            let fits = match measure {
-                Measure::Count | Measure::Uniq(_) => matches!(condition.value, Literal::UInt(_)),
-                Measure::Sum(c) => matches!(
-                    (c.ty().scalar(), &condition.value),
-                    (Ty::Int32 | Ty::Int64, Literal::Int(_))
-                        | (Ty::Float32 | Ty::Float64, Literal::Float(_))
-                        | (
-                            Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64,
-                            Literal::UInt(_)
-                        )
-                ),
-                Measure::Min(c) | Measure::Max(c) | Measure::LatestByVersion(c) => {
-                    condition.value.fits(c.ty())
-                }
-                Measure::HistogramMerge(_) | Measure::PickMerge(_) => false,
-            };
+            let fits = measure.comparable(&condition.value);
             if !fits {
                 return Err(PlanError::LiteralType(
                     measure.column().map_or("count", |c| c.name()),
@@ -471,6 +486,7 @@ impl Aggregate {
             return Err(PlanError::OutputIndex);
         }
         self.order = order;
+        self.cursor = None;
         Ok(self)
     }
 
@@ -480,6 +496,28 @@ impl Aggregate {
             return Err(PlanError::Limit);
         }
         self.limit = Some(limit);
+        Ok(self)
+    }
+
+    /// Resumes strictly after the group whose order outputs hold `after`: the keyset cursor of a grouped list.
+    /// Requires an order whose outputs all run in one direction, and one value per order output, of its type.
+    /// The order must be set first; setting it again drops the cursor.
+    pub fn after(mut self, after: Vec<Literal>) -> Result<Self, PlanError> {
+        let one_direction = match self.order.split_first() {
+            Some(((_, first), rest)) => rest.iter().all(|(_, direction)| direction == first),
+            None => false,
+        };
+        let fits = |(output, value): (&(AggOutput, Direction), &Literal)| match output.0 {
+            AggOutput::Group(i) => self.group.get(i).is_some_and(|c| value.fits(c.ty())),
+            AggOutput::Measure(i) => self.measures.get(i).is_some_and(|m| m.comparable(value)),
+        };
+        if !one_direction
+            || after.len() != self.order.len()
+            || !self.order.iter().zip(&after).all(fits)
+        {
+            return Err(PlanError::Cursor);
+        }
+        self.cursor = Some(after);
         Ok(self)
     }
 
@@ -516,6 +554,11 @@ impl Aggregate {
     /// The group limit, if any.
     pub const fn limit(&self) -> Option<u32> {
         self.limit
+    }
+
+    /// The keyset cursor: the order-output values of the last group already returned.
+    pub fn cursor(&self) -> Option<&[Literal]> {
+        self.cursor.as_deref()
     }
 }
 
@@ -587,7 +630,17 @@ pub enum TokenMode {
     Phrase,
 }
 
-/// A full-text search over text-indexed fields of a payload table; it returns row keys.
+/// The part of each searched string field a text search returns for highlighting.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Snippet {
+    /// How many bytes before the first occurrence of a token the snippet starts.
+    pub before: u32,
+    /// The most bytes of the field the snippet holds.
+    pub len: u32,
+}
+
+/// A full-text search over text-indexed fields of a payload table; it returns row keys and, when asked, a
+/// snippet of each searched string field.
 #[derive(Clone, PartialEq, Debug)]
 pub struct TextSearch {
     table: TableId,
@@ -596,6 +649,7 @@ pub struct TextSearch {
     tokens: Vec<String>,
     pred: Pred,
     limit: u32,
+    snippet: Option<Snippet>,
 }
 
 impl TextSearch {
@@ -634,7 +688,45 @@ impl TextSearch {
             tokens,
             pred,
             limit,
+            snippet: None,
         })
+    }
+
+    /// Also returns, for each searched `String` field in field order, two columns: `<field>_match`, the byte
+    /// position (from 1) of the first occurrence of any token in the field as a substring, compared without
+    /// regard to ASCII case, or 0 when no token occurs; and `<field>_snippet`, at most `snippet.len` bytes of
+    /// the field starting `snippet.before` bytes before that position (at the field's first byte when the
+    /// position is 0 or closer to the start). The snippet's first byte is byte
+    /// `max(match, before + 1) - before` of the field. A hit is decided by tokens and the position by
+    /// substrings, so a field can hold a position without being the field that matched; an array field has no
+    /// snippet.
+    pub fn with_snippets(mut self, snippet: Snippet) -> Result<Self, PlanError> {
+        if snippet.len == 0 {
+            return Err(PlanError::Limit);
+        }
+        if self.tokens.len() > MAX_SNIPPET_TOKENS {
+            return Err(PlanError::ListLength("tokens"));
+        }
+        self.snippet = Some(snippet);
+        Ok(self)
+    }
+
+    /// The searched fields that carry a snippet: the `String` ones, in field order.
+    pub fn snippet_fields(&self) -> Vec<ColumnRef> {
+        match self.snippet {
+            Some(_) => self
+                .fields
+                .iter()
+                .filter(|f| matches!(f.ty(), Ty::String))
+                .copied()
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The snippet returned for each searched string field, if any.
+    pub const fn snippet(&self) -> Option<Snippet> {
+        self.snippet
     }
 
     /// The table.
@@ -685,12 +777,64 @@ pub enum Step {
     Week,
 }
 
+impl Step {
+    /// Every step, finest first.
+    pub const ALL: [Self; 6] = [
+        Self::Minute,
+        Self::FiveMinutes,
+        Self::FifteenMinutes,
+        Self::Hour,
+        Self::Day,
+        Self::Week,
+    ];
+
+    /// The width of a bucket in seconds. Buckets are aligned to the UTC epoch, and weeks start on Monday.
+    pub const fn seconds(self) -> i64 {
+        match self {
+            Self::Minute => 60,
+            Self::FiveMinutes => 300,
+            Self::FifteenMinutes => 900,
+            Self::Hour => 3_600,
+            Self::Day => 86_400,
+            Self::Week => 604_800,
+        }
+    }
+
+    /// The first instant of the bucket that holds `t`.
+    pub fn bucket(self, t: Timestamp) -> Timestamp {
+        const MICROS: i64 = 1_000_000;
+        // 1970-01-01 was a Thursday: the first Monday of the epoch is three days before it.
+        let shift = match self {
+            Self::Week => 3 * 86_400,
+            _ => 0,
+        };
+        let width = self.seconds();
+        let seconds = t.micros().div_euclid(MICROS);
+        let start = (seconds + shift).div_euclid(width) * width - shift;
+        Timestamp::from_micros(start.saturating_mul(MICROS))
+    }
+
+    /// The buckets a window overlaps: the first instant of the first, and how many there are. This is the one
+    /// definition the caps of the metrics compiler, the fill bounds of the renderer and the store model share.
+    pub fn buckets(self, window: TimeWindow) -> (Timestamp, u64) {
+        let first = self.bucket(window.from());
+        let last = self.bucket(window.to().saturating_add_micros(-1));
+        let span = last.micros().saturating_sub(first.micros()) / 1_000_000;
+        (first, (span / self.seconds()).unsigned_abs() + 1)
+    }
+}
+
 /// What an empty bucket holds.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Fill {
     /// Empty buckets are omitted.
     None,
-    /// Empty buckets hold zero.
+    /// Every bucket the plan's window overlaps is returned for every series, in `(group dimensions, bucket)`
+    /// ascending order. A series is a combination of group dimension values with at least one matching row;
+    /// an aggregate without group dimensions is one series, which exists even when no row matches. An empty
+    /// bucket holds the series' dimension values, 0 for `count` and `sum`, null for `min`, `max`, `uniq`,
+    /// pick and latest-by-version measures, the empty histogram `([], [])` for a histogram merge (the floor
+    /// server version has no nullable tuple) and the empty array for a set merge.
     Zero,
 }
 
@@ -713,6 +857,15 @@ impl TimeSeries {
     ) -> Result<Self, PlanError> {
         let time = time.into();
         own(aggregate.table, core::slice::from_ref(&time))?;
+        // A filled series has its own order, and a condition, a limit or a cursor would have to apply to
+        // buckets that hold no row.
+        let shaped = !aggregate.having.is_empty()
+            || !aggregate.order.is_empty()
+            || aggregate.limit.is_some()
+            || aggregate.cursor.is_some();
+        if fill == Fill::Zero && shaped {
+            return Err(PlanError::ZeroFill);
+        }
         match time.ty() {
             Ty::DateTime | Ty::DateTime64 | Ty::Date => Ok(Self {
                 aggregate,
@@ -754,6 +907,7 @@ pub struct FieldRange {
     field: ColumnRef,
     offset: u64,
     len: u64,
+    total: bool,
 }
 
 impl FieldRange {
@@ -786,7 +940,20 @@ impl FieldRange {
             field,
             offset,
             len,
+            total: false,
         })
+    }
+
+    /// Also returns `<field>_bytes`, the length of the whole field in bytes, as a second column: what a byte
+    /// range response needs for its total length.
+    pub fn with_total(mut self) -> Self {
+        self.total = true;
+        self
+    }
+
+    /// Whether the length of the whole field is returned too.
+    pub const fn total(&self) -> bool {
+        self.total
     }
 
     /// The table.

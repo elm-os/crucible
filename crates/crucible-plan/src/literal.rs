@@ -51,6 +51,27 @@ impl Literal {
     }
 }
 
+impl Literal {
+    /// The literal that compares equal to a result value: what a read uses to restrict a later read to the
+    /// keys an earlier one returned. `None` for a null, an array, a tuple, and for bytes that are a `String`
+    /// with invalid UTF-8 when `ty` is a string type.
+    pub fn of(value: &crate::Value, ty: &Ty) -> Option<Self> {
+        let literal = match value {
+            crate::Value::UInt(v) => Self::UInt(*v),
+            crate::Value::Int(v) => Self::Int(*v),
+            crate::Value::Float(v) => Self::Float(*v),
+            crate::Value::String(v) => Self::String(v.clone()),
+            crate::Value::Bytes(v) => Self::Bytes(v.clone()),
+            crate::Value::Uuid(v) => Self::Uuid(*v),
+            crate::Value::Date(v) => Self::Date(*v),
+            crate::Value::Time(v) => Self::Time(*v),
+            crate::Value::Enum(v) => Self::Enum(*v),
+            crate::Value::Null | crate::Value::Array(_) | crate::Value::Tuple2(..) => return None,
+        };
+        literal.fits(ty).then_some(literal)
+    }
+}
+
 impl From<Uuid> for Literal {
     fn from(v: Uuid) -> Self {
         Self::Uuid(v)

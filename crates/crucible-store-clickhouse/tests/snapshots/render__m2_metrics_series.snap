@@ -1,0 +1,18 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&series.unwrap().unwrap())
+---
+SELECT bucket, model_response, observation_type, m0, m1, m2 FROM (SELECT toDateTime(toStartOfMinute(toDateTime(minute, {p0:String})), {p0:String}) AS bucket, model_response, observation_type, sum(count) AS m0, sumMap(dur_hist) AS m1, sum(total_cost_nusd) AS m2, count() AS matched FROM crucible.span_metrics WHERE project_id = {p4:UUID} AND minute >= {p5:DateTime('UTC')} AND minute <= {p6:DateTime('UTC')} AND (level IN ({p7:String}) AND ((model_response = {p8:String} AND observation_type = {p9:String}) OR (model_response = {p10:String} AND observation_type = {p11:String}))) GROUP BY bucket, model_response, observation_type ORDER BY model_response ASC, observation_type ASC, bucket ASC WITH FILL FROM {p1:DateTime('UTC')} TO {p2:DateTime('UTC')} STEP {p3:UInt64}) QUALIFY max(matched) OVER () > 0 ORDER BY model_response ASC, observation_type ASC, bucket ASC
+p0: String = "UTC"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1794911460"
+p3: UInt64 = "60"
+p4: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p5: DateTime('UTC') = "1794907800"
+p6: DateTime('UTC') = "1794911400"
+p7: String = "error"
+p8: String = "model-a"
+p9: String = "generation"
+p10: String = ""
+p11: String = "tool"
+setting use_with_fill_by_sorting_prefix = 1

@@ -180,6 +180,10 @@ decision and its main reason. Entries marked "reconciled" settle a point on whic
     `CRUCIBLE_*` variables only warn.
 83. **The control store is optional.** A node without Postgres still ingests, stores and serves telemetry; platform
     features (sessions, keys in Postgres, alerts, dashboards, the SQL workspace) require it.
+84. **OAuth and OIDC use the `oauth2` and `openidconnect` crates, with two advisories ignored and reviewed at every
+    release.** The rsa timing advisory concerns private-key operations, while Crucible only verifies ID-token
+    signatures with public keys; the chrono advisory reports it unmaintained, with no alternative yet. Hand-written
+    OIDC verification would be the larger risk.
 85. **Dialect tables are layers in the contracts 10.3 order, and every span is mapped with all of them.** The
     chosen dialect decides only `compat_dialect`, which bare-key (`own`) sources are live, and the value
     encoding. This is what the field priority already described; it needs no duplicated rows and stops the data

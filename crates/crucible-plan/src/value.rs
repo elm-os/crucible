@@ -38,7 +38,7 @@
 use crucible_records::{CivilDate, Timestamp, Uuid};
 use crucible_schema::{ColumnRef, Ty};
 
-use crate::node::{Aggregate, Measure, Node};
+use crate::node::{Aggregate, Fill, Measure, Node};
 
 /// The most rows one [`RowBlock`] holds.
 pub const MAX_ROWS_PER_BLOCK: usize = 65_536;
@@ -267,30 +267,56 @@ fn columns(refs: &[ColumnRef]) -> Vec<OutputColumn> {
     refs.iter().map(column).collect()
 }
 
-fn measure(measure: &Measure) -> OutputColumn {
+/// The nullable form of a stored type's result type, for a value that can be absent. Arrays and tuples have no
+/// nullable form on the server; their absent value is the empty one.
+fn nullable(ty: &'static Ty) -> Ty {
+    match ty {
+        Ty::Saf(_, inner) => nullable(inner),
+        Ty::Nullable(_) | Ty::Array(_) | Ty::Tuple2(..) => result_ty(ty),
+        Ty::LowCardinalityString => Ty::Nullable(&Ty::String),
+        other => Ty::Nullable(other),
+    }
+}
+
+/// The output column of a measure. `filled` is set for the measures of a zero-filled time series, whose empty
+/// buckets hold no value.
+fn measure(measure: &Measure, filled: bool) -> OutputColumn {
     let named = |function: &str, c: &ColumnRef, ty: Ty| OutputColumn {
         name: format!("{function}_{}", c.name()),
         ty,
     };
-    let count = |name: String| OutputColumn {
-        name,
-        ty: Ty::UInt64,
+    let absent = |c: &ColumnRef| {
+        if filled {
+            nullable(c.ty())
+        } else {
+            result_ty(c.ty())
+        }
     };
     match measure {
-        Measure::Count => count("count".to_owned()),
-        Measure::Uniq(c) => count(format!("uniq_{}", c.name())),
-        Measure::Sum(c) => named("sum", c, sum_ty(c.ty())),
-        Measure::Min(c) => named("min", c, result_ty(c.ty())),
-        Measure::Max(c) => named("max", c, result_ty(c.ty())),
+        Measure::Count => OutputColumn {
+            name: "count".to_owned(),
+            ty: Ty::UInt64,
+        },
+        // The distinct count of a nullable column is null for a group whose values are all null.
+        Measure::Uniq(c) if filled || matches!(c.ty(), Ty::Nullable(_)) => {
+            named("uniq", c, Ty::Nullable(&Ty::UInt64))
+        }
+        Measure::Uniq(c) => named("uniq", c, Ty::UInt64),
+        Measure::Sum(c) => named("sum", c, sum_ty(c.ty(), filled)),
+        Measure::Min(c) => named("min", c, absent(c)),
+        Measure::Max(c) => named("max", c, absent(c)),
+        Measure::PickMerge(c) => named("pick", c, absent(c)),
+        Measure::LatestByVersion(c) => named("latest", c, absent(c)),
         Measure::HistogramMerge(c) => named("histogram", c, result_ty(c.ty())),
-        Measure::PickMerge(c) => named("pick", c, result_ty(c.ty())),
-        Measure::LatestByVersion(c) => named("latest", c, result_ty(c.ty())),
+        Measure::SetMerge(c) => named("set", c, result_ty(c.ty())),
     }
 }
 
-/// A sum widens to 64 bits and keeps the signedness and nullability of its column.
-fn sum_ty(ty: &Ty) -> Ty {
-    let nullable = matches!(result_ty(ty), Ty::Nullable(_));
+/// A sum widens to 64 bits and keeps the signedness of its column. It keeps the column's nullability too (a
+/// group whose values are all null sums to null), except in a zero-filled time series, where such a sum and
+/// the sum of an empty bucket are both 0.
+fn sum_ty(ty: &Ty, filled: bool) -> Ty {
+    let nullable = !filled && matches!(result_ty(ty), Ty::Nullable(_));
     match (ty.scalar(), nullable) {
         (Ty::Int32 | Ty::Int64, false) => Ty::Int64,
         (Ty::Int32 | Ty::Int64, true) => Ty::Nullable(&Ty::Int64),
@@ -301,10 +327,17 @@ fn sum_ty(ty: &Ty) -> Ty {
     }
 }
 
-fn aggregate(aggregate: &Aggregate) -> Vec<OutputColumn> {
+fn aggregate(aggregate: &Aggregate, filled: bool) -> Vec<OutputColumn> {
     let mut out = columns(aggregate.group());
-    out.extend(aggregate.measures().iter().map(measure));
+    out.extend(aggregate.measures().iter().map(|m| measure(m, filled)));
     out
+}
+
+fn unsigned(name: String) -> OutputColumn {
+    OutputColumn {
+        name,
+        ty: Ty::UInt64,
+    }
 }
 
 /// The output schema of a node. Total over every node kind.
@@ -312,18 +345,34 @@ pub(crate) fn output(node: &Node) -> OutputSchema {
     let columns = match node {
         Node::Scan(n) => columns(n.columns()),
         Node::PointLookup(n) => columns(n.columns()),
-        Node::Aggregate(n) => aggregate(n),
+        Node::Aggregate(n) => aggregate(n, false),
         Node::SemiJoin(n) => columns(n.left().columns()),
-        Node::TextSearch(n) => columns(&crucible_schema::table(n.table()).key_columns()),
+        Node::TextSearch(n) => {
+            let mut out = columns(&crucible_schema::table(n.table()).key_columns());
+            for field in n.snippet_fields() {
+                out.push(unsigned(format!("{}_match", field.name())));
+                out.push(OutputColumn {
+                    name: format!("{}_snippet", field.name()),
+                    ty: Ty::String,
+                });
+            }
+            out
+        }
         Node::TimeSeries(n) => {
             let mut out = vec![OutputColumn {
                 name: "bucket".to_owned(),
                 ty: Ty::DateTime,
             }];
-            out.extend(aggregate(n.aggregate()));
+            out.extend(aggregate(n.aggregate(), n.fill() == Fill::Zero));
             out
         }
-        Node::FieldRange(n) => vec![column(&n.field())],
+        Node::FieldRange(n) => {
+            let mut out = vec![column(&n.field())];
+            if n.total() {
+                out.push(unsigned(format!("{}_bytes", n.field().name())));
+            }
+            out
+        }
     };
     OutputSchema { columns }
 }
@@ -350,24 +399,30 @@ mod tests {
                 let ty = result_ty(&col.ty);
                 assert!(is_result_ty(&ty), "{}.{}: {ty}", def.name(), col.name);
                 assert_eq!(ty.scalar(), &result_ty(col.ty.scalar()), "{}", col.name);
-                assert!(is_result_ty(&sum_ty(&col.ty)));
+                assert!(is_result_ty(&sum_ty(&col.ty, false)));
+                assert!(is_result_ty(&nullable(&col.ty)));
             }
         }
     }
 
     #[test]
     fn sums_widen_and_keep_sign_and_nullability() {
-        assert_eq!(sum_ty(&Ty::UInt8), Ty::UInt64);
+        assert_eq!(sum_ty(&Ty::UInt8, false), Ty::UInt64);
         assert_eq!(
-            sum_ty(&Ty::Saf(crucible_schema::AggFn::Sum, &Ty::Int64)),
+            sum_ty(&Ty::Saf(crucible_schema::AggFn::Sum, &Ty::Int64), false),
             Ty::Int64
         );
-        assert_eq!(sum_ty(&Ty::Float32), Ty::Float64);
+        assert_eq!(sum_ty(&Ty::Float32, false), Ty::Float64);
         assert_eq!(
-            sum_ty(&Ty::Nullable(&Ty::UInt32)),
+            sum_ty(&Ty::Nullable(&Ty::UInt32), false),
             Ty::Nullable(&Ty::UInt64)
         );
-        assert_eq!(sum_ty(&Ty::Nullable(&Ty::Int32)), Ty::Nullable(&Ty::Int64));
+        assert_eq!(
+            sum_ty(&Ty::Nullable(&Ty::Int32), false),
+            Ty::Nullable(&Ty::Int64)
+        );
+        // In a zero-filled series a sum is never null.
+        assert_eq!(sum_ty(&Ty::Nullable(&Ty::UInt32), true), Ty::UInt64);
     }
 
     #[test]
