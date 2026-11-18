@@ -32,23 +32,18 @@ impl McpGate {
         }
     }
 
-    /// Mounts the MCP server over the store's query service, with the keys and cursor keys of the API.
+    /// Mounts the MCP server over the store's query service, with the keys and cursor keys of the API and the
+    /// rate limit of `mcp.calls_per_second` and `mcp.burst`.
     pub(crate) fn open(
         &self,
         env: &Env,
         service: QueryService,
         keys: Arc<dyn KeyVerifier>,
         cursors: Arc<KeyRing>,
+        config: McpConfig,
     ) {
         let settings = Arc::new(StaticProjectSettings::default());
-        let router = crucible_mcp_server::router(
-            env,
-            service,
-            keys,
-            settings,
-            cursors,
-            McpConfig::default(),
-        );
+        let router = crucible_mcp_server::router(env, service, keys, settings, cursors, config);
         // The store task is the only caller, once.
         let _ = self.over_store.set(router);
     }

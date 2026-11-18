@@ -63,23 +63,31 @@ fn both_eras_list_the_same_tools_and_get_the_same_results() {
         );
         assert_eq!(discovered.header("mcp-session-id"), None);
 
-        let expected = [
-            "get_data_bounds",
-            "get_span_children",
-            "get_trace",
-            "list_traces",
-        ];
+        // The registry decides the list; each era sees all of it, in name order.
+        let mut lists = Vec::new();
         for client in [&mut legacy, &mut modern] {
             let listed = client.request("tools/list", json!({})).await;
             assert_eq!(listed.status, StatusCode::OK, "{:#}", listed.body);
-            let tools = &listed.body["result"]["tools"];
-            assert_eq!(names(tools), expected);
+            let tools = listed.body["result"]["tools"].clone();
+            let mut sorted = names(&tools);
+            sorted.sort_unstable();
+            assert_eq!(names(&tools), sorted);
+            for name in [
+                "get_data_bounds",
+                "get_span_children",
+                "get_trace",
+                "list_traces",
+            ] {
+                assert!(sorted.contains(&name), "{name} is not listed");
+            }
+            lists.push(sorted.join(","));
             for tool in tools.as_array().unwrap() {
                 assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool:#}");
                 assert_eq!(tool["inputSchema"]["type"], "object", "{tool:#}");
                 assert_eq!(tool["outputSchema"]["type"], "object", "{tool:#}");
             }
         }
+        assert_eq!(lists[0], lists[1]);
 
         let day = window(NOW.saturating_add_micros(-DAY), NOW);
         let from_session = legacy.output("list_traces", day.clone()).await;

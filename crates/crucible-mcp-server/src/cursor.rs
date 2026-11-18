@@ -48,7 +48,10 @@ pub(crate) struct Cursors<'a> {
 }
 
 impl Cursors<'_> {
-    fn seal(&self, filter: FilterHash, sort: Sort, position: Position) -> String {
+    /// A page cursor at `position`, bound to the call's project and to `filter` and `sort`. A tool that pages
+    /// a list of its own seals with this and [`Cursors::open`], reusing the REST list's route, position and
+    /// canonical filter form.
+    pub(crate) fn seal(&self, filter: FilterHash, sort: Sort, position: Position) -> String {
         self.ring.seal(&Cursor::new(
             self.project_id,
             filter,
@@ -58,7 +61,9 @@ impl Cursors<'_> {
         ))
     }
 
-    fn open(
+    /// The position of a page cursor that opens for this call's project, `route`, `filter`, `sort` and
+    /// `window`.
+    pub(crate) fn open(
         &self,
         text: &str,
         route: Route,

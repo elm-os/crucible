@@ -50,6 +50,7 @@ use crucible_env::{
 };
 use crucible_env_prod::ProdConfig;
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
+use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
@@ -531,6 +532,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// The MCP server's rate limit.
+    mcp: McpConfig,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -611,6 +614,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        mcp,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -683,7 +687,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
     let (mcp_keys, mcp_cursors) = (Arc::clone(&keys), Arc::clone(&cursors));
-    gate.mcp.open(&env, service.clone(), mcp_keys, mcp_cursors);
+    gate.mcp
+        .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
     gate.open(crucible_api::router(
         &env,
         service,
@@ -845,6 +850,10 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let recent_max_bytes = config
         .recent_max_bytes
         .unwrap_or_else(default_recent_max_bytes);
+    let mcp = McpConfig {
+        calls_per_second: config.mcp.calls_per_second,
+        burst: config.mcp.burst,
+    };
     // Without a store the task is one that never ends, so the wait below has one shape.
     let mut store = match clickhouse {
         Some(config) => {
@@ -858,6 +867,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                mcp,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1363,9 +1373,13 @@ mod tests {
         let (index, _writer) = RecentIndex::new(config, Arc::clone(&env.clock), view);
         let stores = Stores::new(Arc::new(model));
         let service = QueryService::new(stores, Arc::clone(&env.clock), index, app.wal.epoch());
-        app.gate
-            .mcp
-            .open(env, service, Arc::clone(&app.keys), cursors);
+        app.gate.mcp.open(
+            env,
+            service,
+            Arc::clone(&app.keys),
+            cursors,
+            McpConfig::default(),
+        );
 
         let lifecycles = [
             ClientLifecycleMode::Initialize,
@@ -1387,15 +1401,14 @@ mod tests {
                 .into_iter()
                 .map(|tool| tool.name.into_owned())
                 .collect();
-            assert_eq!(
-                tools,
-                [
-                    "get_data_bounds",
-                    "get_span_children",
-                    "get_trace",
-                    "list_traces"
-                ]
-            );
+            for name in [
+                "get_data_bounds",
+                "get_span_children",
+                "get_trace",
+                "list_traces",
+            ] {
+                assert!(tools.iter().any(|tool| tool == name), "{name}: {tools:?}");
+            }
             let bounds = client
                 .call_tool(CallToolRequestParams::new("get_data_bounds"))
                 .await
