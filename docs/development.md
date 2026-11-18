@@ -183,8 +183,8 @@ every sealed batch is probed before anything is sent again. Tasks get 30 s befor
 ## A local build in Compose
 
 [The quickstart](self-hosting/quickstart.md) runs the image that `deploy/docker/Dockerfile` builds. To iterate on a
-binary built in the dev container instead, `deploy/compose/compose.dev.yaml` wraps `deploy/compose/bin/crucible` in a small image beside
-ClickHouse 26.8. Build the binary with the UI inside, from the repository root:
+binary built in the dev container instead, `deploy/compose/compose.dev.yaml` wraps `deploy/compose/bin/crucible` in
+a small image beside ClickHouse 26.8, without Postgres. Build the binary with the UI inside, from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
