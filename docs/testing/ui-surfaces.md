@@ -55,7 +55,7 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: payload | `trace.spec.ts` "payload": loading, success (tree), success (messages), large field by ranges, error with retry, empty and not stored (6) | `payload-viewer.test.tsx`, `payload-model.test.ts` |
 | Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
-| Phone | `phone.spec.ts` (4) | |
+| Phone | `phone.spec.ts` (5) | |
 
 ## Keyboard paths
 
@@ -74,7 +74,7 @@ pnpm --filter crucible-ui exec playwright test
 ## Phone width
 
 At 390 px each page reads without the page scrolling sideways: the traces table scrolls inside its frame, the
-waterfall drops to name, bar and duration, and the span panel becomes a bottom sheet.
+waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap.
 
 ## Not covered yet
 
