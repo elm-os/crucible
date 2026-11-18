@@ -10,6 +10,7 @@
 # - A container cannot see its host's power supply, so on Windows the host's AC-power state is read here and
 #   passed in as CRUCIBLE_PERF_AC_POWER. On a Linux host the gate reads it from /sys/class/power_supply.
 # - CARGO_BUILD_JOBS, when set, reaches the load generator's build and the image builds.
+# - With --post, the host's gh token (gh auth token) signs the commit status in.
 # Variables: IMAGE (default crucible-dev-perf:1), TARGET_VOLUME (default crucible-target).
 set -euo pipefail
 # Git Bash on Windows: pass container paths through unchanged.
@@ -44,6 +45,16 @@ esac
 if [ -n "${CARGO_BUILD_JOBS:-}" ]; then
   extra+=(--env "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS")
 fi
+# --post sets a commit status with gh in the container, signed in with the host's gh token. Passing the variable
+# by name keeps the token off the command line.
+case " $* " in
+  *" --post "*)
+    if token=$(gh auth token 2>/dev/null); then
+      export GH_TOKEN=$token
+      extra+=(--env GH_TOKEN)
+    fi
+    ;;
+esac
 
 exec docker run --rm --cpus 3 --memory 2g \
   --volume /var/run/docker.sock:/var/run/docker.sock \

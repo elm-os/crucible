@@ -207,6 +207,15 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// `path` relative to the repository root when it is inside it, which reads the same on a host and in the
+/// container of `tools/perf/xtask.sh`.
+fn shown(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// The fields of a `crucible-loadgen.fsync-probe.v1` report that the gate reads.
 #[derive(Debug, Deserialize)]
 struct ProbeReport {
@@ -267,7 +276,7 @@ fn fsync_probe(args: &ProbeArgs) -> Result<(), String> {
             if check.pass { "pass" } else { "fail" }
         );
     }
-    println!("report: {}", out.display());
+    println!("report: {}", shown(&root, &out));
     Ok(())
 }
 
@@ -463,7 +472,7 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
     write(&dir.join("summary.md"), &text)?;
     println!(
         "\n{text}\nperf gate: report {}",
-        dir.join("gate.json").display()
+        shown(&root, &dir.join("gate.json"))
     );
     if args.post {
         post(&root, &report)?;
