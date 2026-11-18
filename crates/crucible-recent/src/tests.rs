@@ -343,10 +343,12 @@ fn an_entry_leaves_only_after_its_checkpoint_and_the_grace() {
             mut writer,
             ..
         } = rig(100);
+        assert_eq!(index.floor(), None);
         (1..=4).for_each(|lsn| writer.apply(spans(lsn)));
         clock.advance(GRACE * 10);
         writer.maintain();
         assert_eq!(index.stats().entries, 4, "age alone evicts nothing");
+        assert_eq!(index.floor(), Some(Lsn::new(1)));
 
         writer.apply(Frame::Checkpoint {
             lsn: Lsn::new(5),
@@ -359,6 +361,7 @@ fn an_entry_leaves_only_after_its_checkpoint_and_the_grace() {
         clock.advance(Duration::from_nanos(1));
         writer.maintain();
         assert!(!holds(&index, 1) && !holds(&index, 2) && holds(&index, 3) && holds(&index, 4));
+        assert_eq!(index.floor(), Some(Lsn::new(3)));
         assert!(!index.read_state(scoped(1)).gap && !index.read_state(scoped(2)).gap);
         assert_eq!(index.stats().bytes, 2 * ENTRY_BYTES);
     });

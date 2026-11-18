@@ -2,43 +2,71 @@
 //!
 //! The servers accept through `Env`'s `Net`, so the same code will run over the simulated network. Each accept
 //! loop is a named task in the shutdown scope; axum runs one further tokio task per connection, and graceful
-//! shutdown waits for those before the accept-loop task returns. The routers hold the only handles to the WAL,
-//! so its committer stops once the last server has returned.
+//! shutdown waits for those before the accept-loop task returns.
+//!
+//! Two modes:
+//!
+//! - **Ingest only** (no `--clickhouse-url`): requests are made durable in the WAL and nothing ships them; the
+//!   API authenticates each request and answers `telemetry_store_unavailable`.
+//! - **With ClickHouse**: the `telemetry-store` task brings the store up ([`store::bring_up`]: migrations when
+//!   asked for, startup detection and the self-tests of contract 5.8), retrying until it succeeds. Until then
+//!   ingest answers 503 and `/readyz` says why. Then it builds the recent-span index, mounts the API over the
+//!   store, opens ingest, and runs the shipper, whose replay of the retained WAL prefix rebuilds the index.
+//!
+//! Shutdown is one signal to every task. The listeners stop accepting and wait for their open requests, whose
+//! appends resolve because the WAL committer outlives every handle to the log. The shipper stops at its next
+//! step and its in-flight inserts are abandoned: they are in doubt, and the next start probes every pair of
+//! every sealed batch before it sends anything (contract 5.5).
 
 use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
+use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::Response;
-use axum::routing::get;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyVerifier, StaticKeys};
 use crucible_env::metrics::registry;
 use crucible_env::{
-    AssetSource, Counter, Env, Histogram, JoinHandle, Listener, MemoryRecorder, NetError, Root,
-    Stream,
+    AssetSource, Counter, DiskPath, Env, Histogram, JoinHandle, Listener, MemoryRecorder,
+    NetError, OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
 use crucible_ingest::{Ingest, IngestConfig};
+use crucible_normalize::NormCtx;
+use crucible_query::QueryService;
+use crucible_recent::{RecentConfig, RecentIndex};
+use crucible_records::{Lsn, PartitionId, TableId};
+use crucible_shipper::{Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig};
+use crucible_store_clickhouse::Credentials;
 use crucible_ui_assets::{Catalog, Outcome};
-use crucible_wal::{Wal, WalConfig};
+use crucible_wal::{RecoveryReport, Wal, WalConfig};
+use tower::ServiceExt as _;
 
 use crate::ServeArgs;
+use crate::recent::WalSpans;
+use crate::store::{self, ClickHouse, MasterKey, NoLedger};
 
 /// How long tasks get to finish after shutdown is requested before they are aborted.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 /// Pause after an accept failure that is not about one connection (for example, out of descriptors).
 const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
+/// The first and the longest pause between attempts to bring the telemetry store up.
+const STORE_RETRY: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(15));
+/// `Retry-After` of an ingest request refused while the store is not up, in seconds.
+const CLOSED_RETRY_AFTER: u32 = 5;
+/// `recent.max_bytes` when the host's memory cannot be read (contract 8.6 puts the default at 10% of RAM).
+const RECENT_FALLBACK_BYTES: u64 = 256 << 20;
 
 /// A `Net` listener as an axum listener.
 struct EnvListener {
@@ -169,16 +197,76 @@ async fn serve_ui(State(ui): State<Ui>, request: Request) -> Response {
     }
 }
 
-/// What the routers serve besides the UI: OTLP ingest, the WAL behind it, and the keys that ingest and the API
-/// accept.
+/// Whether the node takes ingest, and which API it serves. Without a telemetry store ingest is open from the
+/// start and the API never leaves its store-less form.
+struct Gate {
+    /// Why ingest is closed; `None` when it is open.
+    closed: RwLock<Option<String>>,
+    /// The API over the store, set once the store is up.
+    api: OnceLock<Router>,
+    /// The API until then.
+    api_without_store: Router,
+}
+
+impl Gate {
+    fn closed(&self) -> Option<String> {
+        self.closed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn close(&self, reason: String) {
+        *self.closed.write().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+    }
+
+    /// Mounts the API over the store and opens ingest.
+    fn open(&self, api: Router) {
+        // The store task is the only caller, once.
+        let _ = self.api.set(api);
+        *self.closed.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
+/// Refuses ingest with 503 while the gate is closed (contract 5.8).
+async fn ingest_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next) -> Response {
+    match gate.closed() {
+        None => next.run(request).await,
+        Some(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(RETRY_AFTER, HeaderValue::from(CLOSED_RETRY_AFTER))],
+            format!("ingest is closed: {reason}\n"),
+        )
+            .into_response(),
+    }
+}
+
+/// Hands an API request to the API over the store once there is one.
+async fn serve_api(State(gate): State<Arc<Gate>>, request: Request) -> Response {
+    let api = gate.api.get().unwrap_or(&gate.api_without_store).clone();
+    match api.oneshot(request).await {
+        Ok(response) => response,
+        Err(never) => match never {},
+    }
+}
+
+/// What the routers serve besides the UI: OTLP ingest, the WAL behind it, the keys that ingest and the API
+/// accept, and the gate in front of both.
 struct App {
     ingest: Ingest,
     wal: Wal,
     keys: Arc<dyn KeyVerifier>,
+    gate: Arc<Gate>,
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
-async fn open_app(env: &Env, keys: StaticKeys, config: WalConfig) -> anyhow::Result<App> {
+/// With `closed`, ingest starts closed for that reason.
+async fn open_app(
+    env: &Env,
+    keys: StaticKeys,
+    config: WalConfig,
+    closed: Option<&str>,
+) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
         .map_err(|e| anyhow::anyhow!("opening the WAL failed ({}): {e}", e.code()))?;
@@ -197,40 +285,67 @@ async fn open_app(env: &Env, keys: StaticKeys, config: WalConfig) -> anyhow::Res
         Arc::clone(&keys),
         IngestConfig::default(),
     );
-    Ok(App { ingest, wal, keys })
+    let gate = Arc::new(Gate {
+        closed: RwLock::new(closed.map(str::to_owned)),
+        api: OnceLock::new(),
+        api_without_store: crucible_api::router_without_store(
+            env,
+            Arc::clone(&keys),
+            Arc::new(StaticProjectSettings::default()),
+        ),
+    });
+    let app = App {
+        ingest,
+        wal,
+        keys,
+        gate,
+    };
+    Ok((app, report))
 }
 
-/// Readiness (contract 11.8): the WAL accepts writes. The keys of milestone 1 come from configuration, so they
-/// are always loaded.
-fn readiness(wal: &Wal) -> (StatusCode, &'static str) {
+/// Readiness (contract 11.8): the WAL accepts writes and, with a telemetry store, the startup checks of
+/// contract 5.8 have passed. The keys of milestone 1 come from configuration, so they are always loaded.
+fn readiness(wal: &Wal, gate: &Gate) -> (StatusCode, String) {
     if wal.admission().failed {
-        (
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "not ready: the wal has failed",
-        )
-    } else {
-        (StatusCode::OK, "ready")
+            "not ready: the wal has failed".to_owned(),
+        );
     }
+    match gate.closed() {
+        Some(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("not ready: {reason}"),
+        ),
+        None => (StatusCode::OK, "ready".to_owned()),
+    }
+}
+
+/// OTLP ingest behind the gate.
+fn gated_ingest(app: &App) -> Router {
+    app.ingest
+        .router()
+        .layer(from_fn_with_state(Arc::clone(&app.gate), ingest_gate))
 }
 
 /// The main listener's routes: health, readiness, OTLP ingest and the REST API; the UI answers whatever they do
 /// not match. Every response carries a request id and the security headers.
 ///
-/// No telemetry store is configured yet, so the API authenticates and validates each request and then answers
-/// `telemetry_store_unavailable`; wiring the store and the shipper switches it to `crucible_api::router`.
+/// Until a telemetry store is up the API authenticates and validates each request and then answers
+/// `telemetry_store_unavailable`; the gate then switches it to the API over the store.
 fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
-    let wal = app.wal.clone();
-    let api = crucible_api::router_without_store(
-        env,
-        Arc::clone(&app.keys),
-        Arc::new(StaticProjectSettings::default()),
-    );
+    let (wal, gate) = (app.wal.clone(), Arc::clone(&app.gate));
+    let api_path = format!("{}/{{*rest}}", crucible_api::BASE_PATH);
+    let api = Router::new()
+        .route(crucible_api::BASE_PATH, any(serve_api))
+        .route(&api_path, any(serve_api))
+        .with_state(Arc::clone(&app.gate));
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/readyz",
             get(move || {
-                let ready = readiness(&wal);
+                let ready = readiness(&wal, &gate);
                 async move { ready }
             }),
         )
@@ -239,14 +354,14 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
             env: env.clone(),
             source: ui,
         })
-        .merge(app.ingest.router())
+        .merge(gated_ingest(app))
         .merge(api);
     crucible_api::common_layers(observed(router, env, "api"), env)
 }
 
 /// The OTLP/HTTP listener's routes.
 fn ingest_router(env: &Env, app: &App) -> Router {
-    observed(app.ingest.router(), env, "ingest")
+    observed(gated_ingest(app), env, "ingest")
 }
 
 fn metrics_router(env: &Env, recorder: Arc<MemoryRecorder>) -> Router {
@@ -318,6 +433,199 @@ async fn start(
         ingest: serve(env, "http-ingest", ingest, ingest_router),
         metrics: serve(env, "http-metrics", metrics, metrics_router(env, recorder)),
     })
+}
+
+/// What the `telemetry-store` task takes over.
+struct StoreTask {
+    config: ClickHouse,
+    migrate: bool,
+    wal: Wal,
+    report: RecoveryReport,
+    keys: Arc<dyn KeyVerifier>,
+    gate: Arc<Gate>,
+    recent_max_bytes: u64,
+}
+
+/// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
+/// `Quarantine` frames of such pairs may be gone with their segments, and a read that could touch one must
+/// still answer `partial` (invariant I3). A directory without a whole manifest is a copy that never finished.
+async fn quarantined_pairs(
+    env: &Env,
+    watermark: Lsn,
+) -> anyhow::Result<Vec<(Lsn, TableId, PartitionId)>> {
+    let root = DiskPath::root_dir(Root::Quarantine);
+    let mut pairs = Vec::new();
+    for dir in env.disk.list(&root).await? {
+        let dir = root.join(&dir.name)?;
+        let Some(manifest) = env
+            .disk
+            .list(&dir)
+            .await
+            .ok()
+            .and_then(|entries| entries.into_iter().find(|e| e.name == MANIFEST_FILE))
+        else {
+            continue;
+        };
+        let file = env
+            .disk
+            .open(&dir.join(MANIFEST_FILE)?, OpenMode::Read)
+            .await?;
+        let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
+        let bytes = file.read_at(0, len).await?;
+        let text = String::from_utf8_lossy(&bytes);
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+        };
+        let lsn = |name| field(name)?.parse().ok().map(Lsn::new);
+        let table = field("table_id")
+            .and_then(|id| id.parse().ok())
+            .and_then(TableId::from_id);
+        let partition = field("partition").and_then(|p| PartitionId::parse(p).ok());
+        // `frames` is the last line a whole manifest has but one.
+        if let (Some(first), Some(last), Some(table), Some(partition), Some(_)) = (
+            lsn("first_lsn"),
+            lsn("last_lsn"),
+            table,
+            partition,
+            field("frames"),
+        ) && last <= watermark
+        {
+            pairs.push((first, table, partition));
+        }
+    }
+    Ok(pairs)
+}
+
+/// Brings the telemetry store up, retrying until it holds, then opens ingest and the API and runs the shipper.
+/// Returns on shutdown, or with the error that stopped the shipper.
+async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
+    let StoreTask {
+        config,
+        migrate,
+        wal,
+        report,
+        keys,
+        gate,
+        recent_max_bytes,
+    } = task;
+    let store = config.store(&env);
+    let mut shutdown = env.shutdown();
+    let mut delay = STORE_RETRY.0;
+    let facts = loop {
+        let attempt = tokio::select! {
+            biased;
+            () = &mut shutdown => return Ok(()),
+            attempt = store::bring_up(&config, &store, migrate, &NoLedger) => attempt,
+        };
+        match attempt {
+            Ok(facts) => break facts,
+            Err(error) => {
+                let reason = format!("{error:#}");
+                tracing::warn!(reason, retry_in = ?delay, "the telemetry store is not ready; ingest stays closed");
+                gate.close(format!("the telemetry store is not ready: {reason}"));
+            }
+        }
+        tokio::select! {
+            biased;
+            () = &mut shutdown => return Ok(()),
+            () = env.clock.sleep(delay) => {}
+        }
+        delay = (delay * 2).min(STORE_RETRY.1);
+    };
+    tracing::info!(
+        version = format!("{}.{}", facts.version.major, facts.version.minor),
+        flavour = ?facts.flavour,
+        "the telemetry store passed startup detection and the self-tests"
+    );
+
+    let shipper_config = ShipperConfig {
+        flavour: facts.flavour,
+        ..ShipperConfig::default()
+    };
+    let view = Arc::new(WalSpans {
+        wal: wal.clone(),
+        ctx: NormCtx::new(shipper_config.price_table_version, shipper_config.caps),
+    });
+    // The index starts empty at the recovered watermark; the shipper's replay of the retained prefix feeds
+    // it through the hook (contract 4.6, steps 6 and 7).
+    let watermark = report.watermark_lsn();
+    let (index, writer) = RecentIndex::rebuild(
+        RecentConfig::new(recent_max_bytes, facts.flavour),
+        Arc::clone(&env.clock),
+        view,
+        watermark,
+        std::iter::empty(),
+    );
+    let hook = Arc::new(RecentHook::new(writer, Arc::clone(&env.clock), watermark));
+    hook.restore_quarantined(
+        quarantined_pairs(&env, watermark)
+            .await
+            .context("reading the quarantine manifests")?,
+    );
+    let stores = Stores::new(Arc::new(store));
+    let hooks = Hooks {
+        barriers: Arc::new(NoBarriers),
+        recent: hook,
+    };
+    let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
+        .context("starting the shipper")?;
+    let service = QueryService::new(stores, Arc::clone(&env.clock), index);
+    gate.open(crucible_api::router(
+        &env,
+        service,
+        keys,
+        Arc::new(StaticProjectSettings::default()),
+    ));
+    tracing::info!(
+        watermark = %watermark,
+        last_lsn = %report.last_lsn,
+        resealed = report.unchecked_seals.len(),
+        "ingest is open; the shipper is running"
+    );
+    shipper.run().await.context("the shipper stopped")
+}
+
+/// `recent.max_bytes` (contract 8.6): min(1 GiB, 10% of RAM), from `/proc/meminfo` where there is one.
+#[allow(clippy::disallowed_methods)] // The binary reads the host's memory size.
+fn default_recent_max_bytes() -> u64 {
+    let total_kib = std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| {
+        let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
+        line.split_whitespace().nth(1)?.parse::<u64>().ok()
+    });
+    total_kib.map_or(RECENT_FALLBACK_BYTES, |kib| {
+        RecentConfig::default_max_bytes(kib.saturating_mul(1024))
+    })
+}
+
+/// The ClickHouse settings of the command line, or `None` for the ingest-only mode.
+fn clickhouse(args: &ServeArgs) -> anyhow::Result<Option<ClickHouse>> {
+    let Some(url) = &args.clickhouse_url else {
+        anyhow::ensure!(
+            !args.migrate,
+            "--migrate needs a telemetry store (--clickhouse-url)"
+        );
+        return Ok(None);
+    };
+    let password = store::secret(
+        args.clickhouse_password_file.as_deref(),
+        "CRUCIBLE_CLICKHOUSE_PASSWORD",
+    )?
+    .context(
+        "--clickhouse-url needs the admin password: --clickhouse-password-file or CRUCIBLE_CLICKHOUSE_PASSWORD",
+    )?;
+    let master_key = store::secret(args.master_key_file.as_deref(), "CRUCIBLE_MASTER_KEY")?.context(
+        "--clickhouse-url needs the master key, from which the service passwords are derived: \
+         --master-key-file or CRUCIBLE_MASTER_KEY",
+    )?;
+    Ok(Some(ClickHouse {
+        url: url.clone(),
+        admin: Credentials {
+            user: args.clickhouse_user.clone(),
+            password,
+        },
+        master_key: MasterKey::parse(&master_key)?,
+    }))
 }
 
 /// Resolves with the name of the first termination signal the process receives.
@@ -402,7 +710,34 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
     let key_count = keys.len();
-    let app = open_app(env, keys, WalConfig::default()).await?;
+    let clickhouse = clickhouse(&args)?;
+    let closed = clickhouse
+        .as_ref()
+        .map(|_| "the telemetry store is starting");
+    let (app, report) = open_app(env, keys, WalConfig::default(), closed).await?;
+    let mode = if clickhouse.is_some() {
+        "clickhouse"
+    } else {
+        "ingest-only"
+    };
+    // Without a store the task is one that never ends, so the wait below has one shape.
+    let mut store = match clickhouse {
+        Some(config) => {
+            let task = StoreTask {
+                config,
+                migrate: args.migrate,
+                wal: app.wal.clone(),
+                report,
+                keys: Arc::clone(&app.keys),
+                gate: Arc::clone(&app.gate),
+                recent_max_bytes: args
+                    .recent_max_bytes
+                    .unwrap_or_else(default_recent_max_bytes),
+            };
+            Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
+        }
+        None => None,
+    };
     let listen = Addrs {
         api: args.listen,
         ingest: args.ingest_listen,
@@ -418,10 +753,17 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         ui = ui_source,
         ui_routes,
         keys = key_count,
+        mode,
         "crucible is serving"
     );
 
-    // Run until a termination signal arrives or a server stops on its own.
+    // Run until a termination signal arrives, a server stops on its own, or the shipper fails.
+    let store_stopped = async {
+        match store.as_mut() {
+            Some(task) => task.join().await,
+            None => std::future::pending().await,
+        }
+    };
     let early = tokio::select! {
         biased;
         signal = termination_signal() => {
@@ -431,12 +773,16 @@ pub(crate) async fn run(args: ServeArgs) -> anyhow::Result<()> {
         result = servers.api.join() => Some(("api", result)),
         result = servers.ingest.join() => Some(("ingest", result)),
         result = servers.metrics.join() => Some(("metrics", result)),
+        result = store_stopped => Some(("telemetry-store", result.map(|r| r.map_err(io::Error::other)))),
     };
 
     let aborted = prod.spawner.close(SHUTDOWN_GRACE).await;
     if let Some((name, result)) = early {
         server_result(name, result)?;
         anyhow::bail!("the {name} server stopped without a shutdown request");
+    }
+    if let Some(mut task) = store {
+        server_result("telemetry-store", task.join().await.map(|r| r.map_err(io::Error::other)))?;
     }
     server_result("api", servers.api.join().await)?;
     server_result("ingest", servers.ingest.join().await)?;
@@ -502,7 +848,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, config).await.unwrap()
+        open_app(env, keys, config, None).await.unwrap().0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -650,6 +996,15 @@ mod tests {
                 ..WalConfig::default()
             };
             let (wal, _) = Wal::open(&host.env, config).await.unwrap();
+            let gate = Gate {
+                closed: RwLock::new(None),
+                api: OnceLock::new(),
+                api_without_store: Router::new(),
+            };
+            let readiness = |wal: &Wal| {
+                let (status, text) = readiness(wal, &gate);
+                (status, text.leak() as &str)
+            };
             assert_eq!(readiness(&wal), (StatusCode::OK, "ready"));
             // The group's sync fails and so does the rotation after it: the WAL fails until restart.
             disk.fail_next_syncs(2);

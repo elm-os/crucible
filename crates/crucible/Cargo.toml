@@ -21,24 +21,35 @@ crucible-auth = { workspace = true }
 crucible-env = { workspace = true }
 crucible-env-prod = { workspace = true }
 crucible-ingest = { workspace = true }
+crucible-normalize = { workspace = true }
+crucible-plan = { workspace = true }
+crucible-query = { workspace = true }
+crucible-recent = { workspace = true }
 crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+crucible-shipper = { workspace = true }
+crucible-store-clickhouse = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-ui-assets = { workspace = true }
 crucible-wal = { workspace = true }
+crucible-wal-codec = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["http1", "http2", "tokio", "json", "query", "matched-path", "tracing"] }
-clap = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+# HKDF-SHA256 for the passwords of the generated ClickHouse identities (contract 7.1).
+hkdf = "=0.13.0"
 serde = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync"] }
 # The `--keys-file` parser; reading only.
 toml = { version = "=1.2.1", default-features = false, features = ["std", "serde", "parse"] }
+tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 crucible-otlp = { workspace = true }
 crucible-sim = { path = "../crucible-sim" }
-crucible-wal-codec = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["io-util"] }

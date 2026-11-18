@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crucible_env::metrics::registry;
-use crucible_env::{Clock, Counter, Disk, DiskError, Env, Gauge, Histogram, Root};
+use crucible_env::{Clock, Counter, Disk, DiskError, Env, Gauge, Histogram, OpenMode, Root};
 use crucible_records::{Lsn, Timestamp, WalEpoch};
 use crucible_wal_codec::{
     Checkpoint, PreparedFrame, Record, RecordType, SEGMENT_HEADER_LEN, load_payload,
@@ -18,6 +18,7 @@ use crate::error::{AppendError, GcError, RecoveryError};
 use crate::layout::{SegmentMeta, segment_path, wal_dir, write_hint};
 use crate::recovery::{RecoveryReport, Watermark, recover};
 use crate::replay::Replay;
+use crate::scan::{SegmentReader, Step, WalFrame};
 
 /// What ingest admission reads before it accepts a request (contract sections 4.7 and 4.8).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -398,6 +399,35 @@ impl Wal {
     /// Reads durable frames in LSN order, starting at `from`.
     pub fn replay(&self, from: Lsn) -> Replay {
         Replay::new(Arc::clone(&self.shared), from)
+    }
+
+    /// Reads the durable frame whose header starts at `offset` of segment `segment_no`: the point read behind
+    /// a recent-span locator (contract 8.6). `None` when the segment is no longer retained or no durable frame
+    /// starts at that offset.
+    pub async fn read_at(
+        &self,
+        segment_no: u64,
+        offset: u64,
+    ) -> Result<Option<WalFrame>, DiskError> {
+        let durable = self.shared.durable_lsn();
+        let retained = self.shared.segments();
+        if !retained.iter().any(|s| s.segment_no == segment_no) {
+            return Ok(None);
+        }
+        let file = match self
+            .shared
+            .disk
+            .open(&segment_path(segment_no)?, OpenMode::Read)
+            .await
+        {
+            Ok(file) => file,
+            Err(DiskError::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        match SegmentReader::new(file, segment_no, offset).step().await? {
+            Step::Frame(frame) if frame.lsn() <= durable => Ok(Some(frame)),
+            Step::Frame(_) | Step::End(_) => Ok(None),
+        }
     }
 
     /// Rewrites the `CHECKPOINT` hint when the watermark moved, then removes every segment that may go

@@ -32,7 +32,7 @@ use crucible_shipper::{
     Barrier, Barriers, FRAMES_FILE, Hooks, MANIFEST_FILE, Mutant, RecentIndex, ShipError, Shipper,
     ShipperConfig, ShipperStats, StatsSnapshot,
 };
-use crucible_wal::{AppendError, RecoveryReport, Wal};
+use crucible_wal::{AppendError, RecoveryReport, Wal, WalFrame};
 use crucible_wal_codec::{
     ContentOrigin, FRAME_HEADER_LEN, FrameHeader, IngestRequest, IngestTransport, PreparedFrame,
     Record, RecordType, SEGMENT_HEADER_LEN, load_payload,
@@ -630,12 +630,14 @@ struct SimRecent {
 }
 
 impl RecentIndex for SimRecent {
-    fn applied(&self, frame: &NormalizedFrame, _admission: &Admission) {
+    fn applied(&self, _source: &WalFrame, frame: &NormalizedFrame, _admission: &Admission) {
         let lsn = frame.lsn.get();
         if self.last.swap(lsn, Ordering::SeqCst) >= lsn {
             self.out_of_order.store(true, Ordering::SeqCst);
         }
     }
+
+    fn passed(&self, _source: &WalFrame) {}
 
     fn floor(&self) -> Option<Lsn> {
         let behind = self.pin_behind?;
