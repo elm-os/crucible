@@ -3,7 +3,7 @@
 use crucible_records::{Lsn, PartitionId, ProjectScope, TableId, TimeWindow, Timestamp, WalEpoch};
 use crucible_schema::{PartitionExpr, ServiceIdentity, TableKind, table};
 
-use crate::class::QueryClass;
+use crate::class::{ClassLimits, QueryClass};
 use crate::error::PlanError;
 use crate::node::Node;
 use crate::pred::Pred;
@@ -20,6 +20,7 @@ pub struct QueryPlan {
     scope: ProjectScope,
     window: TimeWindow,
     class: QueryClass,
+    limits: ClassLimits,
     root: Node,
 }
 
@@ -35,8 +36,16 @@ impl QueryPlan {
             scope,
             window,
             class,
+            limits: class.limits(),
             root,
         }
+    }
+
+    /// The same plan under other limits than its class's defaults, for tests of the guardrails only.
+    #[cfg(feature = "test-support")]
+    pub(crate) const fn with_limits(mut self, limits: ClassLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// The project the plan reads.
@@ -54,6 +63,12 @@ impl QueryPlan {
         self.class
     }
 
+    /// The limits the plan runs under: those of its class (contract 8.4). Every store applies these, so the
+    /// simulation's model refuses what a server refuses.
+    pub const fn limits(&self) -> ClassLimits {
+        self.limits
+    }
+
     /// The root node.
     pub const fn root(&self) -> &Node {
         &self.root
@@ -61,7 +76,7 @@ impl QueryPlan {
 
     /// The ClickHouse identity that runs the plan.
     pub const fn identity(&self) -> ServiceIdentity {
-        self.class.limits().identity
+        self.limits.identity
     }
 
     /// The ordered output columns that every row of this plan follows, whichever store runs it. This is the
@@ -73,13 +88,20 @@ impl QueryPlan {
     /// | `Scan`, `PointLookup` | the node's columns, in the order given |
     /// | `Aggregate` | the group dimensions, then one column per measure, in the order given |
     /// | `SemiJoin` | the columns of the left scan |
-    /// | `TextSearch` | the table's key columns (`TableDef::key_columns`) |
+    /// | `TextSearch` | the table's key columns (`TableDef::key_columns`); with snippets, then `<field>_match` (`UInt64`) and `<field>_snippet` (`String`) per searched string field |
     /// | `TimeSeries` | `bucket` (the bucket's first instant, `DateTime('UTC')`), then the aggregate's output |
-    /// | `FieldRange` | the field; the bytes of the range follow the `String` rule of [`crate::Value`] |
+    /// | `FieldRange` | the field; the bytes of the range follow the `String` rule of [`crate::Value`]; with the total, then `<field>_bytes` (`UInt64`) |
     ///
     /// Measures: `count` and `uniq` are `UInt64`; `sum` is `UInt64`, `Int64` or `Float64` by the column's
     /// signedness; `min`, `max`, the pick merge and latest-by-version have the column's result type; a histogram
-    /// merge is the `(keys, counts)` tuple with keys ascending and unique.
+    /// merge is the `(keys, counts)` tuple with keys ascending and unique, without zero counts; a set merge is
+    /// the array of the column, ascending.
+    ///
+    /// Nullable outputs: a column is `Nullable` wherever its value can be absent. `uniq` over a nullable column
+    /// is `Nullable(UInt64)`, null for a group whose values are all null; `sum`, `min` and `max` over a nullable
+    /// column are nullable too. In a `TimeSeries` with `Fill::Zero` the `min`, `max`, `uniq`, pick and
+    /// latest-by-version measures are nullable and null in an empty bucket, while `sum` is never null there
+    /// ([`crate::Fill::Zero`]).
     ///
     /// Rows: a node with an order returns rows in that order, and rows that tie on it in no defined order; a
     /// node without one returns rows in no defined order. A grouped read returns one row per group that has at
