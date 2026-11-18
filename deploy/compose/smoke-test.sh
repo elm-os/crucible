@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compose smoke test, run by the compose-smoke job of .github/workflows/docker.yml: starts compose.yaml with the
-# given image, sends one trace over OTLP/HTTP with curl and reads it back through the REST API.
+# given image, checks that the migrations are recorded in Postgres, sends one trace over OTLP/HTTP with curl and
+# reads it back through the REST API.
 #
 #   deploy/compose/smoke-test.sh <image> [http port] [otlp port]
 #
@@ -37,11 +38,13 @@ cat > "$work/compose.smoke.yaml" <<'EOF'
 services:
   clickhouse:
     mem_limit: 1500m
+  postgres:
+    mem_limit: 768m
   crucible:
     mem_limit: 1g
 EOF
 cd "$work"
-printf 'CLICKHOUSE_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
 printf '[[project_key]]\nproject_id = "%s"\nsecret = "csk_0%s"\n' \
   "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
   "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)" > keys.toml
@@ -53,6 +56,11 @@ secret=$(sed -n 's/^secret = "\(.*\)"$/\1/p' keys.toml)
 
 echo "starting $image"
 compose up --detach --wait --wait-timeout 240
+
+echo "the migrations ledger in Postgres holds the ClickHouse steps"
+recorded=$(compose exec -T postgres psql --username=crucible --dbname=crucible --tuples-only --no-align --command \
+  "SELECT count(*) FROM schema_migrations WHERE id IN ('0001_schema_base', '0002_access_service')")
+[ "$recorded" = 2 ] || { echo "schema_migrations holds $recorded of the 2 ClickHouse steps" >&2; exit 1; }
 
 echo "the UI is embedded and served precompressed"
 encoding=$(curl --fail --silent --show-error --output /dev/null --write-out '%header{content-encoding}' \

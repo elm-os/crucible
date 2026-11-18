@@ -1,11 +1,11 @@
 # Quickstart
 
-This page runs a development preview of Crucible with Docker Compose: the `crucible` server and ClickHouse 26.8 on
-one machine. There is no release yet and no upgrade path, and the data format may change between commits. Do not put
+This page runs a development preview of Crucible with Docker Compose: the `crucible` server, ClickHouse 26.8 and
+Postgres 18 on one machine. There is no release yet and no upgrade path, and the data format may change between commits. Do not put
 data you need to keep in it. [README.md](README.md) covers configuration, ports, upgrades and backups.
 
-What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the REST API for
-traces, and the UI's traces table and trace page. Sign-in, projects and key management will arrive with the control
+What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the migrations
+ledger in Postgres, the REST API for traces, and the UI's traces table and trace page. Sign-in, projects and key management will arrive with the control
 plane; until then project keys come from a file and the UI connects with a key (see "Open the UI").
 
 ## Requirements
@@ -30,12 +30,12 @@ releases exist, skip this step; Compose pulls `ghcr.io/elm-os/crucible`.
 Both live in `deploy/compose/` and are ignored by git. Make them before the first start: Docker Desktop for Windows
 turns a missing `keys.toml` into an empty directory, which you would have to delete first.
 
-`.env` holds the ClickHouse admin password and the master key, 32 random bytes as 64 hexadecimal characters. Make it
-once, and name the image you built:
+`.env` holds the ClickHouse admin password, the Postgres password and the master key, 32 random bytes as 64
+hexadecimal characters. Make it once, with one line, and name the image you built:
 
 ```sh
 cd deploy/compose
-printf 'CLICKHOUSE_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
+printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
 echo 'CRUCIBLE_IMAGE=crucible:dev' >> .env
 ```
 
@@ -63,8 +63,9 @@ curl -s http://127.0.0.1:8080/readyz     # "ready"
 ```
 
 `--wait` returns once the `ready` service reports Crucible's `/readyz` as healthy. On start Crucible applies the
-ClickHouse schema (`--migrate`), checks the server (version 26.3 or newer, the settings and functions it relies on),
-and inserts one block twice to prove that deduplication works. Until that has passed, ingest answers 503 and
+Postgres migrations and the ClickHouse schema (`--migrate`) and records each step in the ledger in Postgres, checks
+the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), and inserts one block twice
+to prove that deduplication works. Until that has passed, ingest answers 503 and
 `/readyz` says what is missing; `docker compose logs crucible` shows the same reason.
 
 The ports are published on every interface, so other machines on your network can send traces. Add

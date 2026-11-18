@@ -4,13 +4,14 @@ Crucible is a development preview. Nothing is released yet, the data format may 
 is no upgrade path from one preview to the next, so do not put data you need to keep in it. To get a server running,
 follow [quickstart.md](quickstart.md).
 
-A deployment is one `crucible` server and one ClickHouse. Postgres will join when the control plane lands (sign-in,
-projects and key management); until then the server does not use it, and project keys come from a file.
+A deployment is one `crucible` server, one ClickHouse and one Postgres. Postgres holds the control plane: in this
+milestone that is the migrations ledger. Sign-in, projects and key management will follow; until then project keys
+come from a file.
 
 | Way to run it | Files | State |
 |---|---|---|
-| Docker Compose with a bundled ClickHouse 26.8 LTS | `deploy/compose/compose.yaml` | Works, with an image you build until the first release publishes one |
-| Docker Compose with a ClickHouse you run elsewhere | `deploy/compose/compose.cloud.yaml` | Works with a single-node ClickHouse 26.3 or newer; ClickHouse Cloud is planned |
+| Docker Compose with a bundled ClickHouse 26.8 LTS and Postgres 18 | `deploy/compose/compose.yaml` | Works, with an image you build until the first release publishes one |
+| Docker Compose with a ClickHouse and a Postgres you run elsewhere | `deploy/compose/compose.cloud.yaml` | Works with a single-node ClickHouse 26.3 or newer and Postgres 15 or newer; ClickHouse Cloud is planned |
 | Prebuilt binaries for Linux, macOS and Windows | GitHub releases | Planned: the first version tag will publish them |
 | From source | [development.md](../development.md) | Works |
 
@@ -33,10 +34,11 @@ carries `LICENSE` and `THIRD_PARTY_NOTICES` in `/usr/share/doc/crucible/`. Its d
 
 ## Docker Compose
 
-`deploy/compose/compose.yaml` runs three services:
+`deploy/compose/compose.yaml` runs four services:
 
 - `clickhouse`: ClickHouse 26.8 LTS with its data in the volume `clickhouse-data`, and the admin user `crucible_admin`,
   which may manage access;
+- `postgres`: Postgres 18 with its data in the volume `postgres-data`, and the user and database `crucible`;
 - `crucible`: the server with `--migrate`, its data in the volume `crucible-data`, and the project keys from
   `keys.toml` beside the Compose file;
 - `ready`: a curl container that reports Crucible's `/readyz` as its health. The Crucible image has no shell, so it
@@ -46,17 +48,20 @@ carries `LICENSE` and `THIRD_PARTY_NOTICES` in `/usr/share/doc/crucible/`. Its d
 Every refusal says what to change: a missing `.env` setting stops Compose with the setting's name and a server that
 cannot take ingest yet answers `/readyz` with the reason. Without `keys.toml`, Docker Engine refuses to start the
 server and names the missing path; Docker Desktop for Windows creates an empty directory there instead, and the
-server stops with
-`reading /etc/crucible/keys.toml` and `Is a directory`. Delete that directory and make the file.
+server stops with `reading /etc/crucible/keys.toml` and `Is a directory`. Delete that directory and make the file.
 
-**Why there is no Postgres service.** Nothing in this preview connects to Postgres. An idle database would cost memory
-and a password and add a volume to back up, for no benefit. When the control plane lands, the Compose file will gain a
-Postgres 18 service and volume; a server that ran without them has nothing to migrate.
+**Why Postgres is bundled already.** The server is designed to run with Postgres, and in this milestone it keeps its
+migrations ledger there: `--migrate` records each step in `schema_migrations` and skips it on the next start, and it
+applies the ClickHouse steps under a lease, so two servers that migrate at once do not interleave. Sign-in, projects
+and keys will live in the same database, so bundling it now gives the Compose file its final shape from the first
+install. The server can run without Postgres (`compose.cloud.yaml` makes it optional); it then applies every
+idempotent step on each start.
 
-`deploy/compose/compose.cloud.yaml` runs the server and the `ready` service against a ClickHouse elsewhere, configured
-through `.env`. This preview supports a single-node ClickHouse only: it refuses a ClickHouse Cloud service at startup
-and `/readyz` gives the reason. ClickHouse Cloud and a managed Postgres are planned; their settings will go in the same
-file.
+`deploy/compose/compose.cloud.yaml` runs the server and the `ready` service against a ClickHouse and a Postgres
+elsewhere, configured through `.env`. This preview supports a single-node ClickHouse only: it refuses a ClickHouse Cloud
+service at startup and `/readyz` gives the reason. ClickHouse Cloud support is planned. A managed Postgres is given as
+`CRUCIBLE_POSTGRES_URL` with its password in the URL and `?sslmode=require` for TLS; `crucible config print` shows the
+URL with the password redacted.
 
 ## Binaries (planned)
 
@@ -84,11 +89,13 @@ Compose reads these from `.env` beside the Compose file:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLICKHOUSE_PASSWORD` | none, required | The password of `crucible_admin` in the bundled ClickHouse (`compose.yaml`) |
+| `CLICKHOUSE_PASSWORD` | none, required by `compose.yaml` | The password of `crucible_admin` in the bundled ClickHouse |
+| `POSTGRES_PASSWORD` | none, required by `compose.yaml` | The password of `crucible` in the bundled Postgres |
 | `CRUCIBLE_MASTER_KEY` | none, required | 32 random bytes as 64 hexadecimal characters. Crucible derives the passwords of its ClickHouse service users and the key that signs API cursors from it |
 | `CRUCIBLE_CLICKHOUSE_URL` | none, required by `compose.cloud.yaml` | `https://<host>:8443` or `http://<host>:8123` |
 | `CRUCIBLE_CLICKHOUSE_USER` | `crucible_admin` | The admin user in `compose.cloud.yaml`; it needs access management |
 | `CRUCIBLE_CLICKHOUSE_PASSWORD` | none, required by `compose.cloud.yaml` | That user's password |
+| `CRUCIBLE_POSTGRES_URL` | none, optional in `compose.cloud.yaml` | `postgres://<user>:<password>@<host>:5432/<database>`, with `?sslmode=require` for TLS |
 | `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image. Pin a version here so that a pull never changes it |
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | Host port of the UI, the REST API and OTLP/HTTP ingest |
@@ -102,8 +109,10 @@ The server's own flags and environment variables are listed in
 [development.md](../development.md#running-crucible-serve); to change them, edit the `command` of the `crucible`
 service. Two notes for containers:
 
-- Secrets can come from files instead of the environment: `--clickhouse-password-file` and `--master-key-file`, for
-  example from Docker secrets mounted under `/run/secrets/`.
+- Every setting can also come from a TOML file (`--config`); `crucible config check` reports every problem at once
+  and `crucible config print` shows the effective values with secrets redacted.
+- Secrets can come from files instead of the environment: `--clickhouse-password-file`, `--postgres-password-file`
+  and `--master-key-file`, for example from Docker secrets mounted under `/run/secrets/`.
 - The recent-span index takes 10% of the machine's memory, at most 1 GiB, by default. The server reads the host's
   total memory, not a container limit, so a container with a memory limit should pass `--recent-max-bytes` below it.
 
@@ -140,18 +149,19 @@ derived from that key, so a server started with another key cannot log in to the
 
 ## Backups
 
-A backup is three things:
+A backup is four things:
 
 1. `.env` and `keys.toml`. Without the master key, restored ClickHouse data cannot be used.
 2. The volume `clickhouse-data`: the telemetry.
-3. The volume `crucible-data`: the WAL, which holds requests that were acknowledged but are not yet in ClickHouse.
+3. The volume `postgres-data`: the control plane, which in this milestone is the migrations ledger.
+4. The volume `crucible-data`: the WAL, which holds requests that were acknowledged but are not yet in ClickHouse.
 
-Stop the stack first, so that the server drains its open requests and ClickHouse writes nothing while the volumes are
-copied, then archive each volume. With the project name `crucible` from `compose.yaml`:
+Stop the stack first, so that the server drains its open requests and the databases write nothing while the volumes
+are copied, then archive each volume. With the project name `crucible` from `compose.yaml`:
 
 ```sh
 docker compose stop
-for v in clickhouse-data crucible-data; do
+for v in clickhouse-data postgres-data crucible-data; do
   docker run --rm -v "crucible_$v:/data:ro" -v "$PWD:/backup" busybox:1.37 tar -czf "/backup/$v.tar.gz" -C /data .
 done
 docker compose start
@@ -162,7 +172,7 @@ the archives into them and start:
 
 ```sh
 docker compose create
-for v in clickhouse-data crucible-data; do
+for v in clickhouse-data postgres-data crucible-data; do
   docker run --rm -v "crucible_$v:/data" -v "$PWD:/backup:ro" busybox:1.37 tar -xzf "/backup/$v.tar.gz" -C /data
 done
 docker compose up -d --wait

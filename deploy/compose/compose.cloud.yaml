@@ -1,15 +1,16 @@
-# Crucible alone, against a ClickHouse that runs elsewhere: ClickHouse Cloud, or a ClickHouse 26.3 or newer that you
-# operate. Development preview: see docs/self-hosting/README.md.
+# Crucible alone, against a ClickHouse and a Postgres that run elsewhere: ClickHouse Cloud and a managed Postgres, or
+# servers that you operate. Development preview: see docs/self-hosting/README.md.
 #
 # This preview supports a single-node ClickHouse only. It refuses a ClickHouse Cloud service at startup and /readyz
-# names the reason; Cloud support is planned. The managed Postgres of the control plane is planned too and will be
-# configured here when the server can use it.
+# names the reason; Cloud support is planned.
 #
 # Settings in .env beside this file:
-#   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS (Cloud), or http://<host>:8123
+#   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS (Cloud), or http://<host>:8123; ClickHouse 26.3 or newer
 #   CRUCIBLE_CLICKHOUSE_USER      an admin user with access management (default crucible_admin)
 #   CRUCIBLE_CLICKHOUSE_PASSWORD  that user's password
 #   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32
+#   CRUCIBLE_POSTGRES_URL         optional: postgres://<user>:<password>@<host>:5432/<database>?sslmode=require
+#                                 (Postgres 15 or newer; without it no ledger records the migrations)
 #   CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT  as in compose.yaml
 # and keys.toml, as for compose.yaml. Then: docker compose -f compose.cloud.yaml up -d --wait
 name: crucible-cloud
@@ -23,7 +24,9 @@ services:
       CRUCIBLE_CLICKHOUSE_USER: ${CRUCIBLE_CLICKHOUSE_USER:-crucible_admin}
       CRUCIBLE_CLICKHOUSE_PASSWORD: ${CRUCIBLE_CLICKHOUSE_PASSWORD:?set CRUCIBLE_CLICKHOUSE_PASSWORD in .env}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (openssl rand -hex 32)}
-    # --migrate is idempotent, so it stays on: every start applies the schema steps that are missing.
+      # Empty means unset. The password goes in the URL; `crucible config print` shows it redacted.
+      CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:-}
+    # --migrate is idempotent, so it stays on: every start applies the steps that are missing.
     command:
       - serve
       - --migrate
