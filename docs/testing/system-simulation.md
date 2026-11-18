@@ -143,7 +143,7 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0xeaeca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x2fe574beef1d` |
 
-Of the 600 runs of the budget, the mutants are caught by 591, 166, 49, 32, 107, 475, 481, 84, 174 and 178 runs,
+Of the 600 runs of the budget, the mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and 178 runs,
 in the order of the table.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
