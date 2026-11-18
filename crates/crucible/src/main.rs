@@ -76,8 +76,11 @@ struct ConfigArgs {
     /// Address of the OTLP/HTTP ingest listener [default: 0.0.0.0:4318].
     #[arg(long)]
     ingest_listen: Option<String>,
-    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id` and
-    /// `secret`. Without it, every ingest request is refused.
+    /// Address of the OTLP/gRPC ingest listener [default: 0.0.0.0:4317].
+    #[arg(long)]
+    grpc_listen: Option<String>,
+    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id`,
+    /// `public_key` and `secret`. Without it, every ingest request is refused.
     #[arg(long)]
     keys_file: Option<String>,
     /// Address of the Prometheus metrics listener [default: 127.0.0.1:9464].
@@ -130,6 +133,7 @@ impl ConfigArgs {
         [
             ("server.listen", &self.listen),
             ("server.ingest_listen", &self.ingest_listen),
+            ("server.grpc_listen", &self.grpc_listen),
             ("server.keys_file", &self.keys_file),
             ("server.metrics_listen", &self.metrics_listen),
             ("data.dir", &self.data_dir),
@@ -311,6 +315,7 @@ mod tests {
         let config = config(&["crucible", "serve"], &[]).unwrap();
         assert_eq!(config.server.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.server.ingest_listen.to_string(), "0.0.0.0:4318");
+        assert_eq!(config.server.grpc_listen.to_string(), "0.0.0.0:4317");
         assert_eq!(config.server.metrics_listen.to_string(), "127.0.0.1:9464");
         assert_eq!(config.data.dir, Path::new("data"));
         assert_eq!(config.data.wal_backend, crucible_config::WalBackend::Auto);
@@ -339,6 +344,8 @@ mod tests {
                 "127.0.0.1:1",
                 "--ingest-listen",
                 "127.0.0.1:2",
+                "--grpc-listen",
+                "127.0.0.1:4",
                 "--metrics-listen",
                 "127.0.0.1:3",
                 "--keys-file",
@@ -354,6 +361,7 @@ mod tests {
         let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
         assert_eq!(config.server.listen, addr("127.0.0.1:1"));
         assert_eq!(config.server.ingest_listen, addr("127.0.0.1:2"));
+        assert_eq!(config.server.grpc_listen, addr("127.0.0.1:4"));
         assert_eq!(config.server.metrics_listen, addr("127.0.0.1:3"));
         assert_eq!(
             config.server.keys_file.as_deref(),
