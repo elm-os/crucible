@@ -7,7 +7,9 @@
 //!   scrub rules. [`spec`] resolves each case into the run spec a runner plays, and checks every resolved case
 //!   against the transport and lifecycle rules of both protocol revisions.
 //! - [`run_suite`] runs every case through a [`Runner`], evaluates the collected spans against the golden
-//!   ([`golden::evaluate`]) and returns the matrix [`Report`].
+//!   ([`golden::evaluate`]) and returns the matrix [`Report`]. The derived fields and the classification of a
+//!   golden are checked against the records that the real normalizer (`crucible-normalize`) makes of the
+//!   exports.
 //! - [`SelfTestRunner`] emits the spans an SDK that follows the contract would emit, directly with
 //!   `opentelemetry-proto`, so the suite runs before any SDK exists.
 //!
@@ -19,6 +21,7 @@ pub mod collector;
 mod driver;
 pub mod golden;
 mod hash;
+mod records;
 pub mod registry;
 pub mod scrub;
 mod selftest;

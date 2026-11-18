@@ -929,6 +929,7 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-fake-collector",
+ "crucible-normalize",
  "crucible-otlp",
  "crucible-records",
  "flate2",

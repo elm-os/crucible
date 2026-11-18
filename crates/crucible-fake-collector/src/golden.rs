@@ -16,6 +16,7 @@ use serde_json::Value as Json;
 
 use crate::collector::{Event, RecordedSpan};
 use crate::hash::{mrtr_hash, session_hash};
+use crate::records::Records;
 use crate::registry::{Registry, Rule, Target};
 use crate::spec::{Case, ResponseEvent};
 use crate::suite::{Kind, Manifest, Scenario, Suite, SuiteError, check_schema, parse, schema};
@@ -702,6 +703,8 @@ struct Eval<'a> {
     vars: BTreeMap<&'static str, Json>,
     facts: BTreeMap<&'static str, String>,
     spans: Vec<(usize, &'a RecordedSpan)>,
+    /// What the real normalizer makes of the case's exports.
+    records: Records,
     checks: u32,
     failures: Vec<Finding>,
 }
@@ -789,6 +792,7 @@ impl<'a> Eval<'a> {
             vars,
             facts,
             spans,
+            records: Records::of(input.events),
             checks: 0,
             failures: Vec::new(),
         }
@@ -826,6 +830,7 @@ impl<'a> Eval<'a> {
         self.exports();
         self.taint();
         self.every_span_contract();
+        self.normalizer();
         let bound = self.bind();
         self.rules();
         self.golden_extras(&bound);
@@ -1039,6 +1044,35 @@ impl<'a> Eval<'a> {
                 "every known key has its registry type",
                 || wrong.join("; "),
                 None,
+            );
+        }
+    }
+
+    /// The real normalizer takes every accepted export, and makes an MCP operation of exactly the spans that
+    /// carry `mcp.method.name` (contract 9.1).
+    fn normalizer(&mut self) {
+        let errors = self.records.errors.join("; ");
+        self.check(
+            errors.is_empty(),
+            None,
+            "the normalizer takes every export",
+            "no error",
+            || errors.clone(),
+            Some("3.2"),
+        );
+        if !errors.is_empty() {
+            return;
+        }
+        let spans = self.spans.clone();
+        for (_, span) in spans.iter().filter(|(_, s)| s.rejection.is_none()) {
+            let (carries, made) = (is_mcp(span), self.records.op(span).is_some());
+            self.check(
+                carries == made,
+                Some(span.name.as_str()),
+                "an MCP operation record exactly for a span with mcp.method.name",
+                if carries { "a record" } else { "no record" },
+                || if made { "a record" } else { "no record" }.to_owned(),
+                Some("9.1"),
             );
         }
     }
@@ -1400,14 +1434,27 @@ impl<'a> Eval<'a> {
             .map(str::to_owned)
             .or_else(|| self.registry.fields.get(field).map(|(c, _)| c.clone()));
         let label = id.unwrap_or(span.name.as_str()).to_owned();
+        // The same field in the record the real normalizer made of the span.
+        let recorded = self.records.field(field, span);
         self.check(
             want.is_some() && got == want,
             Some(label.as_str()),
             format!("field {field}"),
-            want.map_or_else(|| "an unset variable".to_owned(), |w| w.to_string()),
+            want.as_ref()
+                .map_or_else(|| "an unset variable".to_owned(), Json::to_string),
             || got.map_or_else(|| "nothing derivable".to_owned(), |g| g.to_string()),
             contract.as_deref(),
         );
+        if let Some(recorded) = recorded {
+            self.check(
+                want.is_some() && recorded == want,
+                Some(label.as_str()),
+                format!("field {field} of the normalizer's record"),
+                want.map_or_else(|| "an unset variable".to_owned(), |w| w.to_string()),
+                || recorded.map_or_else(|| "no value".to_owned(), |r| r.to_string()),
+                contract.as_deref(),
+            );
+        }
     }
 
     fn classify(&self, span: &RecordedSpan) -> McpClassification {
@@ -1465,12 +1512,32 @@ impl<'a> Eval<'a> {
         classify_mcp_error(&input)
     }
 
+    /// Checks the classification of a span: the one in the record the real normalizer made of it. The
+    /// driver's own reading of the span's keys must give the same, so that the suite and the normalizer cannot
+    /// drift apart.
     fn outcome(&mut self, id: Option<&str>, span: &RecordedSpan, want: &Outcome) {
-        let got = self.classify(span);
+        let read = self.classify(span);
+        let Some(got) = self.records.op(span).map(|op| McpClassification {
+            error_class: op.error_class,
+            error_subclass: op.error_subclass,
+            status: op.status,
+            caller_fault: op.caller_fault,
+        }) else {
+            // `normalizer` has reported the missing record.
+            return;
+        };
+        self.check(
+            got == read,
+            id,
+            "the normalizer's record classifies as the driver reads the span's keys",
+            format!("{read:?}"),
+            || format!("{got:?}"),
+            Some("9.2"),
+        );
         self.check(
             got.status == want.status,
             id,
-            "outcome status (contract 9.2 classifier)",
+            "outcome status of the normalizer's record (contract 9.2 classifier)",
             want.status.as_str(),
             || got.status.as_str().to_owned(),
             Some("9.2"),

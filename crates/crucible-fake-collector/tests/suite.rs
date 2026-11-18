@@ -18,6 +18,16 @@ use crucible_fake_collector::{
     SelfTestRunner, Status, Suite, mrtr_hash, run_suite, session_hash,
 };
 use crucible_records::{SpanId, TraceId};
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::{
+    AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
+};
+use opentelemetry_proto::tonic::resource::v1::Resource;
+use opentelemetry_proto::tonic::trace::v1::span::{Event as SpanEvent, Link};
+use opentelemetry_proto::tonic::trace::v1::{
+    ResourceSpans, ScopeSpans, Span, Status as ProtoStatus,
+};
+use prost::Message;
 use rust_embed::RustEmbed;
 use serde_json::{Value as Json, json};
 
@@ -569,6 +579,104 @@ fn set(span: &mut RecordedSpan, key: &str, value: Value) {
     span.attributes.push((key.to_owned(), value));
 }
 
+fn any_value(value: &Value) -> AnyValue {
+    use any_value::Value as V;
+    AnyValue {
+        value: match value {
+            Value::Empty => None,
+            Value::String(s) => Some(V::StringValue(s.clone())),
+            Value::Bool(b) => Some(V::BoolValue(*b)),
+            Value::Int(i) => Some(V::IntValue(*i)),
+            Value::Double(d) => Some(V::DoubleValue(*d)),
+            Value::Bytes(b) => Some(V::BytesValue(b.clone())),
+            Value::Array(items) => Some(V::ArrayValue(ArrayValue {
+                values: items.iter().map(any_value).collect(),
+            })),
+            Value::KvList(pairs) => Some(V::KvlistValue(KeyValueList {
+                values: key_values(pairs),
+            })),
+        },
+    }
+}
+
+fn key_values(pairs: &[(String, Value)]) -> Vec<KeyValue> {
+    pairs
+        .iter()
+        .map(|(key, value)| KeyValue {
+            key: key.clone(),
+            value: Some(any_value(value)),
+            ..KeyValue::default()
+        })
+        .collect()
+}
+
+/// Writes the body of every export again from its recorded spans, so that a mutation of a recorded span reaches
+/// what the normalizer reads. A collector's log always holds the two in step.
+fn reencode(events: &mut [Event]) {
+    let nanos = |t: crucible_records::Timestamp| t.micros() as u64 * 1_000;
+    for export in exports_mut(events) {
+        let resource_spans = export
+            .spans
+            .iter()
+            .map(|span| ResourceSpans {
+                resource: Some(Resource {
+                    attributes: key_values(&span.resource),
+                    ..Resource::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: span.scope_name.clone(),
+                        version: span.scope_version.clone(),
+                        attributes: key_values(&span.scope_attributes),
+                        ..InstrumentationScope::default()
+                    }),
+                    spans: vec![Span {
+                        trace_id: span.trace_id.to_bytes().to_vec(),
+                        span_id: span.span_id.to_bytes().to_vec(),
+                        parent_span_id: span
+                            .parent_span_id
+                            .map(|id| id.to_bytes().to_vec())
+                            .unwrap_or_default(),
+                        name: span.name.clone(),
+                        kind: i32::from(span.kind.value()),
+                        start_time_unix_nano: nanos(span.start),
+                        end_time_unix_nano: nanos(span.end),
+                        attributes: key_values(&span.attributes),
+                        events: span
+                            .events
+                            .iter()
+                            .map(|event| SpanEvent {
+                                time_unix_nano: nanos(event.time),
+                                name: event.name.clone(),
+                                attributes: key_values(&event.attributes),
+                                ..SpanEvent::default()
+                            })
+                            .collect(),
+                        links: span
+                            .links
+                            .iter()
+                            .map(|link| Link {
+                                trace_id: link.trace_id.to_bytes().to_vec(),
+                                span_id: link.span_id.to_bytes().to_vec(),
+                                attributes: key_values(&link.attributes),
+                                ..Link::default()
+                            })
+                            .collect(),
+                        status: Some(ProtoStatus {
+                            message: span.status_message.clone(),
+                            code: i32::from(span.status.value()),
+                        }),
+                        ..Span::default()
+                    }],
+                    ..ScopeSpans::default()
+                }],
+                ..ResourceSpans::default()
+            })
+            .collect();
+        export.body = ExportTraceServiceRequest { resource_spans }.encode_to_vec();
+    }
+}
+
 type Mutation = fn(&mut Vec<Event>);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -670,6 +778,7 @@ async fn each_check_class_fails_when_its_rule_is_broken() {
         assert!(clean.is_empty(), "{case} must pass unmodified: {clean:#?}");
         let mut broken = events.clone();
         mutate(&mut broken);
+        reencode(&mut broken);
         let failures = failures_of(&suite, case, &broken, &responses);
         assert!(
             failures.iter().any(|f| f.check.starts_with(check)),
