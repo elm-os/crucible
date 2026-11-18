@@ -17,13 +17,13 @@ endpoints share stays in the shared modules.
 | Trace by id | `trace_bounds.rs`, `trace_spans.rs` | `trace_detail.rs` | `trace_detail.rs` | `trace_detail.rs` |
 | Children of a span | `trace_bounds.rs`, `span_children.rs` | `span_children.rs` | `spans.rs` | `spans.rs` |
 | Data bounds | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` |
-| Sessions (plan builders only so far) | `sessions.rs` | | | |
-| Users (plan builders only so far) | `users.rs` | | | |
-| Span list (plan builder only so far) | `span_list.rs` | | | |
+| Sessions | `sessions.rs` | `sessions.rs` | `sessions.rs` | `sessions.rs` |
+| Users and the sessions of a user | `users.rs` | `users.rs` | `users.rs` | `users.rs` |
+| Span list | `span_list.rs` | `span_list.rs` | `span_list.rs` | `span_list.rs` |
 | Search (plan builders only so far) | `search.rs` | | | |
 | Payload byte range (plan builder only so far) | `payload.rs` | | | |
 | Metrics query (plan builders only so far) | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | | | |
-| Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
+| Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `filters.rs` (the list filter parameters), `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
 Each registry is a sorted list with one entry per endpoint; insert a new entry at its sorted place. Two slices whose
 names sort next to each other insert at the same place, and git reports a conflict there that is resolved by keeping
@@ -143,7 +143,7 @@ never edits another endpoint's. Insertions can still meet: when two names sort n
 conflict that is resolved by keeping both entries. These places are still one list for every endpoint, or a line
 that every endpoint of a kind changes; each is a follow-up:
 
-- `assert_eq!(operations, 4)` and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
+- The operation count and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
   a route changes the count.
 - The builder calls of `every_built_plan_carries_its_scope_and_window`, and the `plans` and `tables` arrays of
   `every_builder_clamps_its_window_to_retention`, in `crates/crucible-plan/tests/properties.rs`.
