@@ -31,10 +31,10 @@ const SMOKE_CONFIGS: u64 = 40;
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports.
 const MUTANTS: [(Mutant, u64, &str); 9] = [
     (Mutant::SkipWalSync, 0, "I3"),
-    (Mutant::DropToken, 1000, "I2"),
-    (Mutant::GcAboveCheckpoint, 14000, "I12"),
+    (Mutant::DropToken, 0, "I2"),
+    (Mutant::GcAboveCheckpoint, 1001, "I12"),
     (Mutant::SilentEviction, 17001, "I3"),
-    (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
+    (Mutant::SkipProbeAfterUnknown, 0, "I2"),
     (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 0, "I7"),
     (Mutant::DropFactOnRetry, 3000, "I1"),
