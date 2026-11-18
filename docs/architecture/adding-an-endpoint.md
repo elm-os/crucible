@@ -19,8 +19,9 @@ endpoints share stays in the shared modules.
 | Data bounds | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` |
 | Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
-Each registry is a sorted list with one entry per endpoint. Insert a new entry at its sorted place instead of
-appending it, so that two slices rarely insert at the same place.
+Each registry is a sorted list with one entry per endpoint; insert a new entry at its sorted place. Two slices whose
+names sort next to each other insert at the same place, and git reports a conflict there that is resolved by keeping
+both entries.
 
 ## Checklist
 
@@ -131,10 +132,10 @@ appending it, so that two slices rarely insert at the same place.
 
 ## Lines that slices still share
 
-Every registry entry belongs to one endpoint, and rustfmt formats each entry on its own, so slices that add
-different endpoints add different lines. Where two slices insert at the same place in a list, the merge conflict
-is resolved by keeping both entries. These places are still one list for every endpoint; each is a follow-up to
-split:
+Every registry entry belongs to one endpoint, and rustfmt formats each entry on its own, so a slice adds lines and
+never edits another endpoint's. Insertions can still meet: when two names sort next to each other, git reports a
+conflict that is resolved by keeping both entries. These places are still one list for every endpoint, or a line
+that every endpoint of a kind changes; each is a follow-up:
 
 - `assert_eq!(operations, 4)` and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
   a route changes the count.
@@ -142,8 +143,12 @@ split:
   `every_builder_clamps_its_window_to_retention`, in `crates/crucible-plan/tests/properties.rs`.
 - The fixture, `endpoint_plans` and the summary line of `reads()` in `crates/crucible-conformance/src/reads.rs`.
 - `crates/crucible-store-clickhouse/tests/render.rs`, which holds every builder's snapshots.
-- `visit_exported` in `crates/crucible-api-types/src/lib.rs`, sorted by type rather than by endpoint, and the cursor
-  methods in `crates/crucible-api/src/cursor.rs`.
+- `visit_exported` in `crates/crucible-api-types/src/lib.rs`, sorted by type rather than by endpoint.
+- The `tags(...)` list of the document in `crates/crucible-api/src/openapi.rs`: a group with a new tag adds to it.
+- The `Route` and `Position` enums in `crates/crucible-cursor/src/payload.rs` and the cursor methods in
+  `crates/crucible-api/src/cursor.rs`: every paged endpoint adds to each.
+- The `Allow: GET, HEAD` header that `unknown_method` sends in `crates/crucible-api/src/lib.rs`: the first route with
+  another method (for example `POST search`) changes it.
 - `ui/src/api/client.ts`, which holds every request function.
 - `crates/crucible-sim/src/system_sim.rs`, the one oracle.
 
