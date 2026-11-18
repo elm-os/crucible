@@ -18,6 +18,7 @@ pub mod oauth;
 pub mod password;
 pub mod roles;
 mod seal;
+pub mod service;
 pub mod token;
 
 pub use db_keys::{
