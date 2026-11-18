@@ -750,8 +750,16 @@ dependencies = [
  "crucible-records",
  "flate2",
  "hdrhistogram",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "opentelemetry-proto",
+ "proptest",
  "prost",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
 ]
 
