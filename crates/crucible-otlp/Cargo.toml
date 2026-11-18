@@ -13,7 +13,9 @@ crucible-records = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 memchr = { workspace = true }
-serde_json = { workspace = true }
+serde = { workspace = true }
+# Exact float parsing, so JSON doubles transcode bit for bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]

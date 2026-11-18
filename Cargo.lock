@@ -731,6 +731,7 @@ dependencies = [
  "opentelemetry-proto",
  "proptest",
  "prost",
+ "serde",
  "serde_json",
  "thiserror",
 ]

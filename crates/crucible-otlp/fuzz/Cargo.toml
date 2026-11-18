@@ -1,0 +1,33 @@
+[package]
+name = "crucible-otlp-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crucible-otlp = { path = ".." }
+libfuzzer-sys = "=0.4.13"
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "with-serde"] }
+prost = "=0.14.6"
+
+# A workspace of its own, so it is not a member of the root workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "scan"
+path = "fuzz_targets/scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
