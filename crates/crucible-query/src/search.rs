@@ -576,21 +576,25 @@ impl Read<'_> {
         let keys: Vec<SearchKey> = page.iter().map(|hit| hit.key).collect();
         let (scope, caller) = (self.ctx.scope, self.ctx.caller);
         let plan = search_spans(scope, window, &self.clamp, caller, &keys, &Filter::all());
-        let lsn_at = SpanCoreCol::ALL
-            .iter()
-            .position(|c| *c == SpanCoreCol::Lsn)
-            .unwrap_or(usize::MAX);
+        let at = |column: SpanCoreCol| {
+            SpanCoreCol::ALL
+                .iter()
+                .position(|c| *c == column)
+                .unwrap_or(usize::MAX)
+        };
+        let (lsn_at, hash_at) = (at(SpanCoreCol::Lsn), at(SpanCoreCol::TraceHash));
         for row in self.rows(plan).await? {
-            let lsn = Fields(row.values()).uint(lsn_at)?;
+            let f = Fields(row.values());
+            let lsn = f.uint(lsn_at)?;
+            // The key as the store holds it, so the join is exact.
+            let hash = u32::try_from(f.uint(hash_at)?).map_err(|_| {
+                QueryServiceError::Internal("a span's trace hash is out of range".to_owned())
+            })?;
             let Some(span) = stored(vec![row])?.pop() else {
                 continue;
             };
             let s = &span.summary;
-            let key = (
-                s.start_time.floor_minute(),
-                s.trace_id.trace_hash(),
-                s.span_id,
-            );
+            let key = (s.start_time.floor_minute(), hash, s.span_id);
             // The lists of the plan are a superset: keep only the rows of the page's own keys.
             if !keys.contains(&key) {
                 continue;
