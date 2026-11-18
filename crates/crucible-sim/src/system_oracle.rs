@@ -302,8 +302,9 @@ fn usage_parents(rows: &[&UsageRow], set: &mut BTreeSet<Vec<u8>>) {
     }
 }
 
-/// I7 for `usage_aggregate`, from the rows of `span_core` alone. The flag is stage B state, rebuilt from the
-/// retained WAL prefix after a restart, so a restart may forget an earlier frame's descendants. Stage B takes the
+/// I7 for `usage_aggregate`, from the rows of `span_core` alone. The flag is stage B state, which holds
+/// what the retained WAL prefix holds, so garbage collection and a restart forget an earlier frame's descendants.
+/// Stage B takes the
 /// mark over every span of a frame before it drops the exact repeats, and a dropped repeat leaves no row in its
 /// frame: it is a span whose equal row an earlier frame holds. What holds in every run:
 ///

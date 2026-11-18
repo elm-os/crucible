@@ -1,8 +1,12 @@
-//! `crucible serve`: builds the production `Env`, opens the WAL, and runs the HTTP listeners until asked to stop.
+//! `crucible serve`: builds the production `Env`, opens the WAL, and runs the listeners until asked to stop.
 //!
 //! The servers accept through `Env`'s `Net`, so the same code will run over the simulated network. Each accept
 //! loop is a named task in the shutdown scope; axum runs one further tokio task per connection, and graceful
-//! shutdown waits for those before the accept-loop task returns.
+//! shutdown waits for those before the accept-loop task returns. The gRPC listener is an axum server too: it
+//! speaks HTTP/2 without TLS, as OTLP exporters do on `:4317`.
+//!
+//! Both HTTP ingest listeners serve `/v1/traces` and the compat ingest routes of `crucible_compat::routes`;
+//! paths that name no route there answer problem 404 and never fall back to HTML (contract 12.1).
 //!
 //! Two modes:
 //!
@@ -44,7 +48,7 @@ use crucible_env::{
     OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
-use crucible_ingest::{Ingest, IngestConfig};
+use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
 use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
@@ -177,10 +181,23 @@ struct Ui {
     source: Arc<dyn AssetSource>,
 }
 
+/// A problem 404 for a path that no route serves.
+fn not_found(env: &Env, request: &Request) -> Response {
+    let request_id = crucible_api::request_id(request.extensions(), env);
+    crucible_api::problem(
+        request_id,
+        ProblemCode::NotFound,
+        "no resource exists at this path",
+    )
+}
+
 /// Answers every request the routes do not match with the UI's try-files handler. Paths reserved for the
-/// API, ingest, the MCP server and the health checks never fall back to HTML: they get a problem 404
-/// (contract 12.1).
+/// API, ingest, the MCP server and the health checks never fall back to HTML, and neither do paths under a
+/// compat ingest route's first segment: they get a problem 404 (contract 12.1).
 async fn serve_ui(State(ui): State<Ui>, request: Request) -> Response {
+    if crucible_compat::routes::under_route_prefix(request.uri().path()) {
+        return not_found(&ui.env, &request);
+    }
     let outcome = crucible_ui_assets::serve(
         ui.source.as_ref(),
         request.method(),
@@ -189,14 +206,7 @@ async fn serve_ui(State(ui): State<Ui>, request: Request) -> Response {
     );
     match outcome {
         Outcome::Response(response) => response.map(Body::from),
-        Outcome::Reserved => {
-            let request_id = crucible_api::request_id(request.extensions(), &ui.env);
-            crucible_api::problem(
-                request_id,
-                ProblemCode::NotFound,
-                "no resource exists at this path",
-            )
-        }
+        Outcome::Reserved => not_found(&ui.env, &request),
     }
 }
 
@@ -244,6 +254,18 @@ async fn ingest_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
     }
 }
 
+/// Refuses gRPC ingest with `UNAVAILABLE` and a `RetryInfo` while the gate is closed (contract 5.8).
+async fn grpc_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next) -> Response {
+    match gate.closed() {
+        None => next.run(request).await,
+        Some(reason) => crucible_ingest::grpc_unavailable(
+            request.headers(),
+            CLOSED_RETRY_AFTER,
+            &format!("ingest is closed: {reason}"),
+        ),
+    }
+}
+
 /// Hands an API request to the API over the store once there is one.
 async fn serve_api(State(gate): State<Arc<Gate>>, request: Request) -> Response {
     let api = gate.api.get().unwrap_or(&gate.api_without_store).clone();
@@ -260,6 +282,31 @@ struct App {
     wal: Wal,
     keys: Arc<dyn KeyVerifier>,
     gate: Arc<Gate>,
+}
+
+/// The ingest settings: the defaults, with the compat ingest routes and routing headers of the compat registry
+/// (contract 12.1).
+fn ingest_config() -> IngestConfig {
+    let compat_routes = crucible_compat::routes::INGEST_ROUTES
+        .iter()
+        .map(|route| CompatRoute {
+            path: route.path,
+            dialect: route.dialect,
+            sdk_headers: route.sdk_headers.map(|sdk| (sdk.name, sdk.version)),
+        })
+        .collect();
+    let routing_headers = crucible_compat::routes::ROUTING_HEADERS
+        .iter()
+        .map(|header| RoutingHeader {
+            name: header.name,
+            dialect: header.dialect,
+        })
+        .collect();
+    IngestConfig {
+        compat_routes,
+        routing_headers,
+        ..IngestConfig::default()
+    }
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
@@ -287,7 +334,7 @@ async fn open_app(
         wal.clone(),
         &config,
         Arc::clone(&keys),
-        IngestConfig::default(),
+        ingest_config(),
     );
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
@@ -364,9 +411,24 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
     crucible_api::common_layers(observed(router, env, "api"), env)
 }
 
-/// The OTLP/HTTP listener's routes.
+/// The OTLP/HTTP listener's routes: OTLP and compat ingest. Every other path answers problem 404, and every
+/// response carries a request id.
 fn ingest_router(env: &Env, app: &App) -> Router {
-    observed(gated_ingest(app), env, "ingest")
+    let fallback_env = env.clone();
+    let router = gated_ingest(app).fallback(move |request: Request| {
+        let env = fallback_env.clone();
+        async move { not_found(&env, &request) }
+    });
+    observed(crucible_api::common_layers(router, env), env, "ingest")
+}
+
+/// The OTLP/gRPC listener's routes, behind the gate.
+fn grpc_router(env: &Env, app: &App) -> Router {
+    let router = app
+        .ingest
+        .grpc_router()
+        .layer(from_fn_with_state(Arc::clone(&app.gate), grpc_gate));
+    observed(router, env, "grpc")
 }
 
 fn metrics_router(env: &Env, recorder: Arc<MemoryRecorder>) -> Router {
@@ -387,6 +449,7 @@ fn metrics_router(env: &Env, recorder: Arc<MemoryRecorder>) -> Router {
 struct Addrs {
     api: SocketAddr,
     ingest: SocketAddr,
+    grpc: SocketAddr,
     metrics: SocketAddr,
 }
 
@@ -395,6 +458,7 @@ struct Servers {
     addrs: Addrs,
     api: JoinHandle<io::Result<()>>,
     ingest: JoinHandle<io::Result<()>>,
+    grpc: JoinHandle<io::Result<()>>,
     metrics: JoinHandle<io::Result<()>>,
 }
 
@@ -414,7 +478,7 @@ fn serve(
     })
 }
 
-/// Binds the three listeners and spawns their accept loops. The routers take over `app`.
+/// Binds the four listeners and spawns their accept loops. The routers take over `app`.
 async fn start(
     env: &Env,
     recorder: Arc<MemoryRecorder>,
@@ -424,18 +488,22 @@ async fn start(
 ) -> anyhow::Result<Servers> {
     let api = EnvListener::bind(env, "api", listen.api).await?;
     let ingest = EnvListener::bind(env, "ingest", listen.ingest).await?;
+    let grpc = EnvListener::bind(env, "grpc", listen.grpc).await?;
     let metrics = EnvListener::bind(env, "metrics", listen.metrics).await?;
     let addrs = Addrs {
         api: api.inner.local_addr()?,
         ingest: ingest.inner.local_addr()?,
+        grpc: grpc.inner.local_addr()?,
         metrics: metrics.inner.local_addr()?,
     };
     let (api_router, ingest_router) = (api_router(env, &app, ui), ingest_router(env, &app));
+    let grpc_router = grpc_router(env, &app);
     drop(app);
     Ok(Servers {
         addrs,
         api: serve(env, "http-api", api, api_router),
         ingest: serve(env, "http-ingest", ingest, ingest_router),
+        grpc: serve(env, "grpc-ingest", grpc, grpc_router),
         metrics: serve(env, "http-metrics", metrics, metrics_router(env, recorder)),
     })
 }
@@ -786,6 +854,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let listen = Addrs {
         api: config.server.listen,
         ingest: config.server.ingest_listen,
+        grpc: config.server.grpc_listen,
         metrics: config.server.metrics_listen,
     };
     let mut servers = start(env, Arc::clone(&prod.recorder), Arc::new(ui), listen, app).await?;
@@ -793,6 +862,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         listen = %servers.addrs.api,
         ingest = %servers.addrs.ingest,
+        grpc = %servers.addrs.grpc,
         metrics = %servers.addrs.metrics,
         wal_backend = prod.wal_backend.backend.as_str(),
         ui = ui_source,
@@ -819,6 +889,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         }
         result = servers.api.join() => Some(("api", result)),
         result = servers.ingest.join() => Some(("ingest", result)),
+        result = servers.grpc.join() => Some(("grpc", result)),
         result = servers.metrics.join() => Some(("metrics", result)),
         result = store_stopped => Some(("telemetry-store", result.map(|r| r.map_err(io::Error::other)))),
     };
@@ -836,6 +907,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     }
     server_result("api", servers.api.join().await)?;
     server_result("ingest", servers.ingest.join().await)?;
+    server_result("grpc", servers.grpc.join().await)?;
     server_result("metrics", servers.metrics.join().await)?;
     anyhow::ensure!(
         aborted.is_empty(),
@@ -854,8 +926,16 @@ mod tests {
     use crucible_env_prod::WalBackend;
     use crucible_recent::{WalLocator, WalReadError, WalView as _};
     use crucible_records::{ProjectId, RequestId, TimeWindow, Timestamp, TraceId};
-    use crucible_wal_codec::{Compression, ContentOrigin, PreparedFrame, Record, RecordType};
+    use crucible_wal_codec::{
+        Compression, ContentOrigin, IngestTransport, PreparedFrame, Record, RecordType,
+    };
+    use opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use opentelemetry_proto::tonic::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    };
+    use prost::Message as _;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tonic::codec::CompressionEncoding;
 
     use super::*;
     use crate::store::MasterKey;
@@ -864,17 +944,25 @@ mod tests {
     const LISTEN: Addrs = Addrs {
         api: LOOPBACK,
         ingest: LOOPBACK,
+        grpc: LOOPBACK,
         metrics: LOOPBACK,
     };
     const PROJECT: &str = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b";
+    /// The challenges of a 401 on the ingest paths, as the lowercased header block shows them.
+    const CHALLENGES: &str = "bearer, basic realm=\"crucible\"";
 
     fn secret() -> String {
         format!("csk_{}", "7".repeat(43))
     }
 
+    fn public() -> String {
+        format!("cpk_{}", "7".repeat(43))
+    }
+
     fn keys_toml() -> String {
         format!(
-            "[[project_key]]\nproject_id = \"{PROJECT}\"\nsecret = \"{}\"\n",
+            "[[project_key]]\nproject_id = \"{PROJECT}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n",
+            public(),
             secret()
         )
     }
@@ -981,6 +1069,7 @@ mod tests {
         );
         assert!(matches!(servers.api.join().await, Ok(Ok(()))));
         assert!(matches!(servers.ingest.join().await, Ok(Ok(()))));
+        assert!(matches!(servers.grpc.join().await, Ok(Ok(()))));
         assert!(matches!(servers.metrics.join().await, Ok(Ok(()))));
     }
 
@@ -996,7 +1085,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             prod.spawner.task_names(),
-            ["wal-committer", "http-api", "http-ingest", "http-metrics"]
+            [
+                "wal-committer",
+                "http-api",
+                "http-ingest",
+                "grpc-ingest",
+                "http-metrics"
+            ]
         );
         let addrs = servers.addrs;
 
@@ -1297,7 +1392,7 @@ mod tests {
         // `/v1/traces` is ingest, never the UI.
         let (status, headers, _) = http(env, addr, "POST", "/v1/traces", &[]).await;
         assert_eq!(status, "HTTP/1.1 401 Unauthorized");
-        assert_eq!(header(&headers, "www-authenticate"), Some("bearer"));
+        assert_eq!(header(&headers, "www-authenticate"), Some(CHALLENGES));
         let (status, _, body) = http_get(env, addr, "/healthz").await;
         assert_eq!((status.as_str(), body.as_str()), ("HTTP/1.1 200 OK", "ok"));
 
@@ -1397,7 +1492,7 @@ mod tests {
         assert_eq!(body, b"{}");
         let (status, headers, _) = post(addrs.ingest, "", protobuf_type, protobuf.clone()).await;
         assert_eq!(status, "HTTP/1.1 401 Unauthorized");
-        assert_eq!(header(&headers, "www-authenticate"), Some("bearer"));
+        assert_eq!(header(&headers, "www-authenticate"), Some(CHALLENGES));
         let (status, _, body) = http_get(env, addrs.api, "/readyz").await;
         assert_eq!(
             (status.as_str(), body.as_str()),
@@ -1479,6 +1574,282 @@ mod tests {
             ..locator(0)
         };
         assert_eq!(view.read_span(project, missing).await, gone);
+    }
+
+    /// `Authorization: Basic` with `public:secret`.
+    fn basic(public: &str, secret: &str) -> String {
+        use base64::Engine as _;
+        let pair = format!("{public}:{secret}");
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(pair)
+        )
+    }
+
+    /// An HTTP/2 connection to the gRPC listener at `addr`, as an OTLP exporter whose user agent is
+    /// `e2e-grpc/2.0` keeps one open.
+    async fn grpc_channel(addr: SocketAddr) -> tonic::transport::Channel {
+        tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .user_agent("e2e-grpc/2.0")
+            .unwrap()
+            .connect()
+            .await
+            .unwrap()
+    }
+
+    /// A gRPC export of `body` with `authorization` on `channel`, gzip-compressed.
+    async fn grpc_export(
+        channel: &tonic::transport::Channel,
+        authorization: &str,
+        body: &[u8],
+    ) -> Result<ExportTraceServiceResponse, tonic::Status> {
+        let mut client =
+            TraceServiceClient::new(channel.clone()).send_compressed(CompressionEncoding::Gzip);
+        let mut request = tonic::Request::new(ExportTraceServiceRequest::decode(body).unwrap());
+        request
+            .metadata_mut()
+            .insert("authorization", authorization.parse().unwrap());
+        client
+            .export(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// The compat ingest routes of the registry, its routing headers, gRPC and the problem 404s, through the
+    /// real listeners. Every route takes the key pair as Basic on both HTTP listeners; the frames carry each
+    /// route's hint and SDK and survive a restart.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compat_routes_and_grpc_are_served_on_their_listeners() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let app = test_app(env, keys).await;
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addrs = servers.addrs;
+        let start_nanos = u64::try_from(env.clock.wall_now().micros()).unwrap() * 1_000;
+        let protobuf = crucible_otlp::transcode_json(span_json(start_nanos).as_bytes()).unwrap();
+        let (pair, bearer) = (basic(&public(), &secret()), format!("Bearer {}", secret()));
+        let protobuf_type = "application/x-protobuf";
+        let json_type = "application/json";
+        let json = span_json(start_nanos).into_bytes();
+        let gzip = |bytes: &[u8]| {
+            use std::io::Write as _;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(bytes).unwrap();
+            encoder.finish().unwrap()
+        };
+        let (pb, js) = (ContentOrigin::Protobuf, ContentOrigin::Json);
+        // Each encoding on one of the two HTTP ingest listeners: (listener, media type, gzip, body, origin).
+        let sends = [
+            (addrs.api, protobuf_type, false, protobuf.clone(), pb),
+            (addrs.ingest, protobuf_type, false, protobuf.clone(), pb),
+            (addrs.ingest, json_type, false, json.clone(), js),
+            (addrs.api, protobuf_type, true, gzip(&protobuf), pb),
+            (addrs.ingest, json_type, true, gzip(&json), js),
+        ];
+        let agent = ("e2e-exporter", "1.0");
+        // (compat_dialect, transport, content origin, (sdk_name, sdk_version)) of each acknowledged request, in
+        // order.
+        let mut expected = Vec::new();
+
+        for route in crucible_compat::routes::INGEST_ROUTES {
+            for (addr, content_type, compressed, body, origin) in &sends {
+                let mut headers = vec![
+                    ("authorization", pair.as_str()),
+                    ("content-type", *content_type),
+                    ("user-agent", "e2e-exporter/1.0"),
+                ];
+                if *compressed {
+                    headers.push(("content-encoding", "gzip"));
+                }
+                if let Some(sdk) = route.sdk_headers {
+                    headers.extend([(sdk.name, "sdk-a"), (sdk.version, "2.1.0")]);
+                }
+                let (status, _, reply) =
+                    exchange(env, *addr, "POST", route.path, &headers, body).await;
+                assert_eq!(status, "HTTP/1.1 200 OK", "{}: {reply:?}", route.path);
+                let empty: &[u8] = if *origin == js { b"{}" } else { b"" };
+                assert_eq!(reply, empty);
+                let sdk = route.sdk_headers.map_or(agent, |_| ("sdk-a", "2.1.0"));
+                expected.push((route.dialect, IngestTransport::Http, *origin, sdk));
+            }
+            // A pair whose halves belong to different keys is refused with what to fix.
+            let mixed = basic(&format!("cpk_{}", "8".repeat(43)), &secret());
+            let headers = [
+                ("authorization", mixed.as_str()),
+                ("content-type", protobuf_type),
+            ];
+            let (status, headers, body) =
+                exchange(env, addrs.ingest, "POST", route.path, &headers, &protobuf).await;
+            assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+            assert_eq!(header(&headers, "www-authenticate"), Some(CHALLENGES));
+            assert_eq!(header(&headers, "content-type"), Some(protobuf_type));
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("the public key does not belong to the same project"));
+            assert!(!body.contains(&secret()[4..]) && !body.contains(&"8".repeat(43)));
+        }
+        for routing in crucible_compat::routes::ROUTING_HEADERS {
+            let headers = [
+                ("authorization", bearer.as_str()),
+                ("content-type", protobuf_type),
+                ("user-agent", "e2e-exporter/1.0"),
+                (routing.name, "x"),
+            ];
+            let (status, ..) =
+                exchange(env, addrs.ingest, "POST", "/v1/traces", &headers, &protobuf).await;
+            assert_eq!(status, "HTTP/1.1 200 OK");
+            expected.push((routing.dialect, IngestTransport::Http, pb, agent));
+        }
+        // One connection for every export, held open across the shutdown as an exporter holds it.
+        let channel = grpc_channel(addrs.grpc).await;
+        for authorization in [&bearer, &pair] {
+            let response = grpc_export(&channel, authorization, &protobuf)
+                .await
+                .unwrap();
+            assert_eq!(response.partial_success, None);
+            expected.push((0, IngestTransport::Grpc, pb, ("e2e-grpc", "2.0")));
+        }
+        let refused = grpc_export(&channel, "Bearer csk_short", &protobuf)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::Unauthenticated);
+        // OTLP over HTTP/1.1 sent to the gRPC port.
+        let headers = [
+            ("authorization", bearer.as_str()),
+            ("content-type", protobuf_type),
+        ];
+        let (status, ..) =
+            exchange(env, addrs.grpc, "POST", "/v1/traces", &headers, &protobuf).await;
+        assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
+
+        // Paths under a route's first segment that name no route, and the signals v0 does not ingest, answer
+        // problem 404 on both HTTP listeners; the ingest listener answers it for every other path too.
+        let mut unknown: Vec<String> = crucible_compat::routes::NOT_INGESTED
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect();
+        for route in crucible_compat::routes::INGEST_ROUTES {
+            let segment = route.path[1..]
+                .find('/')
+                .map_or(route.path, |at| &route.path[..=at]);
+            unknown.push(format!("{segment}/v1/metrics"));
+            unknown.push(segment.to_owned());
+        }
+        for addr in [addrs.api, addrs.ingest] {
+            for path in &unknown {
+                for method in ["GET", "POST"] {
+                    let (status, headers, body) = http(env, addr, method, path, &[]).await;
+                    assert_not_found_problem(&status, &headers, &body);
+                }
+            }
+        }
+        for path in ["/v1/logs", "/", "/traces/"] {
+            let (status, headers, body) = http(env, addrs.ingest, "POST", path, &[]).await;
+            assert_not_found_problem(&status, &headers, &body);
+        }
+        let recorder = &prod.recorder;
+        assert_eq!(
+            recorder.counter_value(&registry::HTTP_REQUESTS, &["grpc", "200"]),
+            3,
+            "the refused export is a gRPC status on HTTP 200"
+        );
+        // The idle connection does not hold up the shutdown: `shut_down` checks that nothing was aborted.
+        shut_down(&prod, servers).await;
+        drop(channel);
+        drop(prod);
+
+        let prod = prod_with(data_roots(dir.path()));
+        let (wal, _) = Wal::open(&prod.env, WalConfig::default()).await.unwrap();
+        let mut replay = wal.replay(Lsn::new(1));
+        let mut written = Vec::new();
+        while let Some(frame) = replay.next().await.unwrap() {
+            let payload = frame.payload().unwrap();
+            let Ok(Record::IngestRequest(request)) =
+                Record::decode(RecordType::IngestRequest, &payload)
+            else {
+                panic!("frame {} is not an ingest request", frame.lsn());
+            };
+            assert_eq!(request.project_id.to_string(), PROJECT);
+            assert_eq!(request.otlp, protobuf.as_slice());
+            let sdk = (request.sdk_name.to_owned(), request.sdk_version.to_owned());
+            written.push((
+                request.compat_dialect,
+                request.transport,
+                request.content_origin,
+                sdk,
+            ));
+        }
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(dialect, transport, origin, (name, version))| {
+                let sdk = (name.to_owned(), version.to_owned());
+                (dialect, transport, origin, sdk)
+            })
+            .collect();
+        assert_eq!(written, expected);
+    }
+
+    /// While the telemetry store is not up, gRPC ingest answers `UNAVAILABLE` with the reason and a
+    /// `RetryInfo`, as HTTP ingest answers 503 with `Retry-After`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grpc_ingest_is_unavailable_while_the_gate_is_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let config = WalConfig {
+            segment_bytes: 1 << 20,
+            ..WalConfig::default()
+        };
+        let closed = Some("the telemetry store is starting");
+        let (app, _) = open_app(env, keys, cursors, config, closed).await.unwrap();
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let start_nanos = u64::try_from(env.clock.wall_now().micros()).unwrap() * 1_000;
+        let protobuf = crucible_otlp::transcode_json(span_json(start_nanos).as_bytes()).unwrap();
+        let bearer = format!("Bearer {}", secret());
+        let channel = grpc_channel(servers.addrs.grpc).await;
+        let status = grpc_export(&channel, &bearer, &protobuf).await.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            status.message(),
+            "ingest is closed: the telemetry store is starting"
+        );
+        assert!(
+            !status.details().is_empty(),
+            "the status carries a RetryInfo"
+        );
+        let headers = [("authorization", bearer.as_str())];
+        let (status, headers, _) =
+            http(env, servers.addrs.ingest, "POST", "/v1/traces", &headers).await;
+        assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
+        assert_eq!(header(&headers, "retry-after"), Some("5"));
+        // OTLP over HTTP sent to the gRPC port is refused as such, closed or not, never with HTTP 200.
+        let headers = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/x-protobuf"),
+        ];
+        let (status, headers, _) = exchange(
+            env,
+            servers.addrs.grpc,
+            "POST",
+            "/v1/traces",
+            &headers,
+            &protobuf,
+        )
+        .await;
+        assert_eq!(status, "HTTP/1.1 415 Unsupported Media Type");
+        assert_eq!(header(&headers, "grpc-status"), None);
+        shut_down(&prod, servers).await;
     }
 
     /// The API opens cursors with the key derived from the master key, before it finds that no store is up: a
@@ -1563,9 +1934,14 @@ mod tests {
         assert_eq!(keys.len(), 1);
         let principal = keys.verify(&secret()).unwrap();
         assert_eq!(principal.scope.project_id().to_string(), PROJECT);
+        assert_eq!(keys.verify_pair(&public(), &secret()), Ok(principal));
         assert!(crate::keys::parse("", env).unwrap().is_empty());
 
-        let entry = "[[project_key]]\nproject_id = \"{project}\"\nsecret = \"{secret}\"\n";
+        let entry = "[[project_key]]\nproject_id = \"{project}\"\npublic_key = \"{public}\"\n\
+                     secret = \"{secret}\"\n";
+        let other_secret = format!("csk_{}", "8".repeat(43));
+        let other_public = format!("cpk_{}", "8".repeat(43));
+        let without_public = "[[project_key]]\nproject_id = \"{project}\"\nsecret = \"{secret}\"\n";
         let refused = [
             (
                 entry.replace("{project}", "nope"),
@@ -1575,21 +1951,41 @@ mod tests {
                 entry.replace("{secret}", "csk_short"),
                 "project_key 1: secret",
             ),
+            (
+                entry.replace("{public}", "cpk_short"),
+                "project_key 1: public_key",
+            ),
+            (
+                entry.replace("{public}", &other_secret),
+                "project_key 1: public_key",
+            ),
+            (
+                without_public.to_owned(),
+                "missing field `public_key`; every [[project_key]] needs the public key of its pair",
+            ),
             (format!("{entry}note = \"x\"\n"), "unknown field"),
             (format!("{entry}{entry}"), "same secret"),
+            (
+                format!("{entry}{}", entry.replace("{secret}", &other_secret)),
+                "same public key",
+            ),
+            (
+                format!("{entry}{}", entry.replace("{public}", &other_public)),
+                "same secret",
+            ),
             (entry.replace("{secret}\"", "{secret}"), "not valid"),
             ("[[project_key]\n".to_owned(), "not valid"),
         ];
         for (text, expected) in refused {
             let text = text
                 .replace("{project}", PROJECT)
+                .replace("{public}", &public())
                 .replace("{secret}", &secret());
             let error = format!("{:#}", crate::keys::parse(&text, env).unwrap_err());
             assert!(error.contains(expected), "{error}");
-            assert!(
-                !error.contains(&secret()[4..]),
-                "the error echoes the secret: {error}"
-            );
+            for key in [&secret()[4..], &public()[4..], &other_secret[4..]] {
+                assert!(!error.contains(key), "the error echoes a key: {error}");
+            }
         }
     }
 

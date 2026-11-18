@@ -31,3 +31,7 @@ Rules learned from corrections and surprises. Read at the start of each session.
     heredoc sent through a tool call arrives as a real newline: it split a shell line in `kani.yml`, GitHub could not
     parse the workflow, and the required check vanished from every pull request. The policy workflow now parses every
     workflow file.
+12. **A property over one shape must draw values that cannot change the shape.** The renderer property compared two
+    value assignments of one plan shape, but the plan keeps filter values as a set, so two equal draws shortened an
+    `IN` list and main went red at random. Make a list's values distinct by construction (the second extends the
+    first), and check in CI's `cc` line as a `.proptest-regressions` file so the failing case replays first.

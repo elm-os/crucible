@@ -277,6 +277,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     let address = "an address such as 0.0.0.0:8080";
     let listen = t.parsed("server.listen", address);
     let ingest_listen = t.parsed("server.ingest_listen", address);
+    let grpc_listen = t.parsed("server.grpc_listen", address);
     let metrics_listen = t.parsed("server.metrics_listen", address);
     let wal_backend = match t.text("data.wal_backend") {
         Some("auto") => Some(WalBackend::Auto),
@@ -395,6 +396,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         server: Server {
             listen: listen?,
             ingest_listen: ingest_listen?,
+            grpc_listen: grpc_listen?,
             metrics_listen: metrics_listen?,
             ui_dir: t.text("server.ui_dir").map(Into::into),
             keys_file: t.text("server.keys_file").map(Into::into),
@@ -535,6 +537,7 @@ mod tests {
         let config = &loaded.config;
         assert_eq!(config.server.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.server.ingest_listen.to_string(), "0.0.0.0:4318");
+        assert_eq!(config.server.grpc_listen.to_string(), "0.0.0.0:4317");
         assert_eq!(config.server.metrics_listen.to_string(), "127.0.0.1:9464");
         assert_eq!(config.data.dir, Path::new("data"));
         assert_eq!(config.data.wal_backend, WalBackend::Auto);
@@ -838,6 +841,7 @@ directory_of_everything = "x"
 [server]
 listen = "0.0.0.0:8080"  # default
 ingest_listen = "0.0.0.0:4318"  # default
+grpc_listen = "0.0.0.0:4317"  # default
 metrics_listen = "127.0.0.1:9464"  # default
 
 [data]

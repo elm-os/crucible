@@ -1,22 +1,38 @@
-//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It flags usage aggregates through the usage-parent
-//! set, drops exact repeats through the duplicate window, and marks provisional trace heads through the
-//! first-seen set.
+//! Stage B (contract 3.2 and 5.3): sequential, in LSN order. It flags usage aggregates through the usage
+//! descendant set, drops exact repeats through the duplicate window, and marks provisional trace heads through
+//! the first-seen set.
 //!
 //! **Usage aggregates.** A span's usage and cost count toward trace, session, user and metrics totals unless it
 //! has `usage_aggregate`: at least one descendant that carries usage or cost, seen in the same frame or earlier
-//! in the LSN stream. The usage-parent set holds the span ids that have such a descendant. Every span that carries
-//! usage or cost, or is itself in the set, adds its parent id to the set. Within one frame this runs to a fixed
-//! point over every span of the frame before any is flagged and before the duplicate drop, so wire order inside
-//! a frame does not matter, and an exact repeat that the window then drops still passes a mark on to its parent.
-//! Across frames it relies on children ending, and so being exported, no later than their parents. A span is
-//! flagged when its id is in the set, whatever its type. Known limit: a descendant that arrives after its
-//! ancestor, or after the set evicted the ancestor's id, is counted beside the ancestor.
+//! in the LSN stream. The usage descendant set holds the span ids that have such a descendant. Every span that
+//! carries usage or cost, or is itself in the set, adds its parent id to the set. Within one frame this runs to a
+//! fixed point over every span of the frame before any is flagged and before the duplicate drop, so wire order
+//! inside a frame does not matter, and an exact repeat that the window then drops still passes a mark on to its
+//! parent. Across frames it relies on children ending, and so being exported, no later than their parents. A
+//! span is flagged when its id is in the set, whatever its type. Known limit: a descendant that arrives after its
+//! ancestor, or whose frame the WAL has collected, or after the set evicted the ancestor's id, is counted
+//! beside the ancestor.
 //!
-//! Both are defined over the LSN stream, never over wall time: the state after a sequence of frames is a function
+//! All three are defined over the LSN stream, never over wall time: the state after a sequence of frames is a function
 //! of that sequence alone. Replaying the WAL's retained prefix in LSN order through a fresh [`StageB`] (and
 //! discarding the output) therefore rebuilds it, which is recovery step 6 (contract 4.6).
+//!
+//! The retained prefix gets shorter as the WAL collects garbage, so the state must not remember more than that
+//! prefix holds, or a restart would decide otherwise than the process it replaces, and the pairs of one batch
+//! that land before and after the restart would disagree. Three rules keep the live state equal to the rebuilt
+//! one. Every sighting of a key moves it to the newest position, so the window and the first-seen set hold the
+//! keys sighted most recently. [`StageB::forget_below`] drops what was last sighted below the first retained
+//! LSN. And [`Admission::relies_on`] names the oldest earlier frame a decision used, which the WAL keeps until
+//! the batch of the deciding frame is checkpointed.
+//!
+//! The usage descendant set follows the same rules through the *support* of each id: the LSN of the frame
+//! whose span carries the usage that the mark comes from. A mark that passes through spans of later frames
+//! keeps the support of the frame it started in, and an id with several marks keeps the highest. The set
+//! forgets an id whose support is below the first retained LSN, evicts the id with the lowest support first,
+//! and a span flagged on a support below its own frame relies on that LSN.
 
-use std::collections::VecDeque;
+use core::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 
 use crucible_records::{DetMap, DetSet, Lsn, SpanCore, SpanId, det_map, det_set};
 use xxhash_rust::xxh3::xxh3_64;
@@ -30,10 +46,10 @@ pub const DUPLICATE_WINDOW_KEYS: usize = 4_000_000;
 /// same bound so that its memory is bounded too.
 pub const FIRST_SEEN_TRACES: usize = 4_000_000;
 
-/// Span ids the usage-parent set holds; when full, the id that joined earliest in the LSN stream is evicted.
+/// Span ids the usage descendant set holds (contract 5.3).
 pub const USAGE_PARENT_SPANS: usize = 4_000_000;
 
-/// The usage-parent key of a span's parent: as [`span_key`], with the parent's span id.
+/// The usage descendant key of a span's parent: as [`span_key`], with the parent's span id.
 fn parent_key(core: &SpanCore) -> u64 {
     let mut bytes = [0u8; 40];
     bytes[..16].copy_from_slice(&core.project_id.to_bytes());
@@ -59,23 +75,25 @@ fn trace_key(core: &SpanCore) -> u64 {
     xxh3_64(&bytes)
 }
 
-/// The latest kept `row_digest` of each span key, for at most `capacity` keys.
+/// Keys with a value each and the LSN of the frame that sighted each last, for at most `capacity` keys: the
+/// duplicate window (span key to `row_digest`) and the first-seen set (trace key).
 ///
-/// A span whose key is present with an equal digest is a duplicate. Any other span is kept and becomes its key's
-/// remembered row, at the newest position of the eviction order: a repeat with a different digest moves its key
-/// there. When a new key takes the window above its capacity, the key whose remembered row is oldest in the LSN
-/// stream is evicted (rows of one frame in wire order).
+/// Every sighting moves its key to the newest position, so the keys held are the `capacity` most recently
+/// sighted ones, and [`Sightings::forget_below`] drops the keys last sighted below a floor. The state is
+/// therefore a function of the frames from that floor on: replaying them through fresh state gives the same
+/// keys, values and order.
 #[derive(Debug)]
-struct DuplicateWindow {
+struct Sightings<V> {
     capacity: usize,
-    /// Key to (digest, sequence number of its remembered row).
-    entries: DetMap<u64, (u64, u64)>,
-    /// (sequence number, key) in eviction order. A position whose key has since moved is stale and skipped.
+    /// Key to (value, LSN of its last sighting, sequence number of its position).
+    entries: DetMap<u64, (V, Lsn, u64)>,
+    /// (sequence number, key), oldest sighting first. A position whose key has since moved is stale and
+    /// skipped.
     order: VecDeque<(u64, u64)>,
     next: u64,
 }
 
-impl DuplicateWindow {
+impl<V: Copy + PartialEq> Sightings<V> {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -85,27 +103,31 @@ impl DuplicateWindow {
         }
     }
 
-    /// Whether the span is kept (`false` for a duplicate). A kept span is remembered.
-    fn admit(&mut self, key: u64, digest: u64) -> bool {
-        if self.entries.get(&key).is_some_and(|&(d, _)| d == digest) {
-            return false;
+    /// Records a sighting of `key` with `value` in the frame at `lsn`, and returns what the key held before:
+    /// its value and the LSN of its last sighting. When a new key takes the set above its capacity, the key
+    /// sighted longest ago is evicted (rows of one frame in wire order).
+    fn sight(&mut self, key: u64, value: V, lsn: Lsn) -> Option<(V, Lsn)> {
+        let before = self.entries.get(&key).map(|&(v, at, _)| (v, at));
+        if before == Some((value, lsn)) {
+            // Sighted in this frame already: the key keeps its position.
+            return before;
         }
         let seq = self.next;
         self.next += 1;
-        let moved = self.entries.insert(key, (digest, seq)).is_some();
+        self.entries.insert(key, (value, lsn, seq));
         self.order.push_back((seq, key));
-        if moved {
+        if before.is_some() {
             self.compact();
         } else {
             while self.entries.len() > self.capacity {
                 self.evict_oldest();
             }
         }
-        true
+        before
     }
 
-    fn live(entries: &DetMap<u64, (u64, u64)>, seq: u64, key: u64) -> bool {
-        entries.get(&key).is_some_and(|&(_, s)| s == seq)
+    fn live(entries: &DetMap<u64, (V, Lsn, u64)>, seq: u64, key: u64) -> bool {
+        entries.get(&key).is_some_and(|&(_, _, s)| s == seq)
     }
 
     fn evict_oldest(&mut self) {
@@ -117,7 +139,24 @@ impl DuplicateWindow {
         }
     }
 
-    /// Drops stale positions once they outnumber the live ones, so the order stays within twice the window.
+    /// Drops every key whose last sighting is below `floor`.
+    fn forget_below(&mut self, floor: Lsn) {
+        while let Some(&(seq, key)) = self.order.front() {
+            if Self::live(&self.entries, seq, key) {
+                if self
+                    .entries
+                    .get(&key)
+                    .is_some_and(|&(_, at, _)| at >= floor)
+                {
+                    return;
+                }
+                self.entries.remove(&key);
+            }
+            self.order.pop_front();
+        }
+    }
+
+    /// Drops stale positions once they outnumber the live ones, so the order stays within twice the set.
     fn compact(&mut self) {
         if self.order.len() > 2 * self.entries.len() + 16 {
             let entries = &self.entries;
@@ -126,52 +165,78 @@ impl DuplicateWindow {
         }
     }
 
-    /// The remembered (key, digest) pairs, oldest first.
+    /// The (key, value, LSN of the last sighting) triples, oldest sighting first.
     #[cfg(test)]
-    fn snapshot(&self) -> Vec<(u64, u64)> {
+    fn snapshot(&self) -> Vec<(u64, V, Lsn)> {
         self.order
             .iter()
             .filter(|&&(seq, key)| Self::live(&self.entries, seq, key))
-            .map(|&(_, key)| (key, self.entries[&key].0))
+            .map(|&(_, key)| (key, self.entries[&key].0, self.entries[&key].1))
             .collect()
     }
 }
 
-/// A bounded set of keys in arrival order: the trace keys stage B has seen, or the span keys that have a
-/// descendant carrying usage. When full, the key that joined earliest is evicted.
+/// The usage descendant set: span keys that have a descendant carrying usage or cost, each with its support, the
+/// LSN of the frame whose span carries that usage (the highest, when several descendants do), for at most
+/// `capacity` keys.
+///
+/// A key is forgotten when its support is below a floor, and evicted lowest support first (then lowest key), so
+/// the set is a function of the frames from that floor on: every mark with a support at or above the floor
+/// comes from a span in the frame of that support and passes through later frames only.
 #[derive(Debug)]
-struct FirstSeen {
+struct UsageParents {
     capacity: usize,
-    keys: DetSet<u64>,
-    order: VecDeque<u64>,
+    support: DetMap<u64, Lsn>,
+    /// (support, key), lowest support first.
+    order: BTreeSet<(Lsn, u64)>,
 }
 
-impl FirstSeen {
+impl UsageParents {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            keys: det_set(),
-            order: VecDeque::new(),
+            support: det_map(),
+            order: BTreeSet::new(),
         }
     }
 
-    /// Records the trace; `true` when it was not in the set.
-    fn insert(&mut self, key: u64) -> bool {
-        if !self.keys.insert(key) {
-            return false;
-        }
-        self.order.push_back(key);
-        while self.keys.len() > self.capacity {
-            match self.order.pop_front() {
-                Some(oldest) => self.keys.remove(&oldest),
-                None => break,
-            };
-        }
-        true
+    fn get(&self, key: u64) -> Option<Lsn> {
+        self.support.get(&key).copied()
     }
 
-    fn contains(&self, key: u64) -> bool {
-        self.keys.contains(&key)
+    /// Gives `key` the support `at` unless it holds a higher one, then evicts down to the capacity.
+    fn raise(&mut self, key: u64, at: Lsn) {
+        match self.support.get(&key).copied() {
+            Some(before) if before >= at => return,
+            Some(before) => {
+                self.order.remove(&(before, key));
+            }
+            None => {}
+        }
+        self.support.insert(key, at);
+        self.order.insert((at, key));
+        while self.order.len() > self.capacity {
+            if let Some((_, evicted)) = self.order.pop_first() {
+                self.support.remove(&evicted);
+            }
+        }
+    }
+
+    /// Drops every key whose support is below `floor`.
+    fn forget_below(&mut self, floor: Lsn) {
+        while let Some(&(at, key)) = self.order.first() {
+            if at >= floor {
+                return;
+            }
+            self.order.pop_first();
+            self.support.remove(&key);
+        }
+    }
+
+    /// The (support, key) pairs, lowest support first.
+    #[cfg(test)]
+    fn snapshot(&self) -> Vec<(Lsn, u64)> {
+        self.order.iter().copied().collect()
     }
 }
 
@@ -188,6 +253,12 @@ pub struct Admission {
     /// with no root span in it, the trace's first span in wire order. Root heads need no marking: every span with
     /// `is_root` heads its trace (contract 3.9).
     pub provisional_heads: Vec<usize>,
+    /// The lowest LSN of an earlier frame whose sighting a decision about this frame used: a span dropped as an
+    /// exact repeat used the last sighting of its key, and a trace that is not new used the last sighting of
+    /// the trace, and a span flagged as a usage aggregate on a descendant of an earlier frame used the frame that
+    /// carries that descendant's usage. Stage B rebuilt from a prefix that starts above this LSN could decide otherwise, so the WAL
+    /// must keep the prefix from here on until the frame's batch is checkpointed.
+    pub relies_on: Option<Lsn>,
 }
 
 /// A frame offered to stage B whose LSN does not follow the previous frame's.
@@ -202,12 +273,15 @@ pub struct OutOfOrder {
     pub frame: Lsn,
 }
 
-/// Stage B state: the duplicate window, the first-seen set, the usage-parent set and the last LSN admitted.
+/// Stage B state: the duplicate window, the first-seen set, the usage descendant set and the last LSN admitted.
 #[derive(Debug)]
 pub struct StageB {
-    window: DuplicateWindow,
-    first_seen: FirstSeen,
-    usage_parents: FirstSeen,
+    /// Span key to the `row_digest` of its last sighting. A span whose key holds an equal digest is an exact
+    /// repeat; any other span is kept.
+    window: Sightings<u64>,
+    /// The trace keys sighted, by every span of a frame, dropped repeats included.
+    first_seen: Sightings<()>,
+    usage_parents: UsageParents,
     last: Option<Lsn>,
 }
 
@@ -219,45 +293,56 @@ impl Default for StageB {
 }
 
 impl StageB {
-    /// Empty state with the given bounds, and [`USAGE_PARENT_SPANS`] for the usage-parent set.
+    /// Empty state with the given bounds, and [`USAGE_PARENT_SPANS`] for the usage descendant set.
     pub fn new(window_keys: usize, first_seen_traces: usize) -> Self {
         Self {
-            window: DuplicateWindow::new(window_keys),
-            first_seen: FirstSeen::new(first_seen_traces),
-            usage_parents: FirstSeen::new(USAGE_PARENT_SPANS),
+            window: Sightings::new(window_keys),
+            first_seen: Sightings::new(first_seen_traces),
+            usage_parents: UsageParents::new(USAGE_PARENT_SPANS),
             last: None,
         }
     }
 
-    /// The state with another bound on the usage-parent set.
+    /// The state with another bound on the usage descendant set.
     #[must_use]
     pub fn with_usage_parents(mut self, spans: usize) -> Self {
-        self.usage_parents = FirstSeen::new(spans);
+        self.usage_parents = UsageParents::new(spans);
         self
     }
 
     /// Records the usage parents of a frame and flags its usage aggregates. It runs before the duplicate drop, over
     /// every span of the frame: an exact repeat that the window is about to drop still passes a mark on to its
-    /// parent. `keys` holds the span key of each span.
-    fn mark_usage_aggregates(&mut self, frame: &mut NormalizedFrame, keys: &[u64]) {
+    /// parent. `keys` holds the span key of each span. Returns, for each span, the support of its flag when
+    /// that is an earlier frame; `None` when no span of the frame is flagged.
+    fn mark_usage_aggregates(
+        &mut self,
+        frame: &mut NormalizedFrame,
+        keys: &[u64],
+    ) -> Option<Vec<Option<Lsn>>> {
         const NONE: u32 = u32::MAX;
+        let lsn = frame.lsn;
         let spans = &mut frame.spans;
-        // The worklist: every span that carries usage or cost, or is in the set, in wire order. Each span joins
-        // it once, so the work is linear and a parent cycle ends.
-        let mut queued = vec![false; spans.len()];
+        // First the spans that carry usage or cost, in wire order: their marks have this frame's support, the
+        // highest there is. Each span passes a mark on once, so the work is linear and a parent cycle ends.
+        let mut done = vec![false; spans.len()];
         let mut work: Vec<usize> = Vec::new();
+        // Then the spans that are in the set on an earlier frame's support, highest support first, so that
+        // each passes on the highest support it has.
+        let mut earlier: BinaryHeap<(Lsn, Reverse<usize>)> = BinaryHeap::new();
         for (i, span) in spans.iter().enumerate() {
-            if span.core.carries_usage() || self.usage_parents.contains(keys[i]) {
-                queued[i] = true;
+            if span.core.carries_usage() {
+                done[i] = true;
                 work.push(i);
+            } else if let Some(at) = self.usage_parents.get(keys[i]) {
+                earlier.push((at, Reverse(i)));
             }
         }
-        if work.is_empty() {
+        if work.is_empty() && earlier.is_empty() {
             // No span of the frame is in the set, and none joins it.
             for span in spans.iter_mut() {
                 span.core.usage_aggregate = false;
             }
-            return;
+            return None;
         }
         // Every occurrence of each span key: the first by key, each naming the next.
         let mut first: DetMap<u64, u32> = det_map();
@@ -266,31 +351,54 @@ impl StageB {
             let at = u32::try_from(i).unwrap_or(NONE);
             next[i] = first.insert(key, at).unwrap_or(NONE);
         }
-        let mut at = 0;
-        while let Some(&i) = work.get(at) {
-            at += 1;
+        // Passes the mark of span `i` on to its parent with `support`, and returns the first occurrence of the
+        // parent in the frame, which passes it on in its turn with the occurrences chained from it. The first
+        // mark to reach a key is its highest, so taking the key out walks its chain once.
+        let set = &mut self.usage_parents;
+        let mut pass = |i: usize, support: Lsn| -> u32 {
             let core = &spans[i].core;
             // A span that names itself as its parent is not its own descendant.
             if core.parent_span_id == SpanId::ZERO || core.parent_span_id == core.span_id {
-                continue;
+                return NONE;
             }
             let parent = parent_key(core);
-            self.usage_parents.insert(parent);
-            // Every occurrence of the parent in the frame passes the mark on in its turn. Taking the key out
-            // walks its chain once.
-            let mut occurrence = first.remove(&parent).unwrap_or(NONE);
+            set.raise(parent, support);
+            first.remove(&parent).unwrap_or(NONE)
+        };
+        let mut at = 0;
+        while let Some(&i) = work.get(at) {
+            at += 1;
+            let mut occurrence = pass(i, lsn);
             while let Some(&following) = next.get(occurrence as usize) {
                 let j = occurrence as usize;
-                if !queued[j] {
-                    queued[j] = true;
+                if !done[j] {
+                    done[j] = true;
                     work.push(j);
                 }
                 occurrence = following;
             }
         }
-        for (span, &key) in spans.iter_mut().zip(keys) {
-            span.core.usage_aggregate = self.usage_parents.contains(key);
+        while let Some((support, Reverse(i))) = earlier.pop() {
+            if done[i] {
+                continue;
+            }
+            done[i] = true;
+            let mut occurrence = pass(i, support);
+            while let Some(&following) = next.get(occurrence as usize) {
+                let j = occurrence as usize;
+                if !done[j] {
+                    earlier.push((support, Reverse(j)));
+                }
+                occurrence = following;
+            }
         }
+        let mut supports = Vec::with_capacity(spans.len());
+        for (span, &key) in spans.iter_mut().zip(keys) {
+            let support = self.usage_parents.get(key);
+            span.core.usage_aggregate = support.is_some();
+            supports.push(support.filter(|&at| at < lsn));
+        }
+        Some(supports)
     }
 
     /// Admits the next frame of the LSN stream: records its usage parents and flags its usage aggregates, drops
@@ -304,23 +412,59 @@ impl StageB {
             });
         }
         self.last = Some(frame.lsn);
+        let lsn = frame.lsn;
         let keys: Vec<u64> = frame
             .spans
             .iter()
             .map(|span| span_key(&span.core))
             .collect();
-        self.mark_usage_aggregates(frame, &keys);
+        let supports = self.mark_usage_aggregates(frame, &keys);
+        let mut relies_on: Option<Lsn> = None;
+        let mut rely = |at: Lsn| {
+            if at < lsn {
+                relies_on = Some(relies_on.map_or(at, |lowest| lowest.min(at)));
+            }
+        };
+        // The traces this frame sights first. A dropped repeat sights its trace too, so that the set is a
+        // function of the frames alone, whatever the window dropped.
+        let mut new: DetSet<u64> = det_set();
+        for span in &frame.spans {
+            let key = trace_key(&span.core);
+            match self.first_seen.sight(key, (), lsn) {
+                Some(((), at)) => rely(at),
+                None => {
+                    new.insert(key);
+                }
+            }
+        }
         let mut duplicates = 0u32;
         let window = &mut self.window;
         let mut stage_a_ordinals = Vec::with_capacity(frame.spans.len());
         let mut ordinal = 0u32;
-        let mut keys = keys.into_iter();
         frame.spans.retain(|span| {
-            let key = keys.next().unwrap_or_else(|| span_key(&span.core));
-            let kept = window.admit(key, span.core.row_digest);
+            let digest = span.core.row_digest;
+            let position = ordinal as usize;
+            let key = keys
+                .get(position)
+                .copied()
+                .unwrap_or_else(|| span_key(&span.core));
+            let kept = match window.sight(key, digest, lsn) {
+                Some((remembered, at)) if remembered == digest => {
+                    rely(at);
+                    false
+                }
+                _ => true,
+            };
             duplicates += u32::from(!kept);
             if kept {
                 stage_a_ordinals.push(ordinal);
+                // A kept span flagged on a descendant of an earlier frame relies on that frame.
+                if let Some(support) = supports
+                    .as_ref()
+                    .and_then(|s| s.get(position).copied().flatten())
+                {
+                    rely(support);
+                }
             }
             ordinal = ordinal.saturating_add(1);
             kept
@@ -333,7 +477,7 @@ impl StageB {
             if span.core.is_root {
                 rooted.insert(key);
             }
-            if self.first_seen.insert(key) && noted.insert(key) {
+            if new.contains(&key) && noted.insert(key) {
                 first.push((key, i));
             }
         }
@@ -346,7 +490,16 @@ impl StageB {
             duplicates,
             stage_a_ordinals,
             provisional_heads,
+            relies_on,
         })
+    }
+
+    /// Forgets every sighting below `floor`, the first LSN the WAL retains. The state is then what replaying
+    /// the retained prefix through fresh state gives (recovery step 6), so a restart decides as this state does.
+    pub fn forget_below(&mut self, floor: Lsn) {
+        self.window.forget_below(floor);
+        self.first_seen.forget_below(floor);
+        self.usage_parents.forget_below(floor);
     }
 }
 
@@ -386,55 +539,78 @@ mod tests {
     struct Oracle {
         window_cap: usize,
         seen_cap: usize,
-        /// ((project, trace, span), digest), oldest first.
-        window: Vec<((u8, u8, u8), u8)>,
-        /// (project, trace), oldest first.
-        seen: Vec<(u8, u8)>,
+        /// ((project, trace, span), digest, LSN of the last sighting), oldest sighting first.
+        window: Vec<((u8, u8, u8), u8, u64)>,
+        /// ((project, trace), LSN of the last sighting), oldest sighting first.
+        seen: Vec<((u8, u8), u64)>,
     }
 
     impl Oracle {
-        /// The kept spans (as indexes into `spans`) and the provisional heads (as positions among the kept).
-        fn admit(&mut self, spans: &[Desc]) -> (Vec<usize>, Vec<usize>) {
+        /// The kept spans (as indexes into `spans`), the provisional heads (as positions among the kept) and
+        /// the lowest earlier LSN a decision used.
+        fn admit(&mut self, lsn: u64, spans: &[Desc]) -> (Vec<usize>, Vec<usize>, Option<u64>) {
+            let mut relied: Vec<u64> = Vec::new();
+            let mut new: Vec<(u8, u8)> = Vec::new();
+            for &(p, t, ..) in spans {
+                match self.seen.iter().position(|(k, _)| *k == (p, t)) {
+                    Some(pos) if self.seen[pos].1 == lsn => {}
+                    Some(pos) => {
+                        relied.push(self.seen.remove(pos).1);
+                        self.seen.push(((p, t), lsn));
+                    }
+                    None => {
+                        if !new.contains(&(p, t)) {
+                            new.push((p, t));
+                        }
+                        self.seen.push(((p, t), lsn));
+                        if self.seen.len() > self.seen_cap {
+                            self.seen.remove(0);
+                        }
+                    }
+                }
+            }
             let mut kept = Vec::new();
             for (i, &(p, t, s, d, _)) in spans.iter().enumerate() {
                 let key = (p, t, s);
-                if let Some(pos) = self.window.iter().position(|(k, _)| *k == key) {
-                    if self.window[pos].1 == d {
-                        continue;
+                match self.window.iter().position(|(k, ..)| *k == key) {
+                    Some(pos) => {
+                        let (_, digest, at) = self.window[pos];
+                        if (digest, at) != (d, lsn) {
+                            self.window.remove(pos);
+                            self.window.push((key, d, lsn));
+                        }
+                        if digest == d {
+                            relied.push(at);
+                            continue;
+                        }
                     }
-                    self.window.remove(pos);
-                    self.window.push((key, d));
-                } else {
-                    self.window.push((key, d));
-                    if self.window.len() > self.window_cap {
-                        self.window.remove(0);
+                    None => {
+                        self.window.push((key, d, lsn));
+                        if self.window.len() > self.window_cap {
+                            self.window.remove(0);
+                        }
                     }
                 }
                 kept.push(i);
             }
-            let mut new: Vec<((u8, u8), usize)> = Vec::new();
-            for (pos, &i) in kept.iter().enumerate() {
-                let (p, t, ..) = spans[i];
-                if !self.seen.contains(&(p, t)) {
-                    self.seen.push((p, t));
-                    if self.seen.len() > self.seen_cap {
-                        self.seen.remove(0);
-                    }
-                    if !new.iter().any(|(trace, _)| *trace == (p, t)) {
-                        new.push(((p, t), pos));
-                    }
+            let mut heads = Vec::new();
+            for trace in new {
+                let of_trace = |i: &usize| (spans[*i].0, spans[*i].1) == trace;
+                if kept.iter().any(|i| of_trace(i) && spans[*i].4) {
+                    continue;
+                }
+                if let Some(pos) = kept.iter().position(of_trace) {
+                    heads.push(pos);
                 }
             }
-            let heads = new
-                .into_iter()
-                .filter(|&((p, t), _)| {
-                    !kept
-                        .iter()
-                        .any(|&i| spans[i].0 == p && spans[i].1 == t && spans[i].4)
-                })
-                .map(|(_, pos)| pos)
-                .collect();
-            (kept, heads)
+            heads.sort_unstable();
+            let relies_on = relied.into_iter().filter(|&at| at < lsn).min();
+            (kept, heads, relies_on)
+        }
+
+        fn forget_below(&mut self, floor: u64) {
+            self.window.retain(|&(.., at)| at >= floor);
+            self.seen.retain(|&(_, at)| at >= floor);
         }
     }
 
@@ -446,19 +622,20 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(2_000))]
 
         /// Stage B agrees with the linear model on every frame: which spans it keeps, the duplicate count, the
-        /// provisional heads, and the window's remembered rows in eviction order.
+        /// provisional heads, the LSN it relies on, and both sets in eviction order, also across forgetting.
         #[test]
         fn stage_b_matches_the_oracle(
-            frames in vec(vec(desc(), 0..10), 1..12),
+            frames in vec((vec(desc(), 0..10), prop::option::of(0u64..14)), 1..12),
             window_cap in 0usize..8,
             seen_cap in 0usize..8,
         ) {
             let mut stage = StageB::new(window_cap, seen_cap);
             let mut oracle = Oracle { window_cap, seen_cap, window: Vec::new(), seen: Vec::new() };
-            for (n, spans) in frames.iter().enumerate() {
-                let mut f = frame(n as u64 + 1, spans);
+            for (n, (spans, floor)) in frames.iter().enumerate() {
+                let lsn = n as u64 + 1;
+                let mut f = frame(lsn, spans);
                 let admission = stage.admit(&mut f).unwrap();
-                let (kept, heads) = oracle.admit(spans);
+                let (kept, heads, relies_on) = oracle.admit(lsn, spans);
                 let expected: Vec<SpanRecord> = kept.iter().map(|&i| span(&spans[i])).collect();
                 prop_assert_eq!(&f.spans, &expected);
                 prop_assert_eq!(admission.duplicates as usize, spans.len() - kept.len());
@@ -466,13 +643,27 @@ mod tests {
                 let ordinals: Vec<u32> = kept.iter().map(|&i| i as u32).collect();
                 prop_assert_eq!(&admission.stage_a_ordinals, &ordinals);
                 prop_assert_eq!(&admission.provisional_heads, &heads);
-                let model: Vec<(u64, u64)> = oracle
+                prop_assert_eq!(admission.relies_on, relies_on.map(Lsn::new));
+                if let Some(floor) = *floor {
+                    stage.forget_below(Lsn::new(floor));
+                    oracle.forget_below(floor);
+                }
+                let window: Vec<(u64, u64, Lsn)> = oracle
                     .window
                     .iter()
-                    .map(|&((p, t, s), d)| (span_key(&span(&(p, t, s, d, false)).core), u64::from(d)))
+                    .map(|&((p, t, s), d, at)| {
+                        (span_key(&span(&(p, t, s, d, false)).core), u64::from(d), Lsn::new(at))
+                    })
                     .collect();
-                prop_assert_eq!(stage.window.snapshot(), model);
+                prop_assert_eq!(stage.window.snapshot(), window);
+                let seen: Vec<(u64, (), Lsn)> = oracle
+                    .seen
+                    .iter()
+                    .map(|&((p, t), at)| (trace_key(&span(&(p, t, 0, 0, false)).core), (), Lsn::new(at)))
+                    .collect();
+                prop_assert_eq!(stage.first_seen.snapshot(), seen);
                 prop_assert!(stage.window.order.len() <= 2 * stage.window.entries.len() + 17);
+                prop_assert!(stage.first_seen.order.len() <= 2 * stage.first_seen.entries.len() + 17);
             }
         }
 
@@ -504,6 +695,278 @@ mod tests {
             let rest = run(&mut rebuilt, cut..frames.len());
             prop_assert_eq!(&rest[..], &all[cut..]);
         }
+
+        /// The live state never remembers more than the retained prefix holds: after any forgetting, with the
+        /// last floor at `floor`, both sets equal what a replay of the frames from `floor` on gives fresh
+        /// state, in eviction order, so both admit the rest of the stream alike.
+        #[test]
+        fn the_live_state_equals_a_rebuild_from_the_retained_prefix(
+            frames in vec(vec(desc(), 0..10), 1..14),
+            floors in vec(any::<prop::sample::Index>(), 0..4),
+            rest in vec(vec(desc(), 0..10), 0..4),
+            window_cap in 0usize..8,
+            seen_cap in 0usize..8,
+        ) {
+            // Each floor is forgotten after the frame below it at the earliest, as garbage collection only
+            // removes frames that were admitted; floors never go back.
+            let mut floors: Vec<usize> = floors.iter().map(|f| f.index(frames.len()) + 1).collect();
+            floors.sort_unstable();
+            let floor = floors.last().copied().unwrap_or(1);
+            let mut live = StageB::new(window_cap, seen_cap);
+            for (n, spans) in frames.iter().enumerate() {
+                live.admit(&mut frame(n as u64 + 1, spans)).unwrap();
+                for at in floors.iter().filter(|&&at| at == n + 1) {
+                    live.forget_below(Lsn::new(*at as u64));
+                }
+            }
+            live.forget_below(Lsn::new(floor as u64));
+            let mut rebuilt = StageB::new(window_cap, seen_cap);
+            for (n, spans) in frames.iter().enumerate().skip(floor - 1) {
+                rebuilt.admit(&mut frame(n as u64 + 1, spans)).unwrap();
+            }
+            prop_assert_eq!(live.window.snapshot(), rebuilt.window.snapshot());
+            prop_assert_eq!(live.first_seen.snapshot(), rebuilt.first_seen.snapshot());
+            for (n, spans) in rest.iter().enumerate() {
+                let lsn = (frames.len() + n) as u64 + 1;
+                let (mut a, mut b) = (frame(lsn, spans), frame(lsn, spans));
+                prop_assert_eq!(live.admit(&mut a).unwrap(), rebuilt.admit(&mut b).unwrap());
+                prop_assert_eq!(a.spans, b.spans);
+            }
+        }
+
+        /// A restart decides as the process it replaces did: the frames from `cut` on are admitted alike by
+        /// the state that saw the whole stream and by fresh state that replayed a prefix starting at any LSN
+        /// up to the lowest one those frames rely on.
+        #[test]
+        fn a_rebuild_from_what_a_frame_relies_on_decides_alike(
+            frames in vec(vec(desc(), 0..10), 1..14),
+            cut in any::<prop::sample::Index>(),
+            start in any::<prop::sample::Index>(),
+            window_cap in 0usize..8,
+            seen_cap in 0usize..8,
+        ) {
+            let cut = cut.index(frames.len());
+            let run = |stage: &mut StageB, from: usize| -> Vec<(Vec<SpanRecord>, Admission)> {
+                frames
+                    .iter()
+                    .enumerate()
+                    .skip(from)
+                    .map(|(n, spans)| {
+                        let mut f = frame(n as u64 + 1, spans);
+                        let a = stage.admit(&mut f).unwrap();
+                        (f.spans, a)
+                    })
+                    .collect()
+            };
+            let all = run(&mut StageB::new(window_cap, seen_cap), 0);
+            // As 0-based frame indexes: the lowest frame that the frames from `cut` on rely on, or `cut`.
+            let lowest = all[cut..]
+                .iter()
+                .filter_map(|(_, a)| a.relies_on)
+                .map(|at| at.get() as usize - 1)
+                .min()
+                .map_or(cut, |at| at.min(cut));
+            let start = start.index(lowest + 1);
+            let rebuilt = run(&mut StageB::new(window_cap, seen_cap), start);
+            prop_assert_eq!(&rebuilt[cut - start..], &all[cut..]);
+        }
+    }
+
+    /// A span with what the usage descendant set reads: its parent (a span id of the same small domain, or none)
+    /// and whether it carries usage.
+    type UsageDesc = (Desc, Option<u8>, bool);
+
+    fn usage_frame(lsn: u64, spans: &[UsageDesc]) -> NormalizedFrame {
+        let mut f = frame(
+            lsn,
+            &spans.iter().map(|(desc, ..)| *desc).collect::<Vec<_>>(),
+        );
+        for (record, &(_, parent, carries)) in f.spans.iter_mut().zip(spans) {
+            record.core.parent_span_id =
+                parent.map_or(SpanId::ZERO, |s| SpanId::from_bytes([s + 1; 8]));
+            record.core.total_cost_nusd = crucible_records::NanoUsd::from_nanos(i64::from(carries));
+        }
+        f
+    }
+
+    fn usage_desc() -> impl Strategy<Value = UsageDesc> {
+        (desc(), prop::option::of(0u8..4), any::<bool>())
+    }
+
+    /// The usage descendant set as a loop to a fixed point, with no bound, no hashing and no worklist: the
+    /// support of each (project, trace, span), the highest when several marks reach it.
+    fn usage_model(supports: &mut Vec<((u8, u8, u8), u64)>, lsn: u64, spans: &[UsageDesc]) {
+        loop {
+            let mut changed = false;
+            for &((p, t, s, ..), parent, carries) in spans {
+                let own = supports
+                    .iter()
+                    .find(|(k, _)| *k == (p, t, s))
+                    .map(|&(_, at)| at);
+                let Some(passed) = carries.then_some(lsn).or(own) else {
+                    continue;
+                };
+                let Some(parent) = parent.filter(|&parent| parent != s) else {
+                    continue;
+                };
+                match supports.iter_mut().find(|(k, _)| *k == (p, t, parent)) {
+                    Some((_, at)) if *at >= passed => {}
+                    Some((_, at)) => {
+                        *at = passed;
+                        changed = true;
+                    }
+                    None => {
+                        supports.push(((p, t, parent), passed));
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                return;
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        /// The usage descendant set agrees with the fixed-point model on every frame, also across forgetting:
+        /// the ids it holds, their supports, and the flags of the kept spans.
+        #[test]
+        fn the_usage_set_matches_the_fixed_point_model(
+            frames in vec((vec(usage_desc(), 0..10), prop::option::of(0u64..14)), 1..12),
+        ) {
+            let mut stage = StageB::default();
+            let mut supports: Vec<((u8, u8, u8), u64)> = Vec::new();
+            for (n, (spans, floor)) in frames.iter().enumerate() {
+                let lsn = n as u64 + 1;
+                let mut f = usage_frame(lsn, spans);
+                let ordinals = stage.admit(&mut f).unwrap().stage_a_ordinals;
+                usage_model(&mut supports, lsn, spans);
+                for (record, &at) in f.spans.iter().zip(&ordinals) {
+                    let ((p, t, s, ..), ..) = spans[at as usize];
+                    let flagged = supports.iter().any(|(k, _)| *k == (p, t, s));
+                    prop_assert_eq!(record.core.usage_aggregate, flagged);
+                }
+                if let Some(floor) = *floor {
+                    stage.forget_below(Lsn::new(floor));
+                    supports.retain(|&(_, at)| at >= floor);
+                }
+                let mut model: Vec<(Lsn, u64)> = supports
+                    .iter()
+                    .map(|&((p, t, s), at)| (Lsn::new(at), span_key(&span(&(p, t, s, 0, false)).core)))
+                    .collect();
+                model.sort_unstable();
+                prop_assert_eq!(stage.usage_parents.snapshot(), model);
+            }
+        }
+
+        /// As `the_live_state_equals_a_rebuild_from_the_retained_prefix`, with spans that name parents and
+        /// carry usage and with a small bound on the usage descendant set: after any forgetting the set equals
+        /// what a replay of the retained frames gives fresh state, so both flag the rest of the stream alike.
+        #[test]
+        fn the_usage_set_equals_a_rebuild_from_the_retained_prefix(
+            frames in vec(vec(usage_desc(), 0..10), 1..14),
+            floors in vec(any::<prop::sample::Index>(), 0..4),
+            rest in vec(vec(usage_desc(), 0..10), 0..4),
+            window_cap in 0usize..8,
+            seen_cap in 0usize..8,
+            usage_cap in 0usize..8,
+        ) {
+            let mut floors: Vec<usize> = floors.iter().map(|f| f.index(frames.len()) + 1).collect();
+            floors.sort_unstable();
+            let floor = floors.last().copied().unwrap_or(1);
+            let fresh = || StageB::new(window_cap, seen_cap).with_usage_parents(usage_cap);
+            let mut live = fresh();
+            for (n, spans) in frames.iter().enumerate() {
+                live.admit(&mut usage_frame(n as u64 + 1, spans)).unwrap();
+                for at in floors.iter().filter(|&&at| at == n + 1) {
+                    live.forget_below(Lsn::new(*at as u64));
+                }
+            }
+            live.forget_below(Lsn::new(floor as u64));
+            let mut rebuilt = fresh();
+            for (n, spans) in frames.iter().enumerate().skip(floor - 1) {
+                rebuilt.admit(&mut usage_frame(n as u64 + 1, spans)).unwrap();
+            }
+            prop_assert_eq!(live.usage_parents.snapshot(), rebuilt.usage_parents.snapshot());
+            prop_assert_eq!(live.window.snapshot(), rebuilt.window.snapshot());
+            prop_assert_eq!(live.first_seen.snapshot(), rebuilt.first_seen.snapshot());
+            for (n, spans) in rest.iter().enumerate() {
+                let lsn = (frames.len() + n) as u64 + 1;
+                let (mut a, mut b) = (usage_frame(lsn, spans), usage_frame(lsn, spans));
+                prop_assert_eq!(live.admit(&mut a).unwrap(), rebuilt.admit(&mut b).unwrap());
+                prop_assert_eq!(a.spans, b.spans);
+            }
+        }
+
+        /// As `a_rebuild_from_what_a_frame_relies_on_decides_alike`, with usage: fresh state that replayed a
+        /// prefix starting at any LSN up to the lowest one the frames from `cut` on rely on keeps, drops and
+        /// flags their spans as the state that saw the whole stream did.
+        #[test]
+        fn a_rebuild_from_what_a_frame_relies_on_flags_alike(
+            frames in vec(vec(usage_desc(), 0..10), 1..14),
+            cut in any::<prop::sample::Index>(),
+            start in any::<prop::sample::Index>(),
+            window_cap in 0usize..8,
+            seen_cap in 0usize..8,
+            usage_cap in 0usize..8,
+        ) {
+            let cut = cut.index(frames.len());
+            let run = |from: usize| -> Vec<(Vec<SpanRecord>, Admission)> {
+                let mut stage = StageB::new(window_cap, seen_cap).with_usage_parents(usage_cap);
+                frames
+                    .iter()
+                    .enumerate()
+                    .skip(from)
+                    .map(|(n, spans)| {
+                        let mut f = usage_frame(n as u64 + 1, spans);
+                        let a = stage.admit(&mut f).unwrap();
+                        (f.spans, a)
+                    })
+                    .collect()
+            };
+            let all = run(0);
+            let lowest = all[cut..]
+                .iter()
+                .filter_map(|(_, a)| a.relies_on)
+                .map(|at| at.get() as usize - 1)
+                .min()
+                .map_or(cut, |at| at.min(cut));
+            let start = start.index(lowest + 1);
+            let rebuilt = run(start);
+            prop_assert_eq!(&rebuilt[cut - start..], &all[cut..]);
+        }
+    }
+
+    /// A mark keeps the support of the frame whose span carries the usage, through every later frame it passes,
+    /// so the flagged span relies on that frame, and the set forgets the mark with it.
+    #[test]
+    fn a_mark_relies_on_the_frame_that_carries_the_usage() {
+        // C (span 3, usage) in frame 1, P (span 2) in frame 2, G (span 1) in frame 3; one trace.
+        let c: UsageDesc = ((0, 0, 3, 0, false), Some(2), true);
+        let p: UsageDesc = ((0, 0, 2, 0, false), Some(1), false);
+        let g: UsageDesc = ((0, 0, 1, 0, false), None, false);
+        let admit = |stage: &mut StageB, lsn: u64, desc: UsageDesc| {
+            let mut f = usage_frame(lsn, &[desc]);
+            let admission = stage.admit(&mut f).unwrap();
+            (f.spans[0].core.usage_aggregate, admission.relies_on)
+        };
+        let mut stage = StageB::default();
+        assert_eq!(admit(&mut stage, 1, c), (false, None));
+        // Frame 2 also relies on frame 1 for the trace, which is not new; the flag relies on it as well.
+        assert_eq!(admit(&mut stage, 2, p), (true, Some(Lsn::new(1))));
+        // G is flagged through P, on the usage of frame 1, not on frame 2.
+        assert_eq!(admit(&mut stage, 3, g), (true, Some(Lsn::new(1))));
+
+        // Once the WAL has collected frame 1, the marks that came from it are gone, as after a rebuild from
+        // frame 2 on: P passes nothing on.
+        let mut stage = StageB::default();
+        admit(&mut stage, 1, c);
+        admit(&mut stage, 2, p);
+        stage.forget_below(Lsn::new(2));
+        assert!(stage.usage_parents.snapshot().is_empty());
+        assert!(!admit(&mut stage, 3, g).0);
     }
 
     #[test]

@@ -22,6 +22,7 @@ mod d6;
 mod d7;
 mod fixtures;
 mod native;
+pub mod routes;
 
 use crucible_records::{IoShape, Level, ObservationType};
 

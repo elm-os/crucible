@@ -198,7 +198,9 @@ fn stage_b_usage_descendant_set() {
         let ns = |per_s: f64| 1e9 / (per_s * spans as f64);
         let copy = ns(rate(budget, || black_box(&with_usage).clone().spans.len()));
         let marked = ns(rate(budget, || admit(black_box(&with_usage)))) - copy;
-        let copy_plain = ns(rate(budget, || black_box(&without_usage).clone().spans.len()));
+        let copy_plain = ns(rate(budget, || {
+            black_box(&without_usage).clone().spans.len()
+        }));
         let plain = ns(rate(budget, || admit(black_box(&without_usage)))) - copy_plain;
         let flagged = {
             let mut copy = with_usage.clone();

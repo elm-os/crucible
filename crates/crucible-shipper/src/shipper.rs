@@ -1,7 +1,7 @@
 //! The shipper task: tail the durable WAL, normalize, fill and seal batches, ship their pairs, checkpoint, and
 //! drive garbage collection (contract sections 4.6, 5.1, 5.7 and 5.9).
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -312,6 +312,10 @@ pub struct Shipper {
     ctx: Arc<Ctx>,
     replay: Replay,
     stage_b: StageB,
+    /// For each frame above the watermark whose admission used an earlier sighting, the lowest LSN it relies
+    /// on (`Admission::relies_on`). Garbage collection keeps the log from the lowest of them on, so that a
+    /// restart rebuilds stage B to decide about these frames as this process did.
+    relied_on: BTreeMap<Lsn, Lsn>,
     /// Frames at or below this LSN only rebuild stage B (contract 4.6, step 6).
     watermark: Lsn,
     /// Sealed batches recovery found, oldest first: their boundaries are kept and their pairs are in doubt.
@@ -323,6 +327,10 @@ pub struct Shipper {
     done_tx: mpsc::UnboundedSender<BatchDone>,
     done_rx: mpsc::UnboundedReceiver<BatchDone>,
     last_gc: Instant,
+    /// The last garbage collection failed, so a segment may be removed without the removal being durable: a
+    /// restart may or may not find it. No frame is admitted until a collection succeeds, because stage B could
+    /// not say what a restart will remember.
+    gc_in_doubt: bool,
     read_failures: u32,
     drain: DrainRate,
 }
@@ -403,6 +411,7 @@ impl Shipper {
                 ctx.config.duplicate_window_keys,
                 ctx.config.first_seen_traces,
             ),
+            relied_on: BTreeMap::new(),
             watermark,
             seals,
             quarantined,
@@ -412,6 +421,7 @@ impl Shipper {
             done_tx,
             done_rx,
             last_gc: ctx.env.clock.now(),
+            gc_in_doubt: false,
             read_failures: 0,
             drain: DrainRate::new(ctx.env.clock.now()),
             ctx,
@@ -574,6 +584,9 @@ impl Shipper {
                     .admit(&mut normalized)
                     .map_err(|e| frame_error(lsn, e))?;
                 self.ctx.recent.applied(frame, &normalized, &admission);
+                if let Some(at) = admission.relies_on {
+                    self.relied_on.insert(lsn, at);
+                }
                 Unplaced::Spans(normalized, admission)
             }
             Ok(Content::Facts(facts)) => {
@@ -774,12 +787,36 @@ impl Shipper {
             .set(i64::try_from(rate).unwrap_or(i64::MAX));
     }
 
-    /// Removes the segments below the watermark that neither replay retention nor the recent index holds
-    /// (contract 4.7). A failure is logged; the next run tries again.
+    /// Removes the segments below the watermark that neither replay retention, the recent index nor stage B
+    /// holds (contract 4.7). A failure is logged; the next run tries again.
+    ///
+    /// Stage B holds what an unchecked frame's admission relied on: a restart rebuilds stage B from the
+    /// retained prefix and normalizes the unchecked batches again, and pairs of one batch that land before and
+    /// after it must hold the same spans. For the same reason nothing is collected while a batch that recovery
+    /// found still waits for its frames, and stage B forgets what the collection removed.
     async fn collect_garbage(&mut self) {
         self.last_gc = self.ctx.env.clock.now();
-        if let Err(e) = self.ctx.wal.gc(self.ctx.recent.floor()).await {
+        if !self.seals.is_empty() {
+            return;
+        }
+        let watermark = self.ctx.wal.watermark().map_or(Lsn::ZERO, |w| w.last_lsn());
+        self.relied_on = self
+            .relied_on
+            .split_off(&Lsn::new(watermark.get().saturating_add(1)));
+        let floor = self
+            .relied_on
+            .values()
+            .copied()
+            .chain(self.ctx.recent.floor())
+            .min();
+        let collected = self.ctx.wal.gc(floor).await;
+        self.gc_in_doubt = collected.is_err();
+        if let Err(e) = collected {
             tracing::warn!(error = %e, "wal garbage collection failed");
+        }
+        // A failed collection may have removed segments too.
+        if let Some(oldest) = self.ctx.wal.segments().first() {
+            self.stage_b.forget_below(oldest.first_lsn);
         }
     }
 
@@ -814,14 +851,17 @@ impl Shipper {
                 self.place(held)?;
                 continue;
             }
-            if self.can_read()
+            if !self.gc_in_doubt
+                && self.can_read()
                 && let Some(frame) = self.next_frame().await?
             {
                 self.on_frame(&frame).await?;
                 continue;
             }
             let now = self.ctx.env.clock.now();
-            if now.saturating_duration_since(self.last_gc) >= self.ctx.config.gc_interval {
+            if self.gc_in_doubt
+                || now.saturating_duration_since(self.last_gc) >= self.ctx.config.gc_interval
+            {
                 self.report_drain();
                 self.collect_garbage().await;
             }

@@ -1,8 +1,8 @@
 name: e2e
 
 # Milestone 1 end to end on real infrastructure (crates/crucible/tests/e2e.rs): the release-shaped
-# `crucible serve` binary with the embedded UI in front of ClickHouse 26.8. OTLP traces as protobuf and JSON
-# come back through the REST API and the UI's traces table; a 20,000-span burst, then two kill -9 and one SIGTERM in the middle of
+# `crucible serve` binary with the embedded UI in front of ClickHouse 26.8. OTLP traces as protobuf, JSON and
+# gRPC, and one on a compat ingest route, come back through the REST API and the UI's traces table; a 20,000-span burst, then two kill -9 and one SIGTERM in the middle of
 # further runs, each followed by a restart, lose no acknowledged span and duplicate no row.
 
 on:

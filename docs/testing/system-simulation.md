@@ -86,10 +86,10 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 | Invariant | Continuous (after every ack and at every restart) | Quiescence |
 |---|---|---|
 | I1 | At every restart: every span of every acknowledged request is in `span_core` and `span_payload`, or in a durable frame above the recovered watermark, or in a quarantine copy: the frames of a quarantined pair, or the copy of a frame that does not normalize, which must hold the frame its manifest names. A frame quarantined as a frame has no row anywhere | The same after the drain, and the watermark has passed the last frame that warrants a seal |
-| I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without repeats and quarantines: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
+| I2 | The model refuses a malformed block and records a second block of one (batch, table, partition); no (table, LSN, span) row twice; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows |
 | I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain |
 | I5 | A refusal for load is a 429 or a 503 with `Retry-After`, a 429 only with `project_rate`; a fact write is refused only for load. The rows the shipper holds stay within `shipper.encoded_bytes` plus one frame | |
-| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. A span flagged `usage_aggregate` has a descendant that carries usage or cost in its frame or an earlier one, where a row of an earlier frame may stand in a later frame as a dropped exact repeat and pass the mark on to its parent; and a span with such a descendant among the kept spans of its own frame is always flagged (a restart rebuilds the set from the retained WAL prefix, so it may forget earlier frames) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
+| I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. A span flagged `usage_aggregate` has a descendant that carries usage or cost in its frame or an earlier one, where a row of an earlier frame may stand in a later frame as a dropped exact repeat and pass the mark on to its parent; and a span with such a descendant among the kept spans of its own frame is always flagged (the set holds what the retained WAL prefix holds, so garbage collection and a restart forget earlier frames) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
 | I3 | A trace-by-id read through the query service after every ack, and from concurrent readers for requests of any incarnation. A response that omits an acknowledged span must carry `partial` or `consistency: lagging`. `not_found` for an acknowledged trace is a violation. A marker must be warranted by the configuration: `store_unavailable` only with `outages`, `long_outages`, `ch_read_errors` or `tiny_recent`; `quarantined` only with `ch_poison` or `frame_faults` | Every acknowledged request is read back, and the whole trace list of every project must hold every acknowledged trace that has a root span. No marker is accepted, except `quarantined` when a quarantine directory exists. Repeated after the last restart |
 | I6 | No trace-by-id response holds a span the project did not send, and no list holds a trace of another project (with `multi_project` the projects share trace ids) | The same |
 | I12 | The recovered log equals the uninterrupted reference recovery although crashes cut the real one | A restart after the drain sends no insert and leaves the store and the watermark as they were |
@@ -103,6 +103,26 @@ whole and strong, and in configurations with the store faults switched off (outa
 faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 698
 of 708). The smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
 every later read of its project, and a small row budget holds stage B behind the batches in flight.
+
+### Repeats and restarts
+
+A batch may land some pairs before a crash and the rest after it, so the restart must normalize the batch to
+the same spans: the same repeats dropped, the same provisional heads. Stage B is rebuilt from the retained
+prefix of the log, and garbage collection shortens that prefix. Three rules of the shipper and stage B keep
+the two attempts equal, and I7 and the quiescence half of I2 check them in every run with `client_retries`:
+
+- every sighting of a span key or a trace moves it to the newest position of its set, and after each
+  collection stage B forgets what was last sighted below the first retained LSN, so the live state is what a
+  rebuild from the retained prefix gives (a property test of `crucible-normalize`);
+- a frame whose admission used an earlier sighting keeps the log from that sighting on until the frame's batch
+  is checkpointed, and nothing is collected while a batch that recovery found waits for its frames
+  (`ship_directed.rs`, `a_restart_drops_the_repeats_that_the_first_attempt_dropped`);
+- after a failed collection no frame is admitted until one succeeds, because a removal that is not durable
+  leaves open what a restart will find. No directed test covers this rule; only the swarm reaches it, through
+  `disk_sync_errors` and `disk_write_errors`.
+
+Six corpus lines (invariant I7, seeds 44368508872000 and following) are runs that failed before these rules:
+the rollups counted a repeat that `span_core` did not hold, or the reverse.
 
 ## Mutants
 
