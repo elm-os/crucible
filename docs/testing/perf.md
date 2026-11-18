@@ -88,7 +88,12 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
    generator's container lasts the whole session.
    - Throughput: offer more load than either build can take. The generator is open loop, so the excess is
      refused or queued, and the measurement is `outcome.acked_spans_per_s`. An overloaded schedule lasts until
-     every request is sent, so the run takes about `requests / capacity`, longer than its schedule.
+     every request is sent, so the run takes about `requests / capacity`, longer than its schedule. Acknowledging
+     less than the offered load shows that something saturated, not that Crucible did: when the generator or the
+     Docker network is the limit, both arms measure that limit and no regression above it can show. The load
+     generator's report tells them apart. With Crucible as the limit its 128 connections stay busy (acknowledged
+     requests per second times `service_time_us.p50` comes near 128) while `generator_cpu` stays below the
+     generator's CPUs.
    - Latency: offer a fixed rate below both builds' capacity, and the measurement is `latency_us.p99`.
 5. Compares the builds, writes the report and the summary, and with `--post` sets the commit status.
 
@@ -170,6 +175,16 @@ script mounts the checkout and its git directory (read-only, so a linked worktre
 cargo registry volume and the target volume `$TARGET_VOLUME` (default `crucible-target`). It passes on
 `CARGO_BUILD_JOBS` when that is set, and with `--post` the host's `gh auth token`, so the status is posted as the
 account the host's `gh` is signed in to.
+
+The gate removes its rig on every exit it sees, errors included. A run that is killed, for example by stopping its
+container, leaves the rig running. Everything the gate starts carries the label `crucible.perf-gate`, so this
+removes what is left:
+
+```sh
+docker rm --force --volumes $(docker ps --all --quiet --filter label=crucible.perf-gate)
+docker volume rm $(docker volume ls --quiet --filter label=crucible.perf-gate)
+docker network rm $(docker network ls --quiet --filter label=crucible.perf-gate)
+```
 
 ### Report schema `crucible-perf.gate.v1`
 
