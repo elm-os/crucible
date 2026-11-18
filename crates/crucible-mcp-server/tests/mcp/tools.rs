@@ -67,9 +67,8 @@ fn every_tool_answers_with_its_shape() {
         let data = traces["data"].as_array().unwrap();
         assert_eq!(data[0]["trace_id"], trace(2).to_string());
         assert_eq!(data[1]["trace_id"], trace(1).to_string());
-        // The head served by the store has previews; the one only in the recent index has none yet.
-        assert_eq!(data[0]["input_preview"], Value::Null);
-        assert_eq!(data[1]["input_preview"], "");
+        // The list carries no previews: get_trace has them.
+        assert!(data.iter().all(|row| row.get("input_preview").is_none()));
         assert_eq!(data[1]["span_count"], 4);
         assert_eq!(traces["has_more"], false);
         assert_eq!(traces["truncated"], false);

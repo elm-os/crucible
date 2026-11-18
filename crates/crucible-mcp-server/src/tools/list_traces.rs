@@ -49,9 +49,9 @@ impl Tool for ListTraces {
     const NAME: &'static str = "list_traces";
     const DESCRIPTION: &'static str = "List the project's traces whose head span (the root, or the earliest \
         span while the root has not arrived) started in the window [from, to), newest first: name, status, \
-        duration, span and error counts, cost, tokens, user, session, tags, and the first 1,024 bytes of the head \
-        span's input and output. At most 50 traces and 64 KiB per call; pass `next_cursor` back as `cursor`, with \
-        the same window, for more. Read one trace with get_trace.";
+        duration, span and error counts, cost, tokens, user, session, environment, release and tags. At most 50 \
+        traces and 64 KiB per call; pass `next_cursor` back as `cursor`, with the same window, for more. Read one \
+        trace, with previews of its spans' inputs and outputs, with get_trace.";
     type Args = Args;
     type Output = Output;
 

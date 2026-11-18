@@ -242,12 +242,7 @@ pub(crate) struct TraceRow {
     release: String,
     /// The trace's tags.
     tags: Vec<String>,
-    /// The first 1,024 bytes of the head span's input; null while the trace is only in the recent index or
-    /// when it was left out to keep the result small.
-    input_preview: Option<String>,
-    /// The first 1,024 bytes of the head span's output, null like `input_preview`.
-    output_preview: Option<String>,
-    /// True when the previews and tags were left out because the trace alone came near the result cap.
+    /// True when the tags were left out because the trace alone came near the result cap.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     trimmed: bool,
     /// True when a count above 2^53 - 1 was clamped there.
@@ -258,7 +253,6 @@ impl TraceRow {
     pub(crate) fn new(item: &TraceListItem) -> Self {
         let (head, summary) = (&item.head, &item.summary);
         let mut s = Saturation::default();
-        let preview = |text: &str| (!item.recent).then(|| text.to_owned());
         Self {
             trace_id: head.trace_id.to_string(),
             name: head.name.to_string(),
@@ -281,17 +275,13 @@ impl TraceRow {
             environment: head.environment.to_string(),
             release: head.release.to_string(),
             tags: head.tags.iter().map(ToString::to_string).collect(),
-            input_preview: preview(&head.input_preview),
-            output_preview: preview(&head.output_preview),
             trimmed: false,
             saturated: s.saturated(),
         }
     }
 
-    /// Leaves the previews and tags out.
+    /// Leaves the tags out: 64 tags of 256 bytes are the one part of a trace that can outgrow a result.
     pub(crate) fn lighten(&mut self) {
-        self.input_preview = None;
-        self.output_preview = None;
         self.tags = Vec::new();
         self.trimmed = true;
     }
@@ -323,6 +313,119 @@ mod tests {
             cut,
             next: cut.then_some("v1.k.cursor-of-the-last-row-of-the-prefix"),
         }
+    }
+
+    /// `count` copies of `row` as a cut page of a list, with a cursor of the longest kind.
+    fn list<R: Serialize>(row: &R, count: usize) -> serde_json::Value {
+        let row = serde_json::to_value(row).unwrap();
+        serde_json::json!({
+            "data": vec![row; count],
+            "next_cursor": "v".repeat(200),
+            "has_more": true,
+            "truncated": true,
+            "meta": { "as_of": "2026-11-17T09:30:00.000000Z", "partial": false, "consistency": "strong" },
+        })
+    }
+
+    /// The most copies of `row` that a result holds under the cap.
+    fn rows_per_result<R: Serialize>(row: &R) -> usize {
+        (1..=1_000)
+            .take_while(|&count| result_bytes(&list(row, count)) <= MAX_RESULT_BYTES)
+            .last()
+            .unwrap_or(0)
+    }
+
+    /// Text that JSON escapes most: a control character costs 13 bytes of a result, 6 in the JSON and 7 in its
+    /// copy as an escaped string.
+    fn control(bytes: usize) -> String {
+        "\u{1}".repeat(bytes)
+    }
+
+    fn span_row(name: String, model: String, preview: Option<String>) -> SpanRow {
+        SpanRow {
+            span_id: "000000000000000a".to_owned(),
+            parent_span_id: Some("0000000000000001".to_owned()),
+            name,
+            observation_type: "generation",
+            start_time: "2026-11-17T09:29:00.000000Z".to_owned(),
+            end_time: "2026-11-17T09:29:01.250000Z".to_owned(),
+            duration_us: 1_250_000,
+            status_code: "ok",
+            level: "default",
+            model,
+            total_cost_usd: 0.000_123_4,
+            input_tokens: 1_234,
+            output_tokens: 567,
+            total_tokens: 1_801,
+            child_count: Some(3),
+            input_preview: preview.clone(),
+            output_preview: preview,
+            previews_omitted: false,
+            saturated: false,
+        }
+    }
+
+    fn trace_row(text: impl Fn(usize) -> String, tags: Vec<String>) -> TraceRow {
+        TraceRow {
+            trace_id: "a5a5a5a5a5a5a5a50000000000000001".to_owned(),
+            name: text(1_024),
+            trace_name: text(512),
+            head_kind: "root",
+            start_time: "2026-11-17T09:29:00.000000Z".to_owned(),
+            duration_us: 1_250_000,
+            status_code: "error",
+            level: "error",
+            span_count: 40,
+            error_count: 2,
+            total_cost_usd: 0.012_5,
+            input_tokens: 12_345,
+            output_tokens: 6_789,
+            total_tokens: 19_134,
+            user_id: text(512),
+            session_id: text(512),
+            environment: text(128),
+            release: text(256),
+            tags,
+            trimmed: false,
+            saturated: false,
+        }
+    }
+
+    #[test]
+    fn a_row_at_the_field_caps_fits_a_result_on_its_own() {
+        // The caps of contract 3.1: a name of 1,024 bytes, a model of 256 and previews of 1,024.
+        let span = span_row(control(1_024), control(256), Some(control(1_024)));
+        assert!(rows_per_result(&span) >= 1);
+        // 64 tags of 256 bytes are what can outgrow a result; a trace without them fits.
+        let mut trace = trace_row(control, vec![control(256); 64]);
+        assert_eq!(rows_per_result(&trace), 0);
+        trace.lighten();
+        assert!(rows_per_result(&trace) >= 1);
+    }
+
+    #[test]
+    fn a_result_holds_a_dozen_spans_with_full_previews_and_a_whole_page_of_traces() {
+        // The result carries its JSON twice, so a span whose input and output fill their previews takes about
+        // 5 KB of the 64 KiB, and one without previews about 1 KB.
+        let full = span_row(
+            "llm call".to_owned(),
+            "model-a".to_owned(),
+            Some("a".repeat(1_024)),
+        );
+        assert!(
+            (10..=14).contains(&rows_per_result(&full)),
+            "{}",
+            rows_per_result(&full)
+        );
+        let bare = span_row("tool call".to_owned(), String::new(), None);
+        assert!(
+            (55..=80).contains(&rows_per_result(&bare)),
+            "{}",
+            rows_per_result(&bare)
+        );
+        // A trace with everyday names holds the 50 traces of a page whole.
+        let trace = trace_row(|bytes| "x".repeat(bytes.min(32)), vec!["prod".to_owned()]);
+        assert!(rows_per_result(&trace) >= 50, "{}", rows_per_result(&trace));
     }
 
     /// Text that JSON escapes heavily: control characters, quotes and backslashes cost up to 13 bytes each in
