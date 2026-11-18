@@ -61,6 +61,25 @@ A secret is `csk_` followed by 43 base62 characters (`0-9A-Za-z`) that encode 32
 python3 -c "import secrets, string as s; a = s.digits + s.ascii_uppercase + s.ascii_lowercase; print('csk_0' + ''.join(secrets.choice(a) for _ in range(42)))"
 ```
 
+## The REST API and its generated files
+
+The REST API is `crates/crucible-api`, mounted by `crucible serve` at `/api/v1` on the main listener. Its DTOs live
+in `crates/crucible-api-types`, where each struct derives serde, the OpenAPI schema and the TypeScript type at once.
+Two generated outputs are committed:
+
+- `specs/openapi/crucible-v1.json`, the OpenAPI 3.1 document, printed by the binary:
+  `cargo run -p crucible -- openapi > specs/openapi/crucible-v1.json`;
+- `ui/src/api/generated/`, one TypeScript file per DTO, written by `cargo xtask gen-ts`.
+
+Regenerate both after changing a handler or a DTO, and commit the result. CI regenerates them on every pull request
+and fails on any difference, or on `bigint` in a generated type (`.github/workflows/drift.yml`); a test of
+`crucible-api` also fails while the committed OpenAPI document is stale.
+
+Requests authenticate with a project's secret key from `--keys-file` as `Authorization: Bearer <key>`. Until a
+telemetry store is configured, `crucible serve` checks the key, the project and the parameters of each request and
+then answers 503 with the problem code `telemetry_store_unavailable`. The UI sends no credentials yet: browser
+sessions will arrive with the control plane, so against a running server its API requests answer 401.
+
 ## Hooks
 
 `pnpm install` at the repository root installs the git hooks (lefthook):

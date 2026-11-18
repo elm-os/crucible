@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crucible_env::{Env, Instant, JoinHandle, Rng, Stores};
 use crucible_normalize::{
-    Admission, IngestFrame, NORMALIZER_VERSION, NormCtx, NormalizedFrame, StageB, normalize,
+    Admission, IngestFrame, NORMALIZER_VERSION, NormCtx, NormalizedFrame, PriceTable, StageB,
+    normalize,
 };
 use crucible_records::{Lsn, PartitionId, TableId, Timestamp};
 use crucible_wal::{AppendError, RecoveryReport, Replay, ReplayError, Wal, WalFrame};
@@ -104,6 +105,8 @@ pub(crate) struct Ctx {
     pub(crate) stores: Stores,
     pub(crate) wal: Wal,
     pub(crate) config: ShipperConfig,
+    /// The bundled price table, which stage A prices with and every new seal records.
+    pub(crate) prices: &'static PriceTable,
     pub(crate) barriers: Arc<dyn Barriers>,
     pub(crate) recent: Arc<dyn RecentIndex>,
     pub(crate) gate: Gate,
@@ -226,7 +229,7 @@ fn frame_error(lsn: Lsn, reason: impl ToString) -> ShipError {
 fn normalize_frame(
     wal: &Wal,
     frame: &WalFrame,
-    ctx: &NormCtx,
+    ctx: &NormCtx<'_>,
 ) -> Result<NormalizedFrame, ShipError> {
     let lsn = frame.lsn();
     let payload = frame.payload().map_err(|e| frame_error(lsn, e))?;
@@ -290,10 +293,12 @@ impl Shipper {
                 }
             }
         }
+        let prices = PriceTable::bundled()?;
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let ctx = Arc::new(Ctx {
             env: env.clone(),
             stores: stores.clone(),
+            prices,
             limits: Mutex::new(SealLimits::new(&config)),
             gate: Gate::new(config.connections),
             rng: env.rng.fork("crucible-shipper/backoff"),
@@ -328,15 +333,11 @@ impl Shipper {
         Arc::clone(&self.ctx.stats)
     }
 
-    fn norm_ctx(&self) -> NormCtx {
-        // A recovered batch is normalized with the price table its seal recorded (contract 5.3).
-        let price_table_version = self
-            .seals
-            .front()
-            .map_or(self.ctx.config.price_table_version, |seal| {
-                seal.price_table_version
-            });
-        NormCtx::new(price_table_version, self.ctx.config.caps)
+    /// The stage A context. This build has one price table, so a batch that an earlier build sealed with another
+    /// version is priced with this build's table, as it is normalized by this build's normalizer (contract 5.3):
+    /// its pairs land wholesale.
+    fn norm_ctx(&self) -> NormCtx<'static> {
+        NormCtx::new(self.ctx.prices, self.ctx.config.caps)
     }
 
     /// The next durable frame, or `None` when there is none yet or the read failed. A failed read is tried
@@ -368,8 +369,7 @@ impl Shipper {
                 continue;
             };
             if frame.record_type() == RecordType::IngestRequest {
-                let ctx = NormCtx::new(self.ctx.config.price_table_version, self.ctx.config.caps);
-                let mut normalized = normalize_frame(&self.ctx.wal, &frame, &ctx)?;
+                let mut normalized = normalize_frame(&self.ctx.wal, &frame, &self.norm_ctx())?;
                 let admission = self
                     .stage_b
                     .admit(&mut normalized)
@@ -486,7 +486,7 @@ impl Shipper {
                 frame_count: u32::try_from(id.last_lsn.get() - id.first_lsn.get() + 1)
                     .unwrap_or(u32::MAX),
                 normalizer_version: NORMALIZER_VERSION,
-                price_table_version: ctx.config.price_table_version,
+                price_table_version: ctx.prices.version(),
                 // Milestone 1 applies no tombstones while normalizing.
                 deletion_seq: 0,
             };

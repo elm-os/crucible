@@ -15,12 +15,14 @@ use anyhow::Context as _;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::{IntoResponse as _, Response};
+use axum::response::Response;
 use axum::routing::get;
-use crucible_auth::StaticKeys;
+use crucible_api::StaticProjectSettings;
+use crucible_api_types::ProblemCode;
+use crucible_auth::{KeyVerifier, StaticKeys};
 use crucible_env::metrics::registry;
 use crucible_env::{
     AssetSource, Counter, Env, Histogram, JoinHandle, Listener, MemoryRecorder, NetError, Root,
@@ -28,7 +30,6 @@ use crucible_env::{
 };
 use crucible_env_prod::ProdConfig;
 use crucible_ingest::{Ingest, IngestConfig};
-use crucible_records::RequestId;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{Wal, WalConfig};
 
@@ -157,35 +158,23 @@ async fn serve_ui(State(ui): State<Ui>, request: Request) -> Response {
     );
     match outcome {
         Outcome::Response(response) => response.map(Body::from),
-        Outcome::Reserved => not_found_problem(&ui.env),
+        Outcome::Reserved => {
+            let request_id = crucible_api::request_id(request.extensions(), &ui.env);
+            crucible_api::problem(
+                request_id,
+                ProblemCode::NotFound,
+                "no resource exists at this path",
+            )
+        }
     }
 }
 
-/// The `not_found` problem document (contract 12.3). Until the request-id middleware lands, the request id is
-/// minted here, so only problem responses carry one.
-fn not_found_problem(env: &Env) -> Response {
-    let request_id = RequestId::from_uuid(env.new_id()).to_string();
-    let body = format!(
-        "{{\"type\":\"urn:crucible:problem:not_found\",\"title\":\"Not Found\",\"status\":404,\
-         \"detail\":\"No resource exists at this path.\",\"code\":\"not_found\",\
-         \"request_id\":\"{request_id}\"}}"
-    );
-    let mut response = (
-        StatusCode::NOT_FOUND,
-        [(CONTENT_TYPE, "application/problem+json")],
-        body,
-    )
-        .into_response();
-    if let Ok(value) = HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert("x-request-id", value);
-    }
-    response
-}
-
-/// What the routers serve besides the UI: OTLP ingest and the WAL behind it.
+/// What the routers serve besides the UI: OTLP ingest, the WAL behind it, and the keys that ingest and the API
+/// accept.
 struct App {
     ingest: Ingest,
     wal: Wal,
+    keys: Arc<dyn KeyVerifier>,
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
@@ -200,14 +189,15 @@ async fn open_app(env: &Env, keys: StaticKeys, config: WalConfig) -> anyhow::Res
         segments = report.segments.len(),
         "wal opened"
     );
+    let keys: Arc<dyn KeyVerifier> = Arc::new(keys);
     let ingest = Ingest::new(
         env,
         wal.clone(),
         &config,
-        Arc::new(keys),
+        Arc::clone(&keys),
         IngestConfig::default(),
     );
-    Ok(App { ingest, wal })
+    Ok(App { ingest, wal, keys })
 }
 
 /// Readiness (contract 11.8): the WAL accepts writes. The keys of milestone 1 come from configuration, so they
@@ -223,10 +213,18 @@ fn readiness(wal: &Wal) -> (StatusCode, &'static str) {
     }
 }
 
-/// The main listener's routes: health, readiness and OTLP ingest; the UI answers whatever they do not match.
-/// Later waves add the API.
+/// The main listener's routes: health, readiness, OTLP ingest and the REST API; the UI answers whatever they do
+/// not match. Every response carries a request id and the security headers.
+///
+/// No telemetry store is configured yet, so the API authenticates and validates each request and then answers
+/// `telemetry_store_unavailable`; wiring the store and the shipper switches it to `crucible_api::router`.
 fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
     let wal = app.wal.clone();
+    let api = crucible_api::router_without_store(
+        env,
+        Arc::clone(&app.keys),
+        Arc::new(StaticProjectSettings::default()),
+    );
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
@@ -241,8 +239,9 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
             env: env.clone(),
             source: ui,
         })
-        .merge(app.ingest.router());
-    observed(router, env, "api")
+        .merge(app.ingest.router())
+        .merge(api);
+    crucible_api::common_layers(observed(router, env, "api"), env)
 }
 
 /// The OTLP/HTTP listener's routes.
@@ -455,9 +454,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::{Path, PathBuf};
 
-    use crucible_auth::KeyVerifier as _;
     use crucible_env_prod::WalBackend;
-    use crucible_records::Lsn;
+    use crucible_records::{Lsn, RequestId};
     use crucible_wal_codec::{Compression, ContentOrigin, PreparedFrame, Record, RecordType};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -668,20 +666,91 @@ mod tests {
         });
     }
 
-    /// Asserts a problem 404 whose request id matches `X-Request-Id`.
-    fn assert_not_found_problem(status: &str, headers: &str, body: &[u8]) {
-        assert_eq!(status, "HTTP/1.1 404 Not Found");
+    /// Asserts a problem with this status line and code whose request id matches `X-Request-Id`.
+    fn assert_problem(status: &str, headers: &str, body: &[u8], expected: &str, code: &str) {
+        assert_eq!(status, format!("HTTP/1.1 {expected}"));
         assert_eq!(
             header(headers, "content-type"),
             Some("application/problem+json")
         );
         let problem: serde_json::Value = serde_json::from_slice(body).unwrap();
-        assert_eq!(problem["type"], "urn:crucible:problem:not_found");
-        assert_eq!(problem["status"], 404);
-        assert_eq!(problem["code"], "not_found");
+        assert_eq!(problem["type"], format!("urn:crucible:problem:{code}"));
+        assert_eq!(problem["status"].to_string(), expected[..3]);
+        assert_eq!(problem["code"], code);
         let request_id = problem["request_id"].as_str().unwrap();
         assert!(RequestId::parse(request_id).is_ok(), "{request_id}");
         assert_eq!(header(headers, "x-request-id"), Some(request_id));
+    }
+
+    /// Asserts a problem 404 whose request id matches `X-Request-Id`.
+    fn assert_not_found_problem(status: &str, headers: &str, body: &[u8]) {
+        assert_problem(status, headers, body, "404 Not Found", "not_found");
+    }
+
+    /// The API is mounted before a telemetry store is: requests are authenticated and checked against the
+    /// key's project, then answered with `telemetry_store_unavailable`. UI responses carry the request id and
+    /// the security headers too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_api_answers_unavailable_until_a_store_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let app = test_app(env, keys).await;
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addr = servers.addrs.api;
+        let bearer = format!("Bearer {}", secret());
+        let key = [("authorization", bearer.as_str())];
+        let traces = format!(
+            "/api/v1/projects/{PROJECT}/traces?from=2026-11-16T00:00:00Z&to=2026-11-17T00:00:00Z"
+        );
+
+        let (status, headers, body) = http(env, addr, "GET", &traces, &[]).await;
+        assert_problem(
+            &status,
+            &headers,
+            &body,
+            "401 Unauthorized",
+            "unauthenticated",
+        );
+        let other = traces.replace(PROJECT, "0193a1b2-7c3d-7e4f-8a5b-000000000000");
+        let (status, headers, body) = http(env, addr, "GET", &other, &key).await;
+        assert_problem(&status, &headers, &body, "404 Not Found", "not_found");
+        for path in [
+            traces.clone(),
+            format!("/api/v1/projects/{PROJECT}/traces/5b8efff798038103d269b633813fc60c"),
+            format!(
+                "/api/v1/projects/{PROJECT}/traces/5b8efff798038103d269b633813fc60c/spans\
+                 ?parent_span_id=eee19b7ec3c1b174"
+            ),
+            format!("/api/v1/projects/{PROJECT}/data-bounds"),
+        ] {
+            let (status, headers, body) = http(env, addr, "GET", &path, &key).await;
+            assert_problem(
+                &status,
+                &headers,
+                &body,
+                "503 Service Unavailable",
+                "telemetry_store_unavailable",
+            );
+            assert_eq!(
+                header(&headers, "content-security-policy"),
+                Some("default-src 'none'; frame-ancestors 'none'")
+            );
+        }
+
+        let (status, headers, _) = http_get(env, addr, "/").await;
+        assert_eq!(status, "HTTP/1.1 404 Not Found");
+        assert!(header(&headers, "x-request-id").is_some());
+        assert_eq!(header(&headers, "x-content-type-options"), Some("nosniff"));
+        assert_eq!(header(&headers, "referrer-policy"), Some("same-origin"));
+        let (_, headers, _) = http_get(env, addr, "/healthz").await;
+        assert!(header(&headers, "x-request-id").is_some());
+
+        shut_down(&prod, servers).await;
     }
 
     /// `crucible serve --ui-dir` over the fixture export: the directory source, read through the production

@@ -3,7 +3,9 @@
 
 use bytes::Bytes;
 use crucible_chfmt::{DecodedBlock, EncodedBlock, Values, decode_block, decompress};
-use crucible_normalize::{Admission, IngestFrame, NormCtx, NormalizedFrame, StageB, normalize};
+use crucible_normalize::{
+    Admission, IngestFrame, NormCtx, NormalizedFrame, PriceTable, StageB, normalize,
+};
 use crucible_records::{
     ApiKeyId, CostSource, Ingestion, IoShape, Level, Lsn, McpSide, NanoUsd, ObservationType,
     PayloadCaps, PayloadField, PayloadFields, ProjectId, SourceFormat, SpanCore, SpanId, SpanKind,
@@ -276,7 +278,11 @@ pub fn normalized(frames: &[Vec<SpanDesc>]) -> Vec<(NormalizedFrame, Admission)>
                 rejected: &[],
                 otlp: &body,
             };
-            let mut normalized = normalize(&frame, &NormCtx::new(0, PayloadCaps::DEFAULT)).unwrap();
+            let mut normalized = normalize(
+                &frame,
+                &NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT),
+            )
+            .unwrap();
             let admission = stage_b.admit(&mut normalized).unwrap();
             normalized.stamp_batch_seq(Lsn::new(10));
             (normalized, admission)

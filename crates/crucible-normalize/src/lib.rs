@@ -12,8 +12,9 @@
 //! The shipper stamps `batch_seq` when it seals a batch ([`NormalizedFrame::stamp_batch_seq`]); until then it is
 //! [`Lsn::ZERO`]. The ingestion group is outside the row digest, so stamping never changes a digest.
 //!
-//! Milestone 1 has no price table, so calculated cost is always `none`; provided usage and cost are used as sent.
-//! The MCP projector is a stub until milestone 3, so `mcp_side` is always `none`.
+//! Provided usage and cost are used as sent; without a provided cost, usage is priced from the price tables that
+//! the [`NormCtx`] pins ([`PriceTable`]). The MCP projector is a stub until milestone 3, so `mcp_side` is always
+//! `none`.
 //!
 //! This crate is pure: no `Env`, no IO.
 
@@ -23,6 +24,7 @@ mod engine;
 mod fill;
 mod json;
 mod mapper;
+mod price;
 mod stage_a;
 mod stage_b;
 
@@ -34,12 +36,20 @@ pub use mapper::{
     Hints, InventoryDraft, MapCtx, McpOpDraft, McpProjector, NATIVE, SpanDraft, SpanMapper,
     TableMapper,
 };
+pub use price::{
+    BUNDLED_PRICE_TABLE_VERSION, Compare, Condition, ModelPrice, PriceSnapshot, PriceTable,
+    PriceTableError, PriceTier,
+};
 pub use stage_a::{normalize, normalize_with};
 pub use stage_b::{Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrder, StageB};
 
 /// The version of this normalizer. Every record carries it, and a `BatchSeal` pins it (contract 4.4). Any change
 /// to the records stage A produces for some input ships with a new version.
-pub const NORMALIZER_VERSION: u32 = 1;
+///
+/// - 1: the first version; cost was provided or `none`.
+/// - 2: usage without a provided cost is priced from the price tables (`cost_source = calculated`, per-key costs,
+///   `total_cost_nusd` and the price row and tier ids).
+pub const NORMALIZER_VERSION: u32 = 2;
 
 /// One `IngestRequest` WAL frame as the normalizer reads it: the frame header values and the envelope (contracts
 /// 4.3 and 4.4), borrowing the payload. The shipper fills it from the decoded frame; this crate does not depend on
@@ -81,24 +91,32 @@ impl IngestFrame<'_> {
 /// What stage A's output is pinned to (contract 3.2). Equal frames normalized with equal contexts give
 /// byte-identical records.
 ///
-/// Milestone 1 reads only the caps from the project snapshot; the salt, capture settings and tombstones join with
-/// the stages that use them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NormCtx {
+/// The project snapshot contributes the caps and, from milestone 4, the project's price overrides; the salt,
+/// capture settings and tombstones join with the stages that use them.
+#[derive(Clone, Copy, Debug)]
+pub struct NormCtx<'a> {
     /// The normalizer version recorded in every record.
     pub normalizer_version: u32,
-    /// The price table version, recorded in the seal. Milestone 1 has no price table.
+    /// The price table version, recorded in the seal (contract 5.3). Equal versions must mean equal tables in
+    /// `prices`.
     pub price_table_version: u32,
+    /// The price tables usage is priced with.
+    pub prices: PriceSnapshot<'a>,
     /// The project's payload caps.
     pub caps: PayloadCaps,
 }
 
-impl NormCtx {
-    /// A context for this normalizer ([`NORMALIZER_VERSION`]).
-    pub const fn new(price_table_version: u32, caps: PayloadCaps) -> Self {
+impl<'a> NormCtx<'a> {
+    /// A context for this normalizer ([`NORMALIZER_VERSION`]) that prices with `bundled` alone and records its
+    /// version.
+    pub const fn new(bundled: &'a PriceTable, caps: PayloadCaps) -> Self {
         Self {
             normalizer_version: NORMALIZER_VERSION,
-            price_table_version,
+            price_table_version: bundled.version(),
+            prices: PriceSnapshot {
+                project: None,
+                bundled,
+            },
             caps,
         }
     }

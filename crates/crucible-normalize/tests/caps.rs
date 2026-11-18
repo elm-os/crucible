@@ -7,16 +7,16 @@
 mod common;
 
 use common::double::Double;
-use common::{frame, int, request, request_with, s, span, span_with, strings};
+use common::{frame, int, prices, request, request_with, s, span, span_with, strings};
 use crucible_normalize::{NormCtx, normalize, normalize_with};
 use crucible_records::{PayloadCaps, PayloadField, Truncation, caps, truncate_str};
 use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
 use prost::Message;
 use sha2::{Digest, Sha256};
 
-fn capped(max_field_bytes: usize, max_span_bytes: usize) -> NormCtx {
+fn capped(max_field_bytes: usize, max_span_bytes: usize) -> NormCtx<'static> {
     NormCtx::new(
-        0,
+        prices(),
         PayloadCaps {
             max_field_bytes,
             max_span_bytes,
@@ -134,7 +134,7 @@ fn core_strings_are_cut_on_character_boundaries() {
     let body = req.encode_to_vec();
     let mut f = frame(&body, &[]);
     f.sdk_name = &long;
-    let r = &normalize(&f, &NormCtx::new(0, PayloadCaps::DEFAULT))
+    let r = &normalize(&f, &NormCtx::new(prices(), PayloadCaps::DEFAULT))
         .unwrap()
         .spans[0];
     let c = &r.core;
@@ -180,9 +180,12 @@ fn lists_keep_their_first_items() {
         })
         .collect();
     let body = request(vec![sp]);
-    let r = &normalize(&frame(&body, &[]), &NormCtx::new(0, PayloadCaps::DEFAULT))
-        .unwrap()
-        .spans[0];
+    let r = &normalize(
+        &frame(&body, &[]),
+        &NormCtx::new(prices(), PayloadCaps::DEFAULT),
+    )
+    .unwrap()
+    .spans[0];
     let c = &r.core;
     assert_eq!(c.finish_reasons.len(), caps::FINISH_REASONS_MAX_ITEMS);
     assert!(

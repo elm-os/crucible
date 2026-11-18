@@ -1,0 +1,134 @@
+//! The REST API under `/api/v1` (contract section 12): the routes of milestone 1, principal resolution and the
+//! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
+//!
+//! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
+//!   and `.../data-bounds` over a [`QueryService`]; DTOs come from `crucible-api-types`.
+//! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
+//!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
+//!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
+//!   [`ProjectSettingsSource`] supplies.
+//! - **Errors.** Every error is `application/problem+json` with the request id (contract 12.3), unknown paths
+//!   and methods included.
+//! - **Middleware**, outermost first: request id, security headers with the API's CSP, body limit, request
+//!   timeout on the `Env` clock. The request id and the other security headers also wrap the main listener's
+//!   other routes through [`common_layers`].
+//! - **Cursors** use a temporary unsigned encoding until `crucible-cursor` signs them (milestone 2).
+
+mod access;
+mod convert;
+mod cursor;
+mod layers;
+mod openapi;
+mod params;
+mod problem;
+mod routes;
+mod settings;
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::HeaderValue;
+use axum::http::header::ALLOW;
+use axum::middleware;
+use axum::response::Response;
+use axum::routing::get;
+use crucible_api_types::ProblemCode;
+use crucible_auth::KeyVerifier;
+use crucible_env::Env;
+use crucible_query::QueryService;
+
+pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
+pub use openapi::{openapi, openapi_json};
+pub use problem::{PROBLEM_JSON, problem, request_id};
+pub use settings::{
+    DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
+};
+
+use crate::access::ApiState;
+
+/// The base path of the API (contract 12.1).
+pub const BASE_PATH: &str = "/api/v1";
+
+/// The API over a query service, with its routes under [`BASE_PATH`]. Merge it into the main listener's
+/// router, then wrap that router in [`common_layers`].
+pub fn router(
+    env: &Env,
+    service: QueryService,
+    keys: Arc<dyn KeyVerifier>,
+    settings: Arc<dyn ProjectSettingsSource>,
+) -> Router {
+    build(env, Some(service), keys, settings)
+}
+
+/// The API before a telemetry store is configured: requests are authenticated and validated as usual, then
+/// answered with `telemetry_store_unavailable`.
+pub fn router_without_store(
+    env: &Env,
+    keys: Arc<dyn KeyVerifier>,
+    settings: Arc<dyn ProjectSettingsSource>,
+) -> Router {
+    build(env, None, keys, settings)
+}
+
+fn build(
+    env: &Env,
+    service: Option<QueryService>,
+    keys: Arc<dyn KeyVerifier>,
+    settings: Arc<dyn ProjectSettingsSource>,
+) -> Router {
+    let state = ApiState {
+        env: env.clone(),
+        service,
+        keys,
+        settings,
+    };
+    let api = Router::new()
+        .route("/projects/{project_id}/traces", get(routes::list_traces))
+        .route(
+            "/projects/{project_id}/traces/{trace_id}",
+            get(routes::get_trace),
+        )
+        .route(
+            "/projects/{project_id}/traces/{trace_id}/spans",
+            get(routes::list_span_children),
+        )
+        .route(
+            "/projects/{project_id}/data-bounds",
+            get(routes::get_data_bounds),
+        )
+        .fallback(unknown_path)
+        .method_not_allowed_fallback(unknown_method)
+        .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            env.clone(),
+            layers::request_timeout,
+        ))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(
+            env.clone(),
+            layers::body_limit,
+        ))
+        .layer(middleware::from_fn(layers::api_policy));
+    common_layers(Router::new().nest(BASE_PATH, api), env)
+}
+
+/// Paths under `/api/v1` that name no route never fall back to the UI (contract 12.1).
+async fn unknown_path(State(state): State<ApiState>, request: Request) -> Response {
+    let id = request_id(request.extensions(), &state.env);
+    problem(id, ProblemCode::NotFound, "no resource exists at this path")
+}
+
+/// Every route of milestone 1 is a read.
+async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
+    let id = request_id(request.extensions(), &state.env);
+    let mut response = problem(
+        id,
+        ProblemCode::MethodNotAllowed,
+        "the resource supports GET and HEAD only",
+    );
+    response
+        .headers_mut()
+        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
+    response
+}

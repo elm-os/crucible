@@ -3,6 +3,7 @@
 mod keys;
 mod serve;
 
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -28,6 +29,8 @@ struct Cli {
 enum Command {
     /// Run the server.
     Serve(ServeArgs),
+    /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
+    Openapi,
 }
 
 #[derive(Debug, Args)]
@@ -70,6 +73,11 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             runtime.block_on(serve::run(args))
         }
+        Command::Openapi => {
+            let json = crucible_api::openapi_json()?;
+            std::io::stdout().lock().write_all(json.as_bytes())?;
+            Ok(())
+        }
     }
 }
 
@@ -89,9 +97,16 @@ mod tests {
         );
     }
 
+    fn serve_args(argv: &[&str]) -> ServeArgs {
+        match Cli::parse_from(argv).command {
+            Command::Serve(args) => args,
+            other => panic!("{argv:?} parsed as {other:?}"),
+        }
+    }
+
     #[test]
     fn serve_defaults_match_the_contract_ports() {
-        let Command::Serve(args) = Cli::parse_from(["crucible", "serve"]).command;
+        let args = serve_args(&["crucible", "serve"]);
         assert_eq!(args.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(args.ingest_listen.to_string(), "0.0.0.0:4318");
         assert_eq!(args.metrics_listen.to_string(), "127.0.0.1:9464");
@@ -99,8 +114,16 @@ mod tests {
         assert_eq!(args.keys_file, None);
         assert_eq!(args.ui_dir, None);
         assert!(Cli::try_parse_from(["crucible", "serve", "--wal-backend", "floppy"]).is_err());
-        let Command::Serve(args) =
-            Cli::parse_from(["crucible", "serve", "--ui-dir", "ui/out"]).command;
+        let args = serve_args(&["crucible", "serve", "--ui-dir", "ui/out"]);
         assert_eq!(args.ui_dir, Some(PathBuf::from("ui/out")));
+    }
+
+    #[test]
+    fn openapi_takes_no_arguments() {
+        assert!(matches!(
+            Cli::parse_from(["crucible", "openapi"]).command,
+            Command::Openapi
+        ));
+        assert!(Cli::try_parse_from(["crucible", "openapi", "--yaml"]).is_err());
     }
 }

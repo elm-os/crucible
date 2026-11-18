@@ -262,6 +262,10 @@ fn every_token_names_a_sealed_range_and_ranges_are_adjacent() {
                     seal.normalizer_version,
                     crucible_normalize::NORMALIZER_VERSION
                 );
+                assert_eq!(
+                    seal.price_table_version,
+                    crucible_normalize::BUNDLED_PRICE_TABLE_VERSION
+                );
                 assert!(seal.last_lsn < frame.lsn());
                 seals.push((seal.first_lsn, seal.last_lsn));
             }
