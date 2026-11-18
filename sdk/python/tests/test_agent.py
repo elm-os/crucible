@@ -165,3 +165,25 @@ def test_a_span_after_shutdown_is_not_exported_and_does_not_raise(sdk: Collector
         crucible_sdk.set_input("x")
     assert crucible_sdk.flush()
     assert "late" not in {s.name for s in sdk.spans()}
+
+
+def test_a_generation_keeps_the_message_shape(sdk: Collector) -> None:
+    question = [{"role": "user", "parts": [{"type": "text", "content": "Summarize the refund policy."}]}]
+    reply = [
+        {"role": "assistant", "parts": [{"type": "text", "content": "Refunds take 5 days."}], "finish_reason": "stop"}
+    ]
+    with (
+        crucible_sdk.observe("answer", type="agent", trace_name="refund-flow"),
+        crucible_sdk.generation("draft-reply", model="model-1", provider="provider-1"),
+    ):
+        crucible_sdk.set_messages(input=question, output=reply)
+        crucible_sdk.set_finish_reasons("stop")
+    spans = exported(sdk)
+    assert spans["answer"].attributes["crucible.trace.name"] == "refund-flow"
+    a = spans["draft-reply"].attributes
+    assert json.loads(a["gen_ai.input.messages"]) == question
+    assert json.loads(a["gen_ai.output.messages"]) == reply
+    assert a["gen_ai.response.finish_reasons"] == ["stop"]
+    assert "crucible.input" not in a
+    assert "crucible.output" not in a
+    assert spans["draft-reply"].parent_span_id == spans["answer"].span_id

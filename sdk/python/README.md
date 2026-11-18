@@ -83,9 +83,10 @@ with crucible_sdk.session("conversation-17"), crucible_sdk.user("user-42"), cruc
 
 | Helper | What it sets |
 |---|---|
-| `observe(name, type=...)` | A span with `crucible.observation.type` (`span`, `generation`, `event`, `embedding`, `agent`, `tool`, `chain`, `retriever`, `evaluator`, `guardrail`); optional `input`, `metadata` and `tags`. A context manager that yields the OpenTelemetry span, or a decorator for sync and async functions (`@observe` alone uses the function name; `capture_input=False` and `capture_output=False` turn the recording off) |
+| `observe(name, type=...)` | A span with `crucible.observation.type` (`span`, `generation`, `event`, `embedding`, `agent`, `tool`, `chain`, `retriever`, `evaluator`, `guardrail`); optional `input`, `metadata`, `tags` and `trace_name` (`crucible.trace.name`, for the root observation). A context manager that yields the OpenTelemetry span, or a decorator for sync and async functions (`@observe` alone uses the function name; `capture_input=False` and `capture_output=False` turn the recording off) |
 | `generation(name, model=..., provider=...)` | `observe` with type `generation`, plus `gen_ai.request.model` and `gen_ai.provider.name` |
 | `set_input(value)`, `set_output(value)` | `crucible.input`, `crucible.output` on the current span: a string as is, anything else as JSON |
+| `set_messages(input=, output=)`, `set_finish_reasons(*reasons)` | `gen_ai.input.messages` and `gen_ai.output.messages` as JSON, and `gen_ai.response.finish_reasons`, for generations |
 | `set_usage(input=, output=, cache_read=, cache_write=, reasoning=)` | `gen_ai.usage.*` token counts. Cache reads and writes count inside `input`, reasoning inside `output` |
 | `set_cost(total=, input=, output=, ...)` | `crucible.cost.<key>` in USD. Pass a `Decimal` to send the amount exactly |
 | `session(id)`, `user(id)`, `tags(*values)`, `metadata(**values)` | `crucible.session.id`, `crucible.user.id`, `crucible.tags` and `crucible.metadata.<key>` on every span started inside, including spans of other libraries. Context managers or decorators; nested `tags` and `metadata` add to the enclosing ones |

@@ -200,7 +200,8 @@ class _CappedJson:
             return self._array(value, depth)
         return self._string(str(value))
 
-    def _string(self, value: str) -> bool:
+    def _string(self, value: str, suffix: str = "") -> bool:
+        """Emits a string (an object key with `suffix` ":"), scrubbing no more of it than the budget can hold."""
         raw = value[: self._left + _MARGIN]
         text = json.dumps(self._scrubber.text(raw), ensure_ascii=False)
         if len(raw) < len(value):
@@ -208,7 +209,7 @@ class _CappedJson:
             self._emit(text[:-1])
             self.cut = True
             return False
-        return self._emit(text)
+        return self._emit(text + suffix)
 
     def _object(self, value: Mapping[Any, Any], depth: int) -> bool:
         if not self._emit("{"):
@@ -217,7 +218,7 @@ class _CappedJson:
             name = key if isinstance(key, str) else str(key)
             if i and not self._emit(","):
                 return False
-            if not self._emit(json.dumps(self._scrubber.text(name), ensure_ascii=False) + ":"):
+            if not self._string(name, ":"):
                 return False
             if Scrubber.is_denied_key(name):
                 if not self._emit(json.dumps(_REDACTED)):

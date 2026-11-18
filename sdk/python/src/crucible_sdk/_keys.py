@@ -2,10 +2,10 @@
 
 # Contract 10.6: fields without a semantic convention.
 OBSERVATION_TYPE = "crucible.observation.type"
+TRACE_NAME = "crucible.trace.name"
 SESSION_ID = "crucible.session.id"
 USER_ID = "crucible.user.id"
 TAGS = "crucible.tags"
-TRACE_TAGS = "crucible.trace.tags"
 METADATA_PREFIX = "crucible.metadata."
 INPUT = "crucible.input"
 OUTPUT = "crucible.output"
@@ -14,8 +14,10 @@ DEPLOY_ID = "crucible.deploy.id"
 
 # OpenTelemetry GenAI semantic conventions read by dialect 0.
 REQUEST_MODEL = "gen_ai.request.model"
-RESPONSE_MODEL = "gen_ai.response.model"
 PROVIDER_NAME = "gen_ai.provider.name"
+INPUT_MESSAGES = "gen_ai.input.messages"
+OUTPUT_MESSAGES = "gen_ai.output.messages"
+FINISH_REASONS = "gen_ai.response.finish_reasons"
 USAGE = {
     "input": "gen_ai.usage.input_tokens",
     "output": "gen_ai.usage.output_tokens",

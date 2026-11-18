@@ -79,12 +79,14 @@ class Observation:
         input: object = _UNSET,
         metadata: Mapping[str, object] | None = None,
         tags: Sequence[str] | None = None,
+        trace_name: str | None = None,
         model: str | None = None,
         provider: str | None = None,
         capture_input: bool = True,
         capture_output: bool = True,
     ) -> None:
         self._name = name
+        self._trace_name = trace_name
         self._type = type
         self._input = input
         self._metadata = metadata or {}
@@ -103,6 +105,8 @@ class Observation:
             attributes[_keys.METADATA_PREFIX + key] = _metadata_value(value)
         if self._tags:
             attributes[_keys.TAGS] = list(self._tags)
+        if self._trace_name:
+            attributes[_keys.TRACE_NAME] = self._trace_name
         if self._model:
             attributes[_keys.REQUEST_MODEL] = self._model
         if self._provider:
@@ -168,6 +172,7 @@ def observe(
     input: object = _UNSET,
     metadata: Mapping[str, object] | None = None,
     tags: Sequence[str] | None = None,
+    trace_name: str | None = None,
     capture_input: bool = True,
     capture_output: bool = True,
 ) -> Observation: ...
@@ -181,10 +186,14 @@ def observe(
     input: object = _UNSET,
     metadata: Mapping[str, object] | None = None,
     tags: Sequence[str] | None = None,
+    trace_name: str | None = None,
     capture_input: bool = True,
     capture_output: bool = True,
 ) -> Any:
-    """A span of observation type `type` (`crucible.observation.type`). `@observe` alone uses the function name."""
+    """A span of observation type `type` (`crucible.observation.type`). `@observe` alone uses the function name.
+
+    `trace_name` names the whole trace (`crucible.trace.name`); set it on the root observation.
+    """
     if callable(name):
         return Observation(None, "span")(name)
     return Observation(
@@ -193,6 +202,7 @@ def observe(
         input=input,
         metadata=metadata,
         tags=tags,
+        trace_name=trace_name,
         capture_input=capture_input,
         capture_output=capture_output,
     )
@@ -206,6 +216,7 @@ def generation(
     input: object = _UNSET,
     metadata: Mapping[str, object] | None = None,
     tags: Sequence[str] | None = None,
+    trace_name: str | None = None,
     capture_input: bool = True,
     capture_output: bool = True,
 ) -> Observation:
@@ -216,6 +227,7 @@ def generation(
         input=input,
         metadata=metadata,
         tags=tags,
+        trace_name=trace_name,
         model=model,
         provider=provider,
         capture_input=capture_input,
@@ -231,6 +243,23 @@ def set_input(value: object) -> None:
 def set_output(value: object) -> None:
     """Sets the current span's output (`crucible.output`): a string verbatim, any other value as JSON."""
     trace.get_current_span().set_attribute(_keys.OUTPUT, _text(value))
+
+
+def set_messages(*, input: object = _UNSET, output: object = _UNSET) -> None:
+    """Sets a model call's messages (`gen_ai.input.messages`, `gen_ai.output.messages`) as JSON on the current span.
+
+    Use them instead of `set_input` and `set_output` on generations: they keep the semantic-convention message shape.
+    """
+    span = trace.get_current_span()
+    if input is not _UNSET:
+        span.set_attribute(_keys.INPUT_MESSAGES, _text(input))
+    if output is not _UNSET:
+        span.set_attribute(_keys.OUTPUT_MESSAGES, _text(output))
+
+
+def set_finish_reasons(*reasons: str) -> None:
+    """Sets why the model stopped (`gen_ai.response.finish_reasons`) on the current span."""
+    trace.get_current_span().set_attribute(_keys.FINISH_REASONS, list(reasons))
 
 
 def set_usage(

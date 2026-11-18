@@ -146,3 +146,11 @@ def test_deep_nesting_is_cut_like_the_byte_cap() -> None:
     text, cut = SCRUBBER.capped_json(value, 16384)
     assert cut
     assert text == "[" * 64
+
+
+def test_a_long_key_is_cut_before_it_is_scrubbed() -> None:
+    start = time.perf_counter()
+    text, cut = SCRUBBER.capped_json({"k" * 10_000_000: 1}, 16)
+    assert time.perf_counter() - start < 1.0
+    assert cut
+    assert text == '{"' + "k" * 14

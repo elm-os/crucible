@@ -37,6 +37,7 @@ logger = logging.getLogger("crucible_sdk")
 
 INVALID_PARAMS = -32602
 HANDLE_ID_BYTES = 256
+TARGET_NAME_BYTES = 512
 MRTR_LABEL = b"crucible.mrtr.v1\x00"
 
 Transport = Literal["stdio", "streamable_http", "sse"]
@@ -316,6 +317,9 @@ class CrucibleMiddleware:
         return {_keys.HANDLE_ID: _cut(_pipeline.SCRUBBER.bounded_text(value, HANDLE_ID_BYTES), HANDLE_ID_BYTES)}
 
     def _capture_for(self, tool: str, span: Span) -> Capture | None:
+        if len(tool) > TARGET_NAME_BYTES:
+            # Longer than any stored target name (contract 3.5): never a registered tool, never matched or cached.
+            return None
         if tool not in self._capture_by_tool:
             if len(self._capture_by_tool) > 4096:
                 self._capture_by_tool.clear()
