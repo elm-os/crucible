@@ -17,24 +17,27 @@ crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-plan = { workspace = true }
 crucible-shipper = { workspace = true, features = ["test-mutants"] }
-crucible-recent = { workspace = true }
+crucible-recent = { workspace = true, features = ["test-mutants"] }
 crucible-query = { workspace = true }
-crucible-ingest = { workspace = true }
+crucible-ingest = { workspace = true, features = ["test-mutants"] }
 crucible-normalize = { workspace = true }
 crucible-otlp = { workspace = true }
 crucible-admission = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
 async-trait = { workspace = true }
+axum = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "with-serde"] }
 prost = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+serde_json = { workspace = true }
 shuttle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync", "macros", "test-util"] }
+tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 turmoil = { workspace = true }
 

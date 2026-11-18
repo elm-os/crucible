@@ -943,6 +943,7 @@ dependencies = [
  "crucible-env",
  "crucible-normalize",
  "crucible-plan",
+ "crucible-recent",
  "crucible-records",
  "crucible-schema",
  "crucible-wal",
@@ -961,6 +962,7 @@ name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "blake3",
  "bytes",
  "crucible-admission",
@@ -986,10 +988,12 @@ dependencies = [
  "prost",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
+ "serde_json",
  "shuttle",
  "tempfile",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "turmoil",
 ]
@@ -3393,6 +3397,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "brotli",
+ "crucible-sim",
  "flate2",
 ]
 

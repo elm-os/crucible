@@ -35,6 +35,17 @@ pub const DEFAULT_INFLIGHT_BYTES: u64 = 512 << 20;
 pub const DEFAULT_MAX_EVENT_AGE: Duration = Duration::from_secs(400 * 24 * 60 * 60);
 
 /// Settings of the ingest path.
+/// A seeded defect for the simulation suite, which must catch it.
+///
+/// Without the cargo feature `test-mutants` this type has no value, so [`IngestConfig::mutant`] is always `None`
+/// and no defect can be switched on. Only `crucible-sim` enables the feature.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mutant {
+    /// Answer 200 once the frame is handed to the WAL, without waiting for the append to resolve.
+    #[cfg(feature = "test-mutants")]
+    AckBeforeAppend,
+}
+
 #[derive(Clone, Debug)]
 pub struct IngestConfig {
     /// `ingest.inflight_bytes`: the budget for the request bytes that handlers hold, from the first body byte
@@ -45,6 +56,17 @@ pub struct IngestConfig {
     pub max_event_age: Duration,
     /// `wal.compression` for the frames that ingest prepares.
     pub compression: Compression,
+    /// A seeded defect; `None` outside the simulation suite.
+    pub mutant: Option<Mutant>,
+}
+
+impl IngestConfig {
+    fn acks_before_append(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::AckBeforeAppend);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
 }
 
 impl Default for IngestConfig {
@@ -53,6 +75,7 @@ impl Default for IngestConfig {
             inflight_bytes: DEFAULT_INFLIGHT_BYTES,
             max_event_age: DEFAULT_MAX_EVENT_AGE,
             compression: Compression::Lz4,
+            mutant: None,
         }
     }
 }
@@ -70,6 +93,7 @@ struct Inner {
     admission: Arc<Admission>,
     max_event_age_micros: i64,
     compression: Compression,
+    acks_before_append: bool,
     metrics: Metrics,
 }
 
@@ -222,6 +246,7 @@ impl Ingest {
                 admission: Arc::new(admission),
                 max_event_age_micros: max_age,
                 compression: config.compression,
+                acks_before_append: config.acks_before_append(),
                 metrics: Metrics::new(env),
             }),
         }
@@ -318,11 +343,12 @@ impl Inner {
         })??;
 
         let Prepared { frame, acked, held } = prepared;
-        self.admission
-            .wal
-            .append(frame)
-            .await
-            .map_err(|e| self.append_failed(e))?;
+        let appended = self.admission.wal.append(frame);
+        if self.acks_before_append {
+            drop(appended);
+        } else {
+            appended.await.map_err(|e| self.append_failed(e))?;
+        }
         drop(held);
         Ok(acked)
     }

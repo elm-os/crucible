@@ -374,7 +374,9 @@ impl Shipper {
                     .stage_b
                     .admit(&mut normalized)
                     .map_err(|e| frame_error(frame.lsn(), e))?;
-                self.ctx.recent.applied(&normalized, &admission);
+                self.ctx.recent.applied(&frame, &normalized, &admission);
+            } else {
+                self.ctx.recent.passed(&frame);
             }
         }
         Ok(())
@@ -411,7 +413,7 @@ impl Shipper {
                     .stage_b
                     .admit(&mut normalized)
                     .map_err(|e| frame_error(lsn, e))?;
-                self.ctx.recent.applied(&normalized, &admission);
+                self.ctx.recent.applied(frame, &normalized, &admission);
                 self.place(Held {
                     frame: normalized,
                     admission,
@@ -426,6 +428,7 @@ impl Shipper {
                     record_type,
                     RecordType::BatchSeal | RecordType::Checkpoint | RecordType::Quarantine
                 );
+                self.ctx.recent.passed(frame);
                 let now = self.ctx.env.clock.now();
                 self.open
                     .take_frame(lsn, frame.received_at(), raw_bytes, !own, now);

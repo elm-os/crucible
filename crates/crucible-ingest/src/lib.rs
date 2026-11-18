@@ -24,4 +24,4 @@ mod body;
 mod reply;
 mod service;
 
-pub use service::{DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, Ingest, IngestConfig};
+pub use service::{DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, Ingest, IngestConfig, Mutant};

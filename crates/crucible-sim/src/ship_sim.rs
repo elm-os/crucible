@@ -32,7 +32,7 @@ use crucible_shipper::{
     Barrier, Barriers, FRAMES_FILE, Hooks, MANIFEST_FILE, Mutant, RecentIndex, ShipError, Shipper,
     ShipperConfig, ShipperStats, StatsSnapshot,
 };
-use crucible_wal::{AppendError, RecoveryReport, Wal};
+use crucible_wal::{AppendError, RecoveryReport, Wal, WalFrame};
 use crucible_wal_codec::{
     ContentOrigin, FRAME_HEADER_LEN, FrameHeader, IngestRequest, IngestTransport, PreparedFrame,
     Record, RecordType, SEGMENT_HEADER_LEN, load_payload,
@@ -179,7 +179,7 @@ pub const BARRIERS: [&str; 7] = [
 ];
 
 /// The index of `quarantine.copied` in [`BARRIERS`].
-const QUARANTINE_COPIED: u64 = 4;
+pub(crate) const QUARANTINE_COPIED: u64 = 4;
 
 /// The result of one run.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -366,7 +366,7 @@ impl Shared {
     }
 }
 
-fn random<const N: usize>(rng: &dyn Rng) -> [u8; N] {
+pub(crate) fn random<const N: usize>(rng: &dyn Rng) -> [u8; N] {
     let mut bytes = [0u8; N];
     rng.fill_bytes(&mut bytes);
     // Never all-zero: ingest rejects such ids before the append.
@@ -544,7 +544,7 @@ async fn client(shared: Shared, env: Env, wal: Wal, rng: Arc<dyn Rng>, budget: u
 /// The crash barriers of one incarnation: the armed one freezes the disk and never completes, so the crash
 /// falls exactly between the two steps the barrier separates.
 #[derive(Debug)]
-struct SimBarriers {
+pub(crate) struct SimBarriers {
     disk: SimDisk,
     trace: Arc<Trace>,
     /// Barriers still to pass before the crash; zero when not armed.
@@ -557,7 +557,7 @@ struct SimBarriers {
 }
 
 impl SimBarriers {
-    fn new(disk: &SimDisk, trace: &Arc<Trace>) -> Self {
+    pub(crate) fn new(disk: &SimDisk, trace: &Arc<Trace>) -> Self {
         Self {
             disk: disk.clone(),
             trace: Arc::clone(trace),
@@ -570,14 +570,14 @@ impl SimBarriers {
 
     /// Arms the crash at the `after`-th barrier from now; with `only`, at the `after`-th barrier of that index
     /// in [`BARRIERS`], so that the rare barriers get their share of crashes.
-    fn arm(&self, only: Option<u64>, after: u64) {
+    pub(crate) fn arm(&self, only: Option<u64>, after: u64) {
         self.only
             .store(only.map_or(0, |index| index + 1), Ordering::SeqCst);
         self.countdown.store(after.max(1), Ordering::SeqCst);
     }
 
     /// Resolves with the index in [`BARRIERS`] of the barrier the crash fell at.
-    async fn tripped(&self) -> usize {
+    pub(crate) async fn tripped(&self) -> usize {
         loop {
             match self.tripped.load(Ordering::SeqCst) {
                 0 => self.signal.notified().await,
@@ -630,12 +630,14 @@ struct SimRecent {
 }
 
 impl RecentIndex for SimRecent {
-    fn applied(&self, frame: &NormalizedFrame, _admission: &Admission) {
+    fn applied(&self, _source: &WalFrame, frame: &NormalizedFrame, _admission: &Admission) {
         let lsn = frame.lsn.get();
         if self.last.swap(lsn, Ordering::SeqCst) >= lsn {
             self.out_of_order.store(true, Ordering::SeqCst);
         }
     }
+
+    fn passed(&self, _source: &WalFrame) {}
 
     fn floor(&self) -> Option<Lsn> {
         let behind = self.pin_behind?;
@@ -654,19 +656,29 @@ struct Shipping {
 
 /// A quarantine directory whose pair is in fact quarantined.
 #[derive(Clone, Debug)]
-struct Quarantined {
-    table: TableId,
-    partition: PartitionId,
-    first: u64,
-    last: u64,
+pub(crate) struct Quarantined {
+    pub(crate) table: TableId,
+    pub(crate) partition: PartitionId,
+    pub(crate) first: u64,
+    pub(crate) last: u64,
     /// The payloads of the copied frames.
     payloads: Vec<Vec<u8>>,
+}
+
+/// What is wrong with a quarantine.
+#[derive(Clone, Debug)]
+pub(crate) enum QuarantineFault {
+    /// Contract 5.6: a pair of which the store had accepted a block was quarantined without a probe that read
+    /// absent.
+    InDoubt { table: &'static str, batch_seq: u64 },
+    /// The copy does not hold the frames of its batch; the directory is named.
+    Copy(String),
 }
 
 impl Quarantined {
     /// Whether a copied frame carries the span. A repeat of a request may have been dropped for a frame that
     /// was never acknowledged, whose LSN the ledger does not know.
-    fn holds(&self, trace: &[u8; 16], span: &[u8; 8]) -> bool {
+    pub(crate) fn holds(&self, trace: &[u8; 16], span: &[u8; 8]) -> bool {
         let has = |payload: &[u8], id: &[u8]| payload.windows(id.len()).any(|w| w == id);
         self.payloads
             .iter()
@@ -674,7 +686,7 @@ impl Quarantined {
     }
 }
 
-fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
+pub(crate) fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.sealed += s.sealed;
     total.reshipped += s.reshipped;
     total.checkpoints += s.checkpoints;
@@ -705,6 +717,83 @@ fn copied_payloads(bytes: &[u8], first: u64, last: u64) -> Option<Vec<Vec<u8>>> 
         at = end;
     }
     (next == last + 1).then_some(payloads)
+}
+
+/// The quarantine directories on `disk`: the directory's name and, when its manifest parses, the pair and the
+/// declared length of the copy. A crash can cut the manifest of a copy that was never announced.
+pub(crate) fn manifests(disk: &SimDisk) -> Vec<(String, Option<(Quarantined, usize)>)> {
+    let mut found = Vec::new();
+    for path in disk.files(Root::Quarantine) {
+        let Some(dir) = path.as_str().strip_suffix(&format!("/{MANIFEST_FILE}")) else {
+            continue;
+        };
+        let manifest = disk.read_file(&path).unwrap_or_default();
+        let text = String::from_utf8_lossy(&manifest);
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+        };
+        let number = |name: &str| field(name).and_then(|v| v.parse::<u64>().ok());
+        let parsed = (|| {
+            Some(Quarantined {
+                table: TableId::from_id(u8::try_from(number("table_id")?).ok()?)?,
+                partition: PartitionId::parse(field("partition")?).ok()?,
+                first: number("first_lsn")?,
+                last: number("last_lsn")?,
+                payloads: Vec::new(),
+            })
+        })();
+        let declared = number("bytes").unwrap_or(u64::MAX) as usize;
+        found.push((dir.to_owned(), parsed.map(|q| (q, declared))));
+    }
+    found
+}
+
+/// The number of quarantine directories with a manifest, those whose pair is quarantined, and what is wrong
+/// with them (contract 5.6). A directory whose pair landed after all is what a crash between the copy and the
+/// `Quarantine` frame leaves behind.
+pub(crate) fn read_quarantines(
+    disk: &SimDisk,
+    model: &ChModel,
+    through: u64,
+) -> (u64, Vec<Quarantined>, Vec<QuarantineFault>) {
+    let mut found = Vec::new();
+    let mut faults = Vec::new();
+    let mut directories = 0;
+    for (dir, parsed) in manifests(disk) {
+        directories += 1;
+        let Some((mut q, declared)) = parsed else {
+            continue;
+        };
+        // Above the watermark the pair may still be shipped: the copy is not a quarantine yet.
+        if q.last > through {
+            continue;
+        }
+        let (accepted, last) = model.pair_history(&(q.table, q.partition, q.first));
+        match last {
+            Some(LastAnswer::ProbeAbsent) => {}
+            Some(LastAnswer::InsertPoison) if !accepted => {}
+            Some(LastAnswer::InsertPoison) => faults.push(QuarantineFault::InDoubt {
+                table: q.table.name(),
+                batch_seq: q.first,
+            }),
+            // The pair landed after all: the copy is what a crash before the `Quarantine` frame left.
+            _ => continue,
+        }
+        let frames = DiskPath::new(Root::Quarantine, &format!("{dir}/{FRAMES_FILE}"))
+            .ok()
+            .and_then(|p| disk.read_file(&p))
+            .unwrap_or_default();
+        match frames
+            .get(..declared)
+            .and_then(|bytes| copied_payloads(bytes, q.first, q.last))
+        {
+            Some(payloads) => q.payloads = payloads,
+            None => faults.push(QuarantineFault::Copy(dir)),
+        }
+        found.push(q);
+    }
+    (directories, found, faults)
 }
 
 struct Run<'a> {
@@ -792,66 +881,16 @@ impl Run<'_> {
         Some((host, wal, report))
     }
 
-    /// The quarantine directories whose pair is quarantined, checked against contract 5.6. A directory whose
-    /// pair landed after all is what a crash between the copy and the `Quarantine` frame leaves behind.
+    /// The quarantine directories whose pair is quarantined, checked against contract 5.6.
     fn quarantines(&self, through: u64) -> Vec<Quarantined> {
-        let mut found = Vec::new();
-        let mut directories = 0;
-        for path in self.disk.files(Root::Quarantine) {
-            let Some(dir) = path.as_str().strip_suffix(&format!("/{MANIFEST_FILE}")) else {
-                continue;
-            };
-            directories += 1;
-            let manifest = self.disk.read_file(&path).unwrap_or_default();
-            let text = String::from_utf8_lossy(&manifest);
-            let field = |name: &str| {
-                text.lines()
-                    .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
-            };
-            let number = |name: &str| field(name).and_then(|v| v.parse::<u64>().ok());
-            let parsed = (|| {
-                Some(Quarantined {
-                    table: TableId::from_id(u8::try_from(number("table_id")?).ok()?)?,
-                    partition: PartitionId::parse(field("partition")?).ok()?,
-                    first: number("first_lsn")?,
-                    last: number("last_lsn")?,
-                    payloads: Vec::new(),
-                })
-            })();
-            let Some(mut q) = parsed else {
-                // A crash can cut the manifest of a copy that was never announced.
-                continue;
-            };
-            // Above the watermark the pair may still be shipped: the copy is not a quarantine yet.
-            if q.last > through {
-                continue;
-            }
-            let (accepted, last) = self.model.pair_history(&(q.table, q.partition, q.first));
-            match last {
-                Some(LastAnswer::ProbeAbsent) => {}
-                Some(LastAnswer::InsertPoison) if !accepted => {}
-                Some(LastAnswer::InsertPoison) => {
-                    self.violate(Violation::QuarantinedInDoubt {
-                        table: q.table.name(),
-                        batch_seq: q.first,
-                    });
+        let (directories, found, faults) = read_quarantines(&self.disk, &self.model, through);
+        for fault in faults {
+            self.violate(match fault {
+                QuarantineFault::InDoubt { table, batch_seq } => {
+                    Violation::QuarantinedInDoubt { table, batch_seq }
                 }
-                // The pair landed after all: the copy is what a crash before the `Quarantine` frame left.
-                _ => continue,
-            }
-            let frames = DiskPath::new(Root::Quarantine, &format!("{dir}/{FRAMES_FILE}"))
-                .ok()
-                .and_then(|p| self.disk.read_file(&p))
-                .unwrap_or_default();
-            let declared = number("bytes").unwrap_or(u64::MAX) as usize;
-            match frames
-                .get(..declared)
-                .and_then(|bytes| copied_payloads(bytes, q.first, q.last))
-            {
-                Some(payloads) => q.payloads = payloads,
-                None => self.violate(Violation::QuarantineCopy(dir.to_owned())),
-            }
-            found.push(q);
+                QuarantineFault::Copy(dir) => Violation::QuarantineCopy(dir),
+            });
         }
         self.shared.ledger().stats.quarantines = directories;
         found

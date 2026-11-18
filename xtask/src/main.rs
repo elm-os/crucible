@@ -6,6 +6,7 @@
     clippy::print_stderr
 )]
 
+mod sim;
 mod ui;
 
 use std::path::PathBuf;
@@ -16,17 +17,25 @@ const USAGE: &str = "usage: cargo xtask <command>
 commands:
   help                 show this message
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
-                       (default ui/out); run it after every UI build that will be embedded or served
+                       (default ui/out); run it after every UI build that will be embedded or served";
 
-Planned: sim (run, replay), perf (gate, fsync-probe), conformance, authz-matrix, openapi.";
+const PLANNED: &str = "Planned: perf (gate, fsync-probe), conformance, authz-matrix, openapi.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("help" | "--help" | "-h") => {
-            println!("{USAGE}");
+            println!("{USAGE}\n{}\n\n{PLANNED}", sim::USAGE);
             ExitCode::SUCCESS
         }
+        Some("sim") => match sim::main(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("sim: {e}");
+                ExitCode::from(2)
+            }
+        },
         Some("ui") if args.next().as_deref() == Some("compress") => {
             let dir = args
                 .next()
@@ -52,7 +61,7 @@ fn main() -> ExitCode {
             }
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\n\n{USAGE}");
+            eprintln!("unknown command: {other}\n\n{USAGE}\n{}", sim::USAGE);
             ExitCode::from(2)
         }
     }

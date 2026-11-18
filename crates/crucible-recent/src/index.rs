@@ -185,6 +185,7 @@ impl RecentIndex {
             index: Arc::clone(&index),
             bytes: 0,
             evicted: Lsn::ZERO,
+            silent_drop: false,
         };
         (index, writer)
     }
@@ -236,6 +237,15 @@ impl RecentIndex {
             entries,
             bytes: self.bytes.load(Ordering::SeqCst),
         }
+    }
+
+    /// The lowest LSN an entry still references, which pins WAL segments against garbage collection
+    /// (contract 4.7). `None` when the index is empty.
+    pub fn floor(&self) -> Option<Lsn> {
+        self.shards
+            .iter()
+            .filter_map(|shard| lock(shard.read()).front_lsn())
+            .min()
     }
 
     fn publish(&self, lsn: Lsn) {
@@ -368,6 +378,8 @@ pub struct RecentWriter {
     bytes: u64,
     /// Entries at or below this LSN have been evicted.
     evicted: Lsn,
+    /// The seeded defect of [`RecentWriter::drop_without_gap`]; always `false` without `test-mutants`.
+    silent_drop: bool,
 }
 
 impl RecentWriter {
@@ -377,6 +389,13 @@ impl RecentWriter {
     }
 
     /// Applies one frame. On return the frame is visible to readers and the applied LSN is the frame's.
+    /// A seeded defect for the simulation suite, which must catch it: entries dropped at the bound leave no gap,
+    /// so a read that misses them looks whole (a silent miss, invariant I3).
+    #[cfg(feature = "test-mutants")]
+    pub const fn drop_without_gap(&mut self) {
+        self.silent_drop = true;
+    }
+
     pub fn apply(&mut self, frame: Frame) {
         let index = Arc::clone(&self.index);
         let lsn = match frame {
@@ -447,7 +466,9 @@ impl RecentWriter {
             for shard in &index.shards {
                 lock(shard.read()).projects_through(oldest, &mut projects);
             }
-            lock(index.control.write()).open_gap(&projects, oldest);
+            if !self.silent_drop {
+                lock(index.control.write()).open_gap(&projects, oldest);
+            }
             self.remove_through(oldest);
         }
     }
