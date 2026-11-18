@@ -42,4 +42,5 @@ release in Docker, and ClickHouse Cloud. A mismatch means the model is fixed fir
 - Fuzz targets (cargo-fuzz) for every parser that sees untrusted bytes.
 - Playwright for the UI, covering the loading, success, error and empty state of every section.
 - A shared SDK conformance suite that all four SDKs and the proxy must pass.
-- Performance gates: interleaved A/B benchmarks on fixed containers; relative regressions block merges.
+- Performance gates: interleaved A/B benchmarks on fixed containers; relative regressions block merges
+  ([`perf.md`](perf.md)).
