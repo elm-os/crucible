@@ -14,7 +14,7 @@
 
 use crucible_records::{CostSource, NanoUsd, SpanCore, SpanRecord, UsageEntry, caps};
 
-use crate::price::PriceSnapshot;
+use crate::price::{Matches, PriceSnapshot};
 
 /// Sorts a provided map by key and keeps the first entry of each key.
 fn normalize_map<V>(map: &mut Vec<(Box<str>, V)>) {
@@ -29,7 +29,8 @@ fn get<V: Copy>(map: &[(Box<str>, V)], key: &str) -> Option<V> {
 }
 
 /// Fills `usage`, the token scalars and the cost fields from the provided usage and cost, else from `prices`.
-pub(crate) fn apply(record: &mut SpanRecord, prices: &PriceSnapshot<'_>) {
+/// `matches` carries the rows each model name matched to the next span of the frame.
+pub(crate) fn apply(record: &mut SpanRecord, prices: &PriceSnapshot<'_>, matches: &mut Matches) {
     let (core, payload) = (&mut record.core, &mut record.payload);
     normalize_map(&mut payload.usage_provided);
     normalize_map(&mut payload.cost_provided);
@@ -73,7 +74,7 @@ pub(crate) fn apply(record: &mut SpanRecord, prices: &PriceSnapshot<'_>) {
         core.cost_source = CostSource::None;
         core.total_cost_nusd = NanoUsd::ZERO;
         if !core.usage.is_empty() {
-            calculate(core, &payload.model_parameters, prices);
+            calculate(core, &payload.model_parameters, prices, matches);
         }
     } else {
         core.cost_source = CostSource::Provided;
@@ -89,13 +90,18 @@ pub(crate) fn apply(record: &mut SpanRecord, prices: &PriceSnapshot<'_>) {
 }
 
 /// Prices the calculated usage, when a row and a tier apply.
-fn calculate(core: &mut SpanCore, model_parameters: &[u8], prices: &PriceSnapshot<'_>) {
+fn calculate(
+    core: &mut SpanCore,
+    model_parameters: &[u8],
+    prices: &PriceSnapshot<'_>,
+    matches: &mut Matches,
+) {
     let model = if core.model_response.is_empty() {
         &core.model_requested
     } else {
         &core.model_response
     };
-    let Some(row) = prices.find(model, core.start_time) else {
+    let Some(row) = prices.find_in(matches, model, core.start_time) else {
         return;
     };
     let Some(tier) = row.tier(&core.usage, model_parameters) else {

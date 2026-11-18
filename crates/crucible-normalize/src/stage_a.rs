@@ -10,6 +10,7 @@ use crucible_records::{
 };
 
 use crate::mapper::{Hints, MapCtx, NATIVE, SpanDraft, SpanMapper};
+use crate::price::Matches;
 use crate::{
     FrameSummary, IngestFrame, NormCtx, NormalizeError, NormalizedFrame, cost, digest, fill, json,
 };
@@ -78,7 +79,11 @@ pub fn normalize_with(
         drafts.push(draft);
     }
     fill::forward_fill(&mut drafts);
-    let spans = drafts.into_iter().map(|d| finish(d, ctx)).collect();
+    let mut matches = Matches::default();
+    let spans = drafts
+        .into_iter()
+        .map(|d| finish(d, ctx, &mut matches))
+        .collect();
     Ok(NormalizedFrame {
         lsn: frame.lsn,
         spans,
@@ -215,7 +220,7 @@ fn draft(frame: &IngestFrame<'_>, ctx: &NormCtx<'_>, span: &SpanView<'_>) -> Spa
 }
 
 /// The finished record of a filled draft.
-fn finish(draft: SpanDraft, ctx: &NormCtx<'_>) -> SpanRecord {
+fn finish(draft: SpanDraft, ctx: &NormCtx<'_>, matches: &mut Matches) -> SpanRecord {
     let SpanDraft { mut record, level } = draft;
     let core = &mut record.core;
     core.level = level.unwrap_or(if core.status_code == StatusCode::Error {
@@ -226,7 +231,7 @@ fn finish(draft: SpanDraft, ctx: &NormCtx<'_>) -> SpanRecord {
     if core.environment.is_empty() {
         core.environment = DEFAULT_ENVIRONMENT.into();
     }
-    cost::apply(&mut record, &ctx.prices);
+    cost::apply(&mut record, &ctx.prices, matches);
     record.enforce_payload_caps(&ctx.caps);
     record.core.row_digest = digest::row_digest(&record);
     record

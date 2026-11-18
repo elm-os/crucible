@@ -4,7 +4,7 @@
 
 use core::cell::OnceCell;
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use crucible_records::{CivilDate, NanoUsd, Timestamp, UsageEntry, Uuid};
@@ -238,12 +238,23 @@ impl PriceTable {
     /// The row for `model` at `at`: among the rows whose pattern matches and that start at or before `at`, the one
     /// with the greatest start, ties going to the row listed first. An empty name matches no row.
     pub fn find(&self, model: &str, at: Timestamp) -> Option<&ModelPrice> {
+        self.latest(&self.matching(model), at)
+    }
+
+    /// The positions of the rows whose pattern matches `model`, in table order.
+    fn matching(&self, model: &str) -> Vec<usize> {
         if model.is_empty() {
-            return None;
+            return Vec::new();
         }
+        self.patterns.matches(model).into_iter().collect()
+    }
+
+    /// Among the rows at `positions`, the one with the greatest start at or before `at`, ties going to the row
+    /// listed first.
+    fn latest(&self, positions: &[usize], at: Timestamp) -> Option<&ModelPrice> {
         let mut best: Option<&ModelPrice> = None;
-        for index in self.patterns.matches(model).iter() {
-            let row = &self.models[index];
+        for &position in positions {
+            let row = &self.models[position];
             if row.start <= at && best.is_none_or(|b| row.start > b.start) {
                 best = Some(row);
             }
@@ -269,7 +280,31 @@ impl<'a> PriceSnapshot<'a> {
             .and_then(|table| table.find(model, at))
             .or_else(|| self.bundled.find(model, at))
     }
+
+    /// [`PriceSnapshot::find`], with the rows each name matches kept in `matches` for the next span.
+    pub(crate) fn find_in(
+        &self,
+        matches: &mut Matches,
+        model: &str,
+        at: Timestamp,
+    ) -> Option<&'a ModelPrice> {
+        if !matches.0.contains_key(model) {
+            let project = self.project.map(|table| table.matching(model));
+            let found = (project.unwrap_or_default(), self.bundled.matching(model));
+            matches.0.insert(model.into(), found);
+        }
+        let (project, bundled) = matches.0.get(model)?;
+        self.project
+            .and_then(|table| table.latest(project, at))
+            .or_else(|| self.bundled.latest(bundled, at))
+    }
 }
+
+/// The rows each model name matches in one snapshot's tables, kept while stage A prices the spans of one frame:
+/// those spans mostly share a few models, and which rows match depends on the name alone. The start date is still
+/// checked per span.
+#[derive(Debug, Default)]
+pub(crate) struct Matches(BTreeMap<Box<str>, (Vec<usize>, Vec<usize>)>);
 
 impl ModelPrice {
     /// The first tier by ascending priority whose conditions all hold for the calculated `usage` and the span's
@@ -931,6 +966,42 @@ mod tests {
             bundled: &bundled,
         };
         assert_eq!(none.find("m", AT).map(|m| &*m.name), Some("bundled"));
+    }
+
+    #[test]
+    fn remembered_matches_change_no_choice() {
+        let bundled = table(&format!(
+            "[{}, {}, {}]",
+            row("old", "m.*", Some("2024-01-01")),
+            row("new", "m", Some("2026-01-01")),
+            row("other", "n", None)
+        ));
+        let project = table(&format!("[{}]", row("override", "m|p", Some("2025-06-01"))));
+        let times = ["2023-01-01", "2024-06-01", "2025-07-01", "2026-11-17"].map(date);
+        let names = ["m", "M", "mm", "n", "p", "z", ""];
+        for snapshot in [
+            PriceSnapshot {
+                project: Some(&project),
+                bundled: &bundled,
+            },
+            PriceSnapshot {
+                project: None,
+                bundled: &bundled,
+            },
+        ] {
+            let mut matches = Matches::default();
+            // Each name meets the memo first at one time and again at every other, in both orders.
+            for at in times.iter().chain(times.iter().rev()) {
+                for name in names {
+                    let remembered = snapshot.find_in(&mut matches, name, *at).map(|m| m.id);
+                    assert_eq!(
+                        remembered,
+                        snapshot.find(name, *at).map(|m| m.id),
+                        "{name} {at}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
