@@ -743,3 +743,80 @@ fn decoder_reads_clickhouse_values() {
     assert_eq!(strings[2], b"\x00\xff\r\n");
     assert_eq!(strings[7].len(), 16384);
 }
+
+/// 5,000 rows: every numeric width, the null map and the array offsets cross the encoder's 4 KiB write buffer
+/// several times; the property tests stop at 300 rows.
+#[test]
+fn long_columns_cross_the_write_buffer() {
+    const ROWS: usize = 5_000;
+    let n = |i: usize| (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let nulls: Vec<bool> = (0..ROWS).map(|i| i % 3 == 0).collect();
+    let lengths: Vec<usize> = (0..ROWS).map(|i| i % 5).collect();
+    let offsets = offsets_of(&lengths.iter().map(|&len| vec![(); len]).collect::<Vec<_>>());
+    let flat: Vec<u64> = (0..lengths.iter().sum()).map(n).collect();
+    let cases: Vec<(&str, Values)> = vec![
+        (
+            "UInt8",
+            Values::UInt8((0..ROWS).map(|i| n(i) as u8).collect()),
+        ),
+        (
+            "UInt16",
+            Values::UInt16((0..ROWS).map(|i| n(i) as u16).collect()),
+        ),
+        (
+            "UInt32",
+            Values::UInt32((0..ROWS).map(|i| n(i) as u32).collect()),
+        ),
+        ("UInt64", Values::UInt64((0..ROWS).map(n).collect())),
+        (
+            "Enum8('a' = -128, 'b' = 127)",
+            Values::Int8((0..ROWS).map(|i| n(i) as i8).collect()),
+        ),
+        (
+            "Int32",
+            Values::Int32((0..ROWS).map(|i| n(i) as i32).collect()),
+        ),
+        (
+            "Int64",
+            Values::Int64((0..ROWS).map(|i| n(i) as i64).collect()),
+        ),
+        (
+            "Float32",
+            Values::Float32((0..ROWS).map(|i| n(i) as u32).collect()),
+        ),
+        ("Float64", Values::Float64((0..ROWS).map(n).collect())),
+        (
+            "Nullable(UInt32)",
+            Values::Nullable(
+                nulls.clone(),
+                Box::new(Values::UInt32(
+                    (0..ROWS)
+                        .map(|i| if nulls[i] { 0 } else { n(i) as u32 })
+                        .collect(),
+                )),
+            ),
+        ),
+        (
+            "Array(UInt64)",
+            Values::Array(offsets, Box::new(Values::UInt64(flat))),
+        ),
+    ];
+    let built: Vec<Built> = cases.iter().map(|(_, values)| build(values)).collect();
+    let names: Vec<String> = (0..cases.len()).map(|i| format!("c{i}")).collect();
+    let mut block = Block::new(ROWS).unwrap();
+    for ((name, (ty, _)), data) in names.iter().zip(&cases).zip(&built) {
+        block.push(name, ty, data.column()).unwrap();
+    }
+    let native = block.native();
+    let (rows, decoded, used) = decode_block(&native);
+    assert_eq!((rows, used), (ROWS, native.len()));
+    for (column, (ty, values)) in decoded.iter().zip(&cases) {
+        assert_eq!(&column.values, values, "{ty}");
+    }
+    for compression in [Compression::Lz4, Compression::Zstd] {
+        assert_eq!(
+            decompress(block.encode(compression).unwrap().compressed()).unwrap(),
+            native
+        );
+    }
+}

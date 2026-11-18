@@ -17,8 +17,8 @@
 # With --generate, steps 1 and 2 write each file from the first tag that produces it and compare it on the later
 # tags, and steps 3 and 4 are skipped.
 #
-# Requires docker and curl. The server listens on localhost:$CHFMT_PORT (default 18123). Exits non-zero on any
-# difference; any HTTP error or ClickHouse exception aborts the run.
+# Requires docker and curl 7.87 or newer (for --url-query). The server listens on localhost:$CHFMT_PORT (default
+# 18123). Exits non-zero on any difference; any HTTP error or ClickHouse exception aborts the run.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
