@@ -49,7 +49,7 @@ once, across retries, lost acks, crashes, restarts and normalizer upgrades. It f
 |---|---|
 | Row counts per span key per plain table; marker counts per pair per aggregating table; sums against the oracle | Quiescence |
 | No insert is sent before its `BatchSeal` is durable; no retry after an unknown outcome without a probe | Continuous |
-| `NoDuplicateRows`, `BatchIdentityStableAcrossCrash`, `CheckpointMonotonic` | Proof (Quint) |
+| `NoDuplicateRows`, `BatchIdentityStable`, `CheckpointMonotonic` | Proof (Quint) |
 | Token injective over `(wal_epoch, first_lsn, last_lsn, table_id, partition_id)`; partition routing total and monotone | Proof (Kani) |
 | C1 token dedup, C2 plain-table window, C3 bounded logs, C4 token overrides content hash, shared-engine dedup settings, a single Native block is not re-split, a two-partition block is rejected | Conformance |
 | Startup dedup self-test | Runtime |
@@ -63,7 +63,9 @@ ingesting node through the real API handler returns the span. The only permitted
 
 - `partial: true` with `partial_reason: store_unavailable`, when the read could touch an open index gap (entries
   dropped during a store outage before they were visible in ClickHouse);
-- `consistency: lagging`, when the read barrier expired or a peer did not answer.
+- `consistency: lagging`, when the read barrier expired or a peer did not answer;
+- `partial: true` with `partial_reason: quarantined`, when the read could touch a span whose (table, partition) pair
+  is quarantined: such a span may leave the recent index while absent from ClickHouse until it is requeued.
 
 A response that omits an acknowledged span and carries neither marker is a violation. In the realistic tier with
 the store reachable and no open gap, the span must be present.
