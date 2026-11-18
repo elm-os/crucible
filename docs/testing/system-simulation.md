@@ -226,6 +226,10 @@ By hand, any lane runs on any ref: `gh workflow run sim.yml --ref <branch> -f la
 
 Measured in the dev container on 3 CPUs with a debug build: the 600 runs of the pull-request budget take about
 70 s, so one shard of 150 runs and the corpus stays far inside the 10 minute target, most of which is the build.
+Measured on GitHub-hosted runners with a debug build (run 44408176506, both nightly lanes): a realistic shard of
+638 or 639 runs took 2.6 to 4.7 minutes (the runs 117 to 226 s, the build 14 to 122 s), inside its 30 minute
+timeout, and a stress shard of 1,255 or 1,256 runs took 6.5 to 10.6 minutes (the runs 242 to 548 s), inside its
+150 minutes.
 
 ## Triaging a nightly failure
 
