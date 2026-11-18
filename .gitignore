@@ -31,3 +31,7 @@ __pycache__/
 graphify-out/
 .DS_Store
 Thumbs.db
+
+# Formal tools
+_apalache-out/
+specs/tmp/
