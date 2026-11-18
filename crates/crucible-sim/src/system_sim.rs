@@ -2172,9 +2172,9 @@ impl Run<'_> {
                     stats_spans += u64_at(block, "span_count", row).unwrap_or(0);
                 }
             }
-            // Repeats and quarantines make the derived tables depend on what each restart remembered; without
-            // them the tables must agree exactly.
-            let exact = ledger.repeats == 0 && directories == 0;
+            // A quarantined pair is missing from its table alone; without one the tables must agree exactly,
+            // also about repeats: a restart drops the repeats that the process before it dropped.
+            let exact = directories == 0;
             if exact {
                 for &(lsn, span) in &core_roots {
                     if !heads.contains(&(lsn, span, 1)) {
