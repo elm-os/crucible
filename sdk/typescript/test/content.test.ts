@@ -6,7 +6,7 @@ import { captured, decide, glob } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
 import { patternFacts } from "../src/pattern.ts";
 import packaged from "../src/scrub-rules.json" with { type: "json" };
-import { cutUtf8, scrub, scrubWithRule, setMatcherHook } from "../src/scrub.ts";
+import { cutUtf8, scrub, scrubPlain, scrubWithRule, setMatcherHook } from "../src/scrub.ts";
 
 const shared = JSON.parse(
   readFileSync(new URL("../../../conformance/scrub-rules.json", import.meta.url), "utf8"),
@@ -74,6 +74,85 @@ const ADVERSARIAL: [string, string][] = [
   ["secret key prefixes", "csk_".repeat(4_096)],
 ];
 
+/** A seeded xorshift generator of numbers in [0, 1). */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 2 ** 32;
+  };
+}
+
+/** Pieces of matches, near misses and separators that the generated text is built from. */
+const FRAGMENTS = [
+  " ",
+  "a",
+  "0",
+  "7",
+  "@",
+  ".",
+  ":",
+  "-",
+  "_",
+  "+",
+  "(",
+  ")",
+  "/",
+  "=",
+  "%",
+  "\n",
+  "é",
+  "😀",
+  "eyJ",
+  "csk_",
+  "bearer ",
+  "Bearer\t",
+  "-----BEGIN ",
+  "-----END ",
+  "-----",
+  "KEY",
+  "::",
+  "@@",
+  "a@b",
+  "a@b.c",
+  "x@y.zz",
+  "ada.lovelace@example.com",
+  "ops+alerts@mail.example.co.uk",
+  "+1 415 555 0134",
+  "(415) 555-0134",
+  "4111 1111 1111 1111",
+  "4111-1111-1111-1112",
+  "378282246310005",
+  "Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+  "203.0.113.42",
+  "2001:db8::8a2e:370:7334",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl",
+  "eyJa.b",
+  "eyJeyJ.x.",
+  "eyJ.",
+  "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+];
+const RUN_UNITS = ["a", "Z", "9", "f", ".", "-", "_", "+", "%", "ab@", "eyJ", "1 "];
+
+function generated(random: () => number): string {
+  let text = "";
+  const parts = Math.floor(random() * 14);
+  for (let i = 0; i < parts; i += 1) {
+    text +=
+      random() < 0.7
+        ? (FRAGMENTS[Math.floor(random() * FRAGMENTS.length)] ?? "")
+        : (RUN_UNITS[Math.floor(random() * RUN_UNITS.length)] ?? "").repeat(
+            1 + Math.floor(random() * 40),
+          );
+  }
+  return text;
+}
+
 /** Matcher steps of scrubbing `text` with the whole rule list. */
 function matcherSteps(text: string): number {
   let steps = 0;
@@ -111,6 +190,26 @@ describe("scrubbing work", () => {
 
   test.each(ADVERSARIAL)("%s: matcher steps stay linear in the length", (_, text) => {
     expect(matcherSteps(text)).toBeLessThanOrEqual(2 * shared.rules.length * text.length);
+  });
+
+  test("guarded application equals plain application over generated text", () => {
+    const random = seeded(20_261_118);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 3_000; i += 1) {
+      const text = generated(random);
+      for (const rule of shared.rules) {
+        if (scrubWithRule(rule.name, text) !== scrubPlain(text, rule.name)) {
+          mismatches.push(`${rule.name}: ${JSON.stringify(text)}`);
+        }
+      }
+      if (scrub(text) !== scrubPlain(text)) {
+        mismatches.push(`all rules: ${JSON.stringify(text)}`);
+      }
+      if (matcherSteps(text) > 2 * shared.rules.length * Math.max(text.length, 1)) {
+        mismatches.push(`steps: ${JSON.stringify(text)}`);
+      }
+    }
+    expect(mismatches.slice(0, 5)).toEqual([]);
   });
 
   test("a long run scrubs within a generous ceiling", () => {
