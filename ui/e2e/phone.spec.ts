@@ -16,6 +16,7 @@ import {
   SESSIONS_PATH,
   SPANS_PATH,
   sessionItem,
+  sessionInfo,
   signedIn,
   signInOptions,
   spanListItem,
@@ -300,6 +301,55 @@ test.describe("phone at 390 px", () => {
     await expect(page.getByText(secret)).toBeInViewport({ ratio: 1 });
     await expectNoPageScrollX(page);
     await expectAccessible(page, "new key on a phone");
+  });
+
+  test("retention and deletion requests fit a phone, and the delete dialog stays in view", async ({
+    page,
+    api,
+  }) => {
+    const session = sessionInfo();
+    const [first] = session.projects;
+    const permissions = ["read", "manage", "delete_traces", "delete_by_user"];
+    signedIn(api, { ...session, projects: first ? [{ ...first, permissions }] : [] });
+    api.on(
+      new RegExp(`/api/v1/projects/${PROJECT}/retention$`),
+      json({
+        retention_days: 30,
+        payload_retention_days: null,
+        mcp_content_retention_days: null,
+        hidden_before: { retention: null, payload: null, mcp_content: null },
+        version: 2,
+      }),
+    );
+    api.on(
+      new RegExp(`/api/v1/projects/${PROJECT}/deletion-requests$`),
+      json({
+        data: [
+          {
+            id: "d-1",
+            kind: "user",
+            user_id: "ada",
+            state: "applied",
+            verified: false,
+            requested_at: "2026-11-17T14:00:00.000000Z",
+            requested_by: "user:u-1",
+            updated_at: "2026-11-17T14:01:00.000000Z",
+            traces_resolved: 4,
+            places: [],
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    await page.goto(`/settings/retention/?project=${PROJECT}`);
+    await expect(page.getByLabel("Keep data for")).toHaveValue("30");
+    await expect(page.getByRole("cell", { name: "User ada" })).toBeVisible();
+    await expectNoPageScrollX(page);
+    await page.getByRole("button", { name: "Delete data" }).tap();
+    const dialog = page.getByRole("dialog", { name: "Delete data from Checkout" });
+    await expect(dialog.getByRole("button", { name: "Delete data" })).toBeInViewport({ ratio: 1 });
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "delete data on a phone");
   });
 });
 

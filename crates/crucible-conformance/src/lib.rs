@@ -11,7 +11,7 @@
 //! The binary of this crate runs the suite against the ClickHouse URL it is given; `scripts/conformance.sh`
 //! starts ClickHouse 26.3, 26.8 and latest in Docker and runs it against each.
 
-pub mod blocks;
+pub use crucible_sim::blocks;
 mod cancel;
 mod codes;
 pub mod control;
@@ -19,6 +19,7 @@ pub mod control_pg;
 mod differential;
 mod inserts;
 mod keep_alive;
+mod lifecycle;
 mod m2;
 mod m2_export;
 mod m2_facts;
@@ -343,6 +344,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "ChModel differential: maintenance (2.6)",
         differential::maintenance(&ctx)
+    );
+    row!(
+        "ChModel differential: retention and deletion (13.2 to 13.4)",
+        lifecycle::lifecycle(&ctx)
     );
     row!(
         "ChModel differential: MCP tables (3.5 to 3.7, 3.10)",

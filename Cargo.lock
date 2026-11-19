@@ -785,6 +785,7 @@ dependencies = [
  "crucible-export",
  "crucible-ingest",
  "crucible-jobs",
+ "crucible-lifecycle",
  "crucible-loadgen",
  "crucible-mcp-server",
  "crucible-normalize",
@@ -872,6 +873,7 @@ dependencies = [
  "crucible-egress",
  "crucible-env",
  "crucible-export",
+ "crucible-lifecycle",
  "crucible-notify",
  "crucible-plan",
  "crucible-query",
@@ -1214,6 +1216,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-lifecycle"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-env",
+ "crucible-export",
+ "crucible-jobs",
+ "crucible-plan",
+ "crucible-records",
+ "crucible-schema",
+ "crucible-wal",
+ "crucible-wal-codec",
+ "futures",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-loadgen"
 version = "0.0.0"
 dependencies = [
@@ -1461,6 +1486,7 @@ dependencies = [
 name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "blake3",
@@ -1476,6 +1502,7 @@ dependencies = [
  "crucible-env-prod",
  "crucible-ingest",
  "crucible-jobs",
+ "crucible-lifecycle",
  "crucible-normalize",
  "crucible-notify",
  "crucible-otlp",

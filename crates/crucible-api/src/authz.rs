@@ -220,6 +220,21 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "GET",
+        "/api/v1/projects/{project_id}/deletion-requests",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/deletion-requests",
+        Project(ProjectPermission::DeleteTraces),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/deletion-requests/{request_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
         "/api/v1/projects/{project_id}/exports",
         Project(ProjectPermission::Read),
     ),
@@ -347,6 +362,16 @@ pub const ROUTES: &[RouteAccess] = &[
         "GET",
         "/api/v1/projects/{project_id}/metrics/schema",
         Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/retention",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "PUT",
+        "/api/v1/projects/{project_id}/retention",
+        Project(ProjectPermission::Manage),
     ),
     route(
         "POST",

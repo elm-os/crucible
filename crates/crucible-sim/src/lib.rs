@@ -31,12 +31,14 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 pub mod alerts_sim;
+pub mod blocks;
 mod boot;
 pub mod ch_model;
 mod ch_read;
 mod disk;
 pub mod jobs_sim;
 pub mod lease_sim;
+pub mod lifecycle_sim;
 pub mod mcp_reads;
 pub mod pg_model;
 mod runtime;

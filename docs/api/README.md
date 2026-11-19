@@ -48,6 +48,11 @@ All paths are under `/api/v1`, and `{project_id}` is the project's id.
 | `GET projects/{project_id}/traces/{trace_id}/spans` | One page of the direct children of `parent_span_id`, in start order |
 | `GET projects/{project_id}/spans/{trace_id}/{span_id}/payload` | One payload field of a span as raw bytes, whole or as a byte range |
 | `POST projects/{project_id}/search` | One page of spans whose input, output or metadata hold a query, newest first, with the matching snippets |
+| `GET projects/{project_id}/retention` | The project's retention settings and what earlier settings keep hidden; `ETag` is the project's version |
+| `PUT projects/{project_id}/retention` | Replaces the three retention settings; needs `If-Match` and the project admin role |
+| `GET projects/{project_id}/deletion-requests` | One page of the project's deletion requests, newest first |
+| `POST projects/{project_id}/deletion-requests` | Requests the deletion of traces, or of everything of one user or session; honours `Idempotency-Key` |
+| `GET projects/{project_id}/deletion-requests/{request_id}` | One deletion request with its state and the status of each place it reaches |
 
 The head span of a trace is its root span, or the earliest span while the root has not arrived. Ids are lowercase
 hex in responses; uppercase hex in a path is accepted.
@@ -123,8 +128,8 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/pr
 ```
 
 `spans` and `mcp` give the first and last minute with data; the server does not record MCP operations yet, which is
-planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its data forever, which is the only
-retention in this preview; retention settings are planned. `max_window_days` is the widest window a list or search may
+planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its data forever, which is the default;
+`PUT projects/{project_id}/retention` sets a retention in days. `max_window_days` is the widest window a list or search may
 ask for.
 
 The newest trace in a window:

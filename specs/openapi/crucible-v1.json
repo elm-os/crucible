@@ -2893,6 +2893,300 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/deletion-requests": {
+      "get": {
+        "tags": [
+          "lifecycle"
+        ],
+        "summary": "List deletion requests",
+        "description": "The project's deletion requests, newest first.",
+        "operationId": "list_deletion_requests",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many requests: 1 to 100, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the page before.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletionRequestList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed` or `cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "lifecycle"
+        ],
+        "summary": "Request a deletion",
+        "description": "Deletes a list of traces, everything of one user, or everything of one session. The delete is point in\ntime: data received after the request is kept. The answer comes once the request is durable; from then on\nthe API and the MCP server no longer return the data, and the request's `state` says how far the removal\nfrom the telemetry store has come. Send an `Idempotency-Key` to make a retry safe. Deleting traces needs\nthe `delete_traces` permission (project member, or a key with the `delete` scope); deleting by user or\nsession needs `delete_by_user` (project admin, or a key with the `delete` scope).",
+        "operationId": "create_deletion_request",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`. A repeat with the same body returns the same request.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletionRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletionRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: the role or the key's scopes are too low.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`, or `ingest_unavailable` when the write-ahead log cannot take the request yet.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/deletion-requests/{request_id}": {
+      "get": {
+        "tags": [
+          "lifecycle"
+        ],
+        "summary": "Get a deletion request",
+        "description": "One request with its state and the status of each place it reaches.",
+        "operationId": "get_deletion_request",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "description": "The request id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletionRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/exports": {
       "get": {
         "tags": [
@@ -5998,6 +6292,190 @@
         "security": [
           {
             "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/retention": {
+      "get": {
+        "tags": [
+          "lifecycle"
+        ],
+        "summary": "Get retention",
+        "description": "The project's retention settings. Reads hide what they have expired at once; the rows are removed from the\ntelemetry store within a day.",
+        "operationId": "get_retention",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The settings; `ETag` is the project's version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Retention"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "lifecycle"
+        ],
+        "summary": "Set retention",
+        "description": "Replaces the three settings. Shortening applies to the data the project already holds, at once for every\nread; lengthening never shows data that a shorter setting had hidden. Needs `If-Match` with the `ETag` of\n`GET retention`. API keys cannot change settings.",
+        "operationId": "put_retention",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Retention"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: retention needs the project admin role.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`: a value is out of range, or above `retention_days`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
           }
         ]
       }
@@ -10269,6 +10747,212 @@
           }
         }
       },
+      "DeletionKind": {
+        "type": "string",
+        "description": "What a deletion request selects.",
+        "enum": [
+          "trace",
+          "user",
+          "session"
+        ]
+      },
+      "DeletionPlace": {
+        "type": "object",
+        "description": "Where one place of the reach list stands for a deletion request.",
+        "required": [
+          "place",
+          "status",
+          "deletes",
+          "deletes_done",
+          "deletes_verified"
+        ],
+        "properties": {
+          "deletes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deletes planned for the place, one per partition and page of traces.",
+            "minimum": 0
+          },
+          "deletes_done": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deletes that have run.",
+            "minimum": 0
+          },
+          "deletes_verified": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deletes verified after the mask cycle.",
+            "minimum": 0
+          },
+          "place": {
+            "type": "string",
+            "description": "The place: a telemetry table, or `comments`, `media`, `export_files`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending`, `deleted` (hidden from every read), `verified` (physically removed), `failed`, `done`, or\n`not_present` for a place this deployment does not have."
+          }
+        }
+      },
+      "DeletionRequest": {
+        "type": "object",
+        "description": "A deletion request.",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "verified",
+          "requested_at",
+          "requested_by",
+          "updated_at",
+          "traces_resolved",
+          "places"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read)."
+          },
+          "id": {
+            "type": "string",
+            "description": "The request id."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "For `user`: the issuer, when one was given."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DeletionKind",
+            "description": "What it selects."
+          },
+          "places": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletionPlace"
+            },
+            "description": "The places of the reach list, once the request has been planned."
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The point in time of the delete: data received at or after it is kept (RFC 3339)."
+          },
+          "requested_by": {
+            "type": "string",
+            "description": "Who asked: `user:<id>` or `key:<id>`."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "For `session`: the session."
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeletionState",
+            "description": "Where the request stands."
+          },
+          "trace_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "For `trace`: how many traces the request names.",
+            "minimum": 0
+          },
+          "trace_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For `trace`: the first trace ids, at most 20."
+          },
+          "traces_resolved": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many traces the request resolved to, once it has been planned.",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the request last changed (RFC 3339)."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "For `user`: the user."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Whether the data is verified as physically removed from the telemetry store."
+          }
+        }
+      },
+      "DeletionRequestCreate": {
+        "type": "object",
+        "description": "The body of `POST deletion-requests`. Exactly the members of the chosen `kind` are set.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "description": "For `user`, optional: the token issuer under which the user also appears on MCP rows."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DeletionKind",
+            "description": "What to delete."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "For `session`: the `session_id`."
+          },
+          "trace_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For `trace`: 1 to 10,000 trace ids, each 32 hex characters.",
+            "maxItems": 10000
+          },
+          "user_id": {
+            "type": "string",
+            "description": "For `user`: the `user_id` of the spans."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeletionRequestList": {
+        "type": "object",
+        "description": "The answer of `GET deletion-requests`: newest first.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletionRequest"
+            },
+            "description": "The requests."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "DeletionState": {
+        "type": "string",
+        "description": "Where a deletion request stands.",
+        "enum": [
+          "pending",
+          "logged",
+          "applied",
+          "verified",
+          "completed",
+          "failed"
+        ]
+      },
       "Era": {
         "type": "string",
         "description": "The protocol era of an operation.",
@@ -13642,6 +14326,120 @@
           "task"
         ]
       },
+      "Retention": {
+        "type": "object",
+        "description": "A project's retention settings.",
+        "required": [
+          "hidden_before",
+          "version"
+        ],
+        "properties": {
+          "hidden_before": {
+            "$ref": "#/components/schemas/RetentionHidden",
+            "description": "What earlier settings had hidden and stays hidden."
+          },
+          "mcp_content_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that MCP arguments and results are kept; at most `retention_days`. Null follows `retention_days`.",
+            "minimum": 0
+          },
+          "payload_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that span payloads and corrections are kept; at most `retention_days`. Null follows\n`retention_days`.",
+            "minimum": 0
+          },
+          "retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that data is kept, counted on each span's start time; null keeps data forever.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The project's version, for `If-Match`.",
+            "minimum": 0
+          }
+        }
+      },
+      "RetentionHidden": {
+        "type": "object",
+        "description": "The instants before which a project's data stays hidden because an earlier, shorter retention setting had\nalready hidden it. Lengthening retention never shows that data again.",
+        "properties": {
+          "mcp_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "For MCP arguments and results."
+          },
+          "payload": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "For span payloads and corrections."
+          },
+          "retention": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "For everything bound to `retention_days` (RFC 3339); null when nothing was hidden."
+          }
+        }
+      },
+      "RetentionUpdate": {
+        "type": "object",
+        "description": "The body of `PUT retention`: the three settings, each a number of days or null.",
+        "properties": {
+          "mcp_content_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that MCP arguments and results are kept; at most `retention_days`.",
+            "maximum": 36500,
+            "minimum": 1
+          },
+          "payload_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that span payloads and corrections are kept; at most `retention_days`.",
+            "maximum": 36500,
+            "minimum": 1
+          },
+          "retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days that data is kept (1 to 36,500); null keeps data forever.",
+            "maximum": 36500,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
       "SafeI64": {
         "type": "integer",
         "description": "A signed integer between -(2^53 - 1) and 2^53 - 1.",
@@ -16064,6 +16862,10 @@
     {
       "name": "facts",
       "description": "Scores, tags, flags and corrections written about traces, spans and sessions."
+    },
+    {
+      "name": "lifecycle",
+      "description": "Retention settings and deletion requests."
     },
     {
       "name": "mcp",

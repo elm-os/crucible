@@ -19,6 +19,7 @@ mod enums;
 mod exports;
 mod facts;
 mod identity;
+mod lifecycle;
 mod mcp;
 mod meta;
 mod metrics;
@@ -60,6 +61,10 @@ pub use identity::{
     ProjectMember, ProjectMemberAdd, ProjectMemberList, ProjectMemberPatch, ProjectPatch,
     ProjectRole, ProviderButton, ProviderKind, ServerInfo, SessionInfo, SessionOrg, SessionProject,
     SessionTimes, SessionUser, SetupRequest, SignInOptions, TransferOwnership, UserStatus,
+};
+pub use lifecycle::{
+    DeletionKind, DeletionPlace, DeletionRequest, DeletionRequestCreate, DeletionRequestList,
+    DeletionState, Retention, RetentionHidden, RetentionUpdate,
 };
 pub use mcp::{
     CaptureClass, CaptureSource, Era, ErrorClass, ErrorSubclass, GroupKeyKind, IdentitySource,
@@ -124,6 +129,9 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<ChannelTestResult>();
     visitor.visit::<CorrectionRequest>();
     visitor.visit::<DataBounds>();
+    visitor.visit::<DeletionRequest>();
+    visitor.visit::<DeletionRequestCreate>();
+    visitor.visit::<DeletionRequestList>();
     visitor.visit::<EntityParams>();
     visitor.visit::<Export>();
     visitor.visit::<ExportList>();
@@ -177,6 +185,8 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<ProjectMemberAdd>();
     visitor.visit::<ProjectMemberList>();
     visitor.visit::<ProjectMemberPatch>();
+    visitor.visit::<Retention>();
+    visitor.visit::<RetentionUpdate>();
     visitor.visit::<ProjectPatch>();
     visitor.visit::<SearchPage>();
     visitor.visit::<SearchRequest>();

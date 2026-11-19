@@ -1,7 +1,7 @@
 //! What every read carries in and out: the caller's context, the response `meta` and the errors.
 
 use crucible_env::QueryError;
-use crucible_plan::{Caller, PlanError};
+use crucible_plan::{Caller, PlanError, RetentionFloors};
 use crucible_recent::{Consistency, ReadState};
 use crucible_records::{ProjectScope, TableId, Timestamp};
 use crucible_schema::RetentionSettings;
@@ -13,6 +13,7 @@ use crucible_schema::RetentionSettings;
 pub struct ReadContext {
     pub(crate) scope: ProjectScope,
     pub(crate) retention: RetentionSettings,
+    pub(crate) floors: RetentionFloors,
     pub(crate) caller: Caller,
 }
 
@@ -22,8 +23,21 @@ impl ReadContext {
         Self {
             scope,
             retention,
+            floors: RetentionFloors {
+                retention: None,
+                payload: None,
+                mcp_content: None,
+            },
             caller,
         }
+    }
+
+    /// The same read that also never goes below `floors`: what earlier, shorter retention settings of the
+    /// project had hidden (contract 13.1).
+    #[must_use]
+    pub const fn with_floors(mut self, floors: RetentionFloors) -> Self {
+        self.floors = floors;
+        self
     }
 
     /// The project scope.

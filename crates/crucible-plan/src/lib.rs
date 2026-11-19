@@ -12,6 +12,7 @@ mod class;
 mod endpoints;
 mod error;
 mod filter;
+mod hidden;
 mod literal;
 mod node;
 mod plan;
@@ -21,13 +22,16 @@ mod registry;
 pub mod test_support;
 mod value;
 
-pub use build::{RetentionClamp, TraceBounds, effective_window, trace_bounds_window};
+pub use build::{
+    RetentionClamp, RetentionFloors, TraceBounds, effective_window, trace_bounds_window,
+};
 pub use class::{
     CLASS_FIXED_SETTINGS, Caller, ClassLimits, DEADLINE_SLACK_SECS, QueryClass, profile_caps,
 };
 pub use endpoints::*;
 pub use error::PlanError;
 pub use filter::{Filter, FilterField, FilterTarget, TextField};
+pub use hidden::{HIDDEN_REQUESTS, HIDDEN_TRACE_IDS, Hidden, HiddenSelector};
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{
     AggOutput, Aggregate, ArrivalBounds, DEFAULT_MAX_IDS, Direction, FieldRange, Fill, Having,

@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::response::Response;
-use crucible_api::StaticProjectSettings;
+use crucible_api::ProjectSettingsSource;
 use crucible_auth::KeyVerifier;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
@@ -34,16 +34,17 @@ impl McpGate {
 
     /// Mounts the MCP server over the store's query service, with the keys and cursor keys of the API and the
     /// rate limit of `mcp.calls_per_second` and `mcp.burst`.
+    #[allow(clippy::too_many_arguments)] // What the MCP server is built from, as the store task has it.
     pub(crate) fn open(
         &self,
         env: &Env,
         service: QueryService,
         keys: Arc<dyn KeyVerifier>,
         cursors: Arc<KeyRing>,
+        settings: Arc<dyn ProjectSettingsSource>,
         config: McpConfig,
         exports: Option<crucible_export::Exports>,
     ) {
-        let settings = Arc::new(StaticProjectSettings::default());
         let router =
             crucible_mcp_server::router(env, service, keys, settings, cursors, config, exports);
         // The store task is the only caller, once.
