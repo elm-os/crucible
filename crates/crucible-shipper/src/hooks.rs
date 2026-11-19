@@ -85,18 +85,26 @@ pub struct SaltUnavailable(pub String);
 /// Where the project salts come from (contracts 9.3 and 11.1): the control store's `project_salts`.
 ///
 /// Stage B hashes a user subject with the salt of its project. A salt is random, immutable for the life of its
-/// project and sealed at rest; it is created on first use (insert if absent, then re-read, so that two nodes
-/// agree on one salt). The hook is a trait the shipper takes, as the barriers are, so that the shipper does not
-/// depend on the control plane.
+/// project and sealed at rest; it is created in the transaction that creates its project. The control store's
+/// hook loads every salt at startup and again on a timer, so that it answers a project whose salt it has loaded
+/// without a call to the store. The hook is a trait the shipper takes, as the barriers are, so that the shipper
+/// does not depend on the control plane.
 pub trait ProjectSalts: fmt::Debug + Send + Sync {
     /// Whether a control store holds salts. Without one (ingest-only mode) the shipper never asks for a salt:
     /// stage B drops the identity keys of every MCP operation, as `identity: none` in the sender would.
     fn configured(&self) -> bool;
 
-    /// The salt of `project`, created when the project has none yet. An error means the store did not answer;
-    /// the frame that needs the salt waits and the shipper asks again, because a row hashed without its salt
-    /// could not be told from one of another attempt.
-    fn salt(&self, project: ProjectId) -> BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>>;
+    /// The salt of `project`. A project older than salts made with their project gets its salt here (insert if
+    /// absent, then read again, so that two nodes agree on one salt). `None` for a deleted project without a
+    /// salt: it never gets one, so stage B drops the user subjects of its frames.
+    ///
+    /// An error means the store did not answer, or the stored salt does not open: the frame that needs the salt
+    /// waits and the shipper asks again, because a row hashed without its salt could not be told from one of
+    /// another attempt. A hook that has loaded the project's salt never answers with an error.
+    fn salt(
+        &self,
+        project: ProjectId,
+    ) -> BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>>;
 }
 
 /// No control store: ingest-only mode.
@@ -108,7 +116,10 @@ impl ProjectSalts for NoSalts {
         false
     }
 
-    fn salt(&self, _project: ProjectId) -> BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>> {
+    fn salt(
+        &self,
+        _project: ProjectId,
+    ) -> BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>> {
         Box::pin(future::ready(Err(SaltUnavailable(
             "no control store is configured".to_owned(),
         ))))

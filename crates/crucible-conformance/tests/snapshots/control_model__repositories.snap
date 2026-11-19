@@ -86,6 +86,12 @@ secret after delete: false
 project salt before: false
 project salt insert: true
 project salt second insert: false
+project salt of a missing project: error ForeignKeyViolation("project_salts_project_id_fkey")
+project salt of a soft-deleted project: true
+project salt list: [ProjectId(01a3185c-5014-7000-8000-000000000014), ProjectId(01a3185c-5015-7000-8000-000000000015)]
+project salt delete: true
+project salt delete again: false
+project salt after delete: false
 ledger apply schema: true
 ledger apply access: true
 ledger apply schema again: false

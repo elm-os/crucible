@@ -6,7 +6,7 @@ use crucible_control::{
     ProjectAccess, ProjectMembership, ProjectRole, SealedProjectSalt, Secret, Session, SigningKey,
     SigningKeyState, SigningPurpose, UserStatus,
 };
-use crucible_records::{OrgId, UserId};
+use crucible_records::{OrgId, ProjectId, UserId};
 
 use super::{Ctl, Transcript, at, id, project, user};
 
@@ -411,6 +411,43 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     ensure!(
         read.as_ref() == Some(&salt(1)),
         "the first salt of a project stays"
+    );
+    // A salt belongs to a project that exists.
+    let stray = SealedProjectSalt {
+        project_id: ProjectId::from_uuid(id(29)),
+        ..salt(3)
+    };
+    t.outcome(
+        "project salt of a missing project",
+        s.project_salts().insert_if_absent(&stray).await,
+    );
+    let soft_deleted = SealedProjectSalt {
+        project_id: api.id,
+        ..salt(4)
+    };
+    t.outcome(
+        "project salt of a soft-deleted project",
+        s.project_salts().insert_if_absent(&soft_deleted).await,
+    );
+    t.outcome(
+        "project salt list",
+        s.project_salts()
+            .list()
+            .await
+            .map(|rows| rows.iter().map(|row| row.project_id).collect::<Vec<_>>()),
+    );
+    // A deleted project's salt goes (contract 13.4).
+    t.outcome(
+        "project salt delete",
+        s.project_salts().delete(web.id).await,
+    );
+    t.outcome(
+        "project salt delete again",
+        s.project_salts().delete(web.id).await,
+    );
+    t.outcome(
+        "project salt after delete",
+        s.project_salts().get(web.id).await.map(|s| s.is_some()),
     );
 
     // The migrations ledger is forward-only: a recorded step is never rewritten.
