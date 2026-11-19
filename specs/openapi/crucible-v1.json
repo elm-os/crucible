@@ -1452,6 +1452,524 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/alerts": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "List alert rules",
+        "description": "The rules of the project, each with the state of its series.",
+        "operationId": "list_alerts",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`, or `feature_disabled` without a control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Create an alert rule",
+        "description": "One measure, at most two dimensions, a comparison with a threshold, and the timing of the evaluation. The\nfirst evaluation is the next tick of the rule's schedule.",
+        "operationId": "create_alert",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The rule; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`: `errors` names each member to change.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/alerts/preview": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Preview an alert rule",
+        "description": "What the rule in the body would see if it were evaluated now: each series of the window that ends at the\nlast whole minute at least 30 s ago, with whether it breaches the threshold. Nothing is stored and nobody is\nnotified. The `name` is not used.",
+        "operationId": "preview_alert",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The preview.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/alerts/{alert_id}": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Get an alert rule",
+        "operationId": "get_alert",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "alert_id",
+            "in": "path",
+            "description": "The rule id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rule; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Delete an alert rule",
+        "description": "Deletes the rule with its state and its history.",
+        "operationId": "delete_alert",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "alert_id",
+            "in": "path",
+            "description": "The rule id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The rule's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Change an alert rule",
+        "description": "Changes the members in the body. A change to what the rule measures or when starts its series afresh.",
+        "operationId": "patch_alert",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "alert_id",
+            "in": "path",
+            "description": "The rule id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The rule's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRulePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/alerts/{alert_id}/history": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Get the history of an alert rule",
+        "description": "The rule's state changes, repeated notifications and failing-evaluation notices, newest first.",
+        "operationId": "get_alert_history",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "alert_id",
+            "in": "path",
+            "description": "The rule id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the page before.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/api-keys": {
       "get": {
         "tags": [
@@ -1683,6 +2201,454 @@
           },
           "428": {
             "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/channels": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "List channels",
+        "description": "The channels of the project, for whoever edits alert rules. The URL of a webhook and the recipients of an\nemail channel are left out for callers who may not manage channels.",
+        "operationId": "list_channels",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channels.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`, or `feature_disabled` without a control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Create a channel",
+        "description": "A Slack incoming webhook, an email channel or a signed webhook. A webhook channel gets a signing secret,\nwhich this answer carries once. The target is checked against the egress policy.",
+        "operationId": "create_channel",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The channel; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, or `ssrf_blocked` with the reason and the setting that allows the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/channels/{channel_id}": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Get a channel",
+        "operationId": "get_channel",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "The channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Delete a channel",
+        "description": "Deletes the channel and its secret. Rules that name it stop notifying it.",
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "The channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The channel's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Change a channel",
+        "description": "Renames it, turns it on or off, replaces its target, or replaces the signing secret of a webhook channel.\nTurning a channel on clears its failure count and the reason it was turned off.",
+        "operationId": "patch_channel",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "The channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The channel's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed` or `ssrf_blocked`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/channels/{channel_id}/test": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Send a test notification",
+        "description": "One synchronous attempt, at most 6 a minute per channel. The answer says whether the receiver accepted the\ntest, the class of its status and how long it took; it never carries what the receiver answered. A test\nworks on a channel that is turned off, so a fix can be checked before the channel is turned on again.",
+        "operationId": "test_channel",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "description": "The channel id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The outcome, also when the receiver refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelTestResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8045,6 +9011,580 @@
         },
         "additionalProperties": false
       },
+      "AlertComparison": {
+        "type": "string",
+        "description": "How a rule compares its value with its threshold.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte"
+        ]
+      },
+      "AlertEvent": {
+        "type": "object",
+        "description": "One row of a rule's history.",
+        "required": [
+          "id",
+          "kind",
+          "key",
+          "from_status",
+          "to_status",
+          "notified",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The time of the evaluation (RFC 3339)."
+          },
+          "from_status": {
+            "$ref": "#/components/schemas/AlertStatus",
+            "description": "The state before."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id."
+          },
+          "key": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesKey"
+            },
+            "description": "The series; empty for a rule without dimensions and for a row about the rule itself."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlertEventKind",
+            "description": "What the row records."
+          },
+          "notified": {
+            "type": "boolean",
+            "description": "Whether notifications were written for the rule's channels with this row."
+          },
+          "to_status": {
+            "$ref": "#/components/schemas/AlertStatus",
+            "description": "The state after."
+          },
+          "value": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "The value that was compared, when the series had rows."
+          }
+        }
+      },
+      "AlertEventKind": {
+        "type": "string",
+        "description": "What a history row records.",
+        "enum": [
+          "transition",
+          "renotify",
+          "evaluation_failing"
+        ]
+      },
+      "AlertHistory": {
+        "type": "object",
+        "description": "A page of a rule's history, newest first.",
+        "required": [
+          "data",
+          "has_more",
+          "saturated"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertEvent"
+            },
+            "description": "The rows."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether there are older rows."
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "The cursor of the next page; absent on the last page."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a value of this object was clamped to the wire's integer range (contract 1.3)."
+          }
+        }
+      },
+      "AlertNoDataPolicy": {
+        "type": "string",
+        "description": "What a series becomes when it has had no rows for `no_data_for_secs`.",
+        "enum": [
+          "no_data",
+          "ok",
+          "keep"
+        ]
+      },
+      "AlertPreview": {
+        "type": "object",
+        "description": "What a rule would see if it were evaluated now. Nothing is stored and nobody is notified.",
+        "required": [
+          "from",
+          "to",
+          "unit",
+          "series",
+          "truncated",
+          "saturated"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window that was read (RFC 3339)."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a value of this object was clamped to the wire's integer range (contract 1.3)."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertPreviewSeries"
+            },
+            "description": "The series that had rows, the ones nearest to a breach first."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window: the last whole minute at least 30 s ago (RFC 3339)."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the rule has more than 50 series; only the 50 nearest to a breach are tracked."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of the values."
+          }
+        }
+      },
+      "AlertPreviewSeries": {
+        "type": "object",
+        "description": "One series of a preview.",
+        "required": [
+          "key",
+          "value",
+          "breach"
+        ],
+        "properties": {
+          "breach": {
+            "type": "boolean",
+            "description": "Whether the value breaches the threshold."
+          },
+          "key": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesKey"
+            },
+            "description": "The series."
+          },
+          "value": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "The value over the window, in the measure's stored unit."
+          }
+        }
+      },
+      "AlertRule": {
+        "type": "object",
+        "description": "An alert rule with the state of its series.",
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "source",
+          "measure",
+          "aggregation",
+          "unit",
+          "dimensions",
+          "comparison",
+          "threshold",
+          "window_secs",
+          "interval_secs",
+          "for_secs",
+          "no_data",
+          "no_data_for_secs",
+          "renotify_secs",
+          "channels",
+          "status",
+          "series",
+          "eval_failures",
+          "skipped_ticks",
+          "created_at",
+          "updated_at",
+          "saturated",
+          "version"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "The aggregation."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the channels the rule notifies."
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/AlertComparison",
+            "description": "The comparison."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the rule was created (RFC 3339)."
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The dimensions."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the rule is evaluated."
+          },
+          "eval_failures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Evaluations that failed in a row. From five on, the rule's channels were told once.",
+            "minimum": 0
+          },
+          "for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long the condition must hold before a series fires, in seconds.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "The id."
+          },
+          "interval_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The time between evaluations, in seconds.",
+            "minimum": 0
+          },
+          "last_evaluated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the rule was last evaluated (RFC 3339); absent before its first evaluation."
+          },
+          "measure": {
+            "type": "string",
+            "description": "The measure."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "no_data": {
+            "$ref": "#/components/schemas/AlertNoDataPolicy",
+            "description": "The no-data policy."
+          },
+          "no_data_for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long a series may have no rows before the policy applies, in seconds.",
+            "minimum": 0
+          },
+          "renotify_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The time between repeated notifications of a firing series, in seconds.",
+            "minimum": 0
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a value of this object was clamped to the wire's integer range (contract 1.3)."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertSeries"
+            },
+            "description": "The series the rule tracks, at most 50, ordered by key."
+          },
+          "skipped_ticks": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Evaluations that never ran, for example while the server was down."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source of the measure."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertStatus",
+            "description": "The most severe state among the rule's series: firing, then no_data, pending, resolved, ok."
+          },
+          "threshold": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "The threshold, in `unit`."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`\n(nano-USD)."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the rule was last changed (RFC 3339)."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, also sent as `ETag`; `PATCH` and `DELETE` take it in `If-Match`.",
+            "minimum": 0
+          },
+          "window_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The window, in seconds.",
+            "minimum": 0
+          }
+        }
+      },
+      "AlertRuleInput": {
+        "type": "object",
+        "description": "The body of `POST alerts`: a rule. Members left out take the defaults named on them.",
+        "required": [
+          "name",
+          "measure",
+          "aggregation",
+          "comparison",
+          "threshold",
+          "window_secs"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "How the measure is aggregated over the window, one of the measure's aggregations."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the channels the rule notifies, at most 10. Default none."
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/AlertComparison",
+            "description": "The comparison."
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to two dimensions; each combination of their values is one series. Default none."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the rule is evaluated. Default `true`."
+          },
+          "for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long the condition must hold before a series fires, in seconds. Default 0: it fires at once.",
+            "minimum": 0
+          },
+          "interval_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The time between evaluations, in seconds: 60 (the default) to 86400.",
+            "minimum": 0
+          },
+          "measure": {
+            "type": "string",
+            "description": "The measure, from `GET metrics/schema`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name, 1 to 120 characters."
+          },
+          "no_data": {
+            "$ref": "#/components/schemas/AlertNoDataPolicy",
+            "description": "The no-data policy. Default `keep`."
+          },
+          "no_data_for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long a series may have no rows before the policy applies, in seconds. Default 300.",
+            "minimum": 0
+          },
+          "renotify_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long after a notification a series that still fires is notified again, in seconds: 300 to 604800.\nDefault 14400 (four hours).",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "The source of the measure. Rules read the span rollup: `spans` (the default)."
+          },
+          "threshold": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "The threshold in the measure's stored unit: a count, microseconds, or nano-USD."
+          },
+          "window_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The window each evaluation reads, in seconds: whole minutes from 60 to 86400.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AlertRuleList": {
+        "type": "object",
+        "description": "The rules of a project.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertRule"
+            },
+            "description": "The rules, ordered by id (oldest first)."
+          }
+        }
+      },
+      "AlertRulePatch": {
+        "type": "object",
+        "description": "The body of `PATCH alerts/{alert_id}`: the members to change. A change to what the rule measures or when\nstarts its series afresh; a change to the name, the switch, the channels or `renotify_secs` keeps them.",
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "A new aggregation."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The new list of channels."
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/AlertComparison",
+            "description": "A new comparison."
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "New dimensions."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Turns the rule on or off."
+          },
+          "for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A new `for`.",
+            "minimum": 0
+          },
+          "interval_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A new interval.",
+            "minimum": 0
+          },
+          "measure": {
+            "type": "string",
+            "description": "A new measure."
+          },
+          "name": {
+            "type": "string",
+            "description": "A new name."
+          },
+          "no_data": {
+            "$ref": "#/components/schemas/AlertNoDataPolicy",
+            "description": "A new no-data policy."
+          },
+          "no_data_for_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A new no-data time.",
+            "minimum": 0
+          },
+          "renotify_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A new time between repeated notifications.",
+            "minimum": 0
+          },
+          "threshold": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "A new threshold."
+          },
+          "window_secs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "A new window.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AlertSeries": {
+        "type": "object",
+        "description": "One series a rule tracks.",
+        "required": [
+          "key",
+          "status",
+          "since"
+        ],
+        "properties": {
+          "key": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesKey"
+            },
+            "description": "The series: one value per dimension of the rule, in the rule's order. Empty for a rule without\ndimensions."
+          },
+          "last_notified_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the series was last notified as firing (RFC 3339)."
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the series entered the state (RFC 3339)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertStatus",
+            "description": "The state."
+          },
+          "value": {
+            "$ref": "#/components/schemas/SafeI64",
+            "description": "The value at the last evaluation with rows, in the measure's stored unit."
+          }
+        }
+      },
+      "AlertStatus": {
+        "type": "string",
+        "description": "The state of a series, or of a rule (the most severe state of its series).",
+        "enum": [
+          "ok",
+          "pending",
+          "firing",
+          "resolved",
+          "no_data"
+        ]
+      },
       "ApiKey": {
         "type": "object",
         "description": "An API key. The secret key is shown only once, by `POST`.",
@@ -8417,6 +9957,192 @@
           "proxy_http",
           "otlp"
         ]
+      },
+      "Channel": {
+        "type": "object",
+        "description": "A notification channel. Its secret is never part of it.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "enabled",
+          "failures",
+          "to",
+          "version"
+        ],
+        "properties": {
+          "disabled_reason": {
+            "type": "string",
+            "description": "Why the server turned the channel off (50 deliveries in a row failed). Absent when it is on or a\nperson turned it off."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether notifications are sent to it."
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deliveries that failed in a row.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "The id."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind",
+            "description": "The kind."
+          },
+          "last_test": {
+            "$ref": "#/components/schemas/ChannelTestResult",
+            "description": "The outcome of the last test-send."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "signing_secret": {
+            "type": "string",
+            "description": "The signing secret of a webhook channel. Present only in the answer that created or rotated it: it is\nshown once and cannot be read again."
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The recipients of an email channel. Shown only to callers who may manage channels."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL of a webhook channel. Shown only to callers who may manage channels."
+          },
+          "url_hint": {
+            "type": "string",
+            "description": "A Slack URL shortened to its host and last characters; the URL itself is a credential."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, also sent as `ETag`; `PATCH` and `DELETE` take it in `If-Match`.",
+            "minimum": 0
+          }
+        }
+      },
+      "ChannelCreate": {
+        "type": "object",
+        "description": "The body of `POST channels`.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind",
+            "description": "The kind."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name, 1 to 80 characters."
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The recipients of an email channel, 1 to 20."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL of a Slack incoming webhook (`https://hooks.slack.com/...`) or of a webhook receiver."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChannelKind": {
+        "type": "string",
+        "description": "The kind of a notification channel.",
+        "enum": [
+          "slack",
+          "email",
+          "webhook"
+        ]
+      },
+      "ChannelList": {
+        "type": "object",
+        "description": "The channels of a project.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            },
+            "description": "The channels, ordered by id (oldest first)."
+          }
+        }
+      },
+      "ChannelPatch": {
+        "type": "object",
+        "description": "The body of `PATCH channels/{channel_id}`: the members to change.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Turns the channel on or off. Turning it on clears the failure count and the reason it was turned off."
+          },
+          "name": {
+            "type": "string",
+            "description": "A new name."
+          },
+          "rotate_secret": {
+            "type": "boolean",
+            "description": "`true` replaces the signing secret of a webhook channel; the answer carries the new one, once."
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "New recipients, for an email channel."
+          },
+          "url": {
+            "type": "string",
+            "description": "A new URL, for a Slack or webhook channel."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChannelTestResult": {
+        "type": "object",
+        "description": "The outcome of a test-send. It never carries anything the receiver answered.",
+        "required": [
+          "ok",
+          "latency_ms"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the test was sent (RFC 3339); present on a channel's `last_test`."
+          },
+          "error_code": {
+            "type": "string",
+            "description": "The stable reason of a failure, for example `connect_failed`, `timeout`, `receiver_rejected`,\n`redirect_not_followed`, `metadata_address` or `private_address`."
+          },
+          "latency_ms": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How long the attempt took, in milliseconds."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the receiver accepted the test."
+          },
+          "status_class": {
+            "type": "string",
+            "description": "The class of the receiver's HTTP status: `2xx` to `5xx`. Absent for email and without an answer."
+          }
+        }
       },
       "Consistency": {
         "type": "string",
@@ -11916,6 +13642,12 @@
           "task"
         ]
       },
+      "SafeI64": {
+        "type": "integer",
+        "description": "A signed integer between -(2^53 - 1) and 2^53 - 1.",
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991
+      },
       "SafeU64": {
         "type": "integer",
         "description": "An unsigned integer at most 2^53 - 1.",
@@ -14314,8 +16046,16 @@
   },
   "tags": [
     {
+      "name": "alerts",
+      "description": "Alert rules over the project's metrics, their state, history and preview."
+    },
+    {
       "name": "auth",
       "description": "Sign-in, sessions and the signed-in user's account."
+    },
+    {
+      "name": "channels",
+      "description": "Notification channels: Slack webhooks, email and signed webhooks, with test-send."
     },
     {
       "name": "exports",

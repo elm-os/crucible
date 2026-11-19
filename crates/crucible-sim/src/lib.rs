@@ -20,6 +20,8 @@
 //!   fencing rules of contract 11.7.
 //! - [`jobs_sim`]: the job runners of `crucible-jobs` over `pg_model`: crashes, freezes, clock skew, lost
 //!   connections and lease steals, and the oracle for the job invariants J1 to J3.
+//! - [`alerts_sim`]: alerting end to end over `pg_model` and rollup rows in `ch_model`: crashes, downtime,
+//!   clock skips, store faults and receivers that are down, and the oracle for the alert invariants A1 to A3.
 //!
 //! The network (turmoil hosts) joins in a later wave and reuses these pieces.
 //!
@@ -28,6 +30,7 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
+pub mod alerts_sim;
 mod boot;
 pub mod ch_model;
 mod ch_read;

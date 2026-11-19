@@ -3,10 +3,21 @@ import { type Connection, connectionKey } from "@/lib/connection";
 import { loadPage } from "@/lib/navigate";
 import { currentPath, loginHref } from "@/lib/next-path";
 import { fromHttpFailure, networkError, UiError } from "./errors";
+import type { AlertHistory } from "./generated/AlertHistory";
+import type { AlertPreview } from "./generated/AlertPreview";
+import type { AlertRule } from "./generated/AlertRule";
+import type { AlertRuleInput } from "./generated/AlertRuleInput";
+import type { AlertRuleList } from "./generated/AlertRuleList";
+import type { AlertRulePatch } from "./generated/AlertRulePatch";
 import type { ApiKey } from "./generated/ApiKey";
 import type { ApiKeyCreate } from "./generated/ApiKeyCreate";
 import type { ApiKeyCreated } from "./generated/ApiKeyCreated";
 import type { ApiKeyList } from "./generated/ApiKeyList";
+import type { Channel } from "./generated/Channel";
+import type { ChannelCreate } from "./generated/ChannelCreate";
+import type { ChannelList } from "./generated/ChannelList";
+import type { ChannelPatch } from "./generated/ChannelPatch";
+import type { ChannelTestResult } from "./generated/ChannelTestResult";
 import type { EntityParams } from "./generated/EntityParams";
 import type { Export } from "./generated/Export";
 import type { ExportList } from "./generated/ExportList";
@@ -659,6 +670,99 @@ export async function revokeApiKey(
 ): Promise<void> {
   const path = projectPath(project, `/api-keys/${encodeURIComponent(key.id)}`);
   await call(path, "session", { method: "DELETE", version: key.version });
+}
+
+// Alert rules and channels (contract 12.6). Reads go as telemetry reads do; writes need a session.
+
+export async function listAlerts(project: string, signal?: AbortSignal): Promise<AlertRuleList> {
+  return read<AlertRuleList>(await call(projectPath(project, "/alerts"), "telemetry", { signal }));
+}
+
+function alertPath(project: string, id: string, rest = ""): string {
+  return projectPath(project, `/alerts/${encodeURIComponent(id)}${rest}`);
+}
+
+export async function getAlert(
+  project: string,
+  id: string,
+  signal?: AbortSignal,
+): Promise<AlertRule> {
+  return read<AlertRule>(await call(alertPath(project, id), "telemetry", { signal }));
+}
+
+export async function createAlert(project: string, body: AlertRuleInput): Promise<AlertRule> {
+  const path = projectPath(project, "/alerts");
+  return read<AlertRule>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function patchAlert(
+  project: string,
+  rule: Pick<AlertRule, "id" | "version">,
+  body: AlertRulePatch,
+): Promise<AlertRule> {
+  const init: Init = { method: "PATCH", body, version: rule.version };
+  return read<AlertRule>(await call(alertPath(project, rule.id), "session", init));
+}
+
+export async function deleteAlert(
+  project: string,
+  rule: Pick<AlertRule, "id" | "version">,
+): Promise<void> {
+  await call(alertPath(project, rule.id), "session", { method: "DELETE", version: rule.version });
+}
+
+export async function getAlertHistory(
+  project: string,
+  id: string,
+  cursor: string | undefined,
+  signal?: AbortSignal,
+): Promise<AlertHistory> {
+  const init: Init = { query: { limit: 50, cursor }, signal };
+  return read<AlertHistory>(await call(alertPath(project, id, "/history"), "telemetry", init));
+}
+
+export async function previewAlert(
+  project: string,
+  body: AlertRuleInput,
+  signal?: AbortSignal,
+): Promise<AlertPreview> {
+  const init: Init = { method: "POST", body, signal };
+  return read<AlertPreview>(await call(projectPath(project, "/alerts/preview"), "telemetry", init));
+}
+
+export async function listChannels(project: string, signal?: AbortSignal): Promise<ChannelList> {
+  return read<ChannelList>(await call(projectPath(project, "/channels"), "telemetry", { signal }));
+}
+
+function channelPath(project: string, id: string, rest = ""): string {
+  return projectPath(project, `/channels/${encodeURIComponent(id)}${rest}`);
+}
+
+export async function createChannel(project: string, body: ChannelCreate): Promise<Channel> {
+  const path = projectPath(project, "/channels");
+  return read<Channel>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function patchChannel(
+  project: string,
+  channel: Pick<Channel, "id" | "version">,
+  body: ChannelPatch,
+): Promise<Channel> {
+  const init: Init = { method: "PATCH", body, version: channel.version };
+  return read<Channel>(await call(channelPath(project, channel.id), "session", init));
+}
+
+export async function deleteChannel(
+  project: string,
+  channel: Pick<Channel, "id" | "version">,
+): Promise<void> {
+  const init: Init = { method: "DELETE", version: channel.version };
+  await call(channelPath(project, channel.id), "session", init);
+}
+
+export async function testChannel(project: string, id: string): Promise<ChannelTestResult> {
+  const path = channelPath(project, id, "/test");
+  return read<ChannelTestResult>(await call(path, "session", { method: "POST", body: {} }));
 }
 
 async function failure(response: Response, readBody = true): Promise<UiError> {

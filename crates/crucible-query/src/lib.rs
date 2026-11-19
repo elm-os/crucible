@@ -80,7 +80,10 @@ pub use mcp_rollup::{
     McpErrorClasses, McpPoint, McpServer, McpServers, McpTargetErrors, McpTool, McpToolDelta,
     McpToolDetail, McpTools, TOP_CLIENTS,
 };
-pub use metrics::{MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries};
+pub use metrics::{
+    MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries, MetricsTotal,
+    MetricsTotals,
+};
 pub use payload::{PayloadBytes, PayloadQuery};
 pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,

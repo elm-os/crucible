@@ -1,0 +1,35 @@
+[package]
+name = "crucible-alerts"
+description = "Alert rules: the definition, the evaluation schedule, the per-series state machine and the evaluation job."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
+
+[dependencies]
+crucible-auth = { workspace = true }
+crucible-control = { workspace = true }
+crucible-env = { workspace = true }
+# Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
+crucible-jobs = { path = "../crucible-jobs" }
+crucible-notify = { path = "../crucible-notify" }
+crucible-plan = { workspace = true }
+crucible-query = { workspace = true }
+crucible-records = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

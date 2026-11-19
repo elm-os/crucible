@@ -46,7 +46,7 @@ pub use mcp_rollup::{
 };
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
-    metrics_ranking, metrics_series, metrics_shape,
+    metrics_ranking, metrics_series, metrics_shape, metrics_totals,
 };
 pub use payload::{PayloadField, PayloadRangeRequest, payload_range};
 pub use search::{

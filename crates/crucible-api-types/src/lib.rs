@@ -13,6 +13,7 @@
 //! - enums are lowercase snake_case strings;
 //! - request parameters reject unknown fields.
 
+mod alerts;
 mod data_bounds;
 mod enums;
 mod exports;
@@ -33,6 +34,12 @@ mod traces;
 mod users;
 mod wire;
 
+pub use alerts::{
+    AlertComparison, AlertEvent, AlertEventKind, AlertHistory, AlertHistoryParams,
+    AlertNoDataPolicy, AlertPreview, AlertPreviewSeries, AlertRule, AlertRuleInput, AlertRuleList,
+    AlertRulePatch, AlertSeries, AlertStatus, Channel, ChannelCreate, ChannelKind, ChannelList,
+    ChannelPatch, ChannelTestResult,
+};
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{
     AuthorKind, Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason,
@@ -96,6 +103,13 @@ pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<Account>();
     visitor.visit::<AccountPatch>();
+    visitor.visit::<AlertHistory>();
+    visitor.visit::<AlertHistoryParams>();
+    visitor.visit::<AlertPreview>();
+    visitor.visit::<AlertRule>();
+    visitor.visit::<AlertRuleInput>();
+    visitor.visit::<AlertRuleList>();
+    visitor.visit::<AlertRulePatch>();
     visitor.visit::<ApiKeyCreate>();
     visitor.visit::<ApiKeyCreated>();
     visitor.visit::<ApiKeyList>();
@@ -103,6 +117,11 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<AuthProviderCreate>();
     visitor.visit::<AuthProviderList>();
     visitor.visit::<AuthProviderPatch>();
+    visitor.visit::<Channel>();
+    visitor.visit::<ChannelCreate>();
+    visitor.visit::<ChannelList>();
+    visitor.visit::<ChannelPatch>();
+    visitor.visit::<ChannelTestResult>();
     visitor.visit::<CorrectionRequest>();
     visitor.visit::<DataBounds>();
     visitor.visit::<EntityParams>();

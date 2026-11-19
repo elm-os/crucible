@@ -1,0 +1,36 @@
+[package]
+name = "crucible-notify"
+description = "Notification channels and the outbox consumer: Slack webhooks, email and signed webhooks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Sealing of channel secrets (contract 11.2).
+crucible-auth = { workspace = true }
+crucible-control = { workspace = true }
+crucible-env = { workspace = true }
+# Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
+crucible-egress = { path = "../crucible-egress" }
+crucible-jobs = { path = "../crucible-jobs" }
+crucible-records = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+hmac = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-sim = { path = "../crucible-sim" }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
