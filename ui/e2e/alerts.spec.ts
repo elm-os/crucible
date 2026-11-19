@@ -272,14 +272,14 @@ test.describe("alerts: rules", () => {
   });
 });
 
-test.describe("alerts: one rule", () => {
-  function serveRule(api: Api, fields: Partial<AlertRule> = {}): void {
-    admin(api);
-    api.on(RULE_PATH, json(rule(fields)));
-    api.on(PREVIEW_PATH, json(preview()));
-    api.on(HISTORY_PATH, json({ data: [event(1)], has_more: false, saturated: false }));
-  }
+function serveRule(api: Api, fields: Partial<AlertRule> = {}): void {
+  admin(api);
+  api.on(RULE_PATH, json(rule(fields)));
+  api.on(PREVIEW_PATH, json(preview()));
+  api.on(HISTORY_PATH, json({ data: [event(1)], has_more: false, saturated: false }));
+}
 
+test.describe("alerts: one rule", () => {
   test("loading, then success: the rule, its series, its preview and its history", async ({
     page,
     api,
