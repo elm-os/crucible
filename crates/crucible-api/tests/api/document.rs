@@ -3,6 +3,8 @@
 
 use axum::http::{Method, StatusCode};
 
+use crucible_api::{Access, ROUTES};
+
 use crate::world::World;
 use crate::{api, run, send};
 
@@ -23,40 +25,68 @@ fn the_document_matches_the_committed_file() {
 }
 
 /// A documented path with its parameters filled in.
-fn concrete(path: &str) -> String {
+pub(crate) fn concrete(path: &str) -> String {
     path.replace("{project_id}", "01010101-0101-0101-0101-010101010101")
         .replace("{trace_id}", "a5a5a5a5a5a5a5a50000000000000001")
         .replace("{span_id}", "0000000000000001")
+        .replace("{key_id}", "02020202-0202-0202-0202-020202020202")
+        .replace("{user_id}", "03030303-0303-0303-0303-030303030303")
+        .replace("{invitation_id}", "04040404-0404-0404-0404-040404040404")
+        .replace("{provider_id}", "05050505-0505-0505-0505-050505050505")
+}
+
+/// Every documented operation, with its method.
+pub(crate) fn operations() -> Vec<(Method, String)> {
+    let document = crucible_api::openapi();
+    let mut operations = Vec::new();
+    for (path, item) in &document.paths.paths {
+        assert!(path.starts_with(crucible_api::BASE_PATH), "{path}");
+        for (method, documented) in [
+            (Method::GET, item.get.is_some()),
+            (Method::POST, item.post.is_some()),
+            (Method::PATCH, item.patch.is_some()),
+            (Method::PUT, item.put.is_some()),
+            (Method::DELETE, item.delete.is_some()),
+        ] {
+            if documented {
+                operations.push((method, path.clone()));
+            }
+        }
+    }
+    operations
+}
+
+/// The permission of a documented operation.
+pub(crate) fn access(method: &Method, path: &str) -> Access {
+    ROUTES
+        .iter()
+        .find(|r| r.method == method.as_str() && r.path == path)
+        .map(|r| r.access)
+        .unwrap_or_else(|| panic!("{method} {path} has no authorization entry"))
 }
 
 #[test]
-fn every_documented_operation_reaches_a_handler() {
+fn without_a_control_plane_every_route_reaches_its_handler() {
     run(|env| async move {
         let world = World::new(10);
         let api = api(&env, &world);
-        let document = crucible_api::openapi();
-        let mut operations = 0;
-        for (path, item) in &document.paths.paths {
-            assert!(path.starts_with(crucible_api::BASE_PATH), "{path}");
-            let methods = [
-                (Method::GET, item.get.is_some()),
-                (Method::POST, item.post.is_some()),
-            ];
-            for (method, documented) in methods {
-                if !documented {
-                    continue;
-                }
-                operations += 1;
-                // Without a key, a route's handler answers 401; the fallback would answer 404 or 405.
-                let reply = send(&api, method.clone(), &concrete(path), None).await;
-                assert_eq!(
+        let operations = operations();
+        for (method, path) in &operations {
+            // Without credentials a project route's handler answers 401; routes that need the control plane
+            // answer feature_disabled. The fallback would answer not_found or method_not_allowed.
+            let reply = send(&api, method.clone(), &concrete(path), None).await;
+            match access(method, path) {
+                Access::Project(_) => assert_eq!(
                     reply.status,
                     StatusCode::UNAUTHORIZED,
                     "{method} {path}: {:#}",
                     reply.body
-                );
+                ),
+                Access::Public | Access::Session | Access::Org(_) => {
+                    reply.assert_problem(404, "feature_disabled");
+                }
             }
         }
-        assert_eq!(operations, 14);
+        assert_eq!(operations.len(), ROUTES.len());
     });
 }

@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::HeaderValue;
+use axum::http::header::{AUTHORIZATION, RETRY_AFTER};
 use axum::middleware::Next;
 use axum::response::Response;
 use crucible_api_types::ProblemCode;
@@ -24,8 +25,9 @@ pub(crate) struct AuthState {
     pub(crate) keys: Arc<dyn KeyVerifier>,
 }
 
-/// Verifies the request's credential and records its principal, or answers 401 with what to fix. The refusal
-/// never echoes the credential.
+/// Verifies the request's credential and records its principal, or answers 401 with what to fix. A key the server
+/// cannot check during a Postgres outage is 503 with `Retry-After` instead (contract 11.8). The refusal never
+/// echoes the credential.
 pub(crate) async fn authenticate(
     State(state): State<AuthState>,
     mut request: Request,
@@ -42,6 +44,19 @@ pub(crate) async fn authenticate(
         Ok(principal) => {
             request.extensions_mut().insert(Authorized(principal));
             next.run(request).await
+        }
+        Err(Refusal::Unavailable) => {
+            let id = crucible_api::request_id(request.extensions(), &state.env);
+            let mut response = crucible_api::problem(
+                id,
+                ProblemCode::ControlPlaneUnavailable,
+                &Refusal::Unavailable.to_string(),
+            );
+            response.headers_mut().insert(
+                RETRY_AFTER,
+                HeaderValue::from(crucible_auth::RETRY_AFTER.as_secs()),
+            );
+            response
         }
         Err(refusal) => {
             let id = crucible_api::request_id(request.extensions(), &state.env);

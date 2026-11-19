@@ -1,0 +1,63 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"identity\")"
+---
+insert seeded github: ()
+insert a second seeded github: error UniqueViolation("auth_providers_seeded_kind_key")
+insert unseeded github: ()
+insert oidc: ()
+insert oidc again: error UniqueViolation("auth_providers_pkey")
+update oidc: true
+update a missing provider: false
+providers: [(Github, "Provider 20", true), (Oidc, "Company SSO", false), (Github, "Provider 23", false)]
+link github 1001 to user 1: ()
+link github 1001 again: error UniqueViolation("oauth_accounts_pkey")
+link oidc sub-a to user 1: ()
+link to a missing user: error ForeignKeyViolation("oauth_accounts_user_id_fkey")
+link to a missing provider: error ForeignKeyViolation("oauth_accounts_provider_id_fkey")
+get github 1001: Some(OauthAccount { provider_id: Uuid(01a3185c-5014-7000-8000-000000000014), subject: "1001", user_id: UserId(01a3185c-5001-7000-8000-000000000001) })
+get github 1002: None
+accounts of user 1: 2
+delete oidc: true
+delete oidc again: false
+accounts of user 1 after the provider went: 1
+delete user 1: true
+get github 1001 after the user went: None
+insert flow: ()
+insert flow: ()
+insert flow 1 again: error UniqueViolation("auth_flows_pkey")
+consume flow 1: "consumed at Some(Timestamp(2027-01-15T08:00:30.000000Z))"
+consume flow 1 again: "refused"
+consume flow 2 at its expiry: "refused"
+consume a missing flow: "refused"
+delete expired flows: 2
+insert token: ()
+insert token: ()
+insert token: ()
+insert token: ()
+insert token 1 again: error UniqueViolation("one_time_tokens_pkey")
+consume token 1 as setup: "refused"
+consume token 1 as reset: "consumed at Some(Timestamp(2027-01-15T08:00:05.000000Z))"
+consume token 1 again: "refused"
+consume token 4 after it expired: "refused"
+get token 1: Some((PasswordReset, Some(Timestamp(2027-01-15T08:00:05.000000Z))))
+an open setup token exists: true
+an open setup token exists after it expired: false
+an open invite token exists: false
+delete unused reset tokens of user 2: 1
+token 2 after the delete: false
+delete expired tokens: 3
+token 1 after expiry: false
+insert invitation: ()
+insert invitation: ()
+insert invitation: ()
+insert invitation 30 again: error UniqueViolation("invitations_pkey")
+invitations of ada: [Uuid(01a3185c-501e-7000-8000-00000000001e), Uuid(01a3185c-501f-7000-8000-00000000001f)]
+accept 30: true
+accept 30 again: false
+revoke 30 after acceptance: false
+revoke 31: true
+accept 31 after revocation: false
+accept 32 at its expiry: false
+revoke a missing invitation: false
+invitations: [("ada@example.com", Some(Timestamp(2027-01-15T08:01:00.000000Z)), None), ("ada@example.com", None, Some(Timestamp(2027-01-15T08:01:03.000000Z))), ("bo@example.com", None, None)]

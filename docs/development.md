@@ -51,8 +51,9 @@ WAL frame under `--data-dir` is durable. Both HTTP ingest listeners also serve t
 acknowledgement.
 
 Requests authenticate with a project's secret key as `Authorization: Bearer <secret key>`, or with its key pair as
-`Authorization: Basic base64(<public key>:<secret key>)`. Key management will move to the control plane; until then,
-list the keys in a TOML file passed with `--keys-file` (without one, every ingest request answers 401):
+`Authorization: Basic base64(<public key>:<secret key>)`. With Postgres configured the keys live there: make them in
+Settings or with `crucible admin create-key --project <slug or id>`. Without Postgres, list the keys in a TOML file
+passed with `--keys-file` (without one, every ingest request answers 401):
 
 ```toml
 [[project_key]]
@@ -82,7 +83,8 @@ Regenerate both after changing a handler or a DTO, and commit the result. CI reg
 and fails on any difference, or on `bigint` in a generated type (`.github/workflows/drift.yml`); a test of
 `crucible-api` also fails while the committed OpenAPI document is stale.
 
-Requests authenticate with a project's secret key from `--keys-file` as `Authorization: Bearer <key>`. Without a
+Requests authenticate with a project's secret key as `Authorization: Bearer <key>` or, with Postgres, with a
+signed-in session's cookie, which writes pair with its CSRF token (contract 11.4). Without a
 telemetry store (see the next section), `crucible serve` checks the key, the project and the parameters of each
 request, cursors included, and then answers 503 with the problem code `telemetry_store_unavailable`.
 
@@ -125,7 +127,7 @@ listen = "0.0.0.0:8080"
 ingest_listen = "0.0.0.0:4318"
 grpc_listen = "0.0.0.0:4317"
 metrics_listen = "127.0.0.1:9464"
-keys_file = "keys.toml"
+public_url = "https://crucible.example.com"
 
 [data]
 dir = "data"
@@ -144,13 +146,15 @@ password_file = "/run/secrets/postgres"
   `_file` twin. Given both in one layer, the file is used and a warning says so.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
+- `server.keys_file` is for a server without `[postgres]`; given both, the configuration is refused with what to do.
 - `crucible config check` loads the configuration and reports every problem at once; `crucible config print`
   shows the effective configuration with the source of each value and with secrets redacted. Both take the same
   flags as `serve`.
 
 ### Postgres and the migrations ledger
 
-`[postgres]` is optional in this milestone: without it `serve` runs exactly as before. With it,
+`[postgres]` is optional: without it there is no sign-in and the project keys come from `--keys-file`. With it, the
+server keeps sign-in, the organization, projects, members and API keys there and needs the master key, and
 `crucible migrate` (or `serve --migrate`) applies the Postgres migrations of `crates/crucible-control-pg/migrations`
 and then the ClickHouse steps, and records each in the ledger table `schema_migrations` (contract 6.6). A step that
 the ledger holds with the same checksum is skipped. The ClickHouse steps run under the `migrations` lease, and each
@@ -209,8 +213,9 @@ docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/us
 ```
 
 Build the `crucible` package on its own, as above: a `--workspace` build also compiles test-only features of other
-crates into the binary. Then make `.env` and `keys.toml` in `deploy/compose/` as in the quickstart's step 2 (the
-`CRUCIBLE_IMAGE` line is not needed) and start it from that directory:
+crates into the binary. It runs without Postgres, so it takes its project keys from a file. In `deploy/compose/`, make
+`.env` as in the quickstart's step 2 (the `CRUCIBLE_IMAGE` line is not needed) and `keys.toml` as in
+[Without Postgres](self-hosting/README.md#without-postgres-keys-from-a-file), and start it from that directory:
 
 ```sh
 docker compose -f compose.dev.yaml up --build -d
@@ -221,11 +226,13 @@ It publishes the ports on `127.0.0.1` only. `docker compose -f compose.dev.yaml 
 
 ## The UI against a running server
 
-The UI has no browser sessions until the control plane lands (milestone 4). Until then the shell has a **Connect**
-dialog, labelled as temporary: it takes a project id and that project's secret key, checks them against the API,
-keeps them in this browser's local storage until you press Disconnect (a new tab or a restart does not ask again)
-and sends the key as `Authorization: Bearer` on API requests. A section that answers 401 offers the same dialog. The code is `ui/src/lib/connection.ts` and
-`ui/src/components/shell/connect-dialog.tsx`; sessions will replace both.
+With Postgres, people sign in. The shell asks `GET /api/v1/auth/providers` whether the server has a control plane,
+then loads the session and sends a browser without one to `/login/`; the code is `ui/src/lib/auth.ts` and
+`ui/src/components/shell/auth-gate.tsx`. Without Postgres that check answers 404 `feature_disabled`, and the shell
+has a **Connect** dialog instead, labelled as temporary: it takes a project id and that project's secret key, checks
+them against the API, keeps them in this browser's local storage until you press Disconnect (a new tab or a restart
+does not ask again) and sends the key as `Authorization: Bearer` on API requests. A section that answers 401 offers
+the same dialog. The code is `ui/src/lib/connection.ts` and `ui/src/components/shell/connect-dialog.tsx`.
 
 ## The end-to-end test
 
@@ -234,7 +241,10 @@ gRPC, and one on a compat ingest route with the key pair as Basic auth, come bac
 in the middle of further runs, each followed by a restart, must lose no acknowledged span and duplicate no row (checked against ClickHouse
 directly, through the load generator's `SequenceReader`), and, when a Chrome binary is given, the embedded UI's
 traces table must show the traces after connecting through the dialog. Without `CRUCIBLE_E2E_CLICKHOUSE_URL` the
-test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real.
+test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real. With
+`CRUCIBLE_E2E_POSTGRES_URL` as well, naming an empty database, a second test runs the control-plane path:
+`crucible admin init`, sign-in, a project and an API key made through the API, a key from
+`crucible admin create-key`, ingest and read-back with each key, revocation and sign-out.
 
 ```sh
 docker network create crucible-e2e

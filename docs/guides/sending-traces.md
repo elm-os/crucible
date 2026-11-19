@@ -34,8 +34,10 @@ Every export carries a project key in `Authorization`, in one of two forms:
 | Key pair | `Authorization: Basic <base64 of public key:secret key>`, which `curl -u <public key>:<secret key>` sends |
 
 A secret key is `csk_` followed by 43 characters from `0-9A-Za-z`; a public key is `cpk_` in the same form. The
-key decides the project: no header, path or attribute selects one. In this preview the server reads its keys from
-the TOML file named by `server.keys_file` (`--keys-file`):
+key decides the project: no header, path or attribute selects one. With Postgres, as in the
+[quickstart](../self-hosting/quickstart.md), keys are made in Settings or with `crucible admin create-key`, and a key
+sends traces with the `ingest` scope, which new keys have. Without Postgres the server reads its keys from the TOML
+file named by `server.keys_file` (`--keys-file`):
 
 ```toml
 [[project_key]]
@@ -44,9 +46,9 @@ public_key = "cpk_..."
 secret = "csk_..."
 ```
 
-The [quickstart](../self-hosting/quickstart.md) shows how to make a key pair. Without a keys file every export
-answers 401. Keys have no scopes yet, so a key in the file can both send traces and read them through the
-[REST API](../api/README.md). Keys created in the UI, with scopes such as `ingest` and `read`, are planned.
+[Without Postgres](../self-hosting/README.md#without-postgres-keys-from-a-file) shows how to make a key pair. Without
+Postgres or a keys file every export answers 401. A key in the file has the scopes of a new key (`ingest`, `read` and
+`write`), so it can both send traces and read them through the [REST API](../api/README.md).
 
 A refused credential answers 401 with `WWW-Authenticate: Bearer, Basic realm="crucible"` and a message that says
 how to fix the header, in the OTLP status body; gRPC answers `UNAUTHENTICATED` with the same message. No refusal

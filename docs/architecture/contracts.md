@@ -121,7 +121,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization) |
 | `crucible-cursor` | `crucible-records` |
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
@@ -135,7 +135,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-sdk` | none (it depends on no internal crate) |
 | `crucible-sdk-conformance` | `crucible-sdk` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
-| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
+| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`), `crucible-api` (`cargo xtask authz-matrix`) |
 
 Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
 `crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
@@ -2503,8 +2503,12 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 - `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
   `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots), `--wal-backend`
   (`auto`, `portable`, `uring`), `--ui-dir` (serve a UI build from a directory instead of the embedded one),
-  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `id`,
-  `project_id` and `secret`; error messages never echo the file).
+  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `project_id`,
+  `public_key` and `secret`; error messages never echo the file). The keys file is the mode without Postgres
+  (ingest and the API on file keys, no sign-in); with Postgres configured, keys live in the control plane and a keys
+  file is refused with a message that says how to fix it. `crucible admin create-key --project <slug|id>
+  [--scopes ...] [--note ...] [--import]` creates a key from the command line; running servers see it within 5 s
+  (the key feed, 11.8).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
   code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product; on a compat route
   that declares SDK identity headers, from those headers when present.
@@ -2616,7 +2620,12 @@ shows server text. Guardrail errors are never retried by the server.
   require `If-Match`: a missing header is `precondition_required`, a mismatch is `precondition_failed`.
 - `Idempotency-Key` (1 to 128 characters of `[A-Za-z0-9_-]`) is honoured on POST creates for exports, deletion
   requests, media and fact writes. Stored for 24 h per (principal, route, key) with a request hash; a replay
-  returns the stored response; a different request under one key is `idempotency_key_reused`.
+  returns the stored response; a different request under one key is `idempotency_key_reused`. For fact writes the
+  principal is the author: a signed-in user writes facts as themselves (author kind `user`, capability
+  `write_facts`), a key as the key, and idempotency keys are kept per author.
+- The Crucible MCP server at `/mcp` accepts control-plane keys only with the `read` scope, and answers 503 with
+  `Retry-After` when the control plane cannot check a key (the fail-open rule of 11.8 for unknown keys).
+- A 405 carries an `Allow` header built from the route's methods.
 
 ### 12.6 Endpoints
 
@@ -2923,3 +2932,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Settled in code by the dialect contract's implementation: the usage descendant set evicts and forgets by support (the LSN of the frame carrying the usage), and the 3.1 known limit covers a descendant whose frame the WAL collected (3.1, 5.3) |
 | v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
 | v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
+| v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |

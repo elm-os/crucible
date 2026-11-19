@@ -3,6 +3,7 @@
 mod control;
 mod cursor_keys;
 mod facts;
+mod identity;
 mod jobs;
 mod keys;
 mod mcp;
@@ -47,8 +48,87 @@ enum Command {
     },
     /// Print the OpenAPI 3.1 document of the REST API (committed at specs/openapi/crucible-v1.json).
     Openapi,
+    /// Administer sign-in on a server with a control plane (Postgres).
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     /// Run the MCP proxy in front of an MCP server. It starts no server subsystem.
     Proxy(proxy::ProxyArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AdminCommand {
+    /// Create the organization and its first owner, instead of the one-time setup page that `serve` prints.
+    /// The password is read from --password-file, or else from the first line of standard input.
+    Init(Box<AdminInitArgs>),
+    /// Print a one-time password-reset link for a user, valid for 30 minutes. This version sends no email, so
+    /// pass the link on.
+    ResetPassword(Box<AdminResetArgs>),
+    /// Make an API key for a project and print `project_id`, `public_key` and `secret_key`. The secret key is
+    /// shown once.
+    CreateKey(Box<AdminCreateKeyArgs>),
+}
+
+#[derive(Debug, Args)]
+struct AdminCreateKeyArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The project: its slug (the first project's is `default`) or its id.
+    #[arg(long)]
+    project: String,
+    /// The scopes, comma-separated, from ingest, read, write, delete and sql [default: ingest,read,write].
+    #[arg(long, value_delimiter = ',')]
+    scopes: Vec<String>,
+    /// A note, shown with the key in Settings.
+    #[arg(long)]
+    note: Option<String>,
+    /// Let the key send spans older than the event-age limit, to import history.
+    #[arg(long)]
+    import: bool,
+}
+
+#[derive(Debug, Args)]
+struct AdminInitArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The organization's name.
+    #[arg(long)]
+    org_name: String,
+    /// The owner's email.
+    #[arg(long)]
+    email: String,
+    /// The owner's display name.
+    #[arg(long)]
+    name: String,
+    /// A file that holds the owner's password (12 to 128 characters).
+    #[arg(long)]
+    password_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AdminResetArgs {
+    #[command(flatten)]
+    config: ConfigArgs,
+    /// The user's email.
+    email: String,
+}
+
+/// The owner's password for `admin init`: the file's first line, or standard input's.
+#[allow(clippy::disallowed_methods)] // The binary reads the operator's input.
+fn read_password(file: Option<&std::path::Path>) -> anyhow::Result<String> {
+    let text = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading the password file {}", path.display()))?,
+        None => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context("reading the password from standard input")?;
+            line
+        }
+    };
+    Ok(text.lines().next().unwrap_or_default().to_owned())
 }
 
 #[derive(Debug, Subcommand)]
@@ -85,8 +165,9 @@ struct ConfigArgs {
     /// Address of the OTLP/gRPC ingest listener [default: 0.0.0.0:4317].
     #[arg(long)]
     grpc_listen: Option<String>,
-    /// TOML file of the project keys that ingest accepts: `[[project_key]]` tables with `project_id`,
-    /// `public_key` and `secret`. Without it, every ingest request is refused.
+    /// TOML file of the project keys, for a server without Postgres: `[[project_key]]` tables with `project_id`,
+    /// `public_key` and `secret`. With Postgres the keys live there; make them in Settings or with
+    /// `crucible admin create-key`.
     #[arg(long)]
     keys_file: Option<String>,
     /// Address of the Prometheus metrics listener [default: 127.0.0.1:9464].
@@ -265,6 +346,49 @@ fn main() -> anyhow::Result<()> {
             std::io::stdout().lock().write_all(json.as_bytes())?;
             Ok(())
         }
+        Command::Admin { command } => match command {
+            AdminCommand::Init(args) => {
+                let config = args.config.load_for_run()?;
+                let password = read_password(args.password_file.as_deref())?;
+                runtime()?.block_on(identity::admin_init(
+                    &config,
+                    &args.org_name,
+                    &args.email,
+                    &args.name,
+                    &password,
+                ))
+            }
+            AdminCommand::CreateKey(args) => {
+                let config = args.config.load_for_run()?;
+                let printed = runtime()?.block_on(identity::admin_create_key(
+                    &config,
+                    &args.project,
+                    &args.scopes,
+                    args.note.clone(),
+                    args.import,
+                ))?;
+                std::io::stdout().lock().write_all(printed.as_bytes())?;
+                writeln!(
+                    std::io::stderr().lock(),
+                    "the secret key is shown only now; running servers accept the key within 5 seconds"
+                )?;
+                Ok(())
+            }
+            AdminCommand::ResetPassword(args) => {
+                let config = args.config.load_for_run()?;
+                let link =
+                    runtime()?.block_on(identity::admin_reset_password(&config, &args.email))?;
+                writeln!(std::io::stdout().lock(), "{link}")?;
+                if config.server.public_url.is_none() {
+                    writeln!(
+                        std::io::stderr().lock(),
+                        "without server.public_url this is a path: open it at the address you reach the server \
+                         at, for example http://127.0.0.1:8080/reset/?token=...; it works once and for 30 minutes"
+                    )?;
+                }
+                Ok(())
+            }
+        },
     }
 }
 
@@ -458,6 +582,8 @@ mod tests {
             "postgres://crucible@postgres:5432/crucible",
             "--postgres-password-file",
             "/run/secrets/clickhouse",
+            "--master-key-file",
+            "/run/secrets/master",
         ];
         let postgres = config(&argv, &[]).unwrap().postgres.unwrap();
         assert_eq!(
@@ -466,7 +592,10 @@ mod tests {
         );
         assert_eq!(postgres.password.unwrap().expose(), "password");
         assert_eq!(postgres.pool_size, 8);
-        let env = [("CRUCIBLE_POSTGRES_URL", "postgres://u:p@h/d")];
+        let env = [
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u:p@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ];
         let postgres = config(&["crucible", "serve"], &env)
             .unwrap()
             .postgres

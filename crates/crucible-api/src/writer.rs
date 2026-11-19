@@ -33,7 +33,7 @@ pub struct NewFact {
 }
 
 /// Who writes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FactAuthor {
     /// The kind of author.
     pub kind: AuthorKind,
