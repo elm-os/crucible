@@ -89,7 +89,10 @@ async fn every_read_is_counted_per_class() {
     let [first, second] = plain.latency_halves_us;
     assert!(first.count > 0 && second.count > 0);
     assert_eq!(first.count + second.count, plain.latency_us.count);
-    assert_eq!(listed.latency_halves_us[0].count + listed.latency_halves_us[1].count, 0);
+    assert_eq!(
+        listed.latency_halves_us[0].count + listed.latency_halves_us[1].count,
+        0
+    );
     stub.abort();
 }
 

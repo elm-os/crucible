@@ -222,6 +222,8 @@ pub struct Fresh {
     pub lists_per_probe: Percentiles,
     /// Each list's round trip, so that `ack_to_list_us` reads as lists times their cost.
     pub list_us: Percentiles,
+    /// What else the Docker host did during the probe.
+    pub context: Context,
 }
 
 /// The loaded dataset.
@@ -613,7 +615,7 @@ fn bench(
         let [first, second] = lane_report.latency_halves_us;
         println!(
             "perf reads: {}: p50 {} us, p95 {} us, p99 {} us (p95 {} us in the first half, {} us in the second), \
-             {} of {} ok, {} store reads per request, {:.1} other CPUs busy{}",
+             {} of {} ok, {} store reads per request, {:.1} other CPUs busy, {} page-cache drops{}",
             lane.name,
             thousands(lane_report.latency_us.p50 as f64),
             thousands(lane_report.latency_us.p95 as f64),
@@ -626,6 +628,7 @@ fn bench(
                 .store_reads_per_request
                 .map_or_else(|| "n/a".to_owned(), |r| format!("{r:.2}")),
             context.other_cpus_busy,
+            context.page_cache_drops,
             lane_report
                 .invalid
                 .as_ref()
@@ -715,22 +718,25 @@ fn fresh(
     dir: &Path,
     name: &str,
 ) -> Result<Fresh, String> {
-    let text = session.loadgen_exec(
-        &[
-            "fresh".to_owned(),
-            "--ingest".to_owned(),
-            format!("{crucible}:4318"),
-            "--api".to_owned(),
-            format!("{crucible}:8080"),
-            "--project".to_owned(),
-            key.project_id.clone(),
-            "--probes".to_owned(),
-            probes.to_string(),
-            "--header".to_owned(),
-            bearer.to_owned(),
-        ],
-        Duration::from_secs(120 + u64::from(probes)),
-    )?;
+    let (text, context) = session.observed(|| {
+        session.loadgen_exec(
+            &[
+                "fresh".to_owned(),
+                "--ingest".to_owned(),
+                format!("{crucible}:4318"),
+                "--api".to_owned(),
+                format!("{crucible}:8080"),
+                "--project".to_owned(),
+                key.project_id.clone(),
+                "--probes".to_owned(),
+                probes.to_string(),
+                "--header".to_owned(),
+                bearer.to_owned(),
+            ],
+            Duration::from_secs(120 + u64::from(probes)),
+        )
+    })?;
+    let text = text?;
     let path = format!("runs/{name}.json");
     write(&dir.join(&path), &text)?;
     let report = parse(&text, &path)?;
@@ -741,6 +747,7 @@ fn fresh(
         ack_to_list_us: percentiles(&report["ack_to_list_us"]),
         lists_per_probe: percentiles(&report["lists_per_probe"]),
         list_us: percentiles(&report["list_us"]),
+        context,
     })
 }
 
@@ -800,7 +807,8 @@ pub fn summary(report: &ReadsReport) -> String {
         out,
         "\n## Ack to API\n\nFrom the acknowledgement of one small trace to the first list of traces that names it, \
          polled every 2 ms; the first list leaves at the acknowledgement.\n\n| Store | Listed | p50 ms | p95 ms | \
-         p99 ms | Lists per probe p50, p99 | List round trip p50, p95 ms |\n|---|---|---|---|---|---|---|"
+         p99 ms | Lists per probe p50, p99 | List round trip p50, p95 ms | Other CPUs busy | Page-cache drops \
+         |\n|---|---|---|---|---|---|---|---|---|"
     );
     for (store, fresh) in [
         ("empty", &report.fresh_empty),
@@ -809,7 +817,7 @@ pub fn summary(report: &ReadsReport) -> String {
         let p = fresh.ack_to_list_us;
         let _ = writeln!(
             out,
-            "| {store} | {} of {} | {} | {} | {} | {}, {} | {}, {} |",
+            "| {store} | {} of {} | {} | {} | {} | {}, {} | {}, {} | {:.1} | {} |",
             fresh.listed,
             fresh.probes,
             ms(p.p50),
@@ -818,22 +826,24 @@ pub fn summary(report: &ReadsReport) -> String {
             fresh.lists_per_probe.p50,
             fresh.lists_per_probe.p99,
             ms(fresh.list_us.p50),
-            ms(fresh.list_us.p95)
+            ms(fresh.list_us.p95),
+            fresh.context.other_cpus_busy,
+            fresh.context.page_cache_drops
         );
     }
     let _ = writeln!(
         out,
-        "\n## Reads\n\nOther jobs' containers have no cpuset, so they can also run on the rig's CPUs.\n\n| Lane | OK of \
-         sent | p50 ms | p95 ms | p99 ms | p95 ms by half | Store reads per request | Barrier wait mean ms | \
-         Connections opened | Merges at start | Other CPUs busy | Valid |\n|---|---|---|---|---|---|---|---|---|---|\
-         ---|---|"
+        "\n## Reads\n\nOther jobs' containers have no cpuset, so they can also run on the rig's CPUs. After a page-cache \
+         drop on the host, the store's reads go to the disk.\n\n| Lane | OK of sent | p50 ms | p95 ms | p99 ms | p95 \
+         ms by half | Store reads per request | Barrier wait mean ms | Connections opened | Merges at start | Other \
+         CPUs busy | Page-cache drops | Valid |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     for lane in &report.lanes {
         let p = lane.latency_us;
         let [first, second] = lane.latency_halves_us;
         let _ = writeln!(
             out,
-            "| {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} | {} |",
             lane.name,
             lane.ok,
             lane.sent,
@@ -851,6 +861,9 @@ pub fn summary(report: &ReadsReport) -> String {
             lane.context
                 .as_ref()
                 .map_or_else(|| "n/a".to_owned(), |c| format!("{:.1}", c.other_cpus_busy)),
+            lane.context
+                .as_ref()
+                .map_or_else(|| "n/a".to_owned(), |c| c.page_cache_drops.to_string()),
             lane.invalid.as_deref().unwrap_or("yes")
         );
     }

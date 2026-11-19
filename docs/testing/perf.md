@@ -173,10 +173,11 @@ summary's "Second vs first" column), and a note names it when it exceeds the met
 
 Each measured arm also records what else the machine did: busy cores on the rig's CPUs and on the Docker host's
 other CPUs (from `/proc/stat`, which a container reads unnamespaced), the share of the measurement during which
-the busiest block device had I/O in flight (from `/proc/diskstats`), the 1-minute load average before and after,
-and the containers that ran outside the session. Other jobs' containers carry no cpuset, so they can take the
-rig's CPUs as well, and they write to the disk the WAL flushes to; the summary's last table lists every run in
-order with this context.
+the busiest block device had I/O in flight (from `/proc/diskstats`), the page-cache drops on the host (from
+`/proc/vmstat`: a job that frees memory by dropping the cache sends the next reads to the disk), the 1-minute load
+average before and after, and the containers that ran outside the session. Other jobs' containers carry no cpuset,
+so they can take the rig's CPUs as well, and they write to the disk the WAL flushes to; the summary's last table
+lists every run in order with this context.
 
 ### A/A calibration
 
@@ -288,7 +289,7 @@ Paths are relative to the results directory.
 | `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
 | `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
 | `comparisons[]` | array | The path's two metrics (`throughput` and `latency`, or `sustained` and `freshness`), each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
-| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `disk_busy` (the busiest block device's share of the measurement with I/O in flight), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `disk_busy` (the busiest block device's share of the measurement with I/O in flight), `page_cache_drops` (the host's page-cache drops during it), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
 | `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe

@@ -817,6 +817,9 @@ pub struct Context {
     /// The share of the measurement during which the busiest block device of the Docker host had I/O in flight
     /// (from `/proc/diskstats`): the WAL's flushes wait behind other jobs' writes on a shared disk.
     pub disk_busy: f64,
+    /// Times the Docker host's page cache was dropped during the measurement (`drop_pagecache` in
+    /// `/proc/vmstat`): the store's reads after a drop go to the disk until the cache fills again.
+    pub page_cache_drops: u64,
     /// The containers that ran outside the session when the measurement started.
     pub others: Vec<String>,
 }
@@ -850,12 +853,22 @@ pub fn disk_busy(
 }
 
 /// One reading of the Docker host's activity: CPU ticks, the 1-minute load average, the block devices' busy
-/// time, and when it was taken.
+/// time, the page-cache drops so far, and when it was taken.
 struct HostSample {
     cpus: BTreeMap<usize, (u64, u64)>,
     load: f64,
     disks: BTreeMap<String, u64>,
+    page_cache_drops: u64,
     at: Instant,
+}
+
+/// The page-cache drops since boot, from the `drop_pagecache` line of `/proc/vmstat` (0 when it has none).
+pub fn page_cache_drops(vmstat: &str) -> u64 {
+    vmstat
+        .lines()
+        .find_map(|line| line.strip_prefix("drop_pagecache "))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// Busy and total time per CPU, in clock ticks, from the `cpuN` lines of `/proc/stat`.
@@ -1463,16 +1476,21 @@ impl<'r> Session<'r> {
                 &after.disks,
                 after.at.saturating_duration_since(before.at),
             ),
+            page_cache_drops: after
+                .page_cache_drops
+                .saturating_sub(before.page_cache_drops),
             others,
         };
         Ok((value, context))
     }
 
     fn host_sample(&self, client: &str) -> HostSample {
-        let script = "cat /proc/stat; echo ---; cat /proc/loadavg; echo ---; cat /proc/diskstats";
+        let script = "cat /proc/stat; echo ---; cat /proc/loadavg; echo ---; cat /proc/diskstats; echo ---; \
+                      cat /proc/vmstat";
         let text = docker(["exec", client, "sh", "-c", script]).unwrap_or_default();
         let mut parts = text.split("---\n");
-        let (stat, loadavg, diskstats) = (
+        let (stat, loadavg, diskstats, vmstat) = (
+            parts.next().unwrap_or_default(),
             parts.next().unwrap_or_default(),
             parts.next().unwrap_or_default(),
             parts.next().unwrap_or_default(),
@@ -1481,6 +1499,7 @@ impl<'r> Session<'r> {
             cpus: cpu_ticks(stat),
             load: load_1m(loadavg),
             disks: disk_ticks(diskstats),
+            page_cache_drops: page_cache_drops(vmstat),
             at: Instant::now(),
         }
     }
@@ -1733,6 +1752,14 @@ mod tests {
         assert_eq!(disk_busy(&before, &after, Duration::from_millis(500)), 1.0);
         assert_eq!(SMALL.cpus(), [0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(FULL.cpus().len(), 23);
+    }
+
+    #[test]
+    fn page_cache_drops_are_read_from_vmstat() {
+        let vmstat = "nr_free_pages 1000\ndrop_pagecache 8\ndrop_slab 8\npgfault 99\n";
+        assert_eq!(page_cache_drops(vmstat), 8);
+        assert_eq!(page_cache_drops("nr_free_pages 1000\n"), 0);
+        assert_eq!(page_cache_drops(""), 0);
     }
 
     #[test]

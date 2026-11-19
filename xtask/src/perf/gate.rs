@@ -924,20 +924,22 @@ pub fn summary(report: &GateReport) -> String {
         out,
         "\n## Runs in order\n\nBusy cores are averaged over each measurement. Other jobs' containers have no cpuset, \
          so they can also run on the rig's CPUs, and they share its disk: disk busy is the share of the measurement \
-         during which the busiest block device had I/O in flight.\n\n| Run | Pair | Measurement | Arm | Value | Rig \
-         CPUs busy | Other CPUs busy | Disk busy | Load before, after | Other containers |\n\
-         |---|---|---|---|---|---|---|---|---|---|"
+         during which the busiest block device had I/O in flight. After a page-cache drop on the host, reads go to the \
+         disk.\n\n| Run | Pair | Measurement | Arm | Value | Rig CPUs busy | Other CPUs busy | Disk busy | Page-cache \
+         drops | Load before, after | Other containers |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|"
     );
     for (index, run) in (1..).zip(&report.runs) {
         let (kind, value) = (heading(run.kind).0, metric_value(run.kind, run.value()));
         let context = run.context.as_ref().map_or_else(
-            || "n/a | n/a | n/a | n/a | n/a".to_owned(),
+            || "n/a | n/a | n/a | n/a | n/a | n/a".to_owned(),
             |c| {
                 format!(
-                    "{:.1} | {:.1} | {:.0}% | {:.1}, {:.1} | {}",
+                    "{:.1} | {:.1} | {:.0}% | {} | {:.1}, {:.1} | {}",
                     c.rig_cpus_busy,
                     c.other_cpus_busy,
                     c.disk_busy * 100.0,
+                    c.page_cache_drops,
                     c.load_before,
                     c.load_after,
                     c.others.len()
