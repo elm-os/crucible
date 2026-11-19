@@ -16,6 +16,8 @@
 //!   claims, the key feed and its fault model.
 //! - [`lease_sim`]: leader election with leases over `pg_model` under its faults, and the oracle for the
 //!   fencing rules of contract 11.7.
+//! - [`jobs_sim`]: the job runners of `crucible-jobs` over `pg_model`: crashes, freezes, clock skew, lost
+//!   connections and lease steals, and the oracle for the job invariants J1 to J3.
 //!
 //! The network (turmoil hosts) joins in a later wave and reuses these pieces.
 //!
@@ -28,6 +30,7 @@ mod boot;
 pub mod ch_model;
 mod ch_read;
 mod disk;
+pub mod jobs_sim;
 pub mod lease_sim;
 pub mod pg_model;
 mod runtime;

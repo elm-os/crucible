@@ -26,6 +26,8 @@ crucible-admission = { workspace = true }
 crucible-auth = { workspace = true, features = ["test-support"] }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-control = { path = "../crucible-control" }
+# A path dependency, for the same reason. The jobs simulation runs the real runners.
+crucible-jobs = { path = "../crucible-jobs", features = ["test-mutants"] }
 async-trait = { workspace = true }
 axum = { workspace = true }
 blake3 = { workspace = true }
