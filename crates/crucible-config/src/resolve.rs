@@ -313,7 +313,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     let cpu_permits = t.parsed::<u32>("cpu.permits", "a whole number of blocking jobs");
     if cpu_permits == Some(0) {
         t.errors.push(
-            "`cpu.permits` must be at least 1; leave it unset to run one blocking job per CPU"
+            "`cpu.permits` must be at least 1; leave it unset for the default of 8 per CPU"
                 .to_owned(),
         );
     }
@@ -1182,7 +1182,7 @@ session_outage_grace = 600  # default
         for (file, says) in [
             (
                 "[cpu]\npermits = 0\n",
-                "`cpu.permits` must be at least 1; leave it unset to run one blocking job per CPU",
+                "`cpu.permits` must be at least 1; leave it unset for the default of 8 per CPU",
             ),
             (
                 "[cpu]\npermits = \"all\"\n",

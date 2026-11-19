@@ -276,12 +276,19 @@ fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBa
 /// name lookups and password hashing.
 const BLOCKING_RESERVE: usize = 8;
 
-/// `cpu.permits`: the setting, or one permit per CPU this process may use (its affinity and its cgroup quota
-/// count). The binary is the one place that reads the core count.
+/// Permits per CPU when `cpu.permits` is unset (default; revisit when the shipper's stages take their shares). The
+/// blocking jobs share the CPUs with the runtime's workers, which run the rest of ingest and the shipper. With one
+/// permit per CPU, a burst on the perf gate's small rig (2 CPUs) acknowledged 12 to 26% fewer spans per second than
+/// with main's unbounded blocking pool (docs/development.md).
+const PERMITS_PER_CPU: u32 = 8;
+
+/// `cpu.permits`: the setting, or [`PERMITS_PER_CPU`] per CPU this process may use (its affinity and its cgroup
+/// quota count). The binary is the one place that reads the core count.
 fn cpu_permits(config: &Config) -> u32 {
     config.cpu_permits.unwrap_or_else(|| {
         std::thread::available_parallelism()
             .map_or(1, |cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX))
+            .saturating_mul(PERMITS_PER_CPU)
     })
 }
 
@@ -713,10 +720,10 @@ mod tests {
     }
 
     #[test]
-    fn the_cpu_budget_defaults_to_the_cpus_of_the_process() {
+    fn the_cpu_budget_defaults_to_8_per_cpu_of_the_process() {
         let unset = config(&["crucible", "serve"], &[]).unwrap();
         let cpus = std::thread::available_parallelism().unwrap().get();
-        assert_eq!(cpu_permits(&unset), u32::try_from(cpus).unwrap());
+        assert_eq!(cpu_permits(&unset), u32::try_from(cpus).unwrap() * 8);
         let set = config(&["crucible", "serve"], &[("CRUCIBLE_CPU_PERMITS", "3")]).unwrap();
         assert_eq!(cpu_permits(&set), 3);
     }
