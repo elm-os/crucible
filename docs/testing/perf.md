@@ -534,14 +534,23 @@ significant digits.
    schedule of 2 reads/s on average for 60 s with exponential think times, 8 connections, its traces and spans
    drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
    after the lane, so their change belongs to the lane's class.
-5. **The caches.** The lanes measure the store as a server that has served reads for a while holds it, so each
-   lane attempt starts by warming it:
+5. **The caches.** The lanes measure a store that no write has changed for a while, as ClickHouse then holds
+   it, so each lane attempt starts by settling and warming it:
+   - **Column statistics.** ClickHouse 26.8 keeps automatic statistics on every column (`auto_statistics_types
+     = 'basic, uniq_v2'`) and uses them to plan each read. Until its statistics cache refreshes, every
+     `refresh_statistics_interval` (300 s), a read loads every part's statistics from their files, and one new
+     part sends reads back to loading them all: on a 41-part table, a read spent 1.5 ms loading statistics and
+     opened 172 files cold, nothing and 6 files after a refresh, and 1.0 ms and 130 files after one insert. In
+     a 300 s trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and the second
+     40.8 ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
+     (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the first refresh, about
+     300 s after the rig started in each of four runs, and nothing afterwards, when its median fell from about
+     92 ms to 15 ms. So each attempt first waits, up to 360 s, until a read of
+     `span_core`, `trace_heads` and `trace_stats` loads no statistics; a lane that never settles is marked
+     invalid. A store under live ingest stays in the loading state, so these lanes leave that cost out.
    - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
-     parts. In a 300 s trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and
-     the second 40.8 ms, with no page-cache drop: for about a minute each `span_core` read missed the mark
-     cache (91 misses per query at first, then fewer) and read 2.4 MB of compressed data, against no miss and
-     0.16 MB once the marks were cached, when its median fell from about 95 ms to 14 ms. Each attempt runs
-     `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
+     parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
+     first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
    - **Page cache.** When the store's active parts fit within half of ClickHouse's memory limit (the
      container's page cache counts against it), each attempt reads every file of the store once; a larger
      store, such as the 100-million-span dataset, is read from the disk, as it would be. The Docker Desktop VM

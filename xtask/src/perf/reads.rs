@@ -135,6 +135,9 @@ const SATURATED_LAG_US: u64 = 25_000;
 /// Attempts of a lane, at most. An attempt during which the host dropped its page cache runs again: its reads
 /// after the drop went to the disk, while the other lanes' came from the cache.
 const ATTEMPTS: u32 = 3;
+/// The longest a lane attempt waits for ClickHouse's reads to stop loading column statistics: one refresh of its
+/// statistics cache (`refresh_statistics_interval`, 300 s by default) and a minute.
+const SETTLE_LIMIT: Duration = Duration::from_secs(360);
 
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     args.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -280,6 +283,11 @@ pub struct LaneReport {
     pub connections_opened: u64,
     /// ClickHouse merges running at the lane's start.
     pub merges_at_start: u64,
+    /// How long the last attempt waited, before its reads, for ClickHouse's reads to stop loading column
+    /// statistics, and whether they did.
+    pub statistics_wait_s: f64,
+    /// See `statistics_wait_s`.
+    pub statistics_settled: bool,
     /// What else the Docker host did during the lane.
     pub context: Option<Context>,
     /// Why the lane's latency does not stand, or `None`.
@@ -578,10 +586,12 @@ fn bench(
             .as_ref()
             .is_none_or(|names| names.iter().any(|name| name == lane.name))
     };
-    // One attempt of a lane. It starts by loading every table's marks into ClickHouse's mark cache and, when the
-    // store fits the page cache, by reading the store's files once, so that neither the load's new parts nor what
-    // an earlier lane or a page-cache drop left in the caches decides its latency.
+    // One attempt of a lane. It waits until ClickHouse's reads stop loading column statistics, then loads every
+    // table's marks into the mark cache and, when the store fits the page cache, reads the store's files once, so
+    // that neither the load's new parts nor what an earlier lane or a page-cache drop left in the caches decides
+    // its latency.
     let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
+        let (statistics_wait, statistics_settled) = session.settle_statistics(SETTLE_LIMIT)?;
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()
@@ -628,10 +638,23 @@ fn bench(
         )?;
         let name = format!("runs/{}-{attempt}.json", lane.name);
         write(&dir.join(&name), &text)?;
-        let lane_report = judge_lane(lane, &parse(&text, &name)?, &before, &after, name);
+        let mut lane_report = judge_lane(lane, &parse(&text, &name)?, &before, &after, name);
+        if !statistics_settled {
+            let unsettled = format!(
+                "ClickHouse's reads still loaded column statistics after {} s, so its reads paid for them while \
+                 the other lanes' did not",
+                statistics_wait.as_secs()
+            );
+            lane_report.invalid = Some(match lane_report.invalid.take() {
+                Some(reasons) => format!("{reasons}; {unsettled}"),
+                None => unsettled,
+            });
+        }
         Ok(LaneReport {
             attempts: attempt,
             merges_at_start,
+            statistics_wait_s: statistics_wait.as_secs_f64(),
+            statistics_settled,
             context: Some(context),
             ..lane_report
         })
@@ -668,7 +691,7 @@ fn bench(
         let [first, second] = lane_report.latency_halves_us;
         println!(
             "perf reads: {}: p50 {} us, p95 {} us, p99 {} us (p95 {} us in the first half, {} us in the second), \
-             {} of {} ok, {} store reads per request, {:.1} other CPUs busy, {} page-cache drops, attempt {}{}",
+             {} of {} ok, {} store reads per request, {:.1} other CPUs busy, {} page-cache drops, attempt {} after {:.0} s \n             waiting for the column statistics{}",
             lane.name,
             thousands(lane_report.latency_us.p50 as f64),
             thousands(lane_report.latency_us.p95 as f64),
@@ -683,6 +706,7 @@ fn bench(
             other_cpus_busy,
             page_cache_drops,
             lane_report.attempts,
+            lane_report.statistics_wait_s,
             lane_report
                 .invalid
                 .as_ref()
@@ -754,6 +778,8 @@ fn judge_lane(
         barrier_wait_mean_us: (waits > 0.0).then(|| waited / waits),
         connections_opened: connections,
         merges_at_start: 0,
+        statistics_wait_s: 0.0,
+        statistics_settled: true,
         context: None,
         invalid: (!reasons.is_empty()).then(|| reasons.join("; ")),
     }
@@ -894,15 +920,15 @@ pub fn summary(report: &ReadsReport) -> String {
          drop on the host, the store's reads go to the disk, so an attempt during which the host dropped its page \
          cache runs again, up to {ATTEMPTS} attempts; the numbers are the last attempt's.\n\n| Lane | Attempts | OK \
          of sent | p50 ms | p95 ms | p99 ms | p95 ms by half | Store reads per request | Barrier wait mean ms | \
-         Connections opened | Merges at start | Other CPUs busy | Page-cache drops | Valid \
-         |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+         Connections opened | Merges at start | Statistics wait s | Other CPUs busy | Page-cache drops | Valid \
+         |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     for lane in &report.lanes {
         let p = lane.latency_us;
         let [first, second] = lane.latency_halves_us;
         let _ = writeln!(
             out,
-            "| {} | {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {:.0} | {} | {} | {} |",
             lane.name,
             lane.attempts,
             lane.ok,
@@ -918,6 +944,7 @@ pub fn summary(report: &ReadsReport) -> String {
                 .map_or_else(|| "n/a".to_owned(), |us| format!("{:.2}", us / 1000.0)),
             lane.connections_opened,
             lane.merges_at_start,
+            lane.statistics_wait_s,
             lane.context
                 .as_ref()
                 .map_or_else(|| "n/a".to_owned(), |c| format!("{:.1}", c.other_cpus_busy)),

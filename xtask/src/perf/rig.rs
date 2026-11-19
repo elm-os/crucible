@@ -1555,6 +1555,37 @@ impl<'r> Session<'r> {
         self.drained(key, rows, limit)
     }
 
+    /// Waits until reads of the trace tables load no column statistics from the parts' files, or until `limit`
+    /// passes, and returns how long it waited and whether they settled. ClickHouse (26.8, automatic statistics
+    /// on every column) loads every part's statistics for each read until its statistics cache refreshes, every
+    /// `refresh_statistics_interval` (300 s by default), and a new part sends reads back to loading them all.
+    pub fn settle_statistics(&self, limit: Duration) -> Result<(Duration, bool), String> {
+        let started = Instant::now();
+        let mut probe = 0u64;
+        loop {
+            probe += 1;
+            let comment = format!("crucible-perf-settle-{}-{probe}", self.id);
+            self.clickhouse_text(&format!(
+                "SELECT (SELECT count() FROM crucible.span_core WHERE trace_hash = 0) + (SELECT count() FROM \
+                 crucible.trace_heads WHERE trace_hash = 0) + (SELECT count() FROM crucible.trace_stats WHERE \
+                 trace_hash = 0) SETTINGS log_comment = '{comment}'"
+            ))?;
+            self.clickhouse_text("SYSTEM FLUSH LOGS")?;
+            let row = self.clickhouse_row(&format!(
+                "SELECT ProfileEvents['LoadedStatisticsMicroseconds'] AS us FROM system.query_log WHERE type = \
+                 'QueryFinish' AND log_comment = '{comment}'"
+            ))?;
+            let loaded = row["us"]
+                .as_u64()
+                .or_else(|| row["us"].as_str().and_then(|s| s.parse().ok()));
+            let settled = loaded == Some(0);
+            if settled || started.elapsed() >= limit {
+                return Ok((started.elapsed(), settled));
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
     /// Prepares the store for a measurement as on a server that has served reads for a while: loads the marks of
     /// every table of the `crucible` database into ClickHouse's mark cache, since a part's marks otherwise load
     /// on its first read, and with `files` also reads every file of the store once, in its container, so that
