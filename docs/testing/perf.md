@@ -414,9 +414,10 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 - **Bounded concurrency.** Each of `--concurrency` connections carries one request at a time (HTTP/1.1). A free
   connection takes the next request and prepares its body (the patch, and the gzip in the gzip lane) before the
   request is due.
-- **Gzip off the runtime's workers.** A 1 MiB body takes about a millisecond to compress; on a runtime worker it
-  held up the pacer and the other connections of that thread, so the generator sent late (send lag p99 3.3 ms
-  at 25,600 spans/s of 10 KiB spans, [`perf-baseline.md`](perf-baseline.md)). Bodies are compressed on the
+- **Gzip off the runtime's workers.** A 1 MiB body takes a few milliseconds of CPU to compress (the generator
+  spends 4 to 5 ms per such request); on a runtime worker it held up the pacer and the other connections of that
+  thread, so the generator sent late: send lag p99 3.3 to 98.7 ms at 25,600 spans/s of 10 KiB spans in 100-span
+  requests, and 0.06 ms off the workers ([`perf-baseline.md`](perf-baseline.md)). Bodies are compressed on the
   runtime's blocking threads, at most `--gzip-threads` at a time (by default half the CPUs available, at least
   one; the runtime's workers get the rest), each by an encoder that keeps its deflate state from body to body.
 - **A pacer.** The production timer has millisecond resolution, so waiting on it alone sent requests up to
@@ -696,6 +697,52 @@ load average 6 to 11). The image is `39360ec` in both arms unless stated.
 - The A/A's order effect was -0.7% (sustained) and -3.0% (freshness), and its arms spread by up to 15% from
   pair to pair: throughput again followed the other jobs' load (correlation -0.50 with the other CPUs' busy
   cores).
+
+### The read bench
+
+Measured on 2026-11-19, on a laptop, not reference hardware, on the small rig (ClickHouse 2 CPUs and 1.5 GB),
+build `7abc007`, with other tracks' work on the machine. Each run loaded 2,250,000 spans of 1 KiB over 30 days
+through ingest in 177 s; the store held them in 516 MB of active parts, 230 bytes per span, so the 100-million-span
+dataset needs about 23 GB of ClickHouse disk and the billion-span one about 230 GB.
+
+Two runs, each lane 120 reads at 2 per second; latency in ms, p50 / p95 / p99:
+
+| Lane | Run 1 | Run 2 | p95 change | Store reads per request |
+|---|---|---|---|---|
+| `trace_by_id` | 90.0 / 154.8 / 209.0 | 83.1 / 137.2 / 174.5 | -11.3% | 6 |
+| `trace_by_id_hinted` | 35.3 / 60.2 / 67.1 | 32.7 / 38.4 / 41.9 | -36.1% | 6 |
+| `trace_list_30d` | 43.3 / 54.7 / 79.1 | 40.2 / 46.8 / 57.9 | -14.3% | 5 |
+| `span_list_30d` | 261.6 / 398.6 / 494.3 | 249.5 / 366.1 / 477.7 | -8.2% | 1 |
+| `session_list_30d` | 3.7 / 4.7 / 9.0 | 3.5 / 3.9 / 5.2 | -16.7% | 1 |
+| `user_list_30d` | 3.4 / 4.0 / 4.5 | 3.4 / 4.1 / 4.5 | +2.6% | 1 |
+| `span_children` | 35.4 / 61.6 / 73.0 | 32.7 / 38.2 / 40.3 | -38.0% | 3 |
+| `payload` | 11.4 / 20.0 / 22.3 | 10.7 / 13.6 / 15.9 | -31.6% | 1 |
+| `facts` | 17.2 / 21.0 / 24.8 | 19.1 / 65.7 / 90.6 | +212.8% | 4 |
+| `filter_values_30d` | 6.4 / 7.7 / 12.1 | 6.0 / 7.0 / 13.4 | -9.3% | 1 |
+| `data_bounds` | 7.2 / 13.4 / 36.1 | 7.4 / 22.0 / 43.2 | +64.1% | 2 |
+| `search_30d` | 19.4 / 47.1 / 286.2 | 19.9 / 28.0 / 485.6 | -40.5% | 1 |
+| `metrics_30d` | 6.7 / 10.7 / 14.1 | 9.3 / 38.1 / 60.7 | +257.4% | 1 |
+
+- Every lane was valid in both runs: every read answered 2xx and non-empty where it must be, Crucible counted
+  every request under the lane's class, and no lane was saturated. Trace by id waited 0 ms for the read barrier
+  (the index was caught up), and each lane opened at most 2 store connections.
+- **Against the targets, at 2.25 million spans on 2 ClickHouse CPUs:** trace by id without a hint misses 100 ms
+  p95 (137 to 155 ms); with the trace's start as the hint, as the UI sends it, it meets it (38 to 60 ms). The
+  30-day trace list stays far below 500 ms p95 (47 to 55 ms); the billion-span figure needs the full rig and the
+  larger dataset.
+- **Two runs agree within 10% at p95 in 3 of 13 lanes**, not all of them. 120 reads put p95 on the 6th slowest
+  read, so a stall of a second or two on the shared machine moves it; the medians agree better (within 10% in 11 of
+  13 lanes), and run 2 was faster in most lanes, which points at the machine's load rather than the build.
+- An earlier run at 20 reads/s saturated trace by id (about 470 ms per read under that load, with
+  requests queued up to 4 s for a connection) and the 30-day span list (about 1.1 s per read): the saturation rule
+  and the default rate of 2 per second come from it.
+
+**Ack to API.** On the empty store the probe measured 59.8 / 75.5 / 81.9 ms and 52.0 / 64.6 / 77.1 ms (p50 / p95 /
+p99, two runs; an earlier run while images were building, 74.6 / 99.5 / 111.5 ms), not milestone 1's 13 to 28 ms.
+Every probe took exactly two lists: the first, sent at the acknowledgement, never named the trace, and the second
+did, so the figure is two list round trips of about 30 ms each. A list issues 5 store reads in sequence (the
+counter above), each a ClickHouse query on 2 CPUs; the trace itself was visible by the start of the second list.
+On the loaded store the same probe measured 108.6 / 121.0 / 139.4 and 99.7 / 113.0 / 125.5 ms.
 
 ### Pre-ack copies
 
