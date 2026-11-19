@@ -20,8 +20,8 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../migrations/V1__control_base.sql"),
     ),
     (
-        "V2__sql_workspace",
-        include_str!("../migrations/V2__sql_workspace.sql"),
+        "V3__sql_workspace",
+        include_str!("../migrations/V3__sql_workspace.sql"),
     ),
 ];
 
