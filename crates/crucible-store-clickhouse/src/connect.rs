@@ -8,15 +8,25 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crucible_env::{Env, NetError, Stream, TlsRoots};
+use crucible_env::metrics::registry;
+use crucible_env::{Counter, Env, NetError, Stream, TlsRoots};
 use futures::future::BoxFuture;
 use http::Uri;
 use hyper::rt::{Read, ReadBufCursor, Write};
 use hyper_util::client::legacy::connect::{Connected, Connection};
 use hyper_util::rt::TokioIo;
 
-/// The pool drops a connection idle for this long, a little under the server's keep-alive timeout.
-const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long the pool keeps an idle connection while the server's keep-alive timeout is unknown.
+pub(crate) const FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How far below the server's keep-alive timeout the pool's idle timeout stays, so that a request does not go
+/// out on a connection the server is closing. At most half the server's timeout.
+const KEEP_ALIVE_MARGIN: Duration = Duration::from_secs(1);
+
+/// The pool's idle timeout for a server that keeps an idle connection open for `keep_alive`.
+pub(crate) fn idle_timeout(keep_alive: Duration) -> Duration {
+    keep_alive.saturating_sub(KEEP_ALIVE_MARGIN.min(keep_alive / 2))
+}
 
 /// Why a connection could not be opened.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +47,8 @@ pub(crate) struct NetConnector {
     env: Env,
     roots: TlsRoots,
     timeout: Duration,
+    /// `crucible_clickhouse_connections_opened_total`.
+    opened: Counter,
 }
 
 impl NetConnector {
@@ -62,11 +74,15 @@ impl NetConnector {
                 .connect(SocketAddr::new(ip, port), deadline)
                 .await
             {
-                Ok(stream) if tls => {
-                    let stream = self.env.net.tls_connect(stream, host, &self.roots).await?;
+                Ok(stream) => {
+                    self.opened.add(1);
+                    let stream = if tls {
+                        self.env.net.tls_connect(stream, host, &self.roots).await?
+                    } else {
+                        stream
+                    };
                     return Ok(Conn(TokioIo::new(stream)));
                 }
-                Ok(stream) => return Ok(Conn(TokioIo::new(stream))),
                 Err(error) => last = ConnectError::Net(error),
             }
         }
@@ -155,15 +171,61 @@ where
     }
 }
 
-/// A ClickHouse client whose every connection goes through `env.net`. Clients cloned from it share one pool.
-pub(crate) fn client(env: &Env, roots: TlsRoots, connect_timeout: Duration) -> clickhouse::Client {
+/// A ClickHouse client whose every connection goes through `env.net`, and whose pool keeps an idle connection
+/// for `idle`. Clients cloned from it share one pool, and the pool keeps that timeout for its whole life.
+pub(crate) fn client(
+    env: &Env,
+    roots: TlsRoots,
+    connect_timeout: Duration,
+    idle: Duration,
+) -> clickhouse::Client {
     let connector = NetConnector {
         env: env.clone(),
         roots,
         timeout: connect_timeout,
+        opened: env
+            .metrics
+            .counter(&registry::CLICKHOUSE_CONNECTIONS_OPENED, &[]),
     };
     let http = hyper_util::client::legacy::Client::builder(EnvExecutor(env.clone()))
-        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+        .pool_idle_timeout(idle)
         .build(connector);
     clickhouse::Client::with_http_client(http).with_compression(clickhouse::Compression::None)
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[test]
+    fn the_idle_timeout_stays_a_margin_below_the_servers_keep_alive() {
+        // The values of the configuration files that 26.3 and 26.8 ship, and the compiled default.
+        assert_eq!(
+            idle_timeout(Duration::from_secs(10)),
+            Duration::from_secs(9)
+        );
+        assert_eq!(
+            idle_timeout(Duration::from_secs(30)),
+            Duration::from_secs(29)
+        );
+        assert_eq!(
+            idle_timeout(Duration::from_secs(1)),
+            Duration::from_millis(500)
+        );
+        assert_eq!(idle_timeout(Duration::ZERO), Duration::ZERO);
+    }
+
+    proptest! {
+        /// The pool never keeps a connection as long as the server does, and gives up at most the margin.
+        #[test]
+        fn the_idle_timeout_is_below_the_keep_alive_by_at_most_the_margin(millis in 1u64..=86_400_000) {
+            let keep_alive = Duration::from_millis(millis);
+            let idle = idle_timeout(keep_alive);
+            prop_assert!(idle < keep_alive);
+            prop_assert!(keep_alive - idle <= KEEP_ALIVE_MARGIN);
+            prop_assert!(idle >= keep_alive / 2);
+        }
+    }
 }

@@ -98,9 +98,20 @@ pub fn parse_code(text: &str) -> Option<u32> {
     rest[..digits].parse().ok()
 }
 
+/// Whether a statement failed before any byte of its request was sent: the connection could not be opened.
+pub(crate) fn not_sent(error: &clickhouse::error::Error) -> bool {
+    match error {
+        clickhouse::error::Error::Network(source) => source
+            .downcast_ref::<hyper_util::client::legacy::Error>()
+            .is_some_and(hyper_util::client::legacy::Error::is_connect),
+        _ => false,
+    }
+}
+
 impl Failure {
     pub(crate) fn from_client(error: clickhouse::error::Error) -> Self {
         use clickhouse::error::Error;
+        let unsent = not_sent(&error);
         match error {
             Error::BadResponse(text) => match parse_code(&text) {
                 Some(code) => Self::Server {
@@ -109,16 +120,8 @@ impl Failure {
                 },
                 None => Self::Network(text),
             },
-            Error::Network(source) => {
-                let connect = source
-                    .downcast_ref::<hyper_util::client::legacy::Error>()
-                    .is_some_and(hyper_util::client::legacy::Error::is_connect);
-                if connect {
-                    Self::NotSent(source.to_string())
-                } else {
-                    Self::Network(source.to_string())
-                }
-            }
+            Error::Network(source) if unsent => Self::NotSent(source.to_string()),
+            Error::Network(source) => Self::Network(source.to_string()),
             Error::TimedOut => Self::Timeout,
             other => Self::Client(other.to_string()),
         }

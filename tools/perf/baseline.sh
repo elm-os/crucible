@@ -41,9 +41,9 @@ CH_CPUS=${CH_CPUS:-6-13}
 CH_MEM=${CH_MEM:-6g}
 CLIENT_CPUS=${CLIENT_CPUS:-14-17}
 CLIENT_MEM=${CLIENT_MEM:-1g}
-# The recent-span index defaults to 10% of the host's memory (at most 1 GiB), which does not fit beside the batches
-# in a 2 GB container.
-RECENT_MAX_BYTES=${RECENT_MAX_BYTES:-268435456}
+# The recent-span index defaults to 10% of the container's memory limit (at most 1 GiB), about 205 MiB in 2 GB. Set
+# RECENT_MAX_BYTES to bound it by hand instead.
+RECENT_MAX_BYTES=${RECENT_MAX_BYTES:-}
 SPANS_PER_REQUEST=${SPANS_PER_REQUEST:-100}
 # The connection cap is at least CONCURRENCY and holds 100 ms of arrivals, so that it binds only after a stall
 # far longer than the 20 ms latency limit: below that the generator stays open loop.
@@ -99,11 +99,14 @@ start_crucible() {
     store=(--clickhouse-url http://perf-clickhouse:8123 --clickhouse-password-file /etc/crucible/clickhouse-password
       --master-key-file /etc/crucible/master-key --migrate)
   fi
+  if [ -n "$RECENT_MAX_BYTES" ]; then
+    store+=(--recent-max-bytes "$RECENT_MAX_BYTES")
+  fi
   docker run -d --name perf-crucible --network "$NET" --cpuset-cpus "$CRUCIBLE_CPUS" \
     --cpus "$(cpus "$CRUCIBLE_CPUS")" --memory "$CRUCIBLE_MEM" \
     -v "$BIN:/opt/crucible:ro" -v "$WAL:/data" -v "$OUT/rig:/etc/crucible:ro" "$IMAGE" \
     /opt/crucible/crucible serve --data-dir /data --keys-file /etc/crucible/keys.toml \
-    --metrics-listen 0.0.0.0:9464 --recent-max-bytes "$RECENT_MAX_BYTES" ${store[@]+"${store[@]}"} >/dev/null
+    --metrics-listen 0.0.0.0:9464 ${store[@]+"${store[@]}"} >/dev/null
   for _ in $(seq 1 120); do
     if docker exec perf-client curl -sf http://perf-crucible:8080/readyz >/dev/null 2>&1; then return 0; fi
     sleep 1
@@ -127,7 +130,7 @@ up() {
     docker info --format 'docker: {{.ServerVersion}}, {{.NCPU}} CPUs, {{.MemTotal}} bytes, kernel {{.KernelVersion}}, {{.OperatingSystem}}'
     echo "clickhouse: $(docker exec perf-clickhouse clickhouse-server --version)"
     echo "image: $IMAGE $(docker image inspect --format '{{.Id}}' "$IMAGE")"
-    echo "crucible: cpuset $CRUCIBLE_CPUS, memory $CRUCIBLE_MEM, recent index $RECENT_MAX_BYTES bytes"
+    echo "crucible: cpuset $CRUCIBLE_CPUS, memory $CRUCIBLE_MEM, recent index bound ${RECENT_MAX_BYTES:-the default}"
     echo "clickhouse: cpuset $CH_CPUS, memory $CH_MEM"
     echo "client: cpuset $CLIENT_CPUS, memory $CLIENT_MEM"
   } > "$OUT/rig/versions.txt"

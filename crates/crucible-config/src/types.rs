@@ -3,6 +3,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// A secret value. It never prints: `Debug` and `Display` both write a placeholder.
 #[derive(Clone, PartialEq, Eq)]
@@ -125,6 +126,8 @@ pub struct ClickHouse {
     pub password: Secret,
     /// The master key, 64 hexadecimal characters: the service passwords derive from it.
     pub master_key: Secret,
+    /// How long an idle connection is kept; `None` derives it from the server's keep-alive timeout.
+    pub idle_timeout: Option<Duration>,
 }
 
 /// The `[postgres]` section, present when `postgres.url` is set.
