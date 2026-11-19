@@ -7,18 +7,19 @@
 //! reasons, request parameters, the tool of a tool span), and the `crucible.*` keys otherwise (observation type,
 //! trace name, session, user, environment, release, version, tags, metadata, level, prompt, provided cost,
 //! completion start). Every residual attribute follows; a key that dialect mapping consumed is not in the
-//! residual and is never re-emitted, and no key of another product's dialect is ever written. Re-ingested, a
-//! natively instrumented span normalizes to the same record (the round-trip property of the tests).
+//! residual and is never re-emitted, and no key of another product's dialect is ever written. The MCP operation
+//! of a span goes out under the keys of contract 9.1, which its projector removed from the residual (see
+//! [`mcp`]). Re-ingested, a natively instrumented span normalizes to the same record and the same operation (the
+//! round-trip property of the tests); a span typed without an operation name keeps the one the line adds in its
+//! residual, since the mapping does not consume that key.
 //!
 //! Messages by `io_shape`: `genai_messages` as stored; `indexed_messages` as the array the normalizer stored
 //! (contract 10.5); `raw` whose value is an object with a `messages` array emits that array; any other `raw`
 //! value is wrapped in one message (`user` for the input, `assistant` for the output) and the span carries
 //! `crucible.io_shape`. The raw input and output of a tool span or an MCP operation are its call's arguments and
-//! result, which go out under the tool keys instead. A span with a field that a cap cut is skipped by default; kept, its cut fields
-//! go out as opaque text where one value holds them, and the cut maps are named in `crucible.truncated_fields`.
-//!
-//! The MCP operation of a span goes out under the keys of contract 9.1, which its projector removed from the
-//! residual (see [`mcp`]); captured content that was cut counts as a cut field.
+//! result, which go out under the tool keys instead. A span with a field that a cap cut (captured MCP content
+//! included) is skipped by default; kept, its cut fields go out as opaque text where one value holds them, and the
+//! cut maps are named in `crucible.truncated_fields`.
 
 use crucible_query::ExportRecord;
 use crucible_records::{
