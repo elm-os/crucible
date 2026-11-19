@@ -36,6 +36,8 @@ pub struct ReadsArgs {
     pub seconds: u64,
     /// Traces of each ack-to-API probe.
     pub probes: u32,
+    /// Only these lanes, by name; `None` runs every lane.
+    pub lanes: Option<Vec<String>>,
 }
 
 /// A read lane: a class of the load generator's `read`, and the request class of Crucible's counters it hits.
@@ -149,6 +151,7 @@ pub fn parse_reads(args: impl IntoIterator<Item = String>) -> Result<ReadsArgs, 
         rate: 2.0,
         seconds: 60,
         probes: 100,
+        lanes: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -160,6 +163,21 @@ pub fn parse_reads(args: impl IntoIterator<Item = String>) -> Result<ReadsArgs, 
             "--rate" => parsed.rate = number(&value(&mut args, &flag)?, &flag)?,
             "--seconds" => parsed.seconds = number(&value(&mut args, &flag)?, &flag)?,
             "--probes" => parsed.probes = number(&value(&mut args, &flag)?, &flag)?,
+            "--lanes" => {
+                let names: Vec<String> = value(&mut args, &flag)?
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(unknown) = names
+                    .iter()
+                    .find(|name| !LANES.iter().any(|lane| lane.name == *name))
+                {
+                    return Err(format!(
+                        "--lanes: `{unknown}` is not a lane of the read bench"
+                    ));
+                }
+                parsed.lanes = Some(names);
+            }
             other => return Err(format!("perf reads: unexpected argument `{other}`")),
         }
     }
@@ -529,7 +547,12 @@ fn bench(
     )?;
 
     let mut lanes = Vec::new();
-    for (index, lane) in LANES.iter().enumerate() {
+    let chosen = |lane: &&Lane| {
+        args.lanes
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|name| name == lane.name))
+    };
+    for (index, lane) in LANES.iter().enumerate().filter(|(_, lane)| chosen(lane)) {
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()
@@ -826,6 +849,16 @@ mod tests {
             args("--lane x")
                 .unwrap_err()
                 .contains("unexpected argument")
+        );
+        let some = args("--lanes trace_by_id,trace_list_30d").unwrap();
+        assert_eq!(
+            some.lanes,
+            Some(vec!["trace_by_id".to_owned(), "trace_list_30d".to_owned()])
+        );
+        assert!(
+            args("--lanes nope")
+                .unwrap_err()
+                .contains("`nope` is not a lane")
         );
     }
 

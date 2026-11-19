@@ -29,7 +29,7 @@ pub const USAGE: &str = "  perf gate --base <ref> [--candidate <ref>] [--path ac
                        classify the rig's WAL volume with the fsync-honesty probe and write its report
                        (default perf/results/local/fsync-probe/<time>.json)
   perf reads [--image <ref>] [--rig small|full] [--spans N] [--spread-days D] [--rate R] [--seconds S]
-          [--probes P]
+          [--probes P] [--lanes a,b]
                        the read bench of one build (default HEAD) on one rig (default small): ack-to-API on the
                        empty store, a dataset of N spans loaded through ingest over D days, then one open-loop
                        lane per read class with the per-request store-read, connection and barrier counters;

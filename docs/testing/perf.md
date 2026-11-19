@@ -571,6 +571,7 @@ tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-sp
 | `--rate` | 2 | Reads per second of each lane, on average. On the small rig, trace by id takes about 0.5 s and a 30-day span list about 1 s of its two ClickHouse CPUs, so a higher rate saturates those lanes |
 | `--seconds` | 60 | Seconds of each lane |
 | `--probes` | 100 | Traces of each ack-to-API probe |
+| `--lanes` | every lane | Only these lanes, comma-separated |
 
 The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
 `crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span, both probes and every lane
