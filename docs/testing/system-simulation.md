@@ -16,7 +16,7 @@ One simulated node, on one thread with a paused virtual clock and seeded random 
 | Ingest | Real | `crucible_ingest::Ingest::router()`: authentication, admission, the scan, the WAL append, the ack; and `Ingest::append_facts`, the entry point the fact routes will call |
 | WAL | Real | `crucible-wal` on `SimDisk`, the disk fault model of contract 2.4 |
 | Shipper | Real | `crucible-shipper`: stage A and B, the span tables, the rollups, the five MCP tables and the fact tables, seals, inserts, probes, pair and frame quarantine, checkpoints, garbage collection |
-| Project salts | Model | One fixed salt per project behind the shipper's `ProjectSalts` hook; with `mcp_identity` a share of its reads fails, and without it the node has no control store |
+| Project salts | Model | One fixed salt per project behind the shipper's `ProjectSalts` hook; with `mcp_identity` a share of its reads fails, and without it the node has no control store. The production hook (`crucible/src/salts.rs`, the sealed `project_salts` rows) has its own tests over `PgModel` |
 | Recent-span index | Real | `crucible-recent`, fed by stage B through `crucible_shipper::RecentHook` |
 | Query service | Real | `crucible_query::QueryService`: trace by id and the trace list, decorated with their facts; the facts of a target; the metrics query |
 | ClickHouse | Model | `ChModel`: inserts, deduplication, probes, the typed-plan interpreter, merges, and seeded faults |
