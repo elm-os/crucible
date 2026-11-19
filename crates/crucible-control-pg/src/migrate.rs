@@ -40,6 +40,10 @@ const FILES: &[(&str, &str)] = &[
         "V7__lifecycle",
         include_str!("../migrations/V7__lifecycle.sql"),
     ),
+    (
+        "V8__dashboards",
+        include_str!("../migrations/V8__dashboards.sql"),
+    ),
 ];
 
 fn failed(what: &str, error: impl std::fmt::Display) -> TxError {

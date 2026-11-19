@@ -182,6 +182,7 @@ fn row_name(script: &str) -> &'static str {
         "lifecycle" => {
             "PgModel differential: lifecycle (nodes, deletion requests, actions, floors)"
         }
+        "dashboards" => "PgModel differential: dashboards (widget sets, versions, cascade)",
         _ => "PgModel differential",
     }
 }
