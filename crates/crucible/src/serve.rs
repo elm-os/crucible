@@ -51,6 +51,7 @@ use crucible_env::{
     OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
+use crucible_export::{ExportRuntime, Exports};
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
@@ -355,6 +356,7 @@ async fn open_app(
     config: WalConfig,
     identity: Option<Arc<Identity>>,
     closed: Option<&str>,
+    exports: Option<Exports>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -388,7 +390,7 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
-                crucible_api::platform_router(env, None, identity, settings, cursors, None)
+                crucible_api::platform_router(env, None, identity, settings, cursors, None, exports)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -579,6 +581,10 @@ struct StoreTask {
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
+    /// What the export job reads with, given the query service once the store is up.
+    exports: ExportRuntime,
+    /// The API's exports, with a control plane.
+    export_service: Option<Exports>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -662,6 +668,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        exports,
+        export_service,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -777,9 +785,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    exports.set_service(service.clone());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
-    gate.mcp
-        .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
+    gate.mcp.open(
+        &env,
+        service.clone(),
+        mcp_keys,
+        mcp_cursors,
+        mcp,
+        export_service.clone(),
+    );
     let settings = Arc::new(StaticProjectSettings::default());
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
@@ -789,6 +804,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             settings,
             cursors,
             sql,
+            export_service,
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
@@ -1042,7 +1058,11 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     };
     // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
     // for them.
-    let jobs = crate::jobs::start(env, control.as_ref());
+    // The export job's reads come from the telemetry store task once it runs. Only that task and the job tasks
+    // hold the runtime: its reads hold the WAL through the recent index, so a holder that outlived them would
+    // keep the WAL committer from stopping.
+    let exports = ExportRuntime::new();
+    let jobs = crate::jobs::start(env, control.as_ref(), &exports);
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1051,6 +1071,10 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
+    // Exports live in the control plane; their files on this node's exports root.
+    let export_service = control
+        .as_ref()
+        .map(|control| Exports::new(env.clone(), Arc::new(control.store.clone())));
     let (app, report) = open_app(
         env,
         keys,
@@ -1058,6 +1082,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         WalConfig::default(),
         identity.clone(),
         closed,
+        export_service.clone(),
     )
     .await?;
     let mode = if clickhouse.is_some() {
@@ -1115,6 +1140,8 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                exports,
+                export_service,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1268,7 +1295,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None)
+        open_app(env, keys, cursors, config, None, None, None)
             .await
             .unwrap()
             .0
@@ -1769,6 +1796,7 @@ mod tests {
             Arc::clone(&app.keys),
             cursors,
             McpConfig::default(),
+            None,
         );
 
         let lifecycles = [
@@ -1837,7 +1865,7 @@ mod tests {
         let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
         app.gate
             .mcp
-            .open(env, service, keys, cursors, McpConfig::default());
+            .open(env, service, keys, cursors, McpConfig::default(), None);
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await
@@ -2487,7 +2515,7 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+        let (app, _) = open_app(env, keys, cursors, config, None, closed, None)
             .await
             .unwrap();
         let ui = Arc::new(Catalog::default());

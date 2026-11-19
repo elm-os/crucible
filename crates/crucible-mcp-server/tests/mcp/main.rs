@@ -16,6 +16,7 @@ mod world;
 mod auth;
 mod caps;
 mod eras;
+mod exports;
 mod text;
 mod tools;
 
@@ -78,7 +79,31 @@ pub(crate) fn mcp(env: &Env, world: &World) -> Router {
 pub(crate) fn mcp_with(env: &Env, world: &World, config: McpConfig) -> Router {
     let settings = Arc::new(StaticProjectSettings::default());
     let service = world.service.clone();
-    crucible_mcp_server::router(env, service, keys(env), settings, cursor_keys(), config)
+    crucible_mcp_server::router(
+        env,
+        service,
+        keys(env),
+        settings,
+        cursor_keys(),
+        config,
+        None,
+    )
+}
+
+/// The MCP server over the world's query service, with the export tools over `exports`.
+pub(crate) fn mcp_exporting(env: &Env, world: &World, exports: crucible_export::Exports) -> Router {
+    let settings = Arc::new(StaticProjectSettings::default());
+    let service = world.service.clone();
+    let config = McpConfig::default();
+    crucible_mcp_server::router(
+        env,
+        service,
+        keys(env),
+        settings,
+        cursor_keys(),
+        config,
+        Some(exports),
+    )
 }
 
 /// The MCP server before a telemetry store is up.

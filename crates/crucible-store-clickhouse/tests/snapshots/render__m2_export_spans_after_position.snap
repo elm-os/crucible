@@ -1,0 +1,20 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&live(next))
+---
+SELECT start_minute, trace_hash, start_time, end_time, span_id, parent_span_id, trace_id, is_root, is_app_root, clock_skew, kind, status_code, observation_type, level, trace_public, cost_source, mcp_side, io_shape, input_truncation, output_truncation, source_format, name, status_message, service_version, scope_version, telemetry_sdk_version, sdk_version, release, version, trace_name, user_id, session_id, prompt_name, prompt_version, service_name, scope_name, telemetry_sdk_name, telemetry_sdk_language, sdk_name, environment, model_requested, model_response, provider, duration_us, input_tokens, output_tokens, total_tokens, input_bytes, output_bytes, completion_start_time, trace_tags, tags, tool_names, finish_reasons, usage_keys, usage_values, cost_values, total_cost_nusd, price_model_id, price_tier_id, api_key_id, tool_call_count, normalizer_version, event_bytes, compat_dialect, input_preview, output_preview, input_sha256, output_sha256, row_digest, usage_aggregate, wal_epoch, batch_seq, lsn, received_at FROM crucible.span_core WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND received_at <= {p5:DateTime64(6, 'UTC')} AND (trace_id IN (unhex({p6:String}), unhex({p7:String})) AND user_id = {p8:String} AND session_id = {p9:String}) AND (start_minute, trace_hash, start_time, span_id) > ({p10:DateTime('UTC')}, {p11:UInt32}, {p12:DateTime64(6, 'UTC')}, unhex({p13:String})) ORDER BY start_minute ASC, trace_hash ASC, start_time ASC, span_id ASC LIMIT {p14:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911400"
+p5: DateTime64(6, 'UTC') = "1794907800.000000"
+p6: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+p7: String = "07070707070707070707070707070707"
+p8: String = "user-1"
+p9: String = "session-1"
+p10: DateTime('UTC') = "1794907800"
+p11: UInt32 = "42"
+p12: DateTime64(6, 'UTC') = "1794907800.000005"
+p13: String = "0303030303030303"
+p14: UInt64 = "1000"
