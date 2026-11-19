@@ -1379,6 +1379,7 @@ dependencies = [
 name = "crucible-sim"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "blake3",
@@ -1392,6 +1393,7 @@ dependencies = [
  "crucible-env-prod",
  "crucible-ingest",
  "crucible-jobs",
+ "crucible-lifecycle",
  "crucible-normalize",
  "crucible-otlp",
  "crucible-plan",

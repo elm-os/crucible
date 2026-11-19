@@ -872,6 +872,14 @@ impl ChModel {
         interpret(&state.read, plan)
     }
 
+    /// Every row the store still holds of a table, in the column order of its `TableDef`, with its partition
+    /// and whether a delete masks it. For oracles that check what is physically left (invariant I9).
+    pub fn held_rows(&self, table_id: TableId) -> Vec<(PartitionId, bool, Vec<crucible_plan::Value>)> {
+        let mut state = self.settled();
+        self.sync(&mut state);
+        state.read.held(table_id)
+    }
+
     /// How often, per million, a merge follows newly landed parts (300,000 unless set; 0 for never).
     pub fn set_merge_ppm(&self, ppm: u32) {
         self.settled().read.merge_ppm = ppm;

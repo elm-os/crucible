@@ -329,3 +329,29 @@ impl LifecycleRepo for Runner {
         .await
     }
 }
+
+impl super::PgModel {
+    /// Every committed leader action, in key order. For oracles: no fault applies and no time passes.
+    pub fn lifecycle_actions(&self) -> Vec<LifecycleAction> {
+        let db = super::lock(&self.shared().db);
+        db.rows
+            .values()
+            .filter_map(|slot| match &slot.val {
+                Some(Row::Action(action)) => Some(action.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every committed deletion request, in key order. For oracles: no fault applies and no time passes.
+    pub fn deletion_requests(&self) -> Vec<DeletionRequest> {
+        let db = super::lock(&self.shared().db);
+        db.rows
+            .values()
+            .filter_map(|slot| match &slot.val {
+                Some(Row::DeletionRequest(request)) => Some(request.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}

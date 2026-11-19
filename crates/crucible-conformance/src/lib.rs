@@ -11,7 +11,7 @@
 //! The binary of this crate runs the suite against the ClickHouse URL it is given; `scripts/conformance.sh`
 //! starts ClickHouse 26.3, 26.8 and latest in Docker and runs it against each.
 
-pub mod blocks;
+pub use crucible_sim::blocks;
 mod cancel;
 mod codes;
 pub mod control;

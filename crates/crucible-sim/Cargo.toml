@@ -28,6 +28,9 @@ crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-control = { path = "../crucible-control" }
 # A path dependency, for the same reason. The jobs simulation runs the real runners.
 crucible-jobs = { path = "../crucible-jobs", features = ["test-mutants"] }
+# The lifecycle simulation runs the real executors and switches their seeded defects on.
+crucible-lifecycle = { path = "../crucible-lifecycle", features = ["test-mutants"] }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 blake3 = { workspace = true }
