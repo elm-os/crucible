@@ -375,15 +375,20 @@ pub trait ExportJobRepo: Send + Sync {
     ) -> Result<Vec<ExportJob>, TxError>;
 }
 
-/// The project salts (contract 11.1). A salt is immutable for the life of its project, so there is no update
-/// and no delete.
+/// The project salts (contract 11.1). A salt is immutable for the life of its project, so there is no update. A
+/// salt references its project (`project_salts_project_id_fkey`), and deleting the project's row deletes it.
 #[async_trait]
 pub trait ProjectSaltRepo: Send + Sync {
     /// The sealed salt of this project.
     async fn get(&self, project_id: ProjectId) -> Result<Option<SealedProjectSalt>, TxError>;
+    /// Every sealed salt, ordered by project id.
+    async fn list(&self) -> Result<Vec<SealedProjectSalt>, TxError>;
     /// Stores the salt when the project has none. `false` when it already has one; the stored row is not
-    /// changed, and the caller reads it back.
+    /// changed, and the caller reads it back. A project that does not exist is
+    /// `ForeignKeyViolation("project_salts_project_id_fkey")`.
     async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError>;
+    /// Deletes the salt of a deleted project (contract 13.4). `false` when it has none.
+    async fn delete(&self, project_id: ProjectId) -> Result<bool, TxError>;
 }
 
 /// The forward-only migrations ledger (contract 6.6): Postgres migrations and ClickHouse schema and access

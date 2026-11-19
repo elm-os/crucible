@@ -1248,6 +1248,40 @@ fn http_with_cookies(
     (status, cookies, body)
 }
 
+/// The salt of the project with this slug in the control plane, opened with the seal subkey of [`MASTER_KEY`]
+/// as the server opens it (contract 9.3); `None` when the project has no salt row.
+async fn project_salt(env: &Env, postgres_url: &str, slug: &str) -> Option<[u8; 32]> {
+    use crucible_control::Repos as _;
+    let store = crucible_control_pg::PgControlStore::new(
+        env,
+        &crucible_control_pg::PgConfig::new(postgres_url),
+    )
+    .unwrap();
+    let project = store
+        .projects()
+        .get_by_slug(slug)
+        .await
+        .unwrap()
+        .expect("the project");
+    let row = store.project_salts().get(project.id).await.unwrap();
+    store.close();
+    let master: Vec<u8> = MASTER_KEY
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut seal_key = [0u8; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(None, &master)
+        .expand(b"crucible/seal/v1", &mut seal_key)
+        .unwrap();
+    let sealer = crucible_auth::Sealer::new("master-0", seal_key);
+    row.map(|row| {
+        sealer
+            .open_project_salt(&row)
+            .expect("the salt opens with the server's master key")
+    })
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     let (Ok(clickhouse_url), Ok(postgres_url)) = (
@@ -1317,6 +1351,11 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     let second = init("other@e2e.test");
     assert!(!second.status.success(), "a second owner was created");
     let owner_email = email;
+    // The default project has its salt from the start (contract 9.3).
+    assert!(
+        project_salt(env, &postgres_url, "default").await.is_some(),
+        "admin init made the default project without its salt"
+    );
 
     // 3. Sign in with the prelogin CSRF header from the server's own origin.
     let login = json!({"email": owner_email, "password": password}).to_string();
@@ -1364,6 +1403,14 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     );
     assert_eq!(status, 201, "{project}");
     let project_id = project["id"].as_str().unwrap().to_owned();
+    // The new project has its salt at once, sealed under the master key, before any frame needs it.
+    let salt = project_salt(env, &postgres_url, &slug).await;
+    assert!(salt.is_some(), "the project was created without its salt");
+    assert_ne!(
+        salt,
+        project_salt(env, &postgres_url, "default").await,
+        "two projects share a salt"
+    );
     let keys = format!("/api/v1/projects/{project_id}/api-keys");
     let (status, _, created) = as_owner("POST", &keys, json!({"note": "e2e"}));
     assert_eq!(status, 201, "{created}");

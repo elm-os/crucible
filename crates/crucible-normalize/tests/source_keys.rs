@@ -64,9 +64,9 @@ fn strs(items: &[Box<str>]) -> Vec<&str> {
 }
 
 #[test]
-fn records_carry_normalizer_version_5() {
-    assert_eq!(NORMALIZER_VERSION, 5);
-    assert_eq!(one(Vec::new()).core.normalizer_version, 5);
+fn records_carry_normalizer_version_6() {
+    assert_eq!(NORMALIZER_VERSION, 6);
+    assert_eq!(one(Vec::new()).core.normalizer_version, 6);
 }
 
 #[test]
