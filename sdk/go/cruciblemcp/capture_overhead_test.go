@@ -20,6 +20,7 @@ import (
 	"github.com/elm-os/crucible/sdk/go/crucible"
 	"github.com/elm-os/crucible/sdk/go/cruciblemcp"
 	"github.com/elm-os/crucible/sdk/go/internal/collectortest"
+	"github.com/elm-os/crucible/sdk/go/internal/scrub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -43,15 +44,17 @@ type overheadShape struct {
 }
 
 type overheadScenario struct {
-	Schema         string                 `json:"schema"`
-	Tool           string                 `json:"tool"`
-	MaxBytes       int                    `json:"max_bytes"`
-	WorkBound      int                    `json:"work_bound"`
-	CeilingMS      float64                `json:"ceiling_ms"`
-	GateAddedP99MS float64                `json:"gate_added_p99_ms"`
-	Runs           map[string]overheadRun `json:"runs"`
-	Fills          map[string]string      `json:"fills"`
-	Shapes         []overheadShape        `json:"shapes"`
+	Schema    string `json:"schema"`
+	Tool      string `json:"tool"`
+	MaxBytes  int    `json:"max_bytes"`
+	WorkBound int    `json:"work_bound"`
+	// MatcherStepsPerRuleChar bounds matcher steps per captured call, per rule and byte scrubbed.
+	MatcherStepsPerRuleChar int                    `json:"matcher_steps_per_rule_char"`
+	CeilingMS               float64                `json:"ceiling_ms"`
+	GateAddedP99MS          float64                `json:"gate_added_p99_ms"`
+	Runs                    map[string]overheadRun `json:"runs"`
+	Fills                   map[string]string      `json:"fills"`
+	Shapes                  []overheadShape        `json:"shapes"`
 }
 
 func loadOverhead(t *testing.T) overheadScenario {
@@ -180,13 +183,23 @@ func TestCaptureOverhead(t *testing.T) {
 				call(off)
 				call(on)
 			}
+			// The work of one captured call, with the hooks installed; the timed rounds run without them.
 			var mu sync.Mutex
-			serialized, scrubbed := 0, 0
+			serialized, scrubbed, scrubbedInCall, steps := 0, 0, 0, 0
 			cruciblemcp.SetWorkHook(func(sz, sc int) {
 				mu.Lock()
 				defer mu.Unlock()
-				serialized, scrubbed = max(serialized, sz), max(scrubbed, sc)
+				serialized, scrubbed, scrubbedInCall = max(serialized, sz), max(scrubbed, sc), scrubbedInCall+sc
 			})
+			scrub.SetMatcherHook(func(_ string, n int) {
+				mu.Lock()
+				defer mu.Unlock()
+				steps += n
+			})
+			call(on)
+			cruciblemcp.SetWorkHook(nil)
+			scrub.SetMatcherHook(nil)
+			stepsPerChar := float64(steps) / float64(max(scrubbedInCall, 1))
 			var without, with []float64
 			for round := range run.Rounds {
 				arms := []*mcp.ClientSession{off, on}
@@ -203,16 +216,18 @@ func TestCaptureOverhead(t *testing.T) {
 					}
 				}
 			}
-			cruciblemcp.SetWorkHook(nil)
 			added := p99(with) - p99(without)
 			excess := slices.Max(with) - quantile(without, 0.5)
-			t.Logf("capture-overhead go %s: added p99 %.3f ms (off %.3f, on %.3f), slowest excess %.3f ms, serialized %d, scrubbed %d",
-				shape.ID, added, p99(without), p99(with), excess, serialized, scrubbed)
+			t.Logf("capture-overhead go %s: added p99 %.3f ms (off %.3f, on %.3f), slowest excess %.3f ms, serialized %d, scrubbed %d, matcher steps %d (%.1f per character)",
+				shape.ID, added, p99(without), p99(with), excess, serialized, scrubbed, steps, stepsPerChar)
 			if serialized > s.WorkBound {
 				t.Errorf("bytes serialized for one field: %d > %d", serialized, s.WorkBound)
 			}
 			if scrubbed > s.WorkBound {
 				t.Errorf("bytes handed to the scrubber for one field: %d > %d", scrubbed, s.WorkBound)
+			}
+			if bound := float64(s.MatcherStepsPerRuleChar * scrub.RuleCount()); stepsPerChar > bound {
+				t.Errorf("matcher steps per byte scrubbed: %.1f > %.0f", stepsPerChar, bound)
 			}
 			if excess > s.CeilingMS {
 				t.Errorf("slowest captured call over the median uncaptured one: %.1f ms > %.0f ms", excess, s.CeilingMS)

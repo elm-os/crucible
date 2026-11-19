@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -24,6 +25,57 @@ type rule struct {
 	re          *regexp.Regexp
 	luhn        bool
 	replacement string
+	facts       facts
+}
+
+// matcherHook, when set, is called once per matcher call with the rule's name and the call's steps (see
+// searchSteps). The scrubbing work checks read it.
+var matcherHook atomic.Pointer[func(rule string, steps int)]
+
+// RuleCount is the number of rules.
+func RuleCount() int { return len(rules) }
+
+// SetMatcherHook installs, or with nil removes, the matcher hook.
+func SetMatcherHook(h func(rule string, steps int)) {
+	if h == nil {
+		matcherHook.Store(nil)
+		return
+	}
+	matcherHook.Store(&h)
+}
+
+func (r *rule) searched(s string, from, to int) {
+	if h := matcherHook.Load(); h != nil {
+		(*h)(r.name, searchSteps(r.facts.lead, s, from, to))
+	}
+}
+
+// searchSteps is the steps of an unanchored search that tried the starts from from up to to, as a backtracking
+// matcher takes them at the least: one per start, and from a start where a lead pattern's prefix matches, the
+// prefix and the whole class run after it, which the greedy repetition consumes before it backtracks.
+func searchSteps(l *lead, s string, from, to int) int {
+	if l == nil {
+		return to - from
+	}
+	p := len(l.prefix)
+	end := min(len(s), to+p)
+	for end < len(s) && l.class.has(s[end]) {
+		end++
+	}
+	runs := make([]int, end-from+1)
+	for k := end - 1; k >= from; k-- {
+		if l.class.has(s[k]) {
+			runs[k-from] = runs[k-from+1] + 1
+		}
+	}
+	steps := 0
+	for i := from; i < to; i++ {
+		steps++
+		if strings.HasPrefix(s[i:], l.prefix) && i+p-from < len(runs) {
+			steps += p + runs[i+p-from]
+		}
+	}
+	return steps
 }
 
 type ruleFile struct {
@@ -51,7 +103,13 @@ func parse(data []byte) ([]rule, error) {
 		if r.Validator != "" && r.Validator != "luhn" {
 			return nil, fmt.Errorf("rule %s: unknown validator %q", r.Name, r.Validator)
 		}
-		out = append(out, rule{name: r.Name, re: re, luhn: r.Validator == "luhn", replacement: r.Replacement})
+		out = append(out, rule{
+			name:        r.Name,
+			re:          re,
+			luhn:        r.Validator == "luhn",
+			replacement: r.Replacement,
+			facts:       patternFacts(r.Pattern),
+		})
 	}
 	return out, nil
 }
@@ -78,9 +136,11 @@ func (r *rule) apply(s string) string {
 	for pos <= len(s) {
 		loc := r.re.FindStringIndex(s[pos:])
 		if loc == nil {
+			r.searched(s, pos, len(s))
 			break
 		}
 		start, end := pos+loc[0], pos+loc[1]
+		r.searched(s, pos, start+1)
 		if r.luhn && !luhn(s[start:end]) {
 			pos = resume(s, start, end)
 			continue
