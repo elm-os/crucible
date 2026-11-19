@@ -61,6 +61,7 @@ def init(
     deploy_id: str | None = None,
     sample_rate: float = 1.0,
     queue_size: int = 2048,
+    queue_bytes: int = _pipeline.QUEUE_BYTES,
     flush_interval: float = 1.0,
 ) -> None:
     """Starts exporting spans to Crucible.
@@ -79,12 +80,16 @@ def init(
         deploy_id: The resource `crucible.deploy.id` (contract 9.7).
         sample_rate: The fraction of traces exported, decided by trace id.
         queue_size: Spans held for export; when the queue is full new spans are dropped and counted.
+        queue_bytes: Bytes of spans held for export, estimated from their strings, the batch being exported
+            included; beyond it new spans are dropped and counted too. Defaults to 8 MiB.
         flush_interval: Seconds between exports of a partial batch.
     """
     if not 0.0 <= sample_rate <= 1.0:
         raise ValueError(f"crucible_sdk.init: sample_rate must be between 0 and 1, got {sample_rate!r}")
     if queue_size < 1:
         raise ValueError(f"crucible_sdk.init: queue_size must be at least 1, got {queue_size!r}")
+    if queue_bytes < 1:
+        raise ValueError(f"crucible_sdk.init: queue_bytes must be at least 1, got {queue_bytes!r}")
     if not flush_interval > 0:
         raise ValueError(f"crucible_sdk.init: flush_interval must be positive, got {flush_interval!r}")
     key = secret_key or os.environ.get("CRUCIBLE_SECRET_KEY") or None
@@ -101,6 +106,7 @@ def init(
             sample_rate=sample_rate,
             queue_size=queue_size,
             flush_interval=flush_interval,
+            queue_bytes=queue_bytes,
         )
     )
 

@@ -1,0 +1,15 @@
+{
+  "schema": "crucible.conformance.export-stall/v1",
+  "contract": "9.10",
+  "semantics": [
+    "Each SDK starts with its default export queue against a collector that accepts connections and never answers, and serves one tool, shape, from a server it instruments with capture on for the tool at max_bytes. The tool returns one text block of result_bytes characters of the capture-overhead scenario's prose fill.",
+    "The test calls the tool calls times. After every call the bytes the export queue holds, the batch being exported included, as the SDK estimates them from lengths it already knows, stay at or below queue_bytes. At the end the dropped counter is above zero.",
+    "calls stays below queue_spans, so the spans that were dropped were dropped by the byte bound, not by the span bound."
+  ],
+  "tool": "shape",
+  "max_bytes": 16384,
+  "result_bytes": 16384,
+  "calls": 1024,
+  "queue_spans": 2048,
+  "queue_bytes": 8388608
+}

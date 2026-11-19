@@ -16,7 +16,8 @@ import inspect
 import ipaddress
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import math
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -29,8 +30,9 @@ from opentelemetry import trace
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel, ValidationError
+from pydantic_core import to_jsonable_python
 
-from crucible_sdk import _keys, _pipeline
+from crucible_sdk import _keys, _pipeline, _scrub
 from crucible_sdk.mcp import _seam
 
 logger = logging.getLogger("crucible_sdk")
@@ -400,11 +402,17 @@ class CrucibleMiddleware:
 
     def _result_capture(self, result: object, capture: Capture) -> dict[str, AttributeValue]:
         # Only the content: an envelope can carry `requestState` and `_meta`, which are never captured.
+        content: object
         if isinstance(result, BaseModel):
-            result = result.model_dump(mode="json", by_alias=True, exclude_none=True)
-        if not isinstance(result, Mapping):
+            # Walked while it is encoded, so a large result is read no further than the cap.
+            members = dict(_model_members(result))
+            content = _scrub.LazyObject(
+                (k, members[k]) for k in ("content", "structuredContent", "isError") if k in members
+            )
+        elif isinstance(result, Mapping):
+            content = {k: result[k] for k in ("content", "structuredContent", "isError") if k in result}
+        else:
             return {}
-        content = {k: result[k] for k in ("content", "structuredContent", "isError") if k in result}
         text, cut = _pipeline.SCRUBBER.capped_json(content, capture.max_bytes)
         attributes: dict[str, AttributeValue] = {_keys.TOOL_CALL_RESULT: text}
         attributes.update(self._capture_flags(capture, cut))
@@ -423,6 +431,44 @@ class CrucibleMiddleware:
         self._finish(span, operation)
         source = "notification" if _seam.cancel_requested(ctx) else "stream_close"
         span.set_attribute(_keys.CANCEL_SOURCE, source)
+
+
+def _model_members(model: BaseModel) -> Iterator[tuple[str, object]]:
+    """The members `model_dump(mode="json", by_alias=True, exclude_none=True)` gives `model`, each converted only
+    when the encoder reads it."""
+    cls = type(model)
+    decorators = getattr(cls, "__pydantic_decorators__", None)
+    custom = decorators is not None and bool(decorators.model_serializers or decorators.field_serializers)
+    if custom or cls.model_computed_fields:
+        # Serialization the field walk cannot follow: this model is dumped whole.
+        yield from model.model_dump(mode="json", by_alias=True, exclude_none=True).items()
+        return
+    for name, info in cls.model_fields.items():
+        value = getattr(model, name)
+        if value is not None and not info.exclude:
+            yield info.serialization_alias or info.alias or name, _lazy(value)
+    for name, value in (model.model_extra or {}).items():
+        if value is not None:
+            yield name, _lazy(value)
+
+
+def _lazy(value: object) -> object:
+    """`value` as `model_dump(mode="json")` has it, with models, mappings and sequences converted while read."""
+    if isinstance(value, BaseModel):
+        return _scrub.LazyObject(_model_members(value))
+    if isinstance(value, Mapping):
+        return _scrub.LazyObject((_json_key(k), _lazy(v)) for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return _scrub.LazyArray(_lazy(v) for v in value)
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return to_jsonable_python(value)
+
+
+def _json_key(key: object) -> str:
+    return key if isinstance(key, str) else str(to_jsonable_python(key))
 
 
 def _safely(step: Callable[..., dict[str, AttributeValue]], *args: Any) -> dict[str, AttributeValue]:

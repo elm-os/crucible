@@ -1,8 +1,8 @@
 // The export queue (contract 9.10): spans leave the request path through a bounded in-memory queue that a
-// background loop drains in batches. The bound counts the batch being exported too. A full queue drops the span
-// and counts it; ending a span never blocks.
+// background loop drains in batches. It is bounded by spans and by estimated bytes, and both bounds count the batch
+// being exported too. A full queue drops the span and counts it; ending a span never blocks.
 
-import { context } from "@opentelemetry/api";
+import { type Attributes, context } from "@opentelemetry/api";
 import { ExportResultCode, suppressTracing } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 
@@ -10,6 +10,8 @@ import type { ReadableSpan, SpanExporter, SpanProcessor } from "@opentelemetry/s
 export interface QueueStats {
   /** Spans waiting for export or being exported. */
   queued: number;
+  /** Their estimated size in bytes (see `spanBytes`). */
+  queuedBytes: number;
   /** Spans dropped because the queue was full, or because they ended after `shutdown`. */
   dropped: number;
   /** Spans the collector accepted. */
@@ -20,6 +22,8 @@ export interface QueueStats {
 
 export interface QueueOptions {
   maxQueueSize: number;
+  /** Bound on the estimated bytes of the queued spans, the batch being exported included. */
+  maxQueueBytes: number;
   maxBatchSize: number;
   flushIntervalMs: number;
   /** Bound on one export, and on the whole of `forceFlush` and `shutdown`. */
@@ -29,12 +33,49 @@ export interface QueueOptions {
 /** Extra time an export may take beyond its own timeout before the queue stops waiting for it. */
 const EXPORT_GRACE_MS = 1_000;
 
+/** What a span costs beyond its strings: ids, times, kind, status code, links and the resource and scope refs. */
+const SPAN_OVERHEAD_BYTES = 256;
+
+function attributeBytes(attributes: Attributes): number {
+  let bytes = 0;
+  for (const [key, value] of Object.entries(attributes)) {
+    bytes += key.length;
+    if (typeof value === "string") {
+      bytes += value.length;
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        bytes += typeof item === "string" ? item.length : 8;
+      }
+    } else {
+      bytes += 8;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * A span's size, estimated from lengths already known (its name, attributes, events and status message) plus a
+ * fixed allowance; the attribute count limit bounds the work.
+ */
+export function spanBytes(span: ReadableSpan): number {
+  let bytes = SPAN_OVERHEAD_BYTES + span.name.length + (span.status.message?.length ?? 0);
+  bytes += attributeBytes(span.attributes);
+  for (const event of span.events) {
+    bytes += event.name.length + attributeBytes(event.attributes ?? {});
+  }
+  return bytes;
+}
+
 export class QueueSpanProcessor implements SpanProcessor {
   readonly #exporter: SpanExporter;
   readonly #options: QueueOptions;
   #queue: ReadableSpan[] = [];
+  /** The estimated size of each queued span, in queue order. */
+  #sizes: number[] = [];
+  #queuedBytes = 0;
   #inFlight: Promise<void> | undefined;
   #inFlightSpans = 0;
+  #inFlightBytes = 0;
   #timer: NodeJS.Timeout | undefined;
   #closed = false;
   #dropped = 0;
@@ -49,6 +90,7 @@ export class QueueSpanProcessor implements SpanProcessor {
   stats(): QueueStats {
     return {
       queued: this.#queue.length + this.#inFlightSpans,
+      queuedBytes: this.#queuedBytes + this.#inFlightBytes,
       dropped: this.#dropped,
       exported: this.#exported,
       failed: this.#failed,
@@ -62,7 +104,14 @@ export class QueueSpanProcessor implements SpanProcessor {
       this.#dropped += 1;
       return;
     }
+    const size = spanBytes(span);
+    if (this.#queuedBytes + this.#inFlightBytes + size > this.#options.maxQueueBytes) {
+      this.#dropped += 1;
+      return;
+    }
     this.#queue.push(span);
+    this.#sizes.push(size);
+    this.#queuedBytes += size;
     if (this.#queue.length >= this.#options.maxBatchSize) {
       this.#send();
     } else {
@@ -115,10 +164,14 @@ export class QueueSpanProcessor implements SpanProcessor {
     clearTimeout(this.#timer);
     this.#timer = undefined;
     const batch = this.#queue.splice(0, this.#options.maxBatchSize);
+    const bytes = this.#sizes.splice(0, batch.length).reduce((sum, size) => sum + size, 0);
+    this.#queuedBytes -= bytes;
     this.#inFlightSpans = batch.length;
+    this.#inFlightBytes = bytes;
     this.#inFlight = this.#export(batch).then(() => {
       this.#inFlight = undefined;
       this.#inFlightSpans = 0;
+      this.#inFlightBytes = 0;
       if (this.#queue.length >= this.#options.maxBatchSize) {
         this.#send();
       } else if (this.#queue.length > 0) {
