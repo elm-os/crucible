@@ -302,7 +302,7 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
     let schema = metrics_schema();
     assert_eq!(
         schema.iter().map(|s| s.source).collect::<Vec<_>>(),
-        [Source::Spans, Source::Traces]
+        [Source::Spans, Source::McpOps, Source::Traces]
     );
     let spans = &schema[0];
     assert_eq!(spans.source, Source::Spans);
@@ -331,10 +331,10 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
             };
             let allowed = measure.aggregations().contains(&aggregation);
             assert_eq!(run(&query).is_ok(), allowed, "{measure:?} {aggregation:?}");
-            // A percentile is a quantile of the histogram kernel; a sum is additive.
+            // A percentile is a quantile of the histogram kernel; a sum is additive; a rate is neither.
             assert_eq!(
                 aggregation.quantile_ppm().is_some(),
-                aggregation != Aggregation::Sum
+                !matches!(aggregation, Aggregation::Sum | Aggregation::Rate)
             );
             assert_eq!(
                 allowed && measure.additive(),

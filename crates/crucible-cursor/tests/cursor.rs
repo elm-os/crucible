@@ -486,7 +486,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     };
     assert_eq!(with(&page, 0, 2), Err(DecodeError::Version(2)));
     assert_eq!(with(&page, 0, 0), Err(DecodeError::Version(0)));
-    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 4), (3, 0), (3, 3)] {
+    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 5), (3, 0), (3, 3)] {
         assert_eq!(
             with(&page, at, value),
             Err(DecodeError::Value),
@@ -496,6 +496,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     // Head and span children, and head and search, are no kind of cursor.
     assert_eq!(with(&head, 2, 2), Err(DecodeError::Value));
     assert_eq!(with(&head, 2, 3), Err(DecodeError::Value));
+    assert_eq!(with(&head, 2, 4), Err(DecodeError::Value));
     // A page of span children or of search read as a trace page runs out of bytes; the reverse has bytes left
     // over.
     assert_eq!(with(&child, 2, 1), Err(DecodeError::Length));

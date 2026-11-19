@@ -35,6 +35,7 @@ pub(crate) fn concrete(path: &str) -> String {
         .replace("{user_id}", "03030303-0303-0303-0303-030303030303")
         .replace("{invitation_id}", "04040404-0404-0404-0404-040404040404")
         .replace("{provider_id}", "05050505-0505-0505-0505-050505050505")
+        .replace("{name}", "read_file")
 }
 
 /// Every documented operation, with its method.

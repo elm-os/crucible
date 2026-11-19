@@ -163,6 +163,18 @@ impl QueryService {
                 points: points(&buckets, aggregation, measure.by_error_class())?,
             });
         }
+        // Series come in ranking order, as the keys were ranked.
+        if let Some(keys) = &keys {
+            let rank = |key: &[std::sync::Arc<str>]| {
+                keys.iter().position(|ranked| {
+                    ranked.len() == key.len()
+                        && ranked.iter().zip(key).all(|(literal, value)| {
+                            matches!(literal, crucible_plan::Literal::String(s) if s.as_str() == &**value)
+                        })
+                })
+            };
+            series.sort_by_key(|s| rank(&s.key).unwrap_or(usize::MAX));
+        }
         for (_, buckets) in by_key(other_rows, &[])? {
             series.push(MetricsSeries {
                 measure,

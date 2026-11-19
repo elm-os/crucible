@@ -6,6 +6,7 @@
 
 mod facts;
 mod list;
+mod mcp;
 mod metrics;
 mod payload;
 mod properties;
