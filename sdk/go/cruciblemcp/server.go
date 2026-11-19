@@ -188,9 +188,7 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		okv, class := outcomeAttrs(out, o, notification, true)
 		kv = append(kv, okv...)
 		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {
-			result := resultText(r)
-			noteWork(len(result), min(len(result), scrub.WindowSize(rule.MaxBytes)))
-			if text, cut, ok := s.captured(FieldResult, result, rule.MaxBytes); ok {
+			if text, cut, ok := s.capturedResult(r, rule.MaxBytes); ok {
 				kv = append(kv, attribute.String(keyToolResult, text))
 				truncated = truncated || cut
 			}
@@ -327,6 +325,13 @@ func (s *server) captured(field, value string, max int) (text string, truncated,
 		text, _ = scrub.Prefix(text, max)
 	}
 	return text, truncated, text != ""
+}
+
+// capturedResult is the captured form of a tool result, scrubbed and capped as captured does it.
+func (s *server) capturedResult(r *mcp.CallToolResult, max int) (text string, truncated, ok bool) {
+	result := resultText(r)
+	noteWork(len(result), min(len(result), scrub.WindowSize(max)))
+	return s.captured(FieldResult, result, max)
 }
 
 // resultText is the captured form of a tool result: its content and structured content only, never the
