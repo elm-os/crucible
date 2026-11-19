@@ -36,7 +36,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
-    ControlTx, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease,
+    ControlTx, CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease,
     LeaseName, Leases, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo,
     OrgRepo, Project, ProjectRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session, SessionRepo,
     SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo, UserStatus,
@@ -554,6 +554,9 @@ impl Repos for NodeStore {
     fn sql_runs(&self) -> &dyn SqlRunRepo {
         self.model.sql_runs()
     }
+    fn export_jobs(&self) -> &dyn ExportJobRepo {
+        self.model.export_jobs()
+    }
 }
 
 #[async_trait]
@@ -652,6 +655,9 @@ impl Repos for NodeTx {
     }
     fn sql_runs(&self) -> &dyn SqlRunRepo {
         self.inner.sql_runs()
+    }
+    fn export_jobs(&self) -> &dyn ExportJobRepo {
+        self.inner.export_jobs()
     }
 }
 

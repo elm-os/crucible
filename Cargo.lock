@@ -1279,6 +1279,7 @@ name = "crucible-query"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
