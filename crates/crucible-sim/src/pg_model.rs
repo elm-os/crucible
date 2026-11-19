@@ -29,10 +29,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
-    ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo, KeyChange,
-    KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
-    Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org,
-    OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, Secret,
+    ControlStore, ControlTx, Credential, CredentialRepo, DeletionRequest, Invitation,
+    InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases,
+    LedgerEntry, LifecycleAction, LifecycleRepo, MembershipRepo, Migrations, NewJob, Node, NodeAck,
+    OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org, OrgMembership, OrgRepo,
+    OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, RetentionFloor, Secret,
     SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
     TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
 };
@@ -133,6 +134,11 @@ enum Tbl {
     AuthFlows,
     OneTimeTokens,
     Invitations,
+    Nodes,
+    DeletionRequests,
+    DeletionAcks,
+    Actions,
+    Floors,
 }
 
 type Key = Vec<u8>;
@@ -217,6 +223,11 @@ enum Row {
     AuthFlow(AuthFlow),
     OneTimeToken(OneTimeToken),
     Invitation(Invitation),
+    Node(Node),
+    DeletionRequest(DeletionRequest),
+    DeletionAck(NodeAck),
+    Action(LifecycleAction),
+    Floor((ProjectId, RetentionFloor)),
 }
 
 /// The secondary unique constraints of a row, by the names of the production schema.
@@ -237,6 +248,11 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
             "auth_providers_seeded_kind_key",
             provider.kind.as_str().as_bytes().to_vec(),
         )],
+        Row::DeletionRequest(request) => lifecycle::idempotency_key(request)
+            .map(|key| ("deletion_requests_idempotency_key", key))
+            .into_iter()
+            .collect(),
+        Row::Action(action) => vec![("lifecycle_actions_key_key", action.key.as_bytes().to_vec())],
         _ => Vec::new(),
     }
 }
@@ -274,6 +290,21 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             ),
             ("oauth_accounts_user_id_fkey", Tbl::Users, user(a.user_id)),
         ],
+        Row::DeletionRequest(r) => vec![(
+            "deletion_requests_project_id_fkey",
+            Tbl::Projects,
+            project(r.project_id),
+        )],
+        Row::DeletionAck(a) => vec![(
+            "deletion_node_acks_request_id_fkey",
+            Tbl::DeletionRequests,
+            a.request_id.to_bytes().to_vec(),
+        )],
+        Row::Floor((id, _)) => vec![(
+            "retention_floors_project_id_fkey",
+            Tbl::Projects,
+            project(*id),
+        )],
         _ => Vec::new(),
     }
 }
@@ -329,6 +360,7 @@ struct Db {
     commit_seq: u64,
     next_tx: u64,
     feed_seq: u64,
+    deletion_seq: u64,
     /// Increases at every failover; a transaction of an older generation is lost.
     generation: u64,
     /// Monotonic nanoseconds until which every call fails.
@@ -921,6 +953,7 @@ impl PgModel {
                 commit_seq: 0,
                 next_tx: 0,
                 feed_seq: 0,
+                deletion_seq: 0,
                 generation: 0,
                 outage_until: 0,
                 db_offset_micros: 0,
@@ -1185,6 +1218,9 @@ macro_rules! repos {
             fn migrations(&self) -> &dyn Migrations {
                 &self.runner
             }
+            fn lifecycle(&self) -> &dyn LifecycleRepo {
+                &self.runner
+            }
         }
     };
 }
@@ -1246,6 +1282,9 @@ impl Repos for PgModel {
     fn migrations(&self) -> &dyn Migrations {
         &*self.runner
     }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        &*self.runner
+    }
 }
 
 /// Reads one row of a known variant.
@@ -1272,6 +1311,7 @@ macro_rules! all {
 }
 
 mod identity;
+mod lifecycle;
 
 fn uuid_key(bytes: [u8; 16]) -> Key {
     bytes.to_vec()

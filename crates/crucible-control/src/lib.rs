@@ -6,14 +6,22 @@
 //! - [`Repos`] and the per-aggregate repository traits; [`ControlStore`], [`ControlTx`] and [`transaction`].
 //! - [`TxError`], the one typed error.
 //! - [`HeldLease`], the holder's local validity rule for leases.
+//! - [`LifecycleRepo`] and its rows: the node registry, deletion requests, leader actions and retention floors.
 
 mod error;
 mod lease;
-mod repo;
+// Declared before `lifecycle`, which uses its `text_enum!`.
+#[macro_use]
 mod types;
+mod lifecycle;
+mod repo;
 
 pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
+pub use lifecycle::{
+    ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo,
+    MAX_DELETION_TRACES, Node, NodeAck, RetentionFloor,
+};
 pub use repo::{
     ApiKeyRepo, AuthFlowRepo, AuthProviderRepo, Claims, ControlStore, ControlTx, CredentialRepo,
     InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,

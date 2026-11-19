@@ -21,7 +21,9 @@ mod registry;
 pub mod test_support;
 mod value;
 
-pub use build::{RetentionClamp, TraceBounds, effective_window, trace_bounds_window};
+pub use build::{
+    RetentionClamp, RetentionFloors, TraceBounds, effective_window, trace_bounds_window,
+};
 pub use class::{
     CLASS_FIXED_SETTINGS, Caller, ClassLimits, DEADLINE_SLACK_SECS, QueryClass, profile_caps,
 };

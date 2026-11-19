@@ -55,7 +55,7 @@ impl QueryService {
         Read {
             service: self,
             ctx: *ctx,
-            clamp: RetentionClamp::new(ctx.retention, now),
+            clamp: RetentionClamp::new(ctx.retention, now).with_floors(ctx.floors),
             now,
             store_down: None,
         }

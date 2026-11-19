@@ -41,8 +41,9 @@ mod trace_detail;
 mod trace_list;
 
 pub use context::{Meta, PartialReason, QueryServiceError, ReadContext};
-pub use crucible_recent::Consistency;
 /// Re-exported for callers that build a [`ReadContext`] without depending on `crucible-schema`.
+pub use crucible_plan::RetentionFloors;
+pub use crucible_recent::Consistency;
 pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, PageCursor};
 pub use data_bounds::{DataBounds, MinuteRange};

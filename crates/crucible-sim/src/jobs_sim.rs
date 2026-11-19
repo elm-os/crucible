@@ -37,9 +37,9 @@ use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
     ControlTx, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease,
-    LeaseName, Leases, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo,
-    OrgRepo, Project, ProjectRepo, Queue, Repos, SecretRepo, Session, SessionRepo, SigningKeyRepo,
-    TokenHash, TxError, User, UserRepo, UserStatus,
+    LeaseName, Leases, LifecycleRepo, MembershipRepo, Migrations, NewJob, OauthAccountRepo,
+    OneTimeTokenRepo, OrgRepo, Project, ProjectRepo, Queue, Repos, SecretRepo, Session,
+    SessionRepo, SigningKeyRepo, TokenHash, TxError, User, UserRepo, UserStatus,
 };
 use crucible_env::{Clock, ClockExt, Env, Instant, Rng};
 use crucible_jobs::housekeeping::{self, KEY_FEED_KEEP};
@@ -545,6 +545,9 @@ impl Repos for NodeStore {
     fn migrations(&self) -> &dyn Migrations {
         self.model.migrations()
     }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        self.model.lifecycle()
+    }
 }
 
 #[async_trait]
@@ -634,6 +637,9 @@ impl Repos for NodeTx {
     }
     fn migrations(&self) -> &dyn Migrations {
         self.inner.migrations()
+    }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        self.inner.lifecycle()
     }
 }
 

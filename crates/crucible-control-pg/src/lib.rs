@@ -15,6 +15,7 @@
 
 mod conn;
 mod identity;
+mod lifecycle;
 mod migrate;
 mod sql;
 mod store;

@@ -5,6 +5,7 @@
 mod data_bounds;
 mod facts;
 mod filter_values;
+mod lifecycle;
 mod metrics;
 mod payload;
 mod search;
@@ -19,6 +20,10 @@ mod users;
 pub use data_bounds::{DataBoundsPlans, data_bounds};
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
+pub use lifecycle::{
+    DELETION_TRACES_PAGE, TraceSelector, deletion_traces, expired_before, lifecycle_column,
+    lifecycle_oldest, lifecycle_time_column,
+};
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
     metrics_ranking, metrics_series, metrics_shape,

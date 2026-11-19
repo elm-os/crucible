@@ -13,6 +13,7 @@ use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
 use futures::future::BoxFuture;
 
 use crate::error::TxError;
+use crate::lifecycle::LifecycleRepo;
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, Invitation, KeyChange, KeyChangeKind,
     KeySnapshot, Lease, LeaseName, LedgerEntry, NewJob, OauthAccount, OneTimeToken, Org,
@@ -371,6 +372,8 @@ pub trait Repos: Send + Sync {
     fn claims(&self) -> &dyn Claims;
     /// The migrations ledger.
     fn migrations(&self) -> &dyn Migrations;
+    /// Retention and deletion.
+    fn lifecycle(&self) -> &dyn LifecycleRepo;
 }
 
 /// Postgres behind repositories (contract 2.7). Through [`Repos`], each call is its own statement.
