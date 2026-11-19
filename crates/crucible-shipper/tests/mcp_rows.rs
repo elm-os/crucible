@@ -503,6 +503,9 @@ fn normalized(frames: &[Vec<OpDesc>]) -> Vec<(NormalizedFrame, Admission)> {
         .collect()
 }
 
+/// Per rollup key: the count, both histograms and the last start.
+type ToolAggs = BTreeMap<String, (u64, BTreeMap<u16, u64>, BTreeMap<u8, u64>, i64)>;
+
 fn arb_frames() -> impl Strategy<Value = Vec<Vec<OpDesc>>> {
     let op = (
         0u8..24,
@@ -593,7 +596,7 @@ proptest! {
             }
         }
         // The reference: per rollup key, the count, the byte sums, the durations and the last start.
-        let mut expected: BTreeMap<String, (u64, BTreeMap<u16, u64>, BTreeMap<u8, u64>, i64)> = BTreeMap::new();
+        let mut expected: ToolAggs = BTreeMap::new();
         let mut deploys: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         for op in &ops {
             let entry = expected.entry(format!("{:?}", rollup_key(op))).or_default();
@@ -609,7 +612,7 @@ proptest! {
             }
         }
         let (mut op_rows, mut content_rows, mut inventory_rows) = (0usize, 0usize, 0usize);
-        let mut found: BTreeMap<String, (u64, BTreeMap<u16, u64>, BTreeMap<u8, u64>, i64)> = BTreeMap::new();
+        let mut found: ToolAggs = BTreeMap::new();
         let mut found_deploys: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         let mut per_source: BTreeMap<i8, u64> = BTreeMap::new();
         let mcp = [

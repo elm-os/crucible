@@ -11,7 +11,9 @@
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_plan::test_support::query_plan;
-use crucible_plan::{AggOutput, Aggregate, Direction, Measure, Node, Pred, QueryClass, Value};
+use crucible_plan::{
+    AggOutput, Aggregate, Direction, Literal, Measure, Node, Pred, QueryClass, Scan, Value,
+};
 use crucible_records::{CaptureSource, ErrorClass, McpSide, TableId, TimeWindow, Timestamp};
 use crucible_schema::{
     Column, McpContentCol, McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol,
@@ -19,7 +21,7 @@ use crucible_schema::{
 
 use crate::blocks::Rows;
 use crate::differential::{insert, rows, stamped};
-use crate::inserts::plain_rows;
+use crate::inserts::{id8, plain_rows};
 use crate::reads::rollup;
 use crate::{Ctx, T0, expect};
 
@@ -213,8 +215,17 @@ pub(crate) async fn mcp(ctx: &Ctx) -> Result<String> {
                 .value(),
             )
         })
-        .each("caller_fault", |row| Value::UInt(u64::from(row == 2)))
-        .each("duration_us", |row| Value::UInt(10 * (row as u64 + 1)))
+            // One trace: the agent's client-side operation (row 3) and under it the server's (row 0).
+            .all("trace_id", Value::Bytes(vec![7; 16]))
+            .each("parent_span_id", |row| {
+                if row == 0 {
+                    id8(SALT + block as u32, 3)
+                } else {
+                    Value::Bytes(vec![0; 8])
+                }
+            })
+            .each("caller_fault", |row| Value::UInt(u64::from(row == 2)))
+            .each("duration_us", |row| Value::UInt(10 * (row as u64 + 1)))
         .each("content_captured", |row| Value::UInt(u64::from(row < 2)))
         .each("jsonrpc_code", |row| {
             if row == 2 {
@@ -438,6 +449,34 @@ pub(crate) async fn mcp(ctx: &Ctx) -> Result<String> {
                 ],
             || format!("the operations per capture source {when} the merge: {per_source:?}"),
         )?;
+        // The link between an agent's tool call and the server's operation (contract 9.1): the server-side
+        // row of the trace whose parent is the client-side span.
+        let Value::Bytes(client_span) = id8(SALT, 3) else {
+            return Err(anyhow!("a span id is bytes"));
+        };
+        let linked = Scan::new(
+            TableId::McpOps,
+            [McpOpsCol::SpanId, McpOpsCol::Side],
+            Pred::And(vec![
+                Pred::eq(McpOpsCol::TraceId, Literal::Bytes(vec![7; 16])),
+                Pred::eq(McpOpsCol::ParentSpanId, Literal::Bytes(client_span)),
+                Pred::eq(McpOpsCol::Side, Literal::Enum(McpSide::Server.value())),
+            ]),
+        )?;
+        let found = rows(
+            ctx,
+            query_plan(scope, window, QueryClass::List, Node::Scan(linked)),
+        )
+        .await?;
+        let under: Vec<Vec<Value>> = found.iter().map(|row| row.values().to_vec()).collect();
+        expect(
+            under == vec![vec![id8(SALT, 0), Value::Enum(McpSide::Server.value())]],
+            || {
+                format!(
+                    "the server operation under the agent's tool call {when} the merge: {under:?}"
+                )
+            },
+        )?;
         let content = Aggregate::new(
             TableId::McpContent,
             Pred::all(),
@@ -460,7 +499,7 @@ pub(crate) async fn mcp(ctx: &Ctx) -> Result<String> {
                 ]],
             || format!("the content rows {when} the merge: {stored:?}"),
         )?;
-        reads += 6;
+        reads += 7;
     }
     let violations = ctx.model.violations();
     expect(violations.is_empty(), || {
@@ -469,6 +508,7 @@ pub(crate) async fn mcp(ctx: &Ctx) -> Result<String> {
     Ok(format!(
         "{reads} reads of the five MCP tables returned the same rows on the server and on the store model, \
          before and after the model merged its parts: sums, both histogram merges, seen times and the set of \
-         capture sources, with rows of different capture sources apart"
+         capture sources, with rows of different capture sources apart, and the server operation under an agent's \
+         tool call by trace and parent span"
     ))
 }
