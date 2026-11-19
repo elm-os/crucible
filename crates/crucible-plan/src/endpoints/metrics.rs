@@ -460,7 +460,10 @@ pub fn metrics_totals(
         return Err(invalid("measures", "an alert reads exactly one measure"));
     };
     if query.source != Source::Spans || id.source() != Source::Spans {
-        return Err(invalid("source", "alerts read the span rollup only"));
+        return Err(invalid(
+            "source",
+            "this read is of the span rollup; an mcp_ops rule is read by mcp_metrics_totals",
+        ));
     }
     if !id.aggregations().contains(aggregation) {
         return Err(invalid(
