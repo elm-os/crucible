@@ -248,7 +248,16 @@ fn path_export(project: &Scoped<impl Send + Sync>) -> Result<ExportJobId, ApiErr
         .path
         .get("export_id")
         .and_then(|id| ExportJobId::parse(id).ok())
-        .ok_or_else(|| ApiError::not_found(project.request_id))
+        .ok_or_else(|| no_export(project.request_id))
+}
+
+/// `not_found` for an export id that names no export of the project.
+fn no_export(rid: RequestId) -> ApiError {
+    ApiError::new(
+        rid,
+        ProblemCode::NotFound,
+        "no export of this project has this id; the project's export list has the ids",
+    )
 }
 
 /// List exports
@@ -385,7 +394,7 @@ pub(crate) async fn get_export(
         .get(project.scope, id)
         .await
         .map_err(|e| tx_problem(rid, &e))?
-        .ok_or_else(|| ApiError::not_found(rid))?;
+        .ok_or_else(|| no_export(rid))?;
     Ok(Json(export_dto(&job, exports.now())))
 }
 
@@ -422,7 +431,7 @@ pub(crate) async fn download_export(
         .open(project.scope, id)
         .await
         .map_err(|error| match error {
-            DownloadError::NotFound => ApiError::not_found(rid),
+            DownloadError::NotFound => no_export(rid),
             DownloadError::NotReady(state) => ApiError::new(
                 rid,
                 ProblemCode::Conflict,

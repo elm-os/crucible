@@ -41,7 +41,7 @@ impl Tool for GetExport {
         let Some(id) = id else {
             return Err(ToolError::new(
                 ProblemCode::ValidationFailed,
-                "the export id is invalid",
+                "the export id is invalid; give the id create_export answered",
             ));
         };
         let exports = service(call)?;
@@ -52,7 +52,8 @@ impl Tool for GetExport {
             .ok_or_else(|| {
                 ToolError::new(
                     ProblemCode::NotFound,
-                    "no export of the project has this id",
+                    "no export of the key's project has this id; give the id create_export answered, with a key \
+                     of the same project",
                 )
             })?;
         Ok(view(exports, &job))

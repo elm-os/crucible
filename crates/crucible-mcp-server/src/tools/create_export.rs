@@ -167,7 +167,7 @@ impl Tool for CreateExport {
         let Some(window) = window else {
             return Err(ToolError::new(
                 ProblemCode::ValidationFailed,
-                "the window is invalid",
+                "the window is invalid; give `from` before `to`, each an RFC 3339 time",
             ));
         };
         let exports = service(call)?;
@@ -197,7 +197,10 @@ impl Tool for CreateExport {
                 ),
             )
             .with_limit("exports_per_hour", EXPORTS_PER_HOUR as u32),
-            CreateError::KeyReused => ToolError::new(ProblemCode::IdempotencyKeyReused, "the key was used before"),
+            CreateError::KeyReused => ToolError::new(
+                ProblemCode::IdempotencyKeyReused,
+                "the request repeats an earlier one with other arguments; call create_export again",
+            ),
             CreateError::Store(error) => store_error(&error),
         })?;
         let job = match created {
