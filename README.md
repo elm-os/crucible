@@ -36,6 +36,8 @@ infrastructure you control.
 
 - A metrics API over spans and traces: counts, errors, tokens, cost and latency percentiles, by minute to week,
   split by up to two dimensions.
+- Dashboards of charts, numbers, tables and notes over those metrics, laid out on a grid and edited by pointer or
+  keyboard, with built-in starter dashboards to duplicate and change.
 - Threshold alerts on those measures, delivered to webhooks, Slack and email.
 - A read-only SQL workspace for each project, with saved queries. ClickHouse access control keeps each project's
   SQL inside that project's data.

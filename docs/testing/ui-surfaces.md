@@ -185,9 +185,8 @@ and requests nothing.
 
 ## Not covered yet
 
-- The alert rule form picks measures and dimensions from a list in the UI that mirrors the span rollup; it will
-  read `metrics/schema` once the shared query builder of the dashboards lands. The preview shows the current
-  window; the chart of the last 24 hours with the threshold line is planned with that builder.
+- The alert rule form picks measures and dimensions from a list in the UI that mirrors the span rollup; the
+  dashboard editor reads them from `metrics/schema`. The alert preview shows the current window.
 
 - The span panel's metadata and MCP tabs wait for the payload route's `metadata`, `mcp_args` and `mcp_result`
   selectors (contract 12.6), which it does not serve yet.
