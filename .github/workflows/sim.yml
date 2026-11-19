@@ -1,15 +1,20 @@
 name: sim
 
-# The whole-system deterministic simulation with swarm testing (docs/testing/system-simulation.md).
+# The whole-system deterministic simulation with swarm testing (docs/testing/system-simulation.md). Every lane
+# runs the regression corpus, then fresh configurations that start at the workflow run id, so each run explores
+# configurations no earlier run has seen.
 #
-# - Every pull request: the regression corpus plus 200 fresh configurations with 3 seeds each, in the realistic
-#   tier, split over 4 shards. The fresh configurations start at the workflow run id, so each run explores
-#   configurations no earlier run has seen.
-# - Nightly: 5,000 fresh configurations in the stress tier, split the same way.
-# - By hand (workflow_dispatch): either budget on any ref; the pull-request budget by default.
+# - Every pull request: 200 fresh configurations with 3 seeds each in the realistic tier, split over 4 shards.
+# - Nightly, realistic lane: 3,400 fresh configurations with 3 seeds each (10,200 runs) in the realistic tier,
+#   split over 16 shards. A failure fails the workflow.
+# - Nightly, stress lane: 5,000 fresh configurations with 1 seed each in the stress tier, split over 4 shards.
+#   Its failures are filed but do not fail the workflow.
+# - After the nightly lanes, `nightly report` gathers every shard's failures into its job summary and, when a run
+#   failed, opens or updates the issue "nightly simulation: <date>" (label sim-nightly).
+# - By hand (workflow_dispatch): any lane on any ref; the pull-request budget by default.
 #
-# A failing run prints its replay command (`cargo xtask sim replay --seed <n> --config <mask>`) and the line to
-# add to sim/corpus/seeds.jsonl.
+# A failing run prints its replay command (`cargo xtask sim replay --seed <n> --config <mask> --tier <tier>`) and
+# the line to add to sim/corpus/seeds.jsonl.
 
 on:
   pull_request:
@@ -17,17 +22,18 @@ on:
     - cron: "41 2 * * *"
   workflow_dispatch:
     inputs:
-      tier:
-        description: realistic runs the pull-request budget, stress the nightly one
+      lane:
+        description: pull-request, both nightly lanes as the schedule runs them, or one of them
         type: choice
-        options: [realistic, stress]
-        default: realistic
+        options: [pull-request, nightly, nightly-realistic, nightly-stress]
+        default: pull-request
 
 permissions:
   contents: read
 
 concurrency:
-  group: sim-${{ github.ref }}
+  # The event and the lane keep a run by hand from cancelling the nightly run of the same ref.
+  group: sim-${{ github.ref }}-${{ github.event_name }}-${{ inputs.lane }}
   cancel-in-progress: true
 
 env:
@@ -38,8 +44,9 @@ env:
 jobs:
   swarm:
     name: swarm ${{ matrix.shard }}/4
+    if: github.event_name == 'pull_request' || inputs.lane == 'pull-request'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'schedule' && 150 || inputs.tier == 'stress' && 150 || 20 }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -57,16 +64,151 @@ jobs:
       - name: Build the runner
         run: cargo build --locked -p xtask
       - name: Corpus and fresh configurations (realistic tier)
-        if: github.event_name == 'pull_request' || inputs.tier == 'realistic'
         env:
           SHARD: ${{ matrix.shard }}
         run: |
           cargo xtask sim run --configs 200 --seeds 3 --tier realistic \
             --base "$GITHUB_RUN_ID" --shard "$SHARD/4"
-      - name: Corpus and fresh configurations (stress tier)
-        if: github.event_name == 'schedule' || inputs.tier == 'stress'
+
+  nightly-realistic:
+    name: nightly realistic ${{ matrix.shard }}/16
+    if: github.event_name == 'schedule' || inputs.lane == 'nightly' || inputs.lane == 'nightly-realistic'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: sim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the runner
+        run: cargo build --locked -p xtask
+      - name: Corpus and fresh configurations (realistic tier)
         env:
           SHARD: ${{ matrix.shard }}
         run: |
+          cargo xtask sim run --configs 3400 --seeds 3 --tier realistic \
+            --base "$GITHUB_RUN_ID" --shard "$SHARD/16" --out "target/sim/realistic-$SHARD.jsonl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: sim-log-realistic-${{ matrix.shard }}
+          path: target/sim/realistic-${{ matrix.shard }}.jsonl
+          if-no-files-found: ignore
+          overwrite: true
+
+  nightly-stress:
+    name: nightly stress ${{ matrix.shard }}/4
+    if: github.event_name == 'schedule' || inputs.lane == 'nightly' || inputs.lane == 'nightly-stress'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: sim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the runner
+        run: cargo build --locked -p xtask
+      # Exit code 1 means that runs failed: `nightly report` files them, and stress-tier failures do not fail the
+      # workflow. Any other exit code is an error of the runner or the build and fails the shard.
+      - name: Corpus and fresh configurations (stress tier)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          status=0
           cargo xtask sim run --configs 5000 --seeds 1 --tier stress \
-            --base "$GITHUB_RUN_ID" --shard "$SHARD/4"
+            --base "$GITHUB_RUN_ID" --shard "$SHARD/4" --out "target/sim/stress-$SHARD.jsonl" || status=$?
+          if [ "$status" -gt 1 ]; then exit "$status"; fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: sim-log-stress-${{ matrix.shard }}
+          path: target/sim/stress-${{ matrix.shard }}.jsonl
+          if-no-files-found: ignore
+          overwrite: true
+
+  nightly-report:
+    name: nightly report
+    needs: [nightly-realistic, nightly-stress]
+    # After failed lanes too: their failures are what this job reports.
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || startsWith(inputs.lane, 'nightly')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # to create the sim-nightly label, open the issue and comment on it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sim-log-*
+          path: runs
+          merge-multiple: true
+      # The shard counts and budgets are those of the lanes above.
+      - name: Summary
+        id: summary
+        env:
+          REALISTIC: ${{ needs.nightly-realistic.result }}
+          STRESS: ${{ needs.nightly-stress.result }}
+        run: |
+          lanes=()
+          if [ "$REALISTIC" != skipped ]; then lanes+=(--lane realistic:16:10200); fi
+          if [ "$STRESS" != skipped ]; then lanes+=(--lane stress:4:5000); fi
+          python3 tools/sim-nightly/report.py summary --runs runs --failures failures.json "${lanes[@]}" \
+            >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.summary.outputs.failures != '0'
+        with:
+          name: sim-failures
+          path: failures.json
+          overwrite: true
+      - name: Open or update the issue
+        if: steps.summary.outputs.failures != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="nightly simulation: $(date -u +%F)"
+          gh label create sim-nightly --force --color ededed \
+            --description "Failures of the nightly simulation (.github/workflows/sim.yml)"
+          number=$(gh issue list --label sim-nightly --state open --limit 100 --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          : > existing.md
+          if [ -n "$number" ]; then
+            gh issue view "$number" --json body,comments --jq '.body, .comments[].body' > existing.md
+          fi
+          python3 tools/sim-nightly/report.py issue --failures failures.json --existing existing.md > body.md
+          if [ ! -s body.md ]; then
+            echo "Issue #$number lists every failure of this run already."
+          elif [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$title" --label sim-nightly --body-file body.md
+          fi
+      - name: Gate
+        env:
+          GATE: ${{ steps.summary.outputs.gate }}
+        run: |
+          if [ "$GATE" != pass ]; then
+            echo "The nightly simulation failed; the job summary says why."
+            exit 1
+          fi
