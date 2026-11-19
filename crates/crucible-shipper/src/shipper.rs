@@ -521,7 +521,7 @@ impl Shipper {
             if !frame.mcp_ops.is_empty() && !std::mem::replace(&mut self.identity_drop_logged, true)
             {
                 tracing::warn!(
-                    "no control store is configured, so the user identity of MCP operations is dropped                      (user id, subject, issuer, tenant, OAuth client id); configure [postgres] to keep it"
+                    "this node has no project salts, which the control store holds, so the user identity                      of MCP operations is dropped (user id, subject, issuer, tenant, OAuth client id)"
                 );
             }
             return Some(Identity::Suppressed);
