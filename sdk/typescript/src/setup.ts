@@ -113,7 +113,7 @@ export async function shutdown(): Promise<void> {
 
 /** Export queue counters since `init`; all zero before `init`. */
 export function stats(): QueueStats {
-  return state?.queue.stats() ?? { queued: 0, dropped: 0, exported: 0, failed: 0 };
+  return state?.queue.stats() ?? { queued: 0, queuedBytes: 0, dropped: 0, exported: 0, failed: 0 };
 }
 
 /** The tracer for Crucible spans: the SDK's own after `init`, else the global one (a no-op without a provider). */
