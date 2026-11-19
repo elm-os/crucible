@@ -23,6 +23,7 @@ pub(crate) enum P<'a> {
     Uuid(Uuid),
     OptUuid(Option<Uuid>),
     Text(&'a str),
+    OptText(Option<&'a str>),
     Int(i64),
     OptInt4(Option<u32>),
     Int4(u32),
@@ -38,7 +39,7 @@ impl P<'_> {
     pub(crate) fn ty(&self) -> Type {
         match self {
             Self::Uuid(_) | Self::OptUuid(_) => Type::UUID,
-            Self::Text(_) => Type::TEXT,
+            Self::Text(_) | Self::OptText(_) => Type::TEXT,
             Self::Int(_) => Type::INT8,
             Self::OptInt4(_) | Self::Int4(_) => Type::INT4,
             Self::Bool(_) => Type::BOOL,
@@ -61,7 +62,7 @@ impl ToSql for P<'_> {
     fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Boxed> {
         match self {
             Self::Uuid(id) | Self::OptUuid(Some(id)) => out.put_slice(id.as_bytes()),
-            Self::Text(text) => return text.to_sql(ty, out),
+            Self::Text(text) | Self::OptText(Some(text)) => return text.to_sql(ty, out),
             Self::Int(value) => return value.to_sql(ty, out),
             Self::Int4(value) => return int4(*value)?.to_sql(ty, out),
             Self::OptInt4(Some(value)) => return int4(*value)?.to_sql(ty, out),
@@ -72,7 +73,8 @@ impl ToSql for P<'_> {
             Self::OptInt4(None)
             | Self::OptTs(None)
             | Self::OptBytes(None)
-            | Self::OptUuid(None) => {
+            | Self::OptUuid(None)
+            | Self::OptText(None) => {
                 return Ok(IsNull::Yes);
             }
         }
@@ -149,6 +151,10 @@ impl<'a> Cols<'a> {
     }
 
     pub(crate) fn text(&mut self) -> Result<String, TxError> {
+        self.take()
+    }
+
+    pub(crate) fn opt_text(&mut self) -> Result<Option<String>, TxError> {
         self.take()
     }
 

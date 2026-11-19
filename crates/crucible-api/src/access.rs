@@ -29,6 +29,7 @@ use crucible_env::Env;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
 use crucible_records::{AuthorKind, ProjectId, ProjectScope, RequestId};
+use crucible_sqlws::SqlWorkspace;
 
 use crate::cursor::Cursors;
 use crate::idempotency::Keys;
@@ -54,6 +55,8 @@ pub(crate) struct ApiState {
     pub(crate) facts: Option<Arc<dyn FactWriter>>,
     /// The `Idempotency-Key`s of fact writes.
     pub(crate) idempotency: Arc<Keys>,
+    /// The SQL workspace; `None` when it is not configured.
+    pub(crate) sql: Option<SqlWorkspace>,
 }
 
 impl ApiState {
@@ -255,6 +258,12 @@ permissions! {
     WriteFacts => WriteFacts,
     /// API keys, project settings and project members.
     Manage => Manage,
+    /// Create and edit saved queries. Keys never hold it.
+    EditContent => EditContent,
+    /// Run ad hoc SQL.
+    RunSql => RunSql,
+    /// Run a project-visible saved query with its declared parameters.
+    RunSavedQuery => RunSavedQuery,
 }
 
 /// A request authorized for permission `P` on the project of its path (contract 11.6).

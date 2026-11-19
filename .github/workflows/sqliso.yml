@@ -1,0 +1,217 @@
+name: sqliso
+
+# The isolation suite of the SQL workspace (contract 7.5; docs/testing/sqliso.md). Isolation between projects is
+# carried by ClickHouse access control alone, so the suite attacks real servers, on 26.3, 26.8 and latest.
+#
+# Job `direct`, per version, under both values of the server switch users_without_row_policies_can_read_rows:
+#   layer A: direct attacks W1 to W15 as a project's own ClickHouse identity;
+#   layer B: grammar fuzzing with canary oracles (5,000 statements per pull request, 500,000 nightly);
+#   layer D: broken deployments (mutants) that must each make the suite fail, the switch flipped among them.
+# Job `api`, per version:
+#   layer C: the same isolation and the workspace's own guarantees through the REST API of the real binary,
+#   with a real Postgres (crates/crucible/tests/sqliso_api.rs).
+#
+# The servers are started with `docker run`, not as service containers: the switch is server configuration,
+# which a service container cannot take.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-schema/**
+      - crates/crucible-store-clickhouse/**
+      - crates/crucible-sqlws/**
+      - crates/crucible-conformance/**
+      - crates/crucible-env/src/sqlws.rs
+      - crates/crucible-api/src/routes/sql.rs
+      - crates/crucible-control/src/sqlws.rs
+      - crates/crucible-control-pg/**
+      - crates/crucible/src/**
+      - crates/crucible/tests/sqliso_api.rs
+      - Cargo.lock
+      - .github/workflows/sqliso.yml
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqliso-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  ADMIN_USER: crucible_admin
+  ADMIN_PASSWORD: sqliso-admin
+
+jobs:
+  direct:
+    name: layers A, B, D on clickhouse ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'schedule' && 240 || 45 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["26.3", "26.8", "latest"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: conformance
+          save-if: false
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance --bin crucible-sqliso
+      - name: Layers A, B and D under both values of the server switch
+        env:
+          TAG: ${{ matrix.tag }}
+          # Nightly: the contract's 500,000 statements and 2,000 identities. Per pull request: 5,000 and 20.
+          FUZZ: ${{ github.event_name == 'schedule' && '500000' || '5000' }}
+          IDENTITIES: ${{ github.event_name == 'schedule' && '2000' || '20' }}
+          SEED: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          suite=target/debug/crucible-sqliso
+          start() {
+            local value=$1
+            docker rm -f sqliso-ch >/dev/null 2>&1 || true
+            mkdir -p "$RUNNER_TEMP/sqliso"
+            cat > "$RUNNER_TEMP/sqliso/switch.xml" <<XML
+          <clickhouse>
+            <access_control_improvements>
+              <users_without_row_policies_can_read_rows>$value</users_without_row_policies_can_read_rows>
+            </access_control_improvements>
+          </clickhouse>
+          XML
+            chmod 644 "$RUNNER_TEMP/sqliso/switch.xml"
+            docker run -d --name sqliso-ch -p 8123:8123 \
+              -e CLICKHOUSE_USER="$ADMIN_USER" -e CLICKHOUSE_PASSWORD="$ADMIN_PASSWORD" \
+              -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+              -v "$RUNNER_TEMP/sqliso/switch.xml:/etc/clickhouse-server/config.d/sqliso.xml:ro" \
+              "clickhouse/clickhouse-server:$TAG" >/dev/null
+            for _ in $(seq 1 90); do
+              if curl -sf http://localhost:8123/ping >/dev/null; then return 0; fi
+              sleep 1
+            done
+            echo "ClickHouse did not answer on port 8123" >&2
+            docker logs sqliso-ch 2>&1 | tail -30 >&2
+            return 1
+          }
+          run() {
+            "$suite" --url http://localhost:8123 --user "$ADMIN_USER" --password "$ADMIN_PASSWORD" --label "$TAG" "$@"
+          }
+          status=0
+          echo "seed $SEED"
+
+          start false
+          run --switch strict --fuzz "$FUZZ" --seed "$SEED" --identities "$IDENTITIES" | tee strict.tsv || status=1
+
+          start true
+          run --switch permissive --layers a,b,d --fuzz $((FUZZ / 5)) --seed "$SEED" --identities 20 \
+            | tee permissive.tsv || status=1
+
+          # Layer D, the switch flipped: this server is permissive and the deployment is declared strict.
+          if run --switch strict --layers none > flipped.tsv; then
+            printf 'FAIL\t%s\tD8 mutant: the server switch flipped\tthe suite passed a server whose switch is not the declared one\n' "$TAG" | tee -a permissive.tsv
+            status=1
+          else
+            printf 'PASS\t%s\tD8 mutant: the server switch flipped\tcaught by W0 deployment as declared\n' "$TAG" | tee -a permissive.tsv
+          fi
+          docker rm -f sqliso-ch >/dev/null 2>&1 || true
+          exit $status
+      - name: Report
+        if: always()
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          {
+            echo "### sqliso on ClickHouse $TAG"
+            for file in strict permissive; do
+              [ -f "$file.tsv" ] || continue
+              echo
+              echo "Server switch: $file"
+              echo
+              echo '| Result | Row | Detail |'
+              echo '|---|---|---|'
+              awk -F'\t' 'NF >= 4 { detail = $4; gsub(/\|/, "\\|", detail); print "| " $1 " | " $3 " | " substr(detail, 1, 600) " |" }' "$file.tsv"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: sqliso-${{ matrix.tag }}
+          path: "*.tsv"
+          if-no-files-found: ignore
+
+  api:
+    name: layer C on clickhouse ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["26.3", "26.8", "latest"]
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:${{ matrix.tag }}
+        env:
+          CLICKHOUSE_USER: crucible_admin
+          CLICKHOUSE_PASSWORD: sqliso-admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_PASSWORD: sqliso
+          POSTGRES_DB: crucible
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible -d crucible"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: e2e
+          save-if: false
+      # The server is built on its own, never with the workspace or beside the test: either would compile the
+      # test-only features of other crates' dependencies into it.
+      - name: Build the server
+        run: |
+          cargo build --locked --package crucible
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp target/debug/crucible "$RUNNER_TEMP/bin/crucible"
+      - name: Build the test
+        run: cargo test --locked --package crucible --test sqliso_api --no-run
+      - name: Wait for ClickHouse
+        run: |
+          for _ in $(seq 1 90); do
+            if curl -sf http://localhost:8123/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "ClickHouse did not answer on port 8123" >&2
+          exit 1
+      - name: Layer C through the API
+        env:
+          CRUCIBLE_SQLISO_CLICKHOUSE_URL: http://localhost:8123
+          CRUCIBLE_SQLISO_CLICKHOUSE_USER: crucible_admin
+          CRUCIBLE_SQLISO_CLICKHOUSE_PASSWORD: sqliso-admin
+          CRUCIBLE_SQLISO_POSTGRES_URL: postgres://crucible:sqliso@localhost:5432/crucible
+        run: |
+          export CRUCIBLE_SQLISO_BIN="$RUNNER_TEMP/bin/crucible"
+          cargo test --locked --package crucible --test sqliso_api -- --nocapture
