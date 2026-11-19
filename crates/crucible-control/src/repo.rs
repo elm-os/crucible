@@ -14,6 +14,7 @@ use futures::future::BoxFuture;
 
 use crate::alerts::{AlertEventRepo, AlertRuleRepo, AlertStateRepo, ChannelRepo};
 use crate::error::TxError;
+use crate::lifecycle::LifecycleRepo;
 use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, ExportCommit, ExportJob, Invitation,
@@ -445,6 +446,8 @@ pub trait Repos: Send + Sync {
     fn export_jobs(&self) -> &dyn ExportJobRepo;
     /// The migrations ledger.
     fn migrations(&self) -> &dyn Migrations;
+    /// Retention and deletion.
+    fn lifecycle(&self) -> &dyn LifecycleRepo;
     /// The SQL workspace's ClickHouse identities.
     fn sql_identities(&self) -> &dyn SqlIdentityRepo;
     /// Saved SQL queries.

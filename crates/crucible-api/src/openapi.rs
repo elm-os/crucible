@@ -45,6 +45,7 @@ impl Modify for ProjectKey {
         (name = "channels", description = "Notification channels: Slack webhooks, email and signed webhooks, with test-send."),
         (name = "exports", description = "Export jobs: the project's spans in the crucible-jsonl or otlp-json format, as a file to download."),
         (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
+        (name = "lifecycle", description = "Retention settings and deletion requests."),
         (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),
         (name = "projects", description = "Projects, project members and API keys."),

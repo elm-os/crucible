@@ -60,6 +60,8 @@ pub(crate) struct ApiState {
     pub(crate) sql: Option<SqlWorkspace>,
     /// Alert rules and channels; `None` without a control plane.
     pub(crate) alerts: Option<crate::AlertsApi>,
+    /// Retention and deletion; `None` without a control plane.
+    pub(crate) lifecycle: Option<crucible_lifecycle::Service>,
     /// Exports; `None` without a control plane, which holds them.
     pub(crate) exports: Option<Exports>,
 }
@@ -275,6 +277,8 @@ permissions! {
     WriteFacts => WriteFacts,
     /// API keys, project settings and project members.
     Manage => Manage,
+    /// Delete traces.
+    DeleteTraces => DeleteTraces,
     /// Create and edit saved queries and alert rules. Keys never hold it.
     EditContent => EditContent,
     /// Run ad hoc SQL.
@@ -374,7 +378,8 @@ impl Project {
         Ok(Self {
             request_id: scoped.request_id,
             author,
-            ctx: ReadContext::new(scoped.scope, settings.retention, caller),
+            ctx: ReadContext::new(scoped.scope, settings.retention, caller)
+                .with_floors(settings.floors),
             settings,
             path: scoped.path,
         })

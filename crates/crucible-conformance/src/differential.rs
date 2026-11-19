@@ -658,7 +658,7 @@ pub(crate) async fn extra(ctx: &Ctx) -> Result<usize> {
     Ok(done)
 }
 
-async fn finished(ctx: &Ctx, store: &dyn TelemetryStore, id: &MutationId) -> Result<()> {
+pub(crate) async fn finished(ctx: &Ctx, store: &dyn TelemetryStore, id: &MutationId) -> Result<()> {
     for _ in 0..120 {
         match store.mutation_status(id).await? {
             MutationStatus::Done => return Ok(()),
@@ -669,7 +669,7 @@ async fn finished(ctx: &Ctx, store: &dyn TelemetryStore, id: &MutationId) -> Res
     bail!("mutation {} did not finish", id.name())
 }
 
-fn same<T: PartialEq + std::fmt::Debug>(what: &str, real: &T, model: &T) -> Result<()> {
+pub(crate) fn same<T: PartialEq + std::fmt::Debug>(what: &str, real: &T, model: &T) -> Result<()> {
     expect(real == model, || {
         format!("{what}: the server gives {real:?}, the model {model:?}")
     })

@@ -19,6 +19,7 @@ mod errors;
 mod exports;
 mod facts;
 mod identity;
+mod lifecycle;
 mod lists;
 mod metrics;
 mod payload;

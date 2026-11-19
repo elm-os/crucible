@@ -10,12 +10,12 @@ use crucible_control::{
     AlertEventRepo, AlertRuleRepo, AlertStateRepo, ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod,
     AuthProviderRepo, ChannelRepo, Claim, Claims, ControlStore, ControlTx, Credential,
     CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc, KeyChange, KeyChangeKind,
-    KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
-    MigrationKind, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership,
-    OrgRepo, OrgRole, OrgSettings, Project, ProjectMembership, ProjectRepo, ProjectRole,
-    ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo,
-    SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash,
-    TxError, User, UserRepo, UserStatus, duration_micros,
+    KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, LifecycleRepo,
+    MembershipRepo, MigrationKind, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, Org,
+    OrgMembership, OrgRepo, OrgRole, OrgSettings, Project, ProjectMembership, ProjectRepo,
+    ProjectRole, ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session,
+    SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP,
+    TokenHash, TxError, User, UserRepo, UserStatus, duration_micros,
 };
 use crucible_env::{Env, Instant};
 use crucible_records::{ApiKeyId, OrgId, ProjectId, Timestamp, UserId, Uuid};
@@ -282,8 +282,11 @@ impl PgControlStore {
              d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM alert_evaluations), \
              d22 AS (DELETE FROM alert_events), d23 AS (DELETE FROM alert_state), \
              d24 AS (DELETE FROM alert_rules), d25 AS (DELETE FROM channels), \
-             d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs) \
-             SELECT * FROM s";
+             d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs), \
+             d28 AS (DELETE FROM deletion_node_acks), d29 AS (DELETE FROM deletion_requests), \
+             d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
+             d32 AS (DELETE FROM nodes), s2 AS (SELECT setval('deletion_seq', 1, false)) \
+             SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
     }
@@ -552,6 +555,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn migrations(&self) -> &dyn Migrations {
+                $($deref)* self.handle
+            }
+            fn lifecycle(&self) -> &dyn LifecycleRepo {
                 $($deref)* self.handle
             }
             fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
