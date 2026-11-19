@@ -1070,6 +1070,7 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-fake-collector",
+ "crucible-normalize",
  "crucible-otlp",
  "crucible-records",
  "flate2",
@@ -1200,6 +1201,7 @@ dependencies = [
  "crucible-compat",
  "crucible-otlp",
  "crucible-records",
+ "hmac 0.13.0",
  "insta",
  "memchr",
  "opentelemetry-proto",
@@ -1387,6 +1389,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "serde_json",
+ "sha2 0.11.1",
  "shuttle",
  "tempfile",
  "thiserror 2.0.21",
@@ -1394,6 +1397,7 @@ dependencies = [
  "tower",
  "tracing",
  "turmoil",
+ "xxhash-rust",
 ]
 
 [[package]]

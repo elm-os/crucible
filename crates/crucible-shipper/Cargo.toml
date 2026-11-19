@@ -10,7 +10,7 @@ publish.workspace = true
 
 [features]
 # Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
-test-mutants = []
+test-mutants = ["crucible-normalize/test-mutants"]
 
 [dependencies]
 crucible-env = { workspace = true }

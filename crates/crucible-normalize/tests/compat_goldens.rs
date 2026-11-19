@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use common::{ctx, frame};
 use crucible_compat::{FIXTURES, Fixture, ROUTES, TABLES};
-use crucible_normalize::{NormalizedFrame, StageB, normalize};
+use crucible_normalize::{IdentityCtx, NormalizedFrame, StageB, normalize};
 use crucible_otlp::transcode_json;
 use crucible_records::{SpanRecord, Timestamp};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -84,7 +84,9 @@ fn run(case: &Case, body: &[u8]) -> NormalizedFrame {
     f.sdk_version = &case.sdk_version;
     let mut out = normalize(&f, &ctx()).unwrap();
     // Stage B flags the usage aggregates of the request; nothing of a fixture is a repeat.
-    let admission = StageB::new(1_024, 1_024).admit(&mut out).unwrap();
+    let admission = StageB::new(1_024, 1_024)
+        .admit(&mut out, &IdentityCtx::Suppressed)
+        .unwrap();
     assert_eq!(admission.duplicates, 0);
     for span in &mut out.spans {
         span.core.event_bytes = 0;

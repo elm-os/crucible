@@ -42,7 +42,7 @@ use crucible_admission::CpuShares;
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
-use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
+use crucible_auth::{DbKeys, KeyVerifier, Sealer, StaticKeys};
 use crucible_config::Config;
 use crucible_control::KeyScope;
 use crucible_cursor::KeyRing;
@@ -60,7 +60,8 @@ use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
 use crucible_shipper::{
-    FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
+    FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, NoSalts, ProjectSalts, RecentHook, Shipper,
+    ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
@@ -70,6 +71,7 @@ use tower::ServiceExt as _;
 use crate::control::Control;
 use crate::mcp::McpGate;
 use crate::recent::WalSpans;
+use crate::salts::StoreSalts;
 use crate::store::{self, ClickHouse};
 
 /// How long tasks get to finish after shutdown is requested before they are aborted.
@@ -749,9 +751,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         None => None,
     };
     let stores = Stores::new(Arc::new(store));
-    let stores = match control {
-        Some(control) => stores.with_control(Arc::new(control.store)),
-        None => stores,
+    // With a control plane the project salts are its `project_salts` rows; without one stage B drops the user
+    // identity of MCP operations (contract 9.3).
+    let (stores, salts): (_, Arc<dyn ProjectSalts>) = match control {
+        Some(control) => {
+            let control = Arc::new(control.store);
+            let sealer = Sealer::new("master-0", config.master_key.seal_key());
+            let salts = StoreSalts::new(&env, control.clone(), sealer);
+            (stores.with_control(control), Arc::new(salts))
+        }
+        None => (stores, Arc::new(NoSalts)),
     };
     let (sql, stores) = match sql {
         Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
@@ -760,6 +769,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
         recent: hook,
+        salts,
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;

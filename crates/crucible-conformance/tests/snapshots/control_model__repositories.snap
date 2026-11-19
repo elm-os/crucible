@@ -83,6 +83,9 @@ secret same id: error UniqueViolation("secrets_pkey")
 secret delete: true
 secret delete again: false
 secret after delete: false
+project salt before: false
+project salt insert: true
+project salt second insert: false
 ledger apply schema: true
 ledger apply access: true
 ledger apply schema again: false

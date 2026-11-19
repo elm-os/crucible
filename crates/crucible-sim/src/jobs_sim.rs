@@ -38,8 +38,9 @@ use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
     ControlTx, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease,
     LeaseName, Leases, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo,
-    OrgRepo, Project, ProjectRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session, SessionRepo,
-    SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo, UserStatus,
+    OrgRepo, Project, ProjectRepo, ProjectSaltRepo, Queue, Repos, SavedQueryRepo, SecretRepo,
+    Session, SessionRepo, SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User,
+    UserRepo, UserStatus,
 };
 use crucible_env::{Clock, ClockExt, Env, Instant, Rng};
 use crucible_jobs::housekeeping::{self, KEY_FEED_KEEP};
@@ -521,6 +522,9 @@ impl Repos for NodeStore {
     fn secrets(&self) -> &dyn SecretRepo {
         self.model.secrets()
     }
+    fn project_salts(&self) -> &dyn ProjectSaltRepo {
+        self.model.project_salts()
+    }
     fn auth_providers(&self) -> &dyn AuthProviderRepo {
         self.model.auth_providers()
     }
@@ -619,6 +623,9 @@ impl Repos for NodeTx {
     }
     fn secrets(&self) -> &dyn SecretRepo {
         self.inner.secrets()
+    }
+    fn project_salts(&self) -> &dyn ProjectSaltRepo {
+        self.inner.project_salts()
     }
     fn auth_providers(&self) -> &dyn AuthProviderRepo {
         self.inner.auth_providers()

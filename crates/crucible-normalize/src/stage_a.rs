@@ -9,8 +9,10 @@ use crucible_records::{
     truncate_str,
 };
 
+use crate::engine::Marks;
 use crate::index::PRODUCTION;
 use crate::mapper::{Hints, MapCtx, SpanDraft, SpanMapper};
+use crate::mcp::{self, McpInventory, McpOp};
 use crate::price::Matches;
 use crate::{
     FrameSummary, IngestFrame, NormCtx, NormalizeError, NormalizedFrame, cost, digest, engine,
@@ -46,8 +48,11 @@ pub fn normalize(
 /// 2. Skip each span the envelope's bitmap marks, and any span with a missing id.
 /// 3. Build each draft: ids, kind, name, times, status, scope, links, trace state and the envelope and ingestion
 ///    values; then the chosen mapper fills the rest from the attributes.
-/// 4. Forward-fill trace-level attributes within the request (contract 3.3).
-/// 5. Finish each record: level, the default environment, usage and cost, payload caps, then the row digest.
+/// 4. Project the MCP operation of each span that carries `mcp.method.name`, and the tool inventory entries
+///    of each span that carries a tool list (contract 9.1).
+/// 5. Forward-fill trace-level attributes within the request (contract 3.3).
+/// 6. Finish each record: level, the default environment, usage and cost, payload caps, then the row digest,
+///    which covers the span's MCP operation and inventory entries.
 ///
 /// Times: `start_time` and `end_time` are clamped into the valid range, `end_time` is raised to at least
 /// `start_time`, and `clock_skew` is set when a time was clamped or `start_time` is more than 24 h ahead of
@@ -75,6 +80,8 @@ fn run(
         ..FrameSummary::default()
     };
     let mut drafts = Vec::with_capacity(request.span_count() as usize);
+    let mut mcp_ops: Vec<McpOp> = Vec::new();
+    let mut inventory: Vec<McpInventory> = Vec::new();
     for span in request.spans() {
         if frame.is_rejected(span.ordinal()) {
             summary.rejected_before_ack += 1;
@@ -85,18 +92,28 @@ fn run(
             continue;
         }
         let mut draft = draft(frame, ctx, &span);
-        let dialect = match mappers {
+        let (dialect, marks) = match mappers {
             Mappers::Production => {
                 let dialect = engine::detect(&PRODUCTION, &span, frame.compat_dialect);
-                TABLES.get(usize::from(dialect)).map(|table| {
-                    engine::map_span(&PRODUCTION, table, &map_ctx, &span, &mut draft);
-                    dialect
-                })
+                match TABLES.get(usize::from(dialect)) {
+                    Some(table) => (
+                        Some(dialect),
+                        engine::map_span(&PRODUCTION, table, &map_ctx, &span, &mut draft),
+                    ),
+                    None => (None, Marks::default()),
+                }
             }
-            Mappers::Given(mappers) => choose(mappers, frame.compat_dialect, &span).map(|mapper| {
-                mapper.map(&map_ctx, &span, &mut draft);
-                mapper.dialect()
-            }),
+            Mappers::Given(mappers) => {
+                let dialect = choose(mappers, frame.compat_dialect, &span).map(|mapper| {
+                    mapper.map(&map_ctx, &span, &mut draft);
+                    mapper.dialect()
+                });
+                let marks = Marks {
+                    mcp: mcp::is_operation(&span),
+                    tools: mcp::has_tools(&span),
+                };
+                (dialect, marks)
+            }
         };
         if let Some(dialect) = dialect {
             let core = &mut draft.record.core;
@@ -107,17 +124,40 @@ fn run(
                 SourceFormat::Compat
             };
         }
+        let at = u32::try_from(drafts.len()).unwrap_or(u32::MAX);
+        if marks.mcp
+            && let Some(op) = mcp::project(&draft.record.core, &span, ctx.mutant)
+        {
+            draft.record.core.mcp_side = op.record.side;
+            mcp_ops.push(McpOp {
+                span: at,
+                record: op.record,
+                subject: op.subject,
+            });
+        }
+        if marks.tools {
+            for record in mcp::inventory(&draft.record.core, &span) {
+                if inventory.len() < caps::MCP_INVENTORY_MAX_ROWS_PER_FRAME {
+                    inventory.push(McpInventory { span: at, record });
+                } else {
+                    summary.inventory_dropped = summary.inventory_dropped.saturating_add(1);
+                }
+            }
+        }
         drafts.push(draft);
     }
     fill::forward_fill(&mut drafts);
     let mut matches = Matches::default();
-    let spans = drafts
+    let mut spans: Vec<SpanRecord> = drafts
         .into_iter()
         .map(|d| finish(d, ctx, &mut matches))
         .collect();
+    digest::fold_mcp(&mut spans, &mcp_ops, &inventory);
     Ok(NormalizedFrame {
         lsn: frame.lsn,
         spans,
+        mcp_ops,
+        inventory,
         summary,
     })
 }
