@@ -283,6 +283,11 @@ impl KeyFeed for Link {
         self.check()?;
         self.model.key_feed().snapshot().await
     }
+
+    async fn prune(&self, older_than: Duration) -> Result<u64, TxError> {
+        self.check()?;
+        self.model.key_feed().prune(older_than).await
+    }
 }
 
 /// A node: its keys and its link.

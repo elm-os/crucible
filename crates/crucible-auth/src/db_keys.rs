@@ -555,6 +555,10 @@ impl KeyFeed for StoreFeed {
     async fn snapshot(&self) -> Result<KeySnapshot, TxError> {
         self.0.key_feed().snapshot().await
     }
+
+    async fn prune(&self, older_than: Duration) -> Result<u64, TxError> {
+        self.0.key_feed().prune(older_than).await
+    }
 }
 
 /// One poll with its timeout.
