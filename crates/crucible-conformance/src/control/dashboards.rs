@@ -139,10 +139,7 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         "delete through the other project",
         repo.delete_if_version(two.id, first.id, 3).await,
     );
-    t.outcome(
-        "delete",
-        repo.delete_if_version(one.id, first.id, 3).await,
-    );
+    t.outcome("delete", repo.delete_if_version(one.id, first.id, 3).await);
     t.outcome(
         "delete again",
         repo.delete_if_version(one.id, first.id, 3).await,

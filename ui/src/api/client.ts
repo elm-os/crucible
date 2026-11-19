@@ -18,6 +18,11 @@ import type { ChannelCreate } from "./generated/ChannelCreate";
 import type { ChannelList } from "./generated/ChannelList";
 import type { ChannelPatch } from "./generated/ChannelPatch";
 import type { ChannelTestResult } from "./generated/ChannelTestResult";
+import type { Dashboard } from "./generated/Dashboard";
+import type { DashboardCreate } from "./generated/DashboardCreate";
+import type { DashboardDuplicate } from "./generated/DashboardDuplicate";
+import type { DashboardList } from "./generated/DashboardList";
+import type { DashboardPatch } from "./generated/DashboardPatch";
 import type { DeletionRequest } from "./generated/DeletionRequest";
 import type { DeletionRequestCreate } from "./generated/DeletionRequestCreate";
 import type { DeletionRequestList } from "./generated/DeletionRequestList";
@@ -35,6 +40,7 @@ import type { InvitationList } from "./generated/InvitationList";
 import type { LoginRequest } from "./generated/LoginRequest";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
+import type { MetricsSchema } from "./generated/MetricsSchema";
 import type { OrgMember } from "./generated/OrgMember";
 import type { OrgMemberList } from "./generated/OrgMemberList";
 import type { OrgMemberPatch } from "./generated/OrgMemberPatch";
@@ -341,6 +347,10 @@ export function writeFeedback(
   return apiPost(projectPath(project, "/feedback"), body, { idempotencyKey: key });
 }
 
+export function getMetricsSchema(project: string, signal?: AbortSignal): Promise<MetricsSchema> {
+  return apiGet(projectPath(project, "/metrics/schema"), {}, signal);
+}
+
 export function queryMetrics(
   project: string,
   body: MetricsQueryRequest,
@@ -637,6 +647,57 @@ export async function createDeletionRequest(
   const path = projectPath(project, "/deletion-requests");
   const headers = { "Idempotency-Key": idempotencyKey };
   return read<DeletionRequest>(await call(path, "session", { method: "POST", body, headers }));
+}
+
+// Dashboards (contract 12.6). Reads go as telemetry reads do, so the built-in dashboards work without a
+// control plane; writes need a session. A built-in dashboard's id is its key.
+export async function listDashboards(project: string, signal?: AbortSignal): Promise<DashboardList> {
+  return read<DashboardList>(
+    await call(projectPath(project, "/dashboards"), "telemetry", { signal }),
+  );
+}
+
+function dashboardPath(project: string, id: string, rest = ""): string {
+  return projectPath(project, `/dashboards/${encodeURIComponent(id)}${rest}`);
+}
+
+export async function getDashboard(
+  project: string,
+  id: string,
+  signal?: AbortSignal,
+): Promise<Dashboard> {
+  return read<Dashboard>(await call(dashboardPath(project, id), "telemetry", { signal }));
+}
+
+export async function createDashboard(project: string, body: DashboardCreate): Promise<Dashboard> {
+  const path = projectPath(project, "/dashboards");
+  return read<Dashboard>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function patchDashboard(
+  project: string,
+  dashboard: Pick<Dashboard, "id" | "version">,
+  body: DashboardPatch,
+): Promise<Dashboard> {
+  const init: Init = { method: "PATCH", body, version: dashboard.version };
+  return read<Dashboard>(await call(dashboardPath(project, dashboard.id), "session", init));
+}
+
+export async function deleteDashboard(
+  project: string,
+  dashboard: Pick<Dashboard, "id" | "version">,
+): Promise<void> {
+  const init: Init = { method: "DELETE", version: dashboard.version };
+  await call(dashboardPath(project, dashboard.id), "session", init);
+}
+
+export async function duplicateDashboard(
+  project: string,
+  id: string,
+  body: DashboardDuplicate,
+): Promise<Dashboard> {
+  const path = dashboardPath(project, id, "/duplicate");
+  return read<Dashboard>(await call(path, "session", { method: "POST", body }));
 }
 
 async function failure(response: Response, readBody = true): Promise<UiError> {

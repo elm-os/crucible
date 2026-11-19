@@ -14,7 +14,8 @@ const DASHBOARD: &str =
     "d.id, d.project_id, d.name, d.description, d.version, d.created_at, d.updated_at";
 
 /// The columns of a stored widget, from `jsonb_to_recordset` over the array that [`widgets_json`] writes.
-const RECORDSET: &str = "jsonb_to_recordset($WIDGETS::jsonb) AS w(id uuid, query jsonb, display jsonb, layout jsonb)";
+const RECORDSET: &str =
+    "jsonb_to_recordset($WIDGETS::jsonb) AS w(id uuid, query jsonb, display jsonb, layout jsonb)";
 
 fn dashboard(c: &mut Cols<'_>) -> Result<Dashboard, TxError> {
     Ok(Dashboard {
@@ -37,7 +38,9 @@ fn widgets_json(widgets: &[Widget]) -> String {
             format!(
                 r#"{{"id":"{}","query":{},"display":{},"layout":{}}}"#,
                 w.id,
-                w.query.as_ref().map_or_else(|| "null".to_owned(), JsonDoc::to_text),
+                w.query
+                    .as_ref()
+                    .map_or_else(|| "null".to_owned(), JsonDoc::to_text),
                 w.display.to_text(),
                 w.layout.to_text()
             )

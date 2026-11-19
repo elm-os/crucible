@@ -2,9 +2,7 @@
 //! widget id, which go with their dashboard.
 
 use async_trait::async_trait;
-use crucible_control::{
-    Dashboard, DashboardEntry, DashboardRepo, DashboardRows, TxError, Widget,
-};
+use crucible_control::{Dashboard, DashboardEntry, DashboardRepo, DashboardRows, TxError, Widget};
 use crucible_records::{DashboardId, ProjectId};
 
 use super::{Key, Pool, Row, Runner, Tbl, uuid_key};
@@ -22,8 +20,13 @@ fn widget_key(dashboard_id: DashboardId, widget: &Widget) -> Key {
 
 /// The stored dashboard of the project with this id.
 fn find(cx: &super::Cx<'_>, project_id: ProjectId, id: DashboardId) -> Option<Dashboard> {
-    one!(cx, Tbl::Dashboards, &uuid_key(id.to_bytes()), Row::Dashboard)
-        .filter(|d| d.project_id == project_id)
+    one!(
+        cx,
+        Tbl::Dashboards,
+        &uuid_key(id.to_bytes()),
+        Row::Dashboard
+    )
+    .filter(|d| d.project_id == project_id)
 }
 
 /// The widgets of a dashboard, by key: ordered by widget id.

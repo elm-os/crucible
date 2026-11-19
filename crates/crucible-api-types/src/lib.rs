@@ -14,6 +14,7 @@
 //! - request parameters reject unknown fields.
 
 mod alerts;
+mod dashboards;
 mod data_bounds;
 mod enums;
 mod exports;
@@ -39,6 +40,11 @@ pub use alerts::{
     AlertNoDataPolicy, AlertPreview, AlertPreviewSeries, AlertRule, AlertRuleInput, AlertRuleList,
     AlertRulePatch, AlertSeries, AlertStatus, Channel, ChannelCreate, ChannelKind, ChannelList,
     ChannelPatch, ChannelTestResult,
+};
+pub use dashboards::{
+    ChartForm, Dashboard, DashboardCreate, DashboardDuplicate, DashboardList, DashboardPatch,
+    DashboardSummary, Widget, WidgetDisplay, WidgetInput, WidgetKind, WidgetLayout, WidgetPatch,
+    WidgetQuery,
 };
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{
@@ -117,6 +123,11 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<ChannelPatch>();
     visitor.visit::<ChannelTestResult>();
     visitor.visit::<CorrectionRequest>();
+    visitor.visit::<Dashboard>();
+    visitor.visit::<DashboardCreate>();
+    visitor.visit::<DashboardDuplicate>();
+    visitor.visit::<DashboardList>();
+    visitor.visit::<DashboardPatch>();
     visitor.visit::<DataBounds>();
     visitor.visit::<DeletionRequest>();
     visitor.visit::<DeletionRequestCreate>();
@@ -188,6 +199,8 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<UserListParams>();
     visitor.visit::<UserPage>();
     visitor.visit::<UserSessionPage>();
+    visitor.visit::<WidgetInput>();
+    visitor.visit::<WidgetPatch>();
 }
 
 #[cfg(test)]
