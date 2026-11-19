@@ -47,6 +47,7 @@ const json = (body: unknown, status = 200, type = "application/json") =>
 
 function item(fields: Partial<TraceListItem> = {}): TraceListItem {
   return {
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
     name: "POST /checkout",
     trace_name: "checkout agent",

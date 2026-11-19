@@ -5,6 +5,9 @@ import {
   expectNoPageScrollX,
   json,
   LIST_PATH,
+  METRICS_PATH,
+  measuresOf,
+  metrics,
   PROJECT,
   TRACE_PATH,
   test,
@@ -35,7 +38,12 @@ async function tapWhereItRests(page: Page, target: Locator): Promise<void> {
 
 // Phones are for reading and triage: every page reads at 390 px without the page scrolling sideways.
 test.describe("phone at 390 px", () => {
-  test("home reads without sideways scrolling", async ({ page }) => {
+  test("home reads without sideways scrolling", async ({ page, api }) => {
+    api.on(METRICS_PATH, (route) =>
+      route.fulfill(
+        json(metrics(measuresOf(route).map((measure) => ({ measure, values: [1, 2] })))),
+      ),
+    );
     await page.goto(`/home/?project=${PROJECT}`);
     await expect(page.getByRole("region", { name: "Set up" })).toBeVisible();
     await expectNoPageScrollX(page);

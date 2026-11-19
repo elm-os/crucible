@@ -4,7 +4,9 @@
 // Test code throughout: lets the helpers use `unwrap`, `expect` and `panic!` under the workspace lints.
 #![cfg(test)]
 
+mod facts;
 mod list;
+mod metrics;
 mod payload;
 mod properties;
 mod search;

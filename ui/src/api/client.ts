@@ -1,5 +1,10 @@
 import { type Connection, connectionKey } from "@/lib/connection";
 import { fromHttpFailure, networkError, type UiError } from "./errors";
+import type { FactWritten } from "./generated/FactWritten";
+import type { FeedbackRequest } from "./generated/FeedbackRequest";
+import type { FlagRequest } from "./generated/FlagRequest";
+import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
+import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { PayloadField } from "./generated/PayloadField";
 import type { PayloadParams } from "./generated/PayloadParams";
 import type { SearchPage } from "./generated/SearchPage";
@@ -8,6 +13,7 @@ import type { SpanPage } from "./generated/SpanPage";
 import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
+import type { TagRequest } from "./generated/TagRequest";
 import type { TraceListParams } from "./generated/TraceListParams";
 import type { ProblemBody, TimeWindow } from "./types";
 
@@ -34,6 +40,40 @@ export async function apiGet<T>(path: string, query: Query, signal?: AbortSignal
   }
   if (!response.ok) throw await failure(response);
   // A static host or a proxy can answer 200 with HTML; that is a failure, never an empty list.
+  if (!isJson(response)) throw await failure(response, false);
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw await failure(response, false);
+  }
+}
+
+// Writes carry an Idempotency-Key, so a retry of a request whose answer was lost writes nothing twice.
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  options: { signal?: AbortSignal; idempotencyKey?: string } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...authorization(connectionKey()),
+  };
+  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      signal: options.signal,
+      credentials: "same-origin",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw networkError();
+  }
+  if (!response.ok) throw await failure(response);
   if (!isJson(response)) throw await failure(response, false);
   try {
     return (await response.json()) as T;
@@ -100,6 +140,37 @@ export function listSpanChildren(
   );
 }
 
+// 32 hex characters from `crypto.getRandomValues`, which, unlike `crypto.randomUUID`, also works outside a secure
+// context: over plain HTTP on an internal network (contract 1.7).
+export function newIdempotencyKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function writeTag(project: string, body: TagRequest, key: string): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/tags"), body, { idempotencyKey: key });
+}
+
+export function writeFlag(project: string, body: FlagRequest, key: string): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/flags"), body, { idempotencyKey: key });
+}
+
+export function writeFeedback(
+  project: string,
+  body: FeedbackRequest,
+  key: string,
+): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/feedback"), body, { idempotencyKey: key });
+}
+
+export function queryMetrics(
+  project: string,
+  body: MetricsQueryRequest,
+  signal?: AbortSignal,
+): Promise<MetricsResponse> {
+  return apiPost(projectPath(project, "/metrics/query"), body, { signal });
+}
+
 async function send(url: string, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, { credentials: "same-origin", ...init });
@@ -109,32 +180,12 @@ async function send(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
-export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await send(`${BASE}${path}`, {
-    method: "POST",
-    signal,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...authorization(connectionKey()),
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw await failure(response);
-  if (!isJson(response)) throw await failure(response, false);
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw await failure(response, false);
-  }
-}
-
 export function searchSpans(
   project: string,
   request: SearchRequest,
   signal?: AbortSignal,
 ): Promise<SearchPage> {
-  return apiPost(projectPath(project, "/search"), request, signal);
+  return apiPost(projectPath(project, "/search"), request, { signal });
 }
 
 export interface PayloadSpan {
