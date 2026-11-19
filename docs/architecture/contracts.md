@@ -121,7 +121,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization) |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws` |
 | `crucible-cursor` | `crucible-records` |
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
@@ -130,6 +130,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
+| `crucible-sqlws` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-control` |
 | `crucible-proxy` | `crucible-env`, `crucible-records` |
 | `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
 | `crucible-sdk` | none (it depends on no internal crate) |
@@ -1619,8 +1620,9 @@ The retention term uses the table's retention binding (section 6.3) and time col
 `minute`, `day`, `row_day` or `last_seen`). The reconciler rewrites per-project policies when retention changes,
 so retention hides rows from SQL immediately.
 
-**Provisioning order** (binding): per-project policies (both forms, every table), then the user, then the role
-grant. Deprovisioning is the reverse. Identities are provisioned lazily on first workspace use and dropped after
+**Provisioning order** (binding): the user without its role, then per-project policies (both forms, every table),
+then the role grant. ClickHouse refuses a policy for a user that does not exist (code 511), so the user comes
+first; it can read nothing until the grant. Deprovisioning is the reverse. Identities are provisioned lazily on first workspace use and dropped after
 30 idle days. State lives in Postgres `ch_sql_identities` (`project_id`, `generation`, `state`, `last_probe`).
 The reconciler runs every 5 minutes and on project creation, under the leader lease.
 
@@ -1638,8 +1640,11 @@ Values are deployment defaults, tunable through config before provisioning.
 | HTTP | `cancel_http_readonly_queries_on_client_close = 1`, 64-bit integers quoted in JSON output, ISO date output |
 | Window backstops | `force_index_by_date = 1` and `max_partitions_to_read`, enabled only if conformance script W13 shows they work through the views |
 
-**Quota `crucible_sql_quota`**, keyed by user name: per hour 600 queries, 300 errors, 20,000,000,000 read rows and
-1,800 s of execution time.
+**Quota `crucible_sql_quota`**, keyed by user name: per hour 1,800 queries (the operator setting
+`sql.statements_per_hour`, `CRUCIBLE_SQL_STATEMENTS_PER_HOUR`; one API run is about three statements because the
+validation `EXPLAIN`s count, so about 600 runs), 300 errors, 20,000,000,000 read rows and 1,800 s of execution time.
+The quota is applied at every start, beside the profile; a refusal on the `queries` limit names the setting. The probe
+identities are outside the quota.
 
 **The time window is a guardrail, not isolation.** The API requires `from` and `to` and passes them as the query
 parameters `{from}` and `{to}`; a lexical check requires the text to use both (`sql_time_window_required`). If the
@@ -2403,6 +2408,7 @@ provider asserts a verified email.
 | Write tags, flags, comments, feedback, corrections | yes | yes | no |
 | Create and edit dashboards, saved queries, alert rules | yes | yes | no |
 | Run ad hoc SQL; create exports | yes | yes | no |
+| SQL workspace routes (#73) | `GET sql/schema`, `runs`, `saved-queries`: `read`; `POST sql/run` and `POST sql/export`: `run_sql` (export takes query text, so it needs `run_sql`, not `export`); running a saved query and cancelling a run: `run_saved_query`; saved-query create, edit, delete: `edit_content`. A key acts as a member with the `sql` scope and as a viewer without it; no key saves a query. The permission check runs before body validation | | |
 | Run a project-visible saved query (declared parameters only) | yes | yes | yes |
 | Channels (they hold secrets), test-send | yes | no | no |
 | API keys, project settings, retention, model prices, project members | yes | no | no |
@@ -2571,7 +2577,8 @@ Errors are `application/problem+json` (RFC 9457):
 ```
 
 `code` is stable. `title` and `detail` are for logs and developers; the UI maps `code` to its own copy and never
-shows server text. Guardrail errors are never retried by the server.
+shows server text, with one exception: the `/sql/` page shows a `sql_*` problem's `detail` and the database's own
+message, because a user writing SQL needs the engine's error. Guardrail errors are never retried by the server.
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -2772,7 +2779,7 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `password_login_enabled` | bool |
 | `csrf_token` | string |
 | `session` | `{ expires_at, idle_expires_at, auth_method }` |
-| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }` |
+| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }`; `sql_workspace` reports the workspace's real state: `enabled`, or `not_configured`, or the runtime probe's reason |
 | `server` | `{ version }` |
 
 ### 12.8 Export formats
@@ -2960,3 +2967,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
 | v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |
 | v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
+| v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |

@@ -40,6 +40,32 @@ pub use service::CrucibleService;
 /// The default cap on each captured field.
 const DEFAULT_MAX_BYTES: usize = 16 * 1024;
 
+/// Hooks for the SDK's own tests (feature `test-support`).
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use std::sync::{Arc, PoisonError, RwLock};
+
+    pub use crate::scrub::{MatcherHook, set_matcher_hook};
+
+    /// Called once per captured field with the bytes of JSON the capture path serialized for it before any cut,
+    /// and the bytes it handed to the scrubber.
+    pub type CaptureWorkHook = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
+    static HOOK: RwLock<Option<CaptureWorkHook>> = RwLock::new(None);
+
+    /// Installs, or with `None` removes, the hook the capture-overhead scenario reads its work bound from.
+    pub fn set_capture_work_hook(hook: Option<CaptureWorkHook>) {
+        *HOOK.write().unwrap_or_else(PoisonError::into_inner) = hook;
+    }
+
+    pub(super) fn note(serialized: usize, scrubbed: usize) {
+        let hook = HOOK.read().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(hook) = hook {
+            hook(serialized, scrubbed);
+        }
+    }
+}
+
 /// Options of [`Instrumentation::new`]. Every field is optional.
 #[derive(Clone, Default)]
 pub struct Options {

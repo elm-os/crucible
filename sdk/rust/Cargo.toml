@@ -21,6 +21,9 @@ default = []
 mcp = ["dep:hmac", "dep:regex", "dep:rmcp", "dep:sha2", "rmcp/server"]
 # Trace context propagation for MCP clients built on rmcp.
 mcp-client = ["dep:hmac", "dep:regex", "dep:rmcp", "dep:sha2", "rmcp/client"]
+# Hooks for the SDK's own tests, such as the capture work hook of the capture-overhead scenario. Inert unless a
+# test installs one; applications never need it.
+test-support = []
 
 [dependencies]
 hmac = { version = "0.13.0", optional = true }
@@ -76,3 +79,11 @@ required-features = ["mcp"]
 [[test]]
 name = "mcp_client"
 required-features = ["mcp", "mcp-client"]
+
+[[test]]
+name = "capture_overhead"
+required-features = ["mcp", "test-support"]
+
+[[test]]
+name = "export_stall"
+required-features = ["mcp"]

@@ -35,6 +35,8 @@ logger = logging.getLogger("crucible_sdk")
 
 DEFAULT_ENDPOINT = "http://localhost:4318"
 BATCH_SIZE = 512
+# The proxy's telemetry buffer size (contract 9.10).
+QUEUE_BYTES = 8 << 20
 EXPORT_TIMEOUT = 10.0
 
 SCRUBBER = Scrubber.builtin()
@@ -56,6 +58,35 @@ class ExportStats:
     """Spans the collector accepted."""
     failed: int
     """Spans in export requests that failed."""
+    queued_bytes: int = 0
+    """The estimated size of the queued spans and of the batch being exported (see `span_bytes`)."""
+
+
+# What a span costs beyond its strings: ids, times, kind, status code, links and the resource and scope refs.
+_SPAN_OVERHEAD_BYTES = 256
+
+
+def _attribute_bytes(attributes: Mapping[str, object] | None) -> int:
+    size = 0
+    for key, value in (attributes or {}).items():
+        size += len(key)
+        if isinstance(value, str):
+            size += len(value)
+        elif isinstance(value, tuple | list):
+            size += sum(len(item) if isinstance(item, str) else 8 for item in value)
+        else:
+            size += 8
+    return size
+
+
+def span_bytes(span: ReadableSpan) -> int:
+    """A span's size, estimated from lengths already known (its name, attributes, events and status message) plus
+    a fixed allowance; the attribute count limit bounds the work."""
+    size = _SPAN_OVERHEAD_BYTES + len(span.name) + len(span.status.description or "")
+    size += _attribute_bytes(span.attributes)
+    for event in span.events:
+        size += len(event.name) + _attribute_bytes(event.attributes)
+    return size
 
 
 @dataclass(frozen=True)
@@ -70,6 +101,8 @@ class Config:
     flush_interval: float
     batch_size: int = BATCH_SIZE
     export_timeout: float = EXPORT_TIMEOUT
+    queue_bytes: int = QUEUE_BYTES
+    """Estimated bytes of the queued spans and the batch being exported (see `span_bytes`) held before dropping."""
 
 
 def _exporter(config: Config) -> SpanExporter:
@@ -88,7 +121,8 @@ class Pipeline:
         self.config = config
         self._exporter = exporter if exporter is not None else _exporter(config)
         self._cond = threading.Condition(threading.Lock())
-        self._queue: deque[ReadableSpan] = deque()
+        self._queue: deque[tuple[ReadableSpan, int]] = deque()
+        self._queued_bytes = 0
         self._accepted = 0
         self._handled = 0
         self._flush_target = 0
@@ -103,29 +137,32 @@ class Pipeline:
         self._thread.start()
 
     def enqueue(self, span: ReadableSpan) -> None:
+        size = span_bytes(span)
         with self._cond:
             if self._stopping:
                 return
-            if len(self._queue) >= self.config.queue_size:
+            if len(self._queue) >= self.config.queue_size or self._queued_bytes + size > self.config.queue_bytes:
                 self._dropped += 1
                 first_drop = self._dropped == 1
             else:
-                self._queue.append(span)
+                self._queue.append((span, size))
+                self._queued_bytes += size
                 self._accepted += 1
                 if len(self._queue) >= self.config.batch_size:
                     self._cond.notify_all()
                 return
         if first_drop:
             logger.warning(
-                "crucible_sdk: the export queue is full (queue_size=%d), so spans are being dropped; raise "
-                "queue_size in crucible_sdk.init() or check that %s accepts spans",
+                "crucible_sdk: the export queue is full (queue_size=%d spans, queue_bytes=%d bytes), so spans are "
+                "being dropped; raise queue_size or queue_bytes in crucible_sdk.init() or check that %s accepts spans",
                 self.config.queue_size,
+                self.config.queue_bytes,
                 self.config.endpoint,
             )
 
     def stats(self) -> ExportStats:
         with self._cond:
-            return ExportStats(len(self._queue), self._dropped, self._exported, self._failed)
+            return ExportStats(len(self._queue), self._dropped, self._exported, self._failed, self._queued_bytes)
 
     def flush(self, timeout: float) -> bool:
         """Waits until every span queued before the call has been sent, or `timeout` seconds pass."""
@@ -164,8 +201,9 @@ class Pipeline:
                         return
                     continue
                 batch = [self._queue.popleft() for _ in range(min(len(self._queue), self.config.batch_size))]
-            ok = self._send(batch)
+            ok = self._send([span for span, _ in batch])
             with self._cond:
+                self._queued_bytes -= sum(size for _, size in batch)
                 self._handled += len(batch)
                 if ok:
                     self._exported += len(batch)

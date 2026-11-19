@@ -19,6 +19,7 @@ pub mod collector;
 mod driver;
 pub mod golden;
 mod hash;
+mod pattern;
 pub mod registry;
 pub mod scrub;
 mod selftest;
