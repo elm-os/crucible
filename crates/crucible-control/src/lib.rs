@@ -7,12 +7,17 @@
 //! - [`TxError`], the one typed error.
 //! - [`HeldLease`], the holder's local validity rule for leases.
 
+mod alerts;
 mod error;
 mod lease;
 mod repo;
 mod sqlws;
 mod types;
 
+pub use alerts::{
+    AlertEvent, AlertEventKind, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState,
+    AlertStateRepo, AlertStatus, Channel, ChannelKind, ChannelRepo,
+};
 pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use repo::{

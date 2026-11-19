@@ -29,6 +29,10 @@ tokio-rustls = { workspace = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true }
 
+# SMTP for the `Mailer` (contract 2.11), with the workspace's TLS stack: rustls on ring with the bundled web
+# roots. No connection pool, no host-name lookup, no native TLS. MIT.
+lettre = { version = "=0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "webpki-roots"] }
+
 # Safe wrappers for space reservation and free-space queries on every platform (unsafe code is denied here).
 fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
 

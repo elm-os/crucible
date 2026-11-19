@@ -1,0 +1,110 @@
+import { describe, expect, test } from "vitest";
+import {
+  conditionText,
+  formatSpan,
+  formatValue,
+  MEASURES,
+  seriesLabel,
+  testFailure,
+  thresholdFromStored,
+  thresholdToStored,
+  urlRefusal,
+} from "./format";
+
+describe("thresholds", () => {
+  test("are stored in the unit of the measure", () => {
+    expect(thresholdToStored("count", "5")).toBe(5);
+    expect(thresholdToStored("count", " 1,200 ")).toBe(1200);
+    expect(thresholdToStored("us", "250")).toBe(250_000);
+    expect(thresholdToStored("us", "0.5")).toBe(500);
+    expect(thresholdToStored("nusd", "$0.25")).toBe(250_000_000);
+    expect(thresholdToStored("tokens", "-3")).toBe(-3);
+  });
+
+  test("that are not numbers are refused, never guessed", () => {
+    for (const text of ["", " ", "five", "1e3", "1.2.3", "5 ms", "9".repeat(20)]) {
+      expect(thresholdToStored("count", text), text).toBeNull();
+    }
+  });
+
+  test("read back as they were typed", () => {
+    for (const [unit, text] of [
+      ["count", "5"],
+      ["us", "250"],
+      ["us", "0.5"],
+      ["nusd", "0.25"],
+    ] as const) {
+      const stored = thresholdToStored(unit, text);
+      expect(stored).not.toBeNull();
+      expect(thresholdFromStored(unit, stored ?? 0)).toBe(text);
+    }
+  });
+});
+
+describe("what a rule says", () => {
+  test("values read in their unit", () => {
+    expect(formatValue("count", 1200)).toBe("1,200");
+    expect(formatValue("us", 250_000)).toBe("250 ms");
+    expect(formatValue("nusd", 250_000_000)).toBe("$0.25");
+  });
+
+  test("spans of time read in their largest whole unit", () => {
+    expect(formatSpan(90)).toBe("90 s");
+    expect(formatSpan(300)).toBe("5 min");
+    expect(formatSpan(14_400)).toBe("4 h");
+    expect(formatSpan(5_400)).toBe("90 min");
+  });
+
+  test("the condition is one sentence", () => {
+    expect(
+      conditionText({
+        measure: "error_count",
+        aggregation: "sum",
+        comparison: "gt",
+        threshold: 5,
+        unit: "count",
+        window_secs: 300,
+      }),
+    ).toBe("Errors above 5 over 5 min");
+    expect(
+      conditionText({
+        measure: "duration",
+        aggregation: "p95",
+        comparison: "gte",
+        threshold: 2_000_000,
+        unit: "us",
+        window_secs: 3_600,
+      }),
+    ).toBe("Duration p95 at or above 2.0 s over 1 h");
+  });
+
+  test("a series is named by its dimension values", () => {
+    expect(seriesLabel([])).toBe("All spans");
+    expect(
+      seriesLabel([
+        { dimension: "environment", value: "prod" },
+        { dimension: "model", value: "" },
+      ]),
+    ).toBe("environment=prod, model=(empty)");
+  });
+
+  test("every measure has an aggregation to start with", () => {
+    for (const measure of MEASURES) expect(measure.aggregations.length).toBeGreaterThan(0);
+  });
+});
+
+describe("failures are in the page's own words", () => {
+  test("a test-send's code maps to what to check", () => {
+    expect(testFailure("receiver_failed")).toContain("5xx");
+    expect(testFailure("private_address")).toContain("egress.allow_cidrs");
+    expect(testFailure("something_new")).toContain("wasn't delivered");
+    expect(testFailure(undefined)).toContain("wasn't delivered");
+  });
+
+  test("a refused URL says which setting allows it", () => {
+    expect(urlRefusal("metadata_address")).toContain("never calls");
+    expect(urlRefusal("private_address")).toContain("egress.mode = open");
+    expect(urlRefusal("https_required")).toContain("https://");
+    expect(urlRefusal(undefined)).toContain("full URL");
+  });
+});

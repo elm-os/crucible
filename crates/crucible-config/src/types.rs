@@ -149,6 +149,44 @@ pub struct Sql {
     pub statements_per_hour: u64,
 }
 
+/// The `[egress]` section: which notification targets may be called (contract 12.6).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Egress {
+    /// `egress.mode = strict`: public `https` targets only. The default, `open`, allows any network except
+    /// cloud metadata addresses.
+    pub strict: bool,
+    /// `egress.allow_cidrs`: ranges that strict mode lets through, each as `address/prefix`.
+    pub allow_cidrs: Vec<String>,
+}
+
+/// `smtp.tls`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SmtpTls {
+    /// Upgrade a plain connection with STARTTLS.
+    StartTls,
+    /// TLS from the first byte.
+    Tls,
+    /// No TLS: for a relay on the same host or a trusted network.
+    None,
+}
+
+/// The `[smtp]` section, present when `smtp.host` is set.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Smtp {
+    /// The mail server's host.
+    pub host: String,
+    /// The mail server's port.
+    pub port: u16,
+    /// How the connection is secured.
+    pub tls: SmtpTls,
+    /// The user name, when the server asks for one.
+    pub username: Option<String>,
+    /// The password.
+    pub password: Option<Secret>,
+    /// The sender address.
+    pub from: String,
+}
+
 /// The `[clickhouse]` section, present when `clickhouse.url` is set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClickHouse {
@@ -199,6 +237,10 @@ pub struct Config {
     pub postgres: Option<Postgres>,
     /// Sign-in and API keys.
     pub auth: Auth,
+    /// The egress policy of notification calls.
+    pub egress: Egress,
+    /// The mail server; `None` when email channels are off.
+    pub smtp: Option<Smtp>,
 }
 
 /// Everything that is wrong with a configuration, one message per problem.
