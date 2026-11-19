@@ -3,6 +3,7 @@
 //! `ProjectScope::mint` is a disallowed method everywhere else; the CI allow-attribute guard permits the allow
 //! below in this file only.
 
+use crucible_control::Project;
 use crucible_records::{NilProjectId, ProjectId, ProjectScope};
 
 /// Mints a scope for a project id that an authentication path has verified.
@@ -11,11 +12,11 @@ pub(crate) fn mint(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> 
     ProjectScope::mint(project_id)
 }
 
-/// The scope of a project for work that runs outside a request: an export job reads the project that its stored
-/// row names, which the request that created the row was authorized for (contract 11.6), and `crucible export`
-/// reads the project its operator names, who holds the deployment's credentials. Refuses the nil id.
-pub fn stored_work_scope(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> {
-    mint(project_id)
+/// The scope of a project row read from the control store, for the background jobs that act on every stored
+/// project without a request (the retention and deletion executors, contract 13). The row is the witness: a
+/// job cannot scope itself to a project the control plane does not hold.
+pub fn stored_project_scope(project: &Project) -> Result<ProjectScope, NilProjectId> {
+    mint(project.id)
 }
 
 #[cfg(test)]

@@ -30,10 +30,10 @@ pub use db_keys::{
 };
 pub use mint::{LookupKey, MintedKey, mint, secret_hash};
 pub use next_path::safe_next;
+pub use scope::stored_project_scope;
 pub use seal::{Sealed, Sealer, Unsealable};
 
 pub use credential::{Refusal, authenticate};
-pub use scope::stored_work_scope;
 pub use key::{
     KeyConfigError, KeyPrincipal, KeyVerifier, MalformedKey, MalformedPublicKey, PairError,
     PublicKey, SecretKey, StaticKey, StaticKeys,
