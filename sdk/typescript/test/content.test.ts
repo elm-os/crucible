@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { captured, decide, glob } from "../src/mcp/capture.ts";
+import { captured, decide, glob, setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
 import { patternFacts } from "../src/pattern.ts";
 import packaged from "../src/scrub-rules.json" with { type: "json" };
@@ -283,6 +283,26 @@ describe("capture", () => {
     expect(result?.cut).toBe(true);
     expect(result?.text).not.toContain("eyJ");
     expect(result?.text).toBe(`{"note":"${padding} `);
+  });
+
+  test("a large value is serialized no further than the cap and the scrub margin", () => {
+    let serialized = 0;
+    setCaptureWorkHook((s) => {
+      serialized = Math.max(serialized, s);
+    });
+    try {
+      for (const value of [
+        { text: "x".repeat(5 * 1024 * 1024) },
+        ["a".repeat(70_000)],
+        Array.from({ length: 100_000 }, (_, i) => i),
+        { nested: { deep: [{ s: "é\n😀".repeat(100_000) }] } },
+      ]) {
+        captured(value, 16_384);
+      }
+    } finally {
+      setCaptureWorkHook(undefined);
+    }
+    expect(serialized).toBeLessThanOrEqual(16_384 + 1_024);
   });
 
   test("a value that does not serialize is not captured", () => {

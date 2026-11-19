@@ -12,10 +12,12 @@ from random import Random
 from typing import Any
 
 import pytest
+from mcp_types import CallToolResult, TextContent
 
 from crucible_sdk import _scrub
 from crucible_sdk._pattern import facts
 from crucible_sdk._scrub import SCHEMA, Scrubber
+from crucible_sdk.mcp._middleware import Capture, CrucibleMiddleware
 
 RULES: dict[str, Any] = json.loads(resources.files("crucible_sdk").joinpath("scrub_rules.json").read_text("utf-8"))
 SCRUBBER = Scrubber(RULES)
@@ -210,6 +212,28 @@ def test_guarded_application_equals_plain_application_over_generated_text() -> N
         if matcher_steps(text) > 2 * len(RULES["rules"]) * max(len(text), 1):
             mismatches.append(f"steps: {text!r}")
     assert mismatches[:5] == []
+
+
+def test_a_model_result_is_serialized_no_further_than_the_cap_and_the_margin() -> None:
+    middleware = CrucibleMiddleware(
+        server_name="s",
+        server_version="1",
+        capture=(),
+        handle_params={},
+        identify=None,
+        identity="auto",
+        transport=None,
+    )
+    result = CallToolResult(
+        content=[TextContent(type="text", text="x" * (5 << 20))], structured_content={"rows": list(range(100_000))}
+    )
+    work: list[int] = []
+    _scrub.set_work_hook(lambda serialized, _: work.append(serialized))
+    try:
+        middleware._result_capture(result, Capture())
+    finally:
+        _scrub.set_work_hook(None)
+    assert max(work) <= 16384 + 8192
 
 
 def test_a_long_run_scrubs_within_a_generous_ceiling() -> None:
