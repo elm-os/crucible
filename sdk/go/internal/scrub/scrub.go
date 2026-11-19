@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"unicode/utf8"
@@ -26,6 +27,7 @@ type rule struct {
 	luhn        bool
 	replacement string
 	facts       facts
+	rest        *regexp.Regexp // for a lead pattern without a validator: the pattern from its anchor on, anchored
 }
 
 // matcherHook, when set, is called once per matcher call with the rule's name and the call's steps (see
@@ -103,12 +105,20 @@ func parse(data []byte) ([]rule, error) {
 		if r.Validator != "" && r.Validator != "luhn" {
 			return nil, fmt.Errorf("rule %s: unknown validator %q", r.Name, r.Validator)
 		}
+		f := patternFacts(r.Pattern)
+		var rest *regexp.Regexp
+		if f.lead != nil && r.Validator == "" {
+			if rest, err = regexp.Compile("^(?:" + f.lead.rest + ")"); err != nil {
+				return nil, fmt.Errorf("rule %s: %w", r.Name, err)
+			}
+		}
 		out = append(out, rule{
 			name:        r.Name,
 			re:          re,
 			luhn:        r.Validator == "luhn",
 			replacement: r.Replacement,
-			facts:       patternFacts(r.Pattern),
+			facts:       f,
+			rest:        rest,
 		})
 	}
 	return out, nil
@@ -122,15 +132,115 @@ func mustParse(data []byte) []rule {
 	return rs
 }
 
+// shortest is the length no rule matches below.
+var shortest = func() int {
+	n := -1
+	for i := range rules {
+		if n < 0 || rules[i].facts.minLength < n {
+			n = rules[i].facts.minLength
+		}
+	}
+	return max(n, 0)
+}()
+
 // String returns s with every rule applied in file order.
 func String(s string) string {
+	if len(s) < shortest {
+		return s
+	}
 	for i := range rules {
 		s = rules[i].apply(s)
 	}
 	return s
 }
 
+// apply is the rule behind guards that take time linear in s and change nothing: text shorter than any match, or
+// without the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
 func (r *rule) apply(s string) string {
+	f := &r.facts
+	if len(s) < f.minLength {
+		return s
+	}
+	if f.literals != nil && !slices.ContainsFunc(f.literals, func(lit string) bool { return strings.Contains(s, lit) }) {
+		return s
+	}
+	if r.rest != nil {
+		return r.applyLead(s)
+	}
+	return r.applyPlain(s)
+}
+
+// applyLead finds a lead pattern's matches from its anchors. A match ends its class run at an anchor, and every
+// start in that run meets the same anchor, so only the run's leftmost possible start is a candidate and the rest
+// of the pattern is tried once, anchored there. Each position is scanned a bounded number of times.
+func (r *rule) applyLead(s string) string {
+	l := r.facts.lead
+	var b strings.Builder
+	last, floor := 0, 0
+	at := indexByteFrom(s, l.anchor, 0)
+	for at >= 0 {
+		start := at
+		for start > floor && l.class.has(s[start-1]) {
+			start--
+		}
+		begin := -1
+		if l.prefix == "" {
+			if start < at {
+				begin = start
+			}
+		} else if k := strings.Index(s[start:at], l.prefix); k >= 0 && start+k+len(l.prefix) < at {
+			begin = start + k
+		}
+		if begin >= 0 {
+			loc := r.rest.FindStringIndex(s[at:])
+			r.attempted(s, at, loc)
+			if loc != nil {
+				b.WriteString(s[last:begin])
+				b.WriteString(r.replacement)
+				last, floor = at+loc[1], at+loc[1]
+				at = indexByteFrom(s, l.anchor, floor)
+				continue
+			}
+		}
+		at = indexByteFrom(s, l.anchor, at+1)
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// attempted reports an anchored attempt at at to the matcher hook: the bytes it can read, which are its match,
+// or the anchor, the class run after it and the byte that ends the run.
+func (r *rule) attempted(s string, at int, loc []int) {
+	h := matcherHook.Load()
+	if h == nil {
+		return
+	}
+	if loc != nil {
+		(*h)(r.name, loc[1])
+		return
+	}
+	end := at + 1
+	for end < len(s) && r.facts.lead.class.has(s[end]) {
+		end++
+	}
+	(*h)(r.name, end-at+1)
+}
+
+func indexByteFrom(s string, c byte, from int) int {
+	if from > len(s) {
+		return -1
+	}
+	if i := strings.IndexByte(s[from:], c); i >= 0 {
+		return from + i
+	}
+	return -1
+}
+
+// applyPlain is the rule without its guards: the reference the differential tests hold apply to.
+func (r *rule) applyPlain(s string) string {
 	var b strings.Builder
 	last, pos := 0, 0
 	for pos <= len(s) {
