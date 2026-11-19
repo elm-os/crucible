@@ -778,13 +778,18 @@ fn mib(bytes: u64) -> String {
     format!("{} MiB", bytes.div_ceil(1 << 20))
 }
 
+/// The sum of the budgets' sizes.
+fn sum<'a>(budgets: impl IntoIterator<Item = &'a Budget>) -> u64 {
+    budgets
+        .into_iter()
+        .fold(0u64, |total, budget| total.saturating_add(budget.bytes))
+}
+
 /// The warning for budgets that add up to more than [`BUDGET_SHARE_PERCENT`] of `memory`, naming each budget and
 /// what changes it (contract 1.7); `None` when they fit.
 fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
-    let total = budgets
-        .iter()
-        .fold(0u64, |total, budget| total.saturating_add(budget.bytes));
     let limit = memory.bytes();
+    let total = sum(budgets);
     if total.saturating_mul(100) <= limit.saturating_mul(BUDGET_SHARE_PERCENT) {
         return None;
     }
@@ -797,22 +802,38 @@ fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
         .iter()
         .map(|budget| format!("{} {}", budget.setting, mib(budget.bytes)))
         .collect();
-    let lower: String = budgets
+    let settable: Vec<String> = budgets
         .iter()
-        .filter_map(|budget| {
-            Some(format!(
-                ", or lower {} ({})",
-                budget.setting, budget.changed_by?
-            ))
-        })
+        .filter_map(|budget| Some(format!("{} ({})", budget.setting, budget.changed_by?)))
         .collect();
+    let fixed: Vec<&Budget> = budgets
+        .iter()
+        .filter(|budget| budget.changed_by.is_none())
+        .collect();
+    let mut advice = format!("Give the process at least {} of memory", mib(needed));
+    // Lowering the budgets that have a setting helps only when the others fit the share by themselves.
+    let share = limit.saturating_mul(BUDGET_SHARE_PERCENT) / 100;
+    if let Some(room) = share.checked_sub(sum(fixed.iter().copied()))
+        && !settable.is_empty()
+    {
+        let together = if settable.len() > 1 { " together" } else { "" };
+        advice.push_str(&format!(
+            ", or lower {} to at most {} MiB{together}",
+            settable.join(" and "),
+            room >> 20
+        ));
+    }
+    if !fixed.is_empty() {
+        let names: Vec<&str> = fixed.iter().map(|budget| budget.setting).collect();
+        let verb = if fixed.len() > 1 { "have" } else { "has" };
+        advice.push_str(&format!("; {} {verb} no setting yet", names.join(" and ")));
+    }
     Some(format!(
         "the memory budgets add up to {}, more than {BUDGET_SHARE_PERCENT}% of the {} this process may use \
-         ({source}): {}. Give the process at least {} of memory{lower}",
+         ({source}): {}. {advice}",
         mib(total),
         mib(limit),
         sizes.join(", "),
-        mib(needed),
     ))
 }
 
@@ -1383,7 +1404,23 @@ mod tests {
         let fits = (2 << 30) * BUDGET_SHARE_PERCENT / 100 - (1536 << 20);
         assert_eq!(budget_warning(two_gib, &budgets(fits)), None);
         assert!(budget_warning(two_gib, &budgets(fits + 1)).is_some());
-        // A container limited to 1.5 GiB.
+        // A container limited to 1.75 GiB: the budgets without a setting fit, so lowering the recent bound to
+        // what the warning names makes them all fit.
+        let roomy = Memory::Container(1792 << 20);
+        let warning =
+            budget_warning(roomy, &budgets(default_recent_max_bytes(Some(roomy)))).unwrap();
+        assert_eq!(
+            warning,
+            "the memory budgets add up to 1716 MiB, more than 90% of the 1792 MiB this process may use (the \
+             container's memory limit): recent.max_bytes 180 MiB, ingest.inflight_bytes 512 MiB, \
+             shipper.encoded_bytes 1024 MiB. Give the process at least 1906 MiB of memory, or lower \
+             recent.max_bytes (--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES) to at most 76 MiB; \
+             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
+        );
+        assert_eq!(budget_warning(roomy, &budgets(76 << 20)), None);
+        assert!(budget_warning(Memory::Container(1906 << 20), &budgets(187_904_819)).is_none());
+        // A container limited to 1.5 GiB: the budgets without a setting take more than the share by themselves,
+        // so only more memory helps.
         let limited = Memory::Container(1536 << 20);
         let warning =
             budget_warning(limited, &budgets(default_recent_max_bytes(Some(limited)))).unwrap();
@@ -1391,15 +1428,18 @@ mod tests {
             warning,
             "the memory budgets add up to 1690 MiB, more than 90% of the 1536 MiB this process may use (the \
              container's memory limit): recent.max_bytes 154 MiB, ingest.inflight_bytes 512 MiB, \
-             shipper.encoded_bytes 1024 MiB. Give the process at least 1878 MiB of memory, or lower \
-             recent.max_bytes (--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES)"
+             shipper.encoded_bytes 1024 MiB. Give the process at least 1878 MiB of memory; \
+             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
         );
+        assert!(budget_warning(limited, &budgets(0)).is_some());
         // Without a telemetry store only ingest holds a budget.
         let ingest_only = [budgets(0)[1]];
         assert!(
             budget_warning(Memory::Host(512 << 20), &ingest_only)
                 .unwrap()
-                .ends_with("Give the process at least 569 MiB of memory")
+                .ends_with(
+                    "Give the process at least 569 MiB of memory; ingest.inflight_bytes has no setting yet"
+                )
         );
     }
 

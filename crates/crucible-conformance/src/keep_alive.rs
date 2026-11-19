@@ -55,8 +55,11 @@ impl Net for CountingNet {
     }
 
     async fn connect(&self, addr: SocketAddr, deadline: Instant) -> Result<Stream, NetError> {
+        // Only a connection that opened counts: a name can resolve to an address that refuses (`localhost` to
+        // `::1` beside `127.0.0.1`), and the connector then tries the next one.
+        let stream = self.inner.connect(addr, deadline).await?;
         self.connects.fetch_add(1, Ordering::Relaxed);
-        self.inner.connect(addr, deadline).await
+        Ok(stream)
     }
 
     async fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, NetError> {
