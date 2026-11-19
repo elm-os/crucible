@@ -1,0 +1,2 @@
+# The server configuration that sqliso.sh writes for a run and removes after it.
+.sqliso-config.xml

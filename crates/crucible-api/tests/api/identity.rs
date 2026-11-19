@@ -23,17 +23,17 @@ use crate::world::{World, project};
 use crate::{Reply, cursor_keys, run};
 
 const HOST: &str = "crucible.test";
-const PASSWORD: &str = "correct horse battery";
+pub(crate) const PASSWORD: &str = "correct horse battery";
 
 /// How a request authenticates.
 #[derive(Clone, Debug)]
-enum As {
+pub(crate) enum As {
     Nobody,
     Session { cookie: String, csrf: String },
     Key(String),
 }
 
-async fn call(
+pub(crate) async fn call(
     router: &Router,
     method: Method,
     uri: &str,
@@ -96,15 +96,15 @@ fn cookie_of(reply: &Reply) -> String {
         .expect("a session cookie")
 }
 
-struct Platform {
-    router: Router,
-    identity: Arc<Identity>,
+pub(crate) struct Platform {
+    pub(crate) router: Router,
+    pub(crate) identity: Arc<Identity>,
     model: PgModel,
-    owner: As,
-    key: As,
+    pub(crate) owner: As,
+    pub(crate) key: As,
 }
 
-fn session(new: &crucible_auth::service::NewSession) -> As {
+pub(crate) fn session(new: &crucible_auth::service::NewSession) -> As {
     As::Session {
         cookie: new.token.as_str().to_owned(),
         csrf: new.principal.session.csrf_token.clone(),
@@ -112,6 +112,12 @@ fn session(new: &crucible_auth::service::NewSession) -> As {
 }
 
 async fn platform(env: &Env, world: &World) -> Platform {
+    platform_with(env, world, false).await
+}
+
+/// The platform over `PgModel`: an owner, the viewer `vic@example.com`, project 1 and a key with the scopes of
+/// a new key. With `sql`, the SQL workspace runs over the simulation's scripted store, its probe clean.
+pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platform {
     let model = PgModel::new(
         Arc::clone(&env.clock),
         env.rng.fork("pg").as_ref(),
@@ -181,12 +187,25 @@ async fn platform(env: &Env, world: &World) -> Platform {
         .await
         .unwrap();
     let writer: Arc<dyn crucible_api::FactWriter> = crate::facts::FakeWriter::new(world);
+    let workspace = if sql {
+        let workspace = crucible_sqlws::SqlWorkspace::new(
+            env.clone(),
+            crucible_sim::sql_stub::ScriptedSqlStore::new(env),
+            Arc::new(model.clone()),
+            true,
+        );
+        workspace.probe().await;
+        Some(workspace)
+    } else {
+        None
+    };
     let router = crucible_api::platform_router(
         env,
         Some((world.service.clone(), writer)),
         Arc::clone(&identity),
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
+        workspace,
     );
     Platform {
         router,

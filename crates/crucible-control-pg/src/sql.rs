@@ -74,7 +74,8 @@ impl ToSql for P<'_> {
             | Self::OptText(None)
             | Self::OptTs(None)
             | Self::OptBytes(None)
-            | Self::OptUuid(None) => {
+            | Self::OptUuid(None)
+            | Self::OptText(None) => {
                 return Ok(IsNull::Yes);
             }
         }

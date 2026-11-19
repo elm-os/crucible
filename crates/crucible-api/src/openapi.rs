@@ -46,6 +46,7 @@ impl Modify for ProjectKey {
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),
         (name = "projects", description = "Projects, project members and API keys."),
         (name = "search", description = "Full-text search over the spans' inputs, outputs and metadata."),
+        (name = "sql", description = "The read-only SQL workspace: runs, exports, history and saved queries."),
         (name = "traces", description = "Traces, their spans and their payloads, and the project's data bounds."),
     ),
 )]

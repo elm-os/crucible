@@ -11,6 +11,7 @@ use crucible_auth::roles::permission_names;
 use crucible_auth::service::{AuthError, Identity, SessionPrincipal};
 use crucible_control as control;
 use crucible_records::{RequestId, Timestamp};
+use crucible_sqlws::SqlWorkspace;
 use serde::de::DeserializeOwned;
 
 use crate::access::ApiState;
@@ -303,7 +304,19 @@ pub(crate) fn api_key(key: &control::ApiKey) -> wire::ApiKey {
 pub(crate) async fn session_info(
     identity: &Identity,
     principal: &SessionPrincipal,
+    sql: Option<&SqlWorkspace>,
 ) -> Result<wire::SessionInfo, AuthError> {
+    // The reasons are those of `GET sql/schema`: `not_configured`, or what the self-probe said.
+    let sql_workspace = match sql.map(SqlWorkspace::status) {
+        Some(status) => wire::FeatureState {
+            enabled: status.enabled,
+            reason: status.reason.map(str::to_owned),
+        },
+        None => wire::FeatureState {
+            enabled: false,
+            reason: Some("not_configured".to_owned()),
+        },
+    };
     // During a Postgres outage the session still answers, from the cache, with the providers this node last read.
     let providers = identity
         .sign_in_view()
@@ -342,10 +355,7 @@ pub(crate) async fn session_info(
             auth_method: method(session.auth_method),
         },
         features: wire::Features {
-            sql_workspace: wire::FeatureState {
-                enabled: false,
-                reason: Some("the SQL workspace is not part of this version".to_owned()),
-            },
+            sql_workspace,
             media: wire::MediaFeature {
                 enabled: false,
                 max_bytes: 0,

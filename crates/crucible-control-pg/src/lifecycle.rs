@@ -1,4 +1,4 @@
-//! The retention and deletion repository over Postgres (migration V3): the node registry, deletion requests
+//! The retention and deletion repository over Postgres (the lifecycle migration): the node registry, deletion requests
 //! and their acknowledgements, leader actions and retention floors.
 
 use std::time::Duration;

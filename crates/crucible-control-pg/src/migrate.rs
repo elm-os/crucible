@@ -24,8 +24,12 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../migrations/V2__identity.sql"),
     ),
     (
-        "V3__lifecycle",
-        include_str!("../migrations/V3__lifecycle.sql"),
+        "V3__sql_workspace",
+        include_str!("../migrations/V3__sql_workspace.sql"),
+    ),
+    (
+        "V4__lifecycle",
+        include_str!("../migrations/V4__lifecycle.sql"),
     ),
 ];
 

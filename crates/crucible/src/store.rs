@@ -6,12 +6,14 @@
 //!   generation counter, so nothing is stored. The info string is
 //!   `crucible/clickhouse-identity/v1/<name>/<generation>` and the password is the 32 output bytes as lowercase
 //!   hex.
-//! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, access step
-//!   `0002_access_service` and schema step `0004_span_usage_aggregate` for a single-node server
-//!   ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the ledger of
-//!   contract 6.6 and applied once; without it there is no ledger and all are applied each time.
+//! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, the access steps
+//!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
+//!   policies, views and probe identities) and schema step `0004_span_usage_aggregate` for a single-node
+//!   server ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the
+//!   ledger of contract 6.6 and applied once; without it there is no ledger and all are applied each time.
 //! - [`bring_up`] is everything that must hold before ingest is accepted.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -20,12 +22,15 @@ use crucible_env::{
 };
 use crucible_plan::profile_caps;
 use crucible_schema::{
-    AccessParams, Granularity, Ident, MigrationStep, PasswordHash, ServiceIdentity, TABLES,
-    Variant, access_service, schema_base, schema_span_usage_aggregate,
+    AccessParams, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PasswordHash, ServiceIdentity,
+    SqlProfile, TABLES, Variant, WorkspaceParams, access_service, access_workspace, schema_base,
+    schema_span_usage_aggregate, workspace_user,
 };
 
 use crate::control::{ApplyStep, Applying, Control};
-use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
+use crucible_store_clickhouse::{
+    ClickHouseSqlStore, ClickHouseStore, Credentials, SqlPasswords, SqlStoreConfig, StoreConfig,
+};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 
@@ -65,10 +70,13 @@ impl MasterKey {
 
     /// The password of a generated service identity (contract 7.1).
     fn identity_password(&self, identity: ServiceIdentity, generation: u32) -> String {
-        let info = format!(
-            "crucible/clickhouse-identity/v1/{}/{generation}",
-            identity.name()
-        );
+        self.user_password(identity.name(), generation)
+    }
+
+    /// The password of a derived ClickHouse user, a service identity or a project's workspace identity
+    /// (contract 7.1): HKDF-SHA256 of the master key with the user name and the generation.
+    fn user_password(&self, user: &str, generation: u32) -> String {
+        let info = format!("crucible/clickhouse-identity/v1/{user}/{generation}");
         let mut okm = [0u8; 32];
         // 32 bytes is within what HKDF-SHA256 can give, so `expand` cannot fail.
         let _ = Hkdf::<Sha256>::new(None, &self.0).expand(info.as_bytes(), &mut okm);
@@ -108,19 +116,35 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The passwords of the SQL workspace's per-project identities: nothing is stored, and a rotation is a
+/// generation bump.
+#[derive(Debug)]
+struct WorkspacePasswords(MasterKey);
+
+impl SqlPasswords for WorkspacePasswords {
+    fn password(&self, user: &str, generation: u32) -> String {
+        self.0.user_password(user, generation)
+    }
+}
+
 /// What `crucible serve` needs to reach ClickHouse.
 #[derive(Clone, Debug)]
 pub(crate) struct ClickHouse {
     pub(crate) url: String,
     pub(crate) admin: Credentials,
     pub(crate) master_key: MasterKey,
+    /// `sql.statements_per_hour`: the hourly allowance of each SQL workspace identity.
+    pub(crate) sql_statements_per_hour: u64,
     /// `clickhouse.idle_timeout`; `None` lets detection derive it from the server.
     pub(crate) idle_timeout: Option<Duration>,
 }
 
 impl ClickHouse {
-    /// The settings of the `[clickhouse]` section.
-    pub(crate) fn new(config: &crucible_config::ClickHouse) -> anyhow::Result<Self> {
+    /// The settings of the `[clickhouse]` section, with the `[sql]` section's allowance.
+    pub(crate) fn new(
+        config: &crucible_config::ClickHouse,
+        sql: crucible_config::Sql,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             url: config.url.clone(),
             admin: Credentials {
@@ -128,6 +152,7 @@ impl ClickHouse {
                 password: config.password.expose().to_owned(),
             },
             master_key: MasterKey::parse(config.master_key.expose())?,
+            sql_statements_per_hour: sql.statements_per_hour,
             idle_timeout: config.idle_timeout,
         })
     }
@@ -180,12 +205,45 @@ impl ClickHouse {
         })
     }
 
-    /// The steps `--migrate` applies, in ledger order, for a single-node server.
-    fn steps(&self) -> anyhow::Result<[MigrationStep; 3]> {
+    /// The SQL workspace's store over `store`'s connection pool (contract 2.9).
+    pub(crate) fn sql_store(&self, store: &ClickHouseStore) -> anyhow::Result<ClickHouseSqlStore> {
+        Ok(ClickHouseSqlStore::new(
+            store.clone(),
+            SqlStoreConfig {
+                passwords: Arc::new(WorkspacePasswords(self.master_key.clone())),
+                variant: Variant::SingleNode,
+                admin_user: Ident::new(&self.admin.user)
+                    .context("the ClickHouse admin user is not a plain identifier")?,
+                statements_per_hour: self.sql_statements_per_hour,
+            },
+        ))
+    }
+
+    /// The inputs of access step A2: the profile's deployment defaults and the two probe identities at
+    /// generation 0.
+    fn workspace_params(&self, profile: SqlProfile) -> anyhow::Result<WorkspaceParams> {
+        let hash = |project| {
+            let password = self.master_key.user_password(&workspace_user(project), 0);
+            PasswordHash::new(&hex(&Sha256::digest(password.as_bytes())))
+                .context("hashing a probe identity password")
+        };
+        Ok(WorkspaceParams {
+            admin_user: Ident::new(&self.admin.user)
+                .context("the ClickHouse admin user is not a plain identifier")?,
+            profile,
+            statements_per_hour: self.sql_statements_per_hour,
+            probe: [hash(PROBE_PROJECTS[0])?, hash(PROBE_PROJECTS[1])?],
+        })
+    }
+
+    /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
+    /// workspace's settings profile, fitted to the server.
+    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 4]> {
         let variant = Variant::SingleNode;
         Ok([
             schema_base(&variant, Granularity::Day),
             access_service(&variant, &self.access_params()?),
+            access_workspace(&variant, &self.workspace_params(profile)?),
             schema_span_usage_aggregate(&variant),
         ])
     }
@@ -215,7 +273,12 @@ pub(crate) async fn apply_migrations(
     store: &ClickHouseStore,
     control: Option<&Control>,
 ) -> anyhow::Result<()> {
-    let steps = config.steps()?;
+    let profile = config
+        .sql_store(store)?
+        .server_profile(SqlProfile::default())
+        .await
+        .context("reading which settings the server knows")?;
+    let steps = config.steps(profile)?;
     match control {
         Some(control) => control.migrate(env, &steps, store).await,
         None => {
@@ -383,17 +446,34 @@ mod tests {
                 password: "admin-secret".to_owned(),
             },
             master_key: MasterKey::parse(KEY).unwrap(),
+            sql_statements_per_hour: 90,
             idle_timeout: None,
         };
-        let steps = config.steps().unwrap();
+        let steps = config.steps(SqlProfile::default()).unwrap();
+        // `sql.statements_per_hour` reaches the quota of access step A2.
+        assert!(steps[2].statements.iter().any(|statement| {
+            statement.starts_with("ALTER QUOTA crucible_sql_quota")
+                && statement.contains("MAX queries = 90,")
+        }));
         assert_eq!(
             steps.each_ref().map(|step| step.id),
             [
                 crucible_schema::SCHEMA_BASE,
                 crucible_schema::ACCESS_SERVICE,
+                crucible_schema::ACCESS_WORKSPACE,
                 crucible_schema::SCHEMA_SPAN_USAGE_AGGREGATE
             ]
         );
+        // The probe identities' passwords are derived like every other, and only their digests are sent.
+        let workspace = steps[2].statements.join(
+            "
+",
+        );
+        for project in PROBE_PROJECTS {
+            let password = config.master_key.user_password(&workspace_user(project), 0);
+            assert!(!workspace.contains(&password));
+            assert!(workspace.contains(&hex(&Sha256::digest(password.as_bytes()))));
+        }
         let sql = steps[1].statements.join("\n");
         // Only digests reach a statement: neither a derived password nor the admin's.
         for identity in ServiceIdentity::GENERATED {

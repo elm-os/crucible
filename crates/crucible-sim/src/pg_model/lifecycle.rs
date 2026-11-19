@@ -1,4 +1,4 @@
-//! The retention and deletion repository of the model (migration V3): the node registry, deletion requests
+//! The retention and deletion repository of the model (the lifecycle migration): the node registry, deletion requests
 //! and their acknowledgements, leader actions and retention floors.
 //!
 //! Deletion sequence numbers are drawn when the row is written and survive a rollback, like the key feed's.
