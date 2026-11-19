@@ -66,13 +66,15 @@ type queued struct {
 }
 
 // Processor is the SDK's span processor. At span start it copies the session, user, tags and metadata carried in the
-// context onto the span. At span end it puts the span on a bounded queue without blocking: when the queue is
-// full the span is dropped and counted. One goroutine drains the queue in batches to the exporter.
+// context onto the span. At span end it puts the span on a queue bounded by spans and by estimated bytes, without
+// blocking: when either bound is reached the span is dropped and counted. One goroutine drains the queue in
+// batches to the exporter.
 type Processor struct {
-	exporter  sdktrace.SpanExporter
-	release   string
-	batchSize int
-	interval  time.Duration
+	exporter   sdktrace.SpanExporter
+	release    string
+	queueBytes int64 // bound on queuedBytes
+	batchSize  int
+	interval   time.Duration
 
 	queue   chan queued
 	flushes chan chan error
@@ -90,12 +92,14 @@ type Processor struct {
 
 var _ sdktrace.SpanProcessor = (*Processor)(nil)
 
-// NewProcessor starts a processor whose queue holds queueSize spans.
-func NewProcessor(exporter sdktrace.SpanExporter, release string, queueSize, batchSize int, interval time.Duration) *Processor {
+// NewProcessor starts a processor whose queue holds queueSize spans and queueBytes estimated bytes, the batch being
+// exported included.
+func NewProcessor(exporter sdktrace.SpanExporter, release string, queueSize int, queueBytes int64, batchSize int, interval time.Duration) *Processor {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Processor{
 		exporter:     exporter,
 		release:      release,
+		queueBytes:   queueBytes,
 		batchSize:    batchSize,
 		interval:     interval,
 		queue:        make(chan queued, queueSize),
@@ -127,10 +131,20 @@ func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	}
 }
 
-// OnEnd queues the span, or drops and counts it when the queue is full. It never blocks.
+// OnEnd queues the span, or drops and counts it when the queue holds queueSize spans or would pass queueBytes. It
+// never blocks.
 func (p *Processor) OnEnd(s sdktrace.ReadOnlySpan) {
 	size := spanBytes(s)
-	p.queuedBytes.Add(size)
+	for {
+		queued := p.queuedBytes.Load()
+		if queued+size > p.queueBytes {
+			p.queueFull.Add(1)
+			return
+		}
+		if p.queuedBytes.CompareAndSwap(queued, queued+size) {
+			break
+		}
+	}
 	select {
 	case p.queue <- queued{span: s, size: size}:
 	default:
