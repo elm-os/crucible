@@ -7,6 +7,9 @@ import type { ApiKey } from "./generated/ApiKey";
 import type { ApiKeyCreate } from "./generated/ApiKeyCreate";
 import type { ApiKeyCreated } from "./generated/ApiKeyCreated";
 import type { ApiKeyList } from "./generated/ApiKeyList";
+import type { DeletionRequest } from "./generated/DeletionRequest";
+import type { DeletionRequestCreate } from "./generated/DeletionRequestCreate";
+import type { DeletionRequestList } from "./generated/DeletionRequestList";
 import type { FactWritten } from "./generated/FactWritten";
 import type { FeedbackRequest } from "./generated/FeedbackRequest";
 import type { FlagRequest } from "./generated/FlagRequest";
@@ -26,6 +29,8 @@ import type { PayloadField } from "./generated/PayloadField";
 import type { PayloadParams } from "./generated/PayloadParams";
 import type { Project } from "./generated/Project";
 import type { ProjectCreate } from "./generated/ProjectCreate";
+import type { Retention } from "./generated/Retention";
+import type { RetentionUpdate } from "./generated/RetentionUpdate";
 import type { SearchPage } from "./generated/SearchPage";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SessionInfo } from "./generated/SessionInfo";
@@ -49,7 +54,7 @@ type Query = Record<string, string | number | undefined>;
 type Sender = "telemetry" | "session" | "prelogin" | "public";
 
 interface Init {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   query?: Query;
   body?: unknown;
   version?: number;
@@ -378,6 +383,38 @@ export async function revokeApiKey(
 ): Promise<void> {
   const path = projectPath(project, `/api-keys/${encodeURIComponent(key.id)}`);
   await call(path, "session", { method: "DELETE", version: key.version });
+}
+
+export async function getRetention(project: string, signal?: AbortSignal): Promise<Retention> {
+  return read<Retention>(await call(projectPath(project, "/retention"), "session", { signal }));
+}
+
+export async function setRetention(
+  project: string,
+  body: RetentionUpdate,
+  version: number,
+): Promise<Retention> {
+  const path = projectPath(project, "/retention");
+  return read<Retention>(await call(path, "session", { method: "PUT", body, version }));
+}
+
+export async function listDeletionRequests(
+  project: string,
+  signal?: AbortSignal,
+): Promise<DeletionRequestList> {
+  const path = projectPath(project, "/deletion-requests");
+  return read<DeletionRequestList>(await call(path, "session", { signal }));
+}
+
+// `idempotencyKey` makes a retry of the same request safe: the server answers with the first request.
+export async function createDeletionRequest(
+  project: string,
+  body: DeletionRequestCreate,
+  idempotencyKey: string,
+): Promise<DeletionRequest> {
+  const path = projectPath(project, "/deletion-requests");
+  const headers = { "Idempotency-Key": idempotencyKey };
+  return read<DeletionRequest>(await call(path, "session", { method: "POST", body, headers }));
 }
 
 async function failure(response: Response, readBody = true): Promise<UiError> {
