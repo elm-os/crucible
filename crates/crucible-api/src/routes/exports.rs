@@ -92,8 +92,8 @@ const fn state_to_wire(state: ExportState) -> wire::ExportState {
     }
 }
 
-/// The DTO of an export at `now`.
-pub(crate) fn export_dto(job: &ExportJob, now: Timestamp) -> Export {
+/// The DTO of an export at `now`: what the REST routes and the MCP server's export tools show.
+pub fn export_dto(job: &ExportJob, now: Timestamp) -> Export {
     let state = ExportState::of(job, now);
     let selector = Selector::from_text(&job.new.selector).ok();
     let options = Options::from_text(&job.new.options).unwrap_or_default();

@@ -51,6 +51,7 @@ pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
 pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
+pub use routes::exports::export_dto;
 pub use settings::{
     DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
 };

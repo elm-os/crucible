@@ -31,3 +31,6 @@ pub use job::{
     sweep_job,
 };
 pub use service::{CreateError, CreateExport, Created, Download, DownloadError, EXPORTS_PER_HOUR, Exports};
+
+/// The control plane's export types, for the crates that read exports through this one.
+pub use crucible_control::{ExportFormat, ExportJob, TxError};

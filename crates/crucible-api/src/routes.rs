@@ -6,7 +6,7 @@
 
 mod auth;
 mod data_bounds;
-mod exports;
+pub(crate) mod exports;
 mod facts;
 mod filter_values;
 mod metrics;

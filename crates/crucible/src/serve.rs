@@ -777,8 +777,14 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
     exports.set_service(service.clone());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
-    gate.mcp
-        .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
+    gate.mcp.open(
+        &env,
+        service.clone(),
+        mcp_keys,
+        mcp_cursors,
+        mcp,
+        export_service.clone(),
+    );
     let settings = Arc::new(StaticProjectSettings::default());
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
@@ -1777,6 +1783,7 @@ mod tests {
             Arc::clone(&app.keys),
             cursors,
             McpConfig::default(),
+            None,
         );
 
         let lifecycles = [
@@ -1845,7 +1852,7 @@ mod tests {
         let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
         app.gate
             .mcp
-            .open(env, service, keys, cursors, McpConfig::default());
+            .open(env, service, keys, cursors, McpConfig::default(), None);
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await
