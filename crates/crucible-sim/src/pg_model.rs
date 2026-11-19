@@ -7,7 +7,7 @@
 //!   Real Postgres would wait for the lock and fail only if the other transaction commits, so the model is
 //!   stricter here. A single statement waits for the lock, as read committed does.
 //! - Unique and foreign-key constraints carry the names of the production schema and are checked against the
-//!   latest committed rows, as Postgres checks them. Deleting a user cascades.
+//!   latest committed rows, as Postgres checks them. Deleting a user, or a project's row (its salt), cascades.
 //! - A fenced transaction share-locks its lease row, so an acquisition waits for it (contract 11.7).
 //! - Key-feed sequence numbers are drawn when the row is written and survive a rollback, so they become
 //!   visible out of order and leave gaps (contract 11.8).
@@ -367,6 +367,11 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             Tbl::Projects,
             project(r.project_id),
         )],
+        Row::ProjectSalt(s) => vec![(
+            "project_salts_project_id_fkey",
+            Tbl::Projects,
+            project(s.project_id),
+        )],
         Row::OauthAccount(a) => vec![
             (
                 "oauth_accounts_provider_id_fkey",
@@ -415,6 +420,7 @@ fn cascades(table: Tbl) -> &'static [Tbl] {
             Tbl::OauthAccounts,
         ],
         Tbl::AuthProviders => &[Tbl::OauthAccounts],
+        Tbl::Projects => &[Tbl::ProjectSalts],
         Tbl::AlertRules => &[Tbl::AlertState, Tbl::AlertEvents],
         Tbl::Dashboards => &[Tbl::Widgets],
         _ => &[],
@@ -2143,6 +2149,13 @@ impl ProjectSaltRepo for Runner {
         .await
     }
 
+    async fn list(&self) -> Result<Vec<SealedProjectSalt>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            Ok(all!(cx, Tbl::ProjectSalts, Row::ProjectSalt))
+        })
+        .await
+    }
+
     async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             let key = uuid_key(salt.project_id.to_bytes());
@@ -2153,6 +2166,18 @@ impl ProjectSaltRepo for Runner {
                 return Ok(false);
             }
             cx.put(Tbl::ProjectSalts, key, Some(Row::ProjectSalt(salt.clone())))?;
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn delete(&self, project_id: ProjectId) -> Result<bool, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let key = uuid_key(project_id.to_bytes());
+            if cx.get(Tbl::ProjectSalts, &key).is_none() {
+                return Ok(false);
+            }
+            cx.put(Tbl::ProjectSalts, key, None)?;
             Ok(true)
         })
         .await

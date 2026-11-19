@@ -1,4 +1,4 @@
-//! The dashboard repository of the model (migration V8): dashboards, and their widgets keyed by dashboard and
+//! The dashboard repository of the model (migration V9): dashboards, and their widgets keyed by dashboard and
 //! widget id, which go with their dashboard.
 
 use async_trait::async_trait;

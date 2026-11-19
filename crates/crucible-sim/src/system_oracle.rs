@@ -519,6 +519,23 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Whether any text cell of `block` holds `needle`: every `String` and `FixedString` value, also inside arrays,
+/// tuples and nullable columns. The oracle looks for the values the generator planted under keys that must never
+/// be stored (contracts 3.5, 9.3 and 9.4).
+pub(crate) fn holds_text(block: &DecodedBlock, needle: &[u8]) -> bool {
+    fn any(values: &Values, needle: &[u8]) -> bool {
+        match values {
+            Values::String(cells) | Values::FixedString(_, cells) => cells
+                .iter()
+                .any(|cell| cell.windows(needle.len()).any(|w| w == needle)),
+            Values::Nullable(_, inner) | Values::Array(_, inner) => any(inner, needle),
+            Values::Tuple(items) => items.iter().any(|items| any(items, needle)),
+            _ => false,
+        }
+    }
+    !needle.is_empty() && block.columns.iter().any(|c| any(&c.values, needle))
+}
+
 fn values<'a>(block: &'a DecodedBlock, name: &str) -> Option<&'a Values> {
     block
         .columns

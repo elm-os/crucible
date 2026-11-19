@@ -1,4 +1,4 @@
-//! The dashboard repository over Postgres (migration V8): a dashboard and its widgets are read, written and
+//! The dashboard repository over Postgres (migration V9): a dashboard and its widgets are read, written and
 //! deleted in one statement each, with the widgets passed as one JSON array.
 
 use async_trait::async_trait;

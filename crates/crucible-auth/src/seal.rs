@@ -5,7 +5,9 @@ use core::fmt;
 
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
+use crucible_control::SealedProjectSalt;
 use crucible_env::Rng;
+use crucible_records::ProjectId;
 
 /// The length of a nonce.
 const NONCE_LEN: usize = 24;
@@ -41,6 +43,12 @@ impl fmt::Debug for Sealed {
             .field("key_id", &self.key_id)
             .finish_non_exhaustive()
     }
+}
+
+/// The associated data that binds a sealed project salt to its project. Salts sealed since the first version of
+/// `project_salts` carry exactly these bytes.
+fn salt_aad(project: ProjectId) -> Vec<u8> {
+    format!("{}\0project_salt", project.uuid()).into_bytes()
 }
 
 /// A sealed value that does not open: another key sealed it, its associated data differs, or it was altered.
@@ -105,6 +113,32 @@ impl Sealer {
     pub fn seal_bytes(&self, rng: &dyn Rng, aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
         let sealed = self.seal(rng, aad, plaintext);
         [sealed.nonce, sealed.ciphertext].concat()
+    }
+
+    /// A new salt for `project` (contract 9.3): 32 random bytes from `rng`, sealed and bound to the project, as
+    /// its `project_salts` row holds it. A project gets its salt once, when it is created, and never another.
+    pub fn new_project_salt(&self, rng: &dyn Rng, project: ProjectId) -> SealedProjectSalt {
+        let mut salt = [0u8; 32];
+        rng.fill_bytes(&mut salt);
+        let sealed = self.seal(rng, &salt_aad(project), &salt);
+        SealedProjectSalt {
+            project_id: project,
+            key_id: sealed.key_id,
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext,
+        }
+    }
+
+    /// The 32 bytes of a stored project salt.
+    pub fn open_project_salt(&self, row: &SealedProjectSalt) -> Result<[u8; 32], Unsealable> {
+        let sealed = Sealed {
+            key_id: row.key_id.clone(),
+            nonce: row.nonce.clone(),
+            ciphertext: row.ciphertext.clone(),
+        };
+        self.open(&sealed, &salt_aad(row.project_id))?
+            .try_into()
+            .map_err(|_| Unsealable)
     }
 
     /// Opens what [`Sealer::seal_bytes`] sealed.
