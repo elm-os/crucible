@@ -13,9 +13,12 @@
 //! Messages by `io_shape`: `genai_messages` as stored; `indexed_messages` as the array the normalizer stored
 //! (contract 10.5); `raw` whose value is an object with a `messages` array emits that array; any other `raw`
 //! value is wrapped in one message (`user` for the input, `assistant` for the output) and the span carries
-//! `crucible.io_shape`. A tool span's raw input and output are its call's arguments and result, which go out
-//! under the tool keys instead. A span with a field that a cap cut is skipped by default; kept, its cut fields
+//! `crucible.io_shape`. The raw input and output of a tool span or an MCP operation are its call's arguments and
+//! result, which go out under the tool keys instead. A span with a field that a cap cut is skipped by default; kept, its cut fields
 //! go out as opaque text where one value holds them, and the cut maps are named in `crucible.truncated_fields`.
+//!
+//! The MCP operation of a span goes out under the keys of contract 9.1, which its projector removed from the
+//! residual (see [`mcp`]); captured content that was cut counts as a cut field.
 
 use crucible_query::ExportRecord;
 use crucible_records::{
@@ -24,6 +27,8 @@ use crucible_records::{
 };
 
 use crate::json::{self, Json, Obj};
+
+mod mcp;
 
 /// What became of one span.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -95,20 +100,29 @@ fn any(out: &mut Vec<u8>, value: &Json) {
     obj.end();
 }
 
-/// An attribute list being written.
+/// An attribute list being written, and its keys.
 struct Attrs {
     out: Vec<u8>,
+    keys: Vec<String>,
 }
 
 impl Attrs {
     fn new() -> Self {
-        Self { out: vec![b'['] }
+        Self {
+            out: vec![b'['],
+            keys: Vec::new(),
+        }
+    }
+
+    fn has(&self, key: &str) -> bool {
+        self.keys.iter().any(|k| k == key)
     }
 
     fn put(&mut self, key: &str, value: &Json) {
         if self.out.len() > 1 {
             self.out.push(b',');
         }
+        self.keys.push(key.to_owned());
         let mut kv = Obj::new(&mut self.out);
         kv.str("key", key);
         any(kv.key("value"), value);
@@ -236,12 +250,13 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
     let (core, payload) = (&record.span.core, &record.span.payload);
     let cut = |field| is_cut(core, payload, field);
     let mut attrs = Attrs::new();
-    let residual_has = |key: &str| match Json::parse(&payload.attributes) {
+    let residual: Vec<String> = match Json::parse(&payload.attributes) {
         Some(Json::Obj(members)) if !cut(PayloadField::Attributes) => {
-            members.iter().any(|(k, _)| k == key)
+            members.into_iter().map(|(key, _)| key).collect()
         }
-        _ => false,
+        _ => Vec::new(),
     };
+    let residual_has = |key: &str| residual.iter().any(|k| k == key);
 
     attrs.text("crucible.observation.type", core.observation_type.as_str());
     if let Some(name) =
@@ -259,16 +274,21 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
         }
     }
 
-    // Input and output.
-    let tool = core.observation_type == ObservationType::Tool && core.io_shape == IoShape::Raw;
+    // Input and output. A body of a tool span or an MCP operation that is the call's arguments or result goes out
+    // under the tool key (contract 9.1 carries an operation's arguments and result there): as the captured
+    // content says when there is some, else when the body is raw or no message key could have held it. A tool
+    // key left in the residual is one the span did not take.
+    let tool_like = core.observation_type == ObservationType::Tool || record.mcp.is_some();
+    let content = record.mcp.as_ref().and_then(|op| op.content.as_deref());
     let mut io_wrapped = false;
-    for (field, body, role, messages_key, tool_key) in [
+    for (field, body, role, messages_key, tool_key, content_column) in [
         (
             PayloadField::Input,
             &payload.input,
             "user",
             "gen_ai.input.messages",
             "gen_ai.tool.call.arguments",
+            "args",
         ),
         (
             PayloadField::Output,
@@ -276,14 +296,26 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
             "assistant",
             "gen_ai.output.messages",
             "gen_ai.tool.call.result",
+            "result",
         ),
     ] {
         if body.is_empty() {
             continue;
         }
-        if tool && !cut(field) {
+        let message_list = matches!(Json::parse(body), Some(Json::Arr(_)));
+        let call = tool_like
+            && !cut(field)
+            && !residual_has(tool_key)
+            && match content {
+                Some(row) => mcp::content(row, content_column).as_bytes() == &body[..],
+                None => core.io_shape == IoShape::Raw || !message_list,
+            };
+        if call {
             // The call's arguments and result as stored, which the native key reads back byte for byte.
             attrs.text(tool_key, &String::from_utf8_lossy(body));
+        } else if tool_like && !cut(field) && message_list && core.io_shape == IoShape::Raw {
+            // A message list beside the call's raw arguments or result, as stored.
+            attrs.text(messages_key, &String::from_utf8_lossy(body));
         } else {
             let (text, wrap) = messages(core.io_shape, role, body, cut(field));
             io_wrapped |= wrap;
@@ -327,7 +359,16 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
     // The fields without a semantic convention.
     attrs.text("crucible.trace.name", &core.trace_name);
     attrs.text("crucible.session.id", &core.session_id);
-    attrs.text("crucible.user.id", &core.user_id);
+    // An MCP operation's `user.id` (below) also gives the span its user; the native key would win over it and
+    // leave it in the residual.
+    let user_from_mcp = !residual_has("user.id")
+        && record
+            .mcp
+            .as_ref()
+            .is_some_and(|op| *mcp::user_id(op) == *core.user_id);
+    if !user_from_mcp {
+        attrs.text("crucible.user.id", &core.user_id);
+    }
     if &*core.environment != "default" {
         attrs.text("crucible.environment", &core.environment);
     }
@@ -368,6 +409,13 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
         for (key, value) in &members {
             attrs.put(&format!("crucible.trace.metadata.{key}"), value);
         }
+    }
+    if let Some(op) = &record.mcp {
+        let mut line = mcp::Line {
+            attrs: &mut attrs,
+            residual: &residual,
+        };
+        mcp::attributes(&mut line, core, op);
     }
     let cut_maps: Vec<&str> = [
         PayloadField::Attributes,
@@ -489,7 +537,8 @@ pub fn write_otlp(
     let (core, payload) = (&record.span.core, &record.span.payload);
     let truncated = !payload.truncated_fields.is_empty()
         || core.input_truncation == Truncation::CapExceeded
-        || core.output_truncation == Truncation::CapExceeded;
+        || core.output_truncation == Truncation::CapExceeded
+        || record.mcp.as_ref().is_some_and(mcp::content_cut);
     if (truncated && !keep_truncated) || core.project_id != scope.project_id() {
         return Written::Skipped;
     }

@@ -1077,6 +1077,7 @@ dependencies = [
  "crucible-recent",
  "crucible-records",
  "crucible-schema",
+ "crucible-shipper",
  "crucible-sim",
  "flate2",
  "futures",

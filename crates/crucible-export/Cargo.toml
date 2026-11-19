@@ -37,6 +37,8 @@ async-trait = { workspace = true }
 # The round-trip property re-ingests exported lines through the OTLP/JSON transcoder and the normalizer.
 crucible-normalize = { workspace = true }
 crucible-otlp = { workspace = true }
+# The store's rows of an MCP operation, as the shipper encodes them.
+crucible-shipper = { workspace = true }
 proptest = { workspace = true }
 
 [lints]

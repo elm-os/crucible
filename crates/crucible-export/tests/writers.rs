@@ -298,9 +298,17 @@ proptest! {
 
         let mut out = Vec::new();
         let (core, payload) = (&record.span.core, &record.span.payload);
+        // A cut field: a payload field, or the MCP operation's captured content.
+        let content_cut = record.mcp.as_ref().is_some_and(|mcp| {
+            mcp.op.iter().any(|c| {
+                c.name == "content_truncation"
+                    && c.value == Value::Enum(Truncation::CapExceeded.value())
+            })
+        });
         let cut = !payload.truncated_fields.is_empty()
             || core.input_truncation == Truncation::CapExceeded
-            || core.output_truncation == Truncation::CapExceeded;
+            || core.output_truncation == Truncation::CapExceeded
+            || content_cut;
         match write_otlp(project(), &record, keep, &mut out) {
             Written::Skipped => {
                 prop_assert!(cut && !keep);
