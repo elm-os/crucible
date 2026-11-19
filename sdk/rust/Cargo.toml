@@ -83,3 +83,7 @@ required-features = ["mcp", "mcp-client"]
 [[test]]
 name = "capture_overhead"
 required-features = ["mcp", "test-support"]
+
+[[test]]
+name = "export_stall"
+required-features = ["mcp"]

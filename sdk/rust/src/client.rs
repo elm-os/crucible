@@ -138,6 +138,8 @@ pub struct Stats {
     pub dropped: u64,
     /// Spans dropped because their export failed.
     pub failed: u64,
+    /// The estimated bytes of the spans waiting for export and of the batch being exported.
+    pub queued_bytes: u64,
 }
 
 /// A validated configuration.
