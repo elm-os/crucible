@@ -9,7 +9,10 @@
 use crucible_cursor::{
     Binding, Cursor, CursorError, FilterHash, KeyRing, Kind, Position, Route, Sort,
 };
-use crucible_query::{ChildCursor, HeadCursor, PageCursor, SearchCursor, SearchQuery};
+use crucible_query::{
+    ChildCursor, HeadCursor, McpOperationCursor, McpOperationsQuery, PageCursor, SearchCursor,
+    SearchQuery,
+};
 use crucible_records::{ProjectId, SpanId, TimeWindow, Timestamp, TraceId};
 
 /// The order of the trace list.
@@ -27,6 +30,41 @@ fn child_filters(trace_id: TraceId, parent: SpanId) -> FilterHash {
     let mut canonical = [0; 24];
     canonical[..16].copy_from_slice(trace_id.as_bytes());
     canonical[16..].copy_from_slice(parent.as_bytes());
+    FilterHash::of(&canonical)
+}
+
+/// The order of the MCP operation list.
+const MCP_SORT: Sort = Sort::NewestFirst;
+
+/// The canonical form of an MCP operation-list request: the side, the capture-source choice, the caller-fault
+/// rule, then every optional text as a presence byte and a length-prefixed value, in a fixed order.
+fn mcp_operation_filters(query: &McpOperationsQuery) -> FilterHash {
+    let (q, f) = (&query.query, &query.filter);
+    let mut canonical = vec![
+        q.side.value(),
+        u8::from(q.include_caller_faults),
+        u8::from(f.errors_only),
+        f.error_class.map_or(u8::MAX, |c| c.value()),
+    ];
+    let texts = [
+        Some(q.source.as_str()),
+        q.server.as_deref(),
+        f.target.as_deref(),
+        f.method.as_deref(),
+        f.client.as_deref(),
+        f.session.as_deref(),
+        f.user.as_deref(),
+    ];
+    for text in texts {
+        match text {
+            Some(text) => {
+                canonical.push(1);
+                canonical.extend_from_slice(&(text.len() as u64).to_be_bytes());
+                canonical.extend_from_slice(text.as_bytes());
+            }
+            None => canonical.push(0),
+        }
+    }
     FilterHash::of(&canonical)
 }
 
@@ -176,6 +214,38 @@ impl Cursors<'_> {
                 wal_epoch,
                 lsn,
             )),
+            _ => Err(CursorError::WrongKind),
+        }
+    }
+
+    /// An MCP operation-list cursor, bound to the list's side, capture source, caller-fault rule, server and
+    /// filters.
+    pub(crate) fn seal_mcp_operations(
+        &self,
+        query: &McpOperationsQuery,
+        next: McpOperationCursor,
+    ) -> String {
+        let position = Position::McpOperationPage {
+            window: query.query.window,
+            as_of: next.as_of,
+            last: next.last,
+        };
+        self.seal(mcp_operation_filters(query), MCP_SORT, position)
+    }
+
+    /// The cursor of an MCP operation-list request, whose window and filters it must share.
+    pub(crate) fn open_mcp_operations(
+        &self,
+        text: &str,
+        query: &McpOperationsQuery,
+    ) -> Result<McpOperationCursor, CursorError> {
+        let list = (Route::McpOperations, Kind::Page);
+        let filters = mcp_operation_filters(query);
+        let cursor = self.open(text, list, filters, MCP_SORT, Some(query.query.window))?;
+        match cursor.position {
+            Position::McpOperationPage { as_of, last, .. } => {
+                Ok(McpOperationCursor { as_of, last })
+            }
             _ => Err(CursorError::WrongKind),
         }
     }

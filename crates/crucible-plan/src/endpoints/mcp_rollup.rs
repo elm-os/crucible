@@ -146,9 +146,9 @@ pub fn mcp_tool_series(
     )
 }
 
-/// The calls of one tool per client: `client_name`, `error_class`, `caller_fault`, then `sum(count)`, the
-/// merged `dur_hist`, `sum(request_bytes)`, `sum(response_bytes)` and `max(last_seen)`. The service folds them
-/// into the tool's totals, its error classes and its top clients.
+/// The calls of one tool per server and client: `server_name`, `client_name`, `error_class`, `caller_fault`,
+/// then `sum(count)`, the merged `dur_hist`, `sum(request_bytes)`, `sum(response_bytes)` and `max(last_seen)`.
+/// The service folds them into the tool's totals, its error classes, its top clients and its servers.
 pub fn mcp_tool_clients(
     scope: ProjectScope,
     window: TimeWindow,
@@ -163,7 +163,7 @@ pub fn mcp_tool_clients(
         clamp,
         caller,
         (read, tool_calls(name)),
-        &[R::ClientName],
+        &[R::ServerName, R::ClientName],
         vec![
             sum(R::Count),
             Measure::HistogramMerge(R::DurHist.column_ref()),

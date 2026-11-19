@@ -17,6 +17,7 @@ mod data_bounds;
 mod enums;
 mod facts;
 mod identity;
+mod mcp;
 mod meta;
 mod metrics;
 mod payload;
@@ -47,6 +48,17 @@ pub use identity::{
     ProjectMember, ProjectMemberAdd, ProjectMemberList, ProjectMemberPatch, ProjectPatch,
     ProjectRole, ProviderButton, ProviderKind, ServerInfo, SessionInfo, SessionOrg, SessionProject,
     SessionTimes, SessionUser, SetupRequest, SignInOptions, TransferOwnership, UserStatus,
+};
+pub use mcp::{
+    CaptureClass, CaptureSource, Era, ErrorClass, ErrorSubclass, GroupKeyKind, IdentitySource,
+    McpChainLink, McpClassCount, McpClientList, McpClientRow, McpClientVersionRow, McpCompare,
+    McpCompareParams, McpContentPreview, McpDeployList, McpDeployRow, McpErrorGroupRow, McpErrors,
+    McpLatency, McpListParams, McpOperation, McpOperationDetail, McpOperationPage, McpOperationRow,
+    McpOperationsParams, McpParams, McpSeriesPoint, McpServerList, McpServerRow, McpServerSource,
+    McpSessionList,
+    McpSessionRow, McpSide, McpSideParam, McpStats, McpStatus, McpTargetErrorRow, McpTargetKind,
+    McpToolDeltaRow, McpToolDetail, McpToolList, McpToolRow, McpUserList, McpUserRow, McpView,
+    McpViewParams, ResultType, SourceParam, Transport,
 };
 pub use meta::Meta;
 pub use metrics::{
@@ -98,6 +110,22 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<InvitationCreated>();
     visitor.visit::<InvitationList>();
     visitor.visit::<LoginRequest>();
+    visitor.visit::<McpClientList>();
+    visitor.visit::<McpCompare>();
+    visitor.visit::<McpCompareParams>();
+    visitor.visit::<McpDeployList>();
+    visitor.visit::<McpErrors>();
+    visitor.visit::<McpListParams>();
+    visitor.visit::<McpOperationDetail>();
+    visitor.visit::<McpOperationPage>();
+    visitor.visit::<McpOperationsParams>();
+    visitor.visit::<McpParams>();
+    visitor.visit::<McpServerList>();
+    visitor.visit::<McpSessionList>();
+    visitor.visit::<McpToolDetail>();
+    visitor.visit::<McpToolList>();
+    visitor.visit::<McpUserList>();
+    visitor.visit::<McpViewParams>();
     visitor.visit::<MetricsQueryRequest>();
     visitor.visit::<MetricsResponse>();
     visitor.visit::<MetricsSchema>();

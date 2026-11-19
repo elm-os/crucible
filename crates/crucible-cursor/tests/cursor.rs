@@ -81,6 +81,13 @@ fn position() -> impl Strategy<Value = Position> {
                 as_of,
                 last: (minute, hash, SpanId::from_bytes(span)),
             }),
+        (window(), any_time(), any_time(), any::<[u8; 8]>()).prop_map(
+            |(window, as_of, start, span)| Position::McpOperationPage {
+                window,
+                as_of,
+                last: (start, SpanId::from_bytes(span)),
+            }
+        ),
     ]
 }
 
@@ -218,7 +225,8 @@ proptest! {
         let route = match b.route {
             Route::TraceList => Route::SpanChildren,
             Route::SpanChildren => Route::Search,
-            Route::Search => Route::TraceList,
+            Route::Search => Route::McpOperations,
+            Route::McpOperations => Route::TraceList,
         };
         prop_assert_eq!(open(Binding { route, ..b }), Err(CursorError::WrongRoute));
         let kind = match b.kind {
