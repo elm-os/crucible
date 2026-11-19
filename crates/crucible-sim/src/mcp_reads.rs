@@ -61,6 +61,8 @@ pub struct McpReadOutcome {
     pub seed: u64,
     /// The operations landed: one per observation of a call.
     pub operations: usize,
+    /// The (server, side) pairs whose calls more than one capture class observed.
+    pub double_captured: usize,
     /// The reads compared with the reference.
     pub reads: usize,
     /// The violations of I7, empty when the run passed.
@@ -78,7 +80,11 @@ impl WalView for NoWal {
     }
 
     fn read_span(&self, _: ProjectId, _: WalLocator) -> SpanRead {
-        Box::pin(async { Err(WalReadError::Failed("the simulation holds no WAL".to_owned())) })
+        Box::pin(async {
+            Err(WalReadError::Failed(
+                "the simulation holds no WAL".to_owned(),
+            ))
+        })
     }
 }
 
@@ -220,7 +226,7 @@ fn traffic(seed: u64, project: ProjectId) -> Vec<McpOpRecord> {
     let mut out = Vec::new();
     for call in 0..calls {
         let server = SERVERS[rng.next_u32() as usize % SERVERS.len()];
-        let side = if rng.next_u32() % 2 == 0 {
+        let side = if rng.next_u32().is_multiple_of(2) {
             McpSide::Client
         } else {
             McpSide::Server
@@ -298,7 +304,10 @@ fn reference(
 }
 
 /// The class a choice reads a server from, given the classes it has.
-fn chosen(choice: SourceChoice, classes: &BTreeMap<CaptureClass, Expected>) -> Option<CaptureClass> {
+fn chosen(
+    choice: SourceChoice,
+    classes: &BTreeMap<CaptureClass, Expected>,
+) -> Option<CaptureClass> {
     match choice {
         SourceChoice::Auto => classes.keys().next().copied(),
         SourceChoice::Class(class) => classes.contains_key(&class).then_some(class),
@@ -317,16 +326,28 @@ async fn land(model: &ChModel, ops: &[McpOpRecord], batches: usize) -> Result<()
             first_lsn: first,
             last_lsn: Lsn::new(first.get() + 999),
         };
-        let mut pairs: BTreeMap<(TableId, crucible_records::PartitionId), Vec<Row>> = BTreeMap::new();
+        let mut pairs: BTreeMap<(TableId, crucible_records::PartitionId), Vec<Row>> =
+            BTreeMap::new();
         for (ordinal, op) in chunk.iter().enumerate() {
+            // Each row carries the identity of its batch and an LSN inside it, as the shipper's rows do.
+            let mut op = op.clone();
+            op.ingestion.batch_seq = first;
+            op.ingestion.lsn = Lsn::new(first.get() + ordinal as u64);
+            let op = &op;
             let at = |table: TableId, time: Timestamp| route(table, Partitioning::Day, time);
             let row = |cells| Row {
                 cells,
                 lsn: op.ingestion.lsn,
                 ordinal: ordinal as u32,
             };
-            let ops_pair = (TableId::McpOps, at(TableId::McpOps, op.start_time).map_err(|e| e.to_string())?);
-            pairs.entry(ops_pair).or_default().push(row(mcp_ops_row(op)));
+            let ops_pair = (
+                TableId::McpOps,
+                at(TableId::McpOps, op.start_time).map_err(|e| e.to_string())?,
+            );
+            pairs
+                .entry(ops_pair)
+                .or_default()
+                .push(row(mcp_ops_row(op)));
             let rollup = (
                 TableId::McpToolRollup,
                 at(TableId::McpToolRollup, op.start_time).map_err(|e| e.to_string())?,
@@ -340,7 +361,10 @@ async fn land(model: &ChModel, ops: &[McpOpRecord], batches: usize) -> Result<()
                     TableId::McpDeploys,
                     at(TableId::McpDeploys, op.start_time).map_err(|e| e.to_string())?,
                 );
-                pairs.entry(pair).or_default().push(row(mcp_deploys_row(&deploy)));
+                pairs
+                    .entry(pair)
+                    .or_default()
+                    .push(row(mcp_deploys_row(&deploy)));
             }
         }
         for (pair, rows) in pairs {
@@ -351,7 +375,13 @@ async fn land(model: &ChModel, ops: &[McpOpRecord], batches: usize) -> Result<()
             model
                 .insert_block(block, InsertSettings::new(token, StoreFlavour::SingleNode))
                 .await
-                .map_err(|e| format!("the model refused a block: {e:?}"))?;
+                .map_err(|e| {
+                    format!(
+                        "the model refused a block of {}: {e:?}; {:?}",
+                        pair.0.name(),
+                        model.violations()
+                    )
+                })?;
         }
     }
     Ok(())
@@ -374,6 +404,7 @@ pub fn run_mcp_reads(seed: u64) -> McpReadOutcome {
         let mut outcome = McpReadOutcome {
             seed,
             operations: ops.len(),
+            double_captured: double_captured(&ops),
             reads: 0,
             violations: Vec::new(),
         };
@@ -382,7 +413,7 @@ pub fn run_mcp_reads(seed: u64) -> McpReadOutcome {
             outcome.violations.push(error);
             return outcome;
         }
-        if seed % 2 == 0 {
+        if seed.is_multiple_of(2) {
             model.merge_all();
         }
         let (index, _writer) = RecentIndex::new(
@@ -397,10 +428,16 @@ pub fn run_mcp_reads(seed: u64) -> McpReadOutcome {
             WalEpoch::from_bytes([0xe1; 16]),
         );
         let Ok(scope) = crucible_auth::test_support::scope(project) else {
-            outcome.violations.push("the project could not be scoped".to_owned());
+            outcome
+                .violations
+                .push("the project could not be scoped".to_owned());
             return outcome;
         };
-        let ctx = ReadContext::new(scope, RetentionSettings::default(), crucible_plan::Caller::Session);
+        let ctx = ReadContext::new(
+            scope,
+            RetentionSettings::default(),
+            crucible_plan::Caller::Session,
+        );
         let Ok(window) = TimeWindow::new(
             Timestamp::from_micros(HOUR_START),
             Timestamp::from_micros(HOUR_START + 60 * MINUTE),
@@ -437,7 +474,11 @@ async fn check(
                     include_caller_faults,
                     server: None,
                 };
-                let label = format!("{} side, source {}, caller faults {include_caller_faults}", side.as_str(), choice.as_str());
+                let label = format!(
+                    "{} side, source {}, caller faults {include_caller_faults}",
+                    side.as_str(),
+                    choice.as_str()
+                );
                 servers(service, ctx, &query, &expected, &label, outcome).await;
                 if !include_caller_faults {
                     metrics(service, ctx, &query, &expected, &label, outcome).await;
@@ -463,7 +504,12 @@ async fn servers(
     outcome.reads += 1;
     let found = match service.mcp_servers(ctx, query).await {
         Ok(found) => found,
-        Err(error) => return violate(outcome, format!("the servers read failed ({label}): {error}")),
+        Err(error) => {
+            return violate(
+                outcome,
+                format!("the servers read failed ({label}): {error}"),
+            );
+        }
     };
     let mut want: BTreeMap<&str, Expected> = BTreeMap::new();
     for (server, classes) in expected {
@@ -503,20 +549,29 @@ async fn servers(
         .filter(|(server, e)| e.calls > 0 || e.caller_faults > 0 || got.contains_key(server))
         .collect();
     if got != want {
-        violate(outcome, format!("servers differ from the reference ({label}): got {got:?}, want {want:?}"));
+        violate(
+            outcome,
+            format!("servers differ from the reference ({label}): got {got:?}, want {want:?}"),
+        );
     }
     // Every server's calls are one class's, never the sum of two.
     let summed: BTreeSet<&str> = expected
         .iter()
         .filter(|(server, classes)| {
             let total: u64 = classes.values().map(|e| e.calls).sum();
-            classes.len() > 1 && got.get(server.as_str()).is_some_and(|g| g.calls == total && total > 0)
+            classes.len() > 1
+                && got
+                    .get(server.as_str())
+                    .is_some_and(|g| g.calls == total && total > 0)
                 && classes.values().filter(|e| e.calls > 0).count() > 1
         })
         .map(|(server, _)| server.as_str())
         .collect();
     if !summed.is_empty() {
-        violate(outcome, format!("the calls of {summed:?} are summed over capture sources ({label})"));
+        violate(
+            outcome,
+            format!("the calls of {summed:?} are summed over capture sources ({label})"),
+        );
     }
 }
 
@@ -546,7 +601,12 @@ async fn metrics(
     };
     let found = match service.mcp_metrics(ctx, request).await {
         Ok(found) => found,
-        Err(error) => return violate(outcome, format!("the metrics read failed ({label}): {error}")),
+        Err(error) => {
+            return violate(
+                outcome,
+                format!("the metrics read failed ({label}): {error}"),
+            );
+        }
     };
     let mut got: BTreeMap<String, u64> = BTreeMap::new();
     for series in &found.series {
@@ -572,7 +632,10 @@ async fn metrics(
         })
         .collect();
     if got != want {
-        violate(outcome, format!("mcp.calls per server differs ({label}): got {got:?}, want {want:?}"));
+        violate(
+            outcome,
+            format!("mcp.calls per server differs ({label}): got {got:?}, want {want:?}"),
+        );
     }
 }
 
@@ -618,7 +681,12 @@ async fn operations(
         };
         let found = match service.mcp_operations(ctx, &page).await {
             Ok(found) => found,
-            Err(error) => return violate(outcome, format!("the operation list failed ({label}): {error}")),
+            Err(error) => {
+                return violate(
+                    outcome,
+                    format!("the operation list failed ({label}): {error}"),
+                );
+            }
         };
         got.extend(found.operations.iter().map(|op| op.span_id));
         match found.next {
@@ -629,7 +697,11 @@ async fn operations(
     if got != want {
         violate(
             outcome,
-            format!("the operation list holds {} operations, the reference {} ({label})", got.len(), want.len()),
+            format!(
+                "the operation list holds {} operations, the reference {} ({label})",
+                got.len(),
+                want.len()
+            ),
         );
     }
 }
@@ -642,3 +714,14 @@ pub fn run_many(first: u64, seeds: u64) -> Vec<McpReadOutcome> {
         .collect()
 }
 
+/// The (server, side) pairs of a run that more than one capture class observed.
+fn double_captured(ops: &[McpOpRecord]) -> usize {
+    let mut classes: BTreeMap<(&str, u8), BTreeSet<CaptureClass>> = BTreeMap::new();
+    for op in ops {
+        classes
+            .entry((&op.server_name, op.side.value()))
+            .or_default()
+            .insert(CaptureClass::of(op.capture_source));
+    }
+    classes.values().filter(|c| c.len() > 1).count()
+}

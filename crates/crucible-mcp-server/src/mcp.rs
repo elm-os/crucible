@@ -65,7 +65,9 @@ impl Common<'_> {
 impl Checked {
     /// The query, once every argument of the call passed: its window is checked against the project's maximum.
     pub(crate) fn query(self, call: &Call<'_>) -> Result<McpQuery, ToolError> {
-        let query = self.query.ok_or_else(|| ToolError::validation(Vec::new()))?;
+        let query = self
+            .query
+            .ok_or_else(|| ToolError::validation(Vec::new()))?;
         check_window(query.window, call.settings.max_window_days)?;
         Ok(query)
     }

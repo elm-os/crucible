@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crucible_plan::{
     CaptureClass, MCP_OPERATION_COLUMNS, McpContentField, McpOperationsRequest, McpOpsFilter,
     McpRead, McpSelection, McpUserKey, Value, mcp_client_versions, mcp_error_breakdown,
-    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers,
-    mcp_operations, mcp_session_errors, mcp_sessions, mcp_user_errors, mcp_users,
+    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations,
+    mcp_session_errors, mcp_sessions, mcp_user_errors, mcp_users,
 };
 use crucible_records::{
     CaptureSource, Era, ErrorClass, ErrorSubclass, GroupKeyKind, IdentitySource, McpSide,
@@ -489,7 +489,14 @@ impl QueryService {
         let mut read = self.read(ctx);
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
-        let plan = mcp_users(ctx.scope, query.window, &read.clamp, ctx.caller, &mcp, limit);
+        let plan = mcp_users(
+            ctx.scope,
+            query.window,
+            &read.clamp,
+            ctx.caller,
+            &mcp,
+            limit,
+        );
         let mut users = Vec::new();
         for row in read.rows(plan).await? {
             let f = fields(&row);
@@ -513,7 +520,14 @@ impl QueryService {
         users.truncate(limit as usize);
         if !users.is_empty() {
             let keys: Vec<McpUserKey> = users.iter().map(|u| u.key.clone()).collect();
-            let plan = mcp_user_errors(ctx.scope, query.window, &read.clamp, ctx.caller, &mcp, &keys);
+            let plan = mcp_user_errors(
+                ctx.scope,
+                query.window,
+                &read.clamp,
+                ctx.caller,
+                &mcp,
+                &keys,
+            );
             let mut errors: BTreeMap<McpUserKey, u64> = BTreeMap::new();
             for row in read.rows(plan).await? {
                 let f = fields(&row);
@@ -548,7 +562,14 @@ impl QueryService {
         let mut read = self.read(ctx);
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
-        let plan = mcp_sessions(ctx.scope, query.window, &read.clamp, ctx.caller, &mcp, limit);
+        let plan = mcp_sessions(
+            ctx.scope,
+            query.window,
+            &read.clamp,
+            ctx.caller,
+            &mcp,
+            limit,
+        );
         let mut sessions = Vec::new();
         for row in read.rows(plan).await? {
             let f = fields(&row);
@@ -566,8 +587,14 @@ impl QueryService {
         sessions.truncate(limit as usize);
         if !sessions.is_empty() {
             let keys: Vec<String> = sessions.iter().map(|s| s.group_key.to_string()).collect();
-            let plan =
-                mcp_session_errors(ctx.scope, query.window, &read.clamp, ctx.caller, &mcp, &keys);
+            let plan = mcp_session_errors(
+                ctx.scope,
+                query.window,
+                &read.clamp,
+                ctx.caller,
+                &mcp,
+                &keys,
+            );
             let mut errors: BTreeMap<(Arc<str>, u8), u64> = BTreeMap::new();
             for row in read.rows(plan).await? {
                 let f = fields(&row);

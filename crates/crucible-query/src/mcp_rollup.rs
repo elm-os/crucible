@@ -398,9 +398,7 @@ impl QueryService {
             if !client.is_empty() {
                 entry.1.insert(client);
             }
-            entry
-                .0
-                .add(&layout.group(&f)?, query.include_caller_faults);
+            entry.0.add(&layout.group(&f)?, query.include_caller_faults);
         }
         let (deploys, _) = read.deploys_of(query, query.window).await?;
         let mut servers: Vec<McpServer> = tallies
@@ -562,10 +560,10 @@ impl QueryService {
                     "the store returned a series bucket that is not a time".to_owned(),
                 ));
             };
-            per_bucket
-                .entry(*bucket)
-                .or_default()
-                .add(&series_layout.group(&crate::decode::Fields(rest))?, query.include_caller_faults);
+            per_bucket.entry(*bucket).or_default().add(
+                &series_layout.group(&crate::decode::Fields(rest))?,
+                query.include_caller_faults,
+            );
         }
         let series = buckets
             .into_iter()
@@ -690,7 +688,7 @@ impl QueryService {
                 },
             )
             .collect();
-        targets.sort_by(|a, b| b.calls.cmp(&a.calls));
+        targets.sort_by_key(|t| std::cmp::Reverse(t.calls));
         let meta = read.mcp_meta(consistency, &ROLLUP)?;
         Ok(McpErrorClasses {
             totals: total.totals(),

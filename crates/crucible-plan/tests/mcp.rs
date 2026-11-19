@@ -9,15 +9,14 @@
 use crucible_auth::test_support;
 use crucible_plan::{
     Aggregation, Caller, CaptureClass, CmpOp, DimensionId, Fill, Filter, Granularity, Literal,
-    MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead,
-    McpSelection, McpUserKey, MeasureId, MetricsError, MetricsQuery, Node, PlanError, Pred,
-    QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema, Step,
-    effective_window, mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys,
-    mcp_error_breakdown, mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking,
-    mcp_metrics_series, mcp_operation, mcp_operation_chain, mcp_operation_content,
-    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
-    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
-    metrics_schema, metrics_series, subject_hash,
+    MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection,
+    McpUserKey, MeasureId, MetricsError, MetricsQuery, Node, PlanError, Pred, QueryClass,
+    QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema, Step, effective_window,
+    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
+    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
+    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations,
+    mcp_presence, mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series,
+    mcp_tools, mcp_user_errors, mcp_users, metrics_schema, metrics_series, subject_hash,
 };
 use crucible_records::{
     CaptureSource, McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -159,15 +158,33 @@ fn every_plan(
     let raw = QueryClass::AnalyticsRaw;
     let presence = mcp_presence(scope, window, &clamp, caller, read.side, read.server);
     add("presence", presence, analytics, true, true);
-    add("servers", mcp_servers(scope, window, &clamp, caller, read), analytics, true, true);
-    add("tools", mcp_tools(scope, window, &clamp, caller, read), analytics, true, true);
+    add(
+        "servers",
+        mcp_servers(scope, window, &clamp, caller, read),
+        analytics,
+        true,
+        true,
+    );
+    add(
+        "tools",
+        mcp_tools(scope, window, &clamp, caller, read),
+        analytics,
+        true,
+        true,
+    );
     let series = mcp_tool_series(scope, window, &clamp, caller, read, "t", Step::Hour);
     add("tool series", series, analytics, true, true);
     let clients = mcp_tool_clients(scope, window, &clamp, caller, read, "t");
     add("tool clients", clients, analytics, true, true);
     let classes = mcp_error_classes(scope, window, &clamp, caller, read);
     add("error classes", classes, analytics, true, true);
-    add("clients", mcp_clients(scope, window, &clamp, caller, read), analytics, true, true);
+    add(
+        "clients",
+        mcp_clients(scope, window, &clamp, caller, read),
+        analytics,
+        true,
+        true,
+    );
     let deploys_plan = mcp_deploys(scope, window, &clamp, caller, read.server);
     add("deploys", deploys_plan, analytics, true, false);
     let inventory = mcp_inventory(scope, window, &clamp, caller, read.server, &deploys);
@@ -180,10 +197,22 @@ fn every_plan(
     add("error breakdown", breakdown, raw, false, true);
     let versions = mcp_client_versions(scope, window, &clamp, caller, read, 50);
     add("client versions", versions, raw, false, true);
-    add("users", mcp_users(scope, window, &clamp, caller, read, 50), raw, false, true);
+    add(
+        "users",
+        mcp_users(scope, window, &clamp, caller, read, 50),
+        raw,
+        false,
+        true,
+    );
     let errors = mcp_user_errors(scope, window, &clamp, caller, read, &users);
     add("user errors", errors, raw, false, true);
-    add("sessions", mcp_sessions(scope, window, &clamp, caller, read, 50), raw, false, true);
+    add(
+        "sessions",
+        mcp_sessions(scope, window, &clamp, caller, read, 50),
+        raw,
+        false,
+        true,
+    );
     let keys = ["k".to_owned()];
     let errors = mcp_session_errors(scope, window, &clamp, caller, read, &keys);
     add("session errors", errors, raw, false, true);
@@ -193,7 +222,15 @@ fn every_plan(
     let one = mcp_operation(scope, window, &clamp, caller, read.side, (trace, span));
     add("operation", one, point, false, true);
     let key = (read.side, trace, span);
-    let args = mcp_operation_content(scope, window, &clamp, caller, key, McpContentField::Args, 64);
+    let args = mcp_operation_content(
+        scope,
+        window,
+        &clamp,
+        caller,
+        key,
+        McpContentField::Args,
+        64,
+    );
     add("operation args", args, point, false, true);
     let other = match read.side {
         McpSide::Server => McpSide::Client,
@@ -341,24 +378,49 @@ fn the_outputs_are_what_the_builders_document() {
         include_caller_faults: false,
         server: Some("a"),
     };
-    let (s, w, k, c) = (scope(), window(), RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH), Caller::Session);
+    let (s, w, k, c) = (
+        scope(),
+        window(),
+        RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH),
+        Caller::Session,
+    );
     let hist = "Tuple(Array(UInt16), Array(UInt64))";
     let dt64 = "DateTime64(6, 'UTC')";
-    let presence = mcp_presence(s, w, &k, c, McpSide::Client, None).unwrap().unwrap();
+    let presence = mcp_presence(s, w, &k, c, McpSide::Client, None)
+        .unwrap()
+        .unwrap();
     let found = shape(&presence);
     assert_eq!(found[0], "server_name String");
     assert!(found[1].starts_with("capture_source Enum8"), "{found:?}");
     assert_eq!(found[2], "sum_count UInt64");
     assert_eq!(found[3], format!("max_last_seen {dt64}"));
     let servers = mcp_servers(s, w, &k, c, &read).unwrap().unwrap();
-    let names: Vec<String> = servers.output().columns().iter().map(|c| c.name.clone()).collect();
+    let names: Vec<String> = servers
+        .output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
     assert_eq!(
         names,
-        ["server_name", "client_name", "error_class", "caller_fault", "sum_count", "histogram_dur_hist", "max_last_seen"]
+        [
+            "server_name",
+            "client_name",
+            "error_class",
+            "caller_fault",
+            "sum_count",
+            "histogram_dur_hist",
+            "max_last_seen"
+        ]
     );
     assert_eq!(servers.output().columns()[5].ty.to_string(), hist);
     let tools = mcp_tools(s, w, &k, c, &read).unwrap().unwrap();
-    let names: Vec<String> = tools.output().columns().iter().map(|c| c.name.clone()).collect();
+    let names: Vec<String> = tools
+        .output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
     assert_eq!(
         names,
         [
@@ -373,21 +435,56 @@ fn the_outputs_are_what_the_builders_document() {
             "max_last_seen",
         ]
     );
-    let series = mcp_tool_series(s, w, &k, c, &read, "t", Step::FiveMinutes).unwrap().unwrap();
-    let names: Vec<String> = series.output().columns().iter().map(|c| c.name.clone()).collect();
-    assert_eq!(names, ["bucket", "error_class", "caller_fault", "sum_count", "histogram_dur_hist"]);
-    let deploys = mcp_deploys(s, w, &k, c, None).unwrap().unwrap();
-    let names: Vec<String> = deploys.output().columns().iter().map(|c| c.name.clone()).collect();
+    let series = mcp_tool_series(s, w, &k, c, &read, "t", Step::FiveMinutes)
+        .unwrap()
+        .unwrap();
+    let names: Vec<String> = series
+        .output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
     assert_eq!(
         names,
-        ["server_name", "deploy_id", "server_version", "capture_source", "min_first_seen", "max_last_seen"]
+        [
+            "bucket",
+            "error_class",
+            "caller_fault",
+            "sum_count",
+            "histogram_dur_hist"
+        ]
     );
-    let breakdown = mcp_error_breakdown(s, w, &k, c, &read, 10).unwrap().unwrap();
+    let deploys = mcp_deploys(s, w, &k, c, None).unwrap().unwrap();
+    let names: Vec<String> = deploys
+        .output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "server_name",
+            "deploy_id",
+            "server_version",
+            "capture_source",
+            "min_first_seen",
+            "max_last_seen"
+        ]
+    );
+    let breakdown = mcp_error_breakdown(s, w, &k, c, &read, 10)
+        .unwrap()
+        .unwrap();
     let types: Vec<String> = shape(&breakdown);
     assert!(types[5].ends_with("Nullable(Int32)"), "{types:?}");
     assert_eq!(types.len(), 9);
     let users = mcp_users(s, w, &k, c, &read, 10).unwrap().unwrap();
-    let names: Vec<String> = users.output().columns().iter().map(|c| c.name.clone()).collect();
+    let names: Vec<String> = users
+        .output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
     assert_eq!(
         names,
         [
@@ -405,7 +502,11 @@ fn the_outputs_are_what_the_builders_document() {
         w,
         &k,
         c,
-        (McpSide::Server, TraceId::from_bytes([1; 16]), SpanId::from_bytes([1; 8])),
+        (
+            McpSide::Server,
+            TraceId::from_bytes([1; 16]),
+            SpanId::from_bytes([1; 8]),
+        ),
         McpContentField::Args,
         16,
     )
@@ -423,28 +524,49 @@ fn refusals_name_what_to_change() {
         include_caller_faults: false,
         server: None,
     };
-    let (s, w, k, c) = (scope(), window(), RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH), Caller::Session);
+    let (s, w, k, c) = (
+        scope(),
+        window(),
+        RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH),
+        Caller::Session,
+    );
     assert!(matches!(
         mcp_servers(s, w, &k, c, &none),
         Err(PlanError::UnsupportedFilter { field: "side", .. })
     ));
-    let read = McpRead { side: McpSide::Server, ..none };
+    let read = McpRead {
+        side: McpSide::Server,
+        ..none
+    };
     assert!(matches!(
         mcp_compare_tools(s, w, &k, c, &read, &[]),
-        Err(PlanError::UnsupportedFilter { field: "server", .. })
+        Err(PlanError::UnsupportedFilter {
+            field: "server",
+            ..
+        })
     ));
     for limit in [0, MCP_LIST_MAX_LIMIT + 1] {
         assert_eq!(mcp_users(s, w, &k, c, &read, limit), Err(PlanError::Limit));
     }
     // A named class no server has: nothing to read, so no plan.
-    let empty = McpSelection::select(SourceChoice::Class(CaptureClass::Sdk), [("x".to_owned(), CaptureSource::Otlp)]);
-    let read = McpRead { selection: &empty, ..read };
+    let empty = McpSelection::select(
+        SourceChoice::Class(CaptureClass::Sdk),
+        [("x".to_owned(), CaptureSource::Otlp)],
+    );
+    let read = McpRead {
+        selection: &empty,
+        ..read
+    };
     assert_eq!(mcp_servers(s, w, &k, c, &read), Ok(None));
     assert_eq!(subject_hash(&"ab".repeat(16)), Some([0xab; 16]));
     assert_eq!(subject_hash("not-a-hash"), None);
 }
 
-fn mcp_query(measure: MeasureId, aggregation: Aggregation, dimensions: Vec<DimensionId>) -> MetricsQuery {
+fn mcp_query(
+    measure: MeasureId,
+    aggregation: Aggregation,
+    dimensions: Vec<DimensionId>,
+) -> MetricsQuery {
     MetricsQuery {
         source: Source::McpOps,
         measures: vec![(measure, aggregation)],
@@ -462,7 +584,14 @@ fn the_registry_holds_the_mcp_alert_measures() {
     let ids: Vec<&str> = schema.measures.iter().map(|m| m.as_str()).collect();
     assert_eq!(
         ids,
-        ["mcp.calls", "mcp.error_count", "mcp.error_rate", "mcp.duration_p50", "mcp.duration_p90", "mcp.duration_p99"]
+        [
+            "mcp.calls",
+            "mcp.error_count",
+            "mcp.error_rate",
+            "mcp.duration_p50",
+            "mcp.duration_p90",
+            "mcp.duration_p99"
+        ]
     );
     assert_eq!(schema.limits.max_measures, 1);
     assert_eq!(
@@ -481,24 +610,60 @@ fn the_registry_holds_the_mcp_alert_measures() {
 
 #[test]
 fn mcp_metrics_compile_one_measure_for_one_side() {
-    let (s, w, k, c) = (scope(), window(), RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH), Caller::Session);
+    let (s, w, k, c) = (
+        scope(),
+        window(),
+        RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH),
+        Caller::Session,
+    );
     let selection = selection(SourceChoice::Auto);
-    let read = McpRead { side: McpSide::Client, selection: &selection, include_caller_faults: false, server: None };
-    for measure in [MeasureId::McpCalls, MeasureId::McpErrorCount, MeasureId::McpErrorRate, MeasureId::McpDurationP99] {
+    let read = McpRead {
+        side: McpSide::Client,
+        selection: &selection,
+        include_caller_faults: false,
+        server: None,
+    };
+    for measure in [
+        MeasureId::McpCalls,
+        MeasureId::McpErrorCount,
+        MeasureId::McpErrorRate,
+        MeasureId::McpDurationP99,
+    ] {
         let aggregation = measure.aggregations()[0];
         let query = mcp_query(measure, aggregation, vec![DimensionId::McpServer]);
-        let ranking = mcp_metrics_ranking(s, w, &k, c, &query, &read).unwrap().unwrap();
+        let ranking = mcp_metrics_ranking(s, w, &k, c, &query, &read)
+            .unwrap()
+            .unwrap();
         assert_eq!(ranking.root().tables(), [TableId::McpToolRollup]);
         let keys = [vec![Literal::String("a".to_owned())]];
-        let series = mcp_metrics_series(s, w, &k, c, &query, (&read, Some(&keys))).unwrap().unwrap();
-        let Node::TimeSeries(series_node) = series.root() else { panic!("a time series") };
-        let group: Vec<&str> = series_node.aggregate().group().iter().map(|c| c.name()).collect();
-        let expected: &[&str] = if measure.by_error_class() { &["server_name", "error_class"] } else { &["server_name"] };
+        let series = mcp_metrics_series(s, w, &k, c, &query, (&read, Some(&keys)))
+            .unwrap()
+            .unwrap();
+        let Node::TimeSeries(series_node) = series.root() else {
+            panic!("a time series")
+        };
+        let group: Vec<&str> = series_node
+            .aggregate()
+            .group()
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        let expected: &[&str] = if measure.by_error_class() {
+            &["server_name", "error_class"]
+        } else {
+            &["server_name"]
+        };
         assert_eq!(group, expected, "{measure:?}");
         let found = conditions(series.root());
-        assert!(found.iter().any(|(c, _, v)| c.name() == "caller_fault" && *v == Literal::UInt(0)));
+        assert!(
+            found
+                .iter()
+                .any(|(c, _, v)| c.name() == "caller_fault" && *v == Literal::UInt(0))
+        );
         assert!(found.iter().any(|(c, _, v)| c.name() == "side" && *v == Literal::Enum(McpSide::Client.value())));
-        let errors = found.iter().any(|(c, op, _)| c.name() == "error_class" && *op == CmpOp::Ne);
+        let errors = found
+            .iter()
+            .any(|(c, op, _)| c.name() == "error_class" && *op == CmpOp::Ne);
         assert_eq!(errors, measure == MeasureId::McpErrorCount, "{measure:?}");
         let other = mcp_metrics_other(s, w, &k, c, &query, (&read, &keys));
         assert_eq!(other.is_ok(), measure.additive(), "{measure:?}");
@@ -507,15 +672,41 @@ fn mcp_metrics_compile_one_measure_for_one_side() {
     let query = mcp_query(MeasureId::McpCalls, Aggregation::Sum, Vec::new());
     assert!(matches!(
         metrics_series(s, w, &k, c, &query, None),
-        Err(MetricsError::Invalid { field: "source", .. })
+        Err(MetricsError::Invalid {
+            field: "source",
+            ..
+        })
     ));
     // Two measures, a dimension of another source, or a filter are refused.
     let mut two = query.clone();
-    two.measures.push((MeasureId::McpErrorCount, Aggregation::Sum));
-    assert!(matches!(mcp_metrics_series(s, w, &k, c, &two, (&read, None)), Err(MetricsError::Invalid { field: "measures", .. })));
-    let other = mcp_query(MeasureId::McpCalls, Aggregation::Sum, vec![DimensionId::Level]);
-    assert!(matches!(mcp_metrics_series(s, w, &k, c, &other, (&read, None)), Err(MetricsError::Invalid { field: "dimensions", .. })));
+    two.measures
+        .push((MeasureId::McpErrorCount, Aggregation::Sum));
+    assert!(matches!(
+        mcp_metrics_series(s, w, &k, c, &two, (&read, None)),
+        Err(MetricsError::Invalid {
+            field: "measures",
+            ..
+        })
+    ));
+    let other = mcp_query(
+        MeasureId::McpCalls,
+        Aggregation::Sum,
+        vec![DimensionId::Level],
+    );
+    assert!(matches!(
+        mcp_metrics_series(s, w, &k, c, &other, (&read, None)),
+        Err(MetricsError::Invalid {
+            field: "dimensions",
+            ..
+        })
+    ));
     let mut filtered = query;
     filtered.filter = Filter::Name("x".to_owned());
-    assert!(matches!(mcp_metrics_series(s, w, &k, c, &filtered, (&read, None)), Err(MetricsError::Invalid { field: "filter", .. })));
+    assert!(matches!(
+        mcp_metrics_series(s, w, &k, c, &filtered, (&read, None)),
+        Err(MetricsError::Invalid {
+            field: "filter",
+            ..
+        })
+    ));
 }

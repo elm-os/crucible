@@ -8,13 +8,13 @@
 use crucible_auth::test_support::scope;
 use crucible_plan::{
     Aggregation, Caller, DimensionId, Fill, Filter, Granularity, Literal, McpContentField,
-    McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId,
-    MetricsQuery, PlanError, QueryPlan, RetentionClamp, Source, SourceChoice, Step,
-    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
-    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
-    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers,
-    mcp_operations, mcp_presence, mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients,
-    mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
+    McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId, MetricsQuery,
+    PlanError, QueryPlan, RetentionClamp, Source, SourceChoice, Step, mcp_client_versions,
+    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown, mcp_error_classes,
+    mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_operation,
+    mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_presence,
+    mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools,
+    mcp_user_errors, mcp_users,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, McpSide, ProjectId, ProjectScope, SpanId, TimeWindow, Timestamp,
@@ -43,7 +43,11 @@ fn live(plan: Result<Option<QueryPlan>, PlanError>) -> QueryPlan {
 
 fn rendered(plan: &QueryPlan) -> String {
     let statement = render::plan(plan).unwrap();
-    assert!(statement.sql.contains("WHERE project_id = {p"), "{}", statement.sql);
+    assert!(
+        statement.sql.contains("WHERE project_id = {p"),
+        "{}",
+        statement.sql
+    );
     statement.to_string()
 }
 
@@ -79,23 +83,54 @@ fn mcp_rollup_plans() {
     };
     insta::assert_snapshot!(
         "mcp_presence",
-        rendered(&live(mcp_presence(s, w, &c, caller, McpSide::Client, Some("files"))))
+        rendered(&live(mcp_presence(
+            s,
+            w,
+            &c,
+            caller,
+            McpSide::Client,
+            Some("files")
+        )))
     );
-    insta::assert_snapshot!("mcp_servers", rendered(&live(mcp_servers(s, w, &c, caller, &read))));
-    insta::assert_snapshot!("mcp_tools", rendered(&live(mcp_tools(s, w, &c, caller, &read))));
+    insta::assert_snapshot!(
+        "mcp_servers",
+        rendered(&live(mcp_servers(s, w, &c, caller, &read)))
+    );
+    insta::assert_snapshot!(
+        "mcp_tools",
+        rendered(&live(mcp_tools(s, w, &c, caller, &read)))
+    );
     insta::assert_snapshot!(
         "mcp_tool_series",
-        rendered(&live(mcp_tool_series(s, w, &c, caller, &files, "read_file", Step::Minute)))
+        rendered(&live(mcp_tool_series(
+            s,
+            w,
+            &c,
+            caller,
+            &files,
+            "read_file",
+            Step::Minute
+        )))
     );
     insta::assert_snapshot!(
         "mcp_tool_clients",
-        rendered(&live(mcp_tool_clients(s, w, &c, caller, &files, "read_file")))
+        rendered(&live(mcp_tool_clients(
+            s,
+            w,
+            &c,
+            caller,
+            &files,
+            "read_file"
+        )))
     );
     insta::assert_snapshot!(
         "mcp_error_classes",
         rendered(&live(mcp_error_classes(s, w, &c, caller, &read)))
     );
-    insta::assert_snapshot!("mcp_clients", rendered(&live(mcp_clients(s, w, &c, caller, &read))));
+    insta::assert_snapshot!(
+        "mcp_clients",
+        rendered(&live(mcp_clients(s, w, &c, caller, &read)))
+    );
     let deploys = ["v1".to_owned(), "v2".to_owned()];
     insta::assert_snapshot!(
         "mcp_compare_tools",
@@ -107,7 +142,14 @@ fn mcp_rollup_plans() {
     );
     insta::assert_snapshot!(
         "mcp_inventory",
-        rendered(&live(mcp_inventory(s, w, &c, caller, Some("files"), &deploys)))
+        rendered(&live(mcp_inventory(
+            s,
+            w,
+            &c,
+            caller,
+            Some("files"),
+            &deploys
+        )))
     );
 }
 
@@ -127,7 +169,10 @@ fn mcp_raw_plans() {
         "mcp_client_versions",
         rendered(&live(mcp_client_versions(s, w, &c, caller, &read, 50)))
     );
-    insta::assert_snapshot!("mcp_users", rendered(&live(mcp_users(s, w, &c, caller, &read, 50))));
+    insta::assert_snapshot!(
+        "mcp_users",
+        rendered(&live(mcp_users(s, w, &c, caller, &read, 50)))
+    );
     let users = [McpUserKey {
         user_id: "alice".to_owned(),
         subject_hash: [0xab; 16],
@@ -146,7 +191,14 @@ fn mcp_raw_plans() {
     );
     insta::assert_snapshot!(
         "mcp_session_errors",
-        rendered(&live(mcp_session_errors(s, w, &c, caller, &read, &["g1".to_owned()])))
+        rendered(&live(mcp_session_errors(
+            s,
+            w,
+            &c,
+            caller,
+            &read,
+            &["g1".to_owned()]
+        )))
     );
     let page = McpOperationsRequest {
         filter: McpOpsFilter::default(),
@@ -166,7 +218,10 @@ fn mcp_raw_plans() {
             user: Some("ab".repeat(16)),
             ..McpOpsFilter::default()
         },
-        cursor: Some((T0.saturating_add_micros(5_000_000), SpanId::from_bytes([3; 8]))),
+        cursor: Some((
+            T0.saturating_add_micros(5_000_000),
+            SpanId::from_bytes([3; 8]),
+        )),
         ..page
     };
     insta::assert_snapshot!(
@@ -181,7 +236,14 @@ fn mcp_operation_plans() {
     let (trace, span) = (TraceId::from_bytes([0xa1; 16]), SpanId::from_bytes([2; 8]));
     insta::assert_snapshot!(
         "mcp_operation",
-        rendered(&live(mcp_operation(s, w, &c, caller, McpSide::Server, (trace, span))))
+        rendered(&live(mcp_operation(
+            s,
+            w,
+            &c,
+            caller,
+            McpSide::Server,
+            (trace, span)
+        )))
     );
     insta::assert_snapshot!(
         "mcp_operation_content",
@@ -237,15 +299,27 @@ fn mcp_metrics_plans() {
     let errors = query(MeasureId::McpErrorCount, Aggregation::Sum);
     insta::assert_snapshot!(
         "mcp_metrics_ranking",
-        rendered(&mcp_metrics_ranking(s, w, &c, caller, &errors, &read).unwrap().unwrap())
+        rendered(
+            &mcp_metrics_ranking(s, w, &c, caller, &errors, &read)
+                .unwrap()
+                .unwrap()
+        )
     );
     insta::assert_snapshot!(
         "mcp_metrics_other",
-        rendered(&mcp_metrics_other(s, w, &c, caller, &errors, (&read, &keys)).unwrap().unwrap())
+        rendered(
+            &mcp_metrics_other(s, w, &c, caller, &errors, (&read, &keys))
+                .unwrap()
+                .unwrap()
+        )
     );
     let rate = query(MeasureId::McpErrorRate, Aggregation::Rate);
     insta::assert_snapshot!(
         "mcp_metrics_series_rate",
-        rendered(&mcp_metrics_series(s, w, &c, caller, &rate, (&read, Some(&keys))).unwrap().unwrap())
+        rendered(
+            &mcp_metrics_series(s, w, &c, caller, &rate, (&read, Some(&keys)))
+                .unwrap()
+                .unwrap()
+        )
     );
 }

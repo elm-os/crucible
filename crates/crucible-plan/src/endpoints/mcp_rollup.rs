@@ -135,7 +135,10 @@ pub fn mcp_tool_series(
         R::TABLE,
         and(parts),
         [R::ErrorClass, R::CallerFault],
-        vec![sum(R::Count), Measure::HistogramMerge(R::DurHist.column_ref())],
+        vec![
+            sum(R::Count),
+            Measure::HistogramMerge(R::DurHist.column_ref()),
+        ],
     )?;
     let series = TimeSeries::new(aggregate, R::Minute, step, Fill::None)?;
     clamp.plan(
@@ -247,7 +250,10 @@ pub fn mcp_compare_tools(
         caller,
         (read, extra),
         &[R::DeployId, R::TargetName],
-        vec![sum(R::Count), Measure::HistogramMerge(R::DurHist.column_ref())],
+        vec![
+            sum(R::Count),
+            Measure::HistogramMerge(R::DurHist.column_ref()),
+        ],
     )
 }
 

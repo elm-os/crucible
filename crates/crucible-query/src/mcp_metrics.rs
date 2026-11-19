@@ -10,7 +10,9 @@ use crucible_records::{ErrorClass, McpSide, TableId, TimeWindow, Timestamp};
 
 use crate::context::{QueryServiceError, ReadContext};
 use crate::mcp::McpQuery;
-use crate::metrics::{MetricValue, MetricsPoint, MetricsResult, MetricsSeries, by_key, measure_value};
+use crate::metrics::{
+    MetricValue, MetricsPoint, MetricsResult, MetricsSeries, by_key, measure_value,
+};
 use crate::service::QueryService;
 
 /// A metrics request over the `mcp_ops` source.
@@ -192,7 +194,13 @@ impl QueryService {
                 .saturating_mul(1_000_000),
         );
         let state = self.index.read_state(scope);
-        let meta = read.finish(read.now, consistency, state, &[TableId::McpToolRollup], false)?;
+        let meta = read.finish(
+            read.now,
+            consistency,
+            state,
+            &[TableId::McpToolRollup],
+            false,
+        )?;
         Ok(MetricsResult {
             step: shape.step,
             tier: Tier::Rollup,

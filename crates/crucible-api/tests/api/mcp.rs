@@ -4,7 +4,9 @@
 
 use axum::http::{Method, StatusCode};
 use crucible_plan::Value;
-use crucible_records::{CaptureSource, ErrorClass, GroupKeyKind, McpSide, TableId, Timestamp, TraceId};
+use crucible_records::{
+    CaptureSource, ErrorClass, GroupKeyKind, McpSide, TableId, Timestamp, TraceId,
+};
 use serde_json::json;
 
 use crate::store::stored_row;
@@ -133,16 +135,32 @@ fn servers_answer_with_the_capture_source_of_each() {
         insta::assert_snapshot!("mcp_servers", reply.pretty());
         let files = &reply.body["data"][0];
         assert_eq!(files["server_name"], "files");
-        assert_eq!(files["stats"]["calls"], 5, "the SDK's calls, without caller faults");
+        assert_eq!(
+            files["stats"]["calls"], 5,
+            "the SDK's calls, without caller faults"
+        );
         assert_eq!(files["stats"]["caller_faults"], 2);
         assert_eq!(files["version"], "1.0.0");
         assert_eq!(reply.body["capture_sources"][1]["chosen"], "sdk");
-        assert_eq!(reply.body["capture_sources"][1]["available"], json!(["sdk", "proxy"]));
+        assert_eq!(
+            reply.body["capture_sources"][1]["available"],
+            json!(["sdk", "proxy"])
+        );
 
-        let proxy = get(&api, &path(1, &format!("/mcp/servers?{}", params("&source=proxy")))).await;
+        let proxy = get(
+            &api,
+            &path(1, &format!("/mcp/servers?{}", params("&source=proxy"))),
+        )
+        .await;
         assert_eq!(proxy.body["data"][0]["stats"]["calls"], 9);
-        let faults =
-            get(&api, &path(1, &format!("/mcp/servers?{}", params("&include_caller_faults=true")))).await;
+        let faults = get(
+            &api,
+            &path(
+                1,
+                &format!("/mcp/servers?{}", params("&include_caller_faults=true")),
+            ),
+        )
+        .await;
         assert_eq!(faults.body["data"][0]["stats"]["calls"], 7);
     });
 }
@@ -156,21 +174,59 @@ fn every_route_refuses_bad_parameters_by_name() {
         let reply = get(&api, &path(1, &format!("/mcp/tools?{window}"))).await;
         reply.assert_problem(422, "validation_failed");
         assert_eq!(reply.field_errors(), [("/side", "required")]);
-        let reply = get(&api, &path(1, &format!("/mcp/tools?{window}&side=both&source=x"))).await;
-        assert_eq!(reply.field_errors(), [("/side", "invalid"), ("/source", "invalid")]);
-        let reply = get(&api, &path(1, &format!("/mcp/deploys?{}", params("&include_caller_faults=1")))).await;
-        assert_eq!(reply.field_errors(), [("/include_caller_faults", "invalid")]);
-        let reply = get(&api, &path(1, &format!("/mcp/users?{}", params("&cursor=x")))).await;
+        let reply = get(
+            &api,
+            &path(1, &format!("/mcp/tools?{window}&side=both&source=x")),
+        )
+        .await;
+        assert_eq!(
+            reply.field_errors(),
+            [("/side", "invalid"), ("/source", "invalid")]
+        );
+        let reply = get(
+            &api,
+            &path(
+                1,
+                &format!("/mcp/deploys?{}", params("&include_caller_faults=1")),
+            ),
+        )
+        .await;
+        assert_eq!(
+            reply.field_errors(),
+            [("/include_caller_faults", "invalid")]
+        );
+        let reply = get(
+            &api,
+            &path(1, &format!("/mcp/users?{}", params("&cursor=x"))),
+        )
+        .await;
         assert_eq!(reply.field_errors(), [("/cursor", "unknown_parameter")]);
-        let long = format!("side=server&from={}&to={}", NOW.saturating_add_micros(-31 * 1_440 * MINUTE), NOW);
+        let long = format!(
+            "side=server&from={}&to={}",
+            NOW.saturating_add_micros(-31 * 1_440 * MINUTE),
+            NOW
+        );
         let reply = get(&api, &path(1, &format!("/mcp/servers?{long}"))).await;
         reply.assert_problem(422, "query_too_broad");
         let reply = get(&api, &path(1, &format!("/mcp/compare?{}", params("")))).await;
-        assert_eq!(reply.field_errors(), [("/server", "required"), ("/baseline_deploy", "required")]);
-        let reply = get(&api, &path(1, &format!("/mcp/operations/{}/zz?{}", trace(), params("")))).await;
+        assert_eq!(
+            reply.field_errors(),
+            [("/server", "required"), ("/baseline_deploy", "required")]
+        );
+        let reply = get(
+            &api,
+            &path(1, &format!("/mcp/operations/{}/zz?{}", trace(), params(""))),
+        )
+        .await;
         assert_eq!(reply.field_errors(), [("/span_id", "invalid_id")]);
         // Another project's key cannot see the project.
-        let reply = send(&api, Method::GET, &path(1, &format!("/mcp/servers?{}", params(""))), Some(&other_key())).await;
+        let reply = send(
+            &api,
+            Method::GET,
+            &path(1, &format!("/mcp/servers?{}", params(""))),
+            Some(&other_key()),
+        )
+        .await;
         reply.assert_problem(404, "not_found");
     });
 }
@@ -186,12 +242,21 @@ fn tools_tool_detail_errors_and_clients() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| (t["tool_name"].as_str().unwrap(), t["unused"].as_bool().unwrap()))
+            .map(|t| {
+                (
+                    t["tool_name"].as_str().unwrap(),
+                    t["unused"].as_bool().unwrap(),
+                )
+            })
             .collect();
         assert_eq!(names, [("read", false), ("read", false), ("write", true)]);
         assert_eq!(tools.body["data"][2]["schema_hash"], "000000000000feed");
 
-        let tool = get(&api, &path(1, &format!("/mcp/tools/read?{}", params("&server=files")))).await;
+        let tool = get(
+            &api,
+            &path(1, &format!("/mcp/tools/read?{}", params("&server=files"))),
+        )
+        .await;
         assert_eq!(tool.status, StatusCode::OK, "{:#}", tool.body);
         assert_eq!(tool.body["granularity"], "minute");
         assert_eq!(tool.body["series"].as_array().unwrap().len(), 60);
@@ -199,15 +264,26 @@ fn tools_tool_detail_errors_and_clients() {
 
         let errors = get(&api, &path(1, &format!("/mcp/errors?{}", params("")))).await;
         assert_eq!(errors.body["view"], "summary");
-        assert_eq!(errors.body["classes"], json!([{"error_class": "timeout", "calls": 1}]));
-        let breakdown = get(&api, &path(1, &format!("/mcp/errors?{}", params("&view=breakdown")))).await;
+        assert_eq!(
+            errors.body["classes"],
+            json!([{"error_class": "timeout", "calls": 1}])
+        );
+        let breakdown = get(
+            &api,
+            &path(1, &format!("/mcp/errors?{}", params("&view=breakdown"))),
+        )
+        .await;
         assert_eq!(breakdown.body["view"], "breakdown");
         assert_eq!(breakdown.body["stats"], serde_json::Value::Null);
 
         let clients = get(&api, &path(1, &format!("/mcp/clients?{}", params("")))).await;
         assert_eq!(clients.body["self_reported"], true);
         assert_eq!(clients.body["data"][0]["client_name"], "agent");
-        let versions = get(&api, &path(1, &format!("/mcp/clients?{}", params("&view=breakdown")))).await;
+        let versions = get(
+            &api,
+            &path(1, &format!("/mcp/clients?{}", params("&view=breakdown"))),
+        )
+        .await;
         assert_eq!(versions.body["versions"][0]["client_version"], "2.0");
         assert_eq!(versions.body["versions"][0]["calls"], 2);
     });
@@ -221,14 +297,24 @@ fn users_sessions_deploys_and_compare() {
         let users = get(&api, &path(1, &format!("/mcp/users?{}", params("")))).await;
         assert_eq!(users.body["data"][0]["user_id"], "alice");
         assert_eq!(users.body["data"][0]["calls"], 2);
-        let sessions = get(&api, &path(1, &format!("/mcp/sessions?{}", params("&limit=1")))).await;
+        let sessions = get(
+            &api,
+            &path(1, &format!("/mcp/sessions?{}", params("&limit=1"))),
+        )
+        .await;
         assert_eq!(sessions.body["data"][0]["group_key"], "g1");
         assert_eq!(sessions.body["data"][0]["group_key_kind"], "trace");
         let deploys = get(&api, &path(1, &format!("/mcp/deploys?{}", params("")))).await;
         assert_eq!(deploys.body["data"][0]["deploy_id"], "v1");
         let compare = get(
             &api,
-            &path(1, &format!("/mcp/compare?{}", params("&server=files&baseline_deploy=v0&candidate_deploy=v1"))),
+            &path(
+                1,
+                &format!(
+                    "/mcp/compare?{}",
+                    params("&server=files&baseline_deploy=v0&candidate_deploy=v1")
+                ),
+            ),
         )
         .await;
         assert_eq!(compare.status, StatusCode::OK, "{:#}", compare.body);
@@ -243,27 +329,68 @@ fn the_operation_list_pages_with_a_bound_cursor_and_one_operation_reads_whole() 
     run(|env| async move {
         let world = world();
         let api = api(&env, &world);
-        let first = get(&api, &path(1, &format!("/mcp/operations?{}", params("&limit=1")))).await;
+        let first = get(
+            &api,
+            &path(1, &format!("/mcp/operations?{}", params("&limit=1"))),
+        )
+        .await;
         assert_eq!(first.status, StatusCode::OK, "{:#}", first.body);
         assert_eq!(first.body["data"][0]["span_id"], "0000000000000002");
         assert_eq!(first.body["has_more"], true);
         let cursor = first.body["next_cursor"].as_str().unwrap().to_owned();
-        let second = get(&api, &path(1, &format!("/mcp/operations?{}", params(&format!("&limit=1&cursor={cursor}"))))).await;
+        let second = get(
+            &api,
+            &path(
+                1,
+                &format!(
+                    "/mcp/operations?{}",
+                    params(&format!("&limit=1&cursor={cursor}"))
+                ),
+            ),
+        )
+        .await;
         assert_eq!(second.body["data"][0]["span_id"], "0000000000000001");
         // The cursor is bound to its filters.
         let moved = get(
             &api,
-            &path(1, &format!("/mcp/operations?{}", params(&format!("&limit=1&target=x&cursor={cursor}")))),
+            &path(
+                1,
+                &format!(
+                    "/mcp/operations?{}",
+                    params(&format!("&limit=1&target=x&cursor={cursor}"))
+                ),
+            ),
         )
         .await;
         moved.assert_problem(400, "cursor_invalid");
 
-        let one = get(&api, &path(1, &format!("/mcp/operations/{}/0000000000000001?{}", trace(), params("")))).await;
+        let one = get(
+            &api,
+            &path(
+                1,
+                &format!(
+                    "/mcp/operations/{}/0000000000000001?{}",
+                    trace(),
+                    params("")
+                ),
+            ),
+        )
+        .await;
         assert_eq!(one.status, StatusCode::OK, "{:#}", one.body);
         insta::assert_snapshot!("mcp_operation", one.pretty());
         assert_eq!(one.body["operation"]["operation"]["client_version"], "2.0");
-        let missing =
-            get(&api, &path(1, &format!("/mcp/operations/{}/00000000000000ff?{}", trace(), params("")))).await;
+        let missing = get(
+            &api,
+            &path(
+                1,
+                &format!(
+                    "/mcp/operations/{}/00000000000000ff?{}",
+                    trace(),
+                    params("")
+                ),
+            ),
+        )
+        .await;
         missing.assert_problem(404, "not_found");
     });
 }
@@ -291,14 +418,23 @@ fn the_metrics_query_reads_the_mcp_ops_source_with_a_side() {
         let missing = post(&api, &path(1, "/metrics/query"), &body(json!({})), &[]).await;
         missing.assert_problem(422, "validation_failed");
         assert_eq!(missing.field_errors(), [("/side", "required")]);
-        let reply = post(&api, &path(1, "/metrics/query"), &body(json!({"side": "server"})), &[]).await;
+        let reply = post(
+            &api,
+            &path(1, "/metrics/query"),
+            &body(json!({"side": "server"})),
+            &[],
+        )
+        .await;
         assert_eq!(reply.status, StatusCode::OK, "{:#}", reply.body);
         let points: Vec<(String, f64)> = reply.body["series"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| {
-                (s["key"][0]["value"].as_str().unwrap().to_owned(), s["points"][0]["value"].as_f64().unwrap())
+                (
+                    s["key"][0]["value"].as_str().unwrap().to_owned(),
+                    s["points"][0]["value"].as_f64().unwrap(),
+                )
             })
             .collect();
         assert_eq!(points, [("files".to_owned(), 5.0), ("db".to_owned(), 1.0)]);

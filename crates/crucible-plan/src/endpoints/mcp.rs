@@ -294,7 +294,10 @@ pub fn mcp_presence(
     let aggregate = Aggregate::new(
         McpToolRollupCol::TABLE,
         and(parts),
-        [McpToolRollupCol::ServerName, McpToolRollupCol::CaptureSource],
+        [
+            McpToolRollupCol::ServerName,
+            McpToolRollupCol::CaptureSource,
+        ],
         vec![
             Measure::Sum(McpToolRollupCol::Count.column_ref()),
             Measure::Max(McpToolRollupCol::LastSeen.column_ref()),

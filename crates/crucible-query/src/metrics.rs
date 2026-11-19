@@ -140,7 +140,10 @@ pub(crate) type Buckets = Vec<(Timestamp, Vec<Value>)>;
 pub(crate) type Keyed = Vec<(Vec<Arc<str>>, Buckets)>;
 
 /// Splits the rows of a series plan into the buckets of each dimension key, in the order the keys first appear.
-pub(crate) fn by_key(rows: Vec<Row>, dimensions: &[DimensionId]) -> Result<Keyed, QueryServiceError> {
+pub(crate) fn by_key(
+    rows: Vec<Row>,
+    dimensions: &[DimensionId],
+) -> Result<Keyed, QueryServiceError> {
     let mut keys: Vec<Vec<Arc<str>>> = Vec::new();
     let mut buckets: BTreeMap<usize, Buckets> = BTreeMap::new();
     for row in rows {

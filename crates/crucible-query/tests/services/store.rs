@@ -190,9 +190,7 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
         | TableId::TraceHeads
         | TableId::SpanPayload
         | TableId::McpOps
-        | TableId::McpContent => {
-            window.contains(time("start_time"))
-        }
+        | TableId::McpContent => window.contains(time("start_time")),
         TableId::SpanMetrics | TableId::McpToolRollup => window.contains(time("minute")),
         // Their time columns are aggregated: the window applies to each group (`group_in_window`).
         TableId::McpDeploys | TableId::McpToolInventory => true,

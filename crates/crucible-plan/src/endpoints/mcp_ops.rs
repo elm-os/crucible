@@ -45,7 +45,11 @@ fn ops_conditions(read: &McpRead<'_>) -> Result<Option<Vec<Pred>>, PlanError> {
 }
 
 fn errors() -> Pred {
-    Pred::cmp(O::ErrorClass, CmpOp::Ne, Literal::Enum(ErrorClass::None.value()))
+    Pred::cmp(
+        O::ErrorClass,
+        CmpOp::Ne,
+        Literal::Enum(ErrorClass::None.value()),
+    )
 }
 
 fn check_limit(limit: u32) -> Result<(), PlanError> {
@@ -178,7 +182,11 @@ pub fn mcp_users(
     };
     parts.push(Pred::Or(vec![
         Pred::cmp(O::UserId, CmpOp::Ne, ""),
-        Pred::cmp(O::UserSubjectHash, CmpOp::Ne, Literal::Bytes(ZERO_16.to_vec())),
+        Pred::cmp(
+            O::UserSubjectHash,
+            CmpOp::Ne,
+            Literal::Bytes(ZERO_16.to_vec()),
+        ),
     ]));
     let aggregate = Aggregate::new(
         O::TABLE,

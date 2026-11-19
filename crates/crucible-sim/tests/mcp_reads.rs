@@ -10,6 +10,11 @@ use crucible_sim::mcp_reads::{run_many, run_mcp_reads};
 #[test]
 fn every_read_matches_the_reference_per_capture_source() {
     let failed = run_many(0, 64);
+    // The never-summed check means something only when calls were captured twice.
+    let doubled: usize = (0..64)
+        .map(|seed| run_mcp_reads(seed).double_captured)
+        .sum();
+    assert!(doubled > 64, "{doubled}");
     assert!(failed.is_empty(), "{failed:#?}");
 }
 

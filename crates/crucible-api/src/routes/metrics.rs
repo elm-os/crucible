@@ -14,8 +14,8 @@ use crucible_api_types::{
 };
 use crucible_plan::{
     Aggregation, CaptureClass, DimensionId, Fill, Filter, FilterField, Granularity, MeasureId,
-    MetricsError, SourceChoice,
-    MetricsQuery, Source, SourceSchema, Step, metrics_schema, metrics_shape,
+    MetricsError, MetricsQuery, Source, SourceChoice, SourceSchema, Step, metrics_schema,
+    metrics_shape,
 };
 use crucible_query::{McpMetricsRequest, MetricValue, MetricsRequest};
 use crucible_records::{Level, McpSide, ObservationType, TimeWindow, Timestamp};
@@ -291,7 +291,8 @@ fn mcp_options(
         || request.include_caller_faults.is_some();
     if source != Source::McpOps {
         if given {
-            let message = "side, capture_source and include_caller_faults apply to the mcp_ops source only";
+            let message =
+                "side, capture_source and include_caller_faults apply to the mcp_ops source only";
             return Err(ApiError::validation(
                 rid,
                 vec![field_error("side", "invalid", message)],
@@ -374,7 +375,11 @@ pub(crate) async fn query_metrics(
             };
             service.mcp_metrics(&project.ctx, request).await
         }
-        None => service.metrics(&project.ctx, MetricsRequest { window, query }).await,
+        None => {
+            service
+                .metrics(&project.ctx, MetricsRequest { window, query })
+                .await
+        }
     };
     let result = result.map_err(|e| ApiError::query(rid, &e))?;
     let mut s = Saturation::default();

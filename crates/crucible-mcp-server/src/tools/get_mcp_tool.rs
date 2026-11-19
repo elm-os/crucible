@@ -131,7 +131,11 @@ impl Tool for GetMcpTool {
     async fn call(call: &Call<'_>, args: Args) -> Result<Output, ToolError> {
         let mut check = Check::default();
         if args.name.is_empty() {
-            check.error("name", "required", "give the tool's name, as list_mcp_tools lists it");
+            check.error(
+                "name",
+                "required",
+                "give the tool's name, as list_mcp_tools lists it",
+            );
         }
         let checked = Common {
             side: &args.side,

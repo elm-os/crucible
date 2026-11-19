@@ -40,7 +40,10 @@ pub(super) fn routes() -> Router<ApiState> {
         .route(&at("deploys"), get(list_mcp_deploys))
         .route(&at("errors"), get(get_mcp_errors))
         .route(&at("operations"), get(list_mcp_operations))
-        .route(&at("operations/{trace_id}/{span_id}"), get(get_mcp_operation))
+        .route(
+            &at("operations/{trace_id}/{span_id}"),
+            get(get_mcp_operation),
+        )
         .route(&at("servers"), get(list_mcp_servers))
         .route(&at("sessions"), get(list_mcp_sessions))
         .route(&at("tools"), get(list_mcp_tools))
@@ -490,7 +493,9 @@ pub(crate) async fn get_mcp_errors(
     let service = state.service(rid)?;
     let mut s = Saturation::default();
     if breakdown {
-        let found = service.mcp_error_breakdown(&project.ctx, &query, limit).await;
+        let found = service
+            .mcp_error_breakdown(&project.ctx, &query, limit)
+            .await;
         let found = found.map_err(|e| ApiError::query(rid, &e))?;
         let groups = found
             .groups
@@ -579,7 +584,9 @@ pub(crate) async fn get_mcp_clients(
     let service = state.service(rid)?;
     let mut s = Saturation::default();
     if breakdown {
-        let found = service.mcp_client_versions(&project.ctx, &query, limit).await;
+        let found = service
+            .mcp_client_versions(&project.ctx, &query, limit)
+            .await;
         let found = found.map_err(|e| ApiError::query(rid, &e))?;
         let versions = found
             .versions

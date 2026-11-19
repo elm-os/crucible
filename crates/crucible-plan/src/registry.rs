@@ -293,9 +293,11 @@ impl MeasureId {
     /// (microseconds) or `ppm` (parts per million).
     pub const fn unit(self) -> &'static str {
         match self {
-            Self::Count | Self::ErrorCount | Self::Traces | Self::McpCalls | Self::McpErrorCount => {
-                "count"
-            }
+            Self::Count
+            | Self::ErrorCount
+            | Self::Traces
+            | Self::McpCalls
+            | Self::McpErrorCount => "count",
             Self::InputTokens | Self::OutputTokens | Self::TotalTokens => "tokens",
             Self::TotalCost => "nusd",
             Self::Duration

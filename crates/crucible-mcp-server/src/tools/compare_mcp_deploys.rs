@@ -83,10 +83,15 @@ impl Tool for CompareMcpDeploys {
     async fn call(call: &Call<'_>, args: Args) -> Result<Output, ToolError> {
         let mut check = Check::default();
         if args.server.is_empty() {
-            check.error("server", "required", "give the server whose deploys to compare");
+            check.error(
+                "server",
+                "required",
+                "give the server whose deploys to compare",
+            );
         }
         if args.baseline_deploy == args.candidate_deploy {
-            let message = "give two different deploys; an empty id is the deploy of unknown version";
+            let message =
+                "give two different deploys; an empty id is the deploy of unknown version";
             check.error("candidate_deploy", "invalid", message);
         }
         let checked = Common {

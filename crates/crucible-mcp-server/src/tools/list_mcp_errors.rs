@@ -134,7 +134,10 @@ impl Tool for ListMcpErrors {
         let mut s = Saturation::default();
         if args.breakdown.unwrap_or(false) {
             let limit = MAX_GROUPS.min(MCP_LIST_MAX_LIMIT);
-            let found = call.service.mcp_error_breakdown(&call.ctx, &query, limit).await;
+            let found = call
+                .service
+                .mcp_error_breakdown(&call.ctx, &query, limit)
+                .await;
             let found = found.map_err(|e| ToolError::query(&e, call.request_id))?;
             let rows: Vec<GroupRow> = found
                 .groups
@@ -153,7 +156,9 @@ impl Tool for ListMcpErrors {
                 .collect();
             return Ok(fit(
                 rows,
-                |row| row.error_message = truncate_str(&row.error_message, LIGHT_MESSAGE).to_owned(),
+                |row| {
+                    row.error_message = truncate_str(&row.error_message, LIGHT_MESSAGE).to_owned()
+                },
                 |prefix, cut| Output {
                     stats: None,
                     classes: Vec::new(),
