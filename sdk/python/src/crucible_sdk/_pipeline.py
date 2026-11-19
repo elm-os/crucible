@@ -35,6 +35,8 @@ logger = logging.getLogger("crucible_sdk")
 
 DEFAULT_ENDPOINT = "http://localhost:4318"
 BATCH_SIZE = 512
+# The proxy's telemetry buffer size (contract 9.10).
+QUEUE_BYTES = 8 << 20
 EXPORT_TIMEOUT = 10.0
 
 SCRUBBER = Scrubber.builtin()
@@ -99,6 +101,8 @@ class Config:
     flush_interval: float
     batch_size: int = BATCH_SIZE
     export_timeout: float = EXPORT_TIMEOUT
+    queue_bytes: int = QUEUE_BYTES
+    """Estimated bytes of the queued spans and the batch being exported (see `span_bytes`) held before dropping."""
 
 
 def _exporter(config: Config) -> SpanExporter:
@@ -137,7 +141,7 @@ class Pipeline:
         with self._cond:
             if self._stopping:
                 return
-            if len(self._queue) >= self.config.queue_size:
+            if len(self._queue) >= self.config.queue_size or self._queued_bytes + size > self.config.queue_bytes:
                 self._dropped += 1
                 first_drop = self._dropped == 1
             else:
@@ -149,9 +153,10 @@ class Pipeline:
                 return
         if first_drop:
             logger.warning(
-                "crucible_sdk: the export queue is full (queue_size=%d), so spans are being dropped; raise "
-                "queue_size in crucible_sdk.init() or check that %s accepts spans",
+                "crucible_sdk: the export queue is full (queue_size=%d spans, queue_bytes=%d bytes), so spans are "
+                "being dropped; raise queue_size or queue_bytes in crucible_sdk.init() or check that %s accepts spans",
                 self.config.queue_size,
+                self.config.queue_bytes,
                 self.config.endpoint,
             )
 

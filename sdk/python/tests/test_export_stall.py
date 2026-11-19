@@ -35,7 +35,7 @@ async def test_a_collector_that_never_answers_keeps_the_queue_under_its_byte_cei
     assert scenario["schema"] == "crucible.conformance.export-stall/v1"
     assert scenario["calls"] < scenario["queue_spans"]
     prose: str = load("capture-overhead.json")["fills"]["prose"]
-    text = (prose * (scenario["result_bytes"] // len(prose) + 1))[: scenario["result_bytes"]]
+    text: str = (prose * (scenario["result_bytes"] // len(prose) + 1))[: scenario["result_bytes"]]
     server = MCPServer("export-stall", version="1.0.0")
 
     @server.tool(name=scenario["tool"])
