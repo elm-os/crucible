@@ -272,6 +272,8 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use std::net::SocketAddr;
     use std::path::Path;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
     use clap::CommandFactory;
     use crucible_config::{Layers, resolve};
@@ -512,5 +514,45 @@ mod tests {
             Command::Openapi
         ));
         assert!(Cli::try_parse_from(["crucible", "openapi", "--yaml"]).is_err());
+    }
+
+    /// The most blocking jobs `runtime` runs at once, out of `jobs` jobs that each hold their thread until all of
+    /// them run or 50 ms pass.
+    fn blocking_at_once(runtime: &tokio::runtime::Runtime, jobs: usize) -> usize {
+        let state = Arc::new((Mutex::new((0usize, 0usize)), Condvar::new()));
+        runtime.block_on(async {
+            let handles: Vec<_> = (0..jobs)
+                .map(|_| {
+                    let state = Arc::clone(&state);
+                    runtime.spawn_blocking(move || {
+                        let (lock, changed) = &*state;
+                        let mut counts = lock.lock().unwrap();
+                        counts.0 += 1;
+                        counts.1 = counts.1.max(counts.0);
+                        changed.notify_all();
+                        let mut counts = changed
+                            .wait_timeout_while(counts, Duration::from_millis(50), |c| c.0 < jobs)
+                            .unwrap()
+                            .0;
+                        counts.0 -= 1;
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.await.unwrap();
+            }
+        });
+        let most = state.0.lock().unwrap().1;
+        most
+    }
+
+    #[test]
+    fn the_server_runtime_caps_its_blocking_threads() {
+        // Two permits and a reserve of eight threads: at most ten blocking jobs at once, out of 64 that could run.
+        let at_once = blocking_at_once(&runtime().unwrap(), 64);
+        assert!(
+            at_once <= 10,
+            "{at_once} blocking jobs ran at once, above the ceiling of 10"
+        );
     }
 }
