@@ -498,7 +498,8 @@ impl Inner {
             min_start,
         } = job;
         let decoded = if gzip {
-            let plain = body::inflate(&wire, wire.len() as u64, &mut held)?;
+            let base = wire.len() as u64;
+            let plain = body::inflate(&wire, |bytes| held.grow_to(base + bytes))?;
             drop(wire);
             held.set(plain.len() as u64)?;
             plain
