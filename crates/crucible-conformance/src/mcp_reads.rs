@@ -8,12 +8,14 @@
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_plan::{
-    Caller, CaptureClass, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead,
-    McpSelection, McpUserKey, QueryPlan, RetentionClamp, Row, SourceChoice, Step, Value,
-    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
-    mcp_error_classes, mcp_inventory, mcp_operation, mcp_operation_chain, mcp_operation_content,
-    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
-    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
+    Aggregation, Caller, CaptureClass, DimensionId, Fill, Filter, Granularity, McpContentField,
+    McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId, MetricsQuery,
+    QueryPlan, RetentionClamp, Row, Source, SourceChoice, Step, Value, mcp_client_versions,
+    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown, mcp_error_classes,
+    mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_operation,
+    mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_presence,
+    mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools,
+    mcp_user_errors, mcp_users,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, GroupKeyKind, McpSide, ProjectScope, SpanId, TableId, TimeWindow,
@@ -675,6 +677,45 @@ pub(crate) async fn mcp_reads(ctx: &Ctx) -> Result<String> {
             format!("the chain {when} the merge: {chain:?}")
         })?;
         plans += 14;
+
+        // The mcp_ops metrics source: the calls per server, ranked, the series of the first and the rest, and
+        // the error rate, split by error class.
+        let metrics = |measure: MeasureId, aggregation: Aggregation| MetricsQuery {
+            source: Source::McpOps,
+            measures: vec![(measure, aggregation)],
+            dimensions: vec![DimensionId::McpServer],
+            filter: Filter::all(),
+            granularity: Granularity::Step(Step::Hour),
+            fill: Fill::Zero,
+            top_n: Some(1),
+        };
+        let calls = metrics(MeasureId::McpCalls, Aggregation::Sum);
+        let ranking = mcp_metrics_ranking(scope, window, &clamp, caller, &calls, &read);
+        let ranked = rows(ctx, live_metrics(ranking)?).await?;
+        expect(
+            ranked.first().map(|r| r.values().to_vec())
+                == Some(vec![Value::String("files".to_owned()), Value::UInt(10)]),
+            || format!("the metrics ranking {when} the merge: {ranked:?}"),
+        )?;
+        let keys = [vec![crucible_plan::Literal::String("files".to_owned())]];
+        let series =
+            mcp_metrics_series(scope, window, &clamp, caller, &calls, (&read, Some(&keys)));
+        let series = rows(ctx, live_metrics(series)?).await?;
+        expect(sum_of(&series, 2) == 10, || {
+            format!("the metrics series {when} the merge: {series:?}")
+        })?;
+        let other = mcp_metrics_other(scope, window, &clamp, caller, &calls, (&read, &keys));
+        let other = rows(ctx, live_metrics(other)?).await?;
+        expect(sum_of(&other, 1) == 3, || {
+            format!("the other series {when} the merge: {other:?}")
+        })?;
+        let rate = metrics(MeasureId::McpErrorRate, Aggregation::Rate);
+        let rate = mcp_metrics_series(scope, window, &clamp, caller, &rate, (&read, Some(&keys)));
+        let rate = rows(ctx, live_metrics(rate)?).await?;
+        expect(sum_of(&rate, 3) == 10, || {
+            format!("the error rate series {when} the merge: {rate:?}")
+        })?;
+        plans += 4;
     }
     let violations = ctx.model.violations();
     expect(violations.is_empty(), || {
@@ -683,8 +724,14 @@ pub(crate) async fn mcp_reads(ctx: &Ctx) -> Result<String> {
     Ok(format!(
         "{plans} plans of the MCP analytics builders (presence, servers, tools, one tool, error classes and \
          breakdown, clients and versions, users, sessions, operations, one operation with its content, other \
-         side and chain, deploys, inventory, compare) returned the same rows on the server and on the store \
+         side and chain, deploys, inventory, compare, and the mcp_ops metrics ranking, series, other series and \
+         error rate) returned the same rows on the server and on the store \
          model, before and after the model merged its parts, with the SDK's rows of a doubly captured server \
          read and the proxy's never added in"
     ))
+}
+
+fn live_metrics(plan: Result<Option<QueryPlan>, crucible_plan::MetricsError>) -> Result<QueryPlan> {
+    plan.map_err(|e| anyhow!("{e}"))?
+        .context("the builder returned no plan")
 }

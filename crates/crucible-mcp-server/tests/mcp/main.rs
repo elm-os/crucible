@@ -13,6 +13,7 @@ mod store;
 #[path = "../../../crucible-query/tests/services/world.rs"]
 mod world;
 
+mod analytics;
 mod auth;
 mod caps;
 mod eras;
