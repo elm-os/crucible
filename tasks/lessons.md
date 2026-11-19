@@ -35,3 +35,8 @@ Rules learned from corrections and surprises. Read at the start of each session.
     value assignments of one plan shape, but the plan keeps filter values as a set, so two equal draws shortened an
     `IN` list and main went red at random. Make a list's values distinct by construction (the second extends the
     first), and check in CI's `cc` line as a `.proptest-regressions` file so the failing case replays first.
+13. **Delete a track's build volume when the track ends.** Per-track cargo target volumes (10 to 77 GB each, with
+    incremental builds and full debug info) grew Docker's WSL disk image to 558 GB and filled C:, which hung Docker
+    and truncated a file in a worktree. Use one volume per track, `CARGO_INCREMENTAL=0` and `line-tables-only` debug
+    info, remove the volume on merge, and watch free space. Freeing space inside Docker does not shrink the image;
+    only an elevated `compact vdisk` does.

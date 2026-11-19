@@ -129,6 +129,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
+| `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-proxy` | `crucible-env`, `crucible-records` |
 | `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
 | `crucible-sdk` | none (it depends on no internal crate) |
@@ -2420,8 +2421,10 @@ Leader-only work is coordinated by lease rows, never by session advisory locks.
 | Local validity | The holder treats its lease as valid only until its local acquire or renew time plus TTL minus 2 s |
 | Fencing | Every leader write to Postgres is a compare-and-set that fails if the lease's `fencing_token` has changed. Leader actions on ClickHouse are idempotent and are recorded in Postgres under the token before they are issued |
 | Lease names | `migrations`, `lifecycle` (retention, deletion leader steps, mask scheduler, marker purge, rollup rebuild), `sql_identities`, `media_gc`, `signing_keys`, `housekeeping` |
-| Claimed work | Alert evaluations, the notification outbox, deletion steps and export jobs use row claims with `lease_until` and an attempt counter, not leases |
-| Shutdown | Leader jobs release their leases; claimed rows simply expire |
+| Claimed work | Alert evaluations, the notification outbox, deletion steps and export jobs use row claims with `lease_until` and an attempt counter, not leases. A claim lasts 60 s; a failed run is retried after a backoff of 5 s doubling to 1 h (less up to a tenth of jitter), computed on the database clock from the claim's `lease_until`; after 12 attempts (a per-queue default) the row is parked (`status = parked`, `Claims::park`) and logged, never deleted. Handlers are idempotent |
+| Job state | A job's cursor (`job_cursors`) is keyed by its lease name, so jobs that share a lease (for example under `lifecycle`) share one cursor. `crucible-jobs` holds the registry: per-node timers, leader jobs under a lease name and claimed-work consumers, each added by one registration line (`docs/architecture/adding-a-job.md`). Without Postgres, leader and claimed jobs do not run; this is logged once and readiness is unaffected |
+| Housekeeping | The `housekeeping` lease job runs every 60 s and prunes `key_feed` rows older than the poll overlap window plus the reconcile interval (75 s) and `sessions` rows more than 10 min past their absolute expiry, each in its own fenced transaction |
+| Shutdown | A leader run in flight may finish within 5 s, then its lease is released; a run that has to be cut leaves its lease to expire, because one of its actions may still be on its way; an acquisition in flight at shutdown is awaited briefly and released. Claimed rows simply expire |
 
 ### 11.8 Key feed and revocation
 
@@ -2919,3 +2922,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Changes behaviour (I7 fix): stage B holds only what the retained prefix holds, evicting by last sighting and forgetting after each collection; admissions record `relies_on` and garbage collection keeps those frames; a failed collection pauses admission until one succeeds (3.1, 4.6, 4.7, 5.3) |
 | v2 | 2026-11-18 | Settled in code by the dialect contract's implementation: the usage descendant set evicts and forgets by support (the LSN of the frame carrying the usage), and the 3.1 known limit covers a descendant whose frame the WAL collected (3.1, 5.3) |
 | v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
+| v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
