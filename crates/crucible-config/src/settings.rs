@@ -95,6 +95,16 @@ pub const SETTINGS: &[Setting] = &[
         "bound on the memory of the recent-span index, in bytes (default: 10% of RAM, at most 1 GiB)",
     ),
     plain(
+        "mcp.calls_per_second",
+        Some("50"),
+        "MCP tool calls one key may make per second, sustained; 0 turns the limit off",
+    ),
+    plain(
+        "mcp.burst",
+        Some("200"),
+        "MCP tool calls one key may make at once after a quiet spell",
+    ),
+    plain(
         "clickhouse.url",
         None,
         "HTTP endpoint of the ClickHouse telemetry store; without it the server only ingests",

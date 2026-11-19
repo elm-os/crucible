@@ -542,6 +542,37 @@ impl Api {
                 .any(|item| item["trace_id"] == trace.trace_id.as_str())
         })
     }
+
+    /// One `tools/call` at `/mcp` in the stateless protocol era, which answers with plain JSON: the tool result.
+    fn mcp(&self, tool: &str, arguments: Value) -> Value {
+        const VERSION: &str = "2026-07-28";
+        let meta = json!({
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { "name": "crucible-e2e", "version": "1" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        let params = json!({ "name": tool, "arguments": arguments, "_meta": meta });
+        let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params });
+        let headers = [
+            ("authorization", self.bearer.as_str()),
+            ("content-type", "application/json"),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-protocol-version", VERSION),
+            ("mcp-method", "tools/call"),
+            ("mcp-name", tool),
+        ];
+        let (status, body) = http(
+            self.addr,
+            "POST",
+            "/mcp",
+            &headers,
+            call.to_string().as_bytes(),
+        )
+        .unwrap_or_else(|e| panic!("POST /mcp {tool}: {e}"));
+        let reply: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        assert_eq!(status, 200, "{tool}: {reply}");
+        reply["result"].clone()
+    }
 }
 
 /// How a trace is sent.
@@ -931,6 +962,21 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
             assert_eq!(meta["consistency"], "strong", "{meta}");
         }
     }
+    // The MCP server reads the same trace through `tools/call`, with the previews of the store, for its own
+    // project only.
+    let trace_id = json!({ "trace_id": protobuf.trace_id });
+    let result = api(&server).mcp("get_trace", trace_id.clone());
+    assert_eq!(result["isError"], false, "{result}");
+    let spans = &result["structuredContent"]["spans"];
+    assert_eq!(spans[0]["span_id"], protobuf.root_id.as_str(), "{result}");
+    assert_eq!(spans[1]["status_code"], "error", "{result}");
+    assert!(spans[0]["input_preview"].is_string(), "{result}");
+    // Not found, or an empty trace that says it may lag, like the REST read of step 2.
+    let foreign = other.mcp("get_trace", trace_id);
+    let text = foreign["content"][0]["text"].as_str().unwrap_or_default();
+    let hidden = text.contains("\"code\":\"not_found\"")
+        || foreign["structuredContent"]["spans"] == json!([]);
+    assert!(hidden, "{foreign}");
 
     // 4. Stop the server in the middle of a run, three times at different points, each followed by a restart
     // on the same data directory: kill -9 twice, then SIGTERM under load, which must exit cleanly. Everything

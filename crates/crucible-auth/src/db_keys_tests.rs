@@ -116,6 +116,24 @@ fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
             Some(rows[0].id)
         );
         assert_eq!(keys.verify(&b.secret), None);
+        // The MCP server's reads take keys with the read scope instead, by secret and by pair.
+        let keys = Arc::new(keys);
+        let reads = keys.with_scope(KeyScope::Read);
+        assert_eq!(
+            reads.verify(&b.secret).map(|p| p.api_key_id),
+            Some(rows[1].id)
+        );
+        assert_eq!(reads.verify(&a.secret), None);
+        assert_eq!(
+            reads
+                .verify_pair(&b.public_key, &b.secret)
+                .map(|p| p.api_key_id),
+            Ok(rows[1].id)
+        );
+        assert_eq!(
+            crate::authenticate(&reads, &basic(&a.public_key, &a.secret)),
+            Err(crate::Refusal::UnknownSecret)
+        );
     });
 }
 

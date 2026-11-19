@@ -463,18 +463,29 @@ impl DbKeys {
     }
 }
 
-/// The verifier of ingest and the compat routes: only keys with the `ingest` scope pass (contract 11.3). The API
-/// checks each route's own permission through [`DbKeys::check_secret`] and [`DbKeys::check_pair`] instead.
-impl KeyVerifier for DbKeys {
-    fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
+impl DbKeys {
+    /// This snapshot as the verifier of a caller that needs `scope`, such as the MCP server's reads.
+    pub fn with_scope(self: &Arc<Self>, scope: KeyScope) -> ScopedKeys {
+        ScopedKeys {
+            keys: Arc::clone(self),
+            scope,
+        }
+    }
+
+    fn verify_scoped(&self, secret: &str, scope: KeyScope) -> Option<KeyPrincipal> {
         match self.check_secret(secret) {
-            KeyVerdict::Valid(grant) if grant.scopes.has(KeyScope::Ingest) => Some(grant.principal),
+            KeyVerdict::Valid(grant) if grant.scopes.has(scope) => Some(grant.principal),
             KeyVerdict::Valid(_) | KeyVerdict::Invalid | KeyVerdict::Unavailable { .. } => None,
         }
     }
 
-    fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError> {
-        let principal = self.verify(secret).ok_or(PairError::Secret)?;
+    fn verify_pair_scoped(
+        &self,
+        public: &str,
+        secret: &str,
+        scope: KeyScope,
+    ) -> Result<KeyPrincipal, PairError> {
+        let principal = self.verify_scoped(secret, scope).ok_or(PairError::Secret)?;
         let ours = self
             .current()
             .and_then(|snapshot| snapshot.by_id.get(&principal.api_key_id).cloned())
@@ -486,11 +497,48 @@ impl KeyVerifier for DbKeys {
         }
     }
 
-    fn retry_after(&self, secret: &str) -> Option<Duration> {
+    fn undecided(&self, secret: &str) -> Option<Duration> {
         match self.check_secret(secret) {
             KeyVerdict::Unavailable { retry_after } => Some(retry_after),
             KeyVerdict::Valid(_) | KeyVerdict::Invalid => None,
         }
+    }
+}
+
+/// The verifier of ingest and the compat routes: only keys with the `ingest` scope pass (contract 11.3). The API
+/// checks each route's own permission through [`DbKeys::check_secret`] and [`DbKeys::check_pair`] instead.
+impl KeyVerifier for DbKeys {
+    fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
+        self.verify_scoped(secret, KeyScope::Ingest)
+    }
+
+    fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError> {
+        self.verify_pair_scoped(public, secret, KeyScope::Ingest)
+    }
+
+    fn retry_after(&self, secret: &str) -> Option<Duration> {
+        self.undecided(secret)
+    }
+}
+
+/// [`DbKeys`] as the verifier of a caller that needs another scope than `ingest`: [`DbKeys::with_scope`].
+#[derive(Debug)]
+pub struct ScopedKeys {
+    keys: Arc<DbKeys>,
+    scope: KeyScope,
+}
+
+impl KeyVerifier for ScopedKeys {
+    fn verify(&self, secret: &str) -> Option<KeyPrincipal> {
+        self.keys.verify_scoped(secret, self.scope)
+    }
+
+    fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError> {
+        self.keys.verify_pair_scoped(public, secret, self.scope)
+    }
+
+    fn retry_after(&self, secret: &str) -> Option<Duration> {
+        self.keys.undecided(secret)
     }
 }
 

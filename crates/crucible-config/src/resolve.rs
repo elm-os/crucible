@@ -8,8 +8,8 @@ use std::str::FromStr;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
-    Auth, ClickHouse, Config, ConfigErrors, Data, PgOutageMode, Postgres, Secret, Server, Source,
-    WalBackend,
+    Auth, ClickHouse, Config, ConfigErrors, Data, Mcp, PgOutageMode, Postgres, Secret, Server,
+    Source, WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -41,6 +41,8 @@ type Values = BTreeMap<&'static str, (String, Source)>;
 /// The settings whose TOML value is a number.
 const NUMBERS: &[&str] = &[
     "recent.max_bytes",
+    "mcp.calls_per_second",
+    "mcp.burst",
     "postgres.pool_size",
     "auth.fail_open_max",
     "auth.session_outage_grace",
@@ -304,6 +306,15 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     };
     let recent_max_bytes = t.parsed::<u64>("recent.max_bytes", "a whole number of bytes");
     let recent_ok = t.text("recent.max_bytes").is_none() || recent_max_bytes.is_some();
+    let calls_per_second = t.parsed::<u32>("mcp.calls_per_second", "a whole number of calls");
+    let burst = t.parsed::<u32>("mcp.burst", "a whole number of calls");
+    if burst == Some(0) {
+        t.errors.push(
+            "`mcp.burst` must be at least 1; set `mcp.calls_per_second` to 0 to turn the limit off"
+                .to_owned(),
+        );
+    }
+    let burst = burst.filter(|burst| *burst > 0);
     let pool_size = t.parsed::<usize>("postgres.pool_size", "a number of connections");
     if pool_size == Some(0) {
         t.errors
@@ -503,6 +514,10 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             wal_backend: wal_backend?,
         },
         recent_max_bytes,
+        mcp: Mcp {
+            calls_per_second: calls_per_second?,
+            burst: burst?,
+        },
         master_key,
         clickhouse,
         postgres: match t.text("postgres.url") {
@@ -647,6 +662,13 @@ mod tests {
         assert_eq!(config.server.ui_dir, None);
         assert_eq!(config.server.keys_file, None);
         assert_eq!(config.recent_max_bytes, None);
+        assert_eq!(
+            config.mcp,
+            Mcp {
+                calls_per_second: 50,
+                burst: 200
+            }
+        );
         assert_eq!(config.clickhouse, None);
         assert_eq!(config.postgres, None);
         assert_eq!(config.master_key, None);
@@ -785,7 +807,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [clickhouse], [postgres], [security], [auth].",
+                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [mcp], [clickhouse], [postgres], [security], [auth].",
             ]
         );
     }
@@ -1027,6 +1049,10 @@ wal_backend = "auto"  # default
 [recent]
 max_bytes = 4096  # file
 
+[mcp]
+calls_per_second = 50  # default
+burst = 200  # default
+
 [clickhouse]
 url = "http://clickhouse:8123"  # env CRUCIBLE_CLICKHOUSE_URL
 user = "crucible_admin"  # default
@@ -1056,6 +1082,30 @@ session_outage_grace = 600  # default
             );
         }
         assert_eq!(Secret::new("x").to_string(), "<redacted>");
+    }
+
+    #[test]
+    fn the_mcp_rate_limit_comes_from_the_file_or_the_environment_and_is_checked() {
+        let file = "[mcp]\ncalls_per_second = 10\nburst = 20\n";
+        let config = load(Some(file), &[], &[]).unwrap().config;
+        let limit = Mcp {
+            calls_per_second: 10,
+            burst: 20,
+        };
+        assert_eq!(config.mcp, limit);
+        let off = env(&[("CRUCIBLE_MCP_CALLS_PER_SECOND", "0")]);
+        let config = load(Some(file), &off, &[]).unwrap().config;
+        assert_eq!(config.mcp.calls_per_second, 0);
+        for (file, says) in [
+            ("[mcp]\nburst = 0\n", "`mcp.burst` must be at least 1"),
+            (
+                "[mcp]\ncalls_per_second = -1\n",
+                "`mcp.calls_per_second` = \"-1\" is not a whole number of calls",
+            ),
+        ] {
+            let errors = load(Some(file), &[], &[]).unwrap_err();
+            assert!(errors.to_string().contains(says), "{errors}");
+        }
     }
 
     #[test]

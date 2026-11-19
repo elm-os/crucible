@@ -136,6 +136,36 @@ both entries.
    Verify: `cargo nextest run -p crucible-sim --test system_dst` and `cargo xtask sim run --configs 200 --seeds 3`;
    the `sim` workflow runs the corpus and 600 fresh runs on every pull request.
 
+## An MCP tool
+
+The MCP server at `/mcp` (`crates/crucible-mcp-server`) gives agents read-only tools over the same query services.
+A slice whose service an agent can use adds one tool for it: one module and one registration line.
+
+1. **Tool module.** Create `crates/crucible-mcp-server/src/tools/<tool>.rs` with a type that implements `Tool`:
+   - `NAME`, a verb and a noun in snake case (`list_sessions`), and `DESCRIPTION`, which tells the agent what
+     the tool returns, its caps, and how to continue a cut result;
+   - `Args`, deriving `Deserialize` and `JsonSchema` with `#[serde(deny_unknown_fields)]`. Times are RFC 3339
+     strings and ids are hex strings, checked with `Check` so that each refusal names its argument by JSON pointer.
+     A list or analytics tool requires `from` and `to` and calls `check_window` (contract 12.4); no tool takes a
+     project, which comes from the key;
+   - `Output`, deriving `Serialize` and `JsonSchema`, with the field names of the REST DTO and the wire rules of
+     contract 1.3 (the shared rows and `Meta` are in `shape.rs`). Results carry previews, never payloads;
+   - `call`, which reads through `call.service` with `call.ctx` (the key's project, class `agent`), maps a failed
+     read with `ToolError::query`, and cuts a list with `shape::fit` so that the whole tool result stays under
+     64 KiB. A cut list continues with a cursor sealed by `call.cursors` (`Cursors::seal` and `Cursors::open`
+     reuse the REST list's route, position and canonical filter form; `cursor.rs` has the three of milestone 1).
+
+   Register it in `crates/crucible-mcp-server/src/tools.rs` with `mod <tool>;` and one `entry::<..>()` line in
+   `TOOLS`, at its sorted place.
+
+   Verify: a test module under `crates/crucible-mcp-server/tests/mcp/` (`tools.rs` for the trace tools, `text.rs`
+   for search and payloads) gains a snapshot of the tool's output and its argument refusals, `tests/mcp/caps.rs`
+   or the same module its row cap and the continuation of a cut result, and
+   `the_registry_is_sorted_and_every_tool_has_object_schemas` checks its schemas;
+   `cargo nextest run -p crucible-mcp-server`. Both protocol eras list every registered tool
+   (`tests/mcp/eras.rs`, and rmcp's own client in `the_mcp_server_answers_both_protocol_eras_at_mcp` of
+   `crates/crucible/src/serve.rs`), so those tests need no change.
+
 ## Lines that slices still share
 
 Every registry entry belongs to one endpoint, and rustfmt formats each entry on its own, so a slice adds lines and

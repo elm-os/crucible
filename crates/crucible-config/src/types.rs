@@ -131,6 +131,15 @@ pub struct Data {
     pub wal_backend: WalBackend,
 }
 
+/// The `[mcp]` section: the per-key limit on the tool calls of the MCP server at `/mcp`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Mcp {
+    /// Tool calls one key may make per second, sustained; 0 turns the limit off.
+    pub calls_per_second: u32,
+    /// Tool calls one key may make at once after a quiet spell.
+    pub burst: u32,
+}
+
 /// The `[clickhouse]` section, present when `clickhouse.url` is set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClickHouse {
@@ -164,6 +173,8 @@ pub struct Config {
     pub data: Data,
     /// Bound on the memory of the recent-span index, in bytes; `None` for the default.
     pub recent_max_bytes: Option<u64>,
+    /// The MCP server's rate limit.
+    pub mcp: Mcp,
     /// The master key, 64 hexadecimal characters.
     pub master_key: Option<Secret>,
     /// The telemetry store; `None` for the ingest-only mode.

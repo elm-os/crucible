@@ -25,8 +25,8 @@ pub mod service;
 pub mod token;
 
 pub use db_keys::{
-    DbKeys, KeyGrant, KeyVerdict, OUTAGE_AFTER, OutageMode, POLL_EVERY, RETRY_AFTER, Scopes,
-    StoreFeed, run_feed, run_last_used,
+    DbKeys, KeyGrant, KeyVerdict, OUTAGE_AFTER, OutageMode, POLL_EVERY, RETRY_AFTER, ScopedKeys,
+    Scopes, StoreFeed, run_feed, run_last_used,
 };
 pub use mint::{LookupKey, MintedKey, mint, secret_hash};
 pub use next_path::safe_next;
