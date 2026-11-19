@@ -118,12 +118,46 @@ pub(crate) async fn read(
 /// Inflates a gzip body of one or more members to at most [`MAX_BODY_BYTES`]. `reserve(bytes)` grows the
 /// in-flight reservation to cover an output of `bytes` before the output holds them, so the reservation follows
 /// the bytes held; its refusal ends the inflate.
+///
+/// The last member's trailer states its inflated size modulo 2^32 (RFC 1952). That is the client's claim, so it
+/// is only a hint, clamped to the cap and to deflate's largest expansion of the body: when the reservation can
+/// hold it, the output is allocated once at that size and the decoder writes straight into it. A body whose
+/// output outgrows the hint (several members, or a trailer that understates) continues as it would without
+/// one, and a trailer that lies still fails the decoder's check, so neither the output nor any refusal depends
+/// on the hint.
 pub(crate) fn inflate(
     compressed: &[u8],
     mut reserve: impl FnMut(u64) -> Result<(), Reject>,
 ) -> Result<Vec<u8>, Reject> {
     let mut decoder = MultiGzDecoder::new(compressed);
     let mut out = Vec::new();
+    let hint = trailer_size(compressed)
+        .min(MAX_BODY_BYTES)
+        .min(compressed.len().saturating_mul(MAX_INFLATE_RATIO));
+    if hint > 0 && reserve(hint as u64).is_ok() {
+        out.resize(hint, 0);
+        let mut filled = 0;
+        while let Some(spare) = out.get_mut(filled..).filter(|spare| !spare.is_empty()) {
+            match decoder.read(spare).map_err(malformed)? {
+                0 => {
+                    out.truncate(filled);
+                    return Ok(out);
+                }
+                n => filled += n,
+            }
+        }
+        // The hint is used up: one byte more tells the end from a body that outgrows it.
+        let mut next = [0; 1];
+        if decoder.read(&mut next).map_err(malformed)? == 0 {
+            return Ok(out);
+        }
+        let len = out.len() + 1;
+        if len > MAX_BODY_BYTES {
+            return Err(too_large("the inflated request body", MAX_BODY_BYTES));
+        }
+        reserve(len as u64)?;
+        out.push(next[0]);
+    }
     let mut chunk = vec![0; INFLATE_CHUNK];
     loop {
         let n = decoder.read(&mut chunk).map_err(malformed)?;
@@ -141,6 +175,19 @@ pub(crate) fn inflate(
 
 fn malformed(e: std::io::Error) -> Reject {
     Reject::Malformed(format!("the gzip body does not inflate: {e}"))
+}
+
+/// Deflate's largest expansion: a stream of maximal back-references inflates to at most about 1,032 times its
+/// size, so no honest body inflates beyond that.
+const MAX_INFLATE_RATIO: usize = 1_032;
+
+/// The inflated size, modulo 2^32, that the trailer of a gzip body's last member states: its last four bytes,
+/// little-endian. 0 for a body too short to hold a member.
+fn trailer_size(compressed: &[u8]) -> usize {
+    match compressed.len().checked_sub(4).map(|at| compressed.split_at(at).1) {
+        Some(&[a, b, c, d]) if compressed.len() >= 18 => u32::from_le_bytes([a, b, c, d]) as usize,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
