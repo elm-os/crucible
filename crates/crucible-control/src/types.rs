@@ -4,7 +4,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crucible_records::{ApiKeyId, OrgId, ProjectId, Timestamp, UserId, Uuid};
+use crucible_records::{ApiKeyId, ExportJobId, OrgId, ProjectId, Timestamp, UserId, Uuid};
 use serde::{Deserialize, Serialize};
 
 use crate::error::TxError;
@@ -191,6 +191,30 @@ text_enum! {
     Queue {
         /// `notification_outbox`.
         NotificationOutbox => "notification_outbox",
+        /// `export_jobs` (contract 12.8).
+        ExportJobs => "export_jobs",
+    }
+}
+
+text_enum! {
+    /// The `status` column of a claimed row (contract 11.7).
+    ClaimStatus {
+        /// Waiting for a claim, or under one.
+        Pending => "pending",
+        /// Completed.
+        Done => "done",
+        /// Parked at the attempt cap; never claimed again.
+        Parked => "parked",
+    }
+}
+
+text_enum! {
+    /// The formats of an export (contract 12.8).
+    ExportFormat {
+        /// One JSON object per span with the keys `schema`, `span` and `facts`.
+        CrucibleJsonl => "crucible-jsonl",
+        /// One OTLP JSON document per span.
+        OtlpJson => "otlp-json",
     }
 }
 
@@ -747,6 +771,75 @@ pub struct Claim {
     pub attempt: u32,
     /// The database clock until which other claimers skip the row.
     pub lease_until: Timestamp,
+}
+
+/// A new export job (contract 11.1 and 12.8): what the request that creates it fixes. The row is also the queue
+/// row its job claims: it starts pending, due at `created_at`, with no attempt.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NewExport {
+    /// The id.
+    pub id: ExportJobId,
+    /// The project whose data the export holds.
+    pub project_id: ProjectId,
+    /// The format.
+    pub format: ExportFormat,
+    /// What to export: JSON text, opaque to the store.
+    pub selector: String,
+    /// How to write it (gzip, truncated spans): JSON text, opaque to the store; the claim's payload.
+    pub options: String,
+    /// The queue's deduplication key: the job id, or the principal and its `Idempotency-Key`.
+    pub dedup_key: String,
+    /// Who created it, for example `user:<id>` or `api_key:<id>`.
+    pub created_by: String,
+    /// When it was created.
+    pub created_at: Timestamp,
+    /// The arrival bound of every read of the export: only spans received at or before it are exported.
+    pub as_of: Timestamp,
+}
+
+/// An export job as stored (contract 11.1): the request's values, its claim state and its outcome.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExportJob {
+    /// What the request fixed.
+    pub new: NewExport,
+    /// The claim status.
+    pub status: ClaimStatus,
+    /// The attempt counter; 0 before the first claim.
+    pub attempts: u32,
+    /// The database clock until which the current claim hides the row.
+    pub lease_until: Option<Timestamp>,
+    /// Spans written so far by the current attempt, or in all once the file is committed.
+    pub spans: u64,
+    /// Bytes written so far by the current attempt, or the file's length once it is committed.
+    pub bytes: u64,
+    /// Spans the format could not hold and left out (an `otlp-json` export skips truncated spans).
+    pub skipped: u64,
+    /// The committed file, relative to the exports root; `None` until the export is committed.
+    pub file: Option<String>,
+    /// SHA-256 of the committed file, lowercase hex.
+    pub checksum: Option<String>,
+    /// When the file stops being downloadable. Set at the commit, and earlier by a deletion request that
+    /// the export predates.
+    pub expires_at: Option<Timestamp>,
+    /// Why the export ended without a file, when it did.
+    pub error: Option<String>,
+}
+
+/// What a committed export holds (contract 12.8).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExportCommit {
+    /// The file, relative to the exports root.
+    pub file: String,
+    /// SHA-256 of the file, lowercase hex.
+    pub checksum: String,
+    /// Spans written.
+    pub spans: u64,
+    /// The file's length in bytes.
+    pub bytes: u64,
+    /// Spans left out.
+    pub skipped: u64,
+    /// When the file stops being downloadable.
+    pub expires_at: Timestamp,
 }
 
 /// One applied step of the migrations ledger (contract 6.6).

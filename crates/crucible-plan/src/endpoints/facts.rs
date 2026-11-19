@@ -53,6 +53,8 @@ pub enum FactsOf<'a> {
     Span(TraceId, SpanId),
     /// The facts whose target is this session.
     Session(&'a str),
+    /// The facts whose target is one of these traces or a span of one of them.
+    TraceTree(&'a [TraceId]),
 }
 
 /// The columns of one fact table that a read selects or filters on.
@@ -109,7 +111,7 @@ fn kind(columns: &Columns, kind: FactTargetKind) -> Pred {
     Pred::eq(columns.target_kind, Literal::Enum(kind.value()))
 }
 
-fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanError> {
+pub(super) fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanError> {
     let c = columns(table);
     let pred = match of {
         FactsOf::Traces(ids) => Pred::And(vec![
@@ -124,6 +126,15 @@ fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanErro
         FactsOf::Session(session_id) => Pred::And(vec![
             kind(&c, FactTargetKind::Session),
             Pred::eq(c.session_id, session_id),
+        ]),
+        FactsOf::TraceTree(ids) => Pred::And(vec![
+            Pred::is_in(
+                c.target_kind,
+                [FactTargetKind::Trace, FactTargetKind::Span]
+                    .map(|k| Literal::Enum(k.value()))
+                    .to_vec(),
+            ),
+            Pred::is_in(c.trace_id, ids.iter().copied().map(Literal::from).collect()),
         ]),
     };
     let mut selected = c.envelope.to_vec();

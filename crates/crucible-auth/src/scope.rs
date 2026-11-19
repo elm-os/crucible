@@ -11,6 +11,13 @@ pub(crate) fn mint(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> 
     ProjectScope::mint(project_id)
 }
 
+/// The scope of a project for work that runs outside a request: an export job reads the project that its stored
+/// row names, which the request that created the row was authorized for (contract 11.6), and `crucible export`
+/// reads the project its operator names, who holds the deployment's credentials. Refuses the nil id.
+pub fn stored_work_scope(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> {
+    mint(project_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

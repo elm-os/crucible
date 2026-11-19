@@ -16,14 +16,15 @@ pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use repo::{
     ApiKeyRepo, AuthFlowRepo, AuthProviderRepo, Claims, ControlStore, ControlTx, CredentialRepo,
-    InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,
+    ExportJobRepo, InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,
     OneTimeTokenRepo, OrgRepo, ProjectRepo, Repos, SecretRepo, SessionRepo, SigningKeyRepo,
     TRANSACTION_CAP, UserRepo, transaction,
 };
 pub use types::{
-    ApiKey, AuthFlow, AuthMethod, AuthProvider, Claim, Credential, Email, Invitation, JsonDoc,
+    ApiKey, AuthFlow, AuthMethod, AuthProvider, Claim, ClaimStatus, Credential, Email, ExportCommit,
+    ExportFormat, ExportJob, Invitation, JsonDoc,
     KeyChange, KeyChangeKind, KeyScope, KeySnapshot, Lease, LeaseName, LedgerEntry, MigrationKind,
-    NewJob, OauthAccount, OneTimeToken, Org, OrgMembership, OrgRole, OrgSettings, Project,
+    NewExport, NewJob, OauthAccount, OneTimeToken, Org, OrgMembership, OrgRole, OrgSettings, Project,
     ProjectAccess, ProjectMembership, ProjectRole, ProviderKind, Queue, Secret, Session,
     SigningKey, SigningKeyState, SigningPurpose, SignupMode, TokenHash, TokenKind, User,
     UserStatus, duration_micros,

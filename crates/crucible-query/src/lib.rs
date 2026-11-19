@@ -27,6 +27,7 @@ mod context;
 mod cursor;
 mod data_bounds;
 mod decode;
+mod export;
 mod facts;
 mod filter_values;
 mod heads;
@@ -47,6 +48,10 @@ pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, PageCursor};
 pub use data_bounds::{DataBounds, MinuteRange};
 pub use decode::TraceHeadView;
+pub use export::{
+    ExportColumn, ExportFact, ExportLimits, ExportMcp, ExportPage, ExportQuery, ExportRecord,
+    ExportWait,
+};
 pub use facts::{
     CorrectionFact, FactTarget, Facts, FlagFact, Resolved, ScoreFact, TagEdit, TargetBounds,
     TargetFacts, TraceFacts,

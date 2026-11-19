@@ -152,6 +152,10 @@ impl<'a> Cols<'a> {
         self.take()
     }
 
+    pub(crate) fn opt_text(&mut self) -> Result<Option<String>, TxError> {
+        self.take()
+    }
+
     pub(crate) fn bool(&mut self) -> Result<bool, TxError> {
         self.take()
     }

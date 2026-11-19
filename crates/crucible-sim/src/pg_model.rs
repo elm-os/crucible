@@ -29,7 +29,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
-    ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo, KeyChange,
+    ControlStore, ControlTx, Credential, CredentialRepo, ExportJobRepo, Invitation, InvitationRepo,
+    KeyChange,
     KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
     Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org,
     OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, Secret,
@@ -156,6 +157,16 @@ struct JobRow {
     next_attempt_at: Timestamp,
     status: JobStatus,
     lease_until: Option<Timestamp>,
+    /// The export's own columns, on a row of [`Queue::ExportJobs`].
+    export: Option<Box<exports::ExportCols>>,
+}
+
+/// The constraint names of a queue's table.
+const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
+    match queue {
+        Queue::NotificationOutbox => ("notification_outbox_pkey", "notification_outbox_dedup_key_key"),
+        Queue::ExportJobs => ("export_jobs_pkey", "export_jobs_dedup_key_key"),
+    }
 }
 
 /// The `status` column of a claimed row.
@@ -230,7 +241,7 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
             key.public_key.as_bytes().to_vec(),
         )],
         Row::Job(job) => vec![(
-            "notification_outbox_dedup_key_key",
+            queue_constraints(job.queue).1,
             job.dedup_key.as_bytes().to_vec(),
         )],
         Row::AuthProvider(provider) if provider.seeded => vec![(
@@ -265,6 +276,14 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             "api_keys_project_id_fkey",
             Tbl::Projects,
             project(k.project_id),
+        )],
+        Row::Job(JobRow {
+            export: Some(export),
+            ..
+        }) => vec![(
+            "export_jobs_project_id_fkey",
+            Tbl::Projects,
+            project(export.new.project_id),
         )],
         Row::OauthAccount(a) => vec![
             (
@@ -1182,6 +1201,9 @@ macro_rules! repos {
             fn claims(&self) -> &dyn Claims {
                 &self.runner
             }
+            fn export_jobs(&self) -> &dyn ExportJobRepo {
+                &self.runner
+            }
             fn migrations(&self) -> &dyn Migrations {
                 &self.runner
             }
@@ -1243,6 +1265,9 @@ impl Repos for PgModel {
     fn claims(&self) -> &dyn Claims {
         &*self.runner
     }
+    fn export_jobs(&self) -> &dyn ExportJobRepo {
+        &*self.runner
+    }
     fn migrations(&self) -> &dyn Migrations {
         &*self.runner
     }
@@ -1271,6 +1296,7 @@ macro_rules! all {
     };
 }
 
+mod exports;
 mod identity;
 
 fn uuid_key(bytes: [u8; 16]) -> Key {
@@ -2039,12 +2065,13 @@ impl Claims for Runner {
                 next_attempt_at: job.run_at,
                 status: JobStatus::Pending,
                 lease_until: None,
+                export: None,
             };
             cx.insert(
                 Tbl::Jobs,
                 job_key(queue, job.id),
                 Row::Job(row),
-                "notification_outbox_pkey",
+                queue_constraints(queue).0,
             )
         })
         .await
