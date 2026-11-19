@@ -6080,7 +6080,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of the threshold and of every value: `count`, `us` (microseconds) or `nusd` (nano-USD)."
+            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`\n(nano-USD)."
           },
           "updated_at": {
             "type": "string",

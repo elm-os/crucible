@@ -86,9 +86,7 @@ pub fn router(
         keys,
         settings,
         cursors,
-        None,
-        None,
-        None,
+        Platform::default(),
     )
 }
 
@@ -100,7 +98,7 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None, None, None)
+    build(env, None, keys, settings, cursors, Platform::default())
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
@@ -116,16 +114,20 @@ pub fn platform_router(
     alerts: Option<AlertsApi>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(
-        env,
-        store,
-        keys,
-        settings,
-        cursors,
-        Some(identity),
+    let platform = Platform {
+        identity: Some(identity),
         sql,
         alerts,
-    )
+    };
+    build(env, store, keys, settings, cursors, platform)
+}
+
+/// What a node with a control plane adds to the API.
+#[derive(Default)]
+struct Platform {
+    identity: Option<Arc<Identity>>,
+    sql: Option<SqlWorkspace>,
+    alerts: Option<AlertsApi>,
 }
 
 fn build(
@@ -134,11 +136,14 @@ fn build(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
-    identity: Option<Arc<Identity>>,
-    sql: Option<SqlWorkspace>,
-    alerts: Option<AlertsApi>,
+    platform: Platform,
 ) -> Router {
     let (service, facts) = store.unzip();
+    let Platform {
+        identity,
+        sql,
+        alerts,
+    } = platform;
     let state = ApiState {
         env: env.clone(),
         service,

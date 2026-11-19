@@ -35,7 +35,8 @@ measure: string,
  */
 aggregation: string, 
 /**
- * The unit of the threshold and of every value: `count`, `us` (microseconds) or `nusd` (nano-USD).
+ * The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`
+ * (nano-USD).
  */
 unit: string, 
 /**

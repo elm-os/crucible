@@ -241,7 +241,8 @@ pub struct AlertRule {
     pub measure: String,
     /// The aggregation.
     pub aggregation: String,
-    /// The unit of the threshold and of every value: `count`, `us` (microseconds) or `nusd` (nano-USD).
+    /// The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`
+    /// (nano-USD).
     pub unit: String,
     /// The dimensions.
     pub dimensions: Vec<String>,
