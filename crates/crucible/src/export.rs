@@ -13,7 +13,7 @@ use anyhow::Context as _;
 use clap::Args;
 use crucible_control::{ExportFormat, Repos as _};
 use crucible_env::{Env, Stores, TelemetryStore as _};
-use crucible_export::{ExportWriter, MAX_TRACE_IDS, Options, Selector, write_pages};
+use crucible_export::{CHUNK_BYTES, ExportWriter, MAX_TRACE_IDS, Options, Pages, Selector};
 use crucible_plan::Caller;
 use crucible_query::{ExportLimits, QueryService, ReadContext};
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
@@ -190,12 +190,12 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
         None => Box::new(std::io::stdout().lock()),
     };
     let mut writer = ExportWriter::new(format, options);
-    write_pages(&service, &ctx, &query, ExportLimits::default(), &mut writer, async |chunk, _| {
-        out.write_all(&chunk)
-            .map_err(|error| crucible_export::WriteError::Sink(format!("writing the export: {error}")))
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let mut pages = Pages::new(&service, &ctx, &query, ExportLimits::default());
+    while pages.next(&mut writer).await.map_err(|error| anyhow::anyhow!("{error}"))? {
+        if let Some(chunk) = writer.ready(CHUNK_BYTES) {
+            out.write_all(&chunk).context("writing the export")?;
+        }
+    }
     let (rest, summary) = writer.finish().map_err(|error| anyhow::anyhow!("{error}"))?;
     out.write_all(&rest).context("writing the export")?;
     out.flush().context("writing the export")?;

@@ -62,6 +62,7 @@ use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
+use crucible_export::ExportRuntime;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
@@ -577,6 +578,8 @@ struct StoreTask {
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
+    /// What the export job reads with, given the query service once the store is up.
+    exports: ExportRuntime,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -660,6 +663,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        exports,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -767,6 +771,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    exports.set_service(service.clone());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
@@ -1032,7 +1037,8 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     };
     // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
     // for them.
-    let jobs = crate::jobs::start(env, control.as_ref());
+    let exports = ExportRuntime::new();
+    let jobs = crate::jobs::start(env, control.as_ref(), &exports);
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1105,6 +1111,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                exports: exports.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }

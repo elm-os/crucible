@@ -5,6 +5,7 @@ use std::io::Write as _;
 
 use bytes::Bytes;
 use crucible_control::ExportFormat;
+use crucible_plan::ExportKey;
 use crucible_query::{
     ExportLimits, ExportQuery, ExportRecord, QueryService, QueryServiceError, ReadContext,
 };
@@ -164,31 +165,59 @@ impl ExportWriter {
     }
 }
 
-/// Reads every page of the export and writes it, handing each chunk of at least [`CHUNK_BYTES`] to `sink` with
-/// the progress so far. The caller ends the file with [`ExportWriter::finish`].
-pub async fn write_pages<S>(
-    service: &QueryService,
-    ctx: &ReadContext,
-    query: &ExportQuery,
+/// The pages of one export, read one at a time into a writer.
+pub struct Pages<'a> {
+    service: &'a QueryService,
+    ctx: &'a ReadContext,
+    query: &'a ExportQuery,
     limits: ExportLimits,
-    writer: &mut ExportWriter,
-    mut sink: S,
-) -> Result<(), WriteError>
-where
-    S: AsyncFnMut(Bytes, Progress) -> Result<(), WriteError>,
-{
-    let mut after = None;
-    loop {
-        let page = service.export_page(ctx, query, after, limits).await?;
-        for record in &page.records {
-            writer.push(ctx.scope(), record)?;
+    after: Option<ExportKey>,
+    done: bool,
+}
+
+impl std::fmt::Debug for Pages<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pages")
+            .field("after", &self.after)
+            .field("done", &self.done)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Pages<'a> {
+    /// The pages of `query`, read under `ctx` with `limits`.
+    pub const fn new(
+        service: &'a QueryService,
+        ctx: &'a ReadContext,
+        query: &'a ExportQuery,
+        limits: ExportLimits,
+    ) -> Self {
+        Self {
+            service,
+            ctx,
+            query,
+            limits,
+            after: None,
+            done: false,
         }
-        if let Some(chunk) = writer.ready(CHUNK_BYTES) {
-            sink(chunk, writer.progress()).await?;
+    }
+
+    /// Reads the next page and writes its spans; `false` once every page was read.
+    pub async fn next(&mut self, writer: &mut ExportWriter) -> Result<bool, WriteError> {
+        if self.done {
+            return Ok(false);
+        }
+        let page = self
+            .service
+            .export_page(self.ctx, self.query, self.after, self.limits)
+            .await?;
+        for record in &page.records {
+            writer.push(self.ctx.scope(), record)?;
         }
         match page.next {
-            Some(next) => after = Some(next),
-            None => return Ok(()),
+            Some(next) => self.after = Some(next),
+            None => self.done = true,
         }
+        Ok(true)
     }
 }

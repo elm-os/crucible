@@ -1,0 +1,460 @@
+//! The export job on the virtual clock (contracts 11.7 and 12.8): a crash at any disk operation of an export
+//! leaves no partial file under a final name, and the export resumes on the restarted node, which commits one
+//! complete file whose checksum the row records; the sweep then leaves only that file. Also: a deletion's purge
+//! expires the export and removes its file, and the API service's rate limit and `Idempotency-Key`.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures::FutureExt as _;
+use crucible_chfmt::EncodedBlock;
+use crucible_control::{
+    ControlStore, ExportFormat, ExportJob, JsonDoc, NewExport, Project, Repos as _,
+};
+use crucible_env::{
+    Clock, DiskPath, Env, InsertError, InsertSettings, MutationId, MutationStatus, OpenMode,
+    QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores, TelemetryStore,
+};
+use crucible_export::{
+    CreateError, CreateExport, Created, EXPORT_LEASE, ExportRuntime, ExportState, Exports,
+    Options, Selector, job, purge, sweep, sweep_job,
+};
+use crucible_jobs::{Registry, Running};
+use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
+use crucible_query::QueryService;
+use crucible_recent::{
+    RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView,
+};
+use crucible_records::{
+    ExportJobId, Lsn, PartitionId, ProjectId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
+    WalEpoch,
+};
+use crucible_schema::{MigrationStep, Ty, table};
+use crucible_sim::pg_model::{PgFaults, PgModel};
+use crucible_sim::{Host, SimDisk};
+use sha2::{Digest, Sha256};
+
+const PROJECT: ProjectId = ProjectId::from_bytes([0x5a; 16]);
+const TRACE: TraceId = TraceId::from_bytes([0xc3; 16]);
+const SPANS: u64 = 2_500;
+
+/// The zero value of a column type.
+fn zero(ty: &Ty) -> Value {
+    match ty {
+        Ty::Uuid => Value::Uuid(Uuid::NIL),
+        Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64 => Value::UInt(0),
+        Ty::Int32 | Ty::Int64 => Value::Int(0),
+        Ty::Float32 | Ty::Float64 => Value::Float(0.0),
+        Ty::String | Ty::LowCardinalityString => Value::String(String::new()),
+        Ty::FixedString(n) => Value::Bytes(vec![0; usize::from(*n)]),
+        Ty::Date => Value::Date(Timestamp::EPOCH.date()),
+        Ty::DateTime | Ty::DateTime64 => Value::Time(Timestamp::EPOCH),
+        Ty::Enum8(kind) => Value::Enum(kind.variants()[0].1),
+        Ty::Nullable(_) => Value::Null,
+        Ty::Array(_) => Value::Array(Vec::new()),
+        Ty::Tuple2(a, b) => Value::Tuple2(Box::new(zero(a)), Box::new(zero(b))),
+        Ty::Saf(_, inner) => zero(inner),
+    }
+}
+
+/// A store that holds [`SPANS`] spans of one trace of [`PROJECT`], starting at `base`, one every 10 µs, each
+/// received 1 µs after the previous one. It answers the page scans of `span_core` and has no payload, MCP or
+/// fact row.
+#[derive(Debug)]
+struct Spans {
+    base: Timestamp,
+}
+
+impl Spans {
+    fn start(&self, i: u64) -> Timestamp {
+        self.base.saturating_add_micros(i64::try_from(i * 10).unwrap())
+    }
+
+    fn value(&self, i: u64, name: &str, ty: &Ty) -> Value {
+        match name {
+            "start_minute" => Value::Time(self.start(i).floor_minute()),
+            "trace_hash" => Value::UInt(u64::from(TRACE.trace_hash())),
+            "start_time" => Value::Time(self.start(i)),
+            "end_time" => Value::Time(self.start(i).saturating_add_micros(5)),
+            "span_id" => Value::Bytes((i + 1).to_be_bytes().to_vec()),
+            "trace_id" => Value::Bytes(TRACE.to_bytes().to_vec()),
+            "name" => Value::String(format!("span {i} {}", "x".repeat(400))),
+            "received_at" => Value::Time(self.base.saturating_add_micros(i64::try_from(i).unwrap())),
+            "lsn" => Value::UInt(i + 1),
+            "event_bytes" => Value::UInt(500),
+            _ => zero(ty),
+        }
+    }
+
+    fn page(&self, plan: &QueryPlan) -> Vec<Row> {
+        let Node::Scan(scan) = plan.root() else { return Vec::new() };
+        if scan.table() != TableId::SpanCore || plan.scope().project_id() != PROJECT {
+            return Vec::new();
+        }
+        // Keys differ in `start_time` only, so the position's start time places it.
+        let after = scan.cursor().and_then(|key| match key.get(2) {
+            Some(crucible_plan::Literal::Time(t)) => Some(*t),
+            _ => None,
+        });
+        let as_of = scan.arrival().as_of.unwrap_or(Timestamp::MAX_EXCLUSIVE);
+        let def = table(TableId::SpanCore);
+        (0..SPANS)
+            .filter(|i| plan.window().contains(self.start(*i)))
+            .filter(|i| after.is_none_or(|after| self.start(*i) > after))
+            .filter(|i| self.base.saturating_add_micros(i64::try_from(*i).unwrap()) <= as_of)
+            .take(scan.limit().map_or(usize::MAX, |l| l as usize))
+            .map(|i| {
+                let values = scan.columns().iter().map(|c| {
+                    let ty = def.column(c.name()).map_or(Ty::String, |col| col.ty);
+                    self.value(i, c.name(), &ty)
+                });
+                Row::new(values.collect())
+            })
+            .collect()
+    }
+}
+
+fn unsupported<T>() -> Result<T, StoreError> {
+    Err(StoreError::Internal("the test store only reads".to_owned()))
+}
+
+#[async_trait]
+impl TelemetryStore for Spans {
+    async fn insert_block(&self, _: EncodedBlock, _: InsertSettings) -> Result<(), InsertError> {
+        Err(InsertError::FatalConfig { code: 0, message: "the test store only reads".to_owned() })
+    }
+    async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        let blocks = RowBlock::split(self.page(&plan)).into_iter().map(Ok);
+        Ok(RowStream::new(Uuid::from_bytes([1; 16]), futures::stream::iter(blocks)))
+    }
+    async fn probe(&self, _: BatchProbe) -> Result<bool, StoreError> {
+        unsupported()
+    }
+    async fn delete(&self, _: DeletePlan) -> Result<MutationId, StoreError> {
+        unsupported()
+    }
+    async fn drop_partition(&self, _: TableId, _: PartitionId) -> Result<(), StoreError> {
+        unsupported()
+    }
+    async fn apply_deleted_mask(&self, _: TableId, _: PartitionId) -> Result<MutationId, StoreError> {
+        unsupported()
+    }
+    async fn mutation_status(&self, _: &MutationId) -> Result<MutationStatus, StoreError> {
+        unsupported()
+    }
+    async fn partition_projects(&self, _: TableId, _: PartitionId) -> Result<Vec<ProjectId>, StoreError> {
+        unsupported()
+    }
+    async fn masked_parts(&self, _: TableId, _: PartitionId) -> Result<u64, StoreError> {
+        unsupported()
+    }
+    async fn apply_migration(&self, _: &MigrationStep) -> Result<(), StoreError> {
+        unsupported()
+    }
+    async fn detect(&self) -> Result<StoreFacts, StoreError> {
+        unsupported()
+    }
+    async fn dedup_selftest(&self) -> Result<(), StoreError> {
+        unsupported()
+    }
+    async fn kill(&self, _: Uuid) -> Result<(), StoreError> {
+        Ok(())
+    }
+    async fn health(&self) -> StoreHealth {
+        StoreHealth::Healthy
+    }
+}
+
+#[derive(Debug)]
+struct NoWal;
+
+impl WalView for NoWal {
+    fn durable_lsn(&self) -> Lsn {
+        Lsn::ZERO
+    }
+    fn read_span(&self, _: ProjectId, _: WalLocator) -> SpanRead {
+        Box::pin(async { Err(WalReadError::Failed("no wal".to_owned())) })
+    }
+}
+
+fn project() -> Project {
+    Project {
+        id: PROJECT,
+        name: "Exports".to_owned(),
+        slug: "exports".to_owned(),
+        settings: JsonDoc::empty(),
+        retention_days: None,
+        payload_retention_days: None,
+        mcp_content_retention_days: None,
+        config_version: 1,
+        version: 1,
+        deleted_at: None,
+    }
+}
+
+/// A node: the registry with the export job and the sweep, its query service over [`Spans`].
+fn start(host: &Host, model: &PgModel, base: Timestamp) -> Running {
+    let (index, _writer) = RecentIndex::new(
+        RecentConfig::new(1 << 20, crucible_env::StoreFlavour::SingleNode),
+        Arc::clone(&host.env.clock),
+        Arc::new(NoWal),
+    );
+    let service = QueryService::new(
+        Stores::new(Arc::new(Spans { base })),
+        Arc::clone(&host.env.clock),
+        index,
+        WalEpoch::from_bytes([1; 16]),
+    );
+    let runtime = ExportRuntime::new();
+    runtime.set_service(service);
+    let mut registry = Registry::new();
+    registry.register(job(runtime));
+    registry.register(sweep_job());
+    let store: Arc<dyn ControlStore> = Arc::new(model.clone());
+    registry.start(&host.env, Some(store), "node")
+}
+
+/// Every file under the project's export directory: name and contents.
+async fn files(env: &Env) -> Vec<(String, Vec<u8>)> {
+    let dir = DiskPath::new(Root::Exports, &PROJECT.to_string()).unwrap();
+    let Ok(entries) = env.disk.list(&dir).await else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in entries {
+        let file = env.disk.open(&dir.join(&entry.name).unwrap(), OpenMode::Read).await.unwrap();
+        let bytes = file.read_at(0, usize::try_from(entry.len).unwrap()).await.unwrap();
+        out.push((entry.name, bytes.to_vec()));
+    }
+    out
+}
+
+/// Whether a committed file holds the whole export: one valid line per span.
+fn complete(bytes: &[u8]) -> bool {
+    let text = std::str::from_utf8(bytes).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    text.ends_with('\n')
+        && lines.len() as u64 == SPANS
+        && lines.iter().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn row(model: &PgModel, id: ExportJobId) -> ExportJob {
+    model.export_jobs().get(PROJECT, id).await.unwrap().unwrap()
+}
+
+/// The checks after a crash, and after the restarted node finished: no file under a final name is partial, and
+/// a recorded file is there with the recorded checksum.
+async fn check(env: &Env, job: &ExportJob, at: &str) {
+    for (name, bytes) in files(env).await {
+        if !name.ends_with(".part") {
+            assert!(complete(&bytes), "{at}: the committed file {name} is partial");
+        }
+    }
+    if let Some(file) = &job.file {
+        let name = file.rsplit('/').next().unwrap();
+        let held = files(env).await.into_iter().find(|(n, _)| n == name);
+        let (_, bytes) = held.unwrap_or_else(|| panic!("{at}: the recorded file {file} is not there"));
+        assert_eq!(job.checksum.as_deref(), Some(sha256(&bytes).as_str()), "{at}: checksum");
+        assert_eq!(job.bytes, bytes.len() as u64, "{at}: length");
+        assert_eq!(job.spans, SPANS, "{at}: spans");
+    }
+}
+
+/// What a crash left: whether the node crashed at all, a temporary file, a file under a final name, and whether
+/// the row recorded a file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Left {
+    crashed: bool,
+    temporary: bool,
+    committed: bool,
+    recorded: bool,
+}
+
+fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
+    crucible_sim::run(seed, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(database.clock.clone(), sim.rng("pg").as_ref(), PgFaults::default());
+        model.projects().insert(&project()).await.unwrap();
+        let now = database.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let selector = Selector {
+            window: TimeWindow::new(base, now).unwrap(),
+            trace_ids: Vec::new(),
+            user_id: None,
+            session_id: None,
+        };
+        let id = ExportJobId::from_bytes([0x0e; 16]);
+        let new = NewExport {
+            id,
+            project_id: PROJECT,
+            format: ExportFormat::CrucibleJsonl,
+            selector: selector.to_text(),
+            options: Options::default().to_text(),
+            dedup_key: id.to_string(),
+            created_by: "user:test".to_owned(),
+            created_at: now,
+            as_of: now,
+        };
+        model.export_jobs().insert(&new).await.unwrap();
+
+        let disk: SimDisk = sim.disk("node");
+        let host = sim.host("node/boot-1", &disk, 0);
+        disk.arm_crash_after_ops(crash_after);
+        let running = start(&host, &model, base);
+        let crashed = {
+            let crash = disk.crash_point_reached().fuse();
+            // Past the sweep's cadence, so the last crash points fall on the sweep after the commit.
+            let give_up = database.clock.sleep(Duration::from_secs(1_500)).fuse();
+            futures::pin_mut!(crash, give_up);
+            futures::select_biased! {
+                () = crash => true,
+                () = give_up => false,
+            }
+        };
+        let mut left = Left { crashed, temporary: false, committed: false, recorded: false };
+        if crashed {
+            drop(running);
+            host.crash().await;
+            let after = sim.host("node/inspect", &disk, 0);
+            let job = row(&model, id).await;
+            check(&after.env, &job, &format!("crash after {crash_after} ops")).await;
+            let names: Vec<String> = files(&after.env).await.into_iter().map(|(n, _)| n).collect();
+            left.temporary = names.iter().any(|n| n.ends_with(".part"));
+            left.committed = names.iter().any(|n| !n.ends_with(".part"));
+            left.recorded = job.file.is_some();
+            after.stop().await;
+        } else {
+            drop(running);
+            host.stop().await;
+        }
+        disk.disarm_crash();
+
+        // The restarted node takes the export once the crashed attempt's claim has run out.
+        let host = sim.host("node/boot-2", &disk, 0);
+        let _running = start(&host, &model, base);
+        let mut done = None;
+        for _ in 0..(EXPORT_LEASE.as_secs() / 30 + 20) {
+            let job = row(&model, id).await;
+            if job.file.is_some() || job.error.is_some() {
+                done = Some(job);
+                break;
+            }
+            database.clock.sleep(Duration::from_secs(30)).await;
+        }
+        let job = done.unwrap_or_else(|| panic!("crash after {crash_after} ops: the export never finished"));
+        assert_eq!(job.error, None);
+        assert_eq!(ExportState::of(&job, host.env.clock.wall_now()), ExportState::Ready);
+        check(&host.env, &job, &format!("resumed after a crash after {crash_after} ops")).await;
+
+        // The sweep leaves only the recorded file: it removes a file of an attempt the row does not name (what a
+        // crash between the rename and the row leaves) and a temporary file whose attempt holds no claim.
+        let dir = DiskPath::new(Root::Exports, &PROJECT.to_string()).unwrap();
+        for stray in [format!("{id}.99.jsonl"), format!("{id}.98.part")] {
+            let file = host.env.disk.open(&dir.join(&stray).unwrap(), OpenMode::CreateNew).await.unwrap();
+            file.append(0, vec![bytes::Bytes::from_static(b"{}\n")]).await.unwrap();
+            file.sync_data().await.unwrap();
+        }
+        host.env.disk.sync_dir(&dir).await.unwrap();
+        let swept = sweep(&model, host.env.disk.as_ref(), host.env.clock.wall_now()).await.unwrap();
+        // The two strays, and the crashed attempt's temporary file when no sweep since its claim ran out took it.
+        assert!(swept.files >= 2, "crash after {crash_after} ops: {swept:?}");
+        let names: Vec<String> = files(&host.env).await.into_iter().map(|(n, _)| n).collect();
+        let recorded = job.file.as_deref().unwrap().rsplit('/').next().unwrap().to_owned();
+        assert_eq!(names, vec![recorded], "crash after {crash_after} ops");
+        left
+    })
+}
+
+#[test]
+fn a_crash_at_any_disk_operation_leaves_no_partial_file_and_the_export_resumes() {
+    // An export of this size takes about a dozen disk operations: a crash point at each of them, and beyond.
+    let left: Vec<Left> = (1..=16).map(|n| crash_and_resume(n, n)).collect();
+    // The crash points fell before the file existed, while a temporary file was being written, and after the
+    // file was committed and recorded (on the sweep that followed).
+    assert!(left.iter().any(|l| l.crashed && !l.temporary && !l.committed), "{left:?}");
+    assert!(left.iter().any(|l| l.crashed && l.temporary && !l.committed), "{left:?}");
+    assert!(left.iter().any(|l| l.crashed && l.committed && l.recorded), "{left:?}");
+}
+
+#[test]
+fn a_deletion_expires_the_exports_it_predates_and_removes_their_files() {
+    crash_and_resume_then(|model, env, id, now| async move {
+        // Five exports were created before the request, each with its file.
+        let purged = purge(&model, env.disk.as_ref(), PROJECT, now, now).await.unwrap();
+        assert_eq!(purged.expired.len(), 5);
+        assert_eq!(purged.files_removed, 5);
+        let job = row(&model, id).await;
+        assert_eq!(ExportState::of(&job, now), ExportState::Expired);
+        assert!(files(&env).await.is_empty());
+        // Again: nothing left to expire.
+        let again = purge(&model, env.disk.as_ref(), PROJECT, now, now).await.unwrap();
+        assert!(again.expired.is_empty());
+    });
+}
+
+/// Runs one export to completion on a node, then `then` with the model, the node's env, the export id and now.
+fn crash_and_resume_then<F, Fut>(then: F)
+where
+    F: FnOnce(PgModel, Env, ExportJobId, Timestamp) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    crucible_sim::run(7, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(database.clock.clone(), sim.rng("pg").as_ref(), PgFaults::default());
+        model.projects().insert(&project()).await.unwrap();
+        let disk = sim.disk("node");
+        let host = sim.host("node/boot-1", &disk, 0);
+        let exports = Exports::new(host.env.clone(), Arc::new(model.clone()));
+        let scope = crucible_auth::test_support::scope(PROJECT).unwrap();
+        let now = host.env.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let request = |key: &str| CreateExport {
+            format: ExportFormat::OtlpJson,
+            selector: Selector {
+                window: TimeWindow::new(base, now).unwrap(),
+                trace_ids: Vec::new(),
+                user_id: None,
+                session_id: None,
+            },
+            options: Options::default(),
+            created_by: "user:test".to_owned(),
+            idempotency_key: Some(key.to_owned()),
+        };
+        let Created::New(job) = exports.create(scope, request("k1")).await.unwrap() else {
+            panic!("a new export")
+        };
+        // The same request under the same key is a replay; another request under it is refused.
+        assert!(matches!(exports.create(scope, request("k1")).await.unwrap(), Created::Replay(j) if j.new.id == job.new.id));
+        let mut other = request("k1");
+        other.options.gzip = true;
+        assert!(matches!(exports.create(scope, other).await, Err(CreateError::KeyReused)));
+        // Five per hour per project; replays did not count.
+        for n in 2..=5 {
+            assert!(matches!(exports.create(scope, request(&format!("k{n}"))).await, Ok(Created::New(_))));
+        }
+        let limited = exports.create(scope, request("k6")).await;
+        assert!(matches!(limited, Err(CreateError::RateLimited { retry_after_s }) if retry_after_s > 3_000), "{limited:?}");
+
+        let _running = start(&host, &model, base);
+        let id = job.new.id;
+        for _ in 0..400 {
+            let all = model.export_jobs().list(PROJECT, 10).await.unwrap();
+            if all.iter().all(|j| j.file.is_some()) {
+                break;
+            }
+            database.clock.sleep(Duration::from_secs(5)).await;
+        }
+        let job = row(&model, id).await;
+        check(&host.env, &job, "a finished export").await;
+        let download = exports.open(scope, id).await.unwrap();
+        assert_eq!(download.len, job.bytes);
+        let bytes = download.read(0, usize::try_from(download.len).unwrap()).await.unwrap();
+        assert_eq!(sha256(&bytes), download.checksum);
+        then(model, host.env.clone(), id, host.env.clock.wall_now()).await;
+    });
+}

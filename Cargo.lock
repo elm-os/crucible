@@ -1062,8 +1062,10 @@ dependencies = [
 name = "crucible-export"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "crucible-auth",
+ "crucible-chfmt",
  "crucible-control",
  "crucible-env",
  "crucible-jobs",
@@ -1071,8 +1073,10 @@ dependencies = [
  "crucible-otlp",
  "crucible-plan",
  "crucible-query",
+ "crucible-recent",
  "crucible-records",
  "crucible-schema",
+ "crucible-sim",
  "flate2",
  "futures",
  "proptest",
