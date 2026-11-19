@@ -94,6 +94,41 @@ test.describe("phone at 390 px", () => {
     await expectAccessible(page, "traces on a phone");
   });
 
+  test("MCP: the scope controls wrap and the servers table scrolls inside its frame", async ({
+    page,
+    api,
+  }) => {
+    api.on(
+      new RegExp(`/projects/${PROJECT}/mcp/servers$`),
+      json({
+        data: [
+          {
+            server_name: "files",
+            stats: {
+              calls: 120,
+              errors: 6,
+              error_rate: 0.05,
+              caller_faults: 2,
+              latency: { p50_us: 12_000, p90_us: 40_000, p99_us: 250_000 },
+              last_seen: "2026-11-17T13:59:00.000000Z",
+            },
+            clients: 3,
+            version: "1.4.0",
+            deploys: 2,
+          },
+        ],
+        capture_sources: [{ server_name: "files", available: ["sdk"], chosen: "sdk" }],
+        saturated: false,
+        meta: { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" },
+      }),
+    );
+    await page.goto(`/mcp/servers/?project=${PROJECT}`);
+    await expect(page.getByRole("link", { name: "files" })).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Include caller faults" })).toBeInViewport();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "mcp servers on a phone");
+  });
+
   test("triage: choosing a span opens its sheet; Escape closes it and focus returns to the row", async ({
     page,
     api,
