@@ -130,6 +130,7 @@ impl QueryService {
         }
         let full = data.len() > limit as usize;
         data.truncate(limit as usize);
+        read.decorate(&mut data).await?;
         let has_more = full || !exhausted;
         let next = if full {
             data.last().map(|item| item.head.key())

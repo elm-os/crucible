@@ -15,6 +15,8 @@
 //! - **Cursors** are plain values ([`PageCursor`], [`HeadCursor`], [`ChildCursor`], [`SpanListCursor`],
 //!   [`IdCursor`]); the API signs and encodes them with `crucible-cursor`.
 //! - **Errors** are [`QueryServiceError`], one problem code of contract 12.3 each.
+//! - **Facts** resolve in Rust with `crucible_records::fold_facts` (contract 3.8): the effective facts of one
+//!   target, and the decoration of trace detail and of trace list pages.
 //!
 //! Each service is one module (`trace_detail`, `trace_list`, `live_tail`, `span_children`, `data_bounds`,
 //! `span_list`, `sessions`, `users`, `search`, `payload`), registered here with its `mod` line and its
@@ -26,8 +28,11 @@ mod context;
 mod cursor;
 mod data_bounds;
 mod decode;
+mod facts;
+mod filter_values;
 mod heads;
 mod live_tail;
+mod metrics;
 mod payload;
 mod search;
 mod service;
@@ -46,8 +51,14 @@ pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, IdCursor, PageCursor, SpanListCursor};
 pub use data_bounds::{DataBounds, MinuteRange};
 pub use decode::TraceHeadView;
+pub use facts::{
+    CorrectionFact, FactTarget, Facts, FlagFact, Resolved, ScoreFact, TagEdit, TargetBounds,
+    TargetFacts, TraceFacts,
+};
+pub use filter_values::{FilterValues, FilterValuesQuery};
 pub use heads::{TRACE_LIST_DEFAULT_LIMIT, TraceListItem};
 pub use live_tail::{NEW_COUNT_MAX, TraceTail, TraceTailQuery};
+pub use metrics::{MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries};
 pub use payload::{PayloadBytes, PayloadQuery};
 pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,

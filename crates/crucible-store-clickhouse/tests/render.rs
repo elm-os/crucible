@@ -826,6 +826,85 @@ fn m2_metrics() {
 }
 
 #[test]
+fn m2_facts() {
+    use crucible_plan::{FactTable, FactsOf, fact_page, fact_rows};
+    let traces = [trace(), TraceId::from_bytes([7; 16])];
+    for table in FactTable::ALL {
+        let name = table.table().name();
+        let rows = fact_rows(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            table,
+            FactsOf::Traces(&traces),
+        );
+        insta::assert_snapshot!(format!("m2_fact_rows_{name}"), rendered(&live(rows)));
+        let page = fact_page(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            table,
+            &traces,
+        );
+        insta::assert_snapshot!(format!("m2_fact_page_{name}"), rendered(&live(page)));
+    }
+    let of_span = FactsOf::Span(trace(), span(3));
+    let rows = fact_rows(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        FactTable::Tags,
+        of_span,
+    );
+    insta::assert_snapshot!("m2_fact_rows_of_a_span", rendered(&live(rows)));
+    let of_session = FactsOf::Session("session-9");
+    let rows = fact_rows(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        FactTable::Flags,
+        of_session,
+    );
+    insta::assert_snapshot!("m2_fact_rows_of_a_session", rendered(&live(rows)));
+}
+
+#[test]
+fn m2_filter_values() {
+    use crucible_plan::{FilterField, FilterValuesRequest, filter_values};
+    let request = |field, prefix: Option<&str>| FilterValuesRequest {
+        source: Source::Spans,
+        field,
+        prefix: prefix.map(str::to_owned),
+        limit: 20,
+    };
+    let release = request(FilterField::Text(TextField::Release), Some("v1."));
+    let plan = filter_values(project(), window(), &clamp(), Caller::Session, &release);
+    insta::assert_snapshot!("m2_filter_values_with_a_prefix", rendered(&live(plan)));
+    let level = request(FilterField::Level, Some("err"));
+    let plan = filter_values(project(), window(), &clamp(), Caller::Session, &level);
+    insta::assert_snapshot!("m2_filter_values_of_an_enum", rendered(&live(plan)));
+}
+
+#[test]
+fn m2_metrics_traces() {
+    let query = MetricsQuery {
+        source: Source::Traces,
+        measures: vec![(MeasureId::Traces, Aggregation::Sum)],
+        dimensions: Vec::new(),
+        filter: Filter::all(),
+        granularity: Granularity::Auto,
+        fill: Fill::Zero,
+        top_n: None,
+    };
+    let series = metrics_series(project(), window(), &clamp(), Caller::Session, &query, None);
+    insta::assert_snapshot!("m2_metrics_traces", rendered(&series.unwrap().unwrap()));
+}
+
+#[test]
 fn node_text_search_with_snippets() {
     let search = TextSearch::new(
         TableId::SpanPayload,

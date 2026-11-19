@@ -13,7 +13,7 @@ use utoipa::OpenApi;
 
 use super::cursor_invalid;
 use crate::access::{ApiState, Project};
-use crate::convert::{meta, micros_between};
+use crate::convert::{meta, micros_between, trace_facts};
 use crate::cursor::Cursors;
 use crate::filters::list_filter;
 use crate::params::{Params, check_window};
@@ -143,7 +143,8 @@ fn list_item(item: &query::TraceListItem) -> wire::TraceListItem {
         session_id: summary.session_id.to_string(),
         environment: head.environment.to_string(),
         release: head.release.to_string(),
-        tags: head.tags.iter().map(ToString::to_string).collect(),
+        tags: item.facts.tags.iter().map(ToString::to_string).collect(),
+        facts: trace_facts(&item.facts),
         saturated: s.saturated(),
     }
 }

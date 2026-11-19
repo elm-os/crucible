@@ -5,6 +5,7 @@ use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::enums::{HeadKind, Level, ObservationType, StatusCode};
+use crate::facts::TraceFacts;
 use crate::meta::Meta;
 use crate::wire::SafeU64;
 
@@ -129,8 +130,11 @@ pub struct TraceListItem {
     pub environment: String,
     /// The head span's release; empty until the store serves the head.
     pub release: String,
-    /// The trace tags; empty until the store serves the head.
+    /// The effective trace tags: the head's tags, which are empty until the store serves the head, plus the
+    /// tags added by edits, minus the removed ones.
     pub tags: Vec<String>,
+    /// The trace's facts. Scores carry no comment or metadata here, and there is no correction.
+    pub facts: TraceFacts,
     /// Whether a count above saturated at 2^53 - 1.
     pub saturated: bool,
 }

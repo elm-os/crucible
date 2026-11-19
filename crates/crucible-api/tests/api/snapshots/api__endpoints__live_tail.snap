@@ -8,6 +8,13 @@ expression: tail.pretty()
       "duration_us": 1000,
       "environment": "default",
       "error_count": 0,
+      "facts": {
+        "bookmarked": false,
+        "correction": null,
+        "public": null,
+        "scores": [],
+        "tags": []
+      },
       "head_kind": "root",
       "input_tokens": 1,
       "level": "default",
@@ -30,6 +37,13 @@ expression: tail.pretty()
       "duration_us": 1000,
       "environment": "default",
       "error_count": 0,
+      "facts": {
+        "bookmarked": false,
+        "correction": null,
+        "public": null,
+        "scores": [],
+        "tags": []
+      },
       "head_kind": "root",
       "input_tokens": 1,
       "level": "default",

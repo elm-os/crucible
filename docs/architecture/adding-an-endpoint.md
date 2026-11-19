@@ -17,12 +17,14 @@ endpoints share stays in the shared modules.
 | Trace by id | `trace_bounds.rs`, `trace_spans.rs` | `trace_detail.rs` | `trace_detail.rs` | `trace_detail.rs` |
 | Children of a span | `trace_bounds.rs`, `span_children.rs` | `span_children.rs` | `spans.rs` | `spans.rs` |
 | Data bounds | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` |
+| Facts of a target, fact writes, and the decoration of trace detail and lists | `facts.rs` | `facts.rs` | `facts.rs` (writes through the binary's `FactWriter`) | `facts.rs` |
+| Filter values | `filter_values.rs` | `filter_values.rs` | `filter_values.rs` | `metrics.rs` |
 | Sessions | `sessions.rs` | `sessions.rs` | `sessions.rs` | `sessions.rs` |
 | Users and the sessions of a user | `users.rs` | `users.rs` | `users.rs` | `users.rs` |
 | Span list | `span_list.rs` | `span_list.rs` | `span_list.rs` | `span_list.rs` |
 | Search | `search.rs` | `search.rs` | `search.rs` | `search.rs` |
 | Payload byte range | `payload.rs` | `payload.rs` | `payload.rs` | `payload.rs` |
-| Metrics query (plan builders only so far) | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | | | |
+| Metrics query and schema | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | `metrics.rs` | `metrics.rs` | `metrics.rs` |
 | Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `filters.rs` (the list filter parameters), `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
 Each registry is a sorted list with one entry per endpoint; insert a new entry at its sorted place. Two slices whose
@@ -121,13 +123,14 @@ both entries.
    and `pnpm --filter crucible-ui test`, `pnpm --filter crucible-ui run typecheck`, `pnpm lint`,
    `pnpm format:check` and `pnpm --filter crucible-ui build` pass, as the `ci-ui` workflow runs them.
 
-   Playwright surface row (planned): milestone 2 is designed to close on a Playwright surface table with one row
-   per section, each driving the section's loading, success, error and empty states in a browser. The table does
-   not exist yet. Until it does, the Vitest test carries the four states, and `tools/e2e/ui-traces.mjs`, which the
-   end-to-end test runs, is the only browser check.
+   Playwright surface row: the section's row in [`../testing/ui-surfaces.md`](../testing/ui-surfaces.md) says what
+   renders in each state, and a test in `ui/e2e/` drives each state in a browser (`pnpm --filter crucible-ui exec
+   playwright test` after a build).
 
 8. **An invariant in the system simulation, where the slice adds data.** A slice that adds data (a table, a fact
-   kind, a derived row) adds its check to `crates/crucible-sim/src/system_sim.rs`. The read goes through the real
+   kind, a derived row) adds its check in a new file under `crates/crucible-sim/src/system_sim/`, a child module
+   that sees the run's ledger and node, registered with its `mod` line and one call in `read_everything` (the
+   facts and metrics checks are `system_sim/reads.rs`). The read goes through the real
    `QueryService` after acknowledgements and at quiescence (`read_everything`) and is compared with the oracle's
    ledger, and a failure is a `Violation` mapped to its invariant in
    [`../testing/invariants.md`](../testing/invariants.md), for example I4 for facts or I7 for aggregates. The
@@ -173,7 +176,7 @@ never edits another endpoint's. Insertions can still meet: when two names sort n
 conflict that is resolved by keeping both entries. These places are still one list for every endpoint, or a line
 that every endpoint of a kind changes; each is a follow-up:
 
-- The operation count and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
+- `assert_eq!(operations, ..)` and `concrete()` in `crates/crucible-api/tests/api/document.rs`: every slice that adds
   a route changes the count.
 - The builder calls of `every_built_plan_carries_its_scope_and_window`, and the `plans` and `tables` arrays of
   `every_builder_clamps_its_window_to_retention`, in `crates/crucible-plan/tests/properties.rs`.
@@ -184,7 +187,8 @@ that every endpoint of a kind changes; each is a follow-up:
 - The `Route` and `Position` enums in `crates/crucible-cursor/src/payload.rs` and the cursor methods in
   `crates/crucible-api/src/cursor.rs`: every paged endpoint adds to each.
 - The `Allow: GET, HEAD` header that `unknown_method` sends in `crates/crucible-api/src/lib.rs`: a route with another
-  method gives its method router a fallback of its own, as `POST search` does (`Allow: POST`).
+  method gives its method router a fallback of its own, as `POST search` does (`Allow: POST`) and the fact writes
+  and `POST metrics/query` do through `routes::post_only`.
 - `ui/src/api/client.ts`, which holds every request function.
 - `crates/crucible-sim/src/system_sim.rs`, the one oracle.
 

@@ -3,6 +3,8 @@
 //! exports. What the builders share is in `build`.
 
 mod data_bounds;
+mod facts;
+mod filter_values;
 mod metrics;
 mod payload;
 mod search;
@@ -15,6 +17,8 @@ mod trace_spans;
 mod users;
 
 pub use data_bounds::{DataBoundsPlans, data_bounds};
+pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
+pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
     metrics_ranking, metrics_series, metrics_shape,

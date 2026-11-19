@@ -769,8 +769,10 @@ dependencies = [
  "http-body-util",
  "insta",
  "proptest",
+ "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2",
  "tower",
  "tracing",
  "utoipa",
@@ -4738,6 +4740,10 @@ dependencies = [
  "crucible-api-types",
  "crucible-sim",
  "flate2",
+ "getrandom 0.4.3",
+ "proptest",
+ "serde",
+ "serde_json",
  "ts-rs",
 ]
 

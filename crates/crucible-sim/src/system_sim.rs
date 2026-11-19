@@ -87,6 +87,7 @@ use crate::trace::Trace;
 use crate::wal_sim::{self, LogState, coin, pick, read_log};
 
 mod lists;
+mod reads;
 
 /// How hostile a run is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2687,6 +2688,7 @@ impl Run<'_> {
         for project in 0..self.plan().projects {
             read_list(&self.shared, node, project, true, permitted).await;
         }
+        reads::check(&self.shared, node, &self.model, self.plan().projects).await;
     }
 }
 

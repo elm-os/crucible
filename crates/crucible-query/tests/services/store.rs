@@ -15,8 +15,8 @@ use crucible_env::{
 };
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, Direction, FieldRange,
-    Literal, Measure, Node, Order, Pred, QueryPlan, Row, RowBlock, Scan, SemiJoin, TextSearch,
-    TokenMode, Value,
+    Fill, Literal, Measure, Node, Order, Pred, QueryPlan, Row, RowBlock, Scan, SemiJoin,
+    TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
 use crucible_schema::{AggFn, ColumnRef, MigrationStep, Ty, table};
@@ -117,10 +117,6 @@ fn to_literal(value: &Value) -> Literal {
 /// The groups of an aggregate in its order, after its keyset cursor, cut to its limit.
 fn ordered_groups(aggregate: &Aggregate, mut groups: Vec<Row>) -> Vec<Row> {
     let order = aggregate.order();
-    if order.is_empty() {
-        assert!(aggregate.cursor().is_none() && aggregate.limit().is_none());
-        return groups;
-    }
     let dimensions = aggregate.group().len();
     let key = |row: &Row| -> Vec<Value> {
         order
@@ -142,8 +138,10 @@ fn ordered_groups(aggregate: &Aggregate, mut groups: Vec<Row>) -> Vec<Row> {
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal)
     };
+    // Without an order the sort is stable and keeps the groups in first-seen order.
     groups.sort_by(|a, b| compare_keys(&key(a), &key(b)));
     if let Some(cursor) = aggregate.cursor() {
+        assert!(!order.is_empty(), "a keyset cursor follows an order");
         let cursor: Vec<Value> = cursor.iter().map(literal).collect();
         groups.retain(|row| compare_keys(&key(row), &cursor).is_gt());
     }
@@ -274,6 +272,9 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
             window.contains(time("start_time"))
         }
         TableId::SpanMetrics | TableId::McpToolRollup => window.contains(time("minute")),
+        TableId::FactScores | TableId::FactTags | TableId::FactFlags | TableId::FactCorrections => {
+            window.contains(time("target_time"))
+        }
         TableId::TraceStats => match &row[position(table_id, "row_day")] {
             // A day's partial is read when the day overlaps the window.
             Value::Date(day) => {
@@ -540,79 +541,176 @@ impl FakeStore {
     fn aggregate(&self, plan: &QueryPlan, aggregate: &Aggregate) -> Vec<Row> {
         assert!(aggregate.having_conditions().is_empty());
         let rows = self.visible(plan, aggregate.table(), aggregate.pred());
-        let key = |row: &StoredRow| -> Vec<Value> {
+        let groups = group_rows(aggregate, rows, |row| {
             aggregate
                 .group()
                 .iter()
                 .map(|c| cell(row, c).clone())
                 .collect()
-        };
-        let mut groups: Vec<(Vec<Value>, Vec<StoredRow>)> = Vec::new();
-        for row in rows {
-            let key = key(&row);
-            match groups
-                .iter_mut()
-                .find(|(k, _)| compare_tuple(k, &key).is_eq())
-            {
-                Some((_, members)) => members.push(row),
-                None => groups.push((key, vec![row])),
-            }
-        }
-        let groups: Vec<Row> = groups
-            .into_iter()
-            .map(|(mut values, members)| {
-                let column = |c: &ColumnRef| -> std::vec::IntoIter<Value> {
-                    let values: Vec<Value> =
-                        members.iter().map(|row| cell(row, c).clone()).collect();
-                    values.into_iter()
-                };
-                values.extend(aggregate.measures().iter().map(|measure| {
-                    match measure {
-                        Measure::Count => Value::UInt(members.len() as u64),
-                        Measure::Sum(c) => column(c)
-                            .reduce(|a, b| match (a, b) {
-                                (Value::UInt(a), Value::UInt(b)) => Value::UInt(a + b),
-                                (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
-                                other => panic!("cannot sum {other:?}"),
-                            })
-                            .unwrap(),
-                        Measure::Min(c) => column(c).min_by(compare).unwrap(),
-                        Measure::Max(c) | Measure::PickMerge(c) => {
-                            column(c).max_by(compare).unwrap()
-                        }
-                        Measure::Uniq(c) => {
-                            let mut seen: Vec<Value> = Vec::new();
-                            for value in column(c) {
-                                if !seen.iter().any(|v| compare(v, &value).is_eq()) {
-                                    seen.push(value);
-                                }
-                            }
-                            Value::UInt(seen.len() as u64)
-                        }
-                        Measure::SetMerge(c) => {
-                            let Some(AggFn::GroupUniqArrayArray(bound)) = c.ty().agg_fn() else {
-                                panic!("{} is not a set partial", c.name())
-                            };
-                            let mut set: Vec<Value> = Vec::new();
-                            for value in column(c) {
-                                let Value::Array(items) = value else {
-                                    panic!("{} is not an array", c.name())
-                                };
-                                set.extend(items);
-                            }
-                            set.sort_by(compare);
-                            set.dedup_by(|a, b| compare(a, b).is_eq());
-                            set.truncate(usize::from(bound));
-                            Value::Array(set)
-                        }
-                        other => panic!("the fake store does not compute {other:?}"),
-                    }
-                }));
-                Row::new(values)
-            })
-            .collect();
+        });
         ordered_groups(aggregate, groups)
     }
+
+    /// A time series: the aggregate per (dimensions, bucket), zero-filled over the window when asked.
+    fn time_series(&self, plan: &QueryPlan, series: &TimeSeries) -> Vec<Row> {
+        let aggregate = series.aggregate();
+        let rows = self.visible(plan, aggregate.table(), aggregate.pred());
+        let step = series.step();
+        let bucket = |row: &StoredRow| match cell(row, &series.time()) {
+            Value::Time(t) => step.bucket(*t),
+            other => panic!("the time column holds {other:?}"),
+        };
+        let grouped = group_rows(aggregate, rows, |row| {
+            let mut key: Vec<Value> = aggregate
+                .group()
+                .iter()
+                .map(|c| cell(row, c).clone())
+                .collect();
+            key.push(Value::Time(bucket(row)));
+            key
+        });
+        let dims = aggregate.group().len();
+        // The bucket goes first in the output.
+        let mut out: Vec<Vec<Value>> = grouped
+            .into_iter()
+            .map(|row| {
+                let mut values = row.into_values();
+                let time = values.remove(dims);
+                values.insert(0, time);
+                values
+            })
+            .collect();
+        if series.fill() == Fill::Zero {
+            let (first, count) = step.buckets(plan.window());
+            let mut keys: Vec<Vec<Value>> = out.iter().map(|v| v[1..=dims].to_vec()).collect();
+            if dims == 0 {
+                keys = vec![Vec::new()];
+            }
+            keys.dedup();
+            for key in keys {
+                for n in 0..count as i64 {
+                    let at = first.saturating_add_micros(n * step.seconds() * 1_000_000);
+                    let at = Value::Time(at);
+                    if out.iter().any(|v| v[0] == at && v[1..=dims] == key[..]) {
+                        continue;
+                    }
+                    let mut row = vec![at];
+                    row.extend(key.iter().cloned());
+                    row.extend(aggregate.measures().iter().map(|m| match m {
+                        Measure::Count => Value::UInt(0),
+                        Measure::Sum(c) if matches!(c.ty().scalar(), Ty::Int32 | Ty::Int64) => {
+                            Value::Int(0)
+                        }
+                        Measure::Sum(_) => Value::UInt(0),
+                        Measure::HistogramMerge(_) => Value::Tuple2(
+                            Box::new(Value::Array(Vec::new())),
+                            Box::new(Value::Array(Vec::new())),
+                        ),
+                        _ => Value::Null,
+                    }));
+                    out.push(row);
+                }
+            }
+        }
+        out.sort_by(|a, b| {
+            compare_tuple(&a[1..=dims], &b[1..=dims]).then_with(|| compare(&a[0], &b[0]))
+        });
+        out.into_iter().map(Row::new).collect()
+    }
+}
+
+/// The rows of an aggregate grouped by `key`, each group's key then its measures, in first-seen order.
+fn group_rows(
+    aggregate: &Aggregate,
+    rows: Vec<StoredRow>,
+    key: impl Fn(&StoredRow) -> Vec<Value>,
+) -> Vec<Row> {
+    let mut groups: Vec<(Vec<Value>, Vec<StoredRow>)> = Vec::new();
+    for row in rows {
+        let key = key(&row);
+        match groups
+            .iter_mut()
+            .find(|(k, _)| compare_tuple(k, &key).is_eq())
+        {
+            Some((_, members)) => members.push(row),
+            None => groups.push((key, vec![row])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(mut values, members)| {
+            let column = |c: &ColumnRef| -> std::vec::IntoIter<Value> {
+                let values: Vec<Value> = members.iter().map(|row| cell(row, c).clone()).collect();
+                values.into_iter()
+            };
+            values.extend(aggregate.measures().iter().map(|measure| {
+                match measure {
+                    Measure::Count => Value::UInt(members.len() as u64),
+                    Measure::Sum(c) => column(c)
+                        .reduce(|a, b| match (a, b) {
+                            (Value::UInt(a), Value::UInt(b)) => Value::UInt(a + b),
+                            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                            other => panic!("cannot sum {other:?}"),
+                        })
+                        .unwrap(),
+                    Measure::Min(c) => column(c).min_by(compare).unwrap(),
+                    Measure::Max(c) | Measure::PickMerge(c) => column(c).max_by(compare).unwrap(),
+                    Measure::HistogramMerge(c) => merge_histograms(column(c)),
+                    Measure::Uniq(c) => {
+                        let mut seen: Vec<Value> = Vec::new();
+                        for value in column(c) {
+                            if !seen.iter().any(|v| compare(v, &value).is_eq()) {
+                                seen.push(value);
+                            }
+                        }
+                        Value::UInt(seen.len() as u64)
+                    }
+                    Measure::SetMerge(c) => {
+                        let mut union: Vec<Value> = column(c)
+                            .flat_map(|set| match set {
+                                Value::Array(items) => items,
+                                other => panic!("a set is an array, not {other:?}"),
+                            })
+                            .collect();
+                        union.sort_by(compare);
+                        union.dedup();
+                        // A bounded set partial keeps at most its bound, as the store's does.
+                        if let Some(AggFn::GroupUniqArrayArray(bound)) = c.ty().agg_fn() {
+                            union.truncate(usize::from(bound));
+                        }
+                        Value::Array(union)
+                    }
+                    other => panic!("the fake store does not compute {other:?}"),
+                }
+            }));
+            Row::new(values)
+        })
+        .collect()
+}
+
+/// The `sumMap` of histogram partials: keys ascending, without zero counts.
+fn merge_histograms(partials: impl Iterator<Item = Value>) -> Value {
+    let mut sums: BTreeMap<u64, u64> = BTreeMap::new();
+    for partial in partials {
+        let Value::Tuple2(keys, counts) = partial else {
+            panic!("a histogram is a tuple")
+        };
+        let (Value::Array(keys), Value::Array(counts)) = (*keys, *counts) else {
+            panic!("a histogram holds two arrays")
+        };
+        for (k, n) in keys.into_iter().zip(counts) {
+            let (Value::UInt(k), Value::UInt(n)) = (k, n) else {
+                panic!("histogram entries are unsigned")
+            };
+            *sums.entry(k).or_default() += n;
+        }
+    }
+    sums.retain(|_, n| *n > 0);
+    let array = |values: Vec<u64>| Value::Array(values.into_iter().map(Value::UInt).collect());
+    Value::Tuple2(
+        Box::new(array(sums.keys().copied().collect())),
+        Box::new(array(sums.values().copied().collect())),
+    )
 }
 
 fn no_writes<T>() -> Result<T, StoreError> {
@@ -637,6 +735,7 @@ impl TelemetryStore for FakeStore {
             Node::Scan(scan) => self.scan(&plan, scan),
             Node::Aggregate(aggregate) => self.aggregate(&plan, aggregate),
             Node::SemiJoin(join) => self.semi_join(&plan, join),
+            Node::TimeSeries(series) => self.time_series(&plan, series),
             Node::TextSearch(search) => self.text_search(&plan, search),
             Node::FieldRange(range) => self.field_range(&plan, range),
             other => panic!("the fake store does not run {other:?}"),

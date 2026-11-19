@@ -59,6 +59,6 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        assert_eq!(operations, 12);
+        assert_eq!(operations, 20);
     });
 }

@@ -89,6 +89,7 @@ impl QueryService {
         let new_count = (data.len() as u64).min(u64::from(NEW_COUNT_MAX)) as u32;
         let has_more = truncated || data.len() > limit as usize;
         data.truncate(limit as usize);
+        read.decorate(&mut data).await?;
         let meta = read.finish(
             read.now,
             consistency(base, &recent),

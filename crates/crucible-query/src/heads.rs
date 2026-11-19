@@ -13,13 +13,21 @@ use crucible_records::{HeadKind, TableId, TimeWindow, TraceId};
 
 use crate::context::QueryServiceError;
 use crate::decode::{self, TraceHeadView};
+use crate::facts::TraceFacts;
 use crate::service::{Read, Stats, TraceSummary};
 
 /// The default page of the trace list (contract 12.4).
 pub const TRACE_LIST_DEFAULT_LIMIT: u32 = 50;
 
-/// The tables the trace list depends on, for the quarantine rule.
-pub(crate) const LIST_TABLES: [TableId; 2] = [TableId::TraceHeads, TableId::TraceStats];
+/// The tables the trace list depends on, for the quarantine rule: its heads, their stats and the facts that
+/// decorate them.
+pub(crate) const LIST_TABLES: [TableId; 5] = [
+    TableId::TraceHeads,
+    TableId::TraceStats,
+    TableId::FactScores,
+    TableId::FactTags,
+    TableId::FactFlags,
+];
 
 /// The tables a trace list under `filter` depends on: [`LIST_TABLES`], and the span table its conditions on
 /// spans are evaluated on (`crucible_plan::filtered_trace_list`), whose quarantined pairs can hide traces too.
@@ -37,7 +45,7 @@ pub(crate) fn list_tables(filter: &Filter) -> Vec<TableId> {
 }
 
 /// One trace of the list.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct TraceListItem {
     /// The head that places the trace in the list.
     pub head: TraceHeadView,
@@ -45,6 +53,8 @@ pub struct TraceListItem {
     pub summary: TraceSummary,
     /// Whether the head came from the recent index: the store does not serve it yet.
     pub recent: bool,
+    /// The trace's facts: scores without comments, tag edits, flags, and the effective tags (contract 3.8).
+    pub facts: TraceFacts,
 }
 
 /// A candidate row of the list, from either source.
@@ -176,6 +186,7 @@ impl Read<'_> {
                     head,
                     summary: stats.resolve(),
                     recent,
+                    facts: TraceFacts::default(),
                 });
             }
         }
