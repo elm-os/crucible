@@ -1,10 +1,12 @@
 # Crucible with a bundled ClickHouse 26.8 LTS and Postgres 18. Development preview: see docs/self-hosting/README.md.
 #
-# Two files beside this one, made once before the first start (docs/self-hosting/quickstart.md):
+# One file beside this one, made once before the first start (docs/self-hosting/quickstart.md):
 #   .env       CLICKHOUSE_PASSWORD, POSTGRES_PASSWORD and CRUCIBLE_MASTER_KEY:
 #              printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-#   keys.toml  the project keys that ingest and the API accept
 # Then: docker compose up -d --wait
+# The first start prints a one-time setup link in `docker compose logs crucible`; open it to create the organization
+# and its owner, or run `docker compose exec crucible crucible admin init --org-name <name> --email <email>
+# --name <name>` with the password on standard input. Then sign in and make an API key in Settings.
 #
 # Optional settings in .env:
 #   CRUCIBLE_IMAGE           the Crucible image (default ghcr.io/elm-os/crucible:latest)
@@ -13,8 +15,8 @@
 #   CRUCIBLE_HTTP_PORT       host port of the UI, the REST API and OTLP/HTTP ingest (default 8080)
 #   CRUCIBLE_OTLP_HTTP_PORT  host port of OTLP/HTTP ingest (default 4318)
 #
-# Postgres holds the control plane. In this milestone that is the migrations ledger: each schema step is recorded
-# there and applied once. Sign-in, projects and keys will live there too.
+# Postgres holds the control plane: sign-in, the organization, projects, members and API keys, and the migrations
+# ledger, in which each schema step is recorded and applied once.
 name: crucible
 
 services:
@@ -73,17 +75,8 @@ services:
       - serve
       - --migrate
       - --data-dir=/var/lib/crucible/data
-      - --keys-file=/etc/crucible/keys.toml
     volumes:
       - crucible-data:/var/lib/crucible
-      - type: bind
-        source: ./keys.toml
-        target: /etc/crucible/keys.toml
-        read_only: true
-        bind:
-          # Docker Engine then refuses to start without keys.toml and names the path. Docker Desktop for Windows
-          # makes an empty directory instead, which the server reports as "Is a directory"; delete it, make the file.
-          create_host_path: false
     ports:
       # The UI, the REST API and OTLP/HTTP ingest.
       - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_HTTP_PORT:-8080}:8080"

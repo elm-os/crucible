@@ -9,6 +9,7 @@ import {
   PROJECT,
   problem,
   SERVER_TEXT,
+  SIGN_IN_CHECK,
   span,
   spanPage,
   TRACE,
@@ -409,14 +410,14 @@ test.describe("trace detail: links", () => {
       "href",
       new RegExp(`^/traces/?\\?project=${PROJECT}$`),
     );
-    expect(api.calls).toEqual([]);
+    expect(api.calls).toEqual([SIGN_IN_CHECK]);
     await expectAccessible(page, "no trace");
   });
 
   test("an invalid trace link says so and asks for nothing", async ({ page, api }) => {
     await page.goto(`/trace/?project=${PROJECT}&trace=4bf92f35`);
     await expect(page.getByText("This trace link isn't valid.")).toBeVisible();
-    expect(api.calls).toEqual([]);
+    expect(api.calls).toEqual([SIGN_IN_CHECK]);
   });
 });
 

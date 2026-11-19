@@ -45,11 +45,11 @@ function submitButton(dialog: HTMLElement) {
   return button;
 }
 
-test("the dialog says it is temporary and names its fields", async () => {
+test("the dialog says why it is there and names its fields", async () => {
   renderDialog();
   const dialog = await open();
-  expect(dialog.textContent).toContain("Temporary, for this development preview");
-  expect(dialog.textContent).toContain("Sign-in will replace this dialog");
+  expect(dialog.textContent).toContain("This server runs without a control plane");
+  expect(dialog.textContent).toContain("With Postgres configured, people sign in instead");
   expect(screen.getByLabelText("Project id")).toBeTruthy();
   expect(screen.getByLabelText("Secret key").getAttribute("type")).toBe("password");
 });

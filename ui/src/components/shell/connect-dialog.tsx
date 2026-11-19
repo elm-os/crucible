@@ -106,9 +106,9 @@ export function ConnectDialog() {
         <div data-slot="stack">
           <DialogTitle>Connect to a project</DialogTitle>
           <DialogDescription>
-            Temporary, for this development preview. Paste a project id and its secret key to read
-            that project&apos;s data. Both stay in this browser tab and are forgotten when you close
-            it. Sign-in will replace this dialog.
+            This server runs without a control plane, so there is no sign-in. Paste a project id and
+            its secret key to read that project&apos;s data. Both stay in this browser tab and are
+            forgotten when you close it. With Postgres configured, people sign in instead.
           </DialogDescription>
         </div>
         <form data-slot="stack" onSubmit={connect}>
