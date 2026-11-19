@@ -38,7 +38,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use crucible_api::StaticProjectSettings;
+use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
 use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
@@ -54,7 +54,7 @@ use crucible_env_prod::ProdConfig;
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
-use crucible_query::QueryService;
+use crucible_query::{HiddenSource, QueryService};
 use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
@@ -67,6 +67,7 @@ use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
 
 use crate::control::Control;
+use crate::lifecycle::Lifecycle;
 use crate::mcp::McpGate;
 use crate::recent::WalSpans;
 use crate::store::{self, ClickHouse};
@@ -317,6 +318,17 @@ struct App {
     wal: Wal,
     keys: Arc<dyn KeyVerifier>,
     gate: Arc<Gate>,
+    /// Retention and deletion; `None` without a control plane.
+    lifecycle: Option<Arc<Lifecycle>>,
+}
+
+/// Where the API finds a project's retention: the node's snapshot of Postgres, or the defaults without a
+/// control plane.
+fn settings_source(lifecycle: Option<&Arc<Lifecycle>>) -> Arc<dyn ProjectSettingsSource> {
+    match lifecycle {
+        Some(lifecycle) => Arc::clone(lifecycle) as Arc<dyn ProjectSettingsSource>,
+        None => Arc::new(StaticProjectSettings::default()),
+    }
 }
 
 /// The ingest settings: the defaults, with the compat ingest routes and routing headers of the compat registry
@@ -352,6 +364,7 @@ async fn open_app(
     cursors: Arc<KeyRing>,
     config: WalConfig,
     identity: Option<Arc<Identity>>,
+    control: Option<&Control>,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -376,7 +389,15 @@ async fn open_app(
         Arc::clone(&keys),
         ingest_config(),
     );
-    let settings = Arc::new(StaticProjectSettings::default());
+    // Retention and deletion need the control plane and this node's WAL.
+    let lifecycle = control.map(|control| {
+        Arc::new(Lifecycle::new(
+            env,
+            Arc::new(control.store.clone()),
+            wal.clone(),
+        ))
+    });
+    let settings = settings_source(lifecycle.as_ref());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
@@ -386,7 +407,8 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
-                crucible_api::platform_router(env, None, identity, settings, cursors, None)
+                let service = lifecycle.as_ref().map(|l| l.service.clone());
+                crucible_api::platform_router(env, None, identity, settings, cursors, None, service)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -396,6 +418,7 @@ async fn open_app(
         wal,
         keys,
         gate,
+        lifecycle,
     };
     Ok((app, report))
 }
@@ -567,6 +590,8 @@ struct StoreTask {
     control: Option<Control>,
     wal: Wal,
     report: RecoveryReport,
+    /// Retention and deletion, when Postgres is configured.
+    lifecycle: Option<Arc<Lifecycle>>,
     keys: Arc<dyn KeyVerifier>,
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
@@ -660,6 +685,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        lifecycle,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -766,11 +792,19 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
+    let telemetry = Arc::clone(&stores.telemetry);
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    let service = match &lifecycle {
+        Some(lifecycle) => {
+            lifecycle.store_is_up(telemetry);
+            service.with_hidden(Arc::clone(lifecycle) as Arc<dyn HiddenSource>)
+        }
+        None => service,
+    };
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
-    let settings = Arc::new(StaticProjectSettings::default());
+    let settings = settings_source(lifecycle.as_ref());
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
             &env,
@@ -779,6 +813,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             settings,
             cursors,
             sql,
+            lifecycle.as_ref().map(|l| l.service.clone()),
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
@@ -1030,9 +1065,6 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     } else {
         "none"
     };
-    // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
-    // for them.
-    let jobs = crate::jobs::start(env, control.as_ref());
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1047,9 +1079,13 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Arc::clone(&cursors),
         WalConfig::default(),
         identity.clone(),
+        control.as_ref(),
         closed,
     )
     .await?;
+    // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
+    // for them. The lifecycle jobs act on ClickHouse once the telemetry store is up.
+    let jobs = crate::jobs::start(env, control.as_ref(), app.lifecycle.as_deref());
     let mode = if clickhouse.is_some() {
         "clickhouse"
     } else {
@@ -1105,6 +1141,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                lifecycle: app.lifecycle.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1258,7 +1295,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None)
+        open_app(env, keys, cursors, config, None, None, None)
             .await
             .unwrap()
             .0
@@ -2477,7 +2514,7 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+        let (app, _) = open_app(env, keys, cursors, config, None, None, closed)
             .await
             .unwrap();
         let ui = Arc::new(Catalog::default());

@@ -42,7 +42,7 @@ mod trace_list;
 
 pub use context::{Meta, PartialReason, QueryServiceError, ReadContext};
 /// Re-exported for callers that build a [`ReadContext`] without depending on `crucible-schema`.
-pub use crucible_plan::RetentionFloors;
+pub use crucible_plan::{Hidden, HiddenSelector, RetentionFloors};
 pub use crucible_recent::Consistency;
 pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, PageCursor};
@@ -61,7 +61,7 @@ pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,
     SearchPage, SearchQuery, search_tokens,
 };
-pub use service::{QueryService, TraceSummary};
+pub use service::{HiddenSource, QueryService, TraceSummary};
 pub use span_children::{SpanChildrenPage, SpanChildrenQuery};
 pub use spans::{SpanSource, TraceSpan};
 pub use trace_detail::TraceDetail;

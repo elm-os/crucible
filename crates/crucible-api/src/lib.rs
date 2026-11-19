@@ -95,7 +95,7 @@ pub fn router_without_store(
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
 /// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
-/// `None` until a telemetry store is up.
+/// `None` until a telemetry store is up. `lifecycle` serves retention settings and deletion requests.
 pub fn platform_router(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -103,9 +103,12 @@ pub fn platform_router(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     sql: Option<SqlWorkspace>,
+    lifecycle: Option<crucible_lifecycle::Service>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, store, keys, settings, cursors, Some(identity), sql)
+    let mut state = state(env, store, keys, settings, cursors, Some(identity), sql);
+    state.lifecycle = lifecycle;
+    serve(env, state)
 }
 
 fn build(
@@ -117,8 +120,21 @@ fn build(
     identity: Option<Arc<Identity>>,
     sql: Option<SqlWorkspace>,
 ) -> Router {
+    let state = state(env, store, keys, settings, cursors, identity, sql);
+    serve(env, state)
+}
+
+fn state(
+    env: &Env,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
+    keys: Arc<dyn KeyVerifier>,
+    settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
+    identity: Option<Arc<Identity>>,
+    sql: Option<SqlWorkspace>,
+) -> ApiState {
     let (service, facts) = store.unzip();
-    let state = ApiState {
+    ApiState {
         env: env.clone(),
         service,
         keys,
@@ -128,7 +144,11 @@ fn build(
         facts,
         idempotency: Arc::default(),
         sql,
-    };
+        lifecycle: None,
+    }
+}
+
+fn serve(env: &Env, state: ApiState) -> Router {
     let api = routes::router()
         .fallback(unknown_path)
         .method_not_allowed_fallback(unknown_method)

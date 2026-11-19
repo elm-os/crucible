@@ -12,6 +12,7 @@ mod class;
 mod endpoints;
 mod error;
 mod filter;
+mod hidden;
 mod literal;
 mod node;
 mod plan;
@@ -29,6 +30,7 @@ pub use class::{
 };
 pub use endpoints::*;
 pub use error::PlanError;
+pub use hidden::{Hidden, HiddenSelector};
 pub use filter::{Filter, FilterField, FilterTarget, TextField};
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{

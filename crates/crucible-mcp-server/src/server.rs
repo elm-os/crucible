@@ -118,7 +118,8 @@ impl ServerHandler for McpServer {
         let settings = shared.settings.settings(project_id);
         let call = Call {
             request_id,
-            ctx: ReadContext::new(principal.scope, settings.retention, Caller::Agent),
+            ctx: ReadContext::new(principal.scope, settings.retention, Caller::Agent)
+                .with_floors(settings.floors),
             settings,
             service: &shared.service,
             cursors: Cursors {

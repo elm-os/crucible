@@ -2,13 +2,17 @@
 //! aggregates.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crucible_env::{Clock, QueryError, Stores};
-use crucible_plan::{MAX_LIST, PlanError, QueryPlan, RetentionClamp, Row, trace_page_stats};
+use crucible_plan::{
+    Hidden, MAX_LIST, PlanError, QueryPlan, RetentionClamp, Row, trace_page_stats,
+};
 use crucible_recent::{Consistency, ReadState, RecentIndex, RecentSpan};
 use crucible_records::{
-    Level, NO_HEAD_START, NanoUsd, Pick, TableId, TimeWindow, Timestamp, TraceId, WalEpoch,
+    Level, NO_HEAD_START, NanoUsd, Pick, ProjectId, TableId, TimeWindow, Timestamp, TraceId,
+    WalEpoch,
 };
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
@@ -32,6 +36,16 @@ pub struct QueryService {
     pub(crate) index: Arc<RecentIndex>,
     /// The epoch of the WAL that feeds `index`: the LSNs of this node's head cursors count its frames.
     pub(crate) wal_epoch: WalEpoch,
+    /// The node's pending-deletion set, when the node has one.
+    pub(crate) hidden: Option<Arc<dyn HiddenSource>>,
+}
+
+/// The pending-deletion set of a node as reads see it (contract 13.4): the deletion requests whose deletes
+/// have not been issued yet. Every typed read leaves out what they select, at once on the node that accepted
+/// the request and within one refresh of the set on every other node.
+pub trait HiddenSource: fmt::Debug + Send + Sync {
+    /// The pending deletions of a project.
+    fn hidden(&self, project_id: ProjectId) -> Vec<Hidden>;
 }
 
 impl QueryService {
@@ -47,7 +61,15 @@ impl QueryService {
             clock,
             index,
             wal_epoch,
+            hidden: None,
         }
+    }
+
+    /// The same service whose reads leave out what the pending deletions of `hidden` select.
+    #[must_use]
+    pub fn with_hidden(mut self, hidden: Arc<dyn HiddenSource>) -> Self {
+        self.hidden = Some(hidden);
+        self
     }
 
     pub(crate) fn read(&self, ctx: &ReadContext) -> Read<'_> {
@@ -57,6 +79,10 @@ impl QueryService {
             ctx: *ctx,
             clamp: RetentionClamp::new(ctx.retention, now).with_floors(ctx.floors),
             now,
+            hidden: self
+                .hidden
+                .as_ref()
+                .map_or_else(Vec::new, |source| source.hidden(ctx.scope.project_id())),
             store_down: None,
         }
     }
@@ -78,6 +104,8 @@ pub(crate) struct Read<'a> {
     pub(crate) ctx: ReadContext,
     pub(crate) clamp: RetentionClamp,
     pub(crate) now: Timestamp,
+    /// The project's pending deletions when the read began.
+    pub(crate) hidden: Vec<Hidden>,
     /// Set when a store read failed as unavailable; the read goes on with what the recent index holds.
     store_down: Option<String>,
 }
@@ -95,6 +123,7 @@ impl Read<'_> {
         if self.store_down.is_some() {
             return Ok(Vec::new());
         }
+        let plan = plan.hiding(&self.hidden);
         let result = match self.service.stores.telemetry.execute(plan).await {
             Ok(stream) => stream.rows().await,
             Err(error) => Err(error),
@@ -114,14 +143,23 @@ impl Read<'_> {
         Ok(self.clamp.cutoff(table)?)
     }
 
-    /// Drops the recent entries that retention has expired: the index is filtered with the cut-off the plans
-    /// are clamped to.
+    /// Drops the recent entries that retention has expired or a pending deletion hides: the index is filtered
+    /// with the cut-off and the deletions that the plans carry.
     pub(crate) fn retained(
         &self,
         mut spans: Vec<RecentSpan>,
     ) -> Result<Vec<RecentSpan>, QueryServiceError> {
         if let Some(cutoff) = self.cutoff(TableId::SpanCore)? {
             spans.retain(|span| span.summary.start_time >= cutoff);
+        }
+        if !self.hidden.is_empty() {
+            spans.retain(|span| {
+                let s = &span.summary;
+                !self
+                    .hidden
+                    .iter()
+                    .any(|h| h.hides(s.trace_id, &s.user_id, &s.session_id, span.received_at))
+            });
         }
         Ok(spans)
     }

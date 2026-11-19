@@ -206,6 +206,7 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
         workspace,
+        None,
     );
     Platform {
         router,

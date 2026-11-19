@@ -42,6 +42,7 @@ impl Modify for ProjectKey {
     tags(
         (name = "auth", description = "Sign-in, sessions and the signed-in user's account."),
         (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
+        (name = "lifecycle", description = "Retention settings and deletion requests."),
         (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),
         (name = "projects", description = "Projects, project members and API keys."),

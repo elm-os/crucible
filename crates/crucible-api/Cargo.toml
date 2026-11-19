@@ -20,6 +20,7 @@ crucible-plan = { workspace = true }
 crucible-query = { workspace = true }
 crucible-records = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-lifecycle = { path = "../crucible-lifecycle" }
 crucible-sqlws = { path = "../crucible-sqlws" }
 axum = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }

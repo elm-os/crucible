@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use crucible_control::{ControlStore, DeletionRequest, DeletionSelector, TxError};
-use crucible_plan::RetentionFloors;
+use crucible_plan::{Hidden, HiddenSelector, RetentionFloors};
 use crucible_records::{DeletionRequestId, DeletionState, ProjectId, Timestamp, TraceId};
 use crucible_schema::RetentionSettings;
 
@@ -96,6 +96,24 @@ impl PendingDeletions {
             .values()
             .filter(|pending| pending.project_id == project_id)
             .cloned()
+            .collect()
+    }
+
+    /// The pending deletions of a project as the plans of its reads carry them (contract 13.4).
+    pub fn hidden(&self, project_id: ProjectId) -> Vec<Hidden> {
+        self.snapshot()
+            .values()
+            .filter(|pending| pending.project_id == project_id)
+            .map(|pending| Hidden {
+                selector: match &pending.selector {
+                    DeletionSelector::Traces(ids) => HiddenSelector::Traces(ids.clone()),
+                    DeletionSelector::User { user_id, .. } => HiddenSelector::User(user_id.clone()),
+                    DeletionSelector::Session(session_id) => {
+                        HiddenSelector::Session(session_id.clone())
+                    }
+                },
+                requested_at: pending.requested_at,
+            })
             .collect()
     }
 

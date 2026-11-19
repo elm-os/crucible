@@ -53,31 +53,37 @@ pub use wal_log::{WalLog, tombstone};
 
 use crate::actions::Shared;
 
+/// Where the leader jobs find the telemetry store. A node opens its store after its jobs start, and may run
+/// without one: while the source answers `None`, a run does nothing.
+pub type TelemetrySource = Arc<dyn Fn() -> Option<Arc<dyn TelemetryStore>> + Send + Sync>;
+
 /// The three leader jobs of the `lifecycle` lease over a telemetry store: the retention executor, the mask
 /// scheduler and the deletion executor. They run one at a time, on the node that holds the lease.
 ///
 /// The retention executor and the mask scheduler wake more often than their period and decide from the
 /// lease's cursor whether their hour or cycle is due, so a pass that could not finish is taken up again soon
 /// and a change of leader repeats nothing.
-pub fn leader_jobs(telemetry: Arc<dyn TelemetryStore>, config: LifecycleConfig) -> [Job; 3] {
-    let shared = Arc::new(Shared { telemetry, config });
+pub fn leader_jobs(telemetry: &TelemetrySource, config: LifecycleConfig) -> [Job; 3] {
     [
         leader(
             "lifecycle-retention",
             config.retention_every / 4,
-            &shared,
+            telemetry,
+            config,
             |ctx, shared| Box::pin(retention::run(ctx, shared)),
         ),
         leader(
             "lifecycle-mask",
             config.mask_cycle / 12,
-            &shared,
+            telemetry,
+            config,
             |ctx, shared| Box::pin(mask::run(ctx, shared)),
         ),
         leader(
             "lifecycle-deletion",
             config.deletion_every,
-            &shared,
+            telemetry,
+            config,
             |ctx, shared| Box::pin(deletion::run(ctx, shared)),
         ),
     ]
@@ -85,12 +91,23 @@ pub fn leader_jobs(telemetry: Arc<dyn TelemetryStore>, config: LifecycleConfig) 
 
 type Run = fn(LeaderCtx, Arc<Shared>) -> BoxFuture<'static, JobResult>;
 
-fn leader(name: &'static str, every: Duration, shared: &Arc<Shared>, run: Run) -> Job {
-    let shared = Arc::clone(shared);
+fn leader(
+    name: &'static str,
+    every: Duration,
+    telemetry: &TelemetrySource,
+    config: LifecycleConfig,
+    run: Run,
+) -> Job {
+    let telemetry = Arc::clone(telemetry);
     Job::leader(
         name,
         LeaseName::Lifecycle,
         Cadence::every(every),
-        move |ctx: LeaderCtx| run(ctx, Arc::clone(&shared)),
+        move |ctx: LeaderCtx| -> BoxFuture<'static, JobResult> {
+            match telemetry() {
+                Some(telemetry) => run(ctx, Arc::new(Shared { telemetry, config })),
+                None => Box::pin(async { Ok(()) }),
+            }
+        },
     )
 }
