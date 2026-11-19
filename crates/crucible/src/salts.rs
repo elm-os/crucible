@@ -1,5 +1,6 @@
 //! The project salts of a node with Postgres (contracts 9.3, 11.1 and 11.2): the shipper's `ProjectSalts` hook
-//! over the `project_salts` rows of the control store.
+//! over the `project_salts` rows of the control store, and the lifecycle's `Subjects`, which hashes the user
+//! of a deletion by user the way stage B hashed the subjects it stored (contract 13.3).
 //!
 //! A salt is 32 random bytes, sealed under the master key with associated data that binds it to its project. It
 //! is created by the first frame of the project that carries a user subject: insert if absent, then read again,
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use crucible_auth::{Sealed, Sealer};
 use crucible_control::{ControlStore, SealedProjectSalt, TxError};
 use crucible_env::{Env, Rng};
+use crucible_lifecycle::Subjects;
 use crucible_normalize::ProjectSalt;
 use crucible_records::ProjectId;
 use crucible_shipper::{ProjectSalts, SaltUnavailable};
@@ -71,6 +73,24 @@ impl StoreSalts {
         let stored = stored.ok_or_else(|| {
             SaltUnavailable("the salt was not there after it was stored".to_owned())
         })?;
+        self.open(stored, &aad)
+    }
+
+    /// The salt of a project when it has one. Unlike the shipper's read, this never creates one: a project
+    /// without a salt has no row that carries a subject hash.
+    async fn read(&self, project: ProjectId) -> Result<Option<ProjectSalt>, SaltUnavailable> {
+        let stored = self
+            .store
+            .project_salts()
+            .get(project)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        stored
+            .map(|stored| self.open(stored, &salt_aad(project)))
+            .transpose()
+    }
+
+    fn open(&self, stored: SealedProjectSalt, aad: &[u8]) -> Result<ProjectSalt, SaltUnavailable> {
         let sealed = Sealed {
             key_id: stored.key_id,
             nonce: stored.nonce,
@@ -78,7 +98,7 @@ impl StoreSalts {
         };
         let salt = self
             .sealer
-            .open(&sealed, &aad)
+            .open(&sealed, aad)
             .ok()
             .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -99,6 +119,26 @@ impl ProjectSalts for StoreSalts {
 
     fn salt(&self, project: ProjectId) -> BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>> {
         Box::pin(self.read_or_create(project))
+    }
+}
+
+/// The subject hashes of a deletion by user (contract 13.3), with the keyed hash that stage B computes.
+impl Subjects for StoreSalts {
+    fn hashes<'a>(
+        &'a self,
+        project_id: ProjectId,
+        issuers: &'a [String],
+        subject: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Vec<[u8; 16]>>, String>> {
+        Box::pin(async move {
+            let salt = self.read(project_id).await.map_err(|error| error.0)?;
+            Ok(salt.map(|salt| {
+                issuers
+                    .iter()
+                    .map(|issuer| salt.subject_hash(issuer, subject))
+                    .collect()
+            }))
+        })
     }
 }
 
@@ -164,6 +204,35 @@ mod tests {
             assert_eq!(model.project_salts().get(PROJECT).await.unwrap(), before);
             let again = salts(&env, &model, [9; 32]).salt(PROJECT).await.unwrap();
             assert_eq!(again.as_bytes(), first.as_bytes());
+        });
+    }
+
+    /// A deletion by user hashes the user as stage B hashed the subjects it stored, never creates a salt for
+    /// a project that has none, and says how to fix a salt that does not open.
+    #[test]
+    fn a_deletion_hashes_with_the_stored_salt_and_never_creates_one() {
+        sim(PgFaults::default(), async |env, model| {
+            let issuers = [
+                "https://a.example".to_owned(),
+                "https://b.example".to_owned(),
+            ];
+            let lifecycle = salts(&env, &model, [9; 32]);
+            assert_eq!(lifecycle.hashes(PROJECT, &issuers, "ada").await, Ok(None));
+            assert!(model.project_salts().get(PROJECT).await.unwrap().is_none());
+            let stored = salts(&env, &model, [9; 32]).salt(PROJECT).await.unwrap();
+            let expected: Vec<[u8; 16]> = issuers
+                .iter()
+                .map(|issuer| stored.subject_hash(issuer, "ada"))
+                .collect();
+            assert_eq!(
+                lifecycle.hashes(PROJECT, &issuers, "ada").await,
+                Ok(Some(expected))
+            );
+            let error = salts(&env, &model, [8; 32])
+                .hashes(PROJECT, &issuers, "ada")
+                .await
+                .unwrap_err();
+            assert!(error.contains("restore the master key"), "{error}");
         });
     }
 

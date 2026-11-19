@@ -1050,6 +1050,23 @@ impl ReadSide {
         projects.into_iter().collect()
     }
 
+    /// Every row the store still holds of a table, with its partition and whether a delete masks it: masked
+    /// rows are hidden from reads and still on disk until a mask application removes them.
+    pub(crate) fn held(&self, id: TableId) -> Vec<(PartitionId, bool, Vec<Value>)> {
+        self.tables.get(&id).map_or_else(Vec::new, |stored| {
+            stored
+                .parts
+                .iter()
+                .flat_map(|part| {
+                    part.rows
+                        .iter()
+                        .zip(&part.deleted)
+                        .map(|(row, deleted)| (part.partition, *deleted, row.clone()))
+                })
+                .collect()
+        })
+    }
+
     /// The parts of a partition that still carry a delete mask at model time `now`.
     pub(crate) fn masked_parts(&self, id: TableId, partition: PartitionId, now: u64) -> u64 {
         self.tables.get(&id).map_or(0, |stored| {

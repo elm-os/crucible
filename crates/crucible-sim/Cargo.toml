@@ -33,6 +33,9 @@ crucible-jobs = { path = "../crucible-jobs", features = ["test-mutants"] }
 crucible-alerts = { path = "../crucible-alerts", features = ["test-mutants"] }
 crucible-egress = { path = "../crucible-egress" }
 crucible-notify = { path = "../crucible-notify" }
+# The lifecycle simulation runs the real executors and switches their seeded defects on.
+crucible-lifecycle = { path = "../crucible-lifecycle", features = ["test-mutants"] }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 blake3 = { workspace = true }

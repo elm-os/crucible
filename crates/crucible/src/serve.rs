@@ -39,7 +39,7 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use crucible_admission::CpuShares;
-use crucible_api::StaticProjectSettings;
+use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
 use crucible_auth::{DbKeys, KeyVerifier, Sealer, StaticKeys};
@@ -54,9 +54,10 @@ use crucible_env::{
 use crucible_env_prod::ProdConfig;
 use crucible_export::{ExportRuntime, Exports};
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
+use crucible_lifecycle::Subjects;
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
-use crucible_query::QueryService;
+use crucible_query::{HiddenSource, QueryService};
 use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
@@ -70,6 +71,7 @@ use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
 
 use crate::control::Control;
+use crate::lifecycle::Lifecycle;
 use crate::mcp::McpGate;
 use crate::recent::WalSpans;
 use crate::salts::StoreSalts;
@@ -321,6 +323,17 @@ struct App {
     wal: Wal,
     keys: Arc<dyn KeyVerifier>,
     gate: Arc<Gate>,
+    /// Retention and deletion; `None` without a control plane.
+    lifecycle: Option<Arc<Lifecycle>>,
+}
+
+/// Where the API finds the retention of a project: the snapshot of Postgres that the node keeps, or the
+/// defaults without a control plane.
+fn settings_source(lifecycle: Option<&Arc<Lifecycle>>) -> Arc<dyn ProjectSettingsSource> {
+    match lifecycle {
+        Some(lifecycle) => Arc::clone(lifecycle) as Arc<dyn ProjectSettingsSource>,
+        None => Arc::new(StaticProjectSettings::default()),
+    }
 }
 
 /// The ingest settings: the defaults, with the CPU budget's ingest-prepare share and the compat ingest routes and
@@ -350,8 +363,9 @@ fn ingest_config(prepare_permits: u32) -> IngestConfig {
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it with
-/// `ingest`. With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
-#[allow(clippy::too_many_arguments)] // The parts of the app, as `run` and the tests build them.
+/// `ingest`. With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors. With
+/// `control`, retention and deletion start over this WAL and join `modules`.
+#[allow(clippy::too_many_arguments)] // The parts of the node that exist before its WAL is open.
 async fn open_app(
     env: &Env,
     keys: StaticKeys,
@@ -360,6 +374,7 @@ async fn open_app(
     identity: Option<Arc<Identity>>,
     closed: Option<&str>,
     modules: crucible_api::Modules,
+    control: Option<&Control>,
     ingest: IngestConfig,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -378,7 +393,15 @@ async fn open_app(
         None => Arc::new(keys),
     };
     let ingest = Ingest::new(env, wal.clone(), &config, Arc::clone(&keys), ingest);
-    let settings = Arc::new(StaticProjectSettings::default());
+    // Retention and deletion need the control plane and the WAL of this node.
+    let lifecycle = control.map(|control| {
+        Arc::new(Lifecycle::new(
+            env,
+            Arc::new(control.store.clone()),
+            wal.clone(),
+        ))
+    });
+    let settings = settings_source(lifecycle.as_ref());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
@@ -388,6 +411,10 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
+                let modules = crucible_api::Modules {
+                    lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                    ..modules
+                };
                 crucible_api::platform_router(env, None, identity, settings, cursors, modules)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
@@ -398,6 +425,7 @@ async fn open_app(
         wal,
         keys,
         gate,
+        lifecycle,
     };
     Ok((app, report))
 }
@@ -585,6 +613,8 @@ struct StoreTask {
     export_service: Option<Exports>,
     /// Alerting, with a control plane: what the API serves, and the read that opens with the store.
     alerts: Option<(crucible_api::AlertsApi, Arc<crate::alerts::LateSource>)>,
+    /// Retention and deletion, with a control plane.
+    lifecycle: Option<Arc<Lifecycle>>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -671,6 +701,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         exports,
         export_service,
         alerts,
+        lifecycle,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -764,15 +795,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let stores = Stores::new(Arc::new(store));
     // With a control plane the project salts are its `project_salts` rows; without one stage B drops the user
-    // identity of MCP operations (contract 9.3).
-    let (stores, salts): (_, Arc<dyn ProjectSalts>) = match control {
+    // identity of MCP operations (contract 9.3). A deletion by user hashes with the same salts.
+    let (stores, salts, subjects): (_, Arc<dyn ProjectSalts>, _) = match control {
         Some(control) => {
             let control = Arc::new(control.store);
             let sealer = Sealer::new("master-0", config.master_key.seal_key());
-            let salts = StoreSalts::new(&env, control.clone(), sealer);
-            (stores.with_control(control), Arc::new(salts))
+            let salts = Arc::new(StoreSalts::new(&env, control.clone(), sealer));
+            let subjects: Arc<dyn Subjects> = salts.clone();
+            (stores.with_control(control), salts, Some(subjects))
         }
-        None => (stores, Arc::new(NoSalts)),
+        None => (stores, Arc::new(NoSalts), None),
     };
     let (sql, stores) = match sql {
         Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
@@ -785,23 +817,36 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
+    let telemetry = Arc::clone(&stores.telemetry);
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    // Every typed read, the export job's included, leaves out what a pending deletion selects.
+    let service = match &lifecycle {
+        Some(lifecycle) => {
+            // Both come from the control plane, as the lifecycle does.
+            if let Some(subjects) = subjects {
+                lifecycle.store_is_up(telemetry, subjects);
+            }
+            service.with_hidden(Arc::clone(lifecycle) as Arc<dyn HiddenSource>)
+        }
+        None => service,
+    };
     exports.set_service(service.clone());
     // Alert evaluations and previews read through the query service from here on.
     let alerts = alerts.map(|(api, source)| {
         source.open(service.clone());
         api
     });
+    let settings = settings_source(lifecycle.as_ref());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp.open(
         &env,
         service.clone(),
         mcp_keys,
         mcp_cursors,
+        Arc::clone(&settings),
         mcp,
         export_service.clone(),
     );
-    let settings = Arc::new(StaticProjectSettings::default());
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
             &env,
@@ -813,6 +858,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
                 sql,
                 exports: export_service,
                 alerts,
+                lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
             },
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
@@ -1081,7 +1127,6 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         Some(alerting) => (Some((alerting.api, alerting.source)), alerting.jobs),
         None => (None, Vec::new()),
     };
-    let jobs = crate::jobs::start(env, control.as_ref(), &exports, alert_jobs);
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1103,15 +1148,26 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         WalConfig::default(),
         identity.clone(),
         closed,
-        // The SQL workspace starts with the telemetry store.
+        // The SQL workspace starts with the telemetry store; retention and deletion start with the WAL, in
+        // `open_app`.
         crucible_api::Modules {
             sql: None,
             exports: export_service.clone(),
             alerts: alerts.as_ref().map(|(api, _)| api.clone()),
+            lifecycle: None,
         },
+        control.as_ref(),
         ingest,
     )
     .await?;
+    // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
+    let jobs = crate::jobs::start(
+        env,
+        control.as_ref(),
+        &exports,
+        alert_jobs,
+        app.lifecycle.as_deref(),
+    );
     let mode = if clickhouse.is_some() {
         "clickhouse"
     } else {
@@ -1170,6 +1226,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 exports,
                 export_service,
                 alerts,
+                lifecycle: app.lifecycle.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1332,6 +1389,7 @@ mod tests {
             None,
             None,
             crucible_api::Modules::default(),
+            None,
             test_ingest(),
         )
         .await
@@ -1838,6 +1896,7 @@ mod tests {
             service,
             Arc::clone(&app.keys),
             cursors,
+            Arc::new(StaticProjectSettings::default()),
             McpConfig::default(),
             None,
         );
@@ -1906,9 +1965,15 @@ mod tests {
         let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
         let app = test_app_with(env, keys, Arc::clone(&cursors)).await;
         let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
-        app.gate
-            .mcp
-            .open(env, service, keys, cursors, McpConfig::default(), None);
+        app.gate.mcp.open(
+            env,
+            service,
+            keys,
+            cursors,
+            Arc::new(StaticProjectSettings::default()),
+            McpConfig::default(),
+            None,
+        );
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await
@@ -2566,6 +2631,7 @@ mod tests {
             None,
             closed,
             crucible_api::Modules::default(),
+            None,
             test_ingest(),
         )
         .await

@@ -8,7 +8,9 @@
 //! has expired.
 
 use crucible_records::{ProjectScope, SpanId, TableId, TimeWindow, Timestamp, TraceId};
-use crucible_schema::{OutOfRange, RetentionSettings, SpanCoreCol, clamp_from};
+use crucible_schema::{
+    OutOfRange, RetentionBinding, RetentionSettings, SpanCoreCol, clamp_from, table,
+};
 
 use crate::class::QueryClass;
 use crate::error::PlanError;
@@ -31,27 +33,75 @@ pub fn effective_window(
     })
 }
 
+/// The cut-offs a project's reads never go below again (contract 13.1: lengthening retention never shows data
+/// that was already hidden). One instant per retention setting, the start of a UTC day; `None` when nothing was
+/// hidden under an earlier setting.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct RetentionFloors {
+    /// The floor of the tables bound to `retention_days`.
+    pub retention: Option<Timestamp>,
+    /// The floor of the tables bound to `payload_retention_days`.
+    pub payload: Option<Timestamp>,
+    /// The floor of the tables bound to `mcp_content_retention_days`.
+    pub mcp_content: Option<Timestamp>,
+}
+
+impl RetentionFloors {
+    /// The floor of a table. The payload and MCP-content tables are also bound by the floor of
+    /// `retention_days`, as their settings are capped by it.
+    pub fn of(&self, table_id: TableId) -> Option<Timestamp> {
+        match table(table_id).retention.binding {
+            RetentionBinding::RetentionDays => self.retention,
+            RetentionBinding::PayloadRetentionDays => self.payload.max(self.retention),
+            RetentionBinding::McpContentRetentionDays => self.mcp_content.max(self.retention),
+            RetentionBinding::OneDay | RetentionBinding::None => None,
+        }
+    }
+}
+
 /// A project's retention settings at one instant: what every builder clamps its window with.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct RetentionClamp {
     settings: RetentionSettings,
+    floors: RetentionFloors,
     now: Timestamp,
 }
 
 impl RetentionClamp {
     /// The clamp of a project with these settings at `now` (`Clock::wall_now`).
     pub const fn new(settings: RetentionSettings, now: Timestamp) -> Self {
-        Self { settings, now }
+        Self {
+            settings,
+            floors: RetentionFloors {
+                retention: None,
+                payload: None,
+                mcp_content: None,
+            },
+            now,
+        }
     }
 
-    /// [`effective_window`] for a table.
+    /// The same clamp that also never reads below `floors`.
+    #[must_use]
+    pub const fn with_floors(mut self, floors: RetentionFloors) -> Self {
+        self.floors = floors;
+        self
+    }
+
+    /// [`effective_window`] for a table, then clamped to the table's floor.
     pub fn window(
         &self,
         table_id: TableId,
         window: TimeWindow,
     ) -> Result<Option<TimeWindow>, PlanError> {
-        effective_window(table_id, window, &self.settings, self.now)
-            .map_err(|_| PlanError::Retention)
+        let clamped = effective_window(table_id, window, &self.settings, self.now)
+            .map_err(|_| PlanError::Retention)?;
+        Ok(match (clamped, self.floors.of(table_id)) {
+            (Some(window), Some(floor)) if floor > window.from() => {
+                TimeWindow::new(floor, window.to()).ok()
+            }
+            (clamped, _) => clamped,
+        })
     }
 
     /// The first instant of a table that is not expired, or `None` when its rows are kept forever. Rows that
@@ -61,7 +111,7 @@ impl RetentionClamp {
             .settings
             .cutoff(table_id, self.now)
             .map_err(|_| PlanError::Retention)?;
-        Ok(cutoff.map(|day| day.start()))
+        Ok(cutoff.map(|day| day.start()).max(self.floors.of(table_id)))
     }
 
     /// The plan of `root` over `window` clamped for every table the node reads.

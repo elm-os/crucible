@@ -6,6 +6,7 @@
 
 mod export;
 mod facts;
+mod hidden;
 mod list;
 mod metrics;
 mod payload;

@@ -1,0 +1,40 @@
+[package]
+name = "crucible-lifecycle"
+description = "Retention and deletion: the retention executor, the mask scheduler, the deletion executor and the per-node tombstone timer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
+
+[dependencies]
+crucible-auth = { workspace = true }
+crucible-control = { workspace = true }
+crucible-env = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-jobs = { path = "../crucible-jobs" }
+# A path dependency, for the same reason: the export side of a deletion request.
+crucible-export = { path = "../crucible-export" }
+crucible-plan = { workspace = true }
+crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+crucible-wal = { workspace = true }
+crucible-wal-codec = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

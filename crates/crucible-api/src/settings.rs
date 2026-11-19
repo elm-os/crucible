@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crucible_query::RetentionSettings;
+use crucible_query::{RetentionFloors, RetentionSettings};
 use crucible_records::ProjectId;
 
 /// The default maximum window of a list or analytics request, in days (contract 12.4).
@@ -14,6 +14,9 @@ pub const DEFAULT_MAX_WINDOW_DAYS: u32 = 30;
 pub struct ProjectSettings {
     /// Retention (contract 13.1): reads hide what it has expired.
     pub retention: RetentionSettings,
+    /// What earlier, shorter retention settings had hidden: lengthening retention never shows it again
+    /// (contract 13.1).
+    pub floors: RetentionFloors,
     /// The widest window a list or analytics request may ask for, in days (contract 12.4).
     pub max_window_days: u32,
 }
@@ -23,6 +26,7 @@ impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
             retention: RetentionSettings::default(),
+            floors: RetentionFloors::default(),
             max_window_days: DEFAULT_MAX_WINDOW_DAYS,
         }
     }
