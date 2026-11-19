@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crucible_normalize::{IngestFrame, NormCtx, PriceTable, StageB, normalize};
+use crucible_normalize::{IdentityCtx, IngestFrame, NormCtx, PriceTable, StageB, normalize};
 use crucible_records::{
     ApiKeyId, Lsn, ObservationType, PayloadCaps, ProjectId, SpanRecord, Timestamp, WalEpoch,
 };
@@ -83,7 +83,9 @@ fn ship(requests: Vec<Vec<Span>>) -> Vec<SpanRecord> {
         };
         let ctx = NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT);
         let mut normalized = normalize(&frame, &ctx).unwrap();
-        stage_b.admit(&mut normalized).unwrap();
+        stage_b
+            .admit(&mut normalized, &IdentityCtx::Suppressed)
+            .unwrap();
         records.extend(normalized.spans);
     }
     records

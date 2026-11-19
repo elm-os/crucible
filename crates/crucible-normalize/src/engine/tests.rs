@@ -224,17 +224,24 @@ fn detection_takes_the_most_confident_matching_rule_and_the_hint_counts_as_60() 
 }
 
 #[test]
-fn the_projector_is_a_stub() {
-    let otlp = body("", vec![kv("mcp.method.name", "tools/call")], Vec::new());
-    let request = TraceRequest::scan(&otlp, None).unwrap();
-    let span = request.spans().next().unwrap();
+fn the_projector_yields_an_operation_only_for_the_method_key() {
     let draft = SpanDraft {
         record: record(),
         level: None,
     };
     let native = TableMapper::new(&crucible_compat::DIALECT_0);
-    assert!(native.project(&draft, &span).is_none());
+    let otlp = body("", vec![kv("mcp.method.name", "tools/call")], Vec::new());
+    let request = TraceRequest::scan(&otlp, None).unwrap();
+    let span = request.spans().next().unwrap();
+    let op = native.project(&draft, &span).unwrap();
+    assert_eq!(&*op.record.method, "tools/call");
+    assert_eq!(op.record.span_id, draft.record.core.span_id);
     assert!(native.inventory(&draft, &span).is_empty());
+
+    let otlp = body("", vec![kv("gen_ai.tool.name", "echo")], Vec::new());
+    let request = TraceRequest::scan(&otlp, None).unwrap();
+    let span = request.spans().next().unwrap();
+    assert!(native.project(&draft, &span).is_none());
 }
 
 fn str_scalar(s: &str) -> Scalar<'_> {

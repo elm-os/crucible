@@ -13,11 +13,12 @@ use crucible_compat::{
     DIALECT_7, DialectTable, LAYERS,
 };
 use crucible_otlp::{ResourceView, ScopeView, SpanView};
-use crucible_records::{Level, McpOpRecord, McpToolInventoryRecord, SpanRecord};
+use crucible_records::{Level, SpanRecord};
 
 use crate::IngestFrame;
 use crate::engine;
 use crate::index::{Index, PRODUCTION};
+use crate::mcp::{self, InventoryDraft, McpOpDraft};
 
 /// A span as mappers fill it: the record before the request-local forward-fill, defaults, cost, caps and the row
 /// digest. Stage A fills the fields that do not depend on the dialect (ids, times, status, scope, links, the
@@ -67,14 +68,8 @@ pub trait SpanMapper: Sync {
     fn map(&self, ctx: &MapCtx<'_>, span: &SpanView<'_>, out: &mut SpanDraft);
 }
 
-/// The draft of an MCP operation. Milestone 3 gives it its own fields; until then it names the record.
-pub type McpOpDraft = McpOpRecord;
-
-/// The draft of a tool inventory entry. Milestone 3 gives it its own fields; until then it names the record.
-pub type InventoryDraft = McpToolInventoryRecord;
-
-/// Projects MCP operations and tool inventory entries from mapped spans (contract 9.1). Stage A calls it from
-/// milestone 3; until then the production implementation projects nothing.
+/// Projects MCP operations and tool inventory entries from mapped spans (contract 9.1). Stage A calls it for
+/// every span that carries `mcp.method.name` or a tool list, after the span's mapper ran.
 pub trait McpProjector: Sync {
     /// The MCP operation of the span, which exists if and only if the span carries `mcp.method.name`.
     fn project(&self, draft: &SpanDraft, span: &SpanView<'_>) -> Option<McpOpDraft>;
@@ -121,21 +116,21 @@ impl SpanMapper for TableMapper {
     /// Maps the span with every layer, this table being the table of the chosen dialect. A table outside the
     /// production layers is mapped alone.
     fn map(&self, ctx: &MapCtx<'_>, span: &SpanView<'_>, out: &mut SpanDraft) {
-        if LAYERS.iter().any(|layer| core::ptr::eq(*layer, self.table)) {
-            engine::map_span(&PRODUCTION, self.table, ctx, span, out);
+        let _marks = if LAYERS.iter().any(|layer| core::ptr::eq(*layer, self.table)) {
+            engine::map_span(&PRODUCTION, self.table, ctx, span, out)
         } else {
-            engine::map_span(&Index::new(&[self.table]), self.table, ctx, span, out);
-        }
+            engine::map_span(&Index::new(&[self.table]), self.table, ctx, span, out)
+        };
     }
 }
 
 impl McpProjector for TableMapper {
-    fn project(&self, _draft: &SpanDraft, _span: &SpanView<'_>) -> Option<McpOpDraft> {
-        None
+    fn project(&self, draft: &SpanDraft, span: &SpanView<'_>) -> Option<McpOpDraft> {
+        mcp::project(&draft.record.core, span, None)
     }
 
-    fn inventory(&self, _draft: &SpanDraft, _span: &SpanView<'_>) -> Vec<InventoryDraft> {
-        Vec::new()
+    fn inventory(&self, draft: &SpanDraft, span: &SpanView<'_>) -> Vec<InventoryDraft> {
+        mcp::inventory(&draft.record.core, span)
     }
 }
 

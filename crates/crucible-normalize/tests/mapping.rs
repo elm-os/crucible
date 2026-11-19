@@ -111,15 +111,18 @@ fn observation_type_rules_apply_in_priority_order() {
 
 #[test]
 fn only_the_explicit_type_key_is_consumed() {
+    // The method key makes the span an MCP operation, whose projector consumes it (contract 9.1).
     let r = one(vec![
         s("crucible.observation.type", "agent"),
         s("mcp.method.name", "tools/call"),
         s("gen_ai.operation.name", "chat"),
     ]);
-    assert_eq!(
-        residual(&r),
-        r#"{"mcp.method.name":"tools/call","gen_ai.operation.name":"chat"}"#
-    );
+    assert_eq!(residual(&r), r#"{"gen_ai.operation.name":"chat"}"#);
+    let r = one(vec![
+        s("crucible.observation.type", "agent"),
+        s("gen_ai.operation.name", "chat"),
+    ]);
+    assert_eq!(residual(&r), r#"{"gen_ai.operation.name":"chat"}"#);
     // A value that yields no type stays.
     let r = one(vec![s("crucible.observation.type", "nope")]);
     assert_eq!(residual(&r), r#"{"crucible.observation.type":"nope"}"#);

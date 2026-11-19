@@ -11,6 +11,9 @@ on:
       - conformance/**
       - sdk/**
       - crates/crucible-fake-collector/**
+      - crates/crucible-normalize/**
+      - crates/crucible-records/**
+      - crates/crucible-compat/**
       - .github/workflows/sdk-conformance.yml
   workflow_dispatch:
 
