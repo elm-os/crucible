@@ -3385,7 +3385,9 @@ impl Run<'_> {
             .max(watermark.get());
         {
             let admitted = &mut self.shared.ledger().admitted;
-            admitted.admissions.retain(|(lsn, _)| *lsn <= sealed_through);
+            admitted
+                .admissions
+                .retain(|(lsn, _)| *lsn <= sealed_through);
             admitted.kept.retain(|lsn, _| *lsn <= sealed_through);
             admitted.relying.retain(|lsn, _| *lsn <= sealed_through);
         }
