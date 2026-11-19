@@ -19,6 +19,7 @@ pub mod control_pg;
 mod differential;
 mod inserts;
 mod keep_alive;
+mod lifecycle;
 mod m2;
 mod m2_facts;
 mod maintenance;
@@ -340,6 +341,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "ChModel differential: maintenance (2.6)",
         differential::maintenance(&ctx)
+    );
+    row!(
+        "ChModel differential: retention and deletion (13.2 to 13.4)",
+        lifecycle::lifecycle(&ctx)
     );
     if single {
         row!(

@@ -30,8 +30,8 @@ pub use class::{
 };
 pub use endpoints::*;
 pub use error::PlanError;
-pub use hidden::{Hidden, HiddenSelector};
 pub use filter::{Filter, FilterField, FilterTarget, TextField};
+pub use hidden::{Hidden, HiddenSelector};
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{
     AggOutput, Aggregate, ArrivalBounds, DEFAULT_MAX_IDS, Direction, FieldRange, Fill, Having,

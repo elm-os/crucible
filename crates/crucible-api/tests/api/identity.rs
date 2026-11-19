@@ -104,6 +104,35 @@ pub(crate) struct Platform {
     pub(crate) key: As,
 }
 
+/// A node log that takes every tombstone at once.
+#[derive(Debug, Default)]
+struct TestLog(std::sync::atomic::AtomicU64);
+
+#[async_trait::async_trait]
+impl crucible_lifecycle::NodeLog for TestLog {
+    fn epoch(&self) -> crucible_records::WalEpoch {
+        crucible_records::WalEpoch::from_uuid(project(77).uuid())
+    }
+
+    async fn append_tombstone(
+        &self,
+        _: &crucible_control::DeletionRequest,
+    ) -> Result<crucible_records::Lsn, crucible_lifecycle::LogError> {
+        let lsn = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok(crucible_records::Lsn::new(lsn))
+    }
+
+    fn watermark(&self) -> crucible_records::Lsn {
+        crucible_records::Lsn::ZERO
+    }
+}
+
+/// Retention and deletion over the model, on a node whose log takes every tombstone.
+fn lifecycle(env: &Env, model: &PgModel) -> crucible_lifecycle::Service {
+    let node = crucible_lifecycle::NodeState::new(Arc::new(TestLog::default()), "test", "");
+    crucible_lifecycle::Service::new(env, Arc::new(model.clone()), Arc::new(node))
+}
+
 pub(crate) fn session(new: &crucible_auth::service::NewSession) -> As {
     As::Session {
         cookie: new.token.as_str().to_owned(),
@@ -206,7 +235,7 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
         workspace,
-        None,
+        Some(lifecycle(env, &model)),
     );
     Platform {
         router,

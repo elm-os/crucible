@@ -1,0 +1,356 @@
+//! Retention and deletion as `crucible-lifecycle` issues them (contract 13.2 to 13.4), on the server and on the
+//! store model with every answer compared: the resolution of a request's traces, a read that carries the
+//! pending-deletion set, the delete of a request in a partition, the retention delete in a partition that
+//! straddles the cut-off, the read that verifies a delete, the mask application and the partition drop.
+
+use anyhow::{Context as _, Result, anyhow};
+use crucible_auth::test_support::scope;
+use crucible_env::TelemetryStore;
+use crucible_plan::{
+    CmpOp, DeletePlan, Hidden, HiddenSelector, Literal, Pred, QueryPlan, Row, TraceSelector, Value,
+    deletion_traces, expired_before, lifecycle_oldest,
+};
+use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
+use crucible_schema::{Column, Granularity, SpanCoreCol, route};
+
+use crate::blocks::Rows;
+use crate::differential::{finished, insert, rows, same};
+use crate::inserts::{plain_rows, uuid};
+use crate::{Ctx, T0, expect};
+
+const SECOND: i64 = 1_000_000;
+const DAY: i64 = 86_400 * SECOND;
+const SALT: u32 = 77;
+
+fn trace(n: u8) -> TraceId {
+    TraceId::from_bytes([n; 16])
+}
+
+/// `count` spans of one trace of one user and one session, received at `received_at`.
+fn spans(
+    project: ProjectId,
+    epoch: WalEpoch,
+    seq: u64,
+    n: u8,
+    user: &str,
+    received_at: Timestamp,
+    count: usize,
+) -> Rows {
+    plain_rows(
+        TableId::SpanCore,
+        project,
+        epoch,
+        seq,
+        T0,
+        count,
+        SALT + u32::from(n) + u32::try_from(seq).unwrap_or(0) * 100,
+    )
+    .all("trace_id", Value::Bytes(trace(n).to_bytes().to_vec()))
+    .all("trace_hash", Value::UInt(u64::from(trace(n).trace_hash())))
+    .all("user_id", Value::String(user.to_owned()))
+    .all("session_id", Value::String(format!("s-{n}")))
+    .all("received_at", Value::Time(received_at))
+}
+
+fn facts(project: ProjectId, epoch: WalEpoch, seq: u64, time: Timestamp, count: usize) -> Rows {
+    Rows::new(TableId::FactScores, count)
+        .all("project_id", uuid(project.uuid()))
+        .all("target_time", Value::Time(time))
+        .all("target_day", Value::Date(time.date()))
+        .all("trace_id", Value::Bytes(trace(1).to_bytes().to_vec()))
+        .each("key", |row| Value::String(format!("k{seq}-{row}")))
+        .all("wal_epoch", uuid(epoch.uuid()))
+        .all("batch_seq", Value::UInt(seq))
+        .all("received_at", Value::Time(time))
+}
+
+fn ids(found: &[Row]) -> Vec<Vec<u8>> {
+    found
+        .iter()
+        .filter_map(|row| match row.values().first() {
+            Some(Value::Bytes(id)) => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
+    let (project, other, epoch) = (ctx.project(), ctx.project(), ctx.epoch());
+    let scope = scope(project).map_err(|e| anyhow!("{e}"))?;
+    let both: [&dyn TelemetryStore; 2] = [&ctx.store, &ctx.model];
+    let table = TableId::SpanCore;
+    let partition = route(table, Granularity::Day, T0)?;
+    let requested_at = T0.saturating_add_micros(100 * SECOND);
+    let (before, after) = (
+        T0.saturating_add_micros(10 * SECOND),
+        T0.saturating_add_micros(200 * SECOND),
+    );
+    // Trace 1 of ada: three spans before the request and two after it. Trace 2 of bob, before it. Another
+    // project holds a trace with the same id and the same user.
+    let blocks = [
+        (1, spans(project, epoch, 1, 1, "ada", before, 3)),
+        (2, spans(project, epoch, 2, 1, "ada", after, 2)),
+        (3, spans(project, epoch, 3, 2, "bob", before, 2)),
+        (4, spans(other, epoch, 4, 1, "ada", before, 4)),
+    ];
+    for (seq, block) in blocks {
+        insert(ctx, block, ctx.token(epoch, seq, table, T0)?).await?;
+    }
+    let mut reads = 0usize;
+    let mut read = async |plan: QueryPlan, what: &str| -> Result<Vec<Row>> {
+        reads += 1;
+        rows(ctx, plan).await.with_context(|| what.to_owned())
+    };
+
+    // 13.3, selector resolution: the traces a request selects among the spans received before it.
+    let ada = TraceSelector::User("ada");
+    let resolved = read(
+        deletion_traces(scope, ada, requested_at, None, 1_000)?,
+        "the traces of a user",
+    )
+    .await?;
+    same(
+        "the traces of a user",
+        &ids(&resolved),
+        &vec![trace(1).to_bytes().to_vec()],
+    )?;
+    let traces = [trace(1), trace(2), trace(9)];
+    let listed = read(
+        deletion_traces(scope, TraceSelector::Traces(&traces), requested_at, None, 1)?,
+        "the first page of a list of traces",
+    )
+    .await?;
+    same(
+        "the first page",
+        &ids(&listed),
+        &vec![trace(1).to_bytes().to_vec()],
+    )?;
+    let next = read(
+        deletion_traces(
+            scope,
+            TraceSelector::Traces(&traces),
+            requested_at,
+            Some(trace(1)),
+            1,
+        )?,
+        "the page after it",
+    )
+    .await?;
+    same(
+        "the page after it",
+        &ids(&next),
+        &vec![trace(2).to_bytes().to_vec()],
+    )?;
+    let session = read(
+        deletion_traces(
+            scope,
+            TraceSelector::Session("s-2"),
+            requested_at,
+            None,
+            1_000,
+        )?,
+        "the traces of a session",
+    )
+    .await?;
+    same(
+        "the traces of a session",
+        &ids(&session),
+        &vec![trace(2).to_bytes().to_vec()],
+    )?;
+
+    // 13.4, typed reads: a plan that carries the pending-deletion set returns none of the selected rows.
+    let every =
+        TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE).map_err(|e| anyhow!("{e}"))?;
+    let count = |pred: Pred| lifecycle_oldest(scope, table, every, pred);
+    let pending = |selector: HiddenSelector| Hidden {
+        selector,
+        requested_at,
+    };
+    for (hidden, expected, what) in [
+        (Vec::new(), (1, 2), "no pending deletion"),
+        // The spans of trace 1 that arrived after the request stay visible.
+        (
+            vec![pending(HiddenSelector::Traces(vec![trace(1)]))],
+            (1, 2),
+            "a pending trace deletion",
+        ),
+        (
+            vec![pending(HiddenSelector::User("bob".to_owned()))],
+            (1, 1),
+            "a pending user deletion",
+        ),
+        (
+            vec![
+                pending(HiddenSelector::Session("s-2".to_owned())),
+                Hidden {
+                    selector: HiddenSelector::User("ada".to_owned()),
+                    requested_at: Timestamp::MAX_EXCLUSIVE,
+                },
+            ],
+            (0, 0),
+            "two pending deletions",
+        ),
+    ] {
+        let user = read(
+            deletion_traces(scope, ada, Timestamp::MAX_EXCLUSIVE, None, 1_000)?.hiding(&hidden),
+            "the traces of the user under the pending set",
+        )
+        .await?
+        .len();
+        let all = read(
+            deletion_traces(
+                scope,
+                TraceSelector::Traces(&traces),
+                Timestamp::MAX_EXCLUSIVE,
+                None,
+                1_000,
+            )?
+            .hiding(&hidden),
+            "every trace under the pending set",
+        )
+        .await?
+        .len();
+        let found = (user, all);
+        expect(found == expected, || {
+            format!("under {what} the reads return {found:?} traces, not {expected:?}")
+        })?;
+    }
+    let early = read(
+        lifecycle_oldest(scope, table, every, Pred::all())?
+            .hiding(&[pending(HiddenSelector::Traces(vec![trace(1), trace(2)]))]),
+        "the oldest span under the pending set",
+    )
+    .await?;
+    expect(early.len() == 1, || {
+        format!("the spans received after the request should stay visible: {early:?}")
+    })?;
+
+    // 13.3 step 5: the delete of a request in a partition, among the rows received before the request.
+    let selected = Pred::And(vec![
+        Pred::Or(vec![
+            Pred::In(
+                SpanCoreCol::TraceId.column_ref(),
+                vec![Literal::from(trace(1)), Literal::from(trace(9))],
+            ),
+            Pred::eq(SpanCoreCol::UserId, "nobody"),
+        ]),
+        Pred::cmp(SpanCoreCol::ReceivedAt, CmpOp::Lt, requested_at),
+    ]);
+    let delete = DeletePlan::project(scope, table, partition, selected.clone())?;
+    for store in both {
+        let id = store
+            .delete(delete.clone())
+            .await
+            .context("the delete of a request")?;
+        finished(ctx, store, &id).await?;
+    }
+    // 13.3 step 7: the read that verifies it finds nothing, and the rows that arrived later are there.
+    let left = read(count(selected.clone())?, "the verification of the delete").await?;
+    expect(left.is_empty(), || format!("the delete left {left:?}"))?;
+    let kept = read(
+        deletion_traces(
+            scope,
+            TraceSelector::Traces(&traces),
+            Timestamp::MAX_EXCLUSIVE,
+            None,
+            10,
+        )?,
+        "the traces after the delete",
+    )
+    .await?;
+    same(
+        "the traces after the delete",
+        &ids(&kept),
+        &vec![trace(1).to_bytes().to_vec(), trace(2).to_bytes().to_vec()],
+    )?;
+    let theirs = read(
+        deletion_traces(
+            crucible_auth::test_support::scope(other).map_err(|e| anyhow!("{e}"))?,
+            ada,
+            requested_at,
+            None,
+            10,
+        )?,
+        "the other project after the delete",
+    )
+    .await?;
+    expect(theirs.len() == 1, || {
+        "the delete reached another project".to_owned()
+    })?;
+
+    // 13.2 step 6: the mask application removes the masked rows for good.
+    for store in both {
+        let masked = store.masked_parts(table, partition).await?;
+        expect(masked >= 1, || "no part carries a delete mask".to_owned())?;
+        let mask = store
+            .apply_deleted_mask(table, partition)
+            .await
+            .context("the mask application")?;
+        finished(ctx, store, &mask).await?;
+        let masked = store.masked_parts(table, partition).await?;
+        expect(masked == 0, || format!("{masked} parts still carry a mask"))?;
+    }
+    let left = read(count(selected)?, "the verification after the mask").await?;
+    expect(left.is_empty(), || format!("the mask left {left:?}"))?;
+
+    // 13.2 step 3: a monthly partition that straddles the cut-off loses the rows before the cut-off day.
+    let facts_table = TableId::FactScores;
+    let cutoff = Timestamp::from_micros(T0.micros() - T0.micros().rem_euclid(DAY));
+    let (old, new) = (cutoff.saturating_add_micros(-SECOND), cutoff);
+    let month = route(facts_table, Granularity::Day, new)?;
+    expect(route(facts_table, Granularity::Day, old)? == month, || {
+        "the fixture days are not in one month".to_owned()
+    })?;
+    for (seq, time, count) in [(11, old, 3), (12, new, 2)] {
+        let block = facts(project, epoch, seq, time, count);
+        insert(ctx, block, ctx.token(epoch, seq, facts_table, time)?).await?;
+    }
+    let expired = expired_before(facts_table, cutoff)?;
+    let retention = DeletePlan::project(scope, facts_table, month, expired.clone())?;
+    for store in both {
+        let id = store
+            .delete(retention.clone())
+            .await
+            .context("the retention delete")?;
+        finished(ctx, store, &id).await?;
+    }
+    let left = read(
+        lifecycle_oldest(scope, facts_table, every, expired)?,
+        "the verification of the retention delete",
+    )
+    .await?;
+    expect(left.is_empty(), || {
+        format!("the retention delete left {left:?}")
+    })?;
+    let oldest = read(
+        lifecycle_oldest(scope, facts_table, every, Pred::all())?,
+        "the oldest fact after the retention delete",
+    )
+    .await?;
+    expect(
+        oldest.first().map(Row::values) == Some(&[Value::Time(new)][..]),
+        || format!("the oldest fact after the retention delete is {oldest:?}"),
+    )?;
+
+    // 13.2 step 2: a partition whose every project has expired is dropped.
+    for store in both {
+        store
+            .drop_partition(table, partition)
+            .await
+            .context("the partition drop")?;
+        let projects = store.partition_projects(table, partition).await?;
+        expect(
+            !projects.contains(&project) && !projects.contains(&other),
+            || format!("the dropped partition still lists {projects:?}"),
+        )?;
+    }
+    let gone = read(count(Pred::all())?, "the spans after the drop").await?;
+    expect(gone.is_empty(), || format!("the drop left {gone:?}"))?;
+
+    Ok(format!(
+        "{reads} reads agree between the model and the server through the resolution of a request's traces, \
+         reads under the pending-deletion set, the delete of a request in a partition with its verification, \
+         the mask application, the retention delete in a partition that straddles the cut-off, and the \
+         partition drop"
+    ))
+}

@@ -73,10 +73,11 @@ fn service(state: &ApiState, rid: RequestId) -> Result<&Service, ApiError> {
 }
 
 fn failed(rid: RequestId) -> impl FnOnce(ServiceError) -> ApiError {
-    move |error| match error {
+    move |error| {
+        match error {
         ServiceError::Invalid { field, reason } => ApiError::validation(
             rid,
-            vec![field_error(&format!("/{field}"), "invalid_value", &reason)],
+            vec![field_error(field, "invalid_value", &reason)],
         ),
         ServiceError::VersionMismatch { current } => ApiError::new(
             rid,
@@ -108,6 +109,7 @@ fn failed(rid: RequestId) -> impl FnOnce(ServiceError) -> ApiError {
             "the control plane (Postgres) is unavailable; try again shortly",
         )
         .with_retry_after(1),
+    }
     }
 }
 
@@ -257,9 +259,7 @@ fn deletion(request: &DeletionRequest) -> wire::DeletionRequest {
         DeletionSelector::User { user_id, issuer } => {
             (None, None, Some(user_id.clone()), issuer.clone(), None)
         }
-        DeletionSelector::Session(session_id) => {
-            (None, None, None, None, Some(session_id.clone()))
-        }
+        DeletionSelector::Session(session_id) => (None, None, None, None, Some(session_id.clone())),
     };
     wire::DeletionRequest {
         id: request.id.to_string(),
@@ -299,7 +299,7 @@ fn unexpected(rid: RequestId, member: &str, kind: &str) -> ApiError {
     ApiError::validation(
         rid,
         vec![field_error(
-            &format!("/{member}"),
+            member,
             "unexpected_member",
             &format!("a `{kind}` deletion does not take `{member}`; leave it out"),
         )],
@@ -310,7 +310,7 @@ fn missing(rid: RequestId, member: &str, kind: &str) -> ApiError {
     ApiError::validation(
         rid,
         vec![field_error(
-            &format!("/{member}"),
+            member,
             "required",
             &format!("a `{kind}` deletion needs `{member}`"),
         )],
@@ -318,7 +318,10 @@ fn missing(rid: RequestId, member: &str, kind: &str) -> ApiError {
 }
 
 /// The selector of a request body: exactly the members of its kind.
-fn selector(rid: RequestId, body: wire::DeletionRequestCreate) -> Result<DeletionSelector, ApiError> {
+fn selector(
+    rid: RequestId,
+    body: wire::DeletionRequestCreate,
+) -> Result<DeletionSelector, ApiError> {
     let wire::DeletionRequestCreate {
         kind,
         trace_ids,
@@ -332,10 +335,22 @@ fn selector(rid: RequestId, body: wire::DeletionRequestCreate) -> Result<Deletio
         wire::DeletionKind::Session => "session",
     };
     let given = [
-        ("trace_ids", trace_ids.is_some(), kind == wire::DeletionKind::Trace),
-        ("user_id", user_id.is_some(), kind == wire::DeletionKind::User),
+        (
+            "trace_ids",
+            trace_ids.is_some(),
+            kind == wire::DeletionKind::Trace,
+        ),
+        (
+            "user_id",
+            user_id.is_some(),
+            kind == wire::DeletionKind::User,
+        ),
         ("issuer", issuer.is_some(), kind == wire::DeletionKind::User),
-        ("session_id", session_id.is_some(), kind == wire::DeletionKind::Session),
+        (
+            "session_id",
+            session_id.is_some(),
+            kind == wire::DeletionKind::Session,
+        ),
     ];
     if let Some((member, _, _)) = given.iter().find(|(_, set, fits)| *set && !*fits) {
         return Err(unexpected(rid, member, name));
@@ -349,7 +364,7 @@ fn selector(rid: RequestId, body: wire::DeletionRequestCreate) -> Result<Deletio
                     ApiError::validation(
                         rid,
                         vec![field_error(
-                            &format!("/trace_ids/{at}"),
+                            &format!("trace_ids/{at}"),
                             "invalid_id",
                             "expected 32 hex characters",
                         )],

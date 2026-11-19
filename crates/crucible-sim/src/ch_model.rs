@@ -874,7 +874,10 @@ impl ChModel {
 
     /// Every row the store still holds of a table, in the column order of its `TableDef`, with its partition
     /// and whether a delete masks it. For oracles that check what is physically left (invariant I9).
-    pub fn held_rows(&self, table_id: TableId) -> Vec<(PartitionId, bool, Vec<crucible_plan::Value>)> {
+    pub fn held_rows(
+        &self,
+        table_id: TableId,
+    ) -> Vec<(PartitionId, bool, Vec<crucible_plan::Value>)> {
         let mut state = self.settled();
         self.sync(&mut state);
         state.read.held(table_id)

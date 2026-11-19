@@ -1165,8 +1165,7 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
                 || (TRACE_TABLES.contains(&row.table_id) && resolved())
         }
         DeletionSelector::Session(session_id) => {
-            let own =
-                SPAN_TABLES.contains(&row.table_id) || row.table_id == TableId::SessionRollup;
+            let own = SPAN_TABLES.contains(&row.table_id) || row.table_id == TableId::SessionRollup;
             (own && row.text("session_id") == Some(session_id.as_str()))
                 || (TRACE_TABLES.contains(&row.table_id) && resolved())
         }
@@ -1336,9 +1335,8 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         Granularity::Day,
         Duration::from_secs(3_600),
     );
-    let projects = [1_u64, 2].map(|n| {
-        ProjectId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000 + n, u128::from(n)))
-    });
+    let projects = [1_u64, 2]
+        .map(|n| ProjectId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000 + n, u128::from(n))));
     let ledger: Arc<Mutex<Ledger>> = Arc::default();
     for (id, slug) in projects.iter().zip(["shortened", "kept"]) {
         if let Err(error) = pg.projects().insert(&project(*id, slug)).await {

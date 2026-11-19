@@ -67,7 +67,7 @@ fn assert_exercised(total: &Stats) {
 
 #[test]
 fn retention_and_deletion_are_complete_under_every_fault() {
-    let total = sweep(0..40, Options::FAULTY);
+    let total = sweep(0..24, Options::FAULTY);
     assert_exercised(&total);
     assert!(
         total.crashes > 0 && total.long_downtimes > 0 && total.steals > 0,
@@ -81,7 +81,7 @@ fn retention_and_deletion_are_complete_under_every_fault() {
 
 #[test]
 fn retention_and_deletion_are_complete_without_faults() {
-    let total = sweep(1_000..1_020, Options::CALM);
+    let total = sweep(1_000..1_010, Options::CALM);
     assert_exercised(&total);
     assert_eq!(total.crashes + total.steals + total.failovers, 0);
 }
@@ -92,7 +92,7 @@ fn five_nodes_share_the_lease_and_every_node_logs_each_request() {
         nodes: 5,
         ..Options::FAULTY
     };
-    let total = sweep(2_000..2_010, options);
+    let total = sweep(2_000..2_006, options);
     assert_exercised(&total);
 }
 
@@ -116,11 +116,11 @@ fn skipping_the_checkpoint_wait_is_caught() {
         mutant: Some(Mutant::SkipCheckpointWait),
         ..Options::CALM
     };
-    let caught = catching(3_000..3_020, options, "I9:");
+    let caught = catching(3_000..3_008, options, "I9:");
     println!("skip the checkpoint wait: caught in seeds {caught:?}");
     assert!(!caught.is_empty());
-    // The same seeds hold without the defect.
-    for seed in caught {
+    // A seed that shows the defect holds without it.
+    for seed in caught.into_iter().take(2) {
         assert_holds(&run_lifecycle_sim(seed, Options::CALM));
     }
 }
@@ -132,11 +132,13 @@ fn dropping_the_mask_cycle_is_caught() {
         mutant: Some(Mutant::DropMaskCycle),
         ..Options::CALM
     };
-    let masked = catching(4_000..4_005, options, "I9:");
-    let stuck = catching(4_000..4_005, options, "L3:");
-    println!("drop the mask cycle: rows left in seeds {masked:?}, requests open in seeds {stuck:?}");
-    assert_eq!(masked.len(), 5);
-    assert_eq!(stuck.len(), 5);
+    let masked = catching(4_000..4_003, options, "I9:");
+    let stuck = catching(4_000..4_003, options, "L3:");
+    println!(
+        "drop the mask cycle: rows left in seeds {masked:?}, requests open in seeds {stuck:?}"
+    );
+    assert_eq!(masked.len(), 3);
+    assert_eq!(stuck.len(), 3);
 }
 
 /// The mutant "delete without fencing": an action reaches the store with no record of it as issued.

@@ -166,7 +166,7 @@ mod tests {
             TableId::TraceStats,
             Pred::And(Vec::new()),
             [TraceStatsCol::TraceId],
-            vec![Measure::Count],
+            vec![Measure::Min(TraceStatsCol::RowDay.column_ref())],
         )
         .unwrap();
         let hiding = plan(Node::Aggregate(stats)).hiding(&hidden());
@@ -185,7 +185,7 @@ mod tests {
             TableId::SpanMetrics,
             Pred::And(Vec::new()),
             [SpanMetricsCol::Environment],
-            vec![Measure::Count],
+            vec![Measure::Min(SpanMetricsCol::Minute.column_ref())],
         )
         .unwrap();
         let before = plan(Node::Aggregate(metrics));
