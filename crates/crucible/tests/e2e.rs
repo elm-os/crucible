@@ -729,6 +729,7 @@ fn run_config(server: &Server, bearer: &str, seconds: u64) -> RunConfig {
             http::HeaderValue::from_str(bearer).unwrap(),
         )],
         spread: Duration::ZERO,
+        backdate: Duration::ZERO,
     }
 }
 

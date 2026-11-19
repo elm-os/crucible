@@ -183,6 +183,10 @@ struct RunArgs {
     /// following the schedule: to load a dataset that covers a read window.
     #[arg(long, default_value_t = 0)]
     spread_secs: u64,
+    /// Move the span times this many seconds before the schedule: with --spread-secs the spread ends there, so
+    /// a dataset can be loaded in time-ordered slices of its window.
+    #[arg(long, default_value_t = 0)]
+    backdate_secs: u64,
     /// Runtime worker threads; the default is the CPUs available to the process, less the gzip threads with
     /// --gzip, so that compression never competes with the pacer for a CPU.
     #[arg(long)]
@@ -338,6 +342,7 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             timeout: Duration::from_millis(args.timeout_ms),
             headers: args.headers.clone(),
             spread: Duration::from_secs(args.spread_secs),
+            backdate: Duration::from_secs(args.backdate_secs),
         };
         let before = process_cpu();
         let outcome = crucible_loadgen::run(&env, Arc::new(pool), &config).await?;

@@ -16,7 +16,6 @@
 //! | `{root_span_id}` | that trace's first span |
 //! | `{span_id}` | a span of that trace, drawn per request |
 //! | `{span_start}`, `{trace_start}` | the start time of that span and of the trace's first span, RFC 3339 |
-//! | `{seq}` | that span's `loadgen.seq`, 20 digits |
 //! | `{from}`, `{to}` | the read window: `to` is the request's due time on the wall clock, `from` the window before |
 //!
 //! `fresh` measures how soon an acknowledged trace shows in the API. It sends one small trace at a time to
@@ -41,8 +40,8 @@ use tokio::sync::Notify;
 
 use crate::pool::{Identity, Pool, PoolConfig, SpanSize, span_offset_nanos};
 use crate::run::{
-    Connection, ErrorCounts, HISTOGRAM_MAX_US, RunError, SPIN_WINDOW, Summary, TRACES_PATH,
-    span_base_nanos,
+    Connection, ErrorCounts, HISTOGRAM_MAX_US, RunError, SPIN_WINDOW, SpanTimes, Summary,
+    TRACES_PATH,
 };
 
 /// The `schema` value of [`ReadReport`].
@@ -127,6 +126,8 @@ struct LoadedLane {
     traces_per_request: u32,
     #[serde(default)]
     spread_s: f64,
+    #[serde(default)]
+    backdate_s: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -167,10 +168,7 @@ pub enum ReadError {
 struct Loaded {
     identity: Identity,
     traces_per_request: u32,
-    wall_start_nanos: u64,
-    rate: u64,
-    requests: u64,
-    spread_nanos: u64,
+    times: SpanTimes,
     /// Acknowledged request ranges `[start, end)`, ascending, and the acknowledged requests before each.
     acked: Vec<([u64; 2], u64)>,
     acked_count: u64,
@@ -196,8 +194,6 @@ pub struct Drawn {
     pub span_start: Timestamp,
     /// The trace's first span's start time.
     pub trace_start: Timestamp,
-    /// The drawn span's `loadgen.seq`, as the span carries it (20 digits).
-    pub seq: String,
 }
 
 impl Dataset {
@@ -233,12 +229,15 @@ impl Dataset {
                     run.lane.traces_per_request,
                 ),
                 traces_per_request: run.lane.traces_per_request.max(1),
-                wall_start_nanos: u64::try_from(started.micros())
-                    .unwrap_or(0)
-                    .saturating_mul(1_000),
-                rate: run.schedule.target_rps,
-                requests,
-                spread_nanos: (run.lane.spread_s.max(0.0) * 1e9) as u64,
+                times: SpanTimes {
+                    wall_start_nanos: u64::try_from(started.micros())
+                        .unwrap_or(0)
+                        .saturating_mul(1_000),
+                    rate: run.schedule.target_rps,
+                    requests,
+                    spread_nanos: (run.lane.spread_s.max(0.0) * 1e9) as u64,
+                    backdate_nanos: (run.lane.backdate_s.max(0.0) * 1e9) as u64,
+                },
                 acked: ranges,
                 acked_count: count,
             });
@@ -281,13 +280,7 @@ impl Dataset {
         let positions = run.identity.positions(trace);
         let width = (positions.end - positions.start).max(1) as u64;
         let position = positions.start + (rng.next_u64() % width) as usize;
-        let base = span_base_nanos(
-            run.wall_start_nanos,
-            run.rate,
-            run.requests,
-            run.spread_nanos,
-            index,
-        );
+        let base = run.times.base(index);
         let start = |position: usize| {
             Timestamp::from_unix_nanos(base.saturating_add(span_offset_nanos(position)))
         };
@@ -298,7 +291,6 @@ impl Dataset {
             span_id: span(position),
             span_start: start(position),
             trace_start: start(positions.start),
-            seq: format!("{:020}", run.identity.seq(index, position)),
         }
     }
 }
@@ -311,7 +303,6 @@ pub fn fill(text: &str, project: &str, drawn: &Drawn, from: Timestamp, to: Times
         .replace("{span_id}", &drawn.span_id)
         .replace("{span_start}", &drawn.span_start.to_string())
         .replace("{trace_start}", &drawn.trace_start.to_string())
-        .replace("{seq}", &drawn.seq)
         .replace("{from}", &from.to_string())
         .replace("{to}", &to.to_string())
 }
@@ -1098,13 +1089,27 @@ mod tests {
     }
 
     #[test]
-    fn start_times_follow_the_run_or_its_spread() {
-        // Request 0 of a run without a spread starts at the run's start; with a spread, the spread before it.
+    fn start_times_follow_the_run_its_spread_and_its_backdate() {
+        // The one trace of request 0 starts at the run's start, the backdate before it, or with a spread, the
+        // spread before that.
         let start = Timestamp::parse_rfc3339("2026-11-18T21:30:00.123456Z").unwrap();
-        for (spread, expected) in [(0.0, 0), (3_600.0, -3_600_000_000)] {
-            let dataset = Dataset::from_reports([report(1, "[]", spread).as_str()]).unwrap();
+        for (spread, backdate, expected) in [
+            (0, 0, 0),
+            (0, 60, -60),
+            (3_600, 0, -3_600),
+            (3_600, 86_400, -90_000),
+        ] {
+            let report = format!(
+                r#"{{"run_id":"{RUN}","started_at":"2026-11-18T21:30:00.123456Z","lane":{{"spans_per_request":4,
+                "spread_s":{spread},"backdate_s":{backdate}}},"schedule":{{"target_rps":10,"requests":1}},
+                "not_acked_requests":[]}}"#
+            );
+            let dataset = Dataset::from_reports([report.as_str()]).unwrap();
             let drawn = dataset.draw(&ChaChaRng::from_u64(1));
-            assert_eq!(drawn.trace_start.micros() - start.micros(), expected);
+            assert_eq!(
+                drawn.trace_start.micros() - start.micros(),
+                expected * 1_000_000
+            );
         }
     }
 
@@ -1116,16 +1121,7 @@ mod tests {
             span_id: "02".repeat(8),
             span_start: Timestamp::from_micros(1_000_000),
             trace_start: Timestamp::from_micros(0),
-            seq: format!("{:020}", 7),
         };
-        let searched = fill(
-            "{\"query\":\"loadgen.seq={seq}\"}",
-            "",
-            &drawn,
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-        );
-        assert_eq!(searched, "{\"query\":\"loadgen.seq=00000000000000000007\"}");
         let filled = fill(
             "/p/{project}/t/{trace_id}?r={root_span_id}&s={span_id}&at={span_start}&h={trace_start}&from={from}&to={to}",
             "proj",

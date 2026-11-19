@@ -79,28 +79,43 @@ pub struct RunConfig {
     pub timeout: Duration,
     /// Extra headers on every request, such as `Authorization`.
     pub headers: Vec<(HeaderName, HeaderValue)>,
-    /// Zero: span times follow the schedule. Otherwise the requests' span times spread evenly over this much time
-    /// before the schedule's start ([`span_base_nanos`]), to load a dataset that covers a read window.
+    /// Zero: span times follow the schedule. Otherwise the requests' span times spread evenly over this much time,
+    /// ending `backdate` before the schedule's start ([`SpanTimes`]), to load a dataset that covers a read window.
     pub spread: Duration,
+    /// How far before the schedule the span times end (with `spread`) or start (without it): a dataset loaded in
+    /// slices of its window, oldest first, sends each slice's spans in time order, as live traffic does.
+    pub backdate: Duration,
 }
 
-/// The start time, in Unix nanoseconds, of request `index`'s first span, for a schedule that started at
-/// `wall_start_nanos` with `requests` requests at `rate` per second: its intended send time, or with a nonzero
-/// `spread_nanos` an even share of the `spread_nanos` before the start.
-pub fn span_base_nanos(
-    wall_start_nanos: u64,
-    rate: u64,
-    requests: u64,
-    spread_nanos: u64,
-    index: u64,
-) -> u64 {
-    if spread_nanos == 0 {
-        return wall_start_nanos.saturating_add(offset_nanos(index, rate));
+/// When the spans of a run start, from its schedule and its spread and backdate ([`RunConfig`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpanTimes {
+    /// The schedule's start on the wall clock, in Unix nanoseconds.
+    pub wall_start_nanos: u64,
+    /// Requests per second.
+    pub rate: u64,
+    /// Requests in the schedule.
+    pub requests: u64,
+    /// See [`RunConfig::spread`].
+    pub spread_nanos: u64,
+    /// See [`RunConfig::backdate`].
+    pub backdate_nanos: u64,
+}
+
+impl SpanTimes {
+    /// The start time, in Unix nanoseconds, of request `index`'s first span: its intended send time, moved back by
+    /// the backdate; or with a spread, an even share of the spread that ends at the backdated start.
+    pub fn base(&self, index: u64) -> u64 {
+        let start = self.wall_start_nanos.saturating_sub(self.backdate_nanos);
+        if self.spread_nanos == 0 {
+            return start.saturating_add(offset_nanos(index, self.rate));
+        }
+        let share =
+            u128::from(index) * u128::from(self.spread_nanos) / u128::from(self.requests.max(1));
+        start
+            .saturating_sub(self.spread_nanos)
+            .saturating_add(u64::try_from(share).unwrap_or(u64::MAX))
     }
-    let share = u128::from(index) * u128::from(spread_nanos) / u128::from(requests.max(1));
-    wall_start_nanos
-        .saturating_sub(spread_nanos)
-        .saturating_add(u64::try_from(share).unwrap_or(u64::MAX))
 }
 
 /// Why a run could not start or finish.
@@ -191,9 +206,10 @@ pub struct Lane {
     pub gzip: bool,
     /// The most bodies compressed at a time; 0 without gzip.
     pub gzip_threads: usize,
-    /// 0: span times follow the schedule. Otherwise the seconds before `started_at` that the requests' span
-    /// times spread over evenly.
+    /// 0: span times follow the schedule. Otherwise the seconds that the requests' span times spread over evenly.
     pub spread_s: f64,
+    /// The seconds before `started_at` at which the span times end (with a spread) or start (without one).
+    pub backdate_s: f64,
     /// Distinct pre-encoded templates.
     pub templates: usize,
     /// Mean protobuf body size of sent requests, before compression.
@@ -271,6 +287,8 @@ pub struct Summary {
     pub p50: u64,
     /// 90th percentile.
     pub p90: u64,
+    /// 95th percentile, which the read-side targets gate on.
+    pub p95: u64,
     /// 99th percentile.
     pub p99: u64,
     /// 99.9th percentile.
@@ -288,6 +306,7 @@ impl Summary {
             count: histogram.len(),
             p50: histogram.value_at_quantile(0.5),
             p90: histogram.value_at_quantile(0.9),
+            p95: histogram.value_at_quantile(0.95),
             p99: histogram.value_at_quantile(0.99),
             p99_9: histogram.value_at_quantile(0.999),
             max: histogram.max(),
@@ -390,10 +409,15 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         timeout: config.timeout,
         start: env.clock.now(),
         wall_start,
-        wall_start_nanos: u64::try_from(wall_start.micros())
-            .unwrap_or(0)
-            .saturating_mul(1_000),
-        spread_nanos: nanos(config.spread),
+        times: SpanTimes {
+            wall_start_nanos: u64::try_from(wall_start.micros())
+                .unwrap_or(0)
+                .saturating_mul(1_000),
+            rate: config.rate,
+            requests,
+            spread_nanos: nanos(config.spread),
+            backdate_nanos: nanos(config.backdate),
+        },
     });
     let shared = Arc::new(Shared {
         next: AtomicU64::new(0),
@@ -448,8 +472,7 @@ struct Plan {
     timeout: Duration,
     start: Instant,
     wall_start: Timestamp,
-    wall_start_nanos: u64,
-    spread_nanos: u64,
+    times: SpanTimes,
 }
 
 impl Plan {
@@ -629,14 +652,7 @@ async fn worker(
         }
         let offset = offset_nanos(index, plan.rate);
         let intended = plan.start.saturating_add(Duration::from_nanos(offset));
-        let span_time = span_base_nanos(
-            plan.wall_start_nanos,
-            plan.rate,
-            plan.requests,
-            plan.spread_nanos,
-            index,
-        );
-        let raw = pool.request(index, span_time);
+        let raw = pool.request(index, plan.times.base(index));
         let request_bytes = raw.len();
         let body = match &shared.compressors {
             Some(compressors) => compressors.compress(&env, raw).await?,
@@ -917,6 +933,7 @@ impl Stats {
                 gzip: config.gzip,
                 gzip_threads: if config.gzip { config.gzip_threads } else { 0 },
                 spread_s: config.spread.as_secs_f64(),
+                backdate_s: config.backdate.as_secs_f64(),
                 templates: pool_config.templates,
                 request_bytes_mean: mean(self.request_bytes),
                 wire_bytes_mean: mean(self.wire_bytes),
@@ -976,6 +993,7 @@ mod tests {
         for (value, expected) in [
             (summary.p50, 500),
             (summary.p90, 900),
+            (summary.p95, 950),
             (summary.p99, 990),
             (summary.p99_9, 999),
         ] {
@@ -1036,6 +1054,33 @@ mod tests {
             prop_assert_eq!(offset_nanos(rate * seconds, rate), seconds * 1_000_000_000);
             prop_assert!(offset_nanos(index, rate) <= offset_nanos(index + 1, rate));
             prop_assert_eq!(scheduled_requests(rate, Duration::from_secs(seconds)), rate * seconds);
+        }
+
+        /// Spread span times stay inside the slice that ends at the backdated start, in request order; without a
+        /// spread they are the schedule's, moved back by the backdate.
+        #[test]
+        fn span_times_stay_in_their_slice(
+            requests in 1u64..1_000_000,
+            index_share in 0.0f64..1.0,
+            spread_s in 0u64..3_000_000,
+            backdate_s in 0u64..3_000_000,
+        ) {
+            let times = SpanTimes {
+                wall_start_nanos: 1_794_000_000_000_000_000,
+                rate: 1_000,
+                requests,
+                spread_nanos: spread_s * 1_000_000_000,
+                backdate_nanos: backdate_s * 1_000_000_000,
+            };
+            let index = ((requests - 1) as f64 * index_share) as u64;
+            let end = times.wall_start_nanos - times.backdate_nanos;
+            let base = times.base(index);
+            if spread_s == 0 {
+                prop_assert_eq!(base, end + offset_nanos(index, 1_000));
+            } else {
+                prop_assert!(base >= end - times.spread_nanos && base < end);
+                prop_assert!(times.base(index) <= times.base(index + 1));
+            }
         }
     }
 }

@@ -408,9 +408,11 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
             stored: out.stored,
         };
         println!(
-            "perf gate: pair {}/{} {name} {arm:?}: {} spans/s acknowledged, p99 {} us, {} errors, {} non-2xx{}",
+            "perf gate: pair {}/{} {name} {arm:?}: {} {}; {} spans/s acknowledged, p99 {} us, {} errors, {} non-2xx{}",
             pair + 1,
             args.pairs,
+            gate::thousands(run.value()),
+            if kind.capacity() { "spans/s" } else { "us" },
             gate::thousands(run.acked_spans_per_s),
             gate::thousands(run.latency_p99_us as f64),
             run.errors,

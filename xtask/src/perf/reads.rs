@@ -45,8 +45,8 @@ struct Lane {
     class: &'static str,
 }
 
-/// The lanes: trace by id, the 30-day trace list, and the other list and detail endpoints. The search finds
-/// one span by its `loadgen.seq` attribute; the payload reads the attributes of one span. The MCP tool
+/// The lanes: trace by id, the 30-day trace list, and the other list and detail endpoints. The search looks
+/// for a word no span holds over the window; the payload reads the attributes of one span. The MCP tool
 /// dashboard gets its lane here once its endpoints exist (`docs/testing/perf.md`).
 const LANES: [Lane; 9] = [
     Lane {
@@ -87,7 +87,7 @@ const LANES: [Lane; 9] = [
     Lane {
         name: "search_30d",
         server_class: "search",
-        class: r#"{"name":"search_30d","method":"POST","path":"/api/v1/projects/{project}/search","body":"{\"query\":\"loadgen.seq={seq}\",\"fields\":[\"metadata\"],\"from\":\"{from}\",\"to\":\"{to}\"}","nonempty":"/data"}"#,
+        class: r#"{"name":"search_30d","method":"POST","path":"/api/v1/projects/{project}/search","body":"{\"query\":\"tokennotloaded\",\"from\":\"{from}\",\"to\":\"{to}\"}"}"#,
     },
     Lane {
         name: "metrics_30d",
@@ -96,13 +96,13 @@ const LANES: [Lane; 9] = [
     },
 ];
 
-/// The default spans to load, and the load's requests per second (100 spans each) and chunk length.
-fn load_plan(rig: RigName) -> (u64, u64, u64) {
+/// The default spans to load, and the load's requests per second (100 spans each).
+fn load_plan(rig: RigName) -> (u64, u64) {
     match rig {
-        // About 30 times smaller than the full rig's dataset, below the small rig's end-to-end capacity.
-        RigName::Small => (2_000_000, 150, 60),
+        // Millions of spans, loaded below the small rig's end-to-end capacity (about 58,000 spans/s).
+        RigName::Small => (2_000_000, 150),
         // The 100-million-span dataset runs in the exclusive window: `--spans 100000000`.
-        RigName::Full => (10_000_000, 500, 60),
+        RigName::Full => (10_000_000, 500),
     }
 }
 
@@ -286,7 +286,7 @@ fn percentiles(summary: &serde_json::Value) -> Percentiles {
     Percentiles {
         count: field("count"),
         p50: field("p50"),
-        p95: field("p95").max(field("p90")),
+        p95: field("p95"),
         p99: field("p99"),
     }
 }
@@ -304,7 +304,7 @@ pub fn run_reads(args: &ReadsArgs) -> Result<(), String> {
     let (docker, cpus) = rig::docker_info()?;
     rig::check_cpus(rig, cpus)?;
     let sha = rig::resolve(&root, &args.image)?;
-    let (default_spans, load_rps, chunk_s) = load_plan(args.rig);
+    let (default_spans, load_rps) = load_plan(args.rig);
     let spans = args.spans.unwrap_or(default_spans);
     println!(
         "perf reads: {} ({sha}), {} rig, {} spans over {} days, lanes of {} reads/s for {} s",
@@ -327,14 +327,10 @@ pub fn run_reads(args: &ReadsArgs) -> Result<(), String> {
     let loadgen = rig::build_loadgen(&root)?;
     let mut session = Session::new(rig)?;
     let loadgen_sha256 = session.start(&loadgen)?;
-    let result = bench(&session, args, &image.0, &dir, spans, load_rps, chunk_s);
-    let crucible = session.crucible();
+    let result = bench(&session, args, &image.0, &dir, spans, load_rps);
     let _ = std::fs::write(
         dir.join("logs").join("crucible.log"),
-        session
-            .client_exec(&["true"])
-            .map(|_| docker_logs(&crucible))
-            .unwrap_or_default(),
+        docker_logs(&session.crucible()),
     );
     session.down();
     drop(session);
@@ -396,7 +392,6 @@ fn bench(
     dir: &Path,
     spans: u64,
     load_rps: u64,
-    chunk_s: u64,
 ) -> Result<Bench, String> {
     let key = session.up(image, dir, "reads")?;
     let crucible = session.crucible();
@@ -419,16 +414,16 @@ fn bench(
         fresh_empty.probes
     );
 
-    // The load: chunks of `chunk_s` seconds, each drained before the next, so the WAL's backlog stays bounded.
+    // The load: one chunk per day of the window, oldest first, each chunk's spans spread over its day in time
+    // order, as live traffic arrives, so that an insert touches one or two daily partitions. Each chunk drains
+    // before the next, so the WAL's backlog stays bounded.
     let started = Instant::now();
-    let spread = (args.spread_days * 86_400).to_string();
-    let (mut stored, mut reports, mut chunk) = (0u64, Vec::new(), 0);
-    while stored < spans {
-        chunk += 1;
-        let remaining = spans - stored;
-        let secs = remaining
-            .div_ceil(load_rps * SPANS_PER_REQUEST)
-            .clamp(1, chunk_s);
+    let days = args.spread_days;
+    let per_day = spans.div_ceil(days).div_ceil(SPANS_PER_REQUEST);
+    let secs = per_day.div_ceil(load_rps).max(1);
+    let (mut stored, mut reports) = (0u64, Vec::new());
+    for chunk in 1..=days {
+        let backdate = ((days - chunk) * 86_400).to_string();
         let path = format!("/tmp/load-{chunk}.json");
         session.loadgen_exec(
             &[
@@ -446,7 +441,9 @@ fn bench(
                 "--concurrency".to_owned(),
                 "64".to_owned(),
                 "--spread-secs".to_owned(),
-                spread.clone(),
+                "86400".to_owned(),
+                "--backdate-secs".to_owned(),
+                backdate,
                 "--seed".to_owned(),
                 chunk.to_string(),
                 "--header".to_owned(),
@@ -464,8 +461,9 @@ fn bench(
         write(&dir.join(&name), &text)?;
         reports.push((name, path));
         stored += acked;
-        // The store drains at least 2,000 spans/s on any rig the gate runs on; allow five minutes beyond that.
-        let limit = Duration::from_secs(300 + stored / 2_000);
+        // Only this chunk is behind. The store drains at least 2,000 spans/s on any rig the gate runs on; allow
+        // five minutes beyond that.
+        let limit = Duration::from_secs(300 + acked / 2_000);
         if !session.wait_for_store(&key, stored, limit)? {
             return Err(format!(
                 "the store did not hold the {stored} acknowledged spans of the load within {} s",
@@ -825,10 +823,11 @@ mod tests {
             Some(5.0)
         );
         let report = serde_json::json!({"classes": [{"sent": 10, "ok": 10,
-            "latency_us": {"count": 10, "p50": 1000, "p90": 2000, "p99": 3000}}]});
+            "latency_us": {"count": 10, "p50": 1000, "p90": 2000, "p95": 2500, "p99": 3000}}]});
         let lane = judge_lane(&LANES[0], &report, before, after, "runs/x.json".to_owned());
         assert_eq!((lane.counted, lane.connections_opened), (10, 3));
         assert_eq!(lane.store_reads_per_request, Some(6.0));
+        assert_eq!((lane.latency_us.p95, lane.latency_us.p99), (2_500, 3_000));
         assert_eq!(lane.barrier_wait_mean_us, Some(50.0));
         assert_eq!(lane.invalid, None);
         // A failed or empty answer invalidates the lane's latency.

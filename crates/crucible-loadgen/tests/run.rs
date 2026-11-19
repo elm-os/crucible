@@ -57,6 +57,7 @@ fn config(target: SocketAddr, rate: u64, duration: Duration, concurrency: usize)
         timeout: Duration::from_secs(5),
         headers: Vec::new(),
         spread: Duration::ZERO,
+        backdate: Duration::ZERO,
     }
 }
 

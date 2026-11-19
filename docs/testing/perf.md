@@ -12,15 +12,16 @@ The rig has three parts:
 
 ## v0 targets
 
-| Target | Value |
-|---|---|
-| Ingest throughput per node | at least 250,000 spans/s of 1 KiB spans, and at least 50,000 spans/s of 10 KiB spans |
-| Durable-ack latency | p99 at most 20 ms, with `wal.durability = group` on a volume the probe classified `honest` |
-| Acknowledged loss | zero (invariant I1) |
-| Freshness | at most 2 s p95 from ack to readable |
-
-The read-side targets (trace by id, list queries, MCP dashboards, SDK and proxy overhead) will be added with the
-tools that measure them.
+| Target | Value | Measured by |
+|---|---|---|
+| Ingest throughput per node | at least 250,000 spans/s of 1 KiB spans, and at least 50,000 spans/s of 10 KiB spans, sustained | the gate's `e2e` path (sustained) and `ack` path (throughput) |
+| Durable-ack latency | p99 at most 20 ms, with `wal.durability = group` on a volume the probe classified `honest` | the gate's `ack` path (latency) |
+| Acknowledged loss | zero (invariant I1) | every `e2e` arm |
+| Freshness | at most 2 s p95 from ack to readable | the gate's `e2e` path (freshness) |
+| Trace by id | at most 100 ms p95 | the read bench's `trace_by_id` lane |
+| A 30-day trace list over 1 billion spans | at most 500 ms p95 | the read bench's `trace_list_30d` lane, measured at 100 million spans and labelled with its scale |
+| The MCP tool dashboard | at most 300 ms p95 | the read bench, once the MCP analytics endpoints exist (below) |
+| SDK and proxy overhead | at most 1 ms p99 | the SDK and proxy suites, not this rig |
 
 ## The rig
 
@@ -391,11 +392,17 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 - **Deterministic content.** Span names, kinds, durations and payload text are a function of `--seed` alone. The
   payload text is drawn from a small word list, so the gzip lane compresses text rather than random bytes (about
   3.2 times for 1 KiB spans). Given the same seed, run id and start time, every byte is the same.
-- **Identity.** Every request is one trace. Every span carries the attributes `loadgen.run_id` (the run id,
-  minted fresh unless `--run-id` is given) and `loadgen.seq`, its sequence number
-  `request_index * spans_per_request + position`, as 20 zero-padded digits. Trace ids are the run tag followed
-  by a bijective mix of the request index, so they never repeat within a run. Span ids are the same mix of the
-  sequence number. No id is ever zero. Span times follow the request's intended send time on the wall clock.
+- **Request shapes.** A request holds `--spans-per-request` spans in `--traces-per-request` traces (1 by default)
+  of consecutive spans whose lengths differ by at most one. The first span of each trace is its root; with
+  `--rootless` it names a parent that no span of the run carries, so no trace has a root, the shape of a client
+  that exports child spans before their parent.
+- **Identity.** Every span carries the attributes `loadgen.run_id` (the run id, minted fresh unless `--run-id`
+  is given) and `loadgen.seq`, its sequence number `request_index * spans_per_request + position`, as 20
+  zero-padded digits. Trace ids are the run tag followed by a bijective mix of `request_index *
+  traces_per_request + trace`, so they never repeat within a run. Span ids are the same mix of the sequence
+  number. No id is ever zero. Span times follow the request's intended send time on the wall clock, or with
+  `--spread-secs` spread evenly over that many seconds before the schedule's start, to load a dataset that covers
+  a read window. The read generator derives every id and start time of a loaded run from its report alone.
 
 ### How it sends
 
@@ -407,6 +414,11 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 - **Bounded concurrency.** Each of `--concurrency` connections carries one request at a time (HTTP/1.1). A free
   connection takes the next request and prepares its body (the patch, and the gzip in the gzip lane) before the
   request is due.
+- **Gzip off the runtime's workers.** A 1 MiB body takes about a millisecond to compress; on a runtime worker it
+  held up the pacer and the other connections of that thread, so the generator sent late (send lag p99 3.3 ms
+  at 25,600 spans/s of 10 KiB spans, [`perf-baseline.md`](perf-baseline.md)). Bodies are compressed on the
+  runtime's blocking threads, at most `--gzip-threads` at a time (by default half the CPUs available, at least
+  one; the runtime's workers get the rest), each by an encoder that keeps its deflate state from body to body.
 - **A pacer.** The production timer has millisecond resolution, so waiting on it alone sent requests up to
   about 2.5 ms late. One pacer task sleeps on the timer until 3 ms before a due time, then yields in a loop until
   the time comes, and releases the request to its connection. The pacer keeps about one core busy, and the CPU
@@ -421,9 +433,9 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 The run keeps a ledger of which requests were acknowledged: answered 2xx, with no rejected spans. Every span of
 an acknowledged request must be readable afterwards (invariant I1). The report lists the requests that were not
 acknowledged as index ranges, so the acknowledged sequence numbers can be reconstructed from the report alone.
-`SequenceReader` is the interface a store-backed reader will implement: it returns the stored `loadgen.seq`
-values of one run. `check_zero_loss` compares them with the ledger and counts lost and duplicated spans. No
-reader exists yet, because ingest and the read API land in a later wave.
+`SequenceReader` is the interface of a store-backed reader: it returns the stored `loadgen.seq` values of one
+run. `check_zero_loss` compares them with the ledger and counts lost and duplicated spans; the end-to-end test of
+the binary reads ClickHouse through it, and the gate's end-to-end path runs the same check in SQL.
 
 ### Running it
 
@@ -439,14 +451,19 @@ crucible-loadgen run --target crucible:4318 --rate 2500 --duration-secs 60 \
 | `--duration-secs` | 10 | Schedule length; the schedule holds `rate * duration` requests |
 | `--span-size` | `1k` | `1k` or `10k` |
 | `--spans-per-request` | 100 | Spans per request |
+| `--traces-per-request` | 1 | Traces per request, from 1 to the spans per request |
+| `--rootless` | off | Give no trace a root |
 | `--gzip` | off | Gzip every body (`Content-Encoding: gzip`) |
+| `--gzip-threads` | half the CPUs, at least 1 | With `--gzip`, the most bodies compressed at a time, each on a blocking thread |
 | `--concurrency` | 64 | Connections, and so the most requests in flight |
 | `--seed` | 1 | Content seed |
 | `--run-id` | fresh UUIDv7 | The run id every span carries |
 | `--templates` | 16 | Pre-encoded templates; memory is about `templates * spans_per_request * span size` |
 | `--timeout-ms` | 10000 | Deadline for connecting and for each request |
 | `--header` | none | Extra header as `Name: value`, repeatable; ingest needs an `Authorization` header (contract 12.2) |
-| `--threads` | CPUs available | Runtime worker threads |
+| `--spread-secs` | 0 | Spread the span times evenly over this many seconds before the schedule's start (moved back by `--backdate-secs`) |
+| `--backdate-secs` | 0 | Move the span times this many seconds back: with a spread, the spread ends there |
+| `--threads` | CPUs available, less the gzip threads | Runtime worker threads |
 | `--out` | stdout | Where to write the JSON report |
 
 The process exits non-zero, without a report, when the target refuses the initial connections or the
@@ -469,7 +486,8 @@ crucible-loadgen run --target 127.0.0.1:14318 --rate 10000 --spans-per-request 1
 | `run_id` | string | The run id every span carries |
 | `seed` | integer | The content seed |
 | `target` | string | The target as given |
-| `lane` | object | `span_bytes`, `spans_per_request`, `gzip`, `templates`, `request_bytes_mean` (protobuf body before compression), `wire_bytes_mean` (body on the wire) |
+| `started_at` | string | The wall-clock time of the schedule's start, RFC 3339 with microseconds |
+| `lane` | object | `span_bytes`, `spans_per_request`, `traces_per_request`, `rootless`, `gzip`, `gzip_threads` (0 without gzip), `spread_s` (0 when span times follow the schedule), `backdate_s`, `templates`, `request_bytes_mean` (protobuf body before compression), `wire_bytes_mean` (body on the wire) |
 | `schedule` | object | `target_rps`, `duration_s`, `requests` (in the schedule), `concurrency`, `timeout_ms` |
 | `outcome.sent` | integer | Requests written to a connection |
 | `outcome.responses` | integer | Requests that got an HTTP response |
@@ -487,8 +505,108 @@ crucible-loadgen run --target 127.0.0.1:14318 --rate 10000 --spans-per-request 1
 | `not_acked_requests` | array | Half-open `[start, end)` request index ranges that were not acknowledged |
 | `generator_cpu` | object or null | `user_s`, `system_s` and `us_per_request` (user plus system CPU per sent request) during the run, from `/proc/self/stat`; null off Linux |
 
-A summary has `count`, `p50`, `p90`, `p99`, `p99_9` and `max`, in microseconds, from an HDR histogram with three
+A summary has `count`, `p50`, `p90`, `p95`, `p99`, `p99_9` and `max`, in microseconds, from an HDR histogram with three
 significant digits.
+
+## The read bench
+
+`cargo xtask perf reads` measures the read-side targets on one build. It starts one rig as the gate does
+(ClickHouse, Postgres and Crucible, with the first owner and a key with the `ingest` and `read` scopes), and then:
+
+1. **Ack to API on the empty store.** `crucible-loadgen fresh` sends one small trace (two 1 KiB spans) at a time
+   to ingest and, from its acknowledgement on, lists the project's traces every 2 ms until the list names it:
+   the method of milestone 1's end-to-end figure (13 to 28 ms from ack to the API). 100 probes by default, 200 ms
+   apart.
+2. **The dataset.** `crucible-loadgen run` loads 1 KiB spans in traces of 100 through ingest, one chunk per day of
+   the read window (30 days by default), oldest first: `--backdate-secs` places the chunk on its day and
+   `--spread-secs` spreads its spans over the day in time order, as live traffic arrives, so an insert touches
+   one or two daily partitions. Each chunk drains into the store before the next, so the WAL's backlog stays
+   bounded. The load runs below the rig's
+   end-to-end capacity: 15,000 spans/s on the small rig, 50,000 on the full one. It records the bytes of the
+   store's active parts per span, from `system.parts`.
+3. **Ack to API on the loaded store**, the same probe again.
+4. **One lane per read class**, more than the visibility grace after the load, so that the store rather than the
+   recent index answers for the dataset. A lane is `crucible-loadgen read` with that class alone: an open-loop
+   schedule of 20 reads/s on average for 30 s with exponential think times, 8 connections, its traces and spans
+   drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
+   after the lane, so their change belongs to the lane's class.
+
+| Lane | Request | Answers that count | Server class |
+|---|---|---|---|
+| `trace_by_id` | `GET /traces/{trace_id}` | non-empty `spans` | `trace_by_id` |
+| `trace_list_30d` | `GET /traces?from=...&to=...&limit=50` over the window | non-empty `data` | `trace_list` |
+| `span_children` | `GET /traces/{trace_id}/spans?parent_span_id={root}&limit=100` | non-empty `data` | `span_children` |
+| `payload` | `GET /spans/{trace_id}/{span_id}/payload?field=attributes&start_time=...` | 2xx | `payload` |
+| `facts` | `GET /facts?trace_id=...` (the dataset has no facts) | 2xx | `facts` |
+| `filter_values_30d` | `GET /filter-values?source=spans&field=observation_type` over the window | non-empty `data` | `filter_values` |
+| `data_bounds` | `GET /data-bounds` | non-empty `spans.first` | `data_bounds` |
+| `search_30d` | `POST /search` over the window for a word no span holds: the dataset carries no input or output text, so this is a full-window search that matches nothing | 2xx | `search` |
+| `metrics_30d` | `POST /metrics/query`: the span count over the window | non-empty `series` | `metrics` |
+
+Paths are relative to `/api/v1/projects/{project_id}`. A lane whose requests were not all answered 2xx and
+non-empty is marked invalid: its latency would not cover them.
+
+**The MCP tool dashboard** gets its lane in `LANES` (`xtask/src/perf/reads.rs`) once the MCP analytics endpoints
+exist: one entry with the dashboard's request, the JSON pointer that must not be empty, and the request class its
+read service records.
+
+```sh
+tools/perf/xtask.sh reads                                   # the small rig: 2 million spans, HEAD's build
+tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-span dataset, alone on the machine
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--image` | `HEAD` | The build to measure, as a ref; its image is built as the gate builds one |
+| `--rig` | `small` | `small` or `full`, as for the gate |
+| `--spans` | 2,000,000 on the small rig, 10,000,000 on the full one | Spans to load |
+| `--spread-days` | 30 | Days the spans' start times spread over, ending at the load, from 1 to 400 (ingest's maximum event age) |
+| `--rate` | 20 | Reads per second of each lane, on average |
+| `--seconds` | 30 | Seconds of each lane |
+| `--probes` | 100 | Traces of each ack-to-API probe |
+
+The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
+`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span, both probes and every lane
+with its percentiles, store reads per request, mean barrier wait, connections opened, ClickHouse merges at its
+start and why it is invalid), `summary.md`, the generator's reports under `runs/` and `dataset/`, and Crucible's
+metrics before and after each lane under `metrics/`.
+
+### Per-request counters
+
+The read services record two histograms per request class (one class per read service: `trace_by_id`,
+`trace_list`, `trace_list_since`, `span_children`, `payload`, `facts`, `fact_target_bounds`, `filter_values`,
+`data_bounds`, `search`, `metrics`):
+
+- `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
+  the reads.
+- `crucible_api_barrier_wait_microseconds{class}`: how long each request that waits for the recent index's read
+  barrier waited (trace by id and the fact target bounds), timed by the read service with the `Env` clock, since
+  the metrics recorder never reads a clock (contract 2.12).
+
+Connections come from `crucible_clickhouse_connections_opened_total`, which the telemetry store counts at
+`Net::connect`. It has no class, and the shipper's inserts count too, so the bench reads it around one class at a
+time on a store that is not loading.
+
+### `crucible-loadgen read` and `crucible-loadgen fresh`
+
+`read` sends the reads of a lane open loop: request `i` is due at `start + t_i`, fixed before the first request,
+and its latency counts from that intended time, as in `run`. The gaps are the think times: exponential with mean
+`1 / rate` from `--seed` (a Poisson process), or all `1 / rate` with `--think fixed`. Request `i` uses class `i %
+classes`. A class is JSON (`name`, `method`, `path`, optional `body`, optional `nonempty`, a JSON pointer that
+must name a non-empty array, object or string in every 2xx answer), and its path and body take placeholders that
+name the dataset that `--dataset` reports describe: `{project}`, `{trace_id}`, `{root_span_id}`, `{span_id}`,
+`{span_start}`, `{trace_start}`, and the window `{from}` and `{to}` (`to` is the request's due time,
+`from` is `--window-secs` before it). Each request draws an acknowledged request of the dataset uniformly, then one
+of its traces and one of its spans, as a function of the seed and the request's index.
+
+The report (`crucible-loadgen.read.v1`) has `schedule` (`rate`, `duration_s`, `think`, `requests`,
+`concurrency`, `timeout_ms`, `window_s`), `dataset_runs` and `dataset_requests`, and per class `sent`, `ok`,
+`empty`, `status_counts`, `errors`, `latency_us` and `service_time_us` over the `ok` answers; and `send_lag_us`
+and `elapsed_s`.
+
+`fresh`'s report (`crucible-loadgen.fresh.v1`) has `probes`, `listed`, `ack_us` (send to acknowledgement),
+`ack_to_list_us`, `lists_per_probe`, `ingest_errors`, `list_errors` and `missing` (acknowledged but not listed
+within `--timeout-ms`).
 
 ## Measurements
 
@@ -540,3 +658,41 @@ connections. Latency columns are in microseconds and give p50 / p99 / p99.9 (max
   backlog pushed latency to a p50 of 78 ms and a maximum of 365 ms, and service time rose to a p50 of 1.2 ms.
   The generator used 2.9 of its 4 cores. The stub inflates and decodes every body on its 2 threads, so the
   shared 6 CPUs set the limit, not the generator alone. In the rig, the generator gets its own 6 CPUs.
+
+### The end-to-end lanes
+
+Measured on 2026-11-19, on a laptop, not reference hardware, on the small rig (Crucible 2 CPUs and 1 GB,
+ClickHouse 2 CPUs and 1.5 GB), path `e2e`, lane `1kb`, with other tracks' builds sharing the machine (1-minute
+load average 6 to 11). The image is `39360ec` in both arms unless stated.
+
+| Run | Pairs | Sustained medians A, B (shipped spans/s) | Change, p | Freshness p95 medians A, B | Change, p | Verdict |
+|---|---|---|---|---|---|---|
+| Smoke | 1 | 57,888; 58,957 | +1.8% | 575 ms; 574 ms | -0.3% | pass |
+| A/A | 5 | 61,053; 58,828 | -3.6%, p = 0.22 | 579 ms; 587 ms | +1.4%, p = 0.69 | pass |
+SEEDED_ROW
+
+- Every arm acknowledged every request with 200 and drained in time, and the zero-loss check found no lost or
+  duplicated span: each sustained arm stored all 1,000,000 acknowledged spans and each freshness arm all 100,000,
+  and the freshness covered every one of them.
+- A sustained arm offers 100,000 spans/s for 10 s; the ack path takes them at that rate while the store falls
+  behind and drains for 5.9 to 8.5 s after the last response. On this rig the store path ships 54,000 to 63,000
+  spans/s, about what the full rig's single shipper task moved in the baseline (69,000).
+- The A/A's order effect was -0.7% (sustained) and -3.0% (freshness), and its arms spread by up to 15% from
+  pair to pair: throughput again followed the other jobs' load (correlation -0.50 with the other CPUs' busy
+  cores).
+
+### Pre-ack copies
+
+Measured on 2026-11-19, on a laptop, not reference hardware, with release builds in the dev container (3 CPUs),
+each timing run interleaving the two forms over its rounds and taking medians.
+
+- **Inflate** (`crucible-ingest`, `inflate_throughput`, ignored): inflating into one allocation sized from the
+  gzip trailer, against 64 KiB reads copied into a doubling buffer. Time per body changed by -1.2%, -0.7% and
+  -0.5% in three runs for 100 KiB bodies (the 1 KiB lane), and by -1.7%, +0.4% and -0.7% for 1 MiB bodies (the
+  10 KiB lane). The decode itself takes most of the time (about 1.25 ms per 1 MiB body). What changes more is the
+  buffer: a body ends in exactly its size instead of up to twice it (131,072 bytes for a 102,400-byte body),
+  which the in-flight reservation now matches. Kept.
+- **Block frames** (`crucible-chfmt`): encoding a 262,144-row `span_core` block (62.3 MB of LZ4 frames) into a
+  buffer sized from the previous block measured 1.2%, 1.0% and 4.0% slower than from an empty buffer, in three
+  runs. Growing a large buffer remaps its pages rather than copying them, so there is nothing to save; the
+  change was not kept.

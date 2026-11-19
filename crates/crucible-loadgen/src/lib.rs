@@ -41,6 +41,6 @@ pub use read::{
 };
 pub use run::{
     ConnectError, ErrorCounts, GeneratorCpu, Lane, MAX_REQUESTS, Outcome, RUN_SCHEMA, ResolveError,
-    RunConfig, RunError, RunOutcome, RunReport, SPIN_WINDOW, Schedule, Summary, TRACES_PATH,
-    offset_nanos, resolve, run, scheduled_requests, span_base_nanos,
+    RunConfig, RunError, RunOutcome, RunReport, SPIN_WINDOW, Schedule, SpanTimes, Summary,
+    TRACES_PATH, offset_nanos, resolve, run, scheduled_requests,
 };

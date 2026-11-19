@@ -184,7 +184,11 @@ const MAX_INFLATE_RATIO: usize = 1_032;
 /// The inflated size, modulo 2^32, that the trailer of a gzip body's last member states: its last four bytes,
 /// little-endian. 0 for a body too short to hold a member.
 fn trailer_size(compressed: &[u8]) -> usize {
-    match compressed.len().checked_sub(4).map(|at| compressed.split_at(at).1) {
+    match compressed
+        .len()
+        .checked_sub(4)
+        .map(|at| compressed.split_at(at).1)
+    {
         Some(&[a, b, c, d]) if compressed.len() >= 18 => u32::from_le_bytes([a, b, c, d]) as usize,
         _ => 0,
     }
