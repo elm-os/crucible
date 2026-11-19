@@ -9,12 +9,36 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
 SCHEMA = "crucible.conformance.scrub/v1"
+
+WorkHook = Callable[[int, int], None]
+"""Called with the work one step of capturing a field cost, in characters: the JSON text serialized for it before
+any cut, and the text handed to the scrubber."""
+
+_work_hook: WorkHook | None = None
+
+
+def set_work_hook(hook: WorkHook | None) -> None:
+    """Installs, or with None removes, the hook the capture-overhead scenario reads its work bound from."""
+    global _work_hook
+    _work_hook = hook
+
+
+def note_work(serialized: int, scrubbed: int) -> None:
+    """Reports work to the hook, if one is installed."""
+    if _work_hook is not None:
+        _work_hook(serialized, scrubbed)
+
+
+def work_hooked() -> bool:
+    """Whether a work hook is installed, so that a caller measures only then."""
+    return _work_hook is not None
+
 
 # Values under these JSON object keys are never emitted (contract 3.5); keys compare lowercased, without '-', '_'
 # and '.'.
@@ -191,6 +215,7 @@ class Scrubber:
         """
         encoder = _CappedJson(self, max_bytes)
         encoder.value(value, 0)
+        note_work(encoder.serialized, encoder.scrubbed)
         return b"".join(encoder.parts).decode("utf-8", "ignore"), encoder.cut
 
 
@@ -200,8 +225,11 @@ class _CappedJson:
         self._left = max_bytes
         self.parts: list[bytes] = []
         self.cut = False
+        self.serialized = 0
+        self.scrubbed = 0
 
     def _emit(self, text: str) -> bool:
+        self.serialized += len(text)
         data = text.encode("utf-8", "replace")
         if len(data) <= self._left:
             self.parts.append(data)
@@ -229,6 +257,7 @@ class _CappedJson:
     def _string(self, value: str, suffix: str = "") -> bool:
         """Emits a string (an object key with `suffix` ":"), scrubbing no more of it than the budget can hold."""
         raw = value[: self._left + _MARGIN]
+        self.scrubbed += len(raw)
         text = json.dumps(self._scrubber.text(raw), ensure_ascii=False)
         if len(raw) < len(value):
             # Cut before scrubbing: emit it without the closing quote, as a prefix of the full encoding.

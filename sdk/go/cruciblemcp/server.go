@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/elm-os/crucible/sdk/go/internal/core"
 	"github.com/elm-os/crucible/sdk/go/internal/scrub"
@@ -159,6 +160,7 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		truncated := false
 		if rule != nil && rule.Args {
 			window, cut := scrub.Window(args, rule.MaxBytes)
+			noteWork(len(window), len(window))
 			truncated = cut
 			if text, cut, ok := s.captured(FieldArguments, window, rule.MaxBytes); ok {
 				kv = append(kv, attribute.String(keyToolArguments, text))
@@ -186,7 +188,9 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		okv, class := outcomeAttrs(out, o, notification, true)
 		kv = append(kv, okv...)
 		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {
-			if text, cut, ok := s.captured(FieldResult, resultText(r), rule.MaxBytes); ok {
+			result := resultText(r)
+			noteWork(len(result), min(len(result), scrub.WindowSize(rule.MaxBytes)))
+			if text, cut, ok := s.captured(FieldResult, result, rule.MaxBytes); ok {
 				kv = append(kv, attribute.String(keyToolResult, text))
 				truncated = truncated || cut
 			}
@@ -299,6 +303,17 @@ func (s *server) rule(tool string) *CaptureRule {
 		}
 	}
 	return nil
+}
+
+// workHook, when set, is called once per captured field with the bytes of JSON the capture path serialized for
+// it before any cut and the bytes it handed to the scrubber. The capture-overhead scenario reads its work bound
+// from it.
+var workHook atomic.Pointer[func(serialized, scrubbed int)]
+
+func noteWork(serialized, scrubbed int) {
+	if h := workHook.Load(); h != nil {
+		(*h)(serialized, scrubbed)
+	}
 }
 
 // captured scrubs and caps one value, then applies the Scrub option. ok is false when there is nothing to

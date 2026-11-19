@@ -30,7 +30,7 @@ from opentelemetry.trace import Span
 from opentelemetry.util.types import AttributeValue
 from pydantic import BaseModel, ValidationError
 
-from crucible_sdk import _keys, _pipeline
+from crucible_sdk import _keys, _pipeline, _scrub
 from crucible_sdk.mcp import _seam
 
 logger = logging.getLogger("crucible_sdk")
@@ -402,6 +402,8 @@ class CrucibleMiddleware:
         # Only the content: an envelope can carry `requestState` and `_meta`, which are never captured.
         if isinstance(result, BaseModel):
             result = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if _scrub.work_hooked():
+                _scrub.note_work(len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))), 0)
         if not isinstance(result, Mapping):
             return {}
         content = {k: result[k] for k in ("content", "structuredContent", "isError") if k in result}

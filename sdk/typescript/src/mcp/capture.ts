@@ -30,6 +30,19 @@ const SCRUB_MARGIN = 1_024;
 /** Characters of tokens, keys and encoded blobs. */
 const TOKEN = /[A-Za-z0-9._~+/=-]/;
 
+/**
+ * The work one captured field cost, in UTF-16 code units: the JSON text serialized for it before any cut, and the
+ * text handed to the scrubber.
+ */
+export type CaptureWorkHook = (serialized: number, scrubbed: number) => void;
+
+let workHook: CaptureWorkHook | undefined;
+
+/** Installs, or with `undefined` removes, the hook the capture-overhead scenario reads its work bound from. */
+export function setCaptureWorkHook(hook: CaptureWorkHook | undefined): void {
+  workHook = hook;
+}
+
 /** Whether to capture one call, decided before any argument is read. */
 export function decide(
   rules: readonly CaptureRule[] | undefined,
@@ -66,6 +79,7 @@ export function captured(
     return undefined;
   }
   const window = json.slice(0, maxBytes + SCRUB_MARGIN);
+  workHook?.(json.length, window.length);
   const scrubbed = scrub(window);
   let text = cutUtf8(scrubbed, maxBytes);
   const cut = window.length < json.length || text.length < scrubbed.length;

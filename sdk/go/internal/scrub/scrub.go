@@ -149,6 +149,9 @@ func Capped(s string, max int) (out string, truncated bool) {
 	return out, cut || cut2
 }
 
+// WindowSize is how many bytes Capped reads for the cap max.
+func WindowSize(max int) int { return max + lookahead }
+
 // Window returns, as a string, the part of b that Capped reads for the cap max, and whether b is longer. Only
 // that part is copied.
 func Window(b []byte, max int) (string, bool) {

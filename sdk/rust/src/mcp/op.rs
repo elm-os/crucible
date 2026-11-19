@@ -252,7 +252,8 @@ impl Op {
         value: &T,
         max: usize,
     ) -> (Option<String>, bool) {
-        let (json, cut) = json_prefix(value, scrub::window(max));
+        let (json, cut, produced) = json_prefix(value, scrub::window(max));
+        note_work(produced, json.len());
         let (text, cut_after) = self.scrubbed(field, &json, max);
         (text, cut || cut_after)
     }
@@ -494,16 +495,27 @@ fn glob(pattern: &str, name: &str) -> bool {
     pattern[p..].iter().all(|&c| c == '*')
 }
 
-/// The first `limit` bytes of a value's JSON text, cut on a character boundary, and whether the text is
-/// longer. Serialization stops at the limit, so a large value costs no more than the cap.
-fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool) {
+/// Reports one captured field's work to the test hook (feature `test-support`).
+fn note_work(serialized: usize, scrubbed: usize) {
+    #[cfg(feature = "test-support")]
+    super::test_support::note(serialized, scrubbed);
+    #[cfg(not(feature = "test-support"))]
+    let _ = (serialized, scrubbed);
+}
+
+/// The first `limit` bytes of a value's JSON text, cut on a character boundary, whether the text is longer,
+/// and how many bytes the serializer produced before it stopped. Serialization stops at the limit, so a large
+/// value costs no more than the cap.
+fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool, usize) {
     struct Limited {
         buf: Vec<u8>,
         limit: usize,
         full: bool,
+        produced: usize,
     }
     impl io::Write for Limited {
         fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.produced += data.len();
             let room = self.limit - self.buf.len();
             if data.len() > room {
                 self.buf.extend_from_slice(&data[..room]);
@@ -522,6 +534,7 @@ fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool)
         buf: Vec::new(),
         limit,
         full: false,
+        produced: 0,
     };
     let _done = serde_json::to_writer(&mut out, value);
     let text = match String::from_utf8(out.buf) {
@@ -533,7 +546,7 @@ fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool)
             String::from_utf8(bytes).unwrap_or_default()
         }
     };
-    (text, out.full)
+    (text, out.full, out.produced)
 }
 
 #[cfg(test)]
@@ -559,10 +572,10 @@ mod tests {
     fn json_prefixes_stop_at_the_limit_on_a_boundary() {
         let value = serde_json::json!({ "note": "é".repeat(100) });
         let full = value.to_string();
-        let (all, cut) = json_prefix(&value, 10_000);
+        let (all, cut, _) = json_prefix(&value, 10_000);
         assert_eq!((all.as_str(), cut), (full.as_str(), false));
         for limit in 0..40 {
-            let (text, cut) = json_prefix(&value, limit);
+            let (text, cut, _) = json_prefix(&value, limit);
             assert!(cut);
             assert!(text.len() <= limit);
             assert!(full.starts_with(&text));

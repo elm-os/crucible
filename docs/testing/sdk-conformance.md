@@ -321,6 +321,33 @@ and ``; no anchors, inline flags, lookaround, backreferences or capturing group
 quantifiers; counts up to 1,000; and no unbounded quantifier on a group that holds one. The driver refuses a rules
 file that breaks the subset or any of its vectors, so an SDK can load the file and trust it.
 
+## Capture overhead
+
+`conformance/capture-overhead.json` is the capture-overhead scenario: what opt-in content capture (contract 9.10)
+may cost per call. It is not a driver case. Each SDK plays it in process with its own test, because it reads work
+counts through a hook inside the SDK.
+
+- Each SDK serves one tool, `shape`, from two in-process instances of a server it instruments: one without capture
+  rules and one capturing the tool's arguments and result at `max_bytes`. Calls alternate between the two in paired
+  rounds whose order flips every round.
+- The result shapes: 200 B of text, text at the cap, 500 short records (structured content), a 64 KiB hexadecimal
+  string, a 64 KiB alphanumeric run, a 1 MiB base64 image block and 5 MiB of text.
+- The check, independent of the machine: through the SDK's capture work hook, the JSON the capture path serialized
+  for each captured field before any cut, and the text it handed to the scrubber, stay at or below `work_bound`
+  (the cap plus 8 KiB). A generous wall-clock ceiling backs it up: the slowest captured call may exceed the median
+  uncaptured call by at most `ceiling_ms`.
+- The latency gate: every run prints the added p99 per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to the laptop's
+  round counts and fails a shape whose added p99 is above `gate_added_p99_ms` (1 ms). CI never gates on timing.
+
+| SDK | Test | Command, from the repository root |
+|---|---|---|
+| TypeScript | `sdk/typescript/test/capture-overhead.test.ts` | `pnpm --filter @elm-os/crucible exec vitest run test/capture-overhead.test.ts` |
+| Python | `sdk/python/tests/test_capture_overhead.py` | `cd sdk/python && uv run --locked pytest -q -s tests/test_capture_overhead.py` |
+| Go | `sdk/go/cruciblemcp/capture_overhead_test.go` | `go -C sdk/go test -count=1 -run TestCaptureOverhead -v ./cruciblemcp` |
+| Rust | `sdk/rust/tests/capture_overhead.rs` | `cargo test --manifest-path sdk/rust/Cargo.toml --features mcp,test-support --test capture_overhead -- --nocapture`, with `--release` for the gate |
+
+The sdk-conformance workflow runs each SDK's test in that SDK's matrix entry.
+
 ## Capability manifest
 
 Each SDK commits one manifest (schema in `conformance/capability-manifest.schema.json`):
