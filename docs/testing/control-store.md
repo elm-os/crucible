@@ -53,7 +53,7 @@ touch the control crates, the model or the workflow, and nightly.
 |---|---|
 | PG1 | The migrations apply once, are recorded in the ledger, and a second run is a no-op |
 | PG2 | Both timeouts are 10 s on pooled connections and in transactions; transactions run at repeatable read |
-| PgModel differential (8 rows) | Each script's transcript against the server equals the model's. The `jobs` row covers the statements of the job runners: parking a claimed row and pruning the key feed. The `repositories` row covers `project_salts`: the first salt of a project stays and a second insert changes nothing, a salt of a project that does not exist is refused by `project_salts_project_id_fkey`, the list is ordered by project, and a delete removes the salt once |
+| PgModel differential (9 rows) | Each script's transcript against the server equals the model's. The `jobs` row covers the statements of the job runners: parking a claimed row and pruning the key feed. The `repositories` row covers `project_salts`: the first salt of a project stays and a second insert changes nothing, a salt of a project that does not exist is refused by `project_salts_project_id_fkey`, the list is ordered by project, and a delete removes the salt once |
 | PG3 | After every connection is terminated, both pools replace their connections and every later call succeeds |
 | PG4 | Deleting a project's row deletes its salt (`ON DELETE CASCADE`). No repository deletes a project's row yet, so the row has no model side |
 
