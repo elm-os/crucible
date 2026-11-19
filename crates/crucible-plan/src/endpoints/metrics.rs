@@ -39,7 +39,7 @@ pub enum Granularity {
 /// `MetricsQuery` v1, without its window (which every builder takes) and its timezone.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MetricsQuery {
-    /// The source: `spans` or `traces`; `mcp_ops` is not compiled yet.
+    /// The source: `spans` or `traces`; an `mcp_ops` query is built by the `mcp_metrics` builders.
     pub source: Source,
     /// One to [`METRICS_MAX_MEASURES`] measures, each with an aggregation it allows.
     pub measures: Vec<(MeasureId, Aggregation)>,
