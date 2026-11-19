@@ -42,6 +42,7 @@ Spans go to `POST {endpoint}/v1/traces` as OTLP/HTTP protobuf with `Authorizatio
 | `release`                       |                                                   | `crucible.release` on every span                                         |
 | `deployId`                      |                                                   | Resource `crucible.deploy.id`; Crucible falls back to the server version |
 | `queueSize`                     | 2,048                                             | Spans held for export, including the batch being sent                    |
+| `queueBytes`                    | 8 MiB                                             | Bytes of spans held for export, estimated from their strings             |
 | `flushIntervalMs`               | 1,000                                             | Longest wait before a partial batch is sent                              |
 | `exportTimeoutMs`               | 10,000                                            | Bound on one export, and on `flush` and `shutdown`                       |
 

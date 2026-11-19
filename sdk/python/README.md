@@ -42,12 +42,13 @@ crucible_sdk.init(
 | `deploy_id` | none | Resource `crucible.deploy.id`; Crucible uses the server version when it is absent |
 | `sample_rate` | `1.0` | Fraction of traces exported, decided by trace id so a trace is kept or dropped whole |
 | `queue_size` | `2048` | Spans waiting for export. A full queue drops new spans and counts them; it never blocks |
+| `queue_bytes` | `8 << 20` | Bytes of spans waiting for export or being exported, estimated from their strings; beyond it new spans are dropped and counted too |
 | `flush_interval` | `1.0` | Seconds between exports of a partial batch (batches hold up to 512 spans) |
 
 `crucible_sdk.flush(timeout=5.0)` waits until every span that ended before the call has been sent and returns `False`
 when the timeout passes first. `crucible_sdk.shutdown(timeout=5.0)` sends what is queued and stops; it also runs at
-interpreter exit. `crucible_sdk.export_stats()` returns the queue counters: `queued`, `dropped`, `exported` and
-`failed`.
+interpreter exit. `crucible_sdk.export_stats()` returns the queue counters: `queued`, `dropped`, `exported`,
+`failed` and `queued_bytes`.
 
 Export runs on one background thread. A collector that is down, refuses connections or never answers can delay only
 that thread: ending a span takes the same time either way, and `flush` and `shutdown` return when their timeout
