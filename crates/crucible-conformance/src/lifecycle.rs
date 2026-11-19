@@ -7,8 +7,8 @@ use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_env::TelemetryStore;
 use crucible_plan::{
-    CmpOp, DeletePlan, Hidden, HiddenSelector, Literal, Pred, QueryPlan, Row, TraceSelector, Value,
-    deletion_traces, expired_before, lifecycle_oldest,
+    CmpOp, DeletePlan, Hidden, HiddenSelector, Literal, Pred, QueryPlan, Row, TRACE_ID_LIST_CHUNK,
+    TraceSelector, Value, deletion_traces, expired_before, lifecycle_oldest,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
 use crucible_schema::{Column, Granularity, SpanCoreCol, route};
@@ -163,6 +163,54 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         &vec![trace(2).to_bytes().to_vec()],
     )?;
 
+    // The longest lists a statement carries. The executor resolves the traces of a request a chunk of ids at
+    // a time, and a read hides at most `HIDDEN_TRACE_IDS` of a pending request: every id is a parameter in
+    // the text of the statement, which the server bounds.
+    let synthetic = |n: u128| TraceId::from_bytes(((0xabu128 << 120) | n).to_be_bytes());
+    let mut chunk: Vec<TraceId> = (0..TRACE_ID_LIST_CHUNK as u128 - 1)
+        .map(synthetic)
+        .collect();
+    chunk.push(trace(2));
+    let among_many = read(
+        deletion_traces(
+            scope,
+            TraceSelector::Traces(&chunk),
+            requested_at,
+            None,
+            1_000,
+        )?,
+        "the traces of one chunk of a list",
+    )
+    .await?;
+    same(
+        "the traces of one chunk of a list",
+        &ids(&among_many),
+        &vec![trace(2).to_bytes().to_vec()],
+    )?;
+    let mut longest = vec![trace(2)];
+    longest.extend((0..9_999u128).map(synthetic));
+    let pending_longest = [Hidden {
+        selector: HiddenSelector::Traces(longest),
+        requested_at,
+    }];
+    let under_many = read(
+        deletion_traces(
+            scope,
+            TraceSelector::Traces(&traces),
+            requested_at,
+            None,
+            1_000,
+        )?
+        .hiding(&pending_longest),
+        "a read under a pending request of 10,000 traces",
+    )
+    .await?;
+    same(
+        "a read under a pending request of 10,000 traces",
+        &ids(&under_many),
+        &vec![trace(1).to_bytes().to_vec()],
+    )?;
+
     // 13.4, typed reads: a plan that carries the pending-deletion set returns none of the selected rows.
     let every =
         TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE).map_err(|e| anyhow!("{e}"))?;
@@ -231,12 +279,14 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     })?;
 
     // 13.3 step 5: the delete of a request in a partition, among the rows received before the request.
+    // A full page of the executor: as many trace ids as one delete carries.
+    let mut page: Vec<Literal> = (0..TRACE_ID_LIST_CHUNK as u128 - 1)
+        .map(|n| Literal::from(synthetic(n)))
+        .collect();
+    page.push(Literal::from(trace(1)));
     let selected = Pred::And(vec![
         Pred::Or(vec![
-            Pred::In(
-                SpanCoreCol::TraceId.column_ref(),
-                vec![Literal::from(trace(1)), Literal::from(trace(9))],
-            ),
+            Pred::In(SpanCoreCol::TraceId.column_ref(), page),
             Pred::eq(SpanCoreCol::UserId, "nobody"),
         ]),
         Pred::cmp(SpanCoreCol::ReceivedAt, CmpOp::Lt, requested_at),

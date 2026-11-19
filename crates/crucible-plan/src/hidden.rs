@@ -8,7 +8,7 @@
 
 use crucible_records::{TableId, Timestamp, TraceId};
 
-use crate::endpoints::lifecycle_column;
+use crate::endpoints::{lifecycle_column, trace_id_in};
 use crate::literal::Literal;
 use crate::plan::QueryPlan;
 use crate::pred::{CmpOp, Pred};
@@ -53,10 +53,9 @@ impl Hidden {
     /// The rows of `table_id` the deletion hides, or `None` when the table lacks the selector's column.
     fn selected(&self, table_id: TableId) -> Option<Pred> {
         let selected = match &self.selector {
-            HiddenSelector::Traces(ids) if !ids.is_empty() => Pred::In(
-                lifecycle_column(table_id, "trace_id")?,
-                ids.iter().copied().map(Literal::from).collect(),
-            ),
+            HiddenSelector::Traces(ids) if !ids.is_empty() => {
+                trace_id_in(lifecycle_column(table_id, "trace_id")?, ids)
+            }
             HiddenSelector::User(user) if !user.is_empty() => Pred::Cmp(
                 lifecycle_column(table_id, "user_id")?,
                 CmpOp::Eq,
@@ -100,12 +99,50 @@ pub(crate) fn keep(table_id: TableId, pred: &mut Pred, hidden: &[Hidden]) {
     *pred = Pred::And(all);
 }
 
+/// The most trace ids the pending deletions of a project add to one scan. Every id is a parameter of the
+/// statement, a plan can hold two scans beside its own lists, and a ClickHouse server refuses a request with
+/// more than 1,000 parameters.
+pub const HIDDEN_TRACE_IDS: usize = 128;
+/// The most pending deletions by user or session that one scan carries.
+pub const HIDDEN_REQUESTS: usize = 32;
+
+/// The deletions a plan can carry, oldest first: every deletion until the budgets run out, and of a list of
+/// traces the ids that still fit. What does not fit stays readable until its deletes have run.
+fn within_budget(hidden: &[Hidden]) -> Vec<Hidden> {
+    let mut oldest: Vec<&Hidden> = hidden.iter().collect();
+    oldest.sort_by_key(|pending| pending.requested_at);
+    let (mut ids_left, mut others_left) = (HIDDEN_TRACE_IDS, HIDDEN_REQUESTS);
+    let mut carried = Vec::new();
+    for pending in oldest {
+        match &pending.selector {
+            HiddenSelector::Traces(ids) => {
+                let fits = ids.len().min(ids_left);
+                if fits > 0 {
+                    ids_left -= fits;
+                    carried.push(Hidden {
+                        selector: HiddenSelector::Traces(ids[..fits].to_vec()),
+                        requested_at: pending.requested_at,
+                    });
+                }
+            }
+            HiddenSelector::User(_) | HiddenSelector::Session(_) => {
+                if others_left > 0 {
+                    others_left -= 1;
+                    carried.push(pending.clone());
+                }
+            }
+        }
+    }
+    carried
+}
+
 impl QueryPlan {
-    /// The same plan without the rows that pending deletions hide. An empty list changes nothing.
+    /// The same plan without the rows that pending deletions hide, within [`HIDDEN_TRACE_IDS`] and
+    /// [`HIDDEN_REQUESTS`]. An empty list changes nothing.
     #[must_use]
     pub fn hiding(mut self, hidden: &[Hidden]) -> Self {
         if !hidden.is_empty() {
-            self.root_mut().hide(hidden);
+            self.root_mut().hide(&within_budget(hidden));
         }
         self
     }
@@ -190,6 +227,68 @@ mod tests {
         .unwrap();
         let before = plan(Node::Aggregate(metrics));
         assert_eq!(before.clone().hiding(&hidden()), before);
+    }
+
+    #[test]
+    fn a_long_list_of_traces_becomes_one_in_list_per_thousand() {
+        let column = SpanCoreCol::TraceId.column_ref();
+        let ids = |n: u128| -> Vec<TraceId> {
+            (0..n)
+                .map(|i| TraceId::from_bytes(i.to_be_bytes()))
+                .collect()
+        };
+        assert!(matches!(trace_id_in(column, &ids(500)), Pred::In(_, list) if list.len() == 500));
+        let Pred::Or(lists) = trace_id_in(column, &ids(10_000)) else {
+            panic!("a list above the chunk is a disjunction");
+        };
+        assert_eq!(lists.len(), 20);
+        let Pred::Or(lists) = trace_id_in(column, &ids(501)) else {
+            panic!("a list above the chunk is a disjunction");
+        };
+        assert!(matches!(&lists[1], Pred::In(_, list) if list.len() == 1));
+        // The longest request a project can have still makes a plan the table accepts.
+        let longest = Hidden {
+            selector: HiddenSelector::Traces(ids(10_000)),
+            requested_at: Timestamp::from_micros(50),
+        };
+        assert!(
+            longest
+                .selected(TableId::SpanCore)
+                .unwrap()
+                .check(TableId::SpanCore)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_plan_carries_the_oldest_deletions_that_fit_its_budget() {
+        let id = |n: u128| TraceId::from_bytes(n.to_be_bytes());
+        let traces = |from: u128, count: u128, at: i64| Hidden {
+            selector: HiddenSelector::Traces((from..from + count).map(id).collect()),
+            requested_at: Timestamp::from_micros(at),
+        };
+        let carried = within_budget(&[traces(5_000, 1_000, 30), traces(0, 100, 10)]);
+        // The older request whole, then the first 28 ids of the newer one.
+        assert_eq!(carried.len(), 2);
+        assert_eq!(carried[0], traces(0, 100, 10));
+        assert_eq!(carried[1], traces(5_000, 28, 30));
+        let users: Vec<Hidden> = (0..100)
+            .map(|n| Hidden {
+                selector: HiddenSelector::User(format!("u{n}")),
+                requested_at: Timestamp::from_micros(100 - n),
+            })
+            .collect();
+        let carried = within_budget(&users);
+        assert_eq!(carried.len(), HIDDEN_REQUESTS);
+        assert_eq!(carried[0].selector, HiddenSelector::User("u99".to_owned()));
+        // A request of the longest list still gives a statement of bounded size.
+        let scan = Scan::new(TableId::SpanCore, [SpanCoreCol::SpanId], Pred::all()).unwrap();
+        let hiding = plan(Node::Scan(scan)).hiding(&[traces(0, 10_000, 5)]);
+        let Node::Scan(scan) = hiding.root() else {
+            panic!("a scan stays a scan");
+        };
+        let listed = format!("{:?}", scan.pred()).matches("Bytes").count();
+        assert!(listed <= HIDDEN_TRACE_IDS, "{listed}");
     }
 
     #[test]

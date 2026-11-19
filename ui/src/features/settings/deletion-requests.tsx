@@ -94,7 +94,8 @@ const STATUS: Record<DeletionState, { label: string; detail: string }> = {
   completed: { label: "Removed", detail: "Removed from storage and checked." },
   failed: {
     label: "Failed",
-    detail: "A step failed and stopped. The data stays hidden; an operator can resume the request.",
+    detail:
+      "A step failed and the request stopped. Some of the data may be readable again. Ask an operator to check the server log.",
   },
 };
 

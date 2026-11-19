@@ -20,7 +20,26 @@ use crate::plan::QueryPlan;
 use crate::pred::{CmpOp, Pred};
 
 /// The most traces one page of [`deletion_traces`] returns.
-pub const DELETION_TRACES_PAGE: u32 = 1_000;
+pub const DELETION_TRACES_PAGE: u32 = 500;
+
+/// The most trace ids one `IN` list of a lifecycle predicate holds. Every id is a parameter of its statement
+/// (the renderer pads a list to the next power of two), and a ClickHouse server refuses a request with more
+/// than 1,000 parameters, or with a statement text above 128 KiB.
+pub const TRACE_ID_LIST_CHUNK: usize = 500;
+
+/// `column IN (ids)` for a list of any length: one `IN` list per
+/// [`TRACE_ID_LIST_CHUNK`] ids, joined with `OR`.
+pub fn trace_id_in(column: ColumnRef, ids: &[TraceId]) -> Pred {
+    let mut lists: Vec<Pred> = ids
+        .chunks(TRACE_ID_LIST_CHUNK)
+        .map(|chunk| Pred::In(column, chunk.iter().copied().map(Literal::from).collect()))
+        .collect();
+    if lists.len() == 1 {
+        lists.remove(0)
+    } else {
+        Pred::Or(lists)
+    }
+}
 
 fn named<C: Column>(name: &str) -> Option<ColumnRef> {
     C::ALL
@@ -117,10 +136,7 @@ pub fn deletion_traces(
     limit: u32,
 ) -> Result<QueryPlan, PlanError> {
     let selected = match selector {
-        TraceSelector::Traces(ids) => Pred::is_in(
-            SpanCoreCol::TraceId,
-            ids.iter().copied().map(Literal::from).collect(),
-        ),
+        TraceSelector::Traces(ids) => trace_id_in(SpanCoreCol::TraceId.column_ref(), ids),
         TraceSelector::User(user_id) => Pred::eq(SpanCoreCol::UserId, user_id),
         TraceSelector::Session(session_id) => Pred::eq(SpanCoreCol::SessionId, session_id),
     };

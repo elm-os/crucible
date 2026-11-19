@@ -91,6 +91,11 @@ without it and must hold.
   it. The simulation's stage B is a model of the two rules above, so invariant I9 holds end to end in the binary
   only once the normalizer and the shipper implement them.
 - Replay of retained segments, requeue from quarantine and `crucible wal drain`.
+- The size of a statement. A ClickHouse server takes at most 1,000 parameters in a request, and every trace id of
+  a list is one. The executor resolves and deletes a list of traces 500 ids at a time, which the conformance row
+  runs on a real server. A read carries at most 128 trace ids and 32 user or session deletions of the pending
+  set, oldest first; what does not fit is filtered from the recent index and stays readable from the store until
+  its deletes have run.
 - Comments, media and export files, which this deployment does not hold; a completed request reports each as
   `not_present`.
 

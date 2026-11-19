@@ -21,7 +21,9 @@ use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
 };
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
-use crucible_plan::{DELETION_TRACES_PAGE, Row, TraceSelector, Value, deletion_traces};
+use crucible_plan::{
+    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_traces,
+};
 use crucible_records::{DeletionState, ProjectScope, Timestamp, TraceId, WalEpoch};
 use serde::{Deserialize, Serialize};
 
@@ -248,55 +250,93 @@ impl Executor<'_> {
         scope: ProjectScope,
         progress: &mut Progress,
     ) -> JobResult {
+        // A list of traces is resolved a chunk of ids at a time: one statement cannot carry the whole list.
+        let listed: Option<Vec<TraceId>> = match &request.selector {
+            DeletionSelector::Traces(ids) => {
+                let mut ids = ids.clone();
+                ids.sort_unstable();
+                Some(ids)
+            }
+            DeletionSelector::User { .. } | DeletionSelector::Session(_) => None,
+        };
         for _ in 0..MAX_PAGES_PER_RUN {
-            let selector = match &request.selector {
-                DeletionSelector::Traces(ids) => TraceSelector::Traces(ids),
-                DeletionSelector::User { user_id, .. } => TraceSelector::User(user_id),
-                DeletionSelector::Session(session_id) => TraceSelector::Session(session_id),
-            };
             let after = progress
                 .cursor
                 .as_deref()
                 .and_then(|id| TraceId::parse(id).ok());
-            let plan = deletion_traces(
-                scope,
-                selector,
-                request.requested_at,
-                after,
-                DELETION_TRACES_PAGE,
-            )
-            .map_err(|error| {
-                JobError::Failed(format!("the trace resolution was refused: {error}"))
-            })?;
-            let rows = match self.shared.telemetry.execute(plan).await {
-                Ok(stream) => stream.rows().await,
-                Err(error) => Err(error),
-            }
-            .map_err(|error| JobError::Failed(format!("the trace resolution failed: {error}")))?;
-            let page = resolved(&rows);
-            if let Some((last, _, _)) = page.last() {
+            let chunk: Option<&[TraceId]> = listed.as_deref().map(|ids| {
+                let from = after.map_or(0, |after| ids.partition_point(|id| *id <= after));
+                let rest = &ids[from..];
+                &rest[..rest.len().min(TRACE_ID_LIST_CHUNK)]
+            });
+            let (selector, plan_after) = match (&request.selector, chunk) {
+                (_, Some(chunk)) => (TraceSelector::Traces(chunk), None),
+                (DeletionSelector::User { user_id, .. }, None) => {
+                    (TraceSelector::User(user_id), after)
+                }
+                (DeletionSelector::Session(session_id), None) => {
+                    (TraceSelector::Session(session_id), after)
+                }
+                (DeletionSelector::Traces(ids), None) => (TraceSelector::Traces(ids), after),
+            };
+            let page = if chunk.is_some_and(<[TraceId]>::is_empty) {
+                Vec::new()
+            } else {
+                let plan = deletion_traces(
+                    scope,
+                    selector,
+                    request.requested_at,
+                    plan_after,
+                    DELETION_TRACES_PAGE,
+                )
+                .map_err(|error| {
+                    JobError::Failed(format!("the trace resolution was refused: {error}"))
+                })?;
+                let rows = match self.shared.telemetry.execute(plan).await {
+                    Ok(stream) => stream.rows().await,
+                    Err(error) => Err(error),
+                }
+                .map_err(|error| {
+                    JobError::Failed(format!("the trace resolution failed: {error}"))
+                })?;
+                resolved(&rows)
+            };
+            // The next read starts after the chunk of ids, or after the last trace of the page.
+            let next = match chunk {
+                Some(chunk) => chunk.last().copied(),
+                None => page.last().map(|(id, _, _)| *id),
+            };
+            if let Some(next) = next {
                 let days: BTreeSet<u32> = page
                     .iter()
                     .flat_map(|(_, first, last)| days_spanned(*first, *last))
                     .collect();
                 let traces: Vec<String> = page.iter().map(|(id, _, _)| id.to_string()).collect();
-                let label = format!("page{}", progress.pages);
-                let actions = self.deletes(
-                    request,
-                    &label,
-                    &page_reach(&request.selector),
-                    &days,
-                    &traces,
-                );
+                let actions = if page.is_empty() {
+                    Vec::new()
+                } else {
+                    let label = format!("page{}", progress.pages);
+                    progress.pages += 1;
+                    self.deletes(
+                        request,
+                        &label,
+                        &page_reach(&request.selector),
+                        &days,
+                        &traces,
+                    )
+                };
                 let mut all: BTreeSet<u32> = progress.days.iter().copied().collect();
                 all.extend(days);
                 progress.days = all.into_iter().collect();
-                progress.cursor = Some(last.to_string());
-                progress.pages += 1;
+                progress.cursor = Some(next.to_string());
                 progress.traces += page.len() as u64;
                 self.record(request, progress, actions).await?;
             }
-            if page.len() < DELETION_TRACES_PAGE as usize {
+            let finished = match chunk {
+                Some(chunk) => chunk.len() < TRACE_ID_LIST_CHUNK,
+                None => page.len() < DELETION_TRACES_PAGE as usize,
+            };
+            if finished {
                 let days: BTreeSet<u32> = progress.days.iter().copied().collect();
                 let actions = self.deletes(
                     request,

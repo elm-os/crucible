@@ -77,7 +77,8 @@ pub enum DeletionState {
     Verified,
     /// Every place is accounted for.
     Completed,
-    /// A step was given up; an operator must look. The request can be resumed.
+    /// A step was given up and the request stopped. Data it had not deleted yet may be readable again; an
+    /// operator must look at the server log.
     Failed,
 }
 
