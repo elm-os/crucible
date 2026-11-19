@@ -33,6 +33,9 @@ import type { InvitationCreate } from "./generated/InvitationCreate";
 import type { InvitationCreated } from "./generated/InvitationCreated";
 import type { InvitationList } from "./generated/InvitationList";
 import type { LoginRequest } from "./generated/LoginRequest";
+import type { Media } from "./generated/Media";
+import type { MediaList } from "./generated/MediaList";
+import type { MediaListParams } from "./generated/MediaListParams";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { OrgMember } from "./generated/OrgMember";
@@ -402,6 +405,25 @@ export async function getPayloadRange(
   const bytes = new Uint8Array(await response.arrayBuffer());
   const total = response.status === 206 ? (rangeTotal(response) ?? bytes.length) : bytes.length;
   return { bytes, total };
+}
+
+// Where media appear in one span: one entry per use, each with its media's metadata.
+export async function listMedia(
+  project: string,
+  traceId: string,
+  spanId: string,
+  signal?: AbortSignal,
+): Promise<MediaList> {
+  const query: MediaListParams = { trace_id: traceId, span_id: spanId };
+  return read<MediaList>(
+    await call(projectPath(project, "/media"), "telemetry", { query, signal }),
+  );
+}
+
+// One media object, with a presigned download that lives 5 minutes once it is uploaded.
+export async function getMedia(project: string, id: string, signal?: AbortSignal): Promise<Media> {
+  const path = projectPath(project, `/media/${encodeURIComponent(id)}`);
+  return read<Media>(await call(path, "telemetry", { signal }));
 }
 
 export type SignInMode = { mode: "keys" } | { mode: "session"; options: SignInOptions };

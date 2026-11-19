@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crucible_auth::test_support::scope;
 use crucible_control::{
-    ControlStore, DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, NewExport, Project,
-    Repos as _,
+    ControlStore, DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, MediaObject, MediaRef,
+    MediaState, NewExport, Project, Repos as _,
 };
 use crucible_env::{StoreFlavour, Stores};
 use crucible_jobs::Registry;
@@ -20,7 +20,9 @@ use crucible_lifecycle::{
     Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::Value;
-use crucible_records::{DeletionState, ExportJobId, Lsn, ProjectId, TableId, TraceId};
+use crucible_records::{
+    DeletionState, ExportJobId, Lsn, MediaObjectId, ProjectId, TableId, Timestamp, TraceId,
+};
 use crucible_schema::{Granularity, table};
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
 use crucible_sim::ch_model::ChModel;
@@ -166,6 +168,7 @@ where
         let service = Service::new(&host.env, Arc::clone(&control), Arc::clone(&state));
         let mut config = LifecycleConfig::default();
         config.mask_cycle = Duration::from_secs(1_800);
+        config.media = true;
         let stores = LeaderStores {
             telemetry: Arc::new(ch.clone()),
             subjects: Arc::new(NoSalt),
@@ -262,6 +265,29 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         let exports = node.pg.export_jobs();
         let before = node.host.env.clock.wall_now();
         exports.insert(&export(1, before)).await.unwrap();
+        // Media used in both traces before the request.
+        let media = node.pg.media();
+        let object = MediaObject {
+            id: MediaObjectId::from_bytes([3; 16]),
+            project_id: ProjectId::from_bytes(PROJECT),
+            sha256: [3; 32],
+            content_type: "image/png".to_owned(),
+            len: 3,
+            state: MediaState::Uploaded,
+            created_at: before,
+            uploaded_at: Some(before),
+        };
+        media.insert_object(&object).await.unwrap();
+        let used = |trace: u8, at: Timestamp| MediaRef {
+            project_id: ProjectId::from_bytes(PROJECT),
+            media_id: object.id,
+            trace_id: TraceId::from_bytes([trace; 16]),
+            span_id: None,
+            field: format!("input-{}", at.micros()),
+            target_time: at,
+        };
+        media.add_ref(&used(1, before)).await.unwrap();
+        media.add_ref(&used(2, before)).await.unwrap();
         node.sleep(Duration::from_secs(1)).await;
 
         let new = NewDeletion {
@@ -287,6 +313,7 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         node.ingest(1, 3..4).await;
         let after = node.host.env.clock.wall_now();
         exports.insert(&export(2, after)).await.unwrap();
+        media.add_ref(&used(1, after)).await.unwrap();
 
         // One period of the executor after the checkpoint: the deletes have run and hide the rows.
         node.sleep(Duration::from_secs(90)).await;
@@ -317,5 +344,22 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
             "{}",
             done.places
         );
+        // The media uses of the trace recorded before the request are gone; the other trace's and the later
+        // one stay, and the object with them.
+        let left = |trace: u8| {
+            let media = node.pg.media();
+            async move {
+                media
+                    .uses(ProjectId::from_bytes(PROJECT), TraceId::from_bytes([trace; 16]), None)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|usage| usage.reference.target_time)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(left(1).await, [after]);
+        assert_eq!(left(2).await, [before]);
+        assert!(done.places.contains("\"media\":\"done\""), "{}", done.places);
     });
 }
