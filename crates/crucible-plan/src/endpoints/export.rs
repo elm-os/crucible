@@ -7,7 +7,7 @@ use crucible_schema::{Column, McpContentCol, McpOpsCol, SpanCoreCol, SpanPayload
 
 use crate::build::RetentionClamp;
 use crate::class::QueryClass;
-use crate::endpoints::facts::{FactTable, FactsOf, scan as fact_scan};
+use crate::endpoints::facts::{FactTable, FactsOf, scan_every_column};
 use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::{ArrivalBounds, Direction, Node, Order, PointLookup, Scan};
@@ -233,7 +233,7 @@ pub fn export_mcp_content(
 }
 
 /// The candidate facts of the traces of a page in one fact table, about the traces themselves and about their
-/// spans, with every body column; the outputs are those of `fact_rows`. The window is over the facts'
+/// spans, in no order: every column of the table, in the table's order. The window is over the facts'
 /// `target_time`.
 pub fn export_facts(
     scope: ProjectScope,
@@ -242,6 +242,6 @@ pub fn export_facts(
     table: FactTable,
     trace_ids: &[TraceId],
 ) -> Result<Option<QueryPlan>, PlanError> {
-    let scan = fact_scan(table, FactsOf::TraceTree(trace_ids), false)?;
+    let scan = scan_every_column(table, FactsOf::TraceTree(trace_ids))?;
     clamp.plan(scope, window, QueryClass::Export, Node::Scan(scan))
 }
