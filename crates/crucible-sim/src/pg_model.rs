@@ -154,8 +154,45 @@ struct JobRow {
     payload: String,
     attempts: u32,
     next_attempt_at: Timestamp,
-    done: bool,
+    status: JobStatus,
     lease_until: Option<Timestamp>,
+}
+
+/// The `status` column of a claimed row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobStatus {
+    /// Waiting for a claim, or under one.
+    Pending,
+    /// Completed.
+    Done,
+    /// Parked after its attempts ran out.
+    Parked,
+}
+
+/// A claimed row as the model holds it, for the oracles.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct JobState {
+    /// The queue.
+    pub queue: Queue,
+    /// The row id.
+    pub id: Uuid,
+    /// The payload.
+    pub payload: String,
+    /// The attempt counter.
+    pub attempts: u32,
+    /// The status.
+    pub status: JobStatus,
+}
+
+/// A seeded defect of the store, for the simulations that must catch it. `None` in every other use.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PgMutant {
+    /// `renew` does not compare the holder, the fencing token or the expiry: it writes the caller's lease
+    /// back over whatever the row holds.
+    RenewWithoutCompareAndSet,
+    /// `complete` does not compare the attempt counter, so a claimer whose claim ran out completes the row
+    /// of a newer claim.
+    CompleteWithoutClaimCheck,
 }
 
 #[derive(Clone, Debug)]
@@ -299,6 +336,7 @@ struct Db {
     db_offset_micros: i64,
     faults: PgFaults,
     events: Vec<LeaseEvent>,
+    mutant: Option<PgMutant>,
 }
 
 /// Why a statement stopped.
@@ -888,6 +926,7 @@ impl PgModel {
                 db_offset_micros: 0,
                 faults,
                 events: Vec::new(),
+                mutant: None,
             }),
         };
         Self {
@@ -922,6 +961,89 @@ impl PgModel {
     /// The lease and job-cursor writes committed so far, in commit order.
     pub fn lease_events(&self) -> Vec<LeaseEvent> {
         lock(&self.shared().db).events.clone()
+    }
+
+    /// Switches a seeded defect on or off.
+    pub fn set_mutant(&self, mutant: Option<PgMutant>) {
+        lock(&self.shared().db).mutant = mutant;
+    }
+
+    /// Takes the lease away from whoever holds it, live or not, as an operator's forced expiry followed by an
+    /// acquisition would: the row gets `holder`, the next fencing token and an expiry `ttl` from the
+    /// database clock. No fault applies. `None` while a statement or a transaction holds a lock on the row,
+    /// which the real statement would wait for.
+    pub fn steal_lease(&self, name: LeaseName, holder: &str, ttl: Duration) -> Option<Lease> {
+        let shared = self.shared();
+        let mut db = lock(&shared.db);
+        let at = (Tbl::Leases, lease_key(name));
+        let slot = db.rows.get(&at);
+        if slot.is_some_and(|slot| slot.excl.is_some() || !slot.shared.is_empty()) {
+            return None;
+        }
+        let token = match slot.and_then(|slot| slot.val.as_ref()) {
+            Some(Row::Lease(row)) => row.fencing_token,
+            _ => 0,
+        };
+        let lease = Lease {
+            name,
+            holder: holder.to_owned(),
+            fencing_token: token + 1,
+            expires_at: after(shared.db_now(&db), ttl),
+        };
+        db.commit_seq += 1;
+        let seq = db.commit_seq;
+        let slot = db.rows.entry(at).or_default();
+        slot.val = Some(Row::Lease(lease.clone()));
+        slot.changed_at = seq;
+        db.events.push(LeaseEvent::Lease(lease.clone()));
+        Some(lease)
+    }
+
+    /// Whether the committed lease row still carries this holder and fencing token and has not expired on
+    /// the database clock.
+    pub fn lease_is_live(&self, lease: &Lease) -> bool {
+        let shared = self.shared();
+        let db = lock(&shared.db);
+        let now = shared.db_now(&db);
+        match db
+            .rows
+            .get(&(Tbl::Leases, lease_key(lease.name)))
+            .and_then(|slot| slot.val.as_ref())
+        {
+            Some(Row::Lease(row)) => {
+                row.holder == lease.holder
+                    && row.fencing_token == lease.fencing_token
+                    && row.expires_at >= now
+            }
+            _ => false,
+        }
+    }
+
+    /// Every committed claimed row, in key order.
+    pub fn job_states(&self) -> Vec<JobState> {
+        let db = lock(&self.shared().db);
+        db.rows
+            .values()
+            .filter_map(|slot| match &slot.val {
+                Some(Row::Job(job)) => Some(JobState {
+                    queue: job.queue,
+                    id: job.id,
+                    payload: job.payload.clone(),
+                    attempts: job.attempts,
+                    status: job.status,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many key-feed rows are committed.
+    pub fn feed_len(&self) -> usize {
+        let db = lock(&self.shared().db);
+        db.rows
+            .values()
+            .filter(|slot| matches!(slot.val, Some(Row::Feed(_))))
+            .count()
     }
 }
 
@@ -1701,6 +1823,21 @@ impl KeyFeed for Runner {
         })
         .await
     }
+
+    async fn prune(&self, older_than: Duration) -> Result<u64, TxError> {
+        self.run(Pool::Reserved, true, |cx| {
+            let before = cx.now.saturating_add_micros(-duration_micros(older_than));
+            let mut pruned = 0;
+            for row in all!(cx, Tbl::Feed, Row::Feed) {
+                if row.at < before {
+                    cx.put(Tbl::Feed, row.seq.to_be_bytes().to_vec(), None)?;
+                    pruned += 1;
+                }
+            }
+            Ok(pruned)
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -1821,6 +1958,14 @@ impl Leases for Runner {
     async fn renew(&self, lease: &Lease, ttl: Duration) -> Result<Option<Lease>, TxError> {
         self.run(Pool::Reserved, true, |cx| {
             let key = lease_key(lease.name);
+            if cx.db.mutant == Some(PgMutant::RenewWithoutCompareAndSet) {
+                let row = Lease {
+                    expires_at: after(cx.now, ttl),
+                    ..lease.clone()
+                };
+                cx.put(Tbl::Leases, key, Some(Row::Lease(row.clone())))?;
+                return Ok(Some(row));
+            }
             match one!(cx, Tbl::Leases, &key, Row::Lease) {
                 Some(mut row)
                     if row.holder == lease.holder
@@ -1892,7 +2037,7 @@ impl Claims for Runner {
                 payload: job.payload.clone(),
                 attempts: 0,
                 next_attempt_at: job.run_at,
-                done: false,
+                status: JobStatus::Pending,
                 lease_until: None,
             };
             cx.insert(
@@ -1915,7 +2060,7 @@ impl Claims for Runner {
             let mut due = all!(cx, Tbl::Jobs, Row::Job);
             due.retain(|job| {
                 job.queue == queue
-                    && !job.done
+                    && job.status == JobStatus::Pending
                     && job.next_attempt_at <= cx.now
                     && job.lease_until.is_none_or(|until| until < cx.now)
                     // Skip locked.
@@ -1942,25 +2087,45 @@ impl Claims for Runner {
     }
 
     async fn complete(&self, claim: &Claim) -> Result<bool, TxError> {
-        self.run(Pool::Main, true, |cx| settle(cx, claim, None))
+        self.run(Pool::Main, true, |cx| settle(cx, claim, Settle::Done))
             .await
     }
 
     async fn fail(&self, claim: &Claim, retry_at: Timestamp) -> Result<bool, TxError> {
-        self.run(Pool::Main, true, |cx| settle(cx, claim, Some(retry_at)))
+        self.run(Pool::Main, true, |cx| {
+            settle(cx, claim, Settle::Retry(retry_at))
+        })
+        .await
+    }
+
+    async fn park(&self, claim: &Claim) -> Result<bool, TxError> {
+        self.run(Pool::Main, true, |cx| settle(cx, claim, Settle::Parked))
             .await
     }
 }
 
-/// Ends a claim: done, or due again at `retry_at`.
-fn settle(cx: &mut Cx<'_>, claim: &Claim, retry_at: Option<Timestamp>) -> Step<bool> {
+/// How a claim ends.
+#[derive(Clone, Copy)]
+enum Settle {
+    Done,
+    Retry(Timestamp),
+    Parked,
+}
+
+/// Ends a claim: done, due again at a retry time, or parked.
+fn settle(cx: &mut Cx<'_>, claim: &Claim, how: Settle) -> Step<bool> {
     let key = job_key(claim.queue, claim.id);
+    let unchecked =
+        cx.db.mutant == Some(PgMutant::CompleteWithoutClaimCheck) && matches!(how, Settle::Done);
     match one!(cx, Tbl::Jobs, &key, Row::Job) {
-        Some(mut job) if job.attempts == claim.attempt && !job.done => {
+        Some(mut job)
+            if (job.attempts == claim.attempt || unchecked) && job.status == JobStatus::Pending =>
+        {
             job.lease_until = None;
-            match retry_at {
-                Some(at) => job.next_attempt_at = at,
-                None => job.done = true,
+            match how {
+                Settle::Retry(at) => job.next_attempt_at = at,
+                Settle::Done => job.status = JobStatus::Done,
+                Settle::Parked => job.status = JobStatus::Parked,
             }
             cx.put(Tbl::Jobs, key, Some(Row::Job(job)))?;
             Ok(true)

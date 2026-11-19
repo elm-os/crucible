@@ -1189,6 +1189,19 @@ impl KeyFeed for Handle {
             keys: every(&rows, api_key)?,
         })
     }
+
+    async fn prune(&self, older_than: Duration) -> Result<u64, TxError> {
+        let rows = self
+            .query(
+                Which::Reserved,
+                true,
+                "DELETE FROM key_feed WHERE at < clock_timestamp() - $1 * interval '1 microsecond' \
+                 RETURNING 1",
+                &[micros(older_than)],
+            )
+            .await?;
+        Ok(rows.len() as u64)
+    }
 }
 
 const SIGNING_KEY: &str = "kid, purpose, sealed_key, state, created_at";
@@ -1432,19 +1445,27 @@ const fn table(queue: Queue) -> &'static str {
     }
 }
 
+/// How a claim ends.
+enum Settle {
+    Done,
+    Retry(Timestamp),
+    Parked,
+}
+
 impl Handle {
-    async fn settle(&self, claim: &Claim, retry_at: Option<Timestamp>) -> Result<bool, TxError> {
+    async fn settle(&self, claim: &Claim, how: Settle) -> Result<bool, TxError> {
         let table = table(claim.queue);
-        let set = match retry_at {
-            Some(_) => "next_attempt_at = $3",
-            None => "status = 'done'",
+        let set = match how {
+            Settle::Retry(_) => "next_attempt_at = $3",
+            Settle::Done => "status = 'done'",
+            Settle::Parked => "status = 'parked'",
         };
         let sql = format!(
             "UPDATE {table} SET lease_until = NULL, {set} \
              WHERE id = $1 AND attempts = $2 AND status = 'pending' RETURNING 1"
         );
         let mut params = vec![P::Uuid(claim.id), P::Int4(claim.attempt)];
-        if let Some(at) = retry_at {
+        if let Settle::Retry(at) = how {
             params.push(P::Ts(at));
         }
         Ok(self.write(&sql, &params).await? == 1)
@@ -1514,11 +1535,15 @@ impl Claims for Handle {
     }
 
     async fn complete(&self, claim: &Claim) -> Result<bool, TxError> {
-        self.settle(claim, None).await
+        self.settle(claim, Settle::Done).await
     }
 
     async fn fail(&self, claim: &Claim, retry_at: Timestamp) -> Result<bool, TxError> {
-        self.settle(claim, Some(retry_at)).await
+        self.settle(claim, Settle::Retry(retry_at)).await
+    }
+
+    async fn park(&self, claim: &Claim) -> Result<bool, TxError> {
+        self.settle(claim, Settle::Parked).await
     }
 }
 

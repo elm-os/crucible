@@ -1,0 +1,27 @@
+[package]
+name = "crucible-jobs"
+description = "The job registry and its runners: per-node timers, leader jobs under fenced leases, claimed work."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
+
+[dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+crucible-control = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

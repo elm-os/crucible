@@ -1,0 +1,26 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"jobs\")"
+---
+claim one: [("job 1", 1)]
+park: true
+park again: false
+complete after park: false
+fail after park: false
+claim the rest: [("job 2", 1)]
+claim after the lease ran out: [("job 2", 2)]
+the older attempt cannot park: false
+park the newer attempt: true
+nothing left to claim: []
+park inside a transaction: true
+claimed after the rollback: [("job 3", 1)]
+prune an empty window: 0
+prune the rows older than the pause: 2
+feed after the prune: [("key 1, changed", Changed, 2), ("key 3", Created, 1)]
+prune again: 0
+snapshot keeps every key: 3
+prune inside a transaction: 2
+feed inside the transaction: []
+feed after the rollback: [("key 1, changed", Changed, 2), ("key 3", Created, 1)]
+prune everything: 2
+snapshot of an empty feed: (0, 3)
