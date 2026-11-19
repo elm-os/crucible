@@ -12,6 +12,8 @@ import * as z from "zod/v4";
 import { init, shutdown } from "../src/index.ts";
 import { setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { instrument } from "../src/mcp/index.ts";
+import rules from "../src/scrub-rules.json" with { type: "json" };
+import { setMatcherHook } from "../src/scrub.ts";
 import { type Collector, startCollector } from "./support/collector.ts";
 
 interface Block {
@@ -38,6 +40,7 @@ interface Scenario {
   tool: string;
   max_bytes: number;
   work_bound: number;
+  matcher_steps_per_rule_char: number;
   ceiling_ms: number;
   gate_added_p99_ms: number;
   runs: { ci: Run; laptop: Run };
@@ -131,6 +134,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setCaptureWorkHook(undefined);
+  setMatcherHook(undefined);
   await off.close();
   await on.close();
   await collector.close();
@@ -154,12 +158,26 @@ describe("capture overhead (conformance/capture-overhead.json)", () => {
         await call(off);
         await call(on);
       }
+      // The work of one captured call, with the hooks installed; the timed rounds run without them.
       let serialized = 0;
       let scrubbed = 0;
+      let scrubbedInCall = 0;
+      let steps = 0;
       setCaptureWorkHook((s, c) => {
         serialized = Math.max(serialized, s);
         scrubbed = Math.max(scrubbed, c);
+        scrubbedInCall += c;
       });
+      setMatcherHook((_, s) => {
+        steps += s;
+      });
+      try {
+        await call(on);
+      } finally {
+        setCaptureWorkHook(undefined);
+        setMatcherHook(undefined);
+      }
+      const stepsPerChar = steps / Math.max(scrubbedInCall, 1);
       const without: number[] = [];
       const withCapture: number[] = [];
       for (let round = 0; round < run.rounds; round += 1) {
@@ -169,17 +187,19 @@ describe("capture overhead (conformance/capture-overhead.json)", () => {
           }
         }
       }
-      setCaptureWorkHook(undefined);
       const added = p99(withCapture) - p99(without);
       const excess = Math.max(...withCapture) - quantile(without, 0.5);
       process.stdout.write(
-        `capture-overhead typescript ${shape.id}: added p99 ${added.toFixed(3)} ms (off ${p99(without).toFixed(3)}, on ${p99(withCapture).toFixed(3)}), slowest excess ${excess.toFixed(3)} ms, serialized ${serialized}, scrubbed ${scrubbed}\n`,
+        `capture-overhead typescript ${shape.id}: added p99 ${added.toFixed(3)} ms (off ${p99(without).toFixed(3)}, on ${p99(withCapture).toFixed(3)}), slowest excess ${excess.toFixed(3)} ms, serialized ${serialized}, scrubbed ${scrubbed}, matcher steps ${steps} (${stepsPerChar.toFixed(1)} per character)\n`,
       );
       expect(serialized, "code units serialized for one field").toBeLessThanOrEqual(
         scenario.work_bound,
       );
       expect(scrubbed, "code units handed to the scrubber for one field").toBeLessThanOrEqual(
         scenario.work_bound,
+      );
+      expect(stepsPerChar, "matcher steps per character scrubbed").toBeLessThanOrEqual(
+        scenario.matcher_steps_per_rule_char * rules.rules.length,
       );
       expect(
         excess,

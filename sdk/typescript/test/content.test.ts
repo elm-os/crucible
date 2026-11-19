@@ -4,8 +4,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { captured, decide, glob } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
+import { patternFacts } from "../src/pattern.ts";
 import packaged from "../src/scrub-rules.json" with { type: "json" };
-import { cutUtf8, scrub, scrubWithRule } from "../src/scrub.ts";
+import { cutUtf8, scrub, scrubWithRule, setMatcherHook } from "../src/scrub.ts";
 
 const shared = JSON.parse(
   readFileSync(new URL("../../../conformance/scrub-rules.json", import.meta.url), "utf8"),
@@ -43,6 +44,80 @@ describe("scrub rules", () => {
     }
     const perCallMs = (performance.now() - started) / 20;
     expect(perCallMs).toBeLessThan(20);
+  });
+});
+
+const run = (unit: string, length: number): string =>
+  unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+
+/** Inputs that make a backtracking matcher slow on the shared rules, about 16 KiB each. */
+const ADVERSARIAL: [string, string][] = [
+  ["letters", "a".repeat(16_384)],
+  ["digits", "1".repeat(16_384)],
+  ["digit pairs", "1 ".repeat(8_192)],
+  ["at signs", "a@".repeat(8_192)],
+  ["dots", "a.".repeat(8_192)],
+  ["one at sign", `${"a".repeat(8_000)}@${"a".repeat(8_000)}`],
+  ["hex", run("0123456789abcdef", 16_384)],
+  ["alphanumeric", run("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 16_384)],
+  [
+    "base64",
+    Buffer.from(Uint8Array.from({ length: 12_288 }, (_, i) => i % 256)).toString("base64"),
+  ],
+  ["pem header", `-----BEGIN A-----${"A".repeat(16_000)}`],
+  ["jwt prefixes", "eyJ".repeat(5_461)],
+  ["jwt chain", `${"eyJ".repeat(5_000)}${".eyJ".repeat(400)}`],
+  ["bearer", "bearer ".repeat(2_340)],
+  ["colons", "1:".repeat(8_192)],
+  ["plus ones", "+1".repeat(8_192)],
+  ["phone groups", "(415) ".repeat(2_730)],
+  ["secret key prefixes", "csk_".repeat(4_096)],
+];
+
+/** Matcher steps of scrubbing `text` with the whole rule list. */
+function matcherSteps(text: string): number {
+  let steps = 0;
+  setMatcherHook((_, s) => {
+    steps += s;
+  });
+  try {
+    scrub(text);
+  } finally {
+    setMatcherHook(undefined);
+  }
+  return steps;
+}
+
+describe("scrubbing work", () => {
+  test("the rules' patterns yield the facts the guards use", () => {
+    const facts = Object.fromEntries(
+      shared.rules.map((rule) => {
+        const { minLength, literals, lead } = patternFacts(rule.pattern);
+        return [rule.name, { minLength, literals, lead: lead && [lead.prefix, lead.anchor] }];
+      }),
+    );
+    expect(facts).toEqual({
+      pem: { minLength: 32, literals: ["-----BEGIN "], lead: undefined },
+      jwt: { minLength: 7, literals: ["eyJ"], lead: ["eyJ", "."] },
+      bearer: { minLength: 23, literals: undefined, lead: undefined },
+      secret_key: { minLength: 12, literals: ["csk_"], lead: undefined },
+      card: { minLength: 14, literals: undefined, lead: undefined },
+      email: { minLength: 6, literals: ["@"], lead: ["", "@"] },
+      ipv6: { minLength: 6, literals: [":", ":"], lead: undefined },
+      ipv4: { minLength: 7, literals: ["."], lead: undefined },
+      phone: { minLength: 8, literals: undefined, lead: undefined },
+    });
+  });
+
+  test.each(ADVERSARIAL)("%s: matcher steps stay linear in the length", (_, text) => {
+    expect(matcherSteps(text)).toBeLessThanOrEqual(2 * shared.rules.length * text.length);
+  });
+
+  test("a long run scrubs within a generous ceiling", () => {
+    const text = `${"a".repeat(65_536)}@${"a".repeat(65_536)}`;
+    const started = performance.now();
+    scrub(text);
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 });
 

@@ -22,9 +22,11 @@ from mcp_types import CallToolResult, ContentBlock, ImageContent, TextContent
 
 import crucible_sdk
 import crucible_sdk.mcp
-from crucible_sdk import _scrub
+from crucible_sdk import _pipeline, _scrub
 from tests.collector import Collector, running
 from tests.conftest import SECRET_KEY
+
+_SCRUBBER_RULES = _pipeline.SCRUBBER.rules
 
 SCENARIO_FILE = Path(__file__).resolve().parent.parent.parent.parent / "conformance" / "capture-overhead.json"
 pytestmark = pytest.mark.skipif(not SCENARIO_FILE.exists(), reason="the SDK is checked out without conformance/")
@@ -102,6 +104,7 @@ async def test_the_capture_path_stays_within_the_work_bound(stalled: Collector, 
     )
     arguments = {"shape": shape["id"]}
     work: list[tuple[int, int]] = []
+    call_steps: list[int] = []
     without: list[float] = []
     with_capture: list[float] = []
     async with Client(plain, mode="2026-07-28") as off, Client(captured, mode="2026-07-28") as on:
@@ -114,25 +117,34 @@ async def test_the_capture_path_stays_within_the_work_bound(stalled: Collector, 
         for _ in range(run["warmup"]):
             await call(off)
             await call(on)
+        # The work of one captured call, with the hooks installed; the timed rounds run without them.
         _scrub.set_work_hook(lambda serialized, scrubbed: work.append((serialized, scrubbed)))
+        _scrub.set_matcher_hook(lambda _, s: call_steps.append(s))
         try:
-            for round_ in range(run["rounds"]):
-                for client in (off, on) if round_ % 2 == 0 else (on, off):
-                    for _ in range(run["calls"]):
-                        (with_capture if client is on else without).append(await call(client))
+            await call(on)
         finally:
             _scrub.set_work_hook(None)
+            _scrub.set_matcher_hook(None)
+        for round_ in range(run["rounds"]):
+            for client in (off, on) if round_ % 2 == 0 else (on, off):
+                for _ in range(run["calls"]):
+                    (with_capture if client is on else without).append(await call(client))
     serialized = max(s for s, _ in work)
     scrubbed = max(c for _, c in work)
+    steps = sum(call_steps)
+    steps_per_char = steps / max(sum(c for _, c in work), 1)
     added = p99(with_capture) - p99(without)
     excess = max(with_capture) * 1000 - quantile(without, 0.5)
     print(
         f"capture-overhead python {shape['id']}: added p99 {added:.3f} ms (off {p99(without):.3f}, on "
-        f"{p99(with_capture):.3f}), slowest excess {excess:.3f} ms, serialized {serialized}, scrubbed {scrubbed}"
+        f"{p99(with_capture):.3f}), slowest excess {excess:.3f} ms, serialized {serialized}, scrubbed {scrubbed}, "
+        f"matcher steps {steps} ({steps_per_char:.1f} per character)"
     )
     bound = SCENARIO["work_bound"]
     assert serialized <= bound, f"characters serialized for one field: {serialized} > {bound}"
     assert scrubbed <= bound, f"characters handed to the scrubber for one field: {scrubbed} > {bound}"
+    step_bound = SCENARIO["matcher_steps_per_rule_char"] * len(_SCRUBBER_RULES)
+    assert steps_per_char <= step_bound, f"matcher steps per character scrubbed: {steps_per_char:.1f} > {step_bound}"
     assert excess <= SCENARIO["ceiling_ms"], f"slowest captured call over the median uncaptured one: {excess:.1f} ms"
     if GATED:
         assert added <= SCENARIO["gate_added_p99_ms"], f"added p99: {added:.3f} ms"

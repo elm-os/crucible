@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
+from crucible_sdk._pattern import Facts, Lead, facts
+
 SCHEMA = "crucible.conformance.scrub/v1"
 
 WorkHook = Callable[[int, int], None]
@@ -38,6 +40,39 @@ def note_work(serialized: int, scrubbed: int) -> None:
 def work_hooked() -> bool:
     """Whether a work hook is installed, so that a caller measures only then."""
     return _work_hook is not None
+
+
+MatcherHook = Callable[[str, int], None]
+"""Called once per matcher call with the rule's name and the call's steps (see `_search_steps`)."""
+
+_matcher_hook: MatcherHook | None = None
+
+
+def set_matcher_hook(hook: MatcherHook | None) -> None:
+    """Installs, or with None removes, the hook the scrubbing work checks read matcher steps from."""
+    global _matcher_hook
+    _matcher_hook = hook
+
+
+def _search_steps(lead: Lead | None, text: str, start: int, stop: int) -> int:
+    """The steps of an unanchored search that tried the starts from `start` up to `stop`, as a backtracking matcher
+    takes them at the least: one per start, and from a start where a lead pattern's prefix matches, the prefix and
+    the whole class run after it, which the greedy repetition consumes before it backtracks."""
+    if lead is None:
+        return stop - start
+    p = len(lead.prefix)
+    end = min(len(text), stop + p)
+    while end < len(text) and lead.in_class(text[end]):
+        end += 1
+    runs = [0] * (end - start + 1)
+    for k in range(end - 1, start - 1, -1):
+        runs[k - start] = runs[k - start + 1] + 1 if lead.in_class(text[k]) else 0
+    steps = 0
+    for s in range(start, stop):
+        steps += 1
+        if text.startswith(lead.prefix, s):
+            steps += p + (runs[s + p - start] if s + p - start < len(runs) else 0)
+    return steps
 
 
 # Values under these JSON object keys are never emitted (contract 3.5); keys compare lowercased, without '-', '_'
@@ -144,9 +179,15 @@ class _Rule:
     regex: re.Pattern[str]
     replacement: str
     luhn: bool
+    facts: Facts
+
+    def _searched(self, text: str, start: int, stop: int) -> None:
+        if _matcher_hook is not None:
+            _matcher_hook(self.name, _search_steps(self.facts.lead, text, start, stop))
 
     def apply(self, text: str) -> str:
         if not self.luhn:
+            self._searched(text, 0, len(text))
             return self.regex.sub(self.replacement, text)
         # After a match the validator rejects, the search resumes after the match's first character that is neither
         # an ASCII letter nor a digit (after the match when it has none), so a rejected run of digit groups cannot
@@ -154,6 +195,7 @@ class _Rule:
         out: list[str] = []
         copied = at = 0
         while (match := self.regex.search(text, at)) is not None:
+            self._searched(text, at, match.start() + 1)
             if not _luhn(match.group()):
                 separator = next((i for i, c in enumerate(match.group()) if not _ascii_alnum(c)), None)
                 at = match.end() if separator is None else match.start() + separator + 1
@@ -163,6 +205,8 @@ class _Rule:
             at = match.end() if match.end() > match.start() else match.end() + 1
             if at >= len(text):
                 break
+        else:
+            self._searched(text, at, len(text))
         out.append(text[copied:])
         return "".join(out)
 
@@ -182,7 +226,9 @@ class Scrubber:
             validator = entry.get("validator")
             if validator not in (None, "luhn"):
                 raise ValueError(f"scrub rule {name!r}: unknown validator {validator!r}; use 'luhn' or leave it out")
-            rules.append(_Rule(name, re.compile(pattern), str(entry["replacement"]), validator == "luhn"))
+            rules.append(
+                _Rule(name, re.compile(pattern), str(entry["replacement"]), validator == "luhn", facts(pattern))
+            )
         self.rules = tuple(rules)
 
     @classmethod

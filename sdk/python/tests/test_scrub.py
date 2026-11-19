@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -11,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from crucible_sdk import _scrub
+from crucible_sdk._pattern import facts
 from crucible_sdk._scrub import SCHEMA, Scrubber
 
 RULES: dict[str, Any] = json.loads(resources.files("crucible_sdk").joinpath("scrub_rules.json").read_text("utf-8"))
@@ -84,6 +87,73 @@ def test_adversarial_16_kib_inputs_scrub_within_a_bound(text: str) -> None:
     SCRUBBER.text(text)
     # Exponential backtracking takes minutes here. The email rule's unbounded local part is quadratic in a
     # backtracking matcher on a long run with no '@' (about 0.15 s for 16 KiB on a laptop); the capture cap bounds it.
+    assert time.perf_counter() - start < 2.0
+
+
+def run(unit: str, length: int) -> str:
+    return (unit * (length // len(unit) + 1))[:length]
+
+
+# Inputs that make a backtracking matcher slow on the shared rules, about 16 KiB each.
+STEP_INPUTS = {
+    "letters": "a" * 16384,
+    "digits": "1" * 16384,
+    "digit pairs": "1 " * 8192,
+    "at signs": "a@" * 8192,
+    "dots": "a." * 8192,
+    "one at sign": "a" * 8000 + "@" + "a" * 8000,
+    "hex": run("0123456789abcdef", 16384),
+    "alphanumeric": run("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 16384),
+    "base64": base64.b64encode(bytes(i % 256 for i in range(12288))).decode(),
+    "pem header": "-----BEGIN A-----" + "A" * 16000,
+    "jwt prefixes": "eyJ" * 5461,
+    "jwt chain": "eyJ" * 5000 + ".eyJ" * 400,
+    "bearer": "bearer " * 2340,
+    "colons": "1:" * 8192,
+    "plus ones": "+1" * 8192,
+    "phone groups": "(415) " * 2730,
+    "secret key prefixes": "csk_" * 4096,
+}
+
+
+def matcher_steps(text: str) -> int:
+    """Matcher steps of scrubbing `text` with the whole rule list."""
+    steps: list[int] = []
+    _scrub.set_matcher_hook(lambda _, s: steps.append(s))
+    try:
+        SCRUBBER.text(text)
+    finally:
+        _scrub.set_matcher_hook(None)
+    return sum(steps)
+
+
+def test_the_rules_patterns_yield_the_facts_the_guards_use() -> None:
+    found = {}
+    for rule in RULES["rules"]:
+        f = facts(rule["pattern"])
+        found[rule["name"]] = (f.min_length, f.literals, None if f.lead is None else (f.lead.prefix, f.lead.anchor))
+    assert found == {
+        "pem": (32, ("-----BEGIN ",), None),
+        "jwt": (7, ("eyJ",), ("eyJ", ".")),
+        "bearer": (23, None, None),
+        "secret_key": (12, ("csk_",), None),
+        "card": (14, None, None),
+        "email": (6, ("@",), ("", "@")),
+        "ipv6": (6, (":", ":"), None),
+        "ipv4": (7, (".",), None),
+        "phone": (8, None, None),
+    }
+
+
+@pytest.mark.parametrize("text", STEP_INPUTS.values(), ids=STEP_INPUTS.keys())
+def test_matcher_steps_stay_linear_in_the_length(text: str) -> None:
+    assert matcher_steps(text) <= 2 * len(RULES["rules"]) * len(text)
+
+
+def test_a_long_run_scrubs_within_a_generous_ceiling() -> None:
+    text = "a" * 65536 + "@" + "a" * 65536
+    start = time.perf_counter()
+    SCRUBBER.text(text)
     assert time.perf_counter() - start < 2.0
 
 

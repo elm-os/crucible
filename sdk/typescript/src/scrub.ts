@@ -2,6 +2,7 @@
 // `conformance/scrub-rules.json`. `scrub-rules.json` here holds the same rules, so the package carries them; a test
 // keeps the two equal.
 
+import { type Lead, type PatternFacts, patternFacts } from "./pattern.ts";
 import rules from "./scrub-rules.json" with { type: "json" };
 
 interface Rule {
@@ -9,6 +10,7 @@ interface Rule {
   readonly regex: RegExp;
   readonly replacement: string;
   readonly luhn: boolean;
+  readonly facts: PatternFacts;
 }
 
 const compiled: readonly Rule[] = rules.rules.map((rule) => ({
@@ -16,7 +18,46 @@ const compiled: readonly Rule[] = rules.rules.map((rule) => ({
   regex: new RegExp(rule.pattern, "g"),
   replacement: rule.replacement,
   luhn: "validator" in rule && rule.validator === "luhn",
+  facts: patternFacts(rule.pattern),
 }));
+
+/** Called once per matcher call with the rule's name and the call's steps (see `searchSteps`). */
+export type MatcherHook = (rule: string, steps: number) => void;
+
+let matcherHook: MatcherHook | undefined;
+
+/** Installs, or with `undefined` removes, the hook the scrubbing work checks read matcher steps from. */
+export function setMatcherHook(hook: MatcherHook | undefined): void {
+  matcherHook = hook;
+}
+
+/**
+ * The steps of an unanchored search that tried the starts from `from` up to `to`, as a backtracking matcher takes
+ * them at the least: one per start, and from a start where a lead pattern's prefix matches, the prefix and the
+ * whole class run after it, which the greedy repetition consumes before it backtracks.
+ */
+function searchSteps(lead: Lead | undefined, text: string, from: number, to: number): number {
+  if (lead === undefined) {
+    return to - from;
+  }
+  const p = lead.prefix.length;
+  let end = Math.min(text.length, to + p);
+  while (end < text.length && lead.inClass(text.charAt(end))) {
+    end += 1;
+  }
+  const runs = new Int32Array(end - from + 1);
+  for (let k = end - 1; k >= from; k -= 1) {
+    runs[k - from] = lead.inClass(text.charAt(k)) ? (runs[k - from + 1] ?? 0) + 1 : 0;
+  }
+  let steps = 0;
+  for (let s = from; s < to; s += 1) {
+    steps += 1;
+    if (text.startsWith(lead.prefix, s)) {
+      steps += p + (runs[s + p - from] ?? 0);
+    }
+  }
+  return steps;
+}
 
 /** Applies every rule, in file order, to `text`. */
 export function scrub(text: string): string {
@@ -49,6 +90,10 @@ function apply(rule: Rule, text: string): string {
   while (from <= text.length) {
     regex.lastIndex = from;
     const match = regex.exec(text);
+    if (matcherHook !== undefined) {
+      const to = match === null ? text.length : match.index + 1;
+      matcherHook(rule.name, searchSteps(rule.facts.lead, text, from, to));
+    }
     if (match === null) {
       break;
     }
