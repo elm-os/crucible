@@ -176,6 +176,37 @@ fn roles_and_key_scopes_decide_who_runs_and_who_saves() {
             .await
         };
 
+        // The session says the workspace is on; without one it says why not.
+        let me = call(
+            &p.router,
+            Method::GET,
+            "/api/v1/auth/session",
+            &p.owner,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(
+            me.body["features"]["sql_workspace"],
+            json!({ "enabled": true }),
+            "{}",
+            me.pretty()
+        );
+        let bare = platform_with(&env, &world, false).await;
+        let me = call(
+            &bare.router,
+            Method::GET,
+            "/api/v1/auth/session",
+            &bare.owner,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(
+            me.body["features"]["sql_workspace"],
+            json!({ "enabled": false, "reason": "not_configured" })
+        );
+
         // The owner is a project admin: runs, and saves a project-visible query.
         let reply = post(&p.owner, "/sql/run", &run_body).await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
