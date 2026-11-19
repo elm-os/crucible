@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5beb77e9a7770be2ed39843335cd2b7e40bed91b9ec3b6aac145cc29f4ab3716 # shrinks to scope = ProjectScope { project_id: ProjectId(00000000-0000-0000-0000-000000000001) }, window = TimeWindow { from: Timestamp(1970-01-01T00:00:00.000000Z), to: Timestamp(1970-01-01T00:00:00.000001Z) }, as_of = Timestamp(1970-01-01T00:00:00.000000Z), limit = 1, after = Some((Timestamp(1970-01-01T00:00:00.000001Z), 0, Timestamp(1970-01-01T00:00:00.000000Z), [0, 0, 0, 0, 0, 0, 0, 0])), spans = [(Timestamp(1970-01-01T00:00:00.010617Z), TraceId(98252788422d47b9d29c193b908bcf6f), SpanId(ca5e2a5c7bd12c03))], traces = [[82, 80, 87, 94, 54, 17, 207, 3, 175, 9, 113, 229, 86, 46, 30, 214]], user = None
