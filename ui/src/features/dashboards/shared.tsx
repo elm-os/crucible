@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { Route } from "next";
+import { useSyncExternalStore } from "react";
 import { getMetricsSchema } from "@/api/client";
 import { useAuth } from "@/lib/auth";
 
@@ -45,4 +46,21 @@ export function dashboardHref(id: string, search: URLSearchParams | null): Route
 
 export function editorHref(id: string, search: URLSearchParams | null): Route {
   return withScope("/dashboard/edit/", search, id);
+}
+
+const WIDE = "(min-width: 48rem)";
+
+function subscribeWide(onChange: () => void): () => void {
+  const query = window.matchMedia(WIDE);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+// Editing is for screens with room for the grid; phones read dashboards.
+export function useWide(): boolean {
+  return useSyncExternalStore(
+    subscribeWide,
+    () => window.matchMedia(WIDE).matches,
+    () => true,
+  );
 }

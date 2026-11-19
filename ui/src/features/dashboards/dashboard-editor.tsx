@@ -44,7 +44,13 @@ import {
   overlaps,
   startSize,
 } from "./rules";
-import { dashboardHref, dashboardKeys, useDashboardAccess, useMetricsSchema } from "./shared";
+import {
+  dashboardHref,
+  dashboardKeys,
+  useDashboardAccess,
+  useMetricsSchema,
+  useWide,
+} from "./shared";
 import { WidgetForm, type WidgetDraft } from "./widget-form";
 
 interface DraftWidget extends WidgetDraft {
@@ -98,6 +104,7 @@ export function DashboardEditor() {
   const id = search.get("id");
   const project = useProject();
   const { signedIn, canEdit } = useDashboardAccess(project);
+  const wide = useWide();
   let refusal: { title: string; body: string } | null = null;
   if (!id)
     refusal = { title: "This link doesn't name a dashboard.", body: "Open one from the list." };
@@ -121,19 +128,17 @@ export function DashboardEditor() {
       </SectionFrame>
     );
   }
-  return (
-    <>
-      <SectionFrame title="Dashboard" className="md:hidden">
+  if (!wide) {
+    return (
+      <SectionFrame title="Dashboard">
         <EmptyState kind="unavailable" title="Editing needs a wider screen.">
           Open this page on a screen at least 768 pixels wide, or{" "}
           <Link href={dashboardHref(id, search)}>view the dashboard</Link>.
         </EmptyState>
       </SectionFrame>
-      <div className="hidden md:block">
-        <Loader project={project} id={id} />
-      </div>
-    </>
-  );
+    );
+  }
+  return <Loader project={project} id={id} />;
 }
 
 function Loader({ project, id }: { project: string; id: string }) {
@@ -419,12 +424,12 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
                     Configure
                   </Button>
                   <Button
-                    aria-label={`Remove ${w.display.title}`}
+                    aria-label={`Delete ${w.display.title}`}
                     onClick={() =>
                       change((d) => ({ ...d, widgets: d.widgets.filter((x) => x.key !== w.key) }))
                     }
                   >
-                    Remove
+                    Delete
                   </Button>
                 </div>
                 <p className="truncate ps-6 text-label text-ink-soft">

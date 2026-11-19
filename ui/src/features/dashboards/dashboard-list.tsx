@@ -24,18 +24,14 @@ import { Section } from "@/components/section";
 import { formatTime } from "@/lib/format";
 import { useProject } from "@/lib/project";
 import { MAX_NAME } from "./rules";
-import { dashboardHref, dashboardKeys, editorHref, useDashboardAccess } from "./shared";
-
-const WIDE = "(min-width: 48rem)";
+import { dashboardHref, dashboardKeys, editorHref, useDashboardAccess, useWide } from "./shared";
 
 /** Where a new dashboard opens: the editor where there is room for it, else the dashboard itself. */
 export function useOpenNew() {
   const router = useRouter();
   const search = useSearchParams();
-  return (id: string) => {
-    const wide = typeof window !== "undefined" && window.matchMedia?.(WIDE).matches;
-    router.push(wide ? editorHref(id, search) : dashboardHref(id, search));
-  };
+  const wide = useWide();
+  return (id: string) => router.push(wide ? editorHref(id, search) : dashboardHref(id, search));
 }
 
 export function DashboardList() {

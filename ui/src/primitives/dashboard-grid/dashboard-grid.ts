@@ -5,6 +5,7 @@ import {
   createResize,
   definePrimitive,
   live,
+  prepareAnnouncements,
   type ResizeBox,
   type ResizeDraft,
   type ResizeHandle,
@@ -138,7 +139,8 @@ const dashboardGrid = definePrimitive({
     };
   },
   slots: (slot) => ({
-    root: slot({}),
+    // A refused move is announced at once, so the live regions exist before the first one.
+    root: slot({ bind: (el) => prepareAnnouncements(el.ownerDocument) }),
     box: slot<{ value: string }>({
       props: { value: "string" },
       attrs: (state, { key }) => {
