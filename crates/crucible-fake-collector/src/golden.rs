@@ -16,6 +16,7 @@ use serde_json::Value as Json;
 
 use crate::collector::{Event, RecordedSpan};
 use crate::hash::{mrtr_hash, session_hash};
+use crate::records::Records;
 use crate::registry::{Registry, Rule, Target};
 use crate::spec::{Case, ResponseEvent};
 use crate::suite::{Kind, Manifest, Scenario, Suite, SuiteError, check_schema, parse, schema};
@@ -702,6 +703,8 @@ struct Eval<'a> {
     vars: BTreeMap<&'static str, Json>,
     facts: BTreeMap<&'static str, String>,
     spans: Vec<(usize, &'a RecordedSpan)>,
+    /// What the real normalizer makes of the case's exports.
+    records: Records,
     checks: u32,
     failures: Vec<Finding>,
 }
@@ -789,6 +792,7 @@ impl<'a> Eval<'a> {
             vars,
             facts,
             spans,
+            records: Records::of(input.events),
             checks: 0,
             failures: Vec::new(),
         }
@@ -826,6 +830,7 @@ impl<'a> Eval<'a> {
         self.exports();
         self.taint();
         self.every_span_contract();
+        self.normalizer();
         let bound = self.bind();
         self.rules();
         self.golden_extras(&bound);
@@ -1039,6 +1044,35 @@ impl<'a> Eval<'a> {
                 "every known key has its registry type",
                 || wrong.join("; "),
                 None,
+            );
+        }
+    }
+
+    /// The real normalizer takes every accepted export, and makes an MCP operation of exactly the spans that
+    /// carry `mcp.method.name` (contract 9.1).
+    fn normalizer(&mut self) {
+        let errors = self.records.errors.join("; ");
+        self.check(
+            errors.is_empty(),
+            None,
+            "the normalizer takes every export",
+            "no error",
+            || errors.clone(),
+            Some("3.2"),
+        );
+        if !errors.is_empty() {
+            return;
+        }
+        let spans = self.spans.clone();
+        for (_, span) in spans.iter().filter(|(_, s)| s.rejection.is_none()) {
+            let (carries, made) = (is_mcp(span), self.records.op(span).is_some());
+            self.check(
+                carries == made,
+                Some(span.name.as_str()),
+                "an MCP operation record exactly for a span with mcp.method.name",
+                if carries { "a record" } else { "no record" },
+                || if made { "a record" } else { "no record" }.to_owned(),
+                Some("9.1"),
             );
         }
     }
@@ -1400,23 +1434,46 @@ impl<'a> Eval<'a> {
             .map(str::to_owned)
             .or_else(|| self.registry.fields.get(field).map(|(c, _)| c.clone()));
         let label = id.unwrap_or(span.name.as_str()).to_owned();
+        // The same field in the record the real normalizer made of the span.
+        let recorded = self.records.field(field, span);
         self.check(
             want.is_some() && got == want,
             Some(label.as_str()),
             format!("field {field}"),
-            want.map_or_else(|| "an unset variable".to_owned(), |w| w.to_string()),
+            want.as_ref()
+                .map_or_else(|| "an unset variable".to_owned(), Json::to_string),
             || got.map_or_else(|| "nothing derivable".to_owned(), |g| g.to_string()),
             contract.as_deref(),
         );
+        if let Some(recorded) = recorded {
+            self.check(
+                want.is_some() && recorded == want,
+                Some(label.as_str()),
+                format!("field {field} of the normalizer's record"),
+                want.map_or_else(|| "an unset variable".to_owned(), |w| w.to_string()),
+                || recorded.map_or_else(|| "no value".to_owned(), |r| r.to_string()),
+                contract.as_deref(),
+            );
+        }
     }
 
     fn classify(&self, span: &RecordedSpan) -> McpClassification {
         let attrs = &span.attributes;
         let text = |key: &str| get(attrs, key).and_then(Value::as_str);
         let error_type = text("error.type");
+        let http_status = match get(attrs, "http.response.status_code") {
+            Some(Value::Int(i)) => u16::try_from(*i).ok(),
+            _ => None,
+        };
+        // A numeric `error.type` that is the HTTP status is that status, not a JSON-RPC code.
         let jsonrpc_code = text("rpc.response.status_code")
             .and_then(|s| s.parse::<i32>().ok())
-            .or_else(|| error_type.and_then(|t| t.parse::<i32>().ok()));
+            .or_else(|| {
+                error_type
+                    .and_then(|t| t.parse::<i32>().ok())
+                    .filter(|code| http_status.is_none_or(|status| i32::from(status) != *code))
+            });
+        let explicit_class = text("crucible.mcp.error.class").and_then(ErrorClass::parse);
         let era = match self
             .registry
             .derive("era", span)
@@ -1440,22 +1497,21 @@ impl<'a> Eval<'a> {
             side,
             jsonrpc_code,
             is_error: error_type == Some("tool_error"),
-            http_status: match get(attrs, "http.response.status_code") {
-                Some(Value::Int(i)) => u16::try_from(*i).ok(),
-                _ => None,
-            },
+            http_status,
             cancel_source: text("crucible.mcp.cancel.source")
                 .and_then(CancelSource::parse)
                 .unwrap_or(CancelSource::None),
+            // Only the capture source can observe a deadline or a broken transport: its explicit class is
+            // that observation.
             timed_out: matches!(
                 get(attrs, "crucible.mcp.timed_out"),
                 Some(Value::Bool(true))
-            ),
-            transport_failure: false,
+            ) || explicit_class == Some(ErrorClass::Timeout),
+            transport_failure: explicit_class == Some(ErrorClass::Transport),
             unhandled_exception: error_type
                 .is_some_and(|t| t != "tool_error" && t.parse::<i64>().is_err()),
             annotations: McpErrorAnnotations {
-                explicit_class: text("crucible.mcp.error.class").and_then(ErrorClass::parse),
+                explicit_class,
                 subclass: text("crucible.mcp.error.subclass")
                     .and_then(ErrorSubclass::parse)
                     .unwrap_or(ErrorSubclass::None),
@@ -1465,12 +1521,32 @@ impl<'a> Eval<'a> {
         classify_mcp_error(&input)
     }
 
+    /// Checks the classification of a span: the one in the record the real normalizer made of it. The
+    /// driver's own reading of the span's keys must give the same, so that the suite and the normalizer cannot
+    /// drift apart.
     fn outcome(&mut self, id: Option<&str>, span: &RecordedSpan, want: &Outcome) {
-        let got = self.classify(span);
+        let read = self.classify(span);
+        let Some(got) = self.records.op(span).map(|op| McpClassification {
+            error_class: op.error_class,
+            error_subclass: op.error_subclass,
+            status: op.status,
+            caller_fault: op.caller_fault,
+        }) else {
+            // `normalizer` has reported the missing record.
+            return;
+        };
+        self.check(
+            got == read,
+            id,
+            "the normalizer's record classifies as the driver reads the span's keys",
+            format!("{read:?}"),
+            || format!("{got:?}"),
+            Some("9.2"),
+        );
         self.check(
             got.status == want.status,
             id,
-            "outcome status (contract 9.2 classifier)",
+            "outcome status of the normalizer's record (contract 9.2 classifier)",
             want.status.as_str(),
             || got.status.as_str().to_owned(),
             Some("9.2"),

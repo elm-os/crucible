@@ -4,9 +4,9 @@
 #![cfg(test)]
 
 use crucible_cursor::{
-    Binding, CURSOR_TTL_MICROS, Cursor, CursorError, DecodeError, FilterHash, InvalidKid, KeyRing,
-    KeyRingError, KeyState, Kid, Kind, MAX_PAYLOAD_LEN, MAX_TEXT_LEN, Position, Route, SigningKey,
-    Sort,
+    Binding, CURSOR_TTL_MICROS, Cursor, CursorError, CursorId, DecodeError, FilterHash, IdList,
+    InvalidKid, KeyRing, KeyRingError, KeyState, Kid, Kind, MAX_ID_LEN, MAX_PAYLOAD_LEN,
+    MAX_TEXT_LEN, Position, Route, SigningKey, Sort,
 };
 use crucible_records::{Lsn, ProjectId, SpanId, TimeWindow, Timestamp, TraceId, WalEpoch};
 use proptest::collection::vec;
@@ -81,8 +81,40 @@ fn position() -> impl Strategy<Value = Position> {
                 as_of,
                 last: (minute, hash, SpanId::from_bytes(span)),
             }),
+        (window(), any_time(), any_time(), any::<[u8; 8]>()).prop_map(
+            |(window, as_of, start, span)| Position::SpanPage {
+                window,
+                as_of,
+                last: (start, SpanId::from_bytes(span)),
+            }
+        ),
+        (
+            prop_oneof![
+                Just(IdList::Sessions),
+                Just(IdList::Users),
+                Just(IdList::UserSessions)
+            ],
+            window(),
+            any_time(),
+            vec(any::<u8>(), 0..=MAX_ID_LEN),
+        )
+            .prop_map(|(list, window, last_seen, id)| Position::IdPage {
+                list,
+                window,
+                last: (last_seen, CursorId::new(&id).unwrap()),
+            }),
     ]
 }
+
+const ROUTES: [Route; 7] = [
+    Route::TraceList,
+    Route::SpanChildren,
+    Route::Search,
+    Route::SpanList,
+    Route::SessionList,
+    Route::UserList,
+    Route::UserSessions,
+];
 
 fn sort() -> impl Strategy<Value = Sort> {
     prop_oneof![Just(Sort::NewestFirst), Just(Sort::OldestFirst)]
@@ -215,12 +247,9 @@ proptest! {
         if project != b.project_id {
             prop_assert_eq!(open(Binding { project_id: project, ..b }), Err(CursorError::WrongProject));
         }
-        let route = match b.route {
-            Route::TraceList => Route::SpanChildren,
-            Route::SpanChildren => Route::Search,
-            Route::Search => Route::TraceList,
-        };
-        prop_assert_eq!(open(Binding { route, ..b }), Err(CursorError::WrongRoute));
+        for route in ROUTES.into_iter().filter(|route| *route != b.route) {
+            prop_assert_eq!(open(Binding { route, ..b }), Err(CursorError::WrongRoute));
+        }
         let kind = match b.kind {
             Kind::Page => Kind::Head,
             Kind::Head => Kind::Page,
@@ -288,7 +317,7 @@ fn golden_ring() -> KeyRing {
 const ISSUED: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
 const MINUTE: i64 = 60_000_000;
 
-fn golden_cursors() -> [Cursor; 4] {
+fn golden_cursors() -> [Cursor; 6] {
     let window = TimeWindow::new(
         ISSUED.saturating_add_micros(-24 * 60 * MINUTE),
         ISSUED.saturating_add_micros(60 * MINUTE),
@@ -347,6 +376,28 @@ fn golden_cursors() -> [Cursor; 4] {
                 ),
             },
         ),
+        issue(
+            Sort::NewestFirst,
+            Position::SpanPage {
+                window,
+                as_of: ISSUED,
+                last: (
+                    ISSUED.saturating_add_micros(-MINUTE),
+                    SpanId::from_bytes(12u64.to_be_bytes()),
+                ),
+            },
+        ),
+        issue(
+            Sort::NewestFirst,
+            Position::IdPage {
+                list: IdList::Sessions,
+                window,
+                last: (
+                    ISSUED.saturating_add_micros(-MINUTE),
+                    CursorId::new("session-\u{e4}".as_bytes()).unwrap(),
+                ),
+            },
+        ),
     ]
 }
 
@@ -360,6 +411,8 @@ fn the_text_form_matches_a_separate_encoder_of_the_layout() {
         "v1.k1.AQIBAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAODg4ODg4ODg4ODg4ODg4OAAAAAAAAAAKg.FdfBQUrJd_OltJZsDIsjFg",
         "v1.k1.AQECAgEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AKWlpaWlpaWlAAAAAAAAAAcAAAAAAAAACgAGYHWGTpFAAAAAAAAAAAs.Fd_lH4ykLaXgVRq4aiiLsQ",
         "v1.k1.AQEDAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08A3q2-7wAAAAAAAAAM.O-1AhOlK8y1UTtCXRFcUlA",
+        "v1.k1.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1idLWAAAGYHWGP08AAAAAAAAAAAw.T8VL5iOpZ_DFL7zjqHEMqA",
+        "v1.k1.AQEFAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZgdYnS1gAABmCJp6o2AAAGYGFr-3YAAAZgdmBmegAABmB1hj9PAAAKc2Vzc2lvbi3DpA.tDP91Un0C9wt5e6M-QE0OQ",
     ];
     for (cursor, expected) in golden_cursors().iter().zip(expected) {
         assert_eq!(ring.seal(cursor), expected);
@@ -466,10 +519,18 @@ fn text_that_is_not_a_v1_cursor_is_malformed() {
 
 #[test]
 fn decoding_refuses_what_encoding_cannot_produce() {
-    let [page, head, child, search] = golden_cursors().map(|c| c.encode().as_bytes().to_vec());
+    let [page, head, child, search, spans, ids] =
+        golden_cursors().map(|c| c.encode().as_bytes().to_vec());
     assert_eq!(
-        (page.len(), head.len(), child.len(), search.len()),
-        (MAX_PAYLOAD_LEN, 100, 92, 96)
+        (
+            page.len(),
+            head.len(),
+            child.len(),
+            search.len(),
+            spans.len(),
+            ids.len()
+        ),
+        (104, 100, 92, 96, 92, 88)
     );
     let with = |bytes: &[u8], at: usize, value: u8| {
         let mut bytes = bytes.to_vec();
@@ -478,16 +539,17 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     };
     assert_eq!(with(&page, 0, 2), Err(DecodeError::Version(2)));
     assert_eq!(with(&page, 0, 0), Err(DecodeError::Version(0)));
-    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 4), (3, 0), (3, 3)] {
+    for (at, value) in [(1, 0), (1, 3), (2, 0), (2, 200), (3, 0), (3, 3)] {
         assert_eq!(
             with(&page, at, value),
             Err(DecodeError::Value),
             "{at} {value}"
         );
     }
-    // Head and span children, and head and search, are no kind of cursor.
-    assert_eq!(with(&head, 2, 2), Err(DecodeError::Value));
-    assert_eq!(with(&head, 2, 3), Err(DecodeError::Value));
+    // Only the trace list has a head.
+    for route in 2..=7 {
+        assert_eq!(with(&head, 2, route), Err(DecodeError::Value), "{route}");
+    }
     // A page of span children or of search read as a trace page runs out of bytes; the reverse has bytes left
     // over.
     assert_eq!(with(&child, 2, 1), Err(DecodeError::Length));
@@ -499,7 +561,23 @@ fn decoding_refuses_what_encoding_cannot_produce() {
     let from: [u8; 8] = page[52..60].try_into().unwrap();
     empty[60..68].copy_from_slice(&from);
     assert_eq!(Cursor::decode(&empty), Err(DecodeError::Value));
-    for bytes in [&page, &head, &child, &search] {
+    // An id's length must match the bytes that follow it and fit the cap.
+    let length = |len: u16| {
+        let mut bytes = ids.clone();
+        bytes[76..78].copy_from_slice(&len.to_be_bytes());
+        Cursor::decode(&bytes)
+    };
+    assert_eq!(length(9), Err(DecodeError::Length));
+    assert_eq!(length(11), Err(DecodeError::Length));
+    assert_eq!(length(MAX_ID_LEN as u16 + 1), Err(DecodeError::Value));
+    let mut longest = ids[..76].to_vec();
+    longest.extend_from_slice(&(MAX_ID_LEN as u16).to_be_bytes());
+    longest.extend_from_slice(&[b'x'; MAX_ID_LEN]);
+    assert_eq!(longest.len(), MAX_PAYLOAD_LEN);
+    let decoded = Cursor::decode(&longest).unwrap();
+    assert_eq!(decoded.encode().as_bytes(), &longest[..]);
+    assert_eq!(CursorId::new(&[b'x'; MAX_ID_LEN + 1]), None);
+    for bytes in [&page, &head, &child, &search, &spans, &ids] {
         assert_eq!(
             Cursor::decode(&bytes[..bytes.len() - 1]),
             Err(DecodeError::Length)

@@ -6,7 +6,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use crucible_normalize::{IngestFrame, NormCtx, NormalizedFrame, PriceTable, StageB, normalize};
+use crucible_normalize::{
+    IdentityCtx, IngestFrame, NormCtx, NormalizedFrame, PriceTable, StageB, normalize,
+};
 use crucible_records::{ApiKeyId, Lsn, NanoUsd, PayloadCaps, ProjectId, Timestamp, WalEpoch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
@@ -196,7 +198,11 @@ fn stage_b_usage_descendant_set() {
                 let mut copy = frame.clone();
                 let mut stage = StageB::default();
                 let start = Instant::now();
-                black_box(stage.admit(black_box(&mut copy)).unwrap());
+                black_box(
+                    stage
+                        .admit(black_box(&mut copy), &IdentityCtx::Suppressed)
+                        .unwrap(),
+                );
                 timed += start.elapsed();
                 admissions += 1;
             }
@@ -207,7 +213,9 @@ fn stage_b_usage_descendant_set() {
         let plain = admit(&without_usage);
         let flagged = {
             let mut copy = with_usage.clone();
-            StageB::default().admit(&mut copy).unwrap();
+            StageB::default()
+                .admit(&mut copy, &IdentityCtx::Suppressed)
+                .unwrap();
             copy.spans.iter().filter(|s| s.core.usage_aggregate).count()
         };
         println!(

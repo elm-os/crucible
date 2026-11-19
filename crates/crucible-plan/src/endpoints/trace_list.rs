@@ -1,14 +1,18 @@
 //! The trace list (contract 8.7): a keyset scan of `trace_heads`, then the merged `trace_stats` rows of the
-//! page's traces.
+//! page's traces. Under a list filter, the conditions on fields that heads carry filter the scan, and the
+//! conditions on fields that only spans carry restrict it to the traces that have a matching span.
 
 use crucible_records::{ProjectScope, TableId, TimeWindow, Timestamp, TraceId};
-use crucible_schema::{Column, TraceHeadsCol, TraceStatsCol};
+use crucible_schema::{Column, SpanCoreCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol};
 
 use crate::build::RetentionClamp;
 use crate::class::{Caller, QueryClass};
 use crate::error::PlanError;
+use crate::filter::{Filter, FilterTarget};
 use crate::literal::Literal;
-use crate::node::{Aggregate, ArrivalBounds, Direction, Measure, Node, Order, Scan};
+use crate::node::{
+    Aggregate, ArrivalBounds, DEFAULT_MAX_IDS, Direction, Measure, Node, Order, Scan, SemiJoin,
+};
 use crate::plan::QueryPlan;
 use crate::pred::Pred;
 
@@ -41,6 +45,17 @@ pub fn trace_list(
     caller: Caller,
     request: TraceListRequest,
 ) -> Result<Option<QueryPlan>, PlanError> {
+    let scan = heads(request)?;
+    clamp.plan(
+        scope,
+        window,
+        caller.class(QueryClass::List),
+        Node::Scan(scan),
+    )
+}
+
+/// The keyset scan of [`trace_list`].
+fn heads(request: TraceListRequest) -> Result<Scan, PlanError> {
     if request.limit == 0 || request.limit > TRACE_LIST_MAX_LIMIT {
         return Err(PlanError::Limit);
     }
@@ -58,11 +73,84 @@ pub fn trace_list(
     if let Some((start_time, hash, trace_id)) = request.cursor {
         scan = scan.after(vec![start_time.into(), hash.into(), trace_id.into()])?;
     }
+    Ok(scan)
+}
+
+/// The trace list under a list filter (contract 8.8): [`trace_list`] with `filter` added to the request's own
+/// predicate (which a live-tail read uses for the heads its cursor had not reflected).
+///
+/// `filter` is split at its top-level conjunction. The conjuncts that `trace_heads` can evaluate filter the
+/// heads, so they test the head span's values (contract 3.3). The others test fields that only spans carry
+/// (`observation_type`, `metadata`): they restrict the list to the traces with at least one span of the window
+/// that satisfies all of them, through a semi-join into the trace ids of `span_core`, or of `span_payload` for
+/// metadata conditions. One table must evaluate all of them, so metadata cannot be combined with
+/// `observation_type` (or with any field but `user_id` and `session_id` under `or` or `not`); such a filter is
+/// refused. The semi-join is refused as too broad when more than [`DEFAULT_MAX_IDS`] traces of the window match
+/// the span conditions. The outputs are those of [`trace_list`].
+pub fn filtered_trace_list(
+    scope: ProjectScope,
+    window: TimeWindow,
+    clamp: &RetentionClamp,
+    caller: Caller,
+    request: TraceListRequest,
+    filter: &Filter,
+) -> Result<Option<QueryPlan>, PlanError> {
+    let (on_heads, on_spans) = filter.split(FilterTarget::TraceHeads);
+    let pred = match (
+        on_heads.pred(FilterTarget::TraceHeads)?,
+        request.filter.clone(),
+    ) {
+        (heads, extra) if extra == Pred::all() => heads,
+        (heads, extra) if heads == Pred::all() => extra,
+        (heads, extra) => Pred::And(vec![heads, extra]),
+    };
+    let scan = heads(TraceListRequest {
+        filter: pred,
+        ..request
+    })?;
+    if on_spans.is_all() {
+        return clamp.plan(
+            scope,
+            window,
+            caller.class(QueryClass::List),
+            Node::Scan(scan),
+        );
+    }
+    let (table, target, trace_id) = if on_spans.unsupported(FilterTarget::SpanCore).is_none() {
+        (
+            TableId::SpanCore,
+            FilterTarget::SpanCore,
+            SpanCoreCol::TraceId.column_ref(),
+        )
+    } else if let Some(field) = on_spans.unsupported(FilterTarget::SpanPayload) {
+        return Err(PlanError::UnsupportedFilter {
+            field: field.as_str(),
+            target: "a trace list filter with a metadata condition",
+        });
+    } else {
+        (
+            TableId::SpanPayload,
+            FilterTarget::SpanPayload,
+            SpanPayloadCol::TraceId.column_ref(),
+        )
+    };
+    let ids = Aggregate::new(
+        table,
+        on_spans.pred(target)?,
+        [trace_id],
+        vec![Measure::Count],
+    )?;
+    let root = SemiJoin::new(
+        scan,
+        TraceHeadsCol::TraceId,
+        Node::Aggregate(ids),
+        DEFAULT_MAX_IDS,
+    )?;
     clamp.plan(
         scope,
         window,
         caller.class(QueryClass::List),
-        Node::Scan(scan),
+        Node::SemiJoin(root),
     )
 }
 

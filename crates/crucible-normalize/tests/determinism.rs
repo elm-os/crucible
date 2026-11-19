@@ -52,8 +52,11 @@ proptest! {
         let first = normalize(&f, &ctx).unwrap();
         let second = normalize(&f, &ctx).unwrap();
         prop_assert_eq!(&first, &second);
-        for record in &first.spans {
-            prop_assert_eq!(record.core.row_digest, row_digest(record));
+        for (at, record) in first.spans.iter().enumerate() {
+            // The digest of a span with an MCP operation or inventory entries covers them too.
+            let mcp = first.mcp_ops.iter().any(|op| op.span as usize == at)
+                || first.inventory.iter().any(|entry| entry.span as usize == at);
+            prop_assert_eq!(record.core.row_digest == row_digest(record), !mcp);
         }
     }
 

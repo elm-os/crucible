@@ -29,6 +29,11 @@
 //!   quiescence `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics` equal the reference
 //!   aggregation over `span_core` exactly: counts, error counts, token and cost sums, first and last seen,
 //!   and the duration histograms.
+//! - **I8** every `mcp_ops` row carries the status, the error class, the subclass, the JSON-RPC code and the
+//!   caller-fault flag that the shared classifier gives for the exchange the client simulated, and the other
+//!   fields of the wire contract as the exchange had them. At quiescence `mcp_tool_rollup`, `mcp_deploys` and
+//!   `mcp_tool_inventory` equal the reference over `mcp_ops` per capture source (I7), and `mcp_ops` and
+//!   `mcp_content` hold one row per operation (I2).
 //! - **I12** the recovered log equals the uninterrupted reference recovery, and a restart after quiescence
 //!   ships nothing and changes nothing.
 //! - **I13** at quiescence no segment wholly at or below the watermark is left and the index is empty.
@@ -45,22 +50,26 @@ use crucible_auth::{PublicKey, SecretKey, StaticKey, StaticKeys};
 use crucible_chfmt::Compression;
 use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
 use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
-use crucible_normalize::{IngestFrame, NormCtx, PriceTable, normalize};
-use crucible_plan::{Caller, Pred};
+use crucible_normalize::{
+    Admission, IngestFrame, NormCtx, NormalizedFrame, PriceTable, ProjectSalt, normalize,
+};
+use crucible_plan::{Caller, Filter};
 use crucible_query::{
     Consistency, Meta, PartialReason, QueryService, QueryServiceError, ReadContext, SpanSource,
     TraceListQuery,
 };
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
 use crucible_records::{
-    ApiKeyId, AuthorKind, CorrectionBody, FactBody, FactTargetKind, FlagBody, Lsn, PayloadCaps,
-    ProjectId, ScoreBody, ScoreDataType, ScoreSource, SpanId, TableId, TagBody, TagOp, TimeWindow,
-    Timestamp, TraceId, Uuid,
+    ApiKeyId, AuthorKind, CancelSource, CaptureSource, CorrectionBody, Era, ErrorClass,
+    ErrorSubclass, FactBody, FactTargetKind, FlagBody, Lsn, McpErrorAnnotations, McpErrorInput,
+    McpSide, McpStatus, PayloadCaps, ProjectId, ScoreBody, ScoreDataType, ScoreSource, SpanId,
+    TableId, TagBody, TagOp, TimeWindow, Timestamp, TraceId, Transport, Uuid, classify_mcp_error,
 };
 use crucible_schema::{Granularity, RetentionSettings};
 use crucible_shipper::{
-    FRAMES_FILE, FrameFault, FrameManifest, Hooks, MANIFEST_FILE, RecentHook, ShipError, Shipper,
-    ShipperConfig, ShipperStats, StatsSnapshot,
+    FRAMES_FILE, FrameFault, FrameManifest, Hooks, MANIFEST_FILE, NoSalts, ProjectSalts,
+    RecentHook, RecentIndex as StageBHook, SaltUnavailable, ShipError, Shipper, ShipperConfig,
+    ShipperStats, StatsSnapshot,
 };
 use crucible_wal::{RecoveryReport, Wal, WalConfig, WalFrame};
 use crucible_wal_codec::{Record, RecordType};
@@ -69,8 +78,10 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
+use opentelemetry_proto::tonic::resource::v1::Resource;
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
 use prost::Message;
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use crate::boot::{BootCounts, Booted, Recovery, recover};
@@ -82,10 +93,11 @@ use crate::ship_sim::{
     random, read_quarantines,
 };
 use crate::swarm::{ConfigMask, Dim, RunRecord};
-use crate::system_oracle::{self, FactRow};
+use crate::system_oracle::{self, Admitted, FactRow, FrameSpan, McpKey, McpSent};
 use crate::trace::Trace;
 use crate::wal_sim::{self, LogState, coin, pick, read_log};
 
+mod lists;
 mod reads;
 
 /// How hostile a run is.
@@ -141,11 +153,20 @@ pub enum Mutant {
     CountAggregateUsage,
     /// `crucible-shipper` collects the segments that the admission of an unchecked frame relied on.
     CollectWhatFramesRelyOn,
+    /// `crucible-normalize` reports an invalid-params error on a server-side MCP row as the server's fault.
+    MisclassifyCallerFault,
+    /// `crucible-shipper` gives every `mcp_tool_rollup` partial one capture source, so that rows of different
+    /// capture sources are summed.
+    SumCaptureSources,
+    /// `crucible-shipper` sends the blocks of `mcp_tool_rollup` without their marker row.
+    DropRollupMarker,
+    /// `crucible-normalize` flags the usage aggregates of a frame after its exact repeats were dropped.
+    MarkAfterDuplicateDrop,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 15] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -157,6 +178,10 @@ impl Mutant {
         Self::FrameQuarantineWithoutCopy,
         Self::CountAggregateUsage,
         Self::CollectWhatFramesRelyOn,
+        Self::MisclassifyCallerFault,
+        Self::SumCaptureSources,
+        Self::DropRollupMarker,
+        Self::MarkAfterDuplicateDrop,
     ];
 
     /// The name used on the command line.
@@ -173,6 +198,10 @@ impl Mutant {
             Self::FrameQuarantineWithoutCopy => "frame-quarantine-without-copy",
             Self::CountAggregateUsage => "count-aggregate-usage",
             Self::CollectWhatFramesRelyOn => "collect-what-frames-rely-on",
+            Self::MisclassifyCallerFault => "misclassify-caller-fault",
+            Self::SumCaptureSources => "sum-capture-sources",
+            Self::DropRollupMarker => "drop-rollup-marker",
+            Self::MarkAfterDuplicateDrop => "mark-after-duplicate-drop",
         }
     }
 
@@ -319,6 +348,8 @@ pub enum Violation {
         /// The request, in submission order.
         request: usize,
     },
+    /// I8: an `mcp_ops` row is not classified as the shared classifier classifies its exchange.
+    Classification(String),
 }
 
 impl Violation {
@@ -332,6 +363,7 @@ impl Violation {
             Self::FactRow(_) => "I2",
             Self::FactResolution(_) => "I4",
             Self::Aggregate(_) => "I7",
+            Self::Classification(_) => "I8",
             Self::Backpressure(_) => "I5",
             Self::Locator { .. } => "I3",
             Self::Store(_)
@@ -418,6 +450,22 @@ pub struct Stats {
     pub locator_reads: u64,
     /// Requests that carry a span of an earlier request beside their own.
     pub partial_repeats: u64,
+    /// `mcp_ops` rows compared with the exchange their operation simulated.
+    pub mcp_ops: u64,
+    /// Of those, rows whose exchange failed in some error class.
+    pub mcp_errors: u64,
+    /// Of those, rows that are the caller's fault.
+    pub mcp_caller_faults: u64,
+    /// Of those, rows of an operation that another capture source reported too.
+    pub mcp_proxy_rows: u64,
+    /// Of those, rows with a hashed user subject.
+    pub mcp_subjects: u64,
+    /// Keys of the MCP aggregating tables compared with the reference at the end.
+    pub mcp_keys: u64,
+    /// Reads of a project salt that the simulated control store did not answer.
+    pub salt_waits: u64,
+    /// Windows in which directory syncs failed.
+    pub dir_sync_windows: u64,
     /// The shipper's counters, summed over its incarnations.
     pub shipper: StatsSnapshot,
     /// The store's counters.
@@ -463,6 +511,14 @@ impl Stats {
                 self.partial_repeats,
                 "request with a repeated span acknowledged",
             ),
+            (self.mcp_ops, "mcp operation compared with its exchange"),
+            (self.mcp_errors, "mcp operation classified as an error"),
+            (self.mcp_caller_faults, "mcp caller fault"),
+            (self.mcp_proxy_rows, "mcp operation captured by a proxy"),
+            (self.mcp_subjects, "mcp user subject hashed"),
+            (self.mcp_keys, "mcp aggregates compared with the reference"),
+            (self.salt_waits, "frame waited for its project salt"),
+            (self.dir_sync_windows, "directory syncs failed"),
             (
                 self.shipper.quarantined_frames,
                 "shipper quarantined a frame",
@@ -561,6 +617,8 @@ struct Plan {
     fsync_lie: bool,
     stress: bool,
     mutant: Option<Mutant>,
+    /// The share of project salt reads that fail; `None` for a node without a control store.
+    salt_fail_ppm: Option<u32>,
 }
 
 /// The first instant of the span start times: a few days before the simulated wall clock, as real spans are.
@@ -707,6 +765,16 @@ impl Plan {
                 Some(Mutant::CollectWhatFramesRelyOn) => {
                     Some(crucible_shipper::Mutant::CollectWhatFramesRelyOn)
                 }
+                Some(Mutant::MisclassifyCallerFault) => {
+                    Some(crucible_shipper::Mutant::MisclassifyCallerFault)
+                }
+                Some(Mutant::SumCaptureSources) => {
+                    Some(crucible_shipper::Mutant::SumCaptureSources)
+                }
+                Some(Mutant::DropRollupMarker) => Some(crucible_shipper::Mutant::DropRollupMarker),
+                Some(Mutant::MarkAfterDuplicateDrop) => {
+                    Some(crucible_shipper::Mutant::MarkAfterDuplicateDrop)
+                }
                 _ => None,
             },
             ..ShipperConfig::default()
@@ -780,6 +848,9 @@ impl Plan {
             fsync_lie,
             stress,
             mutant: options.mutant,
+            // With an identity the node has a control store, whose reads sometimes fail; without one it runs
+            // in ingest-only mode and drops the identity keys.
+            salt_fail_ppm: has(Dim::McpIdentity).then(|| choose(&[0, 150_000]) as u32),
         }
     }
 }
@@ -794,6 +865,9 @@ fn secret(project: usize) -> String {
 }
 
 type SpanKey = (usize, [u8; 16], [u8; 8]);
+
+/// The MCP operations of a request: (trace, span) of each and what the oracle expects of it.
+type SentOps = Vec<([u8; 16], [u8; 8], McpSent)>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct SpanInfo {
@@ -830,6 +904,8 @@ struct Request {
     acked: bool,
     /// Whether the request carries a span of an earlier request beside its own.
     partial_repeat: bool,
+    /// The MCP operations of the request: (trace, span) and what the oracle expects of each.
+    mcp: Arc<SentOps>,
 }
 
 /// The oracle ledger.
@@ -846,6 +922,10 @@ struct Ledger {
     sent: BTreeMap<SpanKey, system_oracle::Sent>,
     /// Every fact write, in submission order.
     fact_writes: Vec<FactWrite>,
+    /// Every MCP operation sent, as the exchange it simulated.
+    mcp: BTreeMap<McpKey, McpSent>,
+    /// What stage B was given: every span of every frame it admitted, and where the WAL started then.
+    admitted: Admitted,
     repeats: u64,
     violations: Vec<Violation>,
     stats: Stats,
@@ -865,6 +945,10 @@ impl Ledger {
                 .insert(span.span);
             self.sent
                 .insert((request.project, span.trace, span.span), span.sent);
+        }
+        let project = project_id(request.project).to_bytes();
+        for (trace, span, sent) in request.mcp.iter() {
+            self.mcp.insert((project, *trace, *span), sent.clone());
         }
         self.stats.sent += 1;
     }
@@ -1181,17 +1265,26 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             state.spans.remove(0);
         }
     }
-    let otlp = ExportTraceServiceRequest {
-        resource_spans: vec![ResourceSpans {
-            resource: None,
-            scope_spans: vec![ScopeSpans {
-                scope: None,
-                spans: wire,
-                schema_url: String::new(),
-            }],
+    // The MCP operations come last and in their own traces, each call under the resource of its server. A mask
+    // without the dimension draws nothing here.
+    let mut mcp = McpTraffic::default();
+    if has(Dim::Mcp) && pick(rng, 3) > 0 {
+        for _ in 0..1 + pick(rng, 2) {
+            generate_mcp(plan, rng, project, &mut mcp);
+        }
+    }
+    spans.append(&mut mcp.spans);
+    let mut resource_spans = vec![ResourceSpans {
+        resource: None,
+        scope_spans: vec![ScopeSpans {
+            scope: None,
+            spans: wire,
             schema_url: String::new(),
         }],
-    };
+        schema_url: String::new(),
+    }];
+    resource_spans.append(&mut mcp.resources);
+    let otlp = ExportTraceServiceRequest { resource_spans };
     let mut body = if json {
         serde_json::to_vec(&otlp).ok()?
     } else {
@@ -1216,7 +1309,860 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         json,
         acked: false,
         partial_repeat,
+        mcp: Arc::new(mcp.sent),
     })
+}
+
+/// The first protocol version of each era.
+const LEGACY_VERSION: &str = "2025-11-25";
+const MODERN_VERSION: &str = "2026-07-28";
+
+/// Operation durations in microseconds, one in each of several buckets of the MCP duration metric.
+const MCP_DURATIONS: [u64; 8] = [
+    400,
+    9_000,
+    15_000,
+    80_000,
+    700_000,
+    3_000_000,
+    45_000_000,
+    400_000_000,
+];
+
+/// Tool schemas as a `tools/list` result sends them, with the canonical JSON of the input and the output
+/// schema that the inventory's hash is taken of (contract 3.6). `N` stands for the tool's name. The wire forms
+/// order their members otherwise than the canonical form does.
+const TOOL_SCHEMAS: [(&str, &str, &str); 3] = [
+    (
+        r#"{"name":"N","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}}}"#,
+        r#"{"properties":{"q":{"type":"string"}},"type":"object"}"#,
+        "null",
+    ),
+    (
+        r#"{"outputSchema":{"type":"object"},"inputSchema":{"required":["q"],"type":"object","properties":{"q":{"type":"string"},"n":{"type":"integer"}}},"name":"N"}"#,
+        r#"{"properties":{"n":{"type":"integer"},"q":{"type":"string"}},"required":["q"],"type":"object"}"#,
+        r#"{"type":"object"}"#,
+    ),
+    (r#"{"name":"N"}"#, "null", "null"),
+];
+
+/// What happened in one simulated MCP exchange, before any instrumentation saw it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Exchange {
+    Ok,
+    /// A result with `isError: true`, and the SDK annotation of the handler, if any.
+    ToolError(Option<ErrorClass>, ErrorSubclass),
+    /// A JSON-RPC error with this code; with the not-found annotation when set.
+    Rpc(i32, bool),
+    /// An HTTP status without a JSON-RPC body.
+    Http(u16),
+    Cancelled(CancelSource),
+    TimedOut,
+    /// The stream broke with the operation pending.
+    Transport,
+    /// The handler raised an exception that nothing reported.
+    Exception,
+}
+
+/// The salt of a simulated project: fixed for the life of the project, as a salt is (contract 9.3).
+fn project_salt(project: ProjectId) -> ProjectSalt {
+    let mut bytes = [0xa5; 32];
+    bytes[..16].copy_from_slice(&project.to_bytes());
+    ProjectSalt::new(bytes)
+}
+
+fn flag(value: bool) -> AnyValue {
+    AnyValue {
+        value: Some(any_value::Value::BoolValue(value)),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// What one MCP call shares between its spans: who serves it and how the client reached it.
+struct McpCall {
+    project: usize,
+    trace: [u8; 16],
+    server: &'static str,
+    version: &'static str,
+    deploy: &'static str,
+    instance: String,
+    era: Era,
+    transport: Transport,
+    /// The session id of a legacy HTTP session and whether the sender hashes it.
+    session: Option<(String, bool)>,
+    client: &'static str,
+    start_micros: i64,
+}
+
+/// One MCP operation as one instrumentation reports it.
+struct McpOpSpec {
+    side: McpSide,
+    capture: CaptureSource,
+    span: [u8; 8],
+    parent: Option<[u8; 8]>,
+    method: &'static str,
+    target: String,
+    exchange: Exchange,
+    /// An explicit class that the sender wrote although the exchange does not warrant it.
+    stray_class: Option<ErrorClass>,
+    duration_us: u64,
+    round: u16,
+    state_in: Option<[u8; 16]>,
+    state_out: Option<[u8; 16]>,
+    handle: String,
+    subject: Option<(String, String)>,
+    user_id: String,
+    content: Option<(String, String)>,
+    /// The tools a `tools/list` result names: each name and its schema variant.
+    tools: Vec<(String, usize)>,
+    bytes: (u64, u64),
+}
+
+/// The wire span of one MCP operation and what the oracle expects of its rows. The keys follow what each
+/// capture source sends: an SDK wrapper writes the `crucible.mcp.*` keys, the proxy the keys it can observe on
+/// the wire, and a server without either only the semantic-convention keys.
+fn mcp_span(call: &McpCall, op: &McpOpSpec) -> (Span, SpanInfo, McpSent) {
+    use Exchange as X;
+    let sdk = op.capture == CaptureSource::Sdk;
+    let proxy = matches!(
+        op.capture,
+        CaptureSource::ProxyStdio | CaptureSource::ProxyHttp
+    );
+    let http = call.transport == Transport::StreamableHttp;
+    let notification = op.method.starts_with("notifications/");
+    let mut attributes = vec![attribute("mcp.method.name", text(op.method.to_owned()))];
+    let mut put = |key: &str, value: &str| {
+        if !value.is_empty() {
+            attributes.push(attribute(key, text(value.to_owned())));
+        }
+    };
+    let version = match call.era {
+        Era::Legacy => LEGACY_VERSION,
+        Era::Modern => MODERN_VERSION,
+    };
+    put("mcp.protocol.version", version);
+    put("network.transport", if http { "tcp" } else { "pipe" });
+    match op.method {
+        "tools/call" => put("gen_ai.tool.name", &op.target),
+        "prompts/get" => put("gen_ai.prompt.name", &op.target),
+        "resources/read" => put("crucible.mcp.resource.template", &op.target),
+        _ => {}
+    }
+    if sdk || proxy {
+        put("crucible.mcp.capture_source", op.capture.as_str());
+        put("crucible.mcp.era", call.era.as_str());
+        put("crucible.mcp.transport", call.transport.as_str());
+        put("crucible.mcp.server.name", call.server);
+        put("crucible.mcp.server.version", call.version);
+        put("crucible.mcp.client.name", call.client);
+    }
+    if let Some((id, hashed)) = &call.session {
+        let sent = if *hashed {
+            hex(&Sha256::digest(id.as_bytes())[..16])
+        } else {
+            id.clone()
+        };
+        put("mcp.session.id", &sent);
+    }
+
+    // The outcome keys, and what the shared classifier is given for the exchange.
+    let class =
+        |class: ErrorClass| attribute("crucible.mcp.error.class", text(class.as_str().to_owned()));
+    let mut outcome = Vec::new();
+    let mut input = McpErrorInput {
+        era: call.era,
+        side: op.side,
+        jsonrpc_code: None,
+        is_error: false,
+        http_status: (http && sdk).then_some(if notification { 202 } else { 200 }),
+        cancel_source: CancelSource::None,
+        timed_out: false,
+        transport_failure: false,
+        unhandled_exception: false,
+        annotations: McpErrorAnnotations::NONE,
+    };
+    let mut explicit = op.stray_class;
+    match op.exchange {
+        X::Ok => {}
+        X::ToolError(mark, subclass) => {
+            input.is_error = true;
+            outcome.push(attribute("error.type", text("tool_error".to_owned())));
+            if sdk || proxy {
+                explicit = explicit.or(Some(mark.unwrap_or(ErrorClass::ToolExecution)));
+            }
+            if subclass != ErrorSubclass::None {
+                input.annotations.subclass = subclass;
+                outcome.push(attribute(
+                    "crucible.mcp.error.subclass",
+                    text(subclass.as_str().to_owned()),
+                ));
+            }
+        }
+        X::Rpc(code, not_found) => {
+            input.jsonrpc_code = Some(code);
+            outcome.push(attribute("error.type", text(code.to_string())));
+            outcome.push(attribute(
+                "rpc.response.status_code",
+                text(code.to_string()),
+            ));
+            if not_found {
+                explicit = Some(ErrorClass::NotFound);
+            }
+        }
+        X::Http(status) => {
+            input.http_status = Some(status);
+            // The status as the error type, as the proxy and the HTTP conventions report it.
+            outcome.push(attribute("error.type", text(status.to_string())));
+        }
+        X::Cancelled(source) => {
+            input.cancel_source = source;
+            outcome.push(attribute(
+                "crucible.mcp.cancel.source",
+                text(source.as_str().to_owned()),
+            ));
+            explicit = explicit.or(Some(ErrorClass::Cancelled));
+        }
+        X::TimedOut => {
+            input.timed_out = true;
+            outcome.push(attribute("crucible.mcp.timed_out", flag(true)));
+        }
+        X::Transport => {
+            input.transport_failure = true;
+            outcome.push(attribute("error.type", text("transport".to_owned())));
+            explicit = Some(ErrorClass::Transport);
+        }
+        X::Exception => {
+            input.unhandled_exception = true;
+            outcome.push(attribute("error.type", text("RuntimeError".to_owned())));
+        }
+    }
+    if let Some(explicit) = explicit {
+        input.annotations.explicit_class = Some(explicit);
+        outcome.push(class(explicit));
+    }
+    if let Some(status) = input.http_status {
+        outcome.push(attribute(
+            "http.response.status_code",
+            int(u64::from(status)),
+        ));
+    }
+    let expected = classify_mcp_error(&input);
+    attributes.extend(outcome);
+
+    if !notification {
+        attributes.push(attribute(
+            "jsonrpc.request.id",
+            text(format!("{}", op.span[0])),
+        ));
+    } else if sdk || proxy {
+        attributes.push(attribute("crucible.mcp.is_notification", flag(true)));
+    }
+    if op.round > 0 {
+        attributes.push(attribute(
+            "crucible.mcp.mrtr.round",
+            int(u64::from(op.round)),
+        ));
+    }
+    if let Some(state) = op.state_in {
+        attributes.push(attribute("crucible.mcp.mrtr.state_in", text(hex(&state))));
+    }
+    if let Some(state) = op.state_out {
+        attributes.push(attribute("crucible.mcp.mrtr.state_out", text(hex(&state))));
+        attributes.push(attribute(
+            "crucible.mcp.result_type",
+            text("input_required".to_owned()),
+        ));
+    }
+    let mut put = |key: &str, value: &str| {
+        if !value.is_empty() {
+            attributes.push(attribute(key, text(value.to_owned())));
+        }
+    };
+    put("crucible.mcp.handle.id", &op.handle);
+    put("user.id", &op.user_id);
+    if let Some((issuer, subject)) = &op.subject {
+        put("crucible.mcp.user.issuer", issuer);
+        put("crucible.mcp.user.subject", subject);
+        put("crucible.mcp.identity.source", "token_verified");
+    }
+    if op.bytes.0 > 0 {
+        attributes.push(attribute("crucible.mcp.request.bytes", int(op.bytes.0)));
+    }
+    if op.bytes.1 > 0 {
+        attributes.push(attribute("crucible.mcp.response.bytes", int(op.bytes.1)));
+    }
+    if let Some((args, result)) = &op.content {
+        attributes.push(attribute("gen_ai.tool.call.arguments", text(args.clone())));
+        attributes.push(attribute("gen_ai.tool.call.result", text(result.clone())));
+        // A server without a wrapper sends no flag; the content it sends counts as captured.
+        if sdk {
+            attributes.push(attribute("crucible.mcp.content.captured", flag(true)));
+        }
+    }
+    if !op.tools.is_empty() {
+        let listed: Vec<String> = op
+            .tools
+            .iter()
+            .map(|(name, variant)| TOOL_SCHEMAS[*variant].0.replace('N', name))
+            .collect();
+        attributes.push(attribute(
+            "crucible.mcp.tools",
+            text(format!("[{}]", listed.join(", "))),
+        ));
+    }
+
+    let failed = expected.status != McpStatus::Ok;
+    let start_nanos = (call.start_micros as u64) * 1_000;
+    let wire = Span {
+        trace_id: call.trace.to_vec(),
+        span_id: op.span.to_vec(),
+        parent_span_id: op.parent.map(|id| id.to_vec()).unwrap_or_default(),
+        name: format!("{} {}", op.method, op.target),
+        kind: if op.side == McpSide::Client { 3 } else { 2 },
+        start_time_unix_nano: start_nanos,
+        end_time_unix_nano: start_nanos + op.duration_us * 1_000,
+        attributes,
+        status: failed.then(|| Status {
+            message: String::new(),
+            code: 2,
+        }),
+        ..Span::default()
+    };
+    let info = SpanInfo {
+        trace: call.trace,
+        span: op.span,
+        root: op.parent.is_none(),
+        sent: system_oracle::Sent {
+            error: failed,
+            ..system_oracle::Sent::default()
+        },
+    };
+    let sent = McpSent {
+        side: op.side,
+        capture_source: op.capture,
+        era: call.era,
+        transport: call.transport,
+        method: op.method.to_owned(),
+        target: op.target.clone(),
+        server: call.server.to_owned(),
+        version: call.version.to_owned(),
+        deploy: call.deploy.to_owned(),
+        instance: call.instance.clone(),
+        client: if sdk || proxy {
+            call.client.to_owned()
+        } else {
+            String::new()
+        },
+        notification: notification && (sdk || proxy),
+        start_micros: call.start_micros,
+        duration_us: op.duration_us,
+        request_bytes: op.bytes.0,
+        response_bytes: op.bytes.1,
+        parent: op.parent.unwrap_or_default(),
+        outcome: expected,
+        jsonrpc_code: input.jsonrpc_code,
+        http_status: input.http_status,
+        round: op.round,
+        state_in: op.state_in,
+        state_out: op.state_out,
+        session: call.session.clone(),
+        handle: op.handle.clone(),
+        subject: op.subject.clone(),
+        user_id: op.user_id.clone(),
+        content: op
+            .content
+            .as_ref()
+            .map(|(args, result)| (args.len() as u64, result.len() as u64)),
+        tools: op
+            .tools
+            .iter()
+            .map(|(name, variant)| {
+                let (_, input, output) = TOOL_SCHEMAS[*variant];
+                (name.clone(), input.to_owned(), output.to_owned())
+            })
+            .collect(),
+    };
+    (wire, info, sent)
+}
+
+/// The MCP operations a request carries beside its spans.
+#[derive(Default)]
+struct McpTraffic {
+    /// One resource per call: the server's, with the spans its instrumentation exports.
+    resources: Vec<ResourceSpans>,
+    spans: Vec<SpanInfo>,
+    /// (trace, span) of each operation and what the oracle expects of it.
+    sent: SentOps,
+}
+
+/// Builds the MCP operations of one call: a server-side operation as an SDK wrapper, a server without a
+/// wrapper or the proxy reports it, in either era and over either transport; with the dimensions of the mask,
+/// the agent's client-side span above it, the proxy's row of the same call beside the SDK's (double capture),
+/// every error class, a multi-round exchange, a tool list, a deploy that changes, captured content and a user
+/// identity.
+fn generate_mcp(plan: &Plan, rng: &dyn Rng, project: usize, out: &mut McpTraffic) {
+    let has = |dim| plan.mask.has(dim);
+    let of = |items: &[&'static str]| items[pick(rng, items.len() as u64) as usize];
+    let era = if coin(rng) { Era::Legacy } else { Era::Modern };
+    let transport = if coin(rng) {
+        Transport::Stdio
+    } else {
+        Transport::StreamableHttp
+    };
+    let http = transport == Transport::StreamableHttp;
+    let day = if has(Dim::MultiDay) { pick(rng, 3) } else { 1 };
+    let call = McpCall {
+        project,
+        trace: random::<16>(rng),
+        server: of(&["files", "orders"]),
+        version: if has(Dim::McpDeploys) {
+            of(&["1.0.0", "1.1.0"])
+        } else {
+            "1.0.0"
+        },
+        deploy: if has(Dim::McpDeploys) {
+            of(&["", "blue", "green"])
+        } else {
+            ""
+        },
+        instance: format!("pod-{}", pick(rng, 2)),
+        era,
+        transport,
+        session: (era == Era::Legacy && http && coin(rng))
+            .then(|| (format!("session-{}", pick(rng, 3)), coin(rng))),
+        client: of(&["", "inspector", "agent-x"]),
+        start_micros: START_BASE_MICROS + (day * 86_400_000_000 + pick(rng, 3_600_000_000)) as i64,
+    };
+    let method = match pick(rng, 8) {
+        0 => "tools/list",
+        1 => "prompts/get",
+        2 => "resources/read",
+        3 => "notifications/initialized",
+        _ => "tools/call",
+    };
+    let notification = method.starts_with("notifications/");
+    let capture = match pick(rng, 4) {
+        0 => CaptureSource::Otlp,
+        1 if http => CaptureSource::ProxyHttp,
+        1 => CaptureSource::ProxyStdio,
+        _ => CaptureSource::Sdk,
+    };
+    let sdk = capture == CaptureSource::Sdk;
+    let plain = capture == CaptureSource::Otlp;
+    let target = match method {
+        "tools/call" => format!("tool-{}", pick(rng, 3)),
+        "prompts/get" => "greeting".to_owned(),
+        // The proxy reports no resource template.
+        "resources/read" if sdk => "file:///{path}".to_owned(),
+        _ => String::new(),
+    };
+    // What happened, among what the capture source can observe (contract 9.2).
+    let exchange = if !has(Dim::McpErrors) || notification || coin(rng) {
+        Exchange::Ok
+    } else {
+        let codes = [
+            -32700, -32600, -32601, -32602, -32603, -32002, -32020, -32000,
+        ];
+        let code = codes[pick(rng, codes.len() as u64) as usize];
+        match pick(rng, 8) {
+            0 | 1 => Exchange::Rpc(code, sdk && code == -32602 && coin(rng)),
+            2 if sdk => {
+                let mark = [
+                    None,
+                    Some(ErrorClass::Validation),
+                    Some(ErrorClass::NotFound),
+                ][pick(rng, 3) as usize];
+                let subclass = if mark.is_none() && coin(rng) {
+                    ErrorSubclass::ALL[pick(rng, ErrorSubclass::ALL.len() as u64) as usize]
+                } else {
+                    ErrorSubclass::None
+                };
+                Exchange::ToolError(mark, subclass)
+            }
+            2 | 3 => Exchange::ToolError(None, ErrorSubclass::None),
+            4 if http && !sdk => Exchange::Http([401, 403, 429, 500, 503][pick(rng, 5) as usize]),
+            5 if !plain => Exchange::Cancelled(if coin(rng) {
+                CancelSource::Notification
+            } else {
+                CancelSource::StreamClose
+            }),
+            6 if sdk => Exchange::TimedOut,
+            6 if !plain => Exchange::Transport,
+            7 if !sdk => Exchange::Exception,
+            _ => Exchange::Rpc(code, false),
+        }
+    };
+    // An SDK may annotate a class that the exchange does not warrant; the channel decides then.
+    let stray_class = (has(Dim::McpErrors) && sdk && pick(rng, 8) == 0).then(|| {
+        [
+            ErrorClass::ToolExecution,
+            ErrorClass::Validation,
+            ErrorClass::Auth,
+            ErrorClass::Internal,
+        ][pick(rng, 4) as usize]
+    });
+    let duration_us =
+        MCP_DURATIONS[pick(rng, MCP_DURATIONS.len() as u64) as usize] + pick(rng, 300);
+
+    // The agent's side, when it is instrumented: a client span that the server's span hangs under, because the
+    // client wrapper sends its trace context in `params._meta`.
+    let client = (pick(rng, 3) > 0).then(|| random::<8>(rng));
+    let mut specs: Vec<McpOpSpec> = Vec::new();
+    if let Some(span) = client {
+        specs.push(McpOpSpec {
+            side: McpSide::Client,
+            capture: CaptureSource::Sdk,
+            span,
+            parent: None,
+            method,
+            target: target.clone(),
+            exchange: match exchange {
+                Exchange::Rpc(code, _) => Exchange::Rpc(code, false),
+                _ => Exchange::Ok,
+            },
+            stray_class: None,
+            duration_us: duration_us + 200,
+            round: 0,
+            state_in: None,
+            state_out: None,
+            handle: String::new(),
+            subject: None,
+            user_id: String::new(),
+            content: None,
+            tools: Vec::new(),
+            bytes: (0, 0),
+        });
+    }
+    let parent = client.or_else(|| coin(rng).then_some([9; 8]));
+    let identified = has(Dim::McpIdentity) && !plain && pick(rng, 3) > 0;
+    let server_op = |span: [u8; 8], capture: CaptureSource, exchange: Exchange| McpOpSpec {
+        side: McpSide::Server,
+        capture,
+        span,
+        parent,
+        method,
+        target: target.clone(),
+        exchange,
+        stray_class: stray_class.filter(|_| capture == CaptureSource::Sdk),
+        duration_us,
+        round: 0,
+        state_in: None,
+        state_out: None,
+        handle: String::new(),
+        subject: None,
+        user_id: String::new(),
+        content: None,
+        tools: Vec::new(),
+        bytes: (0, 0),
+    };
+    let mut main = server_op(random::<8>(rng), capture, exchange);
+    if !plain {
+        main.bytes = (1 + pick(rng, 4_000), pick(rng, 20_000));
+    }
+    if sdk && pick(rng, 4) == 0 {
+        main.handle = format!("ord_{}", pick(rng, 3));
+    }
+    if identified {
+        main.subject = Some((
+            format!("https://issuer-{}.example", pick(rng, 2)),
+            format!("subject-{}", pick(rng, 3)),
+        ));
+    }
+    // The identify hook's user id needs no salt; without a control store it is dropped all the same.
+    if sdk && pick(rng, 3) == 0 {
+        main.user_id = format!("user-{}", pick(rng, 3));
+    }
+    if has(Dim::McpContent)
+        && method == "tools/call"
+        && !matches!(
+            capture,
+            CaptureSource::ProxyStdio | CaptureSource::ProxyHttp
+        )
+        && coin(rng)
+    {
+        main.content = Some((
+            format!("{{\"q\":\"{}\"}}", "a".repeat(pick(rng, 40) as usize)),
+            "{\"ok\":true}".to_owned(),
+        ));
+    }
+    if has(Dim::McpInventory) && method == "tools/list" && exchange == Exchange::Ok {
+        // The tools a deploy lists change with the deploy and from one listing to the next.
+        main.tools = (0..4)
+            .filter(|_| pick(rng, 3) > 0)
+            .map(|tool| (format!("tool-{tool}"), pick(rng, 3) as usize))
+            .collect();
+    }
+    // A multi-round exchange: the first call asks for input, the retries carry its state back.
+    let rounds = if has(Dim::McpMrtr)
+        && era == Era::Modern
+        && method == "tools/call"
+        && sdk
+        && exchange == Exchange::Ok
+        && pick(rng, 3) == 0
+    {
+        1 + pick(rng, 2) as u16
+    } else {
+        0
+    };
+    let mut state = None;
+    for round in 0..rounds {
+        let mut ask = server_op(random::<8>(rng), capture, Exchange::Ok);
+        ask.round = round;
+        ask.state_in = state;
+        state = Some(random::<16>(rng));
+        ask.state_out = state;
+        specs.push(ask);
+    }
+    if rounds > 0 {
+        main.round = rounds;
+        main.state_in = state;
+    }
+    // The proxy in front of the same server sees the same call (contract 9.5): a second server-side row, with
+    // what a proxy can observe.
+    let seen_by_proxy = match exchange {
+        Exchange::Ok | Exchange::Rpc(..) | Exchange::Cancelled(_) => Some(exchange),
+        Exchange::ToolError(..) => Some(Exchange::ToolError(None, ErrorSubclass::None)),
+        _ => None,
+    };
+    if has(Dim::McpDoubleCapture)
+        && sdk
+        && coin(rng)
+        && let Some(exchange) = seen_by_proxy
+    {
+        let source = if http {
+            CaptureSource::ProxyHttp
+        } else {
+            CaptureSource::ProxyStdio
+        };
+        let exchange = match exchange {
+            Exchange::Rpc(code, _) => Exchange::Rpc(code, false),
+            other => other,
+        };
+        let mut twin = server_op(random::<8>(rng), source, exchange);
+        twin.bytes = main.bytes;
+        specs.push(twin);
+    }
+    specs.push(main);
+
+    let mut spans = Vec::new();
+    for spec in &specs {
+        let (wire, info, sent) = mcp_span(&call, spec);
+        spans.push(wire);
+        out.spans.push(info);
+        out.sent.push((call.trace, spec.span, sent));
+    }
+    let mut resource = vec![
+        attribute("service.name", text(call.server.to_owned())),
+        attribute("service.version", text(call.version.to_owned())),
+        attribute("service.instance.id", text(call.instance.clone())),
+    ];
+    if !call.deploy.is_empty() {
+        resource.push(attribute(
+            "crucible.deploy.id",
+            text(call.deploy.to_owned()),
+        ));
+    }
+    let _ = call.project;
+    out.resources.push(ResourceSpans {
+        resource: Some(Resource {
+            attributes: resource,
+            ..Resource::default()
+        }),
+        scope_spans: vec![ScopeSpans {
+            scope: None,
+            spans,
+            schema_url: String::new(),
+        }],
+        schema_url: String::new(),
+    });
+}
+
+/// The project salts of the simulated control store: one fixed salt per project, and a share of the reads fail,
+/// as a store that does not answer does.
+struct SimSalts {
+    fail_ppm: u32,
+    rng: Arc<dyn Rng>,
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for SimSalts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimSalts")
+            .field("fail_ppm", &self.fail_ppm)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProjectSalts for SimSalts {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn salt(
+        &self,
+        project: ProjectId,
+    ) -> futures::future::BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>> {
+        let failed = self.rng.next_u64() % 1_000_000 < u64::from(self.fail_ppm);
+        if failed {
+            self.shared.ledger().stats.salt_waits += 1;
+        }
+        Box::pin(futures::future::ready(if failed {
+            Err(SaltUnavailable("the store did not answer".to_owned()))
+        } else {
+            Ok(project_salt(project))
+        }))
+    }
+}
+
+/// The recent-span index's hook, with the oracle listening: every frame that stage B admits is recorded with
+/// all the spans stage A made of it, the exact repeats that stage B then drops included, and with the first
+/// LSN the WAL retains at that moment. The usage-aggregate rule is checked against exactly that.
+struct Observed {
+    inner: Arc<RecentHook>,
+    wal: Wal,
+    shared: Arc<Shared>,
+    /// The watermark this incarnation recovered: frames at or below it only rebuild stage B.
+    watermark: Lsn,
+    /// The last LSN of the sealed batches this incarnation recovered: pairs of those batches may have landed
+    /// before the restart.
+    sealed_through: u64,
+}
+
+impl std::fmt::Debug for Observed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observed")
+            .field("watermark", &self.watermark)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Observed {
+    /// The spans of an `IngestRequest` frame that stage A makes records of, in wire order.
+    fn spans(&self, source: &WalFrame) -> Option<Vec<FrameSpan>> {
+        let payload = source.payload().ok()?;
+        let Ok(Record::IngestRequest(request)) =
+            Record::decode(RecordType::IngestRequest, &payload)
+        else {
+            return None;
+        };
+        let project =
+            (0..self.shared.plan.projects).find(|&p| project_id(p) == request.project_id)?;
+        let scanned = crucible_otlp::TraceRequest::scan(request.otlp, None).ok()?;
+        let ledger = self.shared.ledger();
+        let rejected = |ordinal: u32| {
+            request
+                .rejected
+                .get((ordinal / 8) as usize)
+                .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0)
+        };
+        Some(
+            scanned
+                .spans()
+                .filter(|span| !rejected(span.ordinal()) && span.rejection().is_none())
+                .map(|span| {
+                    let (trace, id) = (span.trace_id().to_bytes(), span.span_id().to_bytes());
+                    let parent = span.parent_span_id().map(|parent| parent.to_bytes());
+                    let carries = ledger.sent.get(&(project, trace, id)).is_some_and(|sent| {
+                        sent.input > 0 || sent.output > 0 || sent.cost_nusd > 0
+                    });
+                    FrameSpan::new(
+                        &request.project_id.to_bytes(),
+                        &trace,
+                        &id,
+                        parent.as_ref().map(|parent| &parent[..]),
+                        carries,
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Observed {
+    /// Contract 5.3 and 4.7: the WAL keeps the frame that an admission relied on until the deciding frame is
+    /// checkpointed, so that a restart decides as this process did.
+    fn check_retained(&self) {
+        let watermark = self.wal.watermark().map_or(0, |w| w.last_lsn().get());
+        let Some(floor) = self.wal.segments().first().map(|s| s.first_lsn.get()) else {
+            return;
+        };
+        let mut ledger = self.shared.ledger();
+        ledger.admitted.relying = ledger.admitted.relying.split_off(&(watermark + 1));
+        let lost = ledger
+            .admitted
+            .relying
+            .iter()
+            .find(|(_, relied)| **relied < floor)
+            .map(|(lsn, relied)| (*lsn, *relied));
+        if let Some((lsn, relied)) = lost {
+            ledger.violate(Violation::DerivedMismatch(format!(
+                "the WAL starts at frame {floor} and no longer holds frame {relied}, which the admission \
+                 of frame {lsn} relied on; frame {lsn} is not checkpointed"
+            )));
+        }
+    }
+}
+
+impl StageBHook for Observed {
+    fn applied(&self, source: &WalFrame, frame: &NormalizedFrame, admission: &Admission) {
+        let lsn = source.lsn().get();
+        let known = self.shared.ledger().admitted.frames.contains_key(&lsn);
+        let spans = if known { None } else { self.spans(source) };
+        let floor = self
+            .wal
+            .segments()
+            .first()
+            .map_or(lsn, |segment| segment.first_lsn.get());
+        {
+            let mut ledger = self.shared.ledger();
+            if let Some(spans) = spans {
+                ledger.admitted.frames.insert(lsn, spans);
+            }
+            if lsn > self.watermark.get() {
+                ledger.admitted.admissions.insert((lsn, floor));
+                if let Some(relied) = admission.relies_on {
+                    ledger.admitted.relying.insert(lsn, relied.get());
+                }
+                // I2: the pairs of a sealed batch hold the same spans whether they land before or after a
+                // restart, so this admission keeps and flags what the process before it did.
+                let kept: Vec<(u32, bool)> = admission
+                    .stage_a_ordinals
+                    .iter()
+                    .copied()
+                    .zip(frame.spans.iter().map(|span| span.core.usage_aggregate))
+                    .collect();
+                match ledger.admitted.kept.get(&lsn) {
+                    Some(before) if lsn <= self.sealed_through && *before != kept => {
+                        ledger.violate(Violation::DerivedMismatch(format!(
+                            "after a restart stage B keeps or flags other spans of frame {lsn}, which a                              sealed batch holds, than the process before it did"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => {
+                        ledger.admitted.kept.insert(lsn, kept);
+                    }
+                }
+            }
+        }
+        self.check_retained();
+        self.inner.applied(source, frame, admission);
+    }
+
+    fn passed(&self, source: &WalFrame) {
+        self.check_retained();
+        self.inner.passed(source);
+    }
+
+    fn unshippable(&self, source: &WalFrame, project: Option<ProjectId>, facts: bool) {
+        self.inner.unshippable(source, project, facts);
+    }
+
+    fn floor(&self) -> Option<Lsn> {
+        self.inner.floor()
+    }
 }
 
 /// Builds one fact write: a few facts about recent traces, from small key domains so that versions collide
@@ -1627,7 +2573,7 @@ async fn read_list(
     for _ in 0..pages {
         let query = TraceListQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(if whole { 200 } else { 10 }),
             cursor: cursor.take(),
         };
@@ -2070,7 +3016,28 @@ impl Run<'_> {
         let mut core_rows = 0u64;
         let mut core_roots: BTreeSet<(u64, [u8; 8])> = BTreeSet::new();
         let mut core_root_keys: BTreeSet<SpanKey> = BTreeSet::new();
-        for table in [TableId::SpanCore, TableId::SpanPayload] {
+        let salted = self.plan().salt_fail_ppm.is_some();
+        let (mut mcp_ops, mut mcp_errors, mut mcp_faults, mut mcp_proxy, mut mcp_subjects) =
+            (0u64, 0u64, 0u64, 0u64, 0u64);
+        // The span tables, and the two plain MCP tables, which hold a row for the spans that are MCP
+        // operations (`mcp_content` for those whose content was captured).
+        for table in [
+            TableId::SpanCore,
+            TableId::SpanPayload,
+            TableId::McpOps,
+            TableId::McpContent,
+        ] {
+            let of_mcp = matches!(table, TableId::McpOps | TableId::McpContent);
+            let expects = |ledger: &Ledger, key: &SpanKey| {
+                let op = ledger
+                    .mcp
+                    .get(&(project_id(key.0).to_bytes(), key.1, key.2));
+                match table {
+                    TableId::McpOps => op.is_some(),
+                    TableId::McpContent => op.is_some_and(|op| op.content.is_some()),
+                    _ => true,
+                }
+            };
             let name = table.name();
             let mut by_frame: BTreeSet<(u64, [u8; 8])> = BTreeSet::new();
             let mut by_key: BTreeMap<SpanKey, u32> = BTreeMap::new();
@@ -2089,8 +3056,44 @@ impl Run<'_> {
                         continue;
                     };
                     let sent = ledger.keys.get(&key).copied().unwrap_or(0);
-                    if sent == 0 {
+                    if sent == 0 || !expects(&ledger, &key) {
                         found.push(Violation::UnknownRow { table: name });
+                    }
+                    // I8, and the wire contract of 9.1: the row is the exchange the client simulated.
+                    if table == TableId::McpOps
+                        && let Some(op) =
+                            ledger
+                                .mcp
+                                .get(&(project_id(key.0).to_bytes(), key.1, key.2))
+                    {
+                        let salt = salted.then(|| project_salt(project_id(key.0)));
+                        match system_oracle::mcp_row_matches(block, row, op, salt.as_ref()) {
+                            None => found.push(Violation::UnknownRow { table: name }),
+                            Some(diff) => {
+                                if !diff.classification.is_empty() {
+                                    found.push(Violation::Classification(format!(
+                                        "the mcp_ops row of an operation of frame {lsn} differs from the \
+                                         shared classifier in {:?}: expected {:?}",
+                                        diff.classification, op.outcome
+                                    )));
+                                }
+                                if !diff.fields.is_empty() {
+                                    found.push(Violation::Aggregate(format!(
+                                        "the mcp_ops row of an operation of frame {lsn} differs from the \
+                                         exchange in {:?}",
+                                        diff.fields
+                                    )));
+                                }
+                            }
+                        }
+                        mcp_ops += 1;
+                        mcp_errors += u64::from(op.outcome.error_class != ErrorClass::None);
+                        mcp_faults += u64::from(op.outcome.caller_fault);
+                        mcp_proxy += u64::from(matches!(
+                            op.capture_source,
+                            CaptureSource::ProxyStdio | CaptureSource::ProxyHttp
+                        ));
+                        mcp_subjects += u64::from(salted && op.subject.is_some());
                     }
                     if !by_frame.insert((lsn, key.2)) {
                         found.push(Violation::DuplicateRow { table: name, lsn });
@@ -2129,6 +3132,9 @@ impl Run<'_> {
                 let request = &ledger.requests[index];
                 for span in request.spans.iter() {
                     let key = (request.project, span.trace, span.span);
+                    if of_mcp && !expects(&ledger, &key) {
+                        continue;
+                    }
                     let durable = in_log.contains(&(
                         project_id(request.project).to_bytes(),
                         span.trace,
@@ -2243,10 +3249,20 @@ impl Run<'_> {
             }
         }
 
-        // I7: once everything has landed, every rollup equals the reference aggregation over `span_core`.
+        ledger.stats.mcp_ops = mcp_ops;
+        ledger.stats.mcp_errors = mcp_errors;
+        ledger.stats.mcp_caller_faults = mcp_faults;
+        ledger.stats.mcp_proxy_rows = mcp_proxy;
+        ledger.stats.mcp_subjects = mcp_subjects;
+
+        // I7: once everything has landed, every rollup equals the reference aggregation over `span_core`, and
+        // the MCP aggregating tables equal the reference over `mcp_ops`, per capture source.
         if quiescent && pair_directories == 0 {
-            let (keys, wrong) = system_oracle::check_aggregates(model);
+            let (keys, wrong) = system_oracle::check_aggregates(model, &ledger.admitted);
             ledger.stats.rollup_keys = keys;
+            found.extend(wrong.into_iter().map(Violation::Aggregate));
+            let (keys, wrong) = system_oracle::check_mcp(model, &ledger.mcp);
+            ledger.stats.mcp_keys = keys;
             found.extend(wrong.into_iter().map(Violation::Aggregate));
         }
 
@@ -2361,9 +3377,41 @@ impl Run<'_> {
                 .map(|manifest| (manifest.lsn, manifest.project_id, manifest.facts)),
         );
         let barriers = Arc::new(SimBarriers::new(&self.disk, self.sim.trace()));
+        // The frames above the last batch that an earlier incarnation sealed were admitted and never shipped:
+        // this incarnation admits them afresh, on the prefix the WAL holds now, and only that admission counts.
+        let sealed_through = report
+            .unchecked_seals
+            .iter()
+            .map(|seal| seal.last_lsn.get())
+            .max()
+            .unwrap_or(0)
+            .max(watermark.get());
+        {
+            let admitted = &mut self.shared.ledger().admitted;
+            admitted
+                .admissions
+                .retain(|(lsn, _)| *lsn <= sealed_through);
+            admitted.kept.retain(|lsn, _| *lsn <= sealed_through);
+            admitted.relying.retain(|lsn, _| *lsn <= sealed_through);
+        }
+        let salts: Arc<dyn ProjectSalts> = match plan.salt_fail_ppm {
+            Some(fail_ppm) => Arc::new(SimSalts {
+                fail_ppm,
+                rng: self.sim.rng(&format!("system-sim/salts-{}", self.boots)),
+                shared: Arc::clone(&self.shared),
+            }),
+            None => Arc::new(NoSalts),
+        };
         let hooks = Hooks {
             barriers: barriers.clone(),
-            recent: hook,
+            recent: Arc::new(Observed {
+                inner: hook,
+                wal: wal.clone(),
+                shared: Arc::clone(&self.shared),
+                watermark,
+                sealed_through,
+            }),
+            salts,
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let shipper = match Shipper::new(
@@ -2524,7 +3572,22 @@ impl Run<'_> {
             };
             (pick(rng, run_for), Duration::from_micros(length))
         });
+        // A window in which every directory sync fails: a segment that is created or removed in it is not
+        // durably so. Drawn last, so that a mask without the dimension draws what it drew before.
+        let dir_window = (has(Dim::DirSyncErrors) && coin(rng)).then(|| {
+            (
+                pick(rng, run_for),
+                Duration::from_micros(1_000 + pick(rng, 400_000)),
+            )
+        });
         let at_crash_point = {
+            let mut dir_start = match dir_window {
+                Some((at, _)) => host.env.clock.sleep(Duration::from_micros(at)),
+                None => Box::pin(futures::future::pending()),
+            }
+            .fuse();
+            let mut dir_end: futures::future::Fuse<futures::future::BoxFuture<'_, ()>> =
+                futures::future::Fuse::terminated();
             let mut crash_point = Box::pin(self.disk.crash_point_reached()).fuse();
             let mut barrier = Box::pin(shipping.barriers.tripped()).fuse();
             let mut timer = host.env.clock.sleep(Duration::from_micros(run_for)).fuse();
@@ -2547,10 +3610,20 @@ impl Run<'_> {
                             self.model.start_outage(length);
                         }
                     }
+                    () = dir_start => {
+                        if let Some((_, length)) = dir_window {
+                            self.event("dir_sync.fail", &[length.as_micros() as u64]);
+                            self.shared.ledger().stats.dir_sync_windows += 1;
+                            self.disk.fail_dir_syncs(true);
+                            dir_end = host.env.clock.sleep(length).fuse();
+                        }
+                    }
+                    () = dir_end => self.disk.fail_dir_syncs(false),
                     () = timer => break false,
                 }
             }
         };
+        self.disk.fail_dir_syncs(false);
         self.account(&shipping, false);
         if !at_crash_point && self.plan().wal.clean_stops && coin(rng) {
             self.disk.disarm_crash();
@@ -2666,6 +3739,7 @@ impl Run<'_> {
             self.violate(Violation::RestartNotIdempotent);
         }
         self.read_everything(&node, "after the last restart").await;
+        lists::check(&self.shared, &node, &self.model).await;
         drop(node);
         drop(wal);
         host.stop().await;

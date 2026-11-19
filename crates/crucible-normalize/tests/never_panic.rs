@@ -20,8 +20,14 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
         out.spans.len() as u32 + summary.rejected_before_ack + summary.missing_ids,
         summary.spans
     );
-    for r in &out.spans {
+    // Each MCP operation and inventory entry names a span of the frame, in span order.
+    prop_assert!(out.mcp_ops.is_sorted_by(|a, b| a.span < b.span));
+    prop_assert!(out.inventory.is_sorted_by(|a, b| a.span <= b.span));
+    prop_assert!(out.inventory.len() <= caps::MCP_INVENTORY_MAX_ROWS_PER_FRAME);
+    for (at, r) in out.spans.iter().enumerate() {
         let c = &r.core;
+        let op = out.mcp_ops.iter().find(|op| op.span as usize == at);
+        let reports = out.inventory.iter().any(|entry| entry.span as usize == at);
         prop_assert!(c.start_time.is_valid() && c.end_time.is_valid());
         prop_assert!(c.start_time <= c.end_time);
         prop_assert!(!c.trace_id.is_zero() && !c.span_id.is_zero());
@@ -104,10 +110,27 @@ fn check(out: &NormalizedFrame, ctx: &NormCtx) -> Result<(), TestCaseError> {
                 );
             }
         }
-        prop_assert_eq!(c.row_digest, row_digest(r));
+        // The digest of a span with an MCP operation or inventory entries covers them too.
+        prop_assert_eq!(c.row_digest == row_digest(r), op.is_none() && !reports);
         prop_assert_eq!(c.ingestion.batch_seq, Lsn::ZERO);
         prop_assert!(!c.environment.is_empty());
-        prop_assert_eq!(c.mcp_side, McpSide::None);
+        prop_assert_eq!(c.mcp_side, op.map_or(McpSide::None, |op| op.record.side));
+        if let Some(op) = op {
+            let o = &op.record;
+            prop_assert_ne!(o.side, McpSide::None);
+            prop_assert_eq!((o.trace_id, o.span_id), (c.trace_id, c.span_id));
+            prop_assert_eq!(o.user_subject_hash, None);
+            for (value, cap) in [
+                (&o.method, caps::MCP_METHOD_BYTES),
+                (&o.target_name, caps::MCP_TARGET_NAME_BYTES),
+                (&o.server_name, caps::MCP_SERVER_NAME_BYTES),
+                (&o.deploy_id, caps::MCP_DEPLOY_ID_BYTES),
+                (&o.error_message, caps::MCP_ERROR_MESSAGE_BYTES),
+                (&o.group_key, caps::MCP_GROUP_KEY_BYTES),
+            ] {
+                prop_assert!(value.len() <= cap);
+            }
+        }
         prop_assert!(usize::from(c.compat_dialect) < crucible_compat::TABLES.len());
         prop_assert_eq!(
             c.source_format == crucible_records::SourceFormat::Otel,

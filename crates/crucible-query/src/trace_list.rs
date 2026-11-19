@@ -1,11 +1,11 @@
 //! The trace list (contract 8.7): one page of trace heads, newest first, with each trace's merged aggregates.
 
-use crucible_plan::{Pred, TRACE_LIST_OVER_READ, TraceListRequest};
+use crucible_plan::{Filter, Pred, TRACE_LIST_OVER_READ, TraceListRequest};
 use crucible_records::{TableId, TimeWindow};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::cursor::{HeadCursor, HeadKey, PageCursor};
-use crate::heads::{Candidate, LIST_TABLES, TraceListItem, consistency, newest_first, page_limit};
+use crate::heads::{Candidate, TraceListItem, consistency, list_tables, newest_first, page_limit};
 use crate::service::QueryService;
 
 /// A page reads the store at most this many times. Past it, a page of mostly hidden provisional heads comes
@@ -17,8 +17,9 @@ const MAX_ROUNDS: usize = 4;
 pub struct TraceListQuery {
     /// The window over the heads' `start_time`.
     pub window: TimeWindow,
-    /// The filter over `trace_heads` columns; `Pred::all()` for none.
-    pub filter: Pred,
+    /// The list filter; [`Filter::all`] for none. Conditions on fields that heads carry test the head span's
+    /// values; conditions on `observation_type` and `metadata` keep the traces with a matching span.
+    pub filter: Filter,
     /// The page size; default 50, at most 200.
     pub limit: Option<u32>,
     /// The cursor of the previous page.
@@ -98,13 +99,15 @@ impl QueryService {
         let mut exhausted = false;
         for _ in 0..MAX_ROUNDS {
             let request = TraceListRequest {
-                filter: query.filter.clone(),
+                filter: Pred::all(),
                 limit,
                 cursor: position,
                 as_of,
                 since: None,
             };
-            let mut chunk = read.store_heads(query.window, request).await?;
+            let mut chunk = read
+                .store_heads(query.window, request, &query.filter)
+                .await?;
             exhausted = chunk.len() < over_read;
             if !exhausted {
                 trim_boundary(&mut chunk);
@@ -138,7 +141,7 @@ impl QueryService {
             as_of,
             consistency(base, &recent),
             recent.state,
-            &LIST_TABLES,
+            &list_tables(&query.filter),
             recent.used,
         )?;
         let project_id = scope.project_id();

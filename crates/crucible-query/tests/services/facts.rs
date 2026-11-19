@@ -233,7 +233,7 @@ fn trace_detail_and_the_list_carry_the_latest_facts() {
     // The list reads the same facts without comments, metadata or the correction.
     let query = crucible_query::TraceListQuery {
         window: window(),
-        filter: crucible_plan::Pred::all(),
+        filter: crucible_plan::Filter::all(),
         limit: Some(10),
         cursor: None,
     };

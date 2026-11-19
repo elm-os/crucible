@@ -8,7 +8,7 @@
 mod common;
 
 use common::{ctx, frame, request_with, s, span_with};
-use crucible_normalize::{NormalizedFrame, StageB, normalize};
+use crucible_normalize::{IdentityCtx, NormalizedFrame, StageB, normalize};
 use crucible_otlp::transcode_json;
 use crucible_records::{Lsn, SpanId};
 use prost::Message;
@@ -34,7 +34,7 @@ fn a_retry_drops_at_stage_b_and_a_changed_span_survives() {
     );
     let mut stage = StageB::default();
     let mut first = at(&request.encode_to_vec(), 7);
-    let admitted = stage.admit(&mut first).unwrap();
+    let admitted = stage.admit(&mut first, &IdentityCtx::Suppressed).unwrap();
     assert_eq!((admitted.duplicates, first.spans.len()), (0, 4));
     assert_eq!(admitted.provisional_heads, vec![2]);
     assert_eq!(first.spans[2].core.span_id, SpanId::from_bytes([3; 8]));
@@ -46,7 +46,7 @@ fn a_retry_drops_at_stage_b_and_a_changed_span_survives() {
         retry.spans[0].core.event_bytes,
         first.spans[0].core.event_bytes
     );
-    let admitted = stage.admit(&mut retry).unwrap();
+    let admitted = stage.admit(&mut retry, &IdentityCtx::Suppressed).unwrap();
     assert_eq!(admitted.duplicates, 4);
     assert!(retry.spans.is_empty() && admitted.provisional_heads.is_empty());
 
@@ -55,10 +55,16 @@ fn a_retry_drops_at_stage_b_and_a_changed_span_survives() {
         s("gen_ai.request.model", "other");
     let body = request.encode_to_vec();
     let mut changed = at(&body, 9);
-    let admitted = stage.admit(&mut changed).unwrap();
+    let admitted = stage.admit(&mut changed, &IdentityCtx::Suppressed).unwrap();
     assert_eq!(admitted.duplicates, 3);
     let kept: Vec<SpanId> = changed.spans.iter().map(|r| r.core.span_id).collect();
     assert_eq!(kept, [SpanId::from_bytes([2; 8])]);
     let mut again = at(&body, 10);
-    assert_eq!(stage.admit(&mut again).unwrap().duplicates, 4);
+    assert_eq!(
+        stage
+            .admit(&mut again, &IdentityCtx::Suppressed)
+            .unwrap()
+            .duplicates,
+        4
+    );
 }

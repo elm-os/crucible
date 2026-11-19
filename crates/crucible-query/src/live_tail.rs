@@ -1,12 +1,12 @@
 //! Live tail (contract 8.8): the traces whose head arrived after a head cursor, newest first.
 
-use crucible_plan::{CmpOp, Pred, TRACE_LIST_OVER_READ, TraceListRequest};
+use crucible_plan::{CmpOp, Filter, Pred, TRACE_LIST_OVER_READ, TraceListRequest};
 use crucible_records::{Lsn, TableId, TimeWindow, Timestamp, WalEpoch};
 use crucible_schema::TraceHeadsCol;
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::cursor::HeadCursor;
-use crate::heads::{LIST_TABLES, TraceListItem, consistency, newest_first, page_limit};
+use crate::heads::{TraceListItem, consistency, list_tables, newest_first, page_limit};
 use crate::service::QueryService;
 
 /// `new_count` of a live-tail response saturates here.
@@ -18,7 +18,7 @@ pub struct TraceTailQuery {
     /// The window of the list the cursor came from.
     pub window: TimeWindow,
     /// The filter of that list.
-    pub filter: Pred,
+    pub filter: Filter,
     /// The most traces to return; default 50, at most 200.
     pub limit: Option<u32>,
     /// The head cursor of the first page, or of the previous live-tail response.
@@ -72,17 +72,15 @@ impl QueryService {
         let scan_limit = limit.max(NEW_COUNT_MAX);
         let unseen = unseen_heads(epoch, since_lsn, since);
         let request = TraceListRequest {
-            filter: if query.filter == Pred::all() {
-                unseen
-            } else {
-                Pred::And(vec![query.filter.clone(), unseen])
-            },
+            filter: unseen,
             limit: scan_limit,
             cursor: None,
             as_of: read.now,
             since: None,
         };
-        let mut chunk = read.store_heads(query.window, request).await?;
+        let mut chunk = read
+            .store_heads(query.window, request, &query.filter)
+            .await?;
         let truncated = chunk.len() >= (scan_limit * TRACE_LIST_OVER_READ) as usize;
         chunk.extend(recent.heads.drain(..));
         let mut data = Vec::new();
@@ -96,7 +94,7 @@ impl QueryService {
             read.now,
             consistency(base, &recent),
             recent.state,
-            &LIST_TABLES,
+            &list_tables(&query.filter),
             recent.used,
         )?;
         Ok(TraceTail {

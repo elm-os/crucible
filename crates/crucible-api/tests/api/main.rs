@@ -17,6 +17,7 @@ mod endpoints;
 mod errors;
 mod facts;
 mod identity;
+mod lists;
 mod metrics;
 mod payload;
 mod search;
