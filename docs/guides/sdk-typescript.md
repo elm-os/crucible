@@ -71,6 +71,7 @@ It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
 | `release` | | `crucible.release` on every span |
 | `deployId` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `queueSize` | 2,048 | Spans the export queue holds, the batch being sent included |
+| `queueBytes` | 8 MiB | Bytes of spans the export queue holds, the batch being sent included, estimated from each span's strings |
 | `flushIntervalMs` | 1,000 | Longest wait before a partial batch is sent |
 | `exportTimeoutMs` | 10,000 | Bound on one export, and on `flush` and `shutdown` |
 
@@ -376,9 +377,9 @@ per-request HTTP transport and `unknown` for anything else.
 
 Export runs off the request path. A span that ends goes on a bounded queue; a background loop sends it in batches
 of up to 512 spans, as soon as a batch is full or `flushIntervalMs` after the first span of a partial batch, with
-one export in flight at a time. When the queue holds `queueSize` spans, the batch in flight included, a span that
-ends is dropped and counted. Ending a span never blocks, whether the collector is up, refusing connections or not
-answering.
+one export in flight at a time. When the queue holds `queueSize` spans, or `queueBytes` bytes as estimated from the
+spans' names, attributes, events and status messages, the batch in flight included, a span that ends is dropped and
+counted. Ending a span never blocks, whether the collector is up, refusing connections or not answering.
 
 Within `exportTimeoutMs` the OpenTelemetry exporter the SDK uses retries a refused export, such as a 503 with
 `Retry-After`, when the server's delay fits in the time left. A batch that still fails, or that does not finish in
@@ -390,6 +391,7 @@ time, counts as failed and is not sent again.
 | Counter | Meaning |
 |---|---|
 | `queued` | Spans waiting for export or being exported |
+| `queuedBytes` | Their estimated size in bytes |
 | `dropped` | Spans dropped because the queue was full, or because they ended after `shutdown` |
 | `exported` | Spans the collector accepted |
 | `failed` | Spans in batches whose export failed or timed out |

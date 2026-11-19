@@ -14,10 +14,20 @@ use crate::conn::{Connector, PgConfig};
 use crate::sql::P;
 
 /// The migration files, in order. A change to the schema is a new entry; an applied file never changes.
-const FILES: &[(&str, &str)] = &[(
-    "V1__control_base",
-    include_str!("../migrations/V1__control_base.sql"),
-)];
+const FILES: &[(&str, &str)] = &[
+    (
+        "V1__control_base",
+        include_str!("../migrations/V1__control_base.sql"),
+    ),
+    (
+        "V2__identity",
+        include_str!("../migrations/V2__identity.sql"),
+    ),
+    (
+        "V3__sql_workspace",
+        include_str!("../migrations/V3__sql_workspace.sql"),
+    ),
+];
 
 fn failed(what: &str, error: impl std::fmt::Display) -> TxError {
     TxError::Invalid(format!("postgres migrations: {what}: {error}"))

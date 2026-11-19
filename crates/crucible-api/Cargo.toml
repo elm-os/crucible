@@ -12,14 +12,18 @@ publish.workspace = true
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
+crucible-control = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-cursor = { workspace = true }
 crucible-env = { workspace = true }
 crucible-plan = { workspace = true }
 crucible-query = { workspace = true }
 crucible-records = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-sqlws = { path = "../crucible-sqlws" }
 axum = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Names the JSON pointer of the member that failed in a request body (contract 12.3); already in the lockfile.
@@ -30,6 +34,7 @@ utoipa = { workspace = true }
 
 [dev-dependencies]
 crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-control = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-recent = { workspace = true, features = ["test-support"] }
 crucible-schema = { workspace = true }

@@ -9,10 +9,10 @@
 #   CRUCIBLE_CLICKHOUSE_USER      an admin user with access management (default crucible_admin)
 #   CRUCIBLE_CLICKHOUSE_PASSWORD  that user's password
 #   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32
-#   CRUCIBLE_POSTGRES_URL         optional: postgres://<user>:<password>@<host>:5432/<database>?sslmode=require
-#                                 (Postgres 15 or newer; without it no ledger records the migrations)
+#   CRUCIBLE_POSTGRES_URL         postgres://<user>:<password>@<host>:5432/<database>?sslmode=require (Postgres 15
+#                                 or newer): the control plane, which holds sign-in, projects, members and API keys
 #   CRUCIBLE_IMAGE, CRUCIBLE_BIND_ADDRESS, CRUCIBLE_HTTP_PORT, CRUCIBLE_OTLP_HTTP_PORT  as in compose.yaml
-# and keys.toml, as for compose.yaml. Then: docker compose -f compose.cloud.yaml up -d --wait
+# Then: docker compose -f compose.cloud.yaml up -d --wait, and create the owner as for compose.yaml.
 name: crucible-cloud
 
 services:
@@ -24,22 +24,15 @@ services:
       CRUCIBLE_CLICKHOUSE_USER: ${CRUCIBLE_CLICKHOUSE_USER:-crucible_admin}
       CRUCIBLE_CLICKHOUSE_PASSWORD: ${CRUCIBLE_CLICKHOUSE_PASSWORD:?set CRUCIBLE_CLICKHOUSE_PASSWORD in .env}
       CRUCIBLE_MASTER_KEY: ${CRUCIBLE_MASTER_KEY:?set CRUCIBLE_MASTER_KEY in .env (openssl rand -hex 32)}
-      # Empty means unset. The password goes in the URL; `crucible config print` shows it redacted.
-      CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:-}
+      # The password goes in the URL; `crucible config print` shows it redacted.
+      CRUCIBLE_POSTGRES_URL: ${CRUCIBLE_POSTGRES_URL:?set CRUCIBLE_POSTGRES_URL in .env, for example postgres://<user>:<password>@<host>:5432/<database>?sslmode=require}
     # --migrate is idempotent, so it stays on: every start applies the steps that are missing.
     command:
       - serve
       - --migrate
       - --data-dir=/var/lib/crucible/data
-      - --keys-file=/etc/crucible/keys.toml
     volumes:
       - crucible-data:/var/lib/crucible
-      - type: bind
-        source: ./keys.toml
-        target: /etc/crucible/keys.toml
-        read_only: true
-        bind:
-          create_host_path: false
     ports:
       - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_HTTP_PORT:-8080}:8080"
       - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_OTLP_HTTP_PORT:-4318}:4318"

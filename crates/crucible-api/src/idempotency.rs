@@ -10,8 +10,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::http::HeaderMap;
-use crucible_records::{ApiKeyId, Timestamp};
+use crucible_records::Timestamp;
 use sha2::{Digest, Sha256};
+
+use crate::writer::FactAuthor;
 
 /// The header.
 pub(crate) const IDEMPOTENCY_KEY: &str = "idempotency-key";
@@ -46,7 +48,7 @@ pub(crate) fn request_hash(route: &str, body: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-type Slot = (ApiKeyId, &'static str, String);
+type Slot = (FactAuthor, &'static str, String);
 
 #[derive(Debug)]
 struct Entry {
@@ -110,7 +112,7 @@ impl Keys {
     /// Looks up a key, and reserves it when it is new.
     pub(crate) fn begin(
         self: &Arc<Self>,
-        slot: (ApiKeyId, &'static str, &str),
+        slot: (FactAuthor, &'static str, &str),
         hash: [u8; 32],
         now: Timestamp,
     ) -> Begin {
@@ -154,10 +156,14 @@ impl Keys {
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
+    use crucible_records::{AuthorKind, Uuid};
 
     use super::*;
 
-    const KEY: ApiKeyId = ApiKeyId::from_bytes([1; 16]);
+    const KEY: FactAuthor = FactAuthor {
+        kind: AuthorKind::ApiKey,
+        id: Uuid::from_bytes([1; 16]),
+    };
     const T0: Timestamp = Timestamp::from_micros(1_794_907_800_000_000);
 
     fn run(begin: Begin) -> Reservation {
@@ -179,7 +185,10 @@ mod tests {
         assert!(matches!(keys.begin(slot, a, T0), Begin::Replay(201, body) if body == b"ok"));
         // Per principal and per route.
         drop(run(keys.begin((KEY, "flags", "k1"), a, T0)));
-        let other = ApiKeyId::from_bytes([2; 16]);
+        let other = FactAuthor {
+            kind: AuthorKind::User,
+            id: Uuid::from_bytes([2; 16]),
+        };
         // A failure, or a cancelled request, frees the key; 24 hours later every key is new again.
         drop(run(keys.begin((other, "tags", "k1"), a, T0)));
         drop(run(keys.begin((other, "tags", "k1"), b, T0)));

@@ -1,13 +1,21 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/coming-soon";
+import { Suspense } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SectionFrame } from "@/components/section";
+import { SqlWorkspace } from "@/features/sql/sql-workspace";
 
 export const metadata: Metadata = { title: "SQL" };
 
-export default function Page() {
+export default function SqlPage() {
   return (
-    <ComingSoon
-      title="SQL"
-      description="The SQL workspace will run read-only queries over this project's telemetry, with saved queries and export."
-    />
+    <>
+      <PageHeader
+        title="SQL"
+        description="Read-only queries over this project's telemetry, in the selected time range."
+      />
+      <Suspense fallback={<SectionFrame title="Query">{null}</SectionFrame>}>
+        <SqlWorkspace />
+      </Suspense>
+    </>
   );
 }

@@ -1,0 +1,25 @@
+[package]
+name = "crucible-store-clickhouse-fuzz"
+description = "cargo-fuzz targets of the SQL workspace's result decoder."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crucible-store-clickhouse = { path = ".." }
+crucible-env = { path = "../../crucible-env" }
+libfuzzer-sys = "=0.4.13"
+
+# Not a member of the root workspace.
+[workspace]
+
+[[bin]]
+name = "grid"
+path = "fuzz_targets/grid.rs"
+test = false
+doc = false
+bench = false

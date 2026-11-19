@@ -1,7 +1,14 @@
 import { AxeBuilder } from "@axe-core/playwright";
-import { test as base, expect, type Page, type Route } from "@playwright/test";
+import { test as base, expect, type Page, type Request, type Route } from "@playwright/test";
+import type { SavedQuery } from "../src/api/generated/SavedQuery";
+import type { SessionInfo } from "../src/api/generated/SessionInfo";
+import type { SignInOptions } from "../src/api/generated/SignInOptions";
 import type { Span } from "../src/api/generated/Span";
 import type { SpanPage } from "../src/api/generated/SpanPage";
+import type { SqlRelation } from "../src/api/generated/SqlRelation";
+import type { SqlResult } from "../src/api/generated/SqlResult";
+import type { SqlRun } from "../src/api/generated/SqlRun";
+import type { SqlSchema } from "../src/api/generated/SqlSchema";
 import type { TraceDetail } from "../src/api/generated/TraceDetail";
 import type { TraceListItem } from "../src/api/generated/TraceListItem";
 import type { TraceListPage } from "../src/api/generated/TraceListPage";
@@ -265,12 +272,87 @@ export function measuresOf(route: Route): string[] {
 }
 export const CHILDREN_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}/spans$`);
 export const LIST_PATH = new RegExp(`/projects/${PROJECT}/traces$`);
+export const PROVIDERS_PATH = /\/api\/v1\/auth\/providers$/;
+export const SESSION_PATH = /\/api\/v1\/auth\/session$/;
+
+// The shell's sign-in check: the request a page makes before any of its own.
+export const SIGN_IN_CHECK = "/api/v1/auth/providers";
+
+export const PROJECT_B = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c";
+export const CSRF = "csrf-token-e2e";
+
+export function signInOptions(fields: Partial<SignInOptions> = {}): SignInOptions {
+  return { providers: [], password_login_enabled: true, setup_required: false, ...fields };
+}
+
+export function sessionInfo(fields: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    user: {
+      id: "0193a1b2-0000-7000-8000-000000000001",
+      email: "ada@example.com",
+      name: "Ada Lovelace",
+    },
+    org: { id: "0193a1b2-0000-7000-8000-0000000000aa", name: "Analytical Engines", role: "owner" },
+    projects: [
+      {
+        id: PROJECT,
+        name: "Checkout",
+        slug: "checkout",
+        role: "admin",
+        permissions: ["read", "write_facts", "edit_content", "manage"],
+      },
+      {
+        id: PROJECT_B,
+        name: "Search",
+        slug: "search",
+        role: "viewer",
+        permissions: ["read", "run_saved_query"],
+      },
+    ],
+    providers: [],
+    password_login_enabled: true,
+    csrf_token: CSRF,
+    session: {
+      expires_at: "2026-12-18T12:00:00.000000Z",
+      idle_expires_at: "2026-11-25T12:00:00.000000Z",
+      auth_method: "password",
+    },
+    features: {
+      sql_workspace: { enabled: false },
+      media: { enabled: false, max_bytes: 0 },
+      smtp: false,
+      signup_mode: "invite_only",
+    },
+    server: { version: "0.4.0" },
+    ...fields,
+  };
+}
+
+// The server has a control plane, and this browser holds a session. Signed in, Crucible opens on home, whose
+// tiles and charts read metrics: they get an empty answer unless a test sets its own.
+export function signedIn(api: Api, session: SessionInfo = sessionInfo()): void {
+  api.on(PROVIDERS_PATH, json(signInOptions()));
+  api.on(SESSION_PATH, json(session));
+  api.on(/\/projects\/[^/]+\/metrics\/query$/, json(metrics([])));
+}
+
+// Answers `path` with `reply` and keeps each request, to check what the page sent.
+export function capture(api: Api, path: RegExp, reply: Reply): Request[] {
+  const requests: Request[] = [];
+  api.on(path, (route) => {
+    requests.push(route.request());
+    return route.fulfill(reply);
+  });
+  return requests;
+}
 
 export const test = base.extend<{ api: Api }>({
   api: async ({ page }, use) => {
     const api = new Api();
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
+    // Unless a test signs in, the server has no control plane, so the Connect dialog applies.
+    api.on(PROVIDERS_PATH, problem(404, "feature_disabled"));
     await page.route("**/api/v1/**", (route) => api.handle(route));
     await use(api);
     expect(api.unexpected, "API requests no handler answered").toEqual([]);
@@ -298,4 +380,160 @@ export async function expectNoPageScrollX(page: Page): Promise<void> {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   expect(overflow, "the page scrolls sideways").toBeLessThanOrEqual(0);
+}
+
+// The SQL workspace.
+
+export const SQL_SCHEMA_PATH = new RegExp(`/projects/${PROJECT}/sql/schema$`);
+export const SQL_RUN_PATH = new RegExp(`/projects/${PROJECT}/sql/run$`);
+export const SQL_RUNS_PATH = new RegExp(`/projects/${PROJECT}/sql/runs$`);
+export const SQL_EXPORT_PATH = new RegExp(`/projects/${PROJECT}/sql/export$`);
+export const SQL_SAVED_PATH = new RegExp(`/projects/${PROJECT}/sql/saved-queries$`);
+export const SQL_SAVED_ONE_PATH = new RegExp(`/projects/${PROJECT}/sql/saved-queries/[^/]+$`);
+export const SQL_SAVED_RUN_PATH = new RegExp(`/projects/${PROJECT}/sql/saved-queries/[^/]+/run$`);
+
+export const SQL_EXAMPLE = `SELECT name, count() AS spans
+FROM crucible_sql.spans
+WHERE start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)}
+GROUP BY name
+ORDER BY spans DESC
+LIMIT 100`;
+
+export function sqlRelation(fields: Partial<SqlRelation> = {}): SqlRelation {
+  return {
+    name: "crucible_sql.spans",
+    description: "One row per span of this project.",
+    time_column: "start_time",
+    window_required: true,
+    columns: [
+      { name: "start_time", type: "DateTime64(6)" },
+      { name: "name", type: "String" },
+      { name: "total_tokens", type: "UInt64" },
+    ],
+    example: SQL_EXAMPLE,
+    ...fields,
+  };
+}
+
+export function sqlSchema(fields: Partial<SqlSchema> = {}): SqlSchema {
+  return {
+    status: { enabled: true, failed_checks: [] },
+    relations: [
+      sqlRelation(),
+      sqlRelation({
+        name: "crucible_sql.span_metrics",
+        description: "Span counts and token totals per minute.",
+        time_column: "minute",
+        window_required: false,
+        columns: [
+          { name: "minute", type: "DateTime" },
+          { name: "spans", type: "UInt64" },
+        ],
+        example:
+          "SELECT minute, spans FROM crucible_sql.span_metrics WHERE minute >= {from:DateTime64(6)} AND minute < {to:DateTime64(6)}",
+      }),
+    ],
+    limits: {
+      max_rows: 10_000,
+      max_bytes: 16_777_216,
+      max_cell_bytes: 65_536,
+      max_execution_s: 30,
+      max_sql_bytes: 65_536,
+    },
+    ...fields,
+  };
+}
+
+export function sqlResult(fields: Partial<SqlResult> = {}): SqlResult {
+  return {
+    run_id: "0193a5b2-0000-7000-8000-000000000001",
+    columns: [
+      { name: "name", type: "String" },
+      { name: "spans", type: "UInt64" },
+      { name: "model", type: "Nullable(String)" },
+      { name: "tags", type: "Array(String)" },
+    ],
+    rows: [
+      ["support agent", "18446744073709551615", "gpt-4.1", ["prod", "eu"]],
+      ["search_docs", "42", null, []],
+    ],
+    truncated: false,
+    cut_cells: 0,
+    stats: { rows_read: 120_000, bytes_read: 3_145_728, elapsed_ms: 85, estimated_rows: 130_000 },
+    ...fields,
+  };
+}
+
+export function sqlRun(fields: Partial<SqlRun> = {}): SqlRun {
+  return {
+    id: "0193a5b2-0000-7000-8000-00000000000a",
+    actor: { kind: "api_key", id: "key-1" },
+    kind: "ad_hoc",
+    sql: "\nSELECT count() FROM crucible_sql.spans\nWHERE start_time >= {from:DateTime64(6)}",
+    started_at: at(0),
+    finished_at: at(85_000),
+    outcome: "succeeded",
+    result_rows: 1,
+    truncated: false,
+    rows_read: 120_000,
+    elapsed_ms: 85,
+    ...fields,
+  };
+}
+
+export function savedQuery(fields: Partial<SavedQuery> = {}): SavedQuery {
+  return {
+    id: "0193a5b2-0000-7000-8000-0000000000f1",
+    owner: { kind: "api_key", id: "key-1" },
+    name: "Spans by model",
+    description: "Span counts for one model.",
+    visibility: "project",
+    sql: `SELECT name, count() AS spans FROM crucible_sql.spans
+WHERE start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)}
+  AND model = {model:String} AND total_tokens >= {min_tokens:UInt64}
+GROUP BY name`,
+    parameters: [
+      { name: "model", type: "string", default: "gpt-4.1" },
+      { name: "min_tokens", type: "int" },
+    ],
+    version: 3,
+    created_at: at(0),
+    updated_at: at(0),
+    can_edit: true,
+    can_run: true,
+    ...fields,
+  };
+}
+
+// A workspace refusal: `detail` is the sentence that says how to fix it, and the page shows it.
+export function sqlProblem(
+  status: number,
+  code: string,
+  fields: {
+    detail?: string;
+    clickhouse?: string;
+    line?: number;
+    column?: number;
+    retry_after_s?: number;
+    reason?: string;
+  } = {},
+  requestId = "0193a5b2-7c1d-7e4f",
+): Reply {
+  const { clickhouse, ...rest } = fields;
+  return {
+    status,
+    contentType: "application/problem+json",
+    headers: { "x-request-id": requestId },
+    body: JSON.stringify({
+      type: `urn:crucible:problem:${code}`,
+      title: SERVER_TEXT,
+      status,
+      code,
+      request_id: requestId,
+      ...rest,
+      ...(clickhouse === undefined
+        ? {}
+        : { errors: [{ pointer: "/sql", code: "clickhouse", message: clickhouse }] }),
+    }),
+  };
 }

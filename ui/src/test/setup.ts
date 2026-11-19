@@ -1,5 +1,6 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
+import { setAuth } from "@/lib/auth";
 
 // UI SDK reads this global by name; strict mode turns its development warnings into failures.
 declare global {
@@ -29,9 +30,13 @@ document.head.append(
   }),
 );
 
+// Suites run against a server without a control plane unless they set a session or test the check.
+setAuth({ mode: "keys" });
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
   sessionStorage.clear();
   window.history.replaceState(null, "", "/");
+  setAuth({ mode: "keys" });
 });

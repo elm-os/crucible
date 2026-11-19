@@ -2,8 +2,8 @@
 //! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
 //!
 //! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
-//!   and `.../data-bounds` over a [`QueryService`], one module per route group; DTOs come from
-//!   `crucible-api-types`.
+//!   and `.../data-bounds` over a [`QueryService`], and the SQL workspace under `.../sql/` over a
+//!   [`SqlWorkspace`]; one module per route group; DTOs come from `crucible-api-types`.
 //! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
 //!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
 //!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
@@ -18,7 +18,9 @@
 //!   checked with the other parameters before the store is asked.
 
 mod access;
+mod authz;
 mod body;
+mod control;
 mod convert;
 mod cursor;
 mod idempotency;
@@ -34,17 +36,18 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::HeaderValue;
-use axum::http::header::ALLOW;
 use axum::middleware;
 use axum::response::Response;
 use crucible_api_types::ProblemCode;
 use crucible_auth::KeyVerifier;
+use crucible_auth::service::Identity;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
+use crucible_sqlws::SqlWorkspace;
 
-pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
+pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
+pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use settings::{
@@ -68,7 +71,15 @@ pub fn router(
     cursors: Arc<KeyRing>,
     facts: Arc<dyn FactWriter>,
 ) -> Router {
-    build(env, Some((service, facts)), keys, settings, cursors)
+    build(
+        env,
+        Some((service, facts)),
+        keys,
+        settings,
+        cursors,
+        None,
+        None,
+    )
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -79,7 +90,22 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors)
+    build(env, None, keys, settings, cursors, None, None)
+}
+
+/// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
+/// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
+/// `None` until a telemetry store is up.
+pub fn platform_router(
+    env: &Env,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
+    identity: Arc<Identity>,
+    settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
+    sql: Option<SqlWorkspace>,
+) -> Router {
+    let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
+    build(env, store, keys, settings, cursors, Some(identity), sql)
 }
 
 fn build(
@@ -88,6 +114,8 @@ fn build(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    identity: Option<Arc<Identity>>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -96,8 +124,10 @@ fn build(
         keys,
         settings,
         cursors,
+        identity,
         facts,
         idempotency: Arc::default(),
+        sql,
     };
     let api = routes::router()
         .fallback(unknown_path)
@@ -122,16 +152,12 @@ async fn unknown_path(State(state): State<ApiState>, request: Request) -> Respon
     problem(id, ProblemCode::NotFound, "no resource exists at this path")
 }
 
-/// Every route of milestone 1 is a read.
+/// A method the path does not support. axum lists the supported ones in `Allow`.
 async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
     let id = request_id(request.extensions(), &state.env);
-    let mut response = problem(
+    problem(
         id,
         ProblemCode::MethodNotAllowed,
-        "the resource supports GET and HEAD only",
-    );
-    response
-        .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static("GET, HEAD"));
-    response
+        "the resource does not support this method; see the Allow header",
+    )
 }

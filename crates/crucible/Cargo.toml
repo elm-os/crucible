@@ -42,6 +42,8 @@ crucible-recent = { workspace = true }
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-shipper = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-sqlws = { path = "../crucible-sqlws" }
 crucible-store-clickhouse = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-ui-assets = { workspace = true }

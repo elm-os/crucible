@@ -8,6 +8,7 @@ import {
   PROJECT,
   problem,
   SERVER_TEXT,
+  SIGN_IN_CHECK,
   span,
   TRACE,
   TRACE_PATH,
@@ -50,7 +51,7 @@ test.describe("search: results", () => {
   }) => {
     await browser.goto(searchUrl());
     await expect(browser.getByText("Type what to find.")).toBeVisible();
-    expect(api.calls).toEqual([]);
+    expect(api.calls).toEqual([SIGN_IN_CHECK]);
     await expectAccessible(browser, "search idle");
   });
 

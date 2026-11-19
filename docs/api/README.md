@@ -1,8 +1,9 @@
 # REST API
 
 The REST API reads back what Crucible stored: traces, their spans and payloads, and full-text search over them. This
-page covers what the server on main serves. The rest of the API that
-[contract 12](../architecture/contracts.md#12-api) describes, from sign-in to dashboards, alerts and exports, is
+page covers those reads. Sign-in, the organization, projects and API keys are in the OpenAPI document
+(`specs/openapi/crucible-v1.json`) and the [authorization matrix](../architecture/authz-matrix.md). The rest of the
+API that [contract 12](../architecture/contracts.md#12-api) describes, from dashboards to alerts and exports, is
 planned.
 
 The examples use four shell variables: the server's main listener, a project's secret and public keys, and that
@@ -59,14 +60,17 @@ Send the project's secret key as a Bearer token:
 Authorization: Bearer <secret key>
 ```
 
-The key comes from the server's keys file (`server.keys_file`, described in
-[sending traces](../guides/sending-traces.md#authentication)), and it can read only its own project.
+With Postgres the key is made in Settings or with `crucible admin create-key`; without Postgres it comes from the
+server's keys file (`server.keys_file`, described in [sending traces](../guides/sending-traces.md#authentication)).
+Either way it can read only its own project.
 `{project_id}` must be that project: any other id, a malformed one included, answers 404 `not_found`, so a key
 learns nothing about projects it cannot read. A missing or unknown key answers 401 `unauthenticated` with
 `WWW-Authenticate: Bearer`.
 
-The public and secret key pair as Basic auth works on ingest but not yet on the API, where it answers 401. Basic
-on the API, browser sessions with a CSRF header, keys created in the UI, and key scopes such as `read` are planned.
+With Postgres the API also takes the key pair as Basic auth, a key needs the scope of the call (`read` for every
+read on this page), and a signed-in browser sends its session cookie instead, with the `X-Crucible-CSRF` header on
+writes. Without Postgres a key in the file has the scopes of a new key (`ingest`, `read` and `write`), and the key
+pair as Basic auth works on ingest but not on the API, where it answers 401:
 
 ```sh
 curl -s -u "$CRUCIBLE_PUBLIC_KEY:$CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/data-bounds"
