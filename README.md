@@ -2,32 +2,69 @@
 
 Open-source, self-hosted observability and analytics for AI agents and MCP servers.
 
-> **Status: in development.** Nothing is released yet. This README describes what Crucible is being built to do;
-> progress is tracked in [`tasks/todo.md`](tasks/todo.md).
+Crucible is one Rust binary. It ingests OpenTelemetry traces over OTLP (HTTP and gRPC) and serves a REST API, an MCP
+server, an MCP proxy and a web UI. ClickHouse stores the telemetry and Postgres holds the control plane. Use it for
+agents, for MCP servers, or for both: when an agent and the MCP servers it calls report to the same Crucible, the
+agent's tool call and the server's handling of it land in one trace. Crucible is MIT licensed and runs on
+infrastructure you control.
 
-## What Crucible will do
+## Features
 
-**Agent observability.** Send traces over OTLP from any OpenTelemetry SDK, or use the Crucible SDKs for TypeScript,
-Python, Go and Rust. Crucible will show traces, spans, sessions and users with cost, tokens, latency and time to first
-token, a trace tree, timeline and agent graph, full-text search across inputs and outputs, and feedback, tags and
-comments on any trace.
+**Agent observability**
 
-**MCP server analytics.** Instrument an MCP server with a few lines of SDK code, or run it behind the `crucible proxy`
-with no code changes. Crucible will report calls per tool, success and error rates split by error class (protocol,
-validation, tool execution, auth, rate limit, timeout, transport), p50, p90 and p99 latency, clients, users and
-sessions, tools nobody calls, and before and after comparisons across deploys. Both MCP protocol eras are supported:
-the session-based revisions and the stateless 2026-07-28 revision.
+- Traces, spans, sessions and users, with cost, tokens and latency. Cost is the one a span reports, or else the
+  token usage priced with a bundled, versioned model price table.
+- A trace page with the span tree, a timeline and an agent graph, and a payload viewer for inputs, outputs,
+  system instructions, tool definitions and attributes.
+- Full-text search over inputs, outputs and metadata.
+- Tags, flags, feedback scores and corrections on traces, spans and sessions.
+- A live tail of new traces, and a home page with the project's activity over time.
+- Any OpenTelemetry SDK or Collector can send traces with no Crucible code. Spans that follow the OpenTelemetry
+  GenAI conventions, or the conventions of several other instrumentation libraries, are mapped to the same fields.
 
-**Both together.** When an agent and the MCP servers it calls both report to Crucible, the agent's tool call links to
-the server-side span through W3C trace context, so one trace shows both sides.
+**MCP servers**
 
-**Analytics.** Custom dashboards, threshold alerts to Slack, email and webhooks, and a read-only SQL workspace scoped
-to one project, with isolation enforced by ClickHouse itself.
+- SDK wrappers for TypeScript, Python, Go and Rust record every MCP operation a server handles: method, tool,
+  outcome and error class, client, session and duration. The SDKs also trace an agent's MCP client calls and carry
+  their trace context to the server.
+- `crucible proxy` records the same for stdio and Streamable HTTP servers without changing them. It forwards every
+  byte unchanged and keeps forwarding when Crucible cannot be reached.
+- Both MCP protocol eras: the session-based revisions and the stateless 2026-07-28 revision.
+- MCP operations are stored in tables of their own, which the SQL workspace can query.
 
-**Built for rightmodeler.** rightmodeler will read Crucible exports to validate cheaper models on your own traces,
-and coding agents will query Crucible through its MCP server.
+**Analytics**
 
-## Design
+- A metrics API over spans and traces: counts, errors, tokens, cost and latency percentiles, by minute to week,
+  split by up to two dimensions.
+- Threshold alerts on those measures, delivered to webhooks, Slack and email.
+- A read-only SQL workspace for each project, with saved queries. ClickHouse access control keeps each project's
+  SQL inside that project's data.
+
+**Operations**
+
+- An organization with projects, members, roles and invitations. People sign in with a password, GitHub, Google or
+  any OpenID Connect provider.
+- API keys with scopes: `ingest`, `read`, `write`, `delete` and `sql`.
+- Retention per project, and deletion requests for traces, users and sessions.
+- Exports of a project's spans as `crucible-jsonl` or OTLP JSON, from the UI, the REST API, the `crucible export`
+  command and the MCP server.
+- Crucible's own MCP server at `/mcp`: a coding agent connects with a project key and lists, reads and searches
+  that project's traces.
+- Prometheus metrics, and `/healthz` and `/readyz` for orchestrators.
+
+Crucible works with [rightmodeler](https://github.com/elm-os/rightmodeler): rightmodeler replays the spans of a
+Crucible export to validate cheaper or newer models against the outputs you accepted.
+
+## Quickstart
+
+[docs/self-hosting/quickstart.md](docs/self-hosting/quickstart.md) runs Crucible with Docker Compose next to
+ClickHouse and Postgres: build the image from this repository, start the stack, create the owner from the setup
+link, make an API key and send a first trace. Running against your own ClickHouse and Postgres, every setting,
+backups and monitoring are in [docs/self-hosting](docs/self-hosting/README.md).
+
+## Architecture
+
+Crucible is built in Rust and engineered for speed and throughput.
 
 ```
  SDKs / OTel exporters / crucible proxy
@@ -42,26 +79,48 @@ and coding agents will query Crucible through its MCP server.
  +----------------------------------------------------------------------------+
             |                                   |
          Postgres                           ClickHouse
-   (orgs, users, keys, alerts)      (spans, MCP operations, rollups)
+   (org, users, keys, alerts)       (spans, MCP operations, rollups)
 ```
 
-- **Durable by construction.** A request is acknowledged only after its batch is fsynced to the write-ahead log.
-  Inserts into ClickHouse carry deterministic deduplication tokens, so crashes and retries never lose or duplicate
-  a span.
-- **Fast.** The ingest path is zero-copy Rust; telemetry lands in large Native-format blocks; the read path uses typed
-  query plans with keyset pagination and explicit resource limits.
-- **Verified.** Deterministic simulation and swarm testing exercise the system under seeded disk, network, database and
-  crash faults; a Quint model checks the ingest protocol; Kani proves the WAL codec.
-- **Simple to run.** One binary plus ClickHouse (self-hosted 26.3 LTS or newer, or ClickHouse Cloud) plus Postgres,
-  with optional S3-compatible storage for media.
+- **Durable before acknowledged.** A request is acknowledged only after it is written to the write-ahead log and
+  synced to disk. A group committer syncs many requests at once.
+- **Exactly-once inserts.** Every insert into ClickHouse carries a deterministic deduplication token, so a crash or
+  a retry never loses or duplicates a span.
+- **Readable at once.** An in-memory index of recent spans answers reads before the spans reach ClickHouse.
+- **Bounded reads.** Every telemetry read is a typed query plan with explicit resource limits, rendered to
+  parameterized SQL.
+- **Verified.** Deterministic simulation and swarm testing run the whole system under seeded disk, network, database
+  and crash faults; a Quint model checks the ingest protocol; Kani proves the pure kernels; conformance suites run
+  against real ClickHouse and Postgres.
+
+[docs/architecture/overview.md](docs/architecture/overview.md) is the map of the system,
+[contracts.md](docs/architecture/contracts.md) the binding contract and [decisions.md](docs/architecture/decisions.md)
+the reasons behind it. [docs/testing/methodology.md](docs/testing/methodology.md) describes the verification.
+
+## Sending data
+
+| Source | Guide |
+|---|---|
+| Any OpenTelemetry SDK or the Collector, over OTLP/HTTP or OTLP/gRPC | [Sending traces](docs/guides/sending-traces.md) |
+| TypeScript agents, MCP servers and MCP clients (`sdk/typescript`) | [TypeScript SDK](docs/guides/sdk-typescript.md) |
+| Python agents, MCP servers and MCP clients (`sdk/python`) | [Python SDK](docs/guides/sdk-python.md) |
+| Go agents, MCP servers and MCP clients (`sdk/go`) | [Go SDK](docs/guides/sdk-go.md) |
+| Rust agents, MCP servers and MCP clients (`sdk/rust`) | [Rust SDK](sdk/rust/README.md) |
+| An MCP server you do not change, over stdio or Streamable HTTP | [MCP proxy](docs/guides/mcp-proxy.md) |
+
+Reading data back, from the REST API, is described in [docs/api](docs/api/README.md).
 
 ## Documentation
 
-- [Architecture overview](docs/architecture/overview.md)
-- [Testing methodology](docs/testing/methodology.md)
-- [Development](docs/development.md)
-- [Self-hosting](docs/self-hosting/README.md) (development preview)
+[docs/README.md](docs/README.md) indexes every page: self-hosting, guides, the API, integrations, architecture,
+testing and development.
+
+## Contributing
+
+The development setup, the Linux dev container and the commands that CI runs are in
+[docs/development.md](docs/development.md). Commits follow Conventional Commits, and the git hooks and CI check
+every commit message and file against the naming rule and refuse AI attribution trailers.
 
 ## License
 
-[MIT](LICENSE). Third-party notices are in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
+[MIT](LICENSE). Third-party notices are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
