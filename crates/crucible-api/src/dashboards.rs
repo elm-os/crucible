@@ -265,7 +265,8 @@ fn check_query(
             // One axis: two measures of different units belong in two charts.
             let first = parsed.measures.first().map(|(m, _)| m.unit());
             if parsed.measures.iter().any(|(m, _)| Some(m.unit()) != first) {
-                let message = "a chart has one axis: choose measures of one unit, or one chart per unit";
+                let message =
+                    "a chart has one axis: choose measures of one unit, or one chart per unit";
                 errors.push(error(&at, "measures", "invalid", message));
             }
             let series = chart_series(&parsed);

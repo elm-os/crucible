@@ -188,7 +188,10 @@ function WidgetBody({
         />
       );
     case "bar": {
-      const rows = keyRows(catalog, response, measures);
+      // Ranked bars: the largest first, whatever order the keys arrive in, and Other last.
+      const rows = keyRows(catalog, response, measures).toSorted(
+        (a, b) => Number(a.other) - Number(b.other) || (b.values[0] ?? 0) - (a.values[0] ?? 0),
+      );
       return (
         <>
           {first && !isAdditive(catalog, first) ? (

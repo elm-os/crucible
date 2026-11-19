@@ -18,6 +18,7 @@ import { getDashboard, patchDashboard } from "@/api/client";
 import { asUiError, type UiError } from "@/api/errors";
 import type { Dashboard } from "@/api/generated/Dashboard";
 import type { DashboardPatch } from "@/api/generated/DashboardPatch";
+import type { SchemaMeasure } from "@/api/generated/SchemaMeasure";
 import type { WidgetInput } from "@/api/generated/WidgetInput";
 import type { WidgetLayout } from "@/api/generated/WidgetLayout";
 import { EmptyState } from "@/components/empty-state";
@@ -51,6 +52,7 @@ import {
   useMetricsSchema,
   useWide,
 } from "./shared";
+import { catalogOf, measureLabel } from "./widget-data";
 import { WidgetForm, type WidgetDraft } from "./widget-form";
 
 interface DraftWidget extends WidgetDraft {
@@ -98,6 +100,23 @@ const sameDraft = (a: Draft, b: Draft) => JSON.stringify(a) === JSON.stringify(b
 
 const placed = (widgets: DraftWidget[]) =>
   widgets.map((x) => ({ id: x.key, kind: x.display.kind, layout: x.layout }));
+
+/** What a box shows of its widget: the kind, the measures by their labels, and the grouping. */
+function summaryOf(
+  w: DraftWidget,
+  catalogFor: (source: string) => readonly SchemaMeasure[],
+): string {
+  if (!w.query) return KIND_LABEL[w.display.kind];
+  const catalog = catalogFor(w.query.source);
+  const measures = w.query.measures
+    .map(
+      (m) =>
+        `${measureLabel(catalog, m.measure)}${m.aggregation === "sum" ? "" : ` ${m.aggregation}`}`,
+    )
+    .join(", ");
+  const grouping = w.query.dimensions?.length ? ` by ${w.query.dimensions.join(" and ")}` : "";
+  return `${KIND_LABEL[w.display.kind]} of ${measures}${grouping}`;
+}
 
 export function DashboardEditor() {
   const search = useSearchParams();
@@ -277,6 +296,7 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
   const labels = Object.fromEntries(draft.widgets.map((w) => [w.key, w.display.title]));
   const rows = Math.max(gridHeight(placed(draft.widgets)) + 3, 6);
   const hint = useId();
+  const catalogFor = (source: string) => catalogOf(schema.data, source);
   const full = draft.widgets.length >= MAX_WIDGETS;
   const nameBlank = draft.name.trim() === "";
 
@@ -416,7 +436,15 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
                       />
                     </svg>
                   </DashboardGridHandle>
-                  <p className="min-w-0 grow truncate text-data font-medium">{w.display.title}</p>
+                  <p
+                    className="min-w-0 grow truncate text-data font-medium"
+                    title={w.display.title}
+                  >
+                    {w.display.title}
+                  </p>
+                </div>
+                <p className="truncate ps-6 text-label text-ink-soft">{summaryOf(w, catalogFor)}</p>
+                <div className="mt-auto flex flex-wrap gap-2 ps-6 pe-5">
                   <Button
                     aria-label={`Configure ${w.display.title}`}
                     onClick={() => setEditing(w.key)}
@@ -432,11 +460,6 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
                     Delete
                   </Button>
                 </div>
-                <p className="truncate ps-6 text-label text-ink-soft">
-                  {KIND_LABEL[w.display.kind]}
-                  {w.query ? `, ${w.query.measures.map((m) => m.measure).join(", ")}` : ""}
-                  {w.query?.dimensions?.length ? ` by ${w.query.dimensions.join(", ")}` : ""}
-                </p>
                 <DashboardGridHandle
                   id={`${w.key}-se`}
                   box={w.key}
