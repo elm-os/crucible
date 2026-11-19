@@ -45,6 +45,8 @@ pub struct ScrubRule {
     pub negative: Vec<String>,
     /// What the pattern requires of every match.
     facts: Facts,
+    /// For a lead pattern without a validator: the pattern from its anchor on, anchored where it is tried.
+    rest: Option<Regex>,
 }
 
 /// The steps of an unanchored search that tried the starts from `from` up to `to`, as a backtracking matcher takes
@@ -87,8 +89,89 @@ impl ScrubRule {
         self.apply_observed(text, None)
     }
 
-    /// [`ScrubRule::apply`], reporting the steps of every matcher call to `observe` (see [`search_steps`]).
+    /// [`ScrubRule::apply`], reporting the steps of every matcher call to `observe` (see [`search_steps`]). Guards
+    /// that take time linear in the text and change nothing come first: text shorter than any match, or without
+    /// the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
     pub fn apply_observed(
+        &self,
+        text: &str,
+        observe: Option<&mut (dyn FnMut(usize) + '_)>,
+    ) -> String {
+        let f = &self.facts;
+        let absent = f
+            .literals
+            .as_ref()
+            .is_some_and(|literals| !literals.iter().any(|l| text.contains(l.as_str())));
+        if text.len() < f.min_length || absent {
+            return text.to_owned();
+        }
+        match (&f.lead, &self.rest) {
+            (Some(lead), Some(rest)) => self.apply_lead(lead, rest, text, observe),
+            _ => self.apply_plain_observed(text, observe),
+        }
+    }
+
+    /// The rule without its guards: the reference the differential tests hold [`ScrubRule::apply`] to.
+    pub fn apply_plain(&self, text: &str) -> String {
+        self.apply_plain_observed(text, None)
+    }
+
+    /// The matches of a lead pattern, found from its anchors. A match ends its class run at an anchor, and every
+    /// start in that run meets the same anchor, so only the run's leftmost possible start is a candidate and the
+    /// rest of the pattern is tried once, anchored there. Each position is scanned a bounded number of times.
+    fn apply_lead(
+        &self,
+        lead: &Lead,
+        rest: &Regex,
+        text: &str,
+        mut observe: Option<&mut (dyn FnMut(usize) + '_)>,
+    ) -> String {
+        let bytes = text.as_bytes();
+        let anchor = char::from(lead.anchor);
+        let find_anchor = |from: usize| text.get(from..)?.find(anchor).map(|i| from + i);
+        let mut out = String::with_capacity(text.len());
+        let (mut copied, mut floor) = (0, 0);
+        let mut at = find_anchor(0);
+        while let Some(a) = at {
+            let mut start = a;
+            while start > floor && lead.class.has(bytes[start - 1]) {
+                start -= 1;
+            }
+            let begin = if lead.prefix.is_empty() {
+                (start < a).then_some(start)
+            } else {
+                text[start..a]
+                    .find(lead.prefix.as_str())
+                    .map(|k| start + k)
+                    .filter(|&b| b + lead.prefix.len() < a)
+            };
+            if let Some(begin) = begin {
+                let found = rest.find(&text[a..]);
+                if let Some(observe) = observe.as_deref_mut() {
+                    // The bytes the attempt can read: its match, or the anchor, the class run after it and the
+                    // byte that ends the run.
+                    let run = bytes[a + 1..]
+                        .iter()
+                        .take_while(|&&b| lead.class.has(b))
+                        .count();
+                    observe(found.map_or(run + 2, |m| m.end()));
+                }
+                if let Some(m) = found {
+                    out.push_str(&text[copied..begin]);
+                    out.push_str(&self.replacement);
+                    copied = a + m.end();
+                    floor = copied;
+                    at = find_anchor(floor);
+                    continue;
+                }
+            }
+            at = find_anchor(a + 1);
+        }
+        out.push_str(&text[copied..]);
+        out
+    }
+
+    fn apply_plain_observed(
         &self,
         text: &str,
         mut observe: Option<&mut (dyn FnMut(usize) + '_)>,
@@ -210,8 +293,17 @@ impl ScrubRules {
                     r.name
                 )));
             }
+            let facts = facts(&r.pattern);
+            let rest = match &facts.lead {
+                Some(lead) if validator.is_none() => Some(
+                    Regex::new(&format!("^(?:{})", lead.rest))
+                        .map_err(|e| err(format!("rule {:?}: {e}", r.name)))?,
+                ),
+                _ => None,
+            };
             rules.push(ScrubRule {
-                facts: facts(&r.pattern),
+                facts,
+                rest,
                 name: r.name,
                 pattern,
                 replacement: r.replacement,
@@ -249,10 +341,29 @@ impl ScrubRules {
         mut observe: Option<&mut (dyn FnMut(usize) + '_)>,
     ) -> String {
         let mut text = text.to_owned();
+        if text.len() < self.shortest() {
+            return text;
+        }
         for rule in &self.rules {
             text = rule.apply_observed(&text, observe.as_deref_mut());
         }
         text
+    }
+
+    /// The rules applied without their guards: the reference the differential tests hold [`ScrubRules::scrub`] to.
+    pub fn scrub_plain(&self, text: &str) -> String {
+        self.rules
+            .iter()
+            .fold(text.to_owned(), |text, rule| rule.apply_plain(&text))
+    }
+
+    /// The length no rule matches below.
+    fn shortest(&self) -> usize {
+        self.rules
+            .iter()
+            .map(|r| r.facts.min_length)
+            .min()
+            .unwrap_or(0)
     }
 
     fn check_vectors(&self) -> Result<(), String> {
@@ -618,6 +729,87 @@ mod tests {
             })
             .collect();
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Pieces of matches, near misses and separators that the generated text is built from.
+    const FRAGMENTS: &[&str] = &[
+        " ",
+        "a",
+        "0",
+        "7",
+        "@",
+        ".",
+        ":",
+        "-",
+        "_",
+        "+",
+        "(",
+        ")",
+        "/",
+        "=",
+        "%",
+        "\n",
+        "é",
+        "😀",
+        "eyJ",
+        "csk_",
+        "bearer ",
+        "Bearer\t",
+        "-----BEGIN ",
+        "-----END ",
+        "-----",
+        "KEY",
+        "::",
+        "@@",
+        "a@b",
+        "a@b.c",
+        "x@y.zz",
+        "ada.lovelace@example.com",
+        "ops+alerts@mail.example.co.uk",
+        "+1 415 555 0134",
+        "(415) 555-0134",
+        "4111 1111 1111 1111",
+        "4111-1111-1111-1112",
+        "378282246310005",
+        "Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+        "203.0.113.42",
+        "2001:db8::8a2e:370:7334",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl",
+        "eyJa.b",
+        "eyJeyJ.x.",
+        "eyJ.",
+        "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+    ];
+    const RUN_UNITS: &[&str] = &[
+        "a", "Z", "9", "f", ".", "-", "_", "+", "%", "ab@", "eyJ", "1 ",
+    ];
+
+    static BUILTIN: std::sync::LazyLock<ScrubRules> =
+        std::sync::LazyLock::new(|| ScrubRules::builtin().unwrap());
+
+    fn generated() -> impl Strategy<Value = String> {
+        let fragment = prop_oneof![
+            7 => prop::sample::select(FRAGMENTS).prop_map(str::to_owned),
+            3 => (prop::sample::select(RUN_UNITS), 1..40usize).prop_map(|(unit, n)| unit.repeat(n)),
+        ];
+        prop::collection::vec(fragment, 0..14).prop_map(|parts| parts.concat())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+
+        /// The guards change nothing: guarded application equals plain application, per rule and for the whole
+        /// list, and the matcher steps stay linear in the length.
+        #[test]
+        fn guarded_application_equals_plain_application(text in generated()) {
+            let rules = &*BUILTIN;
+            for rule in &rules.rules {
+                prop_assert_eq!(rule.apply(&text), rule.apply_plain(&text), "rule {}", &rule.name);
+            }
+            prop_assert_eq!(rules.scrub(&text), rules.scrub_plain(&text));
+            prop_assert!(matcher_steps(rules, &text) <= 2 * rules.rules.len() * text.len().max(1));
+        }
     }
 
     #[test]
