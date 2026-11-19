@@ -534,6 +534,15 @@ significant digits.
    schedule of 2 reads/s on average for 60 s with exponential think times, 8 connections, its traces and spans
    drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
    after the lane, so their change belongs to the lane's class.
+5. **The page cache.** The lanes measure the store answering from the page cache when the cache can hold it:
+   when its active parts fit within half of ClickHouse's memory limit (the container's page cache counts
+   against it), each lane attempt starts by reading every file of the store once, so that what an earlier lane
+   left in the cache does not decide its latency; a larger store, such as the 100-million-span dataset, is read
+   from the disk, as it would be. The Docker Desktop VM drops its whole page cache every few minutes (the
+   `drop_pagecache` count of `/proc/vmstat` rose by 5 in 15 minutes on 2026-11-19, under load), and the reads
+   after a drop go to the disk: in one 300 s lane, trace by id measured 143.6 ms p95 in the half after a drop
+   and 38.1 ms in the other. So an attempt during which the host dropped its page cache runs again, up to 3
+   attempts; a lane disturbed in all 3 is marked invalid.
 
 | Lane | Request | Answers that count | Server class |
 |---|---|---|---|
@@ -578,12 +587,14 @@ tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-sp
 | `--lanes` | every lane | Only these lanes, comma-separated |
 
 The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
-`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span, both probes with their lists
-per probe and list round trips, and every lane with its percentiles and its halves' percentiles, store reads per
-request, mean barrier wait, connections opened, ClickHouse merges at its start, what else the Docker host did
-during it (busy cores on the rig's CPUs and on the others, the load average, the busiest disk's busy share and
-the other containers, as the gate records per arm) and why it is invalid), `summary.md`, the generator's reports
-under `runs/` and `dataset/`, and Crucible's metrics before and after each lane under `metrics/`.
+`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span and whether the lanes read it
+into the page cache (`warmed`), both probes with their lists per probe and list round trips, and every lane with
+its attempts and, from the last attempt, its percentiles and its halves' percentiles, store reads per request,
+mean barrier wait, connections opened, ClickHouse merges at its start, what else the Docker host did during it
+(busy cores on the rig's CPUs and on the others, the load average, the busiest disk's busy share, the page-cache
+drops and the other containers, as the gate records per arm) and why it is invalid), `summary.md`, the
+generator's reports under `runs/` (one per lane attempt, `<lane>-<attempt>.json`) and `dataset/`, and Crucible's
+metrics before and after each lane attempt under `metrics/`.
 
 ### Per-request counters
 

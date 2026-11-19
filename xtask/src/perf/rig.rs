@@ -57,6 +57,17 @@ impl Limits {
         last + 1 - first.min(last)
     }
 
+    /// `memory` in bytes: a number with an optional `k`, `m` or `g` suffix, as `docker run --memory` takes it.
+    pub fn memory_bytes(&self) -> u64 {
+        let (digits, unit) = match self.memory.strip_suffix(['k', 'm', 'g']) {
+            Some(digits) if self.memory.ends_with('k') => (digits, 1 << 10),
+            Some(digits) if self.memory.ends_with('m') => (digits, 1 << 20),
+            Some(digits) => (digits, 1 << 30),
+            None => (self.memory, 1),
+        };
+        digits.parse::<u64>().map_or(0, |n| n.saturating_mul(unit))
+    }
+
     fn args(&self) -> Vec<String> {
         vec![
             "--cpuset-cpus".to_owned(),
@@ -1544,6 +1555,20 @@ impl<'r> Session<'r> {
         self.drained(key, rows, limit)
     }
 
+    /// Reads every file of ClickHouse's store once, in its container, so that the page cache holds the store when
+    /// the next measurement starts. The container's page cache counts against its memory limit. A part that a
+    /// merge removes meanwhile is skipped.
+    pub fn warm_store(&self) -> Result<(), String> {
+        docker([
+            "exec",
+            &self.name("clickhouse"),
+            "sh",
+            "-c",
+            "find /var/lib/clickhouse/store -type f -exec cat {} + > /dev/null 2>&1; true",
+        ])
+        .map(drop)
+    }
+
     /// The first row of a ClickHouse `SELECT` as JSON, for the record of a run.
     pub fn clickhouse_row(&self, sql: &str) -> Result<serde_json::Value, String> {
         Ok(self
@@ -1760,6 +1785,20 @@ mod tests {
         assert_eq!(page_cache_drops(vmstat), 8);
         assert_eq!(page_cache_drops("nr_free_pages 1000\n"), 0);
         assert_eq!(page_cache_drops(""), 0);
+    }
+
+    #[test]
+    fn memory_limits_are_read_as_docker_takes_them() {
+        let limits = |memory| Limits {
+            cpuset: "0",
+            memory,
+        };
+        assert_eq!(limits("1536m").memory_bytes(), 1_610_612_736);
+        assert_eq!(limits("9g").memory_bytes(), 9_663_676_416);
+        assert_eq!(limits("512k").memory_bytes(), 524_288);
+        assert_eq!(limits("4096").memory_bytes(), 4_096);
+        assert_eq!(limits("x").memory_bytes(), 0);
+        assert_eq!(SMALL.clickhouse.memory_bytes(), 1_610_612_736);
     }
 
     #[test]

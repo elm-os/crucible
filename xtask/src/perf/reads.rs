@@ -132,6 +132,9 @@ const SPANS_PER_REQUEST: u64 = 100;
 const CONCURRENCY: u32 = 8;
 /// Above this send lag p95, a lane's requests queued for a connection: the schedule outran the server.
 const SATURATED_LAG_US: u64 = 25_000;
+/// Attempts of a lane, at most. An attempt during which the host dropped its page cache runs again: its reads
+/// after the drop went to the disk, while the other lanes' came from the cache.
+const ATTEMPTS: u32 = 3;
 
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     args.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -243,6 +246,9 @@ pub struct DatasetReport {
     pub bytes_on_disk: u64,
     /// See `bytes_on_disk`.
     pub bytes_per_span: f64,
+    /// Whether the store fits within half of ClickHouse's memory, so that each lane attempt starts by reading
+    /// the store's files into the page cache.
+    pub warmed: bool,
 }
 
 /// One read lane.
@@ -252,8 +258,10 @@ pub struct LaneReport {
     pub name: &'static str,
     /// The request class of Crucible's counters.
     pub server_class: &'static str,
-    /// The load generator's report, relative to the results directory.
+    /// The load generator's report of the last attempt, relative to the results directory.
     pub report: String,
+    /// Attempts of the lane; the numbers are the last attempt's.
+    pub attempts: u32,
     /// Requests sent, and answered 2xx and non-empty.
     pub sent: u64,
     /// See `sent`.
@@ -540,6 +548,10 @@ fn bench(
         .as_u64()
         .or_else(|| disk["bytes"].as_str().and_then(|s| s.parse().ok()))
         .unwrap_or(0);
+    // The lanes measure the store answering from the page cache when the cache can hold it: within half of
+    // ClickHouse's memory, which its page cache counts against. A larger store is read from the disk, as it
+    // would be.
+    let warmed = bytes_on_disk.saturating_mul(2) <= args.rig.spec().clickhouse.memory_bytes();
     let dataset = DatasetReport {
         spans: stored,
         reports: reports.iter().map(|(name, _)| name.clone()).collect(),
@@ -548,6 +560,7 @@ fn bench(
         load_s,
         bytes_on_disk,
         bytes_per_span: bytes_on_disk as f64 / stored.max(1) as f64,
+        warmed,
     };
     let fresh_loaded = fresh(
         session,
@@ -565,7 +578,9 @@ fn bench(
             .as_ref()
             .is_none_or(|names| names.iter().any(|name| name == lane.name))
     };
-    for (index, lane) in LANES.iter().enumerate().filter(|(_, lane)| chosen(lane)) {
+    // One attempt of a lane. When the store fits the cache, the attempt starts by reading the store's files once,
+    // so that what an earlier lane or a page-cache drop left in the cache does not decide its latency.
+    let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()
@@ -573,9 +588,12 @@ fn bench(
             .unwrap_or(0);
         let before = session.metrics()?;
         write(
-            &dir.join(format!("metrics/{}-before.txt", lane.name)),
+            &dir.join(format!("metrics/{}-{attempt}-before.txt", lane.name)),
             &before,
         )?;
+        if warmed {
+            session.warm_store()?;
+        }
         let mut command = vec![
             "read".to_owned(),
             "--target".to_owned(),
@@ -606,16 +624,52 @@ fn bench(
         let text = text?;
         let after = session.metrics()?;
         write(
-            &dir.join(format!("metrics/{}-after.txt", lane.name)),
+            &dir.join(format!("metrics/{}-{attempt}-after.txt", lane.name)),
             &after,
         )?;
-        let name = format!("runs/{}.json", lane.name);
+        let name = format!("runs/{}-{attempt}.json", lane.name);
         write(&dir.join(&name), &text)?;
         let lane_report = judge_lane(lane, &parse(&text, &name)?, &before, &after, name);
+        Ok(LaneReport {
+            attempts: attempt,
+            merges_at_start,
+            context: Some(context),
+            ..lane_report
+        })
+    };
+    for (index, lane) in LANES.iter().enumerate().filter(|(_, lane)| chosen(lane)) {
+        let mut attempt = 1;
+        let mut lane_report = loop {
+            let report = attempt_lane(index, lane, attempt)?;
+            let drops = report.context.as_ref().map_or(0, |c| c.page_cache_drops);
+            if drops == 0 || attempt == ATTEMPTS {
+                break report;
+            }
+            println!(
+                "perf reads: {}: the host dropped its page cache during attempt {attempt}, so reads went to the \
+                 disk; running it again",
+                lane.name
+            );
+            attempt += 1;
+        };
+        let (other_cpus_busy, page_cache_drops) = lane_report
+            .context
+            .as_ref()
+            .map_or((0.0, 0), |c| (c.other_cpus_busy, c.page_cache_drops));
+        if page_cache_drops > 0 {
+            let disturbed = format!(
+                "the host dropped its page cache during each of its {ATTEMPTS} attempts, so some of its reads \
+                 went to the disk"
+            );
+            lane_report.invalid = Some(match lane_report.invalid.take() {
+                Some(reasons) => format!("{reasons}; {disturbed}"),
+                None => disturbed,
+            });
+        }
         let [first, second] = lane_report.latency_halves_us;
         println!(
             "perf reads: {}: p50 {} us, p95 {} us, p99 {} us (p95 {} us in the first half, {} us in the second), \
-             {} of {} ok, {} store reads per request, {:.1} other CPUs busy, {} page-cache drops{}",
+             {} of {} ok, {} store reads per request, {:.1} other CPUs busy, {} page-cache drops, attempt {}{}",
             lane.name,
             thousands(lane_report.latency_us.p50 as f64),
             thousands(lane_report.latency_us.p95 as f64),
@@ -627,18 +681,15 @@ fn bench(
             lane_report
                 .store_reads_per_request
                 .map_or_else(|| "n/a".to_owned(), |r| format!("{r:.2}")),
-            context.other_cpus_busy,
-            context.page_cache_drops,
+            other_cpus_busy,
+            page_cache_drops,
+            lane_report.attempts,
             lane_report
                 .invalid
                 .as_ref()
                 .map_or_else(String::new, |reason| format!("; invalid: {reason}"))
         );
-        lanes.push(LaneReport {
-            merges_at_start,
-            context: Some(context),
-            ..lane_report
-        });
+        lanes.push(lane_report);
     }
     Ok((fresh_empty, fresh_loaded, dataset, lanes))
 }
@@ -691,6 +742,7 @@ fn judge_lane(
         name: lane.name,
         server_class: lane.server_class,
         report: path,
+        attempts: 1,
         sent,
         ok,
         latency_us: percentiles(&class["latency_us"]),
@@ -779,13 +831,18 @@ pub fn summary(report: &ReadsReport) -> String {
             "Dataset",
             format!(
                 "{} spans of 1 KiB, 100 per trace, start times spread over {} days, loaded through ingest at {} \
-                 spans/s in {:.0} s; {} bytes on disk ({:.0} per span)",
+                 spans/s in {:.0} s; {} bytes on disk ({:.0} per span), {}",
                 thousands(dataset.spans as f64),
                 dataset.spread_days,
                 thousands(dataset.offered_spans_per_s as f64),
                 dataset.load_s,
                 thousands(dataset.bytes_on_disk as f64),
-                dataset.bytes_per_span
+                dataset.bytes_per_span,
+                if dataset.warmed {
+                    "read into the page cache before each lane attempt"
+                } else {
+                    "more than half of ClickHouse's memory, so the lanes read it from the disk"
+                }
             ),
         ),
         (
@@ -834,17 +891,20 @@ pub fn summary(report: &ReadsReport) -> String {
     let _ = writeln!(
         out,
         "\n## Reads\n\nOther jobs' containers have no cpuset, so they can also run on the rig's CPUs. After a page-cache \
-         drop on the host, the store's reads go to the disk.\n\n| Lane | OK of sent | p50 ms | p95 ms | p99 ms | p95 \
-         ms by half | Store reads per request | Barrier wait mean ms | Connections opened | Merges at start | Other \
-         CPUs busy | Page-cache drops | Valid |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+         drop on the host, the store's reads go to the disk, so an attempt during which the host dropped its page \
+         cache runs again, up to {ATTEMPTS} attempts; the numbers are the last attempt's.\n\n| Lane | Attempts | OK \
+         of sent | p50 ms | p95 ms | p99 ms | p95 ms by half | Store reads per request | Barrier wait mean ms | \
+         Connections opened | Merges at start | Other CPUs busy | Page-cache drops | Valid \
+         |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     );
     for lane in &report.lanes {
         let p = lane.latency_us;
         let [first, second] = lane.latency_halves_us;
         let _ = writeln!(
             out,
-            "| {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} | {} |",
             lane.name,
+            lane.attempts,
             lane.ok,
             lane.sent,
             ms(p.p50),
