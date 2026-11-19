@@ -98,7 +98,7 @@ function ToolTabs({ rows }: { rows: McpToolRow[] }) {
         {unused.length === 0 ? (
           <EmptyState kind="filtered" title="Every listed tool was called in this range." />
         ) : (
-          <Table columns={UNUSED_COLUMNS} label="Unused tools">
+          <Table columns={UNUSED_COLUMNS} label="Unused tools table">
             {unused.map((tool) => (
               <tr
                 key={`${tool.server_name}/${tool.tool_name}`}

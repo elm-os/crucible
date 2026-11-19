@@ -226,3 +226,24 @@ function minWidth(columns: number, wide: boolean): string {
   if (columns <= 4) return "";
   return wide ? "min-w-[60rem]" : "min-w-[42rem]";
 }
+
+// A filter from the URL, named with its value, and a button that clears it.
+export function FilterChip({
+  label,
+  value,
+  onClear,
+}: {
+  label: string;
+  value: string;
+  onClear: () => void;
+}) {
+  return (
+    <span className="flex items-center gap-2 text-data">
+      <span className="text-ink-soft">{`${label}:`}</span>
+      <span className="max-w-48 truncate">{value}</span>
+      <Button onClick={onClear} aria-label={`Clear the ${label.toLowerCase()} filter`}>
+        Clear
+      </Button>
+    </span>
+  );
+}

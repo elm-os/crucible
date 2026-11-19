@@ -19,6 +19,7 @@ import Link from "next/link";
 import type { McpServerSource } from "@/api/generated/McpServerSource";
 import { CLASS_LABEL, sourcesSentence } from "./format";
 import { parseSide, parseSource, SOURCES, useMcpHref, useMcpScope } from "./scope";
+import { FilterChip } from "./shared";
 
 export const MCP_PAGES = [
   { value: "servers", label: "Servers" },
@@ -98,6 +99,13 @@ export function McpBar({ active }: { active: McpPage | null }) {
           </Switch>
           <FieldLabel className="text-data">Include caller faults</FieldLabel>
         </Field>
+        {scope.server ? (
+          <FilterChip
+            label="Server"
+            value={scope.server}
+            onClear={() => setScope({ server: null })}
+          />
+        ) : null}
       </div>
     </div>
   );

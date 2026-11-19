@@ -79,7 +79,7 @@ export function CompareSection() {
             <NameList title="Schema changed" names={compare.changed} />
           </div>
           <p className="mb-2 text-label text-ink-soft">{`Each cell reads baseline ${baseline}, then candidate ${candidate}.`}</p>
-          <Table columns={COLUMNS} wide label="Tools of both deploys">
+          <Table columns={COLUMNS} wide label="Tool deltas table">
             {compare.tools.map((tool) => (
               <tr key={tool.tool_name} className="h-8 border-t border-ash-border">
                 <td className="max-w-60 truncate pe-4">{tool.tool_name}</td>

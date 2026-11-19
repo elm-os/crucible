@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { McpClientList } from "@/api/generated/McpClientList";
 import type { McpCompare } from "@/api/generated/McpCompare";
+import type { McpDeployList } from "@/api/generated/McpDeployList";
+import type { McpDeployRow } from "@/api/generated/McpDeployRow";
 import type { McpOperationDetail } from "@/api/generated/McpOperationDetail";
 import type { McpOperationPage } from "@/api/generated/McpOperationPage";
 import type { McpOperationRow } from "@/api/generated/McpOperationRow";
@@ -17,6 +19,7 @@ import type { Meta } from "@/api/generated/Meta";
 import { createQueryClient } from "@/components/providers";
 import { ClientsSection } from "./clients-section";
 import { CompareSection } from "./compare-section";
+import { DeploysSection } from "./deploys-section";
 import { formatRate, sourcesSentence } from "./format";
 import { McpBar } from "./mcp-bar";
 import { OperationDetail } from "./operation-detail";
@@ -399,11 +402,18 @@ describe("operations", () => {
     fetchMock.mockResolvedValueOnce(json(first)).mockResolvedValueOnce(json(second));
     renderWith(<OperationsSection />);
     expect(await screen.findByText("OK")).toBeTruthy();
+    const firstUrl = lastUrl();
+    // A minute later the next page still asks for the window its cursor is bound to.
+    const later = Date.now() + 5 * 60_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
     expect(lastUrl().searchParams.get("target")).toBe("read_file");
     await act(async () => screen.getByRole("button", { name: "Load more operations" }).click());
     const failed = await screen.findByText("Invalid arguments (caller)");
     expect(failed.getAttribute("data-status")).toBe("error");
     expect(lastUrl().searchParams.get("cursor")).toBe("c-2");
+    expect(lastUrl().searchParams.get("from")).toBe(firstUrl.searchParams.get("from"));
+    expect(lastUrl().searchParams.get("to")).toBe(firstUrl.searchParams.get("to"));
+    clock.mockRestore();
 
     fetchMock.mockImplementation(async () =>
       json({ ...first, has_more: false, next_cursor: null }),
@@ -504,6 +514,63 @@ describe("compare", () => {
     expect(url.searchParams.get("server")).toBe("files");
     expect(url.searchParams.get("baseline_deploy")).toBe("d1");
     expect(url.searchParams.get("candidate_deploy")).toBe("d2");
+  });
+});
+
+function deploy(
+  deployId: string,
+  source: McpDeployRow["capture_source"],
+  minute: number,
+): McpDeployRow {
+  return {
+    server_name: "files",
+    deploy_id: deployId,
+    server_version: deployId ? `1.${minute}.0` : "",
+    capture_source: source,
+    first_seen: bucket(minute),
+    last_seen: bucket(minute + 1),
+  };
+}
+
+describe("deploys and the server filter", () => {
+  test("a deploy compares with an older one of another, known id; an unknown id compares with none", async () => {
+    window.history.replaceState(null, "", "/mcp/deploys/?project=p-1");
+    const list: McpDeployList = {
+      data: [
+        deploy("d2", "sdk", 30),
+        deploy("d2", "otlp", 31),
+        deploy("d1", "sdk", 0),
+        deploy("", "sdk", 1),
+      ],
+      capture_sources: SOURCES.slice(0, 1),
+      meta: META,
+    };
+    fetchMock.mockImplementation(async () => json(list));
+    renderWith(<DeploysSection />);
+    expect(await screen.findAllByRole("link", { name: "Compare with d1" })).toHaveLength(2);
+    expect(screen.queryByRole("link", { name: "Compare with d2" })).toBeNull();
+    expect(screen.getByText("No deploy id")).toBeTruthy();
+    expect(screen.getByText("First in range")).toBeTruthy();
+  });
+
+  test("a deploy seen by two sources is one marker on the tool's charts", async () => {
+    window.history.replaceState(null, "", "/mcp/tool/?project=p-1&name=read_file");
+    fetchMock.mockImplementation(async () =>
+      json(toolDetail({ deploys: [deploy("d2", "otlp", 2), deploy("d2", "sdk", 1)] })),
+    );
+    renderWith(<ToolDetail />);
+    await screen.findByText("Tool failed");
+    const latency = screen.getByRole("region", { name: "Latency percentiles" });
+    expect(latency.querySelectorAll("[data-marker-rule]")).toHaveLength(1);
+  });
+
+  test("a server filter shows in the bar and clears from there", async () => {
+    window.history.replaceState(null, "", "/mcp/tools/?project=p-1&server=files");
+    renderWith(<McpBar active="tools" />);
+    expect(screen.getByText("files")).toBeTruthy();
+    await act(async () => screen.getByRole("button", { name: "Clear the server filter" }).click());
+    expect(new URLSearchParams(window.location.search).get("server")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Clear the server filter" })).toBeNull();
   });
 });
 

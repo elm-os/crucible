@@ -343,24 +343,105 @@ test.describe("mcp: tools", () => {
   });
 });
 
+const ERRORS_SUMMARY: McpErrors = {
+  view: "summary",
+  stats: stats(),
+  classes: [{ error_class: "validation", calls: 6 }],
+  targets: [
+    { method: "tools/call", target_name: "read_file", error_class: "validation", calls: 6 },
+  ],
+  breakdown: [],
+  truncated: false,
+  capture_sources: SOURCES,
+  saturated: false,
+  meta: META,
+};
+
+const CLIENT_LIST: McpClientList = {
+  view: "summary",
+  self_reported: true,
+  data: [{ client_name: "claude-desktop", stats: stats() }],
+  versions: [],
+  truncated: false,
+  capture_sources: SOURCES,
+  saturated: false,
+  meta: META,
+};
+
+const USER_LIST: McpUserList = {
+  data: [
+    {
+      user_id: "u-7",
+      subject_hash: null,
+      identity_source: "identify_hook",
+      calls: 12,
+      errors: 1,
+      sessions: 2,
+      first_seen: at(10),
+      last_seen: at(50),
+    },
+  ],
+  truncated: false,
+  capture_sources: SOURCES,
+  saturated: false,
+  meta: META,
+};
+
+const SESSION_LIST: McpSessionList = {
+  data: [
+    {
+      group_key: "session-1",
+      group_key_kind: "handle",
+      calls: 12,
+      errors: 1,
+      client_name: "claude-desktop",
+      first_seen: at(10),
+      last_seen: at(50),
+    },
+  ],
+  truncated: true,
+  capture_sources: SOURCES,
+  saturated: false,
+  meta: META,
+};
+
+const OPERATION_PAGE: McpOperationPage = {
+  data: [operation()],
+  next_cursor: "c-2",
+  has_more: true,
+  capture_sources: SOURCES,
+  meta: META,
+};
+
+const DEPLOY_LIST: McpDeployList = {
+  data: [
+    {
+      server_name: "files",
+      deploy_id: "d2",
+      server_version: "1.4.0",
+      capture_source: "sdk",
+      first_seen: at(30),
+      last_seen: at(59),
+    },
+    {
+      server_name: "files",
+      deploy_id: "d1",
+      server_version: "1.3.0",
+      capture_source: "sdk",
+      first_seen: at(0),
+      last_seen: at(29),
+    },
+  ],
+  capture_sources: SOURCES.slice(0, 1),
+  meta: META,
+};
+
 test.describe("mcp: errors, clients, users and sessions", () => {
   test("errors: the summary by class and target; the breakdown by message", async ({
     page,
     api,
   }) => {
-    const summary: McpErrors = {
-      view: "summary",
-      stats: stats(),
-      classes: [{ error_class: "validation", calls: 6 }],
-      targets: [
-        { method: "tools/call", target_name: "read_file", error_class: "validation", calls: 6 },
-      ],
-      breakdown: [],
-      truncated: false,
-      capture_sources: SOURCES,
-      saturated: false,
-      meta: META,
-    };
+    const summary = ERRORS_SUMMARY;
     const breakdown: McpErrors = {
       ...summary,
       view: "breakdown",
@@ -399,17 +480,7 @@ test.describe("mcp: errors, clients, users and sessions", () => {
   });
 
   test("clients: names are labelled self-reported", async ({ page, api }) => {
-    const clients: McpClientList = {
-      view: "summary",
-      self_reported: true,
-      data: [{ client_name: "claude-desktop", stats: stats() }],
-      versions: [],
-      truncated: false,
-      capture_sources: SOURCES,
-      saturated: false,
-      meta: META,
-    };
-    api.on(CLIENTS, json(clients));
+    api.on(CLIENTS, json(CLIENT_LIST));
     await page.goto(url("clients"));
     await expect(page.getByText(/^Self-reported:/)).toBeVisible();
     await expect(page.getByRole("link", { name: "claude-desktop" })).toBeVisible();
@@ -417,43 +488,8 @@ test.describe("mcp: errors, clients, users and sessions", () => {
   });
 
   test("users and sessions: rows link to their operations", async ({ page, api }) => {
-    const users: McpUserList = {
-      data: [
-        {
-          user_id: "u-7",
-          subject_hash: null,
-          identity_source: "identify_hook",
-          calls: 12,
-          errors: 1,
-          sessions: 2,
-          first_seen: at(10),
-          last_seen: at(50),
-        },
-      ],
-      truncated: false,
-      capture_sources: SOURCES,
-      saturated: false,
-      meta: META,
-    };
-    const sessions: McpSessionList = {
-      data: [
-        {
-          group_key: "session-1",
-          group_key_kind: "handle",
-          calls: 12,
-          errors: 1,
-          client_name: "claude-desktop",
-          first_seen: at(10),
-          last_seen: at(50),
-        },
-      ],
-      truncated: true,
-      capture_sources: SOURCES,
-      saturated: false,
-      meta: META,
-    };
-    api.on(USERS, json(users));
-    api.on(SESSIONS, json(sessions));
+    api.on(USERS, json(USER_LIST));
+    api.on(SESSIONS, json(SESSION_LIST));
     await page.goto(url("users"));
     const user = new URL(
       (await page.getByRole("link", { name: "u-7" }).getAttribute("href")) ?? "",
@@ -487,13 +523,7 @@ test.describe("mcp: operations, deploys and compare", () => {
     page,
     api,
   }) => {
-    const first: McpOperationPage = {
-      data: [operation()],
-      next_cursor: "c-2",
-      has_more: true,
-      capture_sources: SOURCES,
-      meta: META,
-    };
+    const first = OPERATION_PAGE;
     const second: McpOperationPage = {
       ...first,
       data: [
@@ -543,28 +573,6 @@ test.describe("mcp: operations, deploys and compare", () => {
   });
 
   test("deploys: Compare sets a deploy against the one before it", async ({ page, api }) => {
-    const deploys: McpDeployList = {
-      data: [
-        {
-          server_name: "files",
-          deploy_id: "d2",
-          server_version: "1.4.0",
-          capture_source: "sdk",
-          first_seen: at(30),
-          last_seen: at(59),
-        },
-        {
-          server_name: "files",
-          deploy_id: "d1",
-          server_version: "1.3.0",
-          capture_source: "sdk",
-          first_seen: at(0),
-          last_seen: at(29),
-        },
-      ],
-      capture_sources: SOURCES.slice(0, 1),
-      meta: META,
-    };
     const compare: McpCompare = {
       server_name: "files",
       tools: [
@@ -581,7 +589,7 @@ test.describe("mcp: operations, deploys and compare", () => {
       saturated: false,
       meta: META,
     };
-    api.on(DEPLOYS, json(deploys));
+    api.on(DEPLOYS, json(DEPLOY_LIST));
     api.on(COMPARE, json(compare));
     await page.goto(url("deploys"));
     await expect(page.getByText("First in range")).toBeVisible();
@@ -608,3 +616,61 @@ test.describe("mcp: operations, deploys and compare", () => {
     await expectAccessible(page, "mcp compare idle");
   });
 });
+
+// Every list page's loading, error and empty states, beside the success checks above.
+const LISTS = [
+  { page: "tools", path: TOOLS, title: "Tools", noun: "tools", body: TOOL_LIST },
+  { page: "errors", path: ERRORS, title: "Error classes", noun: "errors", body: ERRORS_SUMMARY },
+  { page: "clients", path: CLIENTS, title: "Clients", noun: "clients", body: CLIENT_LIST },
+  { page: "users", path: USERS, title: "Users", noun: "users", body: USER_LIST },
+  { page: "sessions", path: SESSIONS, title: "Sessions", noun: "sessions", body: SESSION_LIST },
+  {
+    page: "operations",
+    path: OPERATIONS,
+    title: "Operations",
+    noun: "operations",
+    body: OPERATION_PAGE,
+  },
+  { page: "deploys", path: DEPLOYS, title: "Deploys", noun: "deploys", body: DEPLOY_LIST },
+] as const;
+
+function emptied(body: (typeof LISTS)[number]["body"]): unknown {
+  if ("classes" in body) return { ...body, stats: stats({ errors: 0 }), classes: [], targets: [] };
+  if ("versions" in body) return { ...body, data: [], versions: [] };
+  if ("has_more" in body) return { ...body, data: [], has_more: false, next_cursor: null };
+  return { ...body, data: [] };
+}
+
+for (const list of LISTS) {
+  test.describe(`mcp: ${list.page} states`, () => {
+    test("loading, then an error whose retry refetches only the section", async ({ page, api }) => {
+      const release = api.hold(list.path, problem(503, "telemetry_store_unavailable", "req-list"));
+      await page.goto(url(list.page));
+      const section = page.getByRole("region", { name: list.title });
+      await expect(section).toHaveAttribute("aria-busy", "true");
+      await expect(section.getByRole("status")).toHaveText(`Loading ${list.title.toLowerCase()}`);
+      await expectAccessible(page, `mcp ${list.page} loading`);
+      api.on(list.path, problem(503, "telemetry_store_unavailable", "req-list"));
+      release();
+      await expect(section.getByText("This section couldn't load.")).toBeVisible({
+        timeout: 10_000,
+      });
+      await expect(section.getByText("req-list")).toBeVisible();
+      await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+      await expectAccessible(page, `mcp ${list.page} error`);
+
+      api.on(list.path, json(list.body));
+      await section.getByRole("button", { name: `Retry ${list.title.toLowerCase()}` }).click();
+      await expect(section.getByRole("table").first()).toBeVisible();
+    });
+
+    test("empty: a whole empty answer offers the widest range", async ({ page, api }) => {
+      api.on(list.path, json(emptied(list.body)));
+      await page.goto(url(list.page));
+      await expect(page.getByText(`No MCP ${list.noun} in the last 24 hours.`)).toBeVisible();
+      await expectAccessible(page, `mcp ${list.page} empty`);
+      await page.getByRole("button", { name: "Show last 30 days" }).click();
+      await expect(page.getByText(`No MCP ${list.noun} in the last 30 days.`)).toBeVisible();
+    });
+  });
+}

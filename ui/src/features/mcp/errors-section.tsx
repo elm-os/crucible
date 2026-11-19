@@ -126,7 +126,7 @@ function Summary({ errors }: { errors: McpErrors }) {
 function Breakdown({ errors }: { errors: McpErrors }) {
   return (
     <>
-      <Table columns={GROUP_COLUMNS} wide label="Failed calls by message">
+      <Table columns={GROUP_COLUMNS} wide label="Failed calls table">
         {errors.breakdown.map((row) => (
           <tr
             key={`${row.server_name}/${row.method}/${row.target_name}/${row.error_class}/${row.error_subclass}/${row.jsonrpc_code}/${row.error_message}`}

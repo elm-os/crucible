@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { listMcpDeploys } from "@/api/client";
+import type { McpDeployRow } from "@/api/generated/McpDeployRow";
 import { Section } from "@/components/section";
 import { MetaNotice } from "@/components/status";
 import { formatTime } from "@/lib/format";
@@ -41,11 +42,9 @@ export function DeploysSection() {
             <p className="mb-3 text-label text-ink-soft">
               Deploys are recorded from server-side operations, whichever side is shown.
             </p>
-            <Table columns={COLUMNS} label="Deploys">
+            <Table columns={COLUMNS} label="Deploys table">
               {list.data.map((deploy, at) => {
-                const previous = list.data
-                  .slice(at + 1)
-                  .find((other) => other.server_name === deploy.server_name);
+                const previous = previousDeploy(list.data, at);
                 return (
                   <tr
                     key={`${deploy.server_name}/${deploy.deploy_id}/${deploy.server_version}/${deploy.capture_source}`}
@@ -65,10 +64,12 @@ export function DeploysSection() {
                             candidate: deploy.deploy_id,
                           })}
                         >
-                          {`Compare with ${previous.deploy_id || "unknown"}`}
+                          {`Compare with ${previous.deploy_id}`}
                         </Link>
                       ) : (
-                        <span className="text-ink-soft">First in range</span>
+                        <span className="text-ink-soft">
+                          {deploy.deploy_id ? "First in range" : "No deploy id"}
+                        </span>
                       )}
                     </td>
                   </tr>
@@ -80,4 +81,18 @@ export function DeploysSection() {
       }
     </Section>
   );
+}
+
+// The deploy a row compares against: the next older row of the same server with another, known id.
+function previousDeploy(rows: McpDeployRow[], at: number): McpDeployRow | undefined {
+  const deploy = rows[at];
+  if (!deploy?.deploy_id) return undefined;
+  return rows
+    .slice(at + 1)
+    .find(
+      (other) =>
+        other.server_name === deploy.server_name &&
+        other.deploy_id !== "" &&
+        other.deploy_id !== deploy.deploy_id,
+    );
 }

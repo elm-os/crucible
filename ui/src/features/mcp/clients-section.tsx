@@ -80,7 +80,7 @@ export function ClientsSection() {
                 </Table>
               ) : (
                 <>
-                  <Table columns={VERSION_COLUMNS} label="Client versions">
+                  <Table columns={VERSION_COLUMNS} label="Client versions table">
                     {list.versions.map((row) => (
                       <tr
                         key={`${row.client_name}/${row.client_version}`}

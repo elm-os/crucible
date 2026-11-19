@@ -216,7 +216,7 @@ function Content({
           </pre>
           {content.truncated ? (
             <p className="text-label text-ink-soft">
-              {`Showing the start of ${formatBytes(content.bytes)}. Open in the trace to read all of it.`}
+              {`Showing the start of ${formatBytes(content.bytes)}.`}
             </p>
           ) : null}
         </>

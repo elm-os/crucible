@@ -207,9 +207,16 @@ function latencySeries(tool: McpToolDetail): ChartSeries[] {
   ];
 }
 
+// One marker per deploy of a server, at its first sighting, though it may have rows from several sources.
 function markers(tool: McpToolDetail): { t: number; label: string }[] {
-  return tool.deploys.map((d) => ({
-    t: ms(d.first_seen),
-    label: `Deploy ${d.deploy_id || "unknown"} of ${d.server_name}`,
-  }));
+  const first = new Map<string, { t: number; label: string }>();
+  for (const d of tool.deploys) {
+    const key = JSON.stringify([d.server_name, d.deploy_id]);
+    const t = ms(d.first_seen);
+    const seen = first.get(key);
+    if (seen === undefined || t < seen.t) {
+      first.set(key, { t, label: `Deploy ${d.deploy_id || "unknown"} of ${d.server_name}` });
+    }
+  }
+  return [...first.values()].toSorted((a, b) => a.t - b.t);
 }
