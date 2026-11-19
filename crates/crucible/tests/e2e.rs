@@ -1375,6 +1375,40 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+    // The MCP server's tools read: a read-only key reads the trace of step 5 through `/mcp`, and an
+    // ingest-only key is refused there.
+    let scoped = |scopes: Value| {
+        let (status, _, made) = as_owner("POST", &keys, json!({"note": "mcp", "scopes": scopes}));
+        assert_eq!(status, 201, "{made}");
+        format!("Bearer {}", made["secret_key"].as_str().unwrap())
+    };
+    let reader = Api {
+        addr: server.api,
+        project: project_id.clone(),
+        bearer: scoped(json!(["read"])),
+        pair: String::new(),
+    };
+    let result = reader.mcp("get_trace", json!({ "trace_id": trace.trace_id }));
+    assert_eq!(result["isError"], false, "{result}");
+    assert!(
+        result["structuredContent"]["spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()),
+        "{result}"
+    );
+    let ingest_only = scoped(json!(["ingest"]));
+    let (status, body) = http(
+        server.api,
+        "POST",
+        "/mcp",
+        &[
+            ("authorization", &ingest_only),
+            ("content-type", "application/json"),
+        ],
+        b"{}",
+    )
+    .unwrap();
+    assert_eq!(status, 401, "{}", String::from_utf8_lossy(&body));
 
     // 7. Revoking the key stops it at once; signing out ends the session.
     let key_id = created["key"]["id"].as_str().unwrap();
