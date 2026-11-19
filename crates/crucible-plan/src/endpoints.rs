@@ -5,6 +5,9 @@
 mod data_bounds;
 mod facts;
 mod filter_values;
+mod mcp;
+mod mcp_ops;
+mod mcp_rollup;
 mod metrics;
 mod payload;
 mod search;
@@ -19,6 +22,21 @@ mod users;
 pub use data_bounds::{DataBoundsPlans, data_bounds};
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
+pub use mcp::{
+    CaptureClass, McpRead, McpSelection, ServerSources, SourceChoice, TOOLS_CALL, mcp_presence,
+    mcp_series_step,
+};
+pub use mcp_ops::{
+    MCP_CHAIN_COLUMNS, MCP_CHAIN_LIMIT, MCP_LIST_MAX_LIMIT, MCP_OPERATION_COLUMNS, MCP_PEER_LIMIT,
+    McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey, mcp_client_versions,
+    mcp_error_breakdown, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions, mcp_user_errors,
+    mcp_users, subject_hash,
+};
+pub use mcp_rollup::{
+    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_classes, mcp_inventory, mcp_servers,
+    mcp_tool_clients, mcp_tool_series, mcp_tools,
+};
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
     metrics_ranking, metrics_series, metrics_shape,
