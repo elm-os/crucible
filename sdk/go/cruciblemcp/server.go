@@ -327,23 +327,15 @@ func (s *server) captured(field, value string, max int) (text string, truncated,
 	return text, truncated, text != ""
 }
 
-// capturedResult is the captured form of a tool result, scrubbed and capped as captured does it.
+// capturedResult is the captured form of a tool result (its content, structured content and error flag, never
+// the request state or input requests of a multi-round exchange), scrubbed and capped as captured does it. Only
+// the window the scrubber reads is serialized.
 func (s *server) capturedResult(r *mcp.CallToolResult, max int) (text string, truncated, ok bool) {
-	result := resultText(r)
-	noteWork(len(result), min(len(result), scrub.WindowSize(max)))
-	return s.captured(FieldResult, result, max)
-}
-
-// resultText is the captured form of a tool result: its content and structured content only, never the
-// request state or input requests of a multi-round exchange.
-func resultText(r *mcp.CallToolResult) string {
-	b, err := json.Marshal(struct {
-		Content           []mcp.Content `json:"content"`
-		StructuredContent any           `json:"structuredContent,omitempty"`
-		IsError           bool          `json:"isError,omitempty"`
-	}{r.Content, r.StructuredContent, r.IsError})
-	if err != nil {
-		return ""
+	w := resultWindow(r, scrub.WindowSize(max))
+	noteWork(w.produced, len(w.buf))
+	if w.err != nil {
+		return "", false, false
 	}
-	return string(b)
+	text, truncated, ok = s.captured(FieldResult, string(w.buf), max)
+	return text, truncated || w.more, ok
 }
