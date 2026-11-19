@@ -369,8 +369,9 @@ pub struct Shipper {
     gc_in_doubt: bool,
     gc_failures: GcFailures,
     read_failures: u32,
-    /// The salts fetched so far. A salt never changes, so it is fetched once per project and process.
-    salts: DetMap<ProjectId, ProjectSalt>,
+    /// The salts fetched so far, `None` for a deleted project that has none. A salt never changes, so it is
+    /// fetched once per project and process.
+    salts: DetMap<ProjectId, Option<ProjectSalt>>,
     /// Consecutive failures to fetch a salt, for the backoff of the frame that waits for it.
     salt_failures: u32,
     /// Whether the drop of identity keys without a control store was logged.
@@ -515,7 +516,8 @@ impl Shipper {
     ///
     /// Without a control store every MCP operation loses its identity keys, which is logged once. With one,
     /// only a frame that carries a user subject needs the salt of its project, so that a control store that
-    /// does not answer holds no other frame; the salt is fetched once and kept, because it never changes.
+    /// does not answer holds no other frame; the salt is fetched once and kept, because it never changes. A
+    /// deleted project that has no salt gets none: its operations lose the subject and its issuer.
     async fn identity_of(&mut self, frame: &NormalizedFrame) -> Option<Identity> {
         if !self.ctx.salts.configured() {
             if !frame.mcp_ops.is_empty() && !std::mem::replace(&mut self.identity_drop_logged, true)
@@ -535,13 +537,13 @@ impl Shipper {
             return Some(Identity::Salted(None));
         };
         if let Some(salt) = self.salts.get(&project) {
-            return Some(Identity::Salted(Some(*salt)));
+            return Some(Identity::Salted(*salt));
         }
         match self.ctx.salts.salt(project).await {
             Ok(salt) => {
                 self.salts.insert(project, salt);
                 self.salt_failures = 0;
-                Some(Identity::Salted(Some(salt)))
+                Some(Identity::Salted(salt))
             }
             Err(e) => {
                 tracing::warn!(lsn = %frame.lsn, error = %e, "a frame waits for the salt of its project");

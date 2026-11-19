@@ -889,6 +889,8 @@ struct SentSpan {
     project: usize,
     info: SpanInfo,
     wire: Span,
+    /// Whether the request that carried it was acknowledged, so that stage B has seen it.
+    acked: bool,
 }
 
 /// One fact write: what was handed in and, once acknowledged, what the server assigned.
@@ -1061,25 +1063,44 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     // A span of an earlier request of the project, sent again as it was: stage B drops it when the duplicate
     // window still holds it, which shifts the spans after it in the frame.
     // With nested usage, half of the time it is a span whose parent no request has sent yet, so that the parent
-    // arrives after a frame that held the repeat.
+    // arrives after a frame that held the repeat. That repeat is weighted toward the frame that shows a mark
+    // taken after the duplicate drop (contract 5.3), which needs a span that stage B has seen (its request was
+    // acknowledged) and that carries no usage (so its parent is not marked already). When such a span waits,
+    // the repeat is the latest of them (the one the duplicate window most likely still holds) and is always
+    // sent; otherwise a coin decides, and a waiting repeat is sent one time in two rather than four.
     let nth = pick(rng, 4) as usize;
-    let waiting = has(Dim::NestedUsage) && coin(rng);
     let awaited = &state.awaited;
-    let mut candidates = state.spans.iter().filter(|sent| {
+    let waits = |sent: &SentSpan| {
         sent.project == project
-            && (!waiting
-                || awaited.iter().any(|(p, trace, parent)| {
-                    *p == project
-                        && *trace == sent.info.trace
-                        && parent[..] == sent.wire.parent_span_id[..]
-                }))
-    });
+            && awaited.iter().any(|(p, trace, parent)| {
+                *p == project && *trace == sent.info.trace && parent[..] == sent.wire.parent_span_id[..]
+            })
+    };
+    let exposes = |sent: &SentSpan| {
+        sent.acked
+            && sent.info.sent.input == 0
+            && sent.info.sent.output == 0
+            && sent.info.sent.cost_nusd == 0
+    };
+    let waiting = has(Dim::NestedUsage)
+        && (state.spans.iter().any(|sent| waits(sent) && exposes(sent)) || coin(rng));
+    let mut candidates = state
+        .spans
+        .iter()
+        .filter(|sent| sent.project == project && (!waiting || waits(sent)));
     let again = if waiting {
-        candidates.next()
+        candidates.max_by_key(|sent| exposes(sent))
     } else {
         candidates.nth(nth)
     }
-    .filter(|_| has(Dim::ClientRetries) && pick(rng, 4) == 0)
+    .filter(|sent| {
+        let odds = match (waiting, exposes(sent)) {
+            (true, true) => 4,
+            (true, false) => 2,
+            (false, _) => 1,
+        };
+        has(Dim::ClientRetries) && pick(rng, 4) < odds
+    })
     .cloned();
     let partial_repeat = again.is_some();
     // The parent that the repeat waits for: this request may send it beside the repeat.
@@ -1092,9 +1113,13 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         wire.push(sent.wire);
     }
     let session = (pick(rng, 3) > 0).then(|| format!("session-{}", pick(rng, 3)));
+    // Beside a repeat whose parent is still to come there is room for its child and its parent.
+    let count = count + u64::from(repeat_parent.is_some() && count == 1);
     // The position in `spans` of the first span this request adds.
     let first_new = spans.len();
     let mut sent_now: Vec<SentSpan> = Vec::new();
+    // Whether a new span hangs under the repeat whose parent is still to come.
+    let mut child_placed = false;
     for ordinal in 0..count {
         let other = traces.len() > 1 && pick(rng, 5) == 0;
         let trace = if other {
@@ -1102,9 +1127,13 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         } else {
             main
         };
+        // Beside a repeat whose parent is still to come, the first new span is its child and carries usage, and
+        // the next one is the repeat's parent: the frame of the weighting above.
+        let child_of_repeat = repeat_parent.is_some() && !child_placed;
         // With nested usage, a span may be the parent that an earlier request of this client named for one of its
         // spans: the child was exported first, as a child that ends before its parent is.
-        let awaited = (has(Dim::NestedUsage) && pick(rng, 3) == 0)
+        let parent_odds = if repeat_parent.is_some() { 3 } else { 1 };
+        let awaited = (has(Dim::NestedUsage) && !child_of_repeat && pick(rng, 3) < parent_odds)
             .then(|| {
                 let at = state.awaited.iter().position(|(p, trace, id)| {
                     *p == project
@@ -1119,11 +1148,14 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         // repeat, which still passes the mark of its new child on to its own parent.
         let under_repeat = spans
             .first()
-            .filter(|_| has(Dim::NestedUsage) && partial_repeat && awaited.is_none() && coin(rng))
+            .filter(|_| {
+                has(Dim::NestedUsage)
+                    && partial_repeat
+                    && awaited.is_none()
+                    && (child_of_repeat || coin(rng))
+            })
             .map(|repeat| repeat.trace);
-        // A span of the repeat's trace reports no trace-level attribute: the forward fill would hand it to the
-        // repeat, which would then be a changed row and no exact repeat.
-        let bare = under_repeat.is_some() || (awaited.is_some() && repeat_parent.is_some());
+        child_placed |= under_repeat.is_some();
         let (trace, span, root) = match (awaited, under_repeat) {
             (Some((_, trace, span)), _) => (trace, span, false),
             (None, Some(trace)) => (trace, random::<8>(rng), false),
@@ -1134,6 +1166,12 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
                 (trace, random::<8>(rng), root)
             }
         };
+        // A span of the repeat's trace reports no trace-level attribute: the forward fill would hand it to the
+        // repeat, which would then be a changed row and no exact repeat.
+        let bare = under_repeat.is_some()
+            || repeat_parent
+                .as_ref()
+                .is_some_and(|(repeated, _)| *repeated == trace);
         // With nested usage, half of the spans below the root hang under the latest span of their trace in this
         // request, so chains form.
         let parent = if under_repeat.is_some() {
@@ -1151,9 +1189,9 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
                 })
                 .flatten()
         };
-        // Or it names a parent that a later request will send.
+        // Or, one time in two, it names a parent that a later request will send.
         let later_parent =
-            (has(Dim::NestedUsage) && !root && parent.is_none() && pick(rng, 3) == 0)
+            (has(Dim::NestedUsage) && !root && parent.is_none() && pick(rng, 2) == 0)
                 .then(|| random::<8>(rng));
         if let Some(id) = later_parent {
             state.awaited.push((project, trace, id));
@@ -1190,21 +1228,27 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
         if let Some(session) = session.as_ref().filter(|_| !bare) {
             attributes.push(attribute("crucible.session.id", text(session.clone())));
         }
-        if coin(rng) && !bare {
+        // A span that names a parent a later request will send carries every trace-level attribute of its own,
+        // so the forward fill gives it nothing and a request that sends it again sends an exact repeat.
+        let own = later_parent.is_some();
+        if (own || coin(rng)) && !bare {
             attributes.push(attribute("user.id", text(format!("user-{}", pick(rng, 3)))));
         }
-        if pick(rng, 3) == 0 && !bare {
+        if (own || pick(rng, 3) == 0) && !bare {
             let environment = ["prod", "staging"][pick(rng, 2) as usize];
             attributes.push(attribute(
                 "crucible.environment",
                 text(environment.to_owned()),
             ));
         }
-        if pick(rng, 4) == 0 && !bare {
+        if (own || pick(rng, 4) == 0) && !bare {
             attributes.push(attribute("crucible.release", text("r1".to_owned())));
         }
         let mut sent = system_oracle::Sent::default();
-        if coin(rng) {
+        // A span that names a later parent carries usage one time in four, so that most of them can be the
+        // repeat of the weighting above.
+        let usage = if own { pick(rng, 4) == 0 } else { coin(rng) };
+        if child_of_repeat || usage {
             sent.input = pick(rng, 1_000);
             sent.output = pick(rng, 500);
             attributes.push(attribute("gen_ai.usage.input_tokens", int(sent.input)));
@@ -1260,6 +1304,7 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
             project,
             info,
             wire: span.clone(),
+            acked: false,
         });
         spans.push(info);
         wire.push(span);
@@ -2048,7 +2093,7 @@ impl ProjectSalts for SimSalts {
     fn salt(
         &self,
         project: ProjectId,
-    ) -> futures::future::BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>> {
+    ) -> futures::future::BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>> {
         let failed = self.rng.next_u64() % 1_000_000 < u64::from(self.fail_ppm);
         if failed {
             self.shared.ledger().stats.salt_waits += 1;
@@ -2056,7 +2101,7 @@ impl ProjectSalts for SimSalts {
         Box::pin(futures::future::ready(if failed {
             Err(SaltUnavailable("the store did not answer".to_owned()))
         } else {
-            Ok(project_salt(project))
+            Ok(Some(project_salt(project)))
         }))
     }
 }
@@ -2778,6 +2823,7 @@ async fn client(ctx: ClientCtx, budget: u64) {
         }
         let burst = if plan.wal.bursts { 1 + pick(rng, 4) } else { 1 };
         let mut waiting = Vec::new();
+        let mut generated = Vec::new();
         for _ in 0..burst {
             sent += 1;
             let earlier = ctx.shared.ledger().requests.len() as u64;
@@ -2795,9 +2841,24 @@ async fn client(ctx: ClientCtx, budget: u64) {
                 ledger.requests.push(request);
                 ledger.requests.len() - 1
             };
+            generated.push((!repeat).then_some(index));
             waiting.push(exchange(&ctx, index, repeat));
         }
         let acked = futures::future::join_all(waiting).await;
+        // The spans of the new requests that were acknowledged: stage B has seen them.
+        for (index, _) in generated.iter().zip(&acked).filter(|(_, acked)| **acked) {
+            let Some(index) = *index else {
+                continue;
+            };
+            let request = ctx.shared.ledger().requests[index].clone();
+            for sent in state.spans.iter_mut() {
+                sent.acked |= sent.project == request.project
+                    && request
+                        .spans
+                        .iter()
+                        .any(|span| span.trace == sent.info.trace && span.span == sent.info.span);
+            }
+        }
         if acked.contains(&true) {
             refused = 0;
         } else {

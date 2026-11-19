@@ -510,11 +510,12 @@ fn projects_are_created_with_their_salt() {
             Sealer::new("master-0", [6; 32]).open(&sealed, aad.as_bytes()),
             Err(Unsealable)
         );
-        // A taken slug is still a conflict that says what to do.
+        // A taken slug is still a conflict that says what to do, and leaves no salt behind.
         assert!(matches!(
             identity.create_project("Again", "agents").await,
             Err(AuthError::Conflict(_))
         ));
+        assert_eq!(model.project_salts().list().await.unwrap().len(), 2);
     });
     sim(10, async |env, model| {
         let identity = identity(&env, &model, OUTAGE_GRACE);

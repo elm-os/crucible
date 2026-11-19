@@ -124,7 +124,8 @@ pub const RESOURCE_INSTANCE_ID: &str = "service.instance.id";
 pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// Span attributes that must never be stored, in any record or residual attribute (contracts 3.5 and 9.1): a
-/// client address, and request headers that carry credentials. The normalizer drops them from every span.
+/// client address, and request headers that carry credentials. The normalizer drops them from every span and
+/// from its events and links.
 pub const NEVER_STORED: [&str; 5] = [
     "client.address",
     "network.peer.address",
@@ -136,9 +137,10 @@ pub const NEVER_STORED: [&str; 5] = [
 /// Prefixes of span attributes that must never be stored: the `Mcp-Param-*` request headers and baggage.
 pub const NEVER_STORED_PREFIXES: [&str; 2] = ["http.request.header.mcp-param-", "baggage."];
 
-/// Whether a span attribute must never be stored, whatever span carries it: the keys and prefixes above, the raw
-/// user subject and the session id (which is stored only as its hash, in `session_key`). Keys compare without
-/// regard to ASCII case, as header names do.
+/// Whether an attribute must never be stored, whatever span, event or link carries it: the keys and prefixes
+/// above, the raw user subject and its issuer (contract 9.3: stage B hashes them and discards the raw values; the
+/// projector keeps the issuer in `user_issuer` only) and the session id (stored only as its hash, in
+/// `session_key`). Keys compare without regard to ASCII case, as header names do.
 pub fn never_stored(key: &str) -> bool {
     let is = |name: &str| key.eq_ignore_ascii_case(name);
     let starts = |prefix: &str| {
@@ -146,6 +148,7 @@ pub fn never_stored(key: &str) -> bool {
             .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
     };
     is(USER_SUBJECT)
+        || is(USER_ISSUER)
         || is(SESSION_ID)
         || NEVER_STORED.iter().any(|name| is(name))
         || NEVER_STORED_PREFIXES.iter().any(|prefix| starts(prefix))
@@ -215,8 +218,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_subject_and_the_session_id_are_never_stored_and_consumed() {
-        for key in [USER_SUBJECT, SESSION_ID] {
+    fn the_subject_its_issuer_and_the_session_id_are_never_stored_and_consumed() {
+        for key in [USER_SUBJECT, USER_ISSUER, SESSION_ID] {
             assert!(never_stored(key) && consumed(key), "{key}");
         }
         assert!(never_stored("Client.Address"));
