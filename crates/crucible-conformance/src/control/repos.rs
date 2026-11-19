@@ -3,8 +3,8 @@
 use anyhow::{Result, ensure};
 use crucible_control::{
     AuthMethod, Credential, LedgerEntry, MigrationKind, Org, OrgMembership, OrgRole, OrgSettings,
-    ProjectAccess, ProjectMembership, ProjectRole, Secret, Session, SigningKey, SigningKeyState,
-    SigningPurpose, UserStatus,
+    ProjectAccess, ProjectMembership, ProjectRole, SealedProjectSalt, Secret, Session, SigningKey,
+    SigningKeyState, SigningPurpose, UserStatus,
 };
 use crucible_records::{OrgId, UserId};
 
@@ -386,6 +386,31 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome(
         "secret after delete",
         s.secrets().get(secret.id).await.map(|s| s.is_some()),
+    );
+
+    // Project salts: the first one stays.
+    let salt = |byte: u8| SealedProjectSalt {
+        project_id: web.id,
+        key_id: "k1".to_owned(),
+        nonce: vec![byte; 24],
+        ciphertext: vec![byte, 0, 255],
+    };
+    t.outcome(
+        "project salt before",
+        s.project_salts().get(web.id).await.map(|s| s.is_some()),
+    );
+    t.outcome(
+        "project salt insert",
+        s.project_salts().insert_if_absent(&salt(1)).await,
+    );
+    t.outcome(
+        "project salt second insert",
+        s.project_salts().insert_if_absent(&salt(2)).await,
+    );
+    let read = s.project_salts().get(web.id).await?;
+    ensure!(
+        read.as_ref() == Some(&salt(1)),
+        "the first salt of a project stays"
     );
 
     // The migrations ledger is forward-only: a recorded step is never rewritten.

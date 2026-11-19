@@ -6,6 +6,12 @@
 //! `received_at`, `api_key_id`, `row_digest` itself and `event_bytes`. `usage_aggregate` is excluded too: stage B
 //! sets it from the LSN stream after the digest is taken, so a re-sent span keeps its digest.
 //!
+//! A span with an MCP operation or tool inventory entries digests those too ([`fold_mcp`]): the digest of such a
+//! span is xxh3-64 of the span's own digest, a presence byte and the operation (every field of the record but its
+//! ingestion group, then the raw user subject), then each inventory entry's tool name and schema hash behind a
+//! one byte and a closing zero byte. A span without either keeps the digest of its row alone, so the encoding
+//! version does not change for it.
+//!
 //! The encoding is the version byte, then every other field in declaration order, core tier first: integers
 //! little-endian at their own width; `bool` and enums one byte (the stored value); timestamps as `i64`
 //! microseconds; ids at their byte length; an optional value as a presence byte and the value; strings and bodies as
@@ -13,9 +19,12 @@
 //! bit set in [`crucible_records::PayloadField::ALL`] order.
 
 use crucible_records::{
-    NanoUsd, PayloadFields, SpanCore, SpanPayload, SpanRecord, Timestamp, UsageEntry, Uuid,
+    McpOpRecord, NanoUsd, PayloadFields, SpanCore, SpanPayload, SpanRecord, Timestamp, UsageEntry,
+    Uuid,
 };
 use xxhash_rust::xxh3::Xxh3;
+
+use crate::mcp::{McpInventory, McpOp};
 
 /// The version of the encoding that [`row_digest`] hashes. A change to it changes digests, so it ships with a new
 /// normalizer version.
@@ -113,6 +122,196 @@ impl<S: Sink> Encoder<'_, S> {
     fn fields(&mut self, set: PayloadFields) {
         let bits = set.iter().fold(0u16, |bits, f| bits | (1 << f as u8));
         self.u16(bits);
+    }
+
+    fn hash16(&mut self, hash: Option<[u8; 16]>) {
+        match hash {
+            Some(hash) => {
+                self.u8(1);
+                self.0.put(&hash);
+            }
+            None => self.u8(0),
+        }
+    }
+
+    fn str(&mut self, s: &str) {
+        self.bytes(s.as_bytes());
+    }
+}
+
+/// Encodes an MCP operation: every field but the ingestion group, in declaration order, then the user subject.
+fn encode_op<S: Sink>(op: &McpOp, e: &mut Encoder<'_, S>) {
+    let McpOpRecord {
+        project_id,
+        trace_id,
+        span_id,
+        parent_span_id,
+        transport_link_trace_id,
+        transport_link_span_id,
+        server_name,
+        server_version,
+        deploy_id,
+        instance_id,
+        side,
+        capture_source,
+        era,
+        protocol_version,
+        transport,
+        method,
+        target_kind,
+        target_name,
+        jsonrpc_id,
+        direction,
+        is_notification,
+        is_batch,
+        result_type,
+        mrtr_round,
+        mrtr_state_in,
+        mrtr_state_out,
+        task_id,
+        subscription_id,
+        start_time,
+        duration_us,
+        progress_count,
+        cancel_source,
+        timed_out,
+        status,
+        error_class,
+        error_subclass,
+        jsonrpc_code,
+        http_status,
+        caller_fault,
+        error_type,
+        error_message,
+        client_name,
+        client_version,
+        client_capabilities_hash,
+        oauth_client_id,
+        user_subject_hash,
+        user_issuer,
+        user_id,
+        tenant,
+        identity_source,
+        session_key,
+        handle_id,
+        group_key,
+        group_key_kind,
+        ip_prefix,
+        user_agent,
+        request_bytes,
+        response_bytes,
+        content_blocks,
+        content_captured,
+        content_sample_rate,
+        content_truncation,
+        args,
+        result,
+        args_bytes,
+        result_bytes,
+        ingestion: _,
+        normalizer_version,
+    } = &op.record;
+    e.0.put(&project_id.to_bytes());
+    e.0.put(trace_id.as_bytes());
+    e.0.put(span_id.as_bytes());
+    e.0.put(parent_span_id.as_bytes());
+    e.0.put(transport_link_trace_id.as_bytes());
+    e.0.put(transport_link_span_id.as_bytes());
+    for s in [server_name, server_version, deploy_id, instance_id] {
+        e.str(s);
+    }
+    e.u8(side.value());
+    e.u8(capture_source.value());
+    e.u8(era.value());
+    e.str(protocol_version);
+    e.u8(transport.value());
+    e.str(method);
+    e.u8(target_kind.value());
+    e.str(target_name);
+    e.str(jsonrpc_id);
+    e.u8(direction.value());
+    e.bool(*is_notification);
+    e.bool(*is_batch);
+    e.u8(result_type.value());
+    e.u16(*mrtr_round);
+    e.hash16(*mrtr_state_in);
+    e.hash16(*mrtr_state_out);
+    e.str(task_id);
+    e.str(subscription_id);
+    e.time(*start_time);
+    e.u64(*duration_us);
+    e.bool(progress_count.is_some());
+    e.u32(progress_count.unwrap_or(0));
+    e.u8(cancel_source.value());
+    e.bool(*timed_out);
+    e.u8(status.value());
+    e.u8(error_class.value());
+    e.u8(error_subclass.value());
+    e.bool(jsonrpc_code.is_some());
+    e.i64(i64::from(jsonrpc_code.unwrap_or(0)));
+    e.bool(http_status.is_some());
+    e.u16(http_status.unwrap_or(0));
+    e.bool(*caller_fault);
+    for s in [error_type, error_message, client_name, client_version] {
+        e.str(s);
+    }
+    e.u64(*client_capabilities_hash);
+    e.str(oauth_client_id);
+    e.hash16(*user_subject_hash);
+    e.str(user_issuer);
+    e.str(user_id);
+    e.str(tenant);
+    e.u8(identity_source.value());
+    e.hash16(*session_key);
+    e.str(handle_id);
+    e.str(group_key);
+    e.u8(group_key_kind.value());
+    e.str(ip_prefix);
+    e.str(user_agent);
+    e.u64(*request_bytes);
+    e.u64(*response_bytes);
+    e.len(content_blocks.len());
+    for (kind, count) in content_blocks {
+        e.str(kind);
+        e.u32(*count);
+    }
+    e.bool(*content_captured);
+    e.u32(content_sample_rate.to_bits());
+    e.u8(content_truncation.value());
+    e.bytes(args);
+    e.bytes(result);
+    e.u64(*args_bytes);
+    e.u64(*result_bytes);
+    e.u32(*normalizer_version);
+    e.str(&op.subject);
+}
+
+/// Folds the MCP operation and the tool inventory entries of each span into its `row_digest`, so that a span
+/// sent again with another operation is not an exact repeat. `ops` and `inventory` are in span order; a span
+/// without either keeps its digest.
+pub(crate) fn fold_mcp(spans: &mut [SpanRecord], ops: &[McpOp], inventory: &[McpInventory]) {
+    let mut ops = ops.iter().peekable();
+    let mut inventory = inventory.iter().peekable();
+    for (at, span) in spans.iter_mut().enumerate() {
+        let at = u32::try_from(at).unwrap_or(u32::MAX);
+        let op = ops.next_if(|op| op.span == at);
+        if op.is_none() && inventory.peek().is_none_or(|entry| entry.span != at) {
+            continue;
+        }
+        let mut hasher = Xxh3::new();
+        let mut e = Encoder(&mut hasher);
+        e.u64(span.core.row_digest);
+        e.bool(op.is_some());
+        if let Some(op) = op {
+            encode_op(op, &mut e);
+        }
+        while let Some(entry) = inventory.next_if(|entry| entry.span == at) {
+            e.u8(1);
+            e.str(&entry.record.tool_name);
+            e.u64(entry.record.schema_hash);
+        }
+        e.u8(0);
+        span.core.row_digest = hasher.digest();
     }
 }
 

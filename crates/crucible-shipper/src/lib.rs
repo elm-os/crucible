@@ -19,7 +19,11 @@
 //! then passes as a frame without rows (contract 5.6, frame quarantine).
 //!
 //! The row builders ([`value`]) are generic over `TableDef`: a table needs one function from its record to a row
-//! of cells ([`tables`] has those of the span tables, the span rollups and the fact tables).
+//! of cells ([`tables`] has those of the span tables, the span rollups, the MCP tables and the fact tables).
+//!
+//! An `IngestRequest` frame whose spans carry `mcp.method.name` also yields the rows of the five MCP tables
+//! (contract 3.5 to 3.7). Stage B hashes a user subject with the salt of the frame's project, which the shipper
+//! takes from the [`ProjectSalts`] hook before it admits the frame; a frame whose salt cannot be had waits.
 
 mod batch;
 mod config;
@@ -40,7 +44,9 @@ pub use config::{
     DEFAULT_ENCODED_BYTES, FrameFault, Mutant, POISON_LIMIT, PROBE_VALID_FOR, ShipperConfig,
 };
 pub use error::ShipError;
-pub use hooks::{Barrier, Barriers, NoBarriers, NoRecent, RecentIndex};
+pub use hooks::{
+    Barrier, Barriers, NoBarriers, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
+};
 pub use limits::SealLimits;
 pub use quarantine::{
     FRAMES_FILE, FrameManifest, MANIFEST_FILE, frame_quarantine_ref, quarantine_ref,

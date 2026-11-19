@@ -18,8 +18,8 @@ use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, Invitation, KeyChange, KeyChangeKind,
     KeySnapshot, Lease, LeaseName, LedgerEntry, NewJob, OauthAccount, OneTimeToken, Org,
-    OrgMembership, OrgRole, Project, ProjectMembership, Queue, Secret, Session, SigningKey,
-    SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
+    OrgMembership, OrgRole, Project, ProjectMembership, Queue, SealedProjectSalt, Secret, Session,
+    SigningKey, SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
 };
 
 /// The singleton organization row.
@@ -328,6 +328,17 @@ pub trait Claims: Send + Sync {
     async fn prune_done(&self, queue: Queue, older_than: Duration) -> Result<u64, TxError>;
 }
 
+/// The project salts (contract 11.1). A salt is immutable for the life of its project, so there is no update
+/// and no delete.
+#[async_trait]
+pub trait ProjectSaltRepo: Send + Sync {
+    /// The sealed salt of this project.
+    async fn get(&self, project_id: ProjectId) -> Result<Option<SealedProjectSalt>, TxError>;
+    /// Stores the salt when the project has none. `false` when it already has one; the stored row is not
+    /// changed, and the caller reads it back.
+    async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError>;
+}
+
 /// The forward-only migrations ledger (contract 6.6): Postgres migrations and ClickHouse schema and access
 /// steps.
 #[async_trait]
@@ -361,6 +372,8 @@ pub trait Repos: Send + Sync {
     fn signing_keys(&self) -> &dyn SigningKeyRepo;
     /// Sealed secrets.
     fn secrets(&self) -> &dyn SecretRepo;
+    /// Project salts.
+    fn project_salts(&self) -> &dyn ProjectSaltRepo;
     /// Sign-in providers.
     fn auth_providers(&self) -> &dyn AuthProviderRepo;
     /// Provider identities linked to users.

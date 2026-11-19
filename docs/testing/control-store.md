@@ -53,7 +53,7 @@ touch the control crates, the model or the workflow, and nightly.
 |---|---|
 | PG1 | The migrations apply once, are recorded in the ledger, and a second run is a no-op |
 | PG2 | Both timeouts are 10 s on pooled connections and in transactions; transactions run at repeatable read |
-| PgModel differential (9 rows) | Each script's transcript against the server equals the model's. The `jobs` row covers the statements of the job runners: parking a claimed row and pruning the key feed. The `alerts` row covers channels (with the failure count that turns one off in one statement), alert rules, the state of their series, their history, the queue of evaluations and the pruning of done queue rows |
+| PgModel differential (9 rows) | Each script's transcript against the server equals the model's. The `jobs` row covers the statements of the job runners: parking a claimed row and pruning the key feed. The `repositories` row covers `project_salts`: the first salt of a project stays and a second insert changes nothing. The `alerts` row covers channels (with the failure count that turns one off in one statement), alert rules, the state of their series, their history, the queue of evaluations and the pruning of done queue rows |
 | PG3 | After every connection is terminated, both pools replace their connections and every later call succeeds |
 
 Transcripts hold no raw database time and no raw feed sequence number, because those differ between two stores

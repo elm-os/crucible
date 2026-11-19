@@ -34,9 +34,9 @@ use crucible_control::{
     KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
     MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
     OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
-    ProjectRepo, Queue, Repos, Secret, SecretRepo, Session, SessionRepo, SigningKey,
-    SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User,
-    UserRepo, duration_micros,
+    ProjectRepo, ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session,
+    SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP,
+    TokenHash, TxError, User, UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -126,6 +126,7 @@ enum Tbl {
     Feed,
     SigningKeys,
     Secrets,
+    ProjectSalts,
     Leases,
     Cursors,
     Jobs,
@@ -217,6 +218,7 @@ enum Row {
     Feed(FeedRow),
     SigningKey(SigningKey),
     Secret(Secret),
+    ProjectSalt(SealedProjectSalt),
     Lease(Lease),
     Cursor(String),
     Job(JobRow),
@@ -1219,6 +1221,9 @@ macro_rules! repos {
             fn secrets(&self) -> &dyn SecretRepo {
                 &self.runner
             }
+            fn project_salts(&self) -> &dyn ProjectSaltRepo {
+                &self.runner
+            }
             fn auth_providers(&self) -> &dyn AuthProviderRepo {
                 &self.runner
             }
@@ -1299,6 +1304,9 @@ impl Repos for PgModel {
         &*self.runner
     }
     fn secrets(&self) -> &dyn SecretRepo {
+        &*self.runner
+    }
+    fn project_salts(&self) -> &dyn ProjectSaltRepo {
         &*self.runner
     }
     fn auth_providers(&self) -> &dyn AuthProviderRepo {
@@ -2035,6 +2043,36 @@ impl SecretRepo for Runner {
                 return Ok(false);
             }
             cx.put(Tbl::Secrets, key, None)?;
+            Ok(true)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl ProjectSaltRepo for Runner {
+    async fn get(&self, project_id: ProjectId) -> Result<Option<SealedProjectSalt>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            Ok(one!(
+                cx,
+                Tbl::ProjectSalts,
+                &uuid_key(project_id.to_bytes()),
+                Row::ProjectSalt
+            ))
+        })
+        .await
+    }
+
+    async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let key = uuid_key(salt.project_id.to_bytes());
+            if cx.locked_by_other(Tbl::ProjectSalts, &key) {
+                return Err(Halt::Blocked);
+            }
+            if cx.latest(Tbl::ProjectSalts, &key).is_some() {
+                return Ok(false);
+            }
+            cx.put(Tbl::ProjectSalts, key, Some(Row::ProjectSalt(salt.clone())))?;
             Ok(true)
         })
         .await

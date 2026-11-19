@@ -12,9 +12,10 @@ use crucible_control::{
     CredentialRepo, Email, InvitationRepo, JsonDoc, KeyChange, KeyChangeKind, KeyFeed, KeyScope,
     KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo, MigrationKind, Migrations,
     NewJob, OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, OrgSettings,
-    Project, ProjectMembership, ProjectRepo, ProjectRole, Queue, Repos, Secret, SecretRepo,
-    Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
-    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, UserStatus, duration_micros,
+    Project, ProjectMembership, ProjectRepo, ProjectRole, ProjectSaltRepo, Queue, Repos,
+    SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo,
+    SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User, UserRepo,
+    UserStatus, duration_micros,
 };
 use crucible_env::{Env, Instant};
 use crucible_records::{ApiKeyId, OrgId, ProjectId, Timestamp, UserId, Uuid};
@@ -280,7 +281,8 @@ impl PgControlStore {
              d18 AS (DELETE FROM auth_flows), d19 AS (DELETE FROM one_time_tokens), \
              d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM alert_evaluations), \
              d22 AS (DELETE FROM alert_events), d23 AS (DELETE FROM alert_state), \
-             d24 AS (DELETE FROM alert_rules), d25 AS (DELETE FROM channels) \
+             d24 AS (DELETE FROM alert_rules), d25 AS (DELETE FROM channels), \
+             d26 AS (DELETE FROM project_salts) \
              SELECT * FROM s";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -508,6 +510,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn secrets(&self) -> &dyn SecretRepo {
+                $($deref)* self.handle
+            }
+            fn project_salts(&self) -> &dyn ProjectSaltRepo {
                 $($deref)* self.handle
             }
             fn auth_providers(&self) -> &dyn AuthProviderRepo {
@@ -1334,6 +1339,42 @@ impl SecretRepo for Handle {
             )
             .await?;
         Ok(deleted == 1)
+    }
+}
+
+#[async_trait]
+impl ProjectSaltRepo for Handle {
+    async fn get(&self, project_id: ProjectId) -> Result<Option<SealedProjectSalt>, TxError> {
+        let rows = self
+            .read(
+                "SELECT project_id, key_id, nonce, ciphertext FROM project_salts WHERE project_id = $1",
+                &[P::Uuid(project_id.uuid())],
+            )
+            .await?;
+        first(&rows, |c| {
+            Ok(SealedProjectSalt {
+                project_id: ProjectId::from_uuid(c.uuid()?),
+                key_id: c.text()?,
+                nonce: c.bytes()?,
+                ciphertext: c.bytes()?,
+            })
+        })
+    }
+
+    async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError> {
+        let inserted = self
+            .write(
+                "INSERT INTO project_salts (project_id, key_id, nonce, ciphertext) VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (project_id) DO NOTHING RETURNING 1",
+                &[
+                    P::Uuid(salt.project_id.uuid()),
+                    P::Text(&salt.key_id),
+                    P::Bytes(&salt.nonce),
+                    P::Bytes(&salt.ciphertext),
+                ],
+            )
+            .await?;
+        Ok(inserted == 1)
     }
 }
 
