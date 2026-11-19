@@ -45,6 +45,8 @@ const DEFAULT_MAX_BYTES: usize = 16 * 1024;
 pub mod test_support {
     use std::sync::{Arc, PoisonError, RwLock};
 
+    pub use crate::scrub::{MatcherHook, set_matcher_hook};
+
     /// Called once per captured field with the bytes of JSON the capture path serialized for it before any cut,
     /// and the bytes it handed to the scrubber.
     pub type CaptureWorkHook = Arc<dyn Fn(usize, usize) + Send + Sync>;

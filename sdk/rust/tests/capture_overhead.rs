@@ -6,11 +6,12 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use common::{Collector, GLOBAL, Mode, init};
-use crucible_sdk::mcp::test_support::set_capture_work_hook;
+use crucible_sdk::mcp::test_support::{set_capture_work_hook, set_matcher_hook};
 use crucible_sdk::mcp::{self, CaptureRule, Instrumentation};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig,
@@ -25,6 +26,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const SCENARIO: &str = include_str!("../../../conformance/capture-overhead.json");
+const RULES: &str = include_str!("../src/scrub-rules.json");
+
+fn rule_count() -> usize {
+    #[derive(Deserialize)]
+    struct Rules {
+        rules: Vec<Value>,
+    }
+    serde_json::from_str::<Rules>(RULES).unwrap().rules.len()
+}
 
 #[derive(Deserialize)]
 struct Scenario {
@@ -32,6 +42,7 @@ struct Scenario {
     tool: String,
     max_bytes: usize,
     work_bound: usize,
+    matcher_steps_per_rule_char: usize,
     ceiling_ms: f64,
     gate_added_p99_ms: f64,
     runs: BTreeMap<String, Run>,
@@ -216,12 +227,24 @@ async fn the_capture_path_stays_within_the_work_bound() {
             call(&off).await;
             call(&on).await;
         }
-        let work = Arc::new(Mutex::new((0usize, 0usize)));
+        // The work of one captured call, with the hooks installed; the timed rounds run without them.
+        let work = Arc::new(Mutex::new((0usize, 0usize, 0usize)));
         let seen = work.clone();
         set_capture_work_hook(Some(Arc::new(move |serialized, scrubbed| {
             let mut w = seen.lock().unwrap_or_else(PoisonError::into_inner);
-            *w = (w.0.max(serialized), w.1.max(scrubbed));
+            *w = (w.0.max(serialized), w.1.max(scrubbed), w.2 + scrubbed);
         })));
+        let steps = Arc::new(AtomicUsize::new(0));
+        let counted = steps.clone();
+        set_matcher_hook(Some(Arc::new(move |_, n| {
+            counted.fetch_add(n, Ordering::Relaxed);
+        })));
+        call(&on).await;
+        set_capture_work_hook(None);
+        set_matcher_hook(None);
+        let (serialized, scrubbed, scrubbed_in_call) = *work.lock().unwrap();
+        let steps = steps.load(Ordering::Relaxed);
+        let steps_per_byte = steps as f64 / scrubbed_in_call.max(1) as f64;
         let (mut without, mut with) = (Vec::new(), Vec::new());
         for round in 0..run.rounds {
             let arms = if round % 2 == 0 {
@@ -240,16 +263,21 @@ async fn the_capture_path_stays_within_the_work_bound() {
                 }
             }
         }
-        set_capture_work_hook(None);
-        let (serialized, scrubbed) = *work.lock().unwrap();
         let added = p99(&with) - p99(&without);
         let excess = with.iter().copied().fold(0.0, f64::max) - quantile(&without, 50);
         println!(
-            "capture-overhead rust {}: added p99 {added:.3} ms (off {:.3}, on {:.3}), slowest excess {excess:.3} ms, serialized {serialized}, scrubbed {scrubbed}",
+            "capture-overhead rust {}: added p99 {added:.3} ms (off {:.3}, on {:.3}), slowest excess {excess:.3} ms, serialized {serialized}, scrubbed {scrubbed}, matcher steps {steps} ({steps_per_byte:.1} per character)",
             shape.id,
             p99(&without),
             p99(&with)
         );
+        let step_bound = scenario.matcher_steps_per_rule_char * rule_count();
+        if steps_per_byte > step_bound as f64 {
+            failures.push(format!(
+                "{}: matcher steps per byte scrubbed: {steps_per_byte:.1} > {step_bound}",
+                shape.id
+            ));
+        }
         if serialized > scenario.work_bound {
             failures.push(format!(
                 "{}: bytes serialized for one field: {serialized} > {}",

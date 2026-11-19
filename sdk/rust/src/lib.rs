@@ -18,6 +18,8 @@ mod client;
 mod export;
 mod keys;
 #[cfg(any(feature = "mcp", feature = "mcp-client"))]
+mod pattern;
+#[cfg(any(feature = "mcp", feature = "mcp-client"))]
 mod scrub;
 
 #[cfg(feature = "mcp")]
