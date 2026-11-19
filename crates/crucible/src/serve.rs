@@ -1164,6 +1164,25 @@ mod tests {
         assert!(env.net.connect(addrs.api, deadline).await.is_err());
     }
 
+    /// The default bound of the recent-span index, in bytes, is at most 10% of the memory this process may use:
+    /// of the container's limit when `/sys/fs/cgroup/memory.max` holds one, as it does in a container started
+    /// with a memory limit.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // The test reads the file the server reads.
+    fn the_default_recent_bound_fits_the_container() {
+        let limit = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok());
+        let bound = default_recent_max_bytes();
+        match limit {
+            Some(limit) => assert!(
+                bound <= limit / 10,
+                "the default recent bound is {bound} bytes, more than 10% of the container's limit of {limit} bytes"
+            ),
+            None => assert!(bound <= 1 << 30, "{bound}"),
+        }
+    }
+
     #[test]
     fn readiness_follows_the_wal() {
         crucible_sim::run(1, |sim| async move {
