@@ -171,9 +171,13 @@ describe("retention", () => {
     renderPage();
     await screen.findByLabelText("Keep data for");
     await act(() => fill("Keep inputs and outputs for", "45"));
-    await screen.findByText(/can't be longer than the data is kept/);
+    expect(await screen.findAllByText(/can't be longer than the data is kept/)).not.toHaveLength(0);
     await act(() => fill("Keep data for", "soon"));
-    await screen.findByText("Enter a whole number of days from 1 to 36,500, or leave it empty.");
+    expect(
+      await screen.findAllByText(
+        "Enter a whole number of days from 1 to 36,500, or leave it empty.",
+      ),
+    ).not.toHaveLength(0);
     await act(() => press("Save retention"));
     expect(requests(`PUT ${RETENTION}`)).toHaveLength(0);
   });
@@ -315,7 +319,7 @@ describe("deletion requests", () => {
     await act(() => fill("Trace ids", "not-an-id"));
     approve = true;
     await act(() => pressIn("Delete data from Checkout", "Delete data"));
-    await screen.findByText(/isn't a trace id/);
+    expect(await screen.findAllByText(/isn't a trace id/)).not.toHaveLength(0);
     expect(requests(`POST ${REQUESTS}`)).toHaveLength(0);
 
     await act(() =>

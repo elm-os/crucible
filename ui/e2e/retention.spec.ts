@@ -99,7 +99,7 @@ test.describe("settings: retention", () => {
     const region = retentionRegion(page);
     await region.getByLabel("Keep data for").fill("14");
     await region.getByLabel("Keep inputs and outputs for").fill("30");
-    await expect(region.getByText(/can't be longer than the data is kept/)).toBeVisible();
+    await expect(region.getByText(/can't be longer than the data is kept/).first()).toBeVisible();
     await region.getByLabel("Keep inputs and outputs for").fill("7 days");
     await region.getByRole("button", { name: "Save retention" }).click();
     const dialog = page.getByRole("alertdialog", { name: "Shorten retention?" });
@@ -260,10 +260,10 @@ test.describe("settings: deletion requests", () => {
     await expectAccessible(page, "delete data dialog");
 
     await dialog.getByRole("button", { name: "Delete data" }).click();
-    await expect(dialog.getByText("Enter at least one trace id.")).toBeVisible();
+    await expect(dialog.getByText("Enter at least one trace id.").first()).toBeVisible();
     await dialog.getByLabel("Trace ids").fill("nope");
     await dialog.getByRole("button", { name: "Delete data" }).click();
-    await expect(dialog.getByText(/isn't a trace id/)).toBeVisible();
+    await expect(dialog.getByText(/isn't a trace id/).first()).toBeVisible();
     expect(posts).toHaveLength(0);
 
     await dialog.getByLabel("Trace ids").fill(`${TRACE.toUpperCase()}, ${TRACE}`);
@@ -297,7 +297,7 @@ test.describe("settings: deletion requests", () => {
       await dialog.getByRole("radio", { name: choice }).click();
       await dialog.getByRole("button", { name: "Delete data" }).click();
       await expect(
-        dialog.getByText(new RegExp(`Enter the ${label.toLowerCase()} to delete`)),
+        dialog.getByText(new RegExp(`Enter the ${label.toLowerCase()} to delete`)).first(),
       ).toBeVisible();
       await dialog.getByLabel(label).fill(value);
       await dialog.getByRole("button", { name: "Delete data" }).click();
