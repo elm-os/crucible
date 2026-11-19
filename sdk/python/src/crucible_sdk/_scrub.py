@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from importlib import resources
 from typing import Any
@@ -328,6 +328,21 @@ class Scrubber:
         return b"".join(encoder.parts).decode("utf-8", "ignore"), encoder.cut
 
 
+@dataclass(frozen=True)
+class LazyObject:
+    """A JSON object whose members are produced while it is encoded, so a capped encoding reads no more of them than
+    the cap holds."""
+
+    members: Iterable[tuple[str, object]]
+
+
+@dataclass(frozen=True)
+class LazyArray:
+    """A JSON array whose items are produced while it is encoded."""
+
+    items: Iterable[object]
+
+
 class _CappedJson:
     def __init__(self, scrubber: Scrubber, max_bytes: int) -> None:
         self._scrubber = scrubber
@@ -358,9 +373,13 @@ class _CappedJson:
             self.cut = True
             return False
         if isinstance(value, Mapping):
-            return self._object(value, depth)
+            return self._object(value.items(), depth)
+        if isinstance(value, LazyObject):
+            return self._object(value.members, depth)
         if isinstance(value, list | tuple):
             return self._array(value, depth)
+        if isinstance(value, LazyArray):
+            return self._array(value.items, depth)
         return self._string(str(value))
 
     def _string(self, value: str, suffix: str = "") -> bool:
@@ -375,10 +394,10 @@ class _CappedJson:
             return False
         return self._emit(text + suffix)
 
-    def _object(self, value: Mapping[Any, Any], depth: int) -> bool:
+    def _object(self, members: Iterable[tuple[Any, Any]], depth: int) -> bool:
         if not self._emit("{"):
             return False
-        for i, (key, item) in enumerate(value.items()):
+        for i, (key, item) in enumerate(members):
             name = key if isinstance(key, str) else str(key)
             if i and not self._emit(","):
                 return False
@@ -391,7 +410,7 @@ class _CappedJson:
                 return False
         return self._emit("}")
 
-    def _array(self, value: Sequence[Any], depth: int) -> bool:
+    def _array(self, value: Iterable[Any], depth: int) -> bool:
         if not self._emit("["):
             return False
         for i, item in enumerate(value):

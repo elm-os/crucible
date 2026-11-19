@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import datetime
+import enum
 import json
 import re
 import time
@@ -12,7 +14,18 @@ from random import Random
 from typing import Any
 
 import pytest
-from mcp_types import CallToolResult, TextContent
+from mcp_types import (
+    Annotations,
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    ContentBlock,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+)
 
 from crucible_sdk import _scrub
 from crucible_sdk._pattern import facts
@@ -234,6 +247,88 @@ def test_a_model_result_is_serialized_no_further_than_the_cap_and_the_margin() -
     finally:
         _scrub.set_work_hook(None)
     assert max(work) <= 16384 + 8192
+
+
+class Tone(enum.Enum):
+    WARM = "warm"
+
+
+def random_json(random: Random, depth: int) -> Any:
+    kind = random.randrange(6 if depth > 2 else 9)
+    if kind == 0:
+        return None
+    if kind == 1:
+        return random.choice([True, False, 0, -7, 2**60, 1.5, -0.0, float("nan"), float("inf")])
+    if kind == 2:
+        return generated(random)
+    if kind == 3:
+        return random.choice([datetime.datetime(2026, 11, 18, 9, 30), Tone.WARM])
+    if kind == 4:
+        return TextContent(type="text", text=generated(random))
+    if kind == 5:
+        return "x" * random.randrange(3000)
+    if kind == 6:
+        return [random_json(random, depth + 1) for _ in range(random.randrange(5))]
+    if kind == 7:
+        return tuple(random_json(random, depth + 1) for _ in range(random.randrange(3)))
+    return {
+        (random.randrange(3) if random.random() < 0.2 else generated(random)[:8]): random_json(random, depth + 1)
+        for _ in range(random.randrange(5))
+    }
+
+
+def random_block(random: Random) -> ContentBlock:
+    meta = random.choice([None, {"k": "v", "n": None}])
+    annotations = random.choice([None, Annotations(audience=["user"], priority=0.5)])
+    kind = random.randrange(5)
+    if kind == 0:
+        return TextContent(type="text", text=generated(random) * random.randrange(1, 80), annotations=annotations)
+    if kind == 1:
+        return ImageContent(type="image", data="iVBORw0K" * random.randrange(400), mime_type="image/png", _meta=meta)
+    if kind == 2:
+        return AudioContent(type="audio", data="UklGRg" * random.randrange(50), mime_type="audio/wav")
+    if kind == 3:
+        resource: TextResourceContents | BlobResourceContents = (
+            TextResourceContents(uri="file:///a.txt", text=generated(random), mime_type=None)
+            if random.random() < 0.5
+            else BlobResourceContents(uri="file:///b.bin", blob="AAEC" * random.randrange(30), mime_type="x/y")
+        )
+        return EmbeddedResource(type="resource", resource=resource, annotations=annotations)
+    return ResourceLink(
+        type="resource_link",
+        name="n",
+        uri="file:///x.txt",
+        title=random.choice([None, "Title"]),
+        size=random.choice([None, 3]),
+        _meta=meta,
+    )
+
+
+def test_the_model_walk_equals_a_dump_followed_by_the_capped_encoder() -> None:
+    middleware = CrucibleMiddleware(
+        server_name="s",
+        server_version="1",
+        capture=(),
+        handle_params={},
+        identify=None,
+        identity="auto",
+        transport=None,
+    )
+    random = Random(18112026)
+    mismatches: list[str] = []
+    for _ in range(1500):
+        result = CallToolResult(
+            content=[random_block(random) for _ in range(random.randrange(5))],
+            structured_content=random_json(random, 0),
+            is_error=random.random() < 0.3,
+            _meta=random.choice([None, {"progress": 1}]),
+        )
+        capture = Capture(max_bytes=random.choice([1, 17, 100, 600, 5000, 1 << 20]))
+        dumped = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+        walked = middleware._result_capture(result, capture)
+        if walked != middleware._result_capture(dumped, capture):
+            mismatches.append(repr(result)[:300])
+    assert mismatches[:3] == []
 
 
 def test_a_long_run_scrubs_within_a_generous_ceiling() -> None:
