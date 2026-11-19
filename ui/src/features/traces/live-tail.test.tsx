@@ -22,6 +22,7 @@ afterEach(() => {
 
 function item(id: string): TraceListItem {
   return {
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     trace_id: id.repeat(32).slice(0, 32),
     name: `trace ${id}`,
     trace_name: "",
