@@ -1058,6 +1058,9 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     };
     // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
     // for them.
+    // The export job's reads come from the telemetry store task once it runs. Only that task and the job tasks
+    // hold the runtime: its reads hold the WAL through the recent index, so a holder that outlived them would
+    // keep the WAL committer from stopping.
     let exports = ExportRuntime::new();
     let jobs = crate::jobs::start(env, control.as_ref(), &exports);
     let cursors = Arc::new(match &clickhouse {
@@ -1137,7 +1140,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
-                exports: exports.clone(),
+                exports,
                 export_service,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
