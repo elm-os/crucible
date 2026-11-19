@@ -606,6 +606,95 @@ test.describe("dashboard: editor", () => {
     });
   });
 
+  test("move and resize by pointer; a drop onto another widget snaps back", async ({
+    page,
+    api,
+  }) => {
+    editor(api);
+    const two = [
+      WIDGETS[0] as Widget,
+      widget("w-errors", {
+        query: { source: "spans", measures: [{ measure: "error_count", aggregation: "sum" }] },
+        display: { kind: "stat", title: "Errors" },
+        layout: { x: 4, y: 0, w: 3, h: 2 },
+      }),
+    ];
+    const patches: unknown[] = [];
+    api.on(ONE_PATH, (route) => {
+      if (route.request().method() === "PATCH") {
+        patches.push(route.request().postDataJSON());
+        return route.fulfill(json(dashboard({ version: 2, widgets: two })));
+      }
+      return route.fulfill(json(dashboard({ widgets: two })));
+    });
+    await page.goto(EDIT_URL);
+    const box = page.locator('[data-widget="w-spans"]');
+    await expect(box).toBeVisible();
+    const start = await box.boundingBox();
+    if (!start) throw new Error("the box has no place");
+    // A box of 3 columns is 3 pitches wide less the 12 px gap.
+    const pitch = (start.width + 12) / 3;
+    const drag = async (name: string, dx: number, dy: number) => {
+      const handle = await page.getByRole("button", { name }).boundingBox();
+      if (!handle) throw new Error(`no ${name}`);
+      const x = handle.x + handle.width / 2;
+      const y = handle.y + handle.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x + dx / 2, y + dy / 2, { steps: 5 });
+      await page.mouse.move(x + dx, y + dy, { steps: 5 });
+      await page.mouse.up();
+    };
+
+    // Onto Errors: refused, and the box is back where it was.
+    await drag("Move Spans", 3 * pitch, 0);
+    await expect(page.getByText(/Spans can't move there/)).toBeAttached();
+    await expect.poll(async () => (await box.boundingBox())?.x).toBeCloseTo(start.x, 0);
+    expect((await box.boundingBox())?.width).toBeCloseTo(start.width, 0);
+    await expect(page.getByText("No changes.")).toBeVisible();
+
+    // Two rows down, then one cell wider and taller from the corner.
+    await drag("Move Spans", 0, 2 * pitch);
+    await expect.poll(async () => (await box.boundingBox())?.y).toBeCloseTo(start.y + 2 * pitch, 0);
+    await drag("Resize Spans", pitch, pitch);
+    await expect
+      .poll(async () => (await box.boundingBox())?.width)
+      .toBeCloseTo(start.width + pitch, 0);
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible();
+    const sent = patches[0] as { widgets: { id: string; layout: unknown }[] };
+    expect(sent.widgets.find((w) => w.id === "w-spans")?.layout).toEqual({
+      x: 0,
+      y: 2,
+      w: 4,
+      h: 3,
+    });
+  });
+
+  test("the sheet says when the measures are loading or failed, and retries them", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(ONE_PATH, json(dashboard({ widgets: [] })));
+    const release = api.hold(SCHEMA_PATH, problem(503, "control_plane_unavailable", "req-schema"));
+    await page.goto(EDIT_URL);
+    await page.getByRole("button", { name: "Add widget" }).click();
+    const drawer = page.getByRole("dialog", { name: "Add a widget" });
+    await expect(drawer.getByRole("status")).toHaveText("Loading the measures");
+    await expect(drawer.getByText("The measures haven't loaded yet.")).toBeVisible();
+    release();
+    await expect(drawer.getByText("The measures couldn't load.")).toBeVisible({ timeout: 10_000 });
+    await expect(drawer.getByText("req-schema")).toBeVisible();
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expectAccessible(page, "sheet without the measures");
+    api.on(SCHEMA_PATH, json(SCHEMA));
+    metricsByQuery(api);
+    await drawer.getByRole("button", { name: "Retry the measures" }).click();
+    await expect(drawer.getByRole("combobox", { name: "Measure" })).toBeVisible();
+    await expect(drawer.getByText("The measures haven't loaded yet.")).toHaveCount(0);
+  });
+
   test("a save after someone else's change: load theirs, or save yours over it", async ({
     page,
     api,

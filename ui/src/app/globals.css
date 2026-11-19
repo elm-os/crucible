@@ -245,8 +245,8 @@ body {
   }
 }
 
-/* The layout editor: boxes placed in cells of one pitch, the width of a column with its 12px gap. A box being
-   dragged follows its draft. */
+/* The layout editor: boxes placed from the inline start in cells of one pitch, the width of a column with its
+   12px gap. A box being dragged follows its draft. */
 [data-slot="dashboard-grid"] {
   --pitch: calc((100cqi + 12px) / 12);
   position: relative;
@@ -255,7 +255,7 @@ body {
 
 [data-slot="dashboard-grid-box"] {
   position: absolute;
-  left: calc(var(--drag-x, var(--box-x)) * var(--pitch));
+  inset-inline-start: calc(var(--drag-x, var(--box-x)) * var(--pitch));
   top: calc(var(--drag-y, var(--box-y)) * var(--pitch));
   width: calc(var(--drag-w, var(--box-w)) * var(--pitch) - 12px);
   height: calc(var(--drag-h, var(--box-h)) * var(--pitch) - 12px);

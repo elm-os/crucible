@@ -502,7 +502,7 @@ function Editor({ project, loaded }: { project: string; loaded: Dashboard }) {
             <WidgetForm
               key={editing}
               project={project}
-              schema={schema.data}
+              schemaQuery={schema}
               range={range}
               initial={
                 editingWidget ?? {

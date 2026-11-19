@@ -7,8 +7,8 @@ use crucible_plan::{Source, SourceSchema};
 use serde_json::{Value, json};
 
 use crate::identity::{As, PASSWORD, call, platform_with, session};
-use crate::world::{World, project};
-use crate::{Reply, api, run, send};
+use crate::world::{NOW, World, project};
+use crate::{Reply, api, post, run, send};
 
 fn path(rest: &str) -> String {
     format!("/api/v1/projects/{}/dashboards{rest}", project(1))
@@ -486,5 +486,65 @@ fn without_a_control_plane_the_built_in_dashboards_are_served() {
         let stored = format!("{base}/0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b");
         let missing = send(&router, Method::GET, &stored, Some(&crate::key())).await;
         missing.assert_problem(404, "not_found");
+    });
+}
+
+// Every query a listed starter holds runs as its widget will: through `POST metrics/query` over a window. A
+// source that gains required members (as `mcp_ops` does with its side) fails here until the starter sets them.
+#[test]
+fn every_listed_starter_widget_runs_through_the_metrics_query() {
+    run(|env| async move {
+        let world = World::new(10);
+        let router = api(&env, &world);
+        let base = format!("/api/v1/projects/{}", project(1));
+        let key = crate::key();
+        let listed = send(
+            &router,
+            Method::GET,
+            &format!("{base}/dashboards"),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(listed.status.as_u16(), 200, "{}", listed.pretty());
+        let starters: Vec<String> = listed.body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d["builtin_key"].as_str().map(str::to_owned))
+            .collect();
+        assert!(starters.len() >= 4, "{starters:?}");
+        let (from, to) = (NOW.saturating_add_micros(-86_400_000_000), NOW);
+        for starter in starters {
+            let one = send(
+                &router,
+                Method::GET,
+                &format!("{base}/dashboards/{starter}"),
+                Some(&key),
+            )
+            .await;
+            assert_eq!(one.status.as_u16(), 200, "{}", one.pretty());
+            for widget in one.body["widgets"].as_array().unwrap() {
+                let Some(query) = widget.get("query") else {
+                    continue;
+                };
+                let mut body = query.clone();
+                body["from"] = json!(from.to_string());
+                body["to"] = json!(to.to_string());
+                let reply = post(
+                    &router,
+                    &format!("{base}/metrics/query"),
+                    &body.to_string(),
+                    &[],
+                )
+                .await;
+                assert_eq!(
+                    reply.status.as_u16(),
+                    200,
+                    "{starter}/{}: {}",
+                    widget["id"],
+                    reply.pretty()
+                );
+            }
+        }
     });
 }

@@ -66,16 +66,13 @@ describe("widget data", () => {
     expect(reduce(series({ values: [null, null] }), false)).toBeNull();
   });
 
-  test("no data means no sum above zero and no percentile at all", () => {
-    expect(hasData(CATALOG, response([series({ values: [0, 0] })]))).toBe(false);
-    expect(hasData(CATALOG, response([series({ values: [0, 2] })]))).toBe(true);
-    const p95 = series({
-      measure: "duration",
-      aggregation: "p95",
-      unit: "us",
-      values: [null, 1200],
-    });
-    expect(hasData(CATALOG, response([p95]))).toBe(true);
+  test("a sum of zero is data; no keys, or a percentile of no bucket, is none", () => {
+    expect(hasData(CATALOG, response([series({ values: [0, 0] })]))).toBe(true);
+    expect(hasData(CATALOG, response([]))).toBe(false);
+    const p95 = (values: (number | null)[]) =>
+      series({ measure: "duration", aggregation: "p95", unit: "us", values });
+    expect(hasData(CATALOG, response([p95([null, 1200])]))).toBe(true);
+    expect(hasData(CATALOG, response([p95([null, null])]))).toBe(false);
   });
 
   test("labels name the measure, its percentile and its key", () => {

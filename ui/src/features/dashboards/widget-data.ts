@@ -95,12 +95,14 @@ export function reduce(series: MetricsSeries, additive: boolean): number | null 
   return null;
 }
 
-/** Whether the answer holds any data: a sum above zero, or any percentile at all. */
+/**
+ * Whether the answer holds any data: a sum over buckets, zero included (no errors is an answer), or a percentile
+ * of at least one bucket. A split that found no keys has no series at all.
+ */
 export function hasData(catalog: readonly SchemaMeasure[], response: MetricsResponse): boolean {
-  return response.series.some((series) => {
-    const value = reduce(series, isAdditive(catalog, series));
-    return value !== null && value !== 0;
-  });
+  return response.series.some((series) =>
+    isAdditive(catalog, series) ? series.points.length > 0 : reduce(series, false) !== null,
+  );
 }
 
 export function isWholeMeta(meta: Meta): boolean {

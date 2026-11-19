@@ -1,4 +1,4 @@
-import { checkServer, mount } from "@ui-sdk/core/testing";
+import { checkDirection, checkServer, mount } from "@ui-sdk/core/testing";
 import { expect, test } from "vitest";
 import { dashboardGrid, disjoint, type GridBoxes } from "./dashboard-grid";
 
@@ -64,6 +64,24 @@ test("arrows on the corner handle resize the box, never below its smallest size"
   }
 });
 
+test("a pointer moves a box by whole cells and resizes it from the corner; a drop onto another box is refused", async () => {
+  const view = mount(dashboardGrid, options, MARKUP);
+  try {
+    // Without a layout in jsdom a cell is 80 px wide.
+    await view.drag(view.part("handle", "a-move") as Element, { by: { x: 0, y: 170 } });
+    expect(view.state.value.a).toEqual({ x: 0, y: 2, width: 4, height: 2 });
+    expect(view.changes.at(-1)).toMatchObject({ reason: "drag" });
+    await view.drag(view.part("handle", "a-move") as Element, { by: { x: 400, y: -160 } });
+    expect(view.state.value.a).toEqual({ x: 0, y: 2, width: 4, height: 2 });
+    expect(view.announced.at(-1)).toMatch(/Spans can't move there/);
+    expect(view.state.moving).toBeNull();
+    await view.drag(view.part("handle", "a-se") as Element, { by: { x: 80, y: 80 } });
+    expect(view.state.value.a).toEqual({ x: 0, y: 2, width: 5, height: 3 });
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an agent moves and resizes only into free room", () => {
   const view = mount(dashboardGrid, options, MARKUP);
   try {
@@ -83,6 +101,7 @@ test("an agent moves and resizes only into free room", () => {
   }
 });
 
-test("renders on the server", () => {
+test("renders on the server and works in both directions", async () => {
   checkServer(dashboardGrid, options, MARKUP);
+  await checkDirection(dashboardGrid, options, MARKUP);
 });

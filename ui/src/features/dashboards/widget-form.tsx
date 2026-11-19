@@ -1,5 +1,6 @@
 "use client";
 
+import type { UseQueryResult } from "@tanstack/react-query";
 import { Button } from "@ui-sdk/react/button";
 import { Field, FieldDescription, FieldLabel } from "@ui-sdk/react/field";
 import { Input } from "@ui-sdk/react/input";
@@ -24,6 +25,8 @@ import type { MetricsSchema } from "@/api/generated/MetricsSchema";
 import type { Widget } from "@/api/generated/Widget";
 import type { WidgetKind } from "@/api/generated/WidgetKind";
 import type { WidgetQuery } from "@/api/generated/WidgetQuery";
+import { asUiError } from "@/api/errors";
+import { FormAlert } from "@/components/form-alert";
 import { AlertIcon } from "@/components/icons";
 import type { Range } from "@/lib/time-range";
 import {
@@ -87,19 +90,20 @@ function fitKind(
 
 export function WidgetForm({
   project,
-  schema,
+  schemaQuery,
   range,
   initial,
   onApply,
   onCancel,
 }: {
   project: string;
-  schema: MetricsSchema | undefined;
+  schemaQuery: UseQueryResult<MetricsSchema>;
   range: Range;
   initial: WidgetDraft;
   onApply: (draft: WidgetDraft) => void;
   onCancel: () => void;
 }) {
+  const schema = schemaQuery.data;
   const sources = schema?.sources ?? [];
   const [kind, setKind] = useState<WidgetKind>(initial.display.kind);
   const [title, setTitle] = useState(initial.display.title);
@@ -139,7 +143,10 @@ export function WidgetForm({
   const problems = [
     title.trim() === "" ? "Give the widget a title." : null,
     markdown && text.trim() === "" ? "Write the text the widget shows." : null,
-    markdown ? null : shapeProblem(kind, { measures, dimensions, topN: keys }, catalog),
+    !markdown && schema === undefined ? "The measures haven't loaded yet." : null,
+    markdown || schema === undefined
+      ? null
+      : shapeProblem(kind, { measures, dimensions, topN: keys }, catalog),
   ].filter((p): p is string => p !== null);
 
   // The preview reads the draft a moment after it stops changing, not at every keystroke.
@@ -209,6 +216,17 @@ export function WidgetForm({
             addresses.
           </FieldDescription>
         </Field>
+      ) : schemaQuery.isPending ? (
+        <output className="text-data text-ink-soft">Loading the measures</output>
+      ) : schemaQuery.isError ? (
+        <FormAlert
+          copy={{
+            title: "The measures couldn't load.",
+            detail: "A widget's query is built from them. Try again in a moment.",
+          }}
+          requestId={asUiError(schemaQuery.error).requestId}
+          action={<Button onClick={() => schemaQuery.refetch()}>Retry the measures</Button>}
+        />
       ) : (
         <fieldset className="flex flex-col gap-4">
           <legend className="mb-2 text-label font-medium text-ink-soft">Query</legend>
