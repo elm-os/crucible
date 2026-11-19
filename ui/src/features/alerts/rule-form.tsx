@@ -38,14 +38,19 @@ import { scopedHref } from "@/components/shell/nav";
 import { formatTime } from "@/lib/format";
 import {
   AGGREGATION_LABEL,
+  CAPTURE_SOURCES,
   COMPARISONS,
-  DIMENSIONS,
+  dimensionsOf,
   formatValue,
   KIND_LABEL,
   MEASURES,
   measureOf,
+  measuresOf,
   NO_DATA,
   NO_DIMENSION,
+  RULE_SOURCES,
+  type RuleSource,
+  SIDES,
   seriesLabel,
   THRESHOLD_UNIT,
   thresholdFromStored,
@@ -128,6 +133,10 @@ function RuleForm({
   const queryClient = useQueryClient();
   const search = useSearchParams();
   const formRef = useRef<HTMLFormElement>(null);
+  // A rule keeps its source; a new one chooses it first.
+  const [source, setSource] = useState<RuleSource>(
+    rule?.source === "mcp_ops" ? "mcp_ops" : "spans",
+  );
   const [measure, setMeasure] = useState(rule?.measure ?? MEASURES[0].value);
   const option = measureOf(measure);
   const [aggregation, setAggregation] = useState(rule?.aggregation ?? option.aggregations[0]);
@@ -139,8 +148,12 @@ function RuleForm({
     queryFn: ({ signal }) => listChannels(project.id, signal),
   });
   const save = useMutation({
-    mutationFn: (input: AlertRuleInput) =>
-      rule ? patchAlert(project.id, rule, input) : createAlert(project.id, input),
+    mutationFn: (input: AlertRuleInput) => {
+      if (!rule) return createAlert(project.id, input);
+      // The patch carries everything but the source, which a rule keeps.
+      const { source: _kept, ...patch } = input;
+      return patchAlert(project.id, rule, patch);
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: alertKeys.rules(project.id) });
       onSaved();
@@ -164,8 +177,19 @@ function RuleForm({
     const dimensions = [String(data.get("dimension_1")), String(data.get("dimension_2"))].filter(
       (dimension, at, all) => dimension !== NO_DIMENSION && all.indexOf(dimension) === at,
     );
+    // An MCP rule reads one side, under a capture source; a spans rule names neither.
+    const capture = CAPTURE_SOURCES.find((item) => item.value === data.get("capture_source"));
+    const mcp: Partial<AlertRuleInput> =
+      source === "mcp_ops"
+        ? {
+            source,
+            side: data.get("side") === "client" ? "client" : "server",
+            capture_source: capture?.value ?? "auto",
+          }
+        : {};
     return {
       name: String(data.get("name")).trim(),
+      ...mcp,
       measure,
       aggregation,
       dimensions,
@@ -225,11 +249,83 @@ function RuleForm({
             <FieldError match="valueMissing">Enter a name, like Checkout errors.</FieldError>
             <FieldError match={failed("name")}>Use 1 to 120 characters.</FieldError>
           </Field>
+          {rule ? null : (
+            <Field>
+              <FieldLabel>Watch</FieldLabel>
+              <Select
+                items={RULE_SOURCES}
+                value={source}
+                onValueChange={(next) => {
+                  if (next === null) return;
+                  const chosen: RuleSource = next === "mcp_ops" ? "mcp_ops" : "spans";
+                  const first = measuresOf(chosen)[0];
+                  setSource(chosen);
+                  setMeasure(first.value);
+                  setAggregation(first.aggregations[0]);
+                  preview.reset();
+                }}
+              >
+                <SelectTrigger className="text-data">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RULE_SOURCES.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          {source === "mcp_ops" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field invalid={failed("side") || undefined}>
+                <FieldLabel>Side</FieldLabel>
+                <Select name="side" items={SIDES} defaultValue={rule?.side ?? "server"}>
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SIDES.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldError match={failed("side")}>Choose Server side or Client side.</FieldError>
+              </Field>
+              <Field>
+                <FieldLabel>Capture source</FieldLabel>
+                <Select
+                  name="capture_source"
+                  items={CAPTURE_SOURCES}
+                  defaultValue={rule?.capture_source ?? "auto"}
+                >
+                  <SelectTrigger className="text-data">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CAPTURE_SOURCES.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Automatic reads each server from its SDK, else its proxy, else OTLP, at every
+                  check. Calls the caller caused never count.
+                </FieldDescription>
+              </Field>
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field invalid={failed("measure") || undefined}>
               <FieldLabel>Measure</FieldLabel>
               <Select
-                items={MEASURES}
+                items={measuresOf(source)}
                 value={measure}
                 onValueChange={(next) => {
                   if (next === null) return;
@@ -242,7 +338,7 @@ function RuleForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {MEASURES.map((item) => (
+                  {measuresOf(source).map((item) => (
                     <SelectItem key={item.value} value={item.value}>
                       {item.label}
                     </SelectItem>
@@ -280,18 +376,19 @@ function RuleForm({
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             {(["dimension_1", "dimension_2"] as const).map((name, at) => (
-              <Field key={name} invalid={failed("dimensions") || undefined}>
+              // Keyed by the source, so that another source starts from None.
+              <Field key={`${source}-${name}`} invalid={failed("dimensions") || undefined}>
                 <FieldLabel>{at === 0 ? "Group by" : "Then by"}</FieldLabel>
                 <Select
                   name={name}
-                  items={DIMENSIONS}
+                  items={dimensionsOf(source)}
                   defaultValue={rule?.dimensions[at] ?? NO_DIMENSION}
                 >
                   <SelectTrigger className="text-data">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {DIMENSIONS.map((item) => (
+                    {dimensionsOf(source).map((item) => (
                       <SelectItem key={item.value} value={item.value}>
                         {item.label}
                       </SelectItem>
@@ -508,7 +605,7 @@ function RuleForm({
               requestId={previewFailure.requestId}
             />
           ) : null}
-          {preview.isSuccess ? <PreviewResult preview={preview.data} /> : null}
+          {preview.isSuccess ? <PreviewResult preview={preview.data} source={source} /> : null}
         </section>
 
         {failure ? (
@@ -528,7 +625,13 @@ function RuleForm({
   );
 }
 
-export function PreviewResult({ preview }: { preview: AlertPreview }) {
+export function PreviewResult({
+  preview,
+  source = "spans",
+}: {
+  preview: AlertPreview;
+  source?: RuleSource;
+}) {
   const breaching = preview.series.filter((series) => series.breach).length;
   if (preview.series.length === 0) {
     return (
@@ -572,8 +675,8 @@ export function PreviewResult({ preview }: { preview: AlertPreview }) {
           </thead>
           <tbody>
             {preview.series.map((series) => (
-              <tr key={seriesLabel(series.key)} className="h-9 border-t border-ash-border">
-                <td className="pe-4">{seriesLabel(series.key)}</td>
+              <tr key={seriesLabel(series.key, source)} className="h-9 border-t border-ash-border">
+                <td className="pe-4">{seriesLabel(series.key, source)}</td>
                 <td className="pe-4 text-end tabular-nums">
                   {formatValue(preview.unit, series.value)}
                 </td>
