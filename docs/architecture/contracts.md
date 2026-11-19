@@ -90,6 +90,7 @@ Crates are named `crucible-<area>` in kebab-case; the binary crate is `crucible`
 | Read | `crucible-plan`, `crucible-recent`, `crucible-query`, `crucible-lifecycle` |
 | Platform | `crucible-config`, `crucible-auth`, `crucible-control`, `crucible-control-pg`, `crucible-api`, `crucible-api-types`, `crucible-cursor`, `crucible-jobs`, `crucible-alerts`, `crucible-notify`, `crucible-egress`, `crucible-sqlws`, `crucible-media`, `crucible-ui-assets` |
 | MCP | `crucible-proxy`, `crucible-mcp-server` |
+| SDK | `crucible-sdk` and its conformance runner `crucible-sdk-conformance` (`publish = false`), in `sdk/rust`: their own Cargo workspace and lockfile, outside the root workspace |
 | Verification | `crucible-sim`, `crucible-conformance`, `crucible-loadgen`, `crucible-fake-collector` |
 | Binary | `crucible` |
 
@@ -128,6 +129,10 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
+| `crucible-proxy` | `crucible-env`, `crucible-records` |
+| `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
+| `crucible-sdk` | none (it depends on no internal crate) |
+| `crucible-sdk-conformance` | `crucible-sdk` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
 | `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
 
@@ -441,6 +446,7 @@ Decisions made while implementing the traits above; they bind every backend.
 | Topic | Rule |
 |---|---|
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
+| `ChildProcess` | Not a field of `Env`: only the proxy uses it, and takes it as an argument. Linux delivers the parent-death signal through a re-exec trampoline (a hidden `crucible proxy exec-child`), so the workspace stays free of `unsafe`; macOS has no parent-death signal. The simulation of a scripted MCP server (seeded chunk splits, stalls, crashes) lives in `crucible-proxy`'s tests; exit codes are covered by the scripted and real-process tests, because `ProxyCore` takes no exit status |
 | Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
 | File operations | Per-file operations (`append`, `read_at`, `sync_data`, `truncate`, `preallocate`) are methods on `File`. `OpenMode::Write` creates a missing file and never truncates |
 | Unknown sync outcome | Dropping a `sync_data` future fails the file, because its outcome is unknown. Mutating disk operations run to completion even when their future is dropped; they are not cancel-safe |
@@ -566,9 +572,9 @@ character boundary.
   report, so the descendants, which carry the model used for pricing, are what is counted; a hand-instrumented span
   of any type that carries usage or a provided cost and has no usage-bearing descendant counts. The rule applies to
   token and cost sums only: span, error and other counts include every span, and every span still stores and shows
-  its own usage and cost. Known limit: a usage-bearing descendant that arrives after its ancestor, or after the
-  descendant set forgot the trace, leaves the ancestor counted as well (a double count); the I7 oracle models the
-  same rule.
+  its own usage and cost. Known limit: a usage-bearing descendant that arrives after its ancestor, or whose frame
+  the WAL has collected (the descendant set holds only the retained prefix, section 5.3), leaves the ancestor
+  counted as well (a double count); the I7 oracle models the same rule.
 - A client retry that re-sends a span produces new LSNs for one span key. The normalizer's duplicate window (section
   5.3) drops a repeat whose `row_digest` equals the remembered one; a repeat with a different digest is kept. Trace
   detail de-duplicates by `span_id` in the Rust tier (greatest `lsn` wins). Aggregates accept the rare duplicate
@@ -1103,7 +1109,7 @@ every table, base and derived, is written by this protocol.
 | Normalizer version | Recorded in the seal. If the binary changed, the new version is used; safe because routing is frozen and pairs land wholesale |
 | Price table | `price_table_version` in the seal records the table the first attempt used; versions are immutable. As with the normalizer version, a replay after a binary change prices with the current bundled table; pairs land wholesale, so costs never mix inside a pair. A batch whose pairs straddle a crash and an upgrade can carry two table versions across its tables, which I7 states as an exception |
 | Duplicate window and first-seen set | Defined over the LSN stream (not wall time) and rebuilt from the retained prefix. Duplicate window: keyed by xxh3-64 of `(project_id, trace_id, span_id)`, value `row_digest`, bounded to 4,000,000 keys. Every sighting of a key, a dropped repeat included, moves it to the newest position; the key last sighted longest ago is evicted first, and every key last sighted below the first retained LSN is forgotten after each collection, so the live state always equals a rebuild from the retained prefix. An admission records the oldest earlier LSN its decisions used (`relies_on`), and the WAL keeps that frame until the deciding frame is checkpointed (section 4.7) |
-| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream, bounded to 4,000,000 entries and held to the retained prefix exactly like the duplicate window (eviction by last sighting, forgetting after each collection, `relies_on` for a marking that used an earlier frame), so a descendant whose frame was collected no longer marks its ancestor (the known limit of 3.1) |
+| Usage descendant set | Per trace, the span ids that have a descendant carrying usage or cost (or already marked): every such span adds its parent id, and within one frame all spans are added before any is marked. Defined over the LSN stream and bounded to 4,000,000 entries. Each id carries a support: the LSN of the frame whose span carries the usage. A mark passing through later frames keeps that support, and an id with several marks keeps the highest. Like the duplicate window, the set is held to the retained prefix: it forgets ids whose support is below the first retained LSN after each collection, evicts the lowest support first (then the lowest key), and a kept span flagged on an earlier frame's support lowers `relies_on` to that LSN. So a descendant whose frame was collected no longer marks its ancestor (the known limit of 3.1) |
 | Tombstones | A replay may drop more rows, never fewer. The deletion executor acts only after the node's checkpoint passes the tombstone (section 13.3) |
 | Partition routing | Section 5.2 |
 | Marker and ingestion columns | Computed from the seal and the frames (`received_at` of the batch's last frame for `marker_at`) |
@@ -1904,8 +1910,10 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 
 SDKs and the proxy send OTLP spans that carry the OTel MCP semantic-convention keys plus `crucible.mcp.*` extension
 keys. **A span becomes an `McpOpRecord` if and only if it has `mcp.method.name`.** A plain semantic-convention span
-from a server with no Crucible wrapper still yields a row, with `capture_source = otlp`. The key registry lives in
-`crucible-records`.
+from a server with no Crucible wrapper still yields a row, with `capture_source = otlp`. The key registry is
+`conformance/registry.json`, shared by every SDK, the proxy and the normalizer: each producer's emitted keys and
+types, and the projector's mapping, are tested against it. Rust code may hold the keys as constants (for example in
+`crucible-records`), as long as those tests pass.
 
 | `McpOpRecord` field | Span or resource key | When absent |
 |---|---|---|
@@ -2909,3 +2917,5 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Dialect contract (3.1, 3.9, 3.10, 6.4, 6.6, 8.9, 10.1 to 10.6, 12.1, 12.2, I7). Additive: dialect tables as layers with scoped sources, the detection confidence scale, new decoders, merge and consumption rules, native source keys for `provider` and `tool_names`, compat ingest routes, the Basic auth rules, and the `span_core` column `usage_aggregate` with its forward-only schema step. Changes behaviour: the request hint is a detection at confidence 60, no longer an override; token and cost sums leave out spans with `usage_aggregate = true` (an observed usage-bearing descendant); a Basic public key that does not match the secret key's row is refused with 401 |
 | v2 | 2026-11-18 | Settled in code by the read IR (8.9): model guardrails, zero fill and its empty values, UTC buckets, compiled sources, filter hash binding, metadata conjuncts, rollup pages without `as_of`, set merge |
 | v2 | 2026-11-18 | Changes behaviour (I7 fix): stage B holds only what the retained prefix holds, evicting by last sighting and forgetting after each collection; admissions record `relies_on` and garbage collection keeps those frames; a failed collection pauses admission until one succeeds (3.1, 4.6, 4.7, 5.3) |
+| v2 | 2026-11-18 | Settled in code by the dialect contract's implementation: the usage descendant set evicts and forgets by support (the LSN of the frame carrying the usage), and the 3.1 known limit covers a descendant whose frame the WAL collected (3.1, 5.3) |
+| v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
