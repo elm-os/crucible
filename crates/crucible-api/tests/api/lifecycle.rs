@@ -2,7 +2,8 @@
 //! each refusal says, the `If-Match` rule, and the idempotency of a deletion request.
 
 use axum::http::Method;
-use crucible_control::KeyScope;
+use crucible_auth::service::SessionVerdict;
+use crucible_control::{KeyScope, OrgRole};
 use serde_json::{Value, json};
 
 use crate::identity::{As, PASSWORD, call, platform_with, session};
@@ -245,6 +246,38 @@ fn a_deletion_request_is_durable_idempotent_and_bound_to_roles_and_scopes() {
         assert_ne!(second.body["id"], id.as_str());
         assert_eq!(second.body["session_id"], "s-1");
 
+        // A project member deletes traces, and only an admin deletes by user or session.
+        let As::Session { cookie, .. } = &p.owner else {
+            panic!("the owner signs in with a session");
+        };
+        let SessionVerdict::Valid(owner) = p.identity.session(cookie).await else {
+            panic!("the owner's session");
+        };
+        let invited = p
+            .identity
+            .invite(&owner, "mel@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        p.identity
+            .accept_invitation(invited.token.as_str(), "Mel", PASSWORD)
+            .await
+            .unwrap();
+        let member = session(&p.identity.login("mel@example.com", PASSWORD).await.unwrap());
+        let by_member = post(&member, json!({"kind": "trace", "trace_ids": [trace]}), &[]).await;
+        assert_eq!(by_member.status, 201, "{:#}", by_member.body);
+        for body in [
+            json!({"kind": "user", "user_id": "ada"}),
+            json!({"kind": "session", "session_id": "s-1"}),
+        ] {
+            let refused = post(&member, body, &[]).await;
+            refused.assert_problem(403, "forbidden");
+            assert!(
+                detail(&refused).contains("`delete_by_user` permission"),
+                "{}",
+                detail(&refused)
+            );
+        }
+
         // A key with the `delete` scope deletes traces and by user.
         let deleter = p
             .identity
@@ -304,7 +337,7 @@ fn a_deletion_request_is_durable_idempotent_and_bound_to_roles_and_scopes() {
             .iter()
             .map(|request| request["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, ["user", "session", "trace"]);
+        assert_eq!(kinds, ["user", "trace", "session", "trace"]);
         assert_eq!(list.body["next_cursor"], Value::Null);
         let page = call(
             &p.router,
@@ -326,7 +359,7 @@ fn a_deletion_request_is_durable_idempotent_and_bound_to_roles_and_scopes() {
             &[],
         )
         .await;
-        assert_eq!(rest.body["data"][0]["id"], id.as_str());
+        assert_eq!(rest.body["data"][1]["id"], id.as_str());
         assert_eq!(rest.body["next_cursor"], Value::Null);
         call(
             &p.router,

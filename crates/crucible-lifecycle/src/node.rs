@@ -133,7 +133,7 @@ impl NodeState {
         })
         .await?;
         let open = repo.open_requests().await?;
-        self.pending.replace(&open);
+        self.pending.replace(&open, now);
         let mut acks: BTreeMap<DeletionRequestId, NodeAck> = repo
             .node_acks(epoch)
             .await?

@@ -802,9 +802,15 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         None => service,
     };
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
-    gate.mcp
-        .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
     let settings = settings_source(lifecycle.as_ref());
+    gate.mcp.open(
+        &env,
+        service.clone(),
+        mcp_keys,
+        mcp_cursors,
+        Arc::clone(&settings),
+        mcp,
+    );
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
             &env,
@@ -1795,6 +1801,7 @@ mod tests {
             service,
             Arc::clone(&app.keys),
             cursors,
+            Arc::new(StaticProjectSettings::default()),
             McpConfig::default(),
         );
 
@@ -1862,9 +1869,14 @@ mod tests {
         let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
         let app = test_app_with(env, keys, Arc::clone(&cursors)).await;
         let (keys, service) = (Arc::clone(&app.keys), empty_store(env, &app));
-        app.gate
-            .mcp
-            .open(env, service, keys, cursors, McpConfig::default());
+        app.gate.mcp.open(
+            env,
+            service,
+            keys,
+            cursors,
+            Arc::new(StaticProjectSettings::default()),
+            McpConfig::default(),
+        );
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await

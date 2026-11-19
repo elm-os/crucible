@@ -5,6 +5,7 @@
 #![cfg(test)]
 
 mod facts;
+mod hidden;
 mod list;
 mod metrics;
 mod payload;

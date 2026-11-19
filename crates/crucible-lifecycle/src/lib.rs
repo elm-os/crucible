@@ -42,7 +42,7 @@ pub use config::{LifecycleConfig, Mutant};
 pub use deletion::{PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};
-pub use pending::{PendingDeletion, PendingDeletions, RetentionSnapshot};
+pub use pending::{KEEP_AFTER_APPLIED, PendingDeletion, PendingDeletions, RetentionSnapshot};
 pub use reach::{OTHER_PLACES, Reach, final_reach, page_reach, retention_tables};
 pub use retention::{Decision, decide};
 pub use service::{

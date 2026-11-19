@@ -12,6 +12,8 @@ is in [`methodology.md`](methodology.md); the job runners below the executors ar
 | Executors | `crates/crucible-lifecycle` | The three leader jobs under the `lifecycle` lease, the node timer, the service |
 | Unit and property tests | `crates/crucible-lifecycle/src`, `crates/crucible-plan/src/hidden.rs` | The drop-or-delete decision, the partitions of a span of time, the reach list as data, the predicates of a delete, the pending-deletion set, the predicate a pending deletion adds to a plan |
 | Simulation | `crucible_sim::lifecycle_sim`, `crates/crucible-sim/tests/lifecycle_dst.rs` | The real jobs and the real service on several nodes over `ChModel` and `PgModel` under faults, with the oracle and the mutants |
+| Directed scenarios | `crates/crucible-sim/tests/lifecycle_directed.rs` | One node with the real WAL and the real shipper: the tombstone is a durable frame that reads back as the request, the checkpoint passes it on a node that receives nothing else, and a deletion by trace runs to `completed` |
+| Read services | `crates/crucible-query/tests/services/hidden.rs` | Trace detail, the trace list and the payload route under a pending-deletion set, from the recent index and from the store |
 | Differential, ClickHouse | The row "ChModel differential: retention and deletion" of `crucible-conformance` | The reads and maintenance calls the executors issue, on the model and on ClickHouse 26.3, 26.8 and latest |
 | Differential, Postgres | The `lifecycle` script of `crucible-conformance` | Every statement of `LifecycleRepo` on `PgModel` and on Postgres 15 and 18 |
 | Routes | `crates/crucible-api/tests/api/lifecycle.rs` | Roles and scopes, `If-Match`, idempotency and every refusal, over `PgModel` |
@@ -84,8 +86,9 @@ without it and must hold.
 
 ## What the simulation does not cover
 
-- The real stage B and shipper. They do not act on a `Tombstone` frame yet: the frame passes like any control
-  frame. The simulation's stage B is a model of the two rules above, so invariant I9 holds end to end in the binary
+- The two rules of stage B in the real normalizer and shipper. The real shipper seals a `Tombstone` frame, so
+  its checkpoint passes it (the directed scenarios run that path), and it applies no tombstone to the frames after
+  it. The simulation's stage B is a model of the two rules above, so invariant I9 holds end to end in the binary
   only once the normalizer and the shipper implement them.
 - Replay of retained segments, requeue from quarantine and `crucible wal drain`.
 - Comments, media and export files, which this deployment does not hold; a completed request reports each as

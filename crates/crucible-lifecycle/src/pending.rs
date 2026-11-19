@@ -45,6 +45,12 @@ impl PendingDeletion {
     }
 }
 
+/// How long a request stays in the pending-deletion set after its deletes have finished: the longest
+/// visibility grace of the recent-span index (10 s), with room for a node clock that is minutes off the
+/// leader's.
+pub const KEEP_AFTER_APPLIED: std::time::Duration = std::time::Duration::from_secs(600);
+const KEEP_AFTER_APPLIED_MICROS: i64 = 600_000_000;
+
 /// The pending-deletion set of one node.
 #[derive(Debug, Default)]
 pub struct PendingDeletions {
@@ -76,12 +82,23 @@ impl PendingDeletions {
         *requests = Arc::new(next);
     }
 
-    /// Replaces the set with the open requests of Postgres. A request stays in the set until its deletes
-    /// have finished (`applied`): from then on the store itself hides its rows.
-    pub fn replace(&self, open: &[DeletionRequest]) {
+    /// Replaces the set with the open requests of Postgres, read at `now` on this node's clock. A request
+    /// stays in the set until its deletes have finished (`applied`), when the store itself hides its rows,
+    /// and for [`KEEP_AFTER_APPLIED`] more: the recent-span index can still hold its spans for the
+    /// visibility grace after their checkpoint.
+    pub fn replace(&self, open: &[DeletionRequest], now: Timestamp) {
+        let lingers = |request: &DeletionRequest| {
+            request.state == DeletionState::Applied
+                && request
+                    .updated_at
+                    .saturating_add_micros(KEEP_AFTER_APPLIED_MICROS)
+                    > now
+        };
         let next = open
             .iter()
-            .filter(|r| matches!(r.state, DeletionState::Pending | DeletionState::Logged))
+            .filter(|r| {
+                matches!(r.state, DeletionState::Pending | DeletionState::Logged) || lingers(r)
+            })
             .map(|r| (r.id, pending(r)))
             .collect();
         *self
@@ -246,9 +263,13 @@ mod tests {
             DeletionSelector::Session("u".to_owned()),
             DeletionState::Applied,
         );
-        set.replace(&[mine.clone(), logged, applied]);
+        // The applied request last changed at the epoch: it lingers for ten minutes, then leaves the set.
+        let open = [mine.clone(), logged, applied];
+        set.replace(&open, Timestamp::from_micros(599_999_999));
+        assert_eq!(set.len(), 3);
+        set.replace(&open, Timestamp::from_micros(600_000_000));
         assert_eq!(set.len(), 2);
-        set.replace(&[]);
+        set.replace(&[], Timestamp::EPOCH);
         assert!(set.is_empty());
     }
 
