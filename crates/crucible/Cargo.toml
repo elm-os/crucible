@@ -14,6 +14,8 @@ wal-uring = ["crucible-env-prod/wal-uring"]
 embed-ui = ["crucible-ui-assets/embed-ui"]
 
 [dependencies]
+# The CPU budget's shares per stage.
+crucible-admission = { workspace = true }
 # Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
 crucible-alerts = { path = "../crucible-alerts" }
 crucible-api = { workspace = true }
