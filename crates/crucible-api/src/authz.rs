@@ -186,7 +186,7 @@ pub const ROUTES: &[RouteAccess] = &[
     route(
         "GET",
         "/api/v1/projects/{project_id}/channels",
-        Project(ProjectPermission::Read),
+        Project(ProjectPermission::EditContent),
     ),
     route(
         "POST",

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crucible_control::{AlertEvent, AlertRule, AlertSeriesState, ControlStore, TxError};
 use crucible_env::Env;
-use crucible_records::{AlertRuleId, ProjectId, TimeWindow, Timestamp, Uuid};
+use crucible_records::{AlertRuleId, ChannelId, ProjectId, TimeWindow, Timestamp, Uuid};
 
 use crate::schedule::EVALUATION_LAG;
 use crate::source::SeriesSource;
@@ -122,8 +122,15 @@ impl Alerts {
         }
     }
 
-    /// Everything about the input that is not allowed.
-    async fn check(&self, project_id: ProjectId, input: &RuleInput) -> Result<String, AlertError> {
+    /// Everything about the input that is not allowed. Returns the name and the channels to store. A channel
+    /// that no longer exists is refused when the input adds it, and dropped when the rule already had it
+    /// (`had`): its channel was deleted, and the rule must stay editable.
+    async fn check(
+        &self,
+        project_id: ProjectId,
+        input: &RuleInput,
+        had: &[ChannelId],
+    ) -> Result<(String, Vec<ChannelId>), AlertError> {
         let mut issues = input.spec.issues();
         let name = input.name.trim();
         if name.is_empty()
@@ -133,8 +140,11 @@ impl Alerts {
             issues.push(issue("name", "a name of 1 to 120 characters is required"));
         }
         let channels = self.store.channels().list(project_id).await?;
+        let mut kept = Vec::new();
         for wanted in &input.spec.channels {
-            if !channels.iter().any(|channel| channel.id == *wanted) {
+            if channels.iter().any(|channel| channel.id == *wanted) {
+                kept.push(*wanted);
+            } else if !had.contains(wanted) {
                 issues.push(issue(
                     "channels",
                     format!("the channel {wanted} does not exist in this project"),
@@ -142,7 +152,7 @@ impl Alerts {
             }
         }
         if issues.is_empty() {
-            Ok(name.to_owned())
+            Ok((name.to_owned(), kept))
         } else {
             Err(AlertError::Invalid(issues))
         }
@@ -173,7 +183,9 @@ impl Alerts {
         project_id: ProjectId,
         input: RuleInput,
     ) -> Result<RuleView, AlertError> {
-        let name = self.check(project_id, &input).await?;
+        let (name, channels) = self.check(project_id, &input, &[]).await?;
+        let mut input = input;
+        input.spec.channels = channels;
         let now = self.env.clock.wall_now();
         let rule = AlertRule {
             id: AlertRuleId::from_uuid(self.env.new_id()),
@@ -211,8 +223,10 @@ impl Alerts {
         if rule.version != expected {
             return Err(AlertError::VersionMismatch);
         }
-        let name = self.check(project_id, &input).await?;
         let before = RuleSpec::from_doc(&rule.spec)?;
+        let (name, channels) = self.check(project_id, &input, &before.channels).await?;
+        let mut input = input;
+        input.spec.channels = channels;
         let same_measurement = RuleSpec {
             channels: before.channels.clone(),
             renotify_secs: before.renotify_secs,

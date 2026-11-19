@@ -345,6 +345,13 @@ describe("channels", () => {
     expect(screen.getByRole("alert").textContent).toContain("Crucible won't call that address.");
   });
 
+  test("a viewer gets an explanation, and nothing is fetched", () => {
+    navigation.search = `project=${PROJECT_B}`;
+    renderPage(<ChannelsSettings />);
+    expect(screen.getByText("Only project members and admins see channels.")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("members see the channels, without their targets or any control", async () => {
     const session = sessionInfo();
     setAuth({

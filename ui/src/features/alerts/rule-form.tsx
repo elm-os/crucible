@@ -177,7 +177,10 @@ function RuleForm({
       no_data: isNoData(noData) ? noData : "keep",
       no_data_for_secs: seconds(data, "no_data_for"),
       renotify_secs: Number(data.get("renotify")),
-      channels: [...chosen],
+      // A channel that was deleted since the rule was saved is not in the list, and is left out.
+      channels: channels.data
+        ? chosen.filter((id) => channels.data.data.some((channel) => channel.id === id))
+        : [...chosen],
     };
   };
 

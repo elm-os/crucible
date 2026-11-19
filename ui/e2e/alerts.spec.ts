@@ -583,17 +583,12 @@ test.describe("alerts: channels", () => {
     await expect(channels.locator('[data-channel="On call"]')).toBeVisible();
   });
 
-  test("a viewer sees that channels exist, without targets or controls", async ({ page, api }) => {
+  test("a viewer gets an explanation, and no channel is requested", async ({ page, api }) => {
     signedIn(api);
-    api.on(
-      new RegExp(`/projects/${PROJECT_B}/channels$`),
-      json({ data: [channel({ url: undefined })] }),
-    );
     await page.goto(`/alerts/channels/?project=${PROJECT_B}`);
-    const channels = page.getByRole("region", { name: "Channels for Search" });
-    await expect(channels.locator('[data-channel="On call"]')).toContainText("Webhook");
-    await expect(channels.getByRole("button")).toHaveCount(0);
-    await expect(page.getByText(/10\.0\.0\.8/)).toHaveCount(0);
+    await expect(page.getByText("Only project members and admins see channels.")).toBeVisible();
+    expect(api.calls.filter((call) => call.includes("/channels"))).toEqual([]);
+    await expectAccessible(page, "channels without permission");
   });
 });
 

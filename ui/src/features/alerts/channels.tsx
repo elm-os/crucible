@@ -38,7 +38,7 @@ import type { SessionProject } from "@/api/generated/SessionProject";
 import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { AlertIcon, CheckIcon } from "@/components/icons";
-import { Section } from "@/components/section";
+import { Section, SectionFrame } from "@/components/section";
 import { ConfirmDialog } from "@/features/settings/confirm-dialog";
 import { RowsSkeleton } from "@/features/settings/rows-skeleton";
 import { ShowOnce } from "@/features/settings/show-once";
@@ -71,7 +71,21 @@ const SAVE_COPY: CopyByCode = {
 
 export function ChannelsSettings() {
   return (
-    <AlertsAccess title={TITLE}>{(project) => <ChannelsSection project={project} />}</AlertsAccess>
+    <AlertsAccess title={TITLE}>
+      {(project) =>
+        // Listing channels needs the permission to edit rules (contract 12.6), so nothing is fetched.
+        project.permissions.includes("edit_content") || project.permissions.includes("channels") ? (
+          <ChannelsSection project={project} />
+        ) : (
+          <SectionFrame title={`Channels for ${project.name}`}>
+            <EmptyState kind="unavailable" title="Only project members and admins see channels.">
+              Channels hold secrets. Ask an admin of {project.name} for the member role to pick
+              channels for a rule, or the admin role to manage them.
+            </EmptyState>
+          </SectionFrame>
+        )
+      }
+    </AlertsAccess>
   );
 }
 

@@ -2223,7 +2223,7 @@
           "channels"
         ],
         "summary": "List channels",
-        "description": "The channels of the project. The URL of a webhook and the recipients of an email channel are left out for\ncallers who may not manage channels.",
+        "description": "The channels of the project, for whoever edits alert rules. The URL of a webhook and the recipients of an\nemail channel are left out for callers who may not manage channels.",
         "operationId": "list_channels",
         "parameters": [
           {
@@ -2247,6 +2247,16 @@
               }
             }
           },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "`not_found`, or `feature_disabled` without a control plane.",
             "content": {
@@ -2261,9 +2271,6 @@
         "security": [
           {
             "session": []
-          },
-          {
-            "project_key": []
           }
         ]
       },

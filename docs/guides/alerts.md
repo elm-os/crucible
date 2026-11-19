@@ -39,7 +39,9 @@ Viewers read rules, their history and the preview. Members and admins create and
 
 ## Channels
 
-Project admins manage channels, because channels hold secrets.
+Project admins manage channels, because channels hold secrets. Members see the channels' names and states, so
+they can pick them for a rule. Deleting a channel takes it off the rules that named it at their next edit; until
+then those rules skip it.
 
 | Kind | What you enter | Secret |
 |---|---|---|

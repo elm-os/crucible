@@ -334,11 +334,11 @@ fn channels_show_their_secret_once_and_refuse_targets_with_the_setting_that_allo
         assert_eq!(read.body["url"], "http://10.0.0.8:9000/hook");
         assert!(read.body.get("signing_secret").is_none(), "{:#}", read.body);
 
-        // A viewer and a key see that the channel exists, not where it points; neither manages channels.
+        // Channels hold secrets: a viewer and a key neither list nor manage them.
         for who in [&viewer, &p.key] {
-            let list = call(&p.router, Method::GET, &path("/channels"), who, None, &[]).await;
-            assert_eq!(list.body["data"][0]["name"], "On call", "{:#}", list.body);
-            assert!(list.body["data"][0].get("url").is_none());
+            call(&p.router, Method::GET, &path("/channels"), who, None, &[])
+                .await
+                .assert_problem(403, "forbidden");
             post(who, "/channels", webhook.clone())
                 .await
                 .assert_problem(403, "forbidden");
@@ -414,6 +414,13 @@ fn channels_show_their_secret_once_and_refuse_targets_with_the_setting_that_allo
         limited.assert_problem(429, "rate_limited");
         assert!(limited.header("retry-after").is_some());
 
+        // A rule that notifies the channel stays editable after the channel is deleted: the dead id is
+        // dropped, while adding a channel that does not exist is still refused.
+        let mut body = rule_body();
+        body["channels"] = json!([id]);
+        let created = post(&p.owner, "/alerts", body).await;
+        assert_eq!(created.status.as_u16(), 201, "{:#}", created.body);
+        let rule = path(&format!("/alerts/{}", created.body["id"].as_str().unwrap()));
         let deleted = call(
             &p.router,
             Method::DELETE,
@@ -424,5 +431,27 @@ fn channels_show_their_secret_once_and_refuse_targets_with_the_setting_that_allo
         )
         .await;
         assert_eq!(deleted.status.as_u16(), 204);
+        let off = call(
+            &p.router,
+            Method::PATCH,
+            &rule,
+            &p.owner,
+            Some(json!({ "enabled": false })),
+            &[("if-match", "\"1\"")],
+        )
+        .await;
+        assert_eq!(off.status.as_u16(), 200, "{:#}", off.body);
+        assert_eq!(off.body["channels"], json!([]));
+        let stranger = Uuid::from_v7_parts(1_800_000_000_000, 77).to_string();
+        call(
+            &p.router,
+            Method::PATCH,
+            &rule,
+            &p.owner,
+            Some(json!({ "channels": [stranger] })),
+            &[("if-match", "\"2\"")],
+        )
+        .await
+        .assert_problem(422, "validation_failed");
     });
 }

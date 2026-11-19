@@ -1,8 +1,9 @@
 //! Notification channels: `projects/{project_id}/channels/...` (contract 12.6).
 //!
-//! Listing channels needs `read`, so that anyone who edits a rule can pick from them; the URL of a webhook and
-//! the recipients of an email channel are shown only to callers with the `channels` permission. Everything
-//! else, test-send included, needs `channels`: project admins, never an API key (contracts 11.3 and 11.6).
+//! Listing channels needs `edit_content`, so that whoever edits a rule can pick from them; the URL of a webhook
+//! and the recipients of an email channel are shown only to callers with the `channels` permission. Everything
+//! else, test-send included, needs `channels`: project admins. No API key holds either permission (contracts
+//! 11.3 and 11.6).
 //! A channel's secret is never read back. A target the egress policy refuses is `ssrf_blocked`, with the
 //! reason as the error's code and the setting that allows it in its message (contract 1.7).
 
@@ -20,7 +21,7 @@ use serde_json::Value;
 use utoipa::OpenApi;
 
 use super::alerts::store_problem;
-use crate::access::{ApiState, Channels, Principal, Read, Scoped};
+use crate::access::{ApiState, Channels, EditContent, Principal, Scoped};
 use crate::control::{ApiJson, etag, if_match, version};
 use crate::problem::{ApiError, field_error};
 
@@ -169,8 +170,8 @@ fn target(
 
 /// List channels
 ///
-/// The channels of the project. The URL of a webhook and the recipients of an email channel are left out for
-/// callers who may not manage channels.
+/// The channels of the project, for whoever edits alert rules. The URL of a webhook and the recipients of an
+/// email channel are left out for callers who may not manage channels.
 #[utoipa::path(
     get,
     path = "/api/v1/projects/{project_id}/channels",
@@ -179,13 +180,14 @@ fn target(
     params(("project_id" = String, Path, description = "The project id.")),
     responses(
         (status = 200, description = "The channels.", body = wire::ChannelList),
+        (status = 403, description = "`forbidden`.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "`not_found`, or `feature_disabled` without a control plane.", body = Problem, content_type = "application/problem+json"),
     ),
-    security(("session" = []), ("project_key" = [])),
+    security(("session" = [])),
 )]
 pub(crate) async fn list_channels(
     State(state): State<ApiState>,
-    scoped: Scoped<Read>,
+    scoped: Scoped<EditContent>,
 ) -> Result<Json<wire::ChannelList>, ApiError> {
     let rid = scoped.request_id;
     let project_id = scoped.scope.project_id();
