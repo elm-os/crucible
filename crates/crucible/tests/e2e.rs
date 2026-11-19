@@ -844,6 +844,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
                 flavour: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: Duration::from_secs(10),
+                idle_timeout: None,
             },
         ),
         project: project.to_owned(),

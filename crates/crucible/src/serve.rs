@@ -644,6 +644,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     tracing::info!(
         version = format!("{}.{}", facts.version.major, facts.version.minor),
         flavour = ?facts.flavour,
+        idle_timeout = ?store.idle_timeout(),
         "the telemetry store passed startup detection and the self-tests"
     );
 

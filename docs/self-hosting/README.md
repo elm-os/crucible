@@ -113,6 +113,9 @@ service. Two notes for containers:
   and `crucible config print` shows the effective values with secrets redacted.
 - Secrets can come from files instead of the environment: `--clickhouse-password-file`, `--postgres-password-file`
   and `--master-key-file`, for example from Docker secrets mounted under `/run/secrets/`.
+- Idle connections to ClickHouse are kept a little less than the server's `keep_alive_timeout`. A balancer between
+  Crucible and ClickHouse that drops idle connections sooner needs `CRUCIBLE_CLICKHOUSE_IDLE_TIMEOUT` (seconds)
+  below its own idle timeout.
 - The recent-span index takes 10% of the machine's memory, at most 1 GiB, by default. The server reads the host's
   total memory, not a container limit, so a container with a memory limit should pass `--recent-max-bytes` below it.
 

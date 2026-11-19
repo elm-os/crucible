@@ -168,6 +168,9 @@ Startup, in order:
 3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
    one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
    logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.
+   Detection also reads the server's `keep_alive_timeout`, and from then on an idle connection to ClickHouse is
+   kept 1 s less than that (2 s when the value cannot be read). `clickhouse.idle_timeout`, in seconds, sets it
+   instead, for a balancer in front of ClickHouse that drops idle connections sooner than the server does.
 4. The recent-span index is created, the shipper starts, the API is mounted over the store and ingest opens. The
    shipper replays the retained WAL: sealed batches without a checkpoint are probed and shipped again with their
    original tokens, and the replay also refills the recent-span index.

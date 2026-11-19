@@ -113,6 +113,12 @@ pub const SETTINGS: &[Setting] = &[
         "a file that holds the ClickHouse admin user's password",
     ),
     plain(
+        "clickhouse.idle_timeout",
+        None,
+        "seconds an idle connection to ClickHouse is kept for the next statement; set it below the idle timeout \
+         of a balancer in front of the store (default: a margin below the server's keep_alive_timeout)",
+    ),
+    plain(
         "postgres.url",
         None,
         "postgres://user@host:port/database of the control plane; add ?sslmode=require for TLS",

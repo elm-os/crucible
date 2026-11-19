@@ -136,6 +136,7 @@ impl Ctx {
             flavour: Some(flavour),
             tls_roots: TlsRoots::WebPki,
             connect_timeout: Duration::from_secs(10),
+            idle_timeout: None,
         };
         Ok(Self {
             env: env.clone(),
@@ -347,6 +348,14 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "Idle connections: reads 3 s apart share one connection",
         keep_alive::reuse(&ctx)
+    );
+    row!(
+        "Idle connections: a pool timeout above the server's fails no read",
+        keep_alive::above_server(&ctx)
+    );
+    row!(
+        "A read that could not be sent is sent once more",
+        keep_alive::resend(&ctx)
     );
     outcomes
 }
