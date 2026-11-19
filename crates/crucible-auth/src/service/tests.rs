@@ -499,7 +499,12 @@ fn projects_are_created_with_their_salt() {
         assert_eq!((first.len(), second.len()), (32, 32));
         assert_ne!(first, second, "each project has a salt of its own");
         // Bound to its project: one project's row does not open as another's.
-        let row = model.project_salts().get(project.id).await.unwrap().unwrap();
+        let row = model
+            .project_salts()
+            .get(project.id)
+            .await
+            .unwrap()
+            .unwrap();
         let aad = format!("{}\0project_salt", default.id.uuid());
         let sealed = Sealed {
             key_id: row.key_id,

@@ -1074,7 +1074,9 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let waits = |sent: &SentSpan| {
         sent.project == project
             && awaited.iter().any(|(p, trace, parent)| {
-                *p == project && *trace == sent.info.trace && parent[..] == sent.wire.parent_span_id[..]
+                *p == project
+                    && *trace == sent.info.trace
+                    && parent[..] == sent.wire.parent_span_id[..]
             })
     };
     let exposes = |sent: &SentSpan| {

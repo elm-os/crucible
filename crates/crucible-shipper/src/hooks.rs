@@ -101,8 +101,10 @@ pub trait ProjectSalts: fmt::Debug + Send + Sync {
     /// An error means the store did not answer, or the stored salt does not open: the frame that needs the salt
     /// waits and the shipper asks again, because a row hashed without its salt could not be told from one of
     /// another attempt. A hook that has loaded the project's salt never answers with an error.
-    fn salt(&self, project: ProjectId)
-    -> BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>>;
+    fn salt(
+        &self,
+        project: ProjectId,
+    ) -> BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>>;
 }
 
 /// No control store: ingest-only mode.
