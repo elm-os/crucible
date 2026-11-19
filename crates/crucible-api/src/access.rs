@@ -58,6 +58,10 @@ pub(crate) struct ApiState {
     pub(crate) idempotency: Arc<Keys>,
     /// The SQL workspace; `None` when it is not configured.
     pub(crate) sql: Option<SqlWorkspace>,
+    /// Alert rules and channels; `None` without a control plane.
+    pub(crate) alerts: Option<crate::AlertsApi>,
+    /// Retention and deletion; `None` without a control plane.
+    pub(crate) lifecycle: Option<crucible_lifecycle::Service>,
     /// Exports; `None` without a control plane, which holds them.
     pub(crate) exports: Option<Exports>,
 }
@@ -79,6 +83,18 @@ impl ApiState {
                 request_id,
                 ProblemCode::TelemetryStoreUnavailable,
                 "no telemetry store is configured",
+            )
+        })
+    }
+
+    /// Alert rules and channels, or `feature_disabled` with how to turn them on.
+    pub(crate) fn alerts(&self, request_id: RequestId) -> Result<&crate::AlertsApi, ApiError> {
+        self.alerts.as_ref().ok_or_else(|| {
+            ApiError::new(
+                request_id,
+                ProblemCode::FeatureDisabled,
+                "alerts and channels need a control plane and a master key; set postgres.url \
+                 (CRUCIBLE_POSTGRES_URL) and CRUCIBLE_MASTER_KEY",
             )
         })
     }
@@ -261,12 +277,16 @@ permissions! {
     WriteFacts => WriteFacts,
     /// API keys, project settings and project members.
     Manage => Manage,
-    /// Create and edit saved queries. Keys never hold it.
+    /// Delete traces.
+    DeleteTraces => DeleteTraces,
+    /// Create and edit saved queries and alert rules. Keys never hold it.
     EditContent => EditContent,
     /// Run ad hoc SQL.
     RunSql => RunSql,
     /// Run a project-visible saved query with its declared parameters.
     RunSavedQuery => RunSavedQuery,
+    /// Manage channels and test-send. Keys never hold it.
+    Channels => Channels,
     /// Create exports.
     CreateExports => Export,
 }
@@ -358,7 +378,8 @@ impl Project {
         Ok(Self {
             request_id: scoped.request_id,
             author,
-            ctx: ReadContext::new(scoped.scope, settings.retention, caller),
+            ctx: ReadContext::new(scoped.scope, settings.retention, caller)
+                .with_floors(settings.floors),
             settings,
             path: scoped.path,
         })

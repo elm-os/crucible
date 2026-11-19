@@ -3,7 +3,7 @@
 //! through the recent index (contract 8.6), so a payload is readable as soon as its span is.
 
 use crucible_env::QueryError;
-use crucible_plan::{PayloadField, PayloadRangeRequest, Value, payload_range};
+use crucible_plan::{HiddenSelector, PayloadField, PayloadRangeRequest, Value, payload_range};
 use crucible_records::{IoShape, SpanId, TableId, Timestamp, TraceId};
 use crucible_schema::{Column, SpanCoreCol};
 
@@ -95,6 +95,14 @@ impl QueryService {
             return Err(QueryServiceError::Validation("range"));
         }
         let consistency = self.consistency();
+        // A payload is read by its key, which no predicate can narrow: a trace under a pending deletion has
+        // no payload to give (contract 13.4).
+        let deleted = read.hidden.iter().any(|hidden| {
+            matches!(&hidden.selector, HiddenSelector::Traces(ids) if ids.contains(&query.trace_id))
+        });
+        if deleted {
+            return Err(QueryServiceError::NotFound);
+        }
         let request = PayloadRangeRequest {
             trace_id: query.trace_id,
             span_id: query.span_id,
@@ -123,6 +131,17 @@ impl QueryService {
                 .ok()
                 .flatten()
                 .filter(|record| record.core.start_time == query.start_time)
+                .filter(|record| {
+                    let core = &record.core;
+                    !read.hidden.iter().any(|hidden| {
+                        hidden.hides(
+                            core.trace_id,
+                            &core.user_id,
+                            &core.session_id,
+                            core.ingestion.received_at,
+                        )
+                    })
+                })
         } else {
             None
         };

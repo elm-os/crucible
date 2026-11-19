@@ -76,8 +76,18 @@ fn jobs() {
 }
 
 #[test]
+fn alerts() {
+    insta::assert_snapshot!(transcript("alerts"));
+}
+
+#[test]
+fn lifecycle() {
+    insta::assert_snapshot!(transcript("lifecycle"));
+}
+
+#[test]
 fn every_script_has_a_test() {
-    assert_eq!(SCRIPTS.len(), 9);
+    assert_eq!(SCRIPTS.len(), 11);
 }
 
 #[test]

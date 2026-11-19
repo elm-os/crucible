@@ -1,0 +1,85 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"alerts\")"
+---
+insert a channel: ()
+insert a second channel: ()
+insert a channel of the other project: ()
+insert the same id: error UniqueViolation("channels_pkey")
+insert for an unknown project: error ForeignKeyViolation("channels_project_id_fkey")
+get: Some(Channel { id: ChannelId(01a3185c-5064-7000-8000-000000000064), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Channel 100", kind: Webhook, config: JsonDoc(Object {"url": String("http://10.0.0.8:9000/hook")}), secret_id: None, enabled: true, disabled_reason: None, failures: 0, last_test: None, version: 1 })
+get an unknown channel: None
+list a project: [Channel { id: ChannelId(01a3185c-5064-7000-8000-000000000064), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Channel 100", kind: Webhook, config: JsonDoc(Object {"url": String("http://10.0.0.8:9000/hook")}), secret_id: None, enabled: true, disabled_reason: None, failures: 0, last_test: None, version: 1 }, Channel { id: ChannelId(01a3185c-5065-7000-8000-000000000065), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Channel 101", kind: Email, config: JsonDoc(Object {"to": Array [String("team@example.com")]}), secret_id: None, enabled: true, disabled_reason: None, failures: 0, last_test: None, version: 1 }]
+update under a stale version: false
+update: true
+get after the update: Some(Channel { id: ChannelId(01a3185c-5064-7000-8000-000000000064), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "On call", kind: Webhook, config: JsonDoc(Object {"url": String("https://hooks.example.com/x")}), secret_id: None, enabled: true, disabled_reason: None, failures: 0, last_test: None, version: 2 })
+store a test outcome: true
+store a test outcome of an unknown channel: false
+failure 1: false
+failure 2: false
+failure 3: true
+failure 4: false
+get after the failures: Some(Channel { id: ChannelId(01a3185c-5064-7000-8000-000000000064), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "On call", kind: Webhook, config: JsonDoc(Object {"url": String("https://hooks.example.com/x")}), secret_id: None, enabled: false, disabled_reason: Some("three deliveries failed"), failures: 3, last_test: Some(JsonDoc(Object {"ok": Bool(false), "status_class": String("5xx")})), version: 3 })
+a success on a channel that is off: true
+a failure of the second channel: false
+a success clears the count: true
+a success with nothing to clear: false
+get the second channel: Some(Channel { id: ChannelId(01a3185c-5065-7000-8000-000000000065), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Channel 101", kind: Email, config: JsonDoc(Object {"to": Array [String("team@example.com")]}), secret_id: None, enabled: true, disabled_reason: None, failures: 0, last_test: None, version: 1 })
+delete under a stale version: false
+delete: true
+delete again: false
+list after the delete: [Channel { id: ChannelId(01a3185c-5064-7000-8000-000000000064), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "On call", kind: Webhook, config: JsonDoc(Object {"url": String("https://hooks.example.com/x")}), secret_id: None, enabled: false, disabled_reason: Some("three deliveries failed"), failures: 0, last_test: Some(JsonDoc(Object {"ok": Bool(false), "status_class": String("5xx")})), version: 3 }]
+insert a rule: ()
+insert a rule: ()
+insert a rule: ()
+insert the same id: error UniqueViolation("alert_rules_pkey")
+insert for an unknown project: error ForeignKeyViolation("alert_rules_project_id_fkey")
+get: Some(AlertRule { id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Rule 200", enabled: true, spec: JsonDoc(Object {"measure": String("error_count"), "threshold": Number(5)}), interval_secs: 60, version: 1, created_at: Timestamp(2027-01-15T08:00:00.000000Z), updated_at: Timestamp(2027-01-15T08:00:00.000000Z), last_eval_seq: None, eval_failures: 0, skipped_ticks: 0 })
+list a project: [AlertRule { id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Rule 200", enabled: true, spec: JsonDoc(Object {"measure": String("error_count"), "threshold": Number(5)}), interval_secs: 60, version: 1, created_at: Timestamp(2027-01-15T08:00:00.000000Z), updated_at: Timestamp(2027-01-15T08:00:00.000000Z), last_eval_seq: None, eval_failures: 0, skipped_ticks: 0 }, AlertRule { id: AlertRuleId(01a3185c-50c9-7000-8000-0000000000c9), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Rule 201", enabled: false, spec: JsonDoc(Object {"measure": String("error_count"), "threshold": Number(5)}), interval_secs: 60, version: 1, created_at: Timestamp(2027-01-15T08:00:00.000000Z), updated_at: Timestamp(2027-01-15T08:00:00.000000Z), last_eval_seq: None, eval_failures: 0, skipped_ticks: 0 }]
+list the enabled rules: ["Rule 200", "Rule 202"]
+record an evaluation: true
+record an evaluation of an unknown rule: false
+update under a stale version: false
+update: true
+get after the update: Some(AlertRule { id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Edited", enabled: false, spec: JsonDoc(Object {"measure": String("count"), "threshold": Number(9)}), interval_secs: 120, version: 2, created_at: Timestamp(2027-01-15T08:00:00.000000Z), updated_at: Timestamp(2027-01-15T08:01:00.000000Z), last_eval_seq: Some(41), eval_failures: 2, skipped_ticks: 7 })
+clear the last tick: true
+get after the clear: Some(AlertRule { id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), project_id: ProjectId(01a3185c-5001-7000-8000-000000000001), name: "Edited", enabled: false, spec: JsonDoc(Object {"measure": String("count"), "threshold": Number(9)}), interval_secs: 120, version: 2, created_at: Timestamp(2027-01-15T08:00:00.000000Z), updated_at: Timestamp(2027-01-15T08:01:00.000000Z), last_eval_seq: None, eval_failures: 0, skipped_ticks: 7 })
+put a state: ()
+put a state: ()
+put a state: ()
+put a state: ()
+put a state of an unknown rule: error ForeignKeyViolation("alert_state_rule_id_fkey")
+list the states: [AlertSeriesState { rule_id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), series_key: "[\"dev\"]", status: Ok, since: Timestamp(2027-01-15T08:00:10.000000Z), last_rows_at: Timestamp(2027-01-15T08:00:10.000000Z), last_notified_at: None, value: Some(9) }, AlertSeriesState { rule_id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), series_key: "[\"prod\"]", status: Firing, since: Timestamp(2027-01-15T08:01:10.000000Z), last_rows_at: Timestamp(2027-01-15T08:01:10.000000Z), last_notified_at: Some(Timestamp(2027-01-15T08:01:10.000000Z)), value: Some(9) }]
+delete a state: true
+delete it again: false
+insert an event: ()
+insert an event: ()
+insert an event: ()
+insert an event: ()
+insert the same event: error UniqueViolation("alert_events_pkey")
+insert an event of an unknown rule: error ForeignKeyViolation("alert_events_rule_id_fkey")
+the first page: [303, 302]
+the second page: [301, 300]
+one event in full: [AlertEvent { id: Uuid(01a3185c-512f-7000-8000-00000000012f), rule_id: AlertRuleId(01a3185c-50c8-7000-8000-0000000000c8), series_key: "[\"prod\"]", kind: Transition, from_status: Ok, to_status: Firing, value: Some(9), notified: true, eval_seq: 303, at: Timestamp(2027-01-15T08:03:00.000000Z) }]
+the history of another rule: []
+delete under a stale version: false
+delete: true
+delete again: false
+the states are gone: []
+the history is gone: []
+the other rule keeps its state: 1
+enqueue a tick: ()
+enqueue a tick: ()
+enqueue a tick: ()
+enqueue the same tick again: error UniqueViolation("alert_evaluations_dedup_key_key")
+enqueue the key in the outbox: ()
+claim the due ticks: ["tick 400", "tick 401"]
+nothing is pruned while nothing is done: 0
+complete: true
+complete: true
+prune the done ticks older than an hour: 1
+prune again: 0
+the outbox is another queue: 0
+enqueue the pruned tick again: ()
+enqueue the kept tick again: error UniqueViolation("alert_evaluations_dedup_key_key")
+prune everything that is done: 1

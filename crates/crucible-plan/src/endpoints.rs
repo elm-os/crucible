@@ -6,6 +6,7 @@ mod data_bounds;
 mod export;
 mod facts;
 mod filter_values;
+mod lifecycle;
 mod metrics;
 mod payload;
 mod search;
@@ -24,9 +25,14 @@ pub use export::{
 };
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
+pub use lifecycle::{
+    DELETION_TRACES_PAGE, TRACE_ID_LIST_CHUNK, TraceSelector, deletion_issuers, deletion_traces,
+    expired_before, lifecycle_column, lifecycle_oldest, lifecycle_time_column, mcp_user,
+    trace_id_in,
+};
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,
-    metrics_ranking, metrics_series, metrics_shape,
+    metrics_ranking, metrics_series, metrics_shape, metrics_totals,
 };
 pub use payload::{PayloadField, PayloadRangeRequest, payload_range};
 pub use search::{

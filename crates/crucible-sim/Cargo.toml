@@ -28,6 +28,14 @@ crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-control = { path = "../crucible-control" }
 # A path dependency, for the same reason. The jobs simulation runs the real runners.
 crucible-jobs = { path = "../crucible-jobs", features = ["test-mutants"] }
+# Path dependencies, for the same reason. The alerts simulation runs the real scheduler, evaluator and
+# outbox consumer; these crates depend on this one only for their tests.
+crucible-alerts = { path = "../crucible-alerts", features = ["test-mutants"] }
+crucible-egress = { path = "../crucible-egress" }
+crucible-notify = { path = "../crucible-notify" }
+# The lifecycle simulation runs the real executors and switches their seeded defects on.
+crucible-lifecycle = { path = "../crucible-lifecycle", features = ["test-mutants"] }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 blake3 = { workspace = true }

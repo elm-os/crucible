@@ -37,6 +37,7 @@ pub(crate) fn concrete(path: &str) -> String {
         .replace("{invitation_id}", "04040404-0404-0404-0404-040404040404")
         .replace("{provider_id}", "05050505-0505-0505-0505-050505050505")
         .replace("{export_id}", "06060606-0606-7606-8606-060606060606")
+        .replace("{request_id}", "07070707-0707-7707-8707-070707070707")
 }
 
 /// Every documented operation, with its method.

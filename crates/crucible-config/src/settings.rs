@@ -175,6 +175,44 @@ pub const SETTINGS: &[Setting] = &[
         Some("600"),
         "seconds that cached sessions stay valid during a Postgres outage; 0 refuses them at once",
     ),
+    plain(
+        "egress.mode",
+        Some("open"),
+        "which notification targets may be called: open allows any network except cloud metadata addresses, \
+         strict allows public https targets only",
+    ),
+    plain(
+        "egress.allow_cidrs",
+        None,
+        "comma-separated address ranges that egress.mode = strict lets through, for example 10.20.0.0/16",
+    ),
+    plain(
+        "smtp.host",
+        None,
+        "host of the mail server for email channels; without it email channels cannot be created",
+    ),
+    plain(
+        "smtp.port",
+        None,
+        "port of the mail server (default: 587, or 465 with smtp.tls = tls, or 25 with smtp.tls = none)",
+    ),
+    plain(
+        "smtp.tls",
+        Some("starttls"),
+        "how the connection to the mail server is secured: starttls, tls, or none",
+    ),
+    plain("smtp.username", None, "the user name at the mail server"),
+    secret("smtp.password", "the password at the mail server"),
+    plain(
+        "smtp.password_file",
+        None,
+        "a file that holds the password at the mail server",
+    ),
+    plain(
+        "smtp.from",
+        None,
+        "the sender address of notification email, for example crucible@example.com",
+    ),
 ];
 
 /// The setting with this dotted key.
@@ -283,7 +321,7 @@ mod tests {
         let keys = || SETTINGS.iter().map(|setting| setting.key);
         assert_eq!(nearest("server.lisen", keys()), Some("server.listen"));
         assert_eq!(nearest("clickhouse.uri", keys()), Some("clickhouse.url"));
-        assert_eq!(nearest("smtp.host", keys()), None);
+        assert_eq!(nearest("mail.server", keys()), None);
         assert_eq!(distance("kitten", "sitting"), 3);
         assert_eq!(distance("", "abc"), 3);
         assert_eq!(distance("abc", ""), 3);

@@ -283,3 +283,86 @@ impl QueryService {
         })
     }
 }
+
+/// One series of an alert read: a dimension key with its value over the whole window.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MetricsTotal {
+    /// The dimension values of the key, in the query's dimension order: wire names for enums. Empty for a
+    /// query without dimensions.
+    pub key: Vec<Arc<str>>,
+    /// The value over the window; `None` when the key had no spans in it, or no observation for a percentile.
+    pub value: Option<MetricValue>,
+}
+
+/// The answer to an alert read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MetricsTotals {
+    /// The series, at most the limit asked for, in the order of `crucible_plan::metrics_totals`.
+    pub series: Vec<MetricsTotal>,
+    /// Whether there were more keys than the limit.
+    pub truncated: bool,
+}
+
+impl QueryService {
+    /// The value of one measure per dimension key over the whole of `window` (contract 8.4, class `alert`),
+    /// from the minute rollup. Unlike a page read, a store that does not answer is an error here, never an
+    /// empty answer: an alert must not take an outage for missing data.
+    pub async fn metrics_totals(
+        &self,
+        ctx: &ReadContext,
+        window: TimeWindow,
+        query: &MetricsQuery,
+        largest_first: bool,
+        limit: u32,
+    ) -> Result<MetricsTotals, QueryServiceError> {
+        let mut read = self.read(ctx, "metrics_totals");
+        let plan_error = |error: crucible_plan::MetricsError| match error {
+            crucible_plan::MetricsError::Plan(error) => QueryServiceError::from(error),
+            other => QueryServiceError::Internal(other.to_string()),
+        };
+        let plan = crucible_plan::metrics_totals(
+            ctx.scope,
+            window,
+            &read.clamp,
+            query,
+            largest_first,
+            limit.saturating_add(1),
+        )
+        .map_err(plan_error)?;
+        let rows = read.rows(Ok(plan)).await?;
+        let state = self.index.read_state(ctx.scope);
+        read.finish(
+            read.now,
+            self.consistency(),
+            state,
+            &[TableId::SpanMetrics],
+            false,
+        )?;
+        let aggregation = query
+            .measures
+            .first()
+            .map_or(Aggregation::Sum, |(_, aggregation)| *aggregation);
+        let mut series = Vec::new();
+        for row in rows {
+            let mut values = row.into_values().into_iter();
+            let key = query
+                .dimensions
+                .iter()
+                .map(|d| dimension_value(*d, &values.next().ok_or_else(|| bad("dimension"))?))
+                .collect::<Result<Vec<_>, _>>()?;
+            let measure = values.next().ok_or_else(|| bad("measure"))?;
+            let spans = match values.next() {
+                Some(Value::UInt(spans)) => spans,
+                _ => return Err(bad("span count")),
+            };
+            let value = match spans {
+                0 => None,
+                _ => measure_value(aggregation, &measure)?,
+            };
+            series.push(MetricsTotal { key, value });
+        }
+        let truncated = series.len() > limit as usize;
+        series.truncate(limit as usize);
+        Ok(MetricsTotals { series, truncated })
+    }
+}

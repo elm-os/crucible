@@ -1,0 +1,58 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"lifecycle\")"
+---
+no node yet: []
+two nodes, by epoch: [("0.0.1", 3), ("0.0.2", 7)]
+only the node that heartbeated within the window is live: [("0.0.1", 9)]
+both within a wide window: [("0.0.1", 9), ("0.0.2", 7)]
+sequence numbers rise by one: (1, 1)
+the same key again: error UniqueViolation("deletion_requests_idempotency_key")
+the same key of another requester: ()
+the same key in another project: ()
+a request of a project that does not exist: error ForeignKeyViolation("deletion_requests_project_id_fkey")
+get: Some(("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending, "{}", 0, None))
+get through another project: None
+by key: Some(("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending, "{}", 0, None))
+by a key that was never used: None
+list, newest first: [("{\"session_id\":\"s-1\"}", Pending), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
+list one: [("{\"session_id\":\"s-1\"}", Pending)]
+list below the newest: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
+list below the second: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
+open, by sequence: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+update: true
+updated: Some(("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Completed, "{\"planned\":true}", 2, Some("why")))
+update a request that does not exist: false
+a completed request is no longer open: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+record: true
+record of another node: true
+record again keeps the first: false
+acks, by epoch: [(12, false), (40, false)]
+passed: true
+passed again: false
+passed without a record: false
+acks after: [(12, true), (40, false)]
+the acks of a node: [(40, false)]
+an ack of a request that does not exist: error ForeignKeyViolation("deletion_node_acks_request_id_fkey")
+plan: true
+plan: true
+plan: true
+plan the same key again: false
+open, by creation: [("deletion:2:page0:span_core", Planned, 0, None, 0), ("drop:span_core:1", Planned, 0, None, 0), ("mask:span_core:1", Planned, 0, None, 0)]
+of the request: [("deletion:2:page0:span_core", Planned, 0, None, 0)]
+update: true
+update an action that does not exist: false
+nothing is open: []
+prune: 1
+prune again: 0
+prune the later one: 1
+the action of the request stays: [("deletion:2:page0:span_core", Verified, 4, None, 1)]
+plan inside a transaction: true
+open after the rollback: []
+no floor yet: []
+raise: ()
+raise lower and another setting: ()
+raise higher: ()
+raise nothing: ()
+the floor keeps the later instant of each setting: [(ProjectId(01a3185c-501e-7000-8000-00000000001e), RetentionFloor { retention: Some(Timestamp(2027-01-15T08:03:20.000000Z)), payload: Some(Timestamp(2027-01-15T08:01:10.000000Z)), mcp_content: None })]
+a floor of a project that does not exist: error ForeignKeyViolation("retention_floors_project_id_fkey")

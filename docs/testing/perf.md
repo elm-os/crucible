@@ -600,8 +600,8 @@ metrics before and after each lane attempt under `metrics/`.
 
 The read services record two histograms per request class (one class per read service: `trace_by_id`,
 `trace_list`, `trace_list_since`, `span_children`, `span_list`, `payload`, `facts`, `fact_target_bounds`,
-`filter_values`, `data_bounds`, `search`, `metrics`, `session_list`, `session`, `user_list`, `user`,
-`user_sessions`, `export_page`):
+`filter_values`, `data_bounds`, `search`, `metrics`, `metrics_totals` (the alert reads), `session_list`,
+`session`, `user_list`, `user`, `user_sessions`, `export_page`):
 
 - `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
   the reads.
@@ -759,12 +759,29 @@ Two runs, each lane 120 reads at 2 per second; latency in ms, p50 / p95 / p99:
   requests queued up to 4 s for a connection) and the 30-day span list (about 1.1 s per read): the saturation rule
   and the default rate of 2 per second come from it.
 
-**Ack to API.** On the empty store the probe measured 59.8 / 75.5 / 81.9 ms and 52.0 / 64.6 / 77.1 ms (p50 / p95 /
-p99, two runs; an earlier run while images were building, 74.6 / 99.5 / 111.5 ms), not milestone 1's 13 to 28 ms.
-Every probe took exactly two lists: the first, sent at the acknowledgement, never named the trace, and the second
-did, so the figure is two list round trips of about 30 ms each. A list issues 5 store reads in sequence (the
-counter above), each a ClickHouse query on 2 CPUs; the trace itself was visible by the start of the second list.
-On the loaded store the same probe measured 108.6 / 121.0 / 139.4 and 99.7 / 113.0 / 125.5 ms.
+**Ack to API.** Measured on 2026-11-19 with each list's window starting at the probe's own trace, 100 probes,
+on the small rig, two runs per build, a dataset of 30,000 spans; latency in ms, p50 / p95 / p99:
+
+| Build | Empty store | Loaded store | List round trip p50 | Store reads per list |
+|---|---|---|---|---|
+| `7abc007` (this branch) | 26.1 / 31.8 / 46.3; 27.4 / 39.7 / 54.4 | 27.1 / 31.0 / 34.4; 29.5 / 53.5 / 83.7 | 14.6; 15.4 | 3.0 |
+| `3aef9d4`: `7abc007` without the trace list's fact decoration (local, never pushed) | 16.9 / 37.0 / 53.2; 14.5 / 16.4 / 34.7 | 17.5 / 55.4 / 85.1; 16.0 / 18.7 / 19.0 | 7.2; 4.9 | 1.5 |
+
+- **Milestone 1's figure is reproduced at the median.** Milestone 1 measured 16 ms (protobuf) and 22 ms (JSON),
+  one trace each, with a native release binary and a ClickHouse without CPU limits. The bench's median on this
+  branch's build lies in milestone 1's 13 to 28 ms, and without the fact decoration that #61 added to the trace
+  list it measures milestone 1's 16 ms. The p95 moved with the other jobs on the machine (1.2 to 8.0 other CPUs
+  busy).
+- Every probe took two lists: the first, sent at the acknowledgement, came before the shipper had applied the
+  trace to the recent index, and the second named it. The fact decoration doubles a list's store reads (3.0
+  against 1.5 per list, from `crucible_api_store_reads`), each a ClickHouse query on 2 CPUs.
+- The same method in CI's end-to-end test (`crates/crucible/tests/e2e.rs`, one trace per transport, on GitHub's
+  runners) moved the same way: ack to API list (protobuf) 17.7 ms on milestone 1's merge (`4a6e68b`), 11 to 15
+  ms on main and pull requests before #61, 19.4 and 19.6 ms on #61's own runs, and 46.2 ms on the nightly run of
+  `5794a3b`.
+- With the probe's earlier window, 10 minutes on each side, the n-th list also named the n - 1 traces sent before
+  it: 100 probes measured 57.7 and 53.3 ms p50 on `7abc007` and 10 probes 35.1 ms, and on the loaded store of
+  2.25 million spans 108.6 and 99.7 ms, since its window also held the dataset's newest traces.
 
 ### Pre-ack copies
 

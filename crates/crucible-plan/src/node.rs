@@ -1066,6 +1066,24 @@ pub enum Node {
 }
 
 impl Node {
+    /// Narrows every predicate of the node to the rows that no pending deletion hides.
+    pub(crate) fn hide(&mut self, hidden: &[crate::hidden::Hidden]) {
+        use crate::hidden::keep;
+        match self {
+            Self::Scan(n) => keep(n.table, &mut n.pred, hidden),
+            Self::Aggregate(n) => keep(n.table, &mut n.pred, hidden),
+            Self::SemiJoin(n) => {
+                keep(n.left.table, &mut n.left.pred, hidden);
+                n.right.hide(hidden);
+            }
+            Self::TextSearch(n) => keep(n.table, &mut n.pred, hidden),
+            Self::TimeSeries(n) => keep(n.aggregate.table, &mut n.aggregate.pred, hidden),
+            // Lookups by key carry no predicate: the reads that use them find their keys through a plan
+            // that does.
+            Self::PointLookup(_) | Self::FieldRange(_) => {}
+        }
+    }
+
     /// Every table the node reads. The renderer adds the project predicate and the window predicate to each.
     pub fn tables(&self) -> Vec<TableId> {
         match self {

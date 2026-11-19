@@ -13,6 +13,8 @@
 | SQL workspace isolation: the `sqliso` suite, its findings and results | [testing/sqliso.md](testing/sqliso.md) |
 | Background jobs: adding one | [architecture/adding-a-job.md](architecture/adding-a-job.md) |
 | Background jobs: the simulation, its oracle and its mutants | [testing/jobs-simulation.md](testing/jobs-simulation.md) |
+| Alerts: the simulation, its oracle and its mutants | [testing/alerts-simulation.md](testing/alerts-simulation.md) |
+| Retention and deletion: the simulation, its oracle and its mutants | [testing/lifecycle-simulation.md](testing/lifecycle-simulation.md) |
 | Development setup | [development.md](development.md) |
 | Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |
 | Guides for sending telemetry and reading it back | [guides/README.md](guides/README.md) |
@@ -22,3 +24,4 @@
 | Go SDK | [guides/sdk-go.md](guides/sdk-go.md) |
 | REST API: auth, errors, windows, cursors | [api/README.md](api/README.md) |
 | MCP proxy | [guides/mcp-proxy.md](guides/mcp-proxy.md) |
+| Alerts and notification channels | [guides/alerts.md](guides/alerts.md) |

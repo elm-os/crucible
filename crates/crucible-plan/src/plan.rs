@@ -69,6 +69,10 @@ impl QueryPlan {
         self.limits
     }
 
+    pub(crate) const fn root_mut(&mut self) -> &mut Node {
+        &mut self.root
+    }
+
     /// The root node.
     pub const fn root(&self) -> &Node {
         &self.root
