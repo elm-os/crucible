@@ -1,0 +1,29 @@
+[package]
+name = "crucible-egress"
+description = "The egress policy for outbound notification calls: address vetting, pinned connections, no redirects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+crucible-env = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The simulated `Env`: a virtual clock and a task scope for the scripted network of the tests.
+crucible-sim = { path = "../crucible-sim" }
+async-trait = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

@@ -766,9 +766,11 @@ name = "crucible"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "clap",
+ "crucible-alerts",
  "crucible-api",
  "crucible-api-types",
  "crucible-auth",
@@ -777,6 +779,7 @@ dependencies = [
  "crucible-control",
  "crucible-control-pg",
  "crucible-cursor",
+ "crucible-egress",
  "crucible-env",
  "crucible-env-prod",
  "crucible-export",
@@ -786,6 +789,7 @@ dependencies = [
  "crucible-loadgen",
  "crucible-mcp-server",
  "crucible-normalize",
+ "crucible-notify",
  "crucible-otlp",
  "crucible-plan",
  "crucible-proxy",
@@ -833,6 +837,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-alerts"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-env",
+ "crucible-jobs",
+ "crucible-notify",
+ "crucible-plan",
+ "crucible-query",
+ "crucible-records",
+ "futures",
+ "proptest",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-api"
 version = "0.0.0"
 dependencies = [
@@ -840,14 +864,17 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bytes",
+ "crucible-alerts",
  "crucible-api-types",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-control",
  "crucible-cursor",
+ "crucible-egress",
  "crucible-env",
  "crucible-export",
  "crucible-lifecycle",
+ "crucible-notify",
  "crucible-plan",
  "crucible-query",
  "crucible-recent",
@@ -1011,6 +1038,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-egress"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crucible-env",
+ "crucible-sim",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "proptest",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "crucible-env"
 version = "0.0.0"
 dependencies = [
@@ -1049,6 +1093,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "io-uring",
+ "lettre",
  "nix",
  "process-wrap",
  "rcgen",
@@ -1275,6 +1320,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-notify"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-egress",
+ "crucible-env",
+ "crucible-jobs",
+ "crucible-records",
+ "crucible-sim",
+ "futures",
+ "hmac 0.13.0",
+ "http",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-otlp"
 version = "0.0.0"
 dependencies = [
@@ -1423,16 +1492,19 @@ dependencies = [
  "blake3",
  "bytes",
  "crucible-admission",
+ "crucible-alerts",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-compat",
  "crucible-control",
+ "crucible-egress",
  "crucible-env",
  "crucible-env-prod",
  "crucible-ingest",
  "crucible-jobs",
  "crucible-lifecycle",
  "crucible-normalize",
+ "crucible-notify",
  "crucible-otlp",
  "crucible-plan",
  "crucible-query",
@@ -1846,6 +1918,22 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "email-encoding"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f690ae2169f2ceb3f45b28b6fcd8fa16839f2f5c8818546774b9425f5f71004"
+dependencies = [
+ "base64 0.23.1",
+ "memchr",
+]
+
+[[package]]
+name = "email_address"
+version = "0.2.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ab6bbd053d3cdc62ba3de82aae11530a97bbd5b3a572fbdbcd0f0e545e3ff21"
 
 [[package]]
 name = "encode_unicode"
@@ -2631,6 +2719,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "lettre"
+version = "0.11.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f294f3d7cdb313e578acef7d7727d4e8d897e0fcd0d6d58c19959cec95073f19"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "email-encoding",
+ "email_address",
+ "fastrand",
+ "futures-io",
+ "futures-util",
+ "httpdate",
+ "idna",
+ "mime",
+ "nom 8.0.0",
+ "percent-encoding",
+ "quoted_printable",
+ "rustls",
+ "socket2",
+ "tokio",
+ "tokio-rustls",
+ "url",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -3430,6 +3545,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "quoted_printable"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "478e0585659a122aa407eb7e3c0e1fa51b1d8a870038bd29f0cf4a8551eea972"
 
 [[package]]
 name = "r-efi"

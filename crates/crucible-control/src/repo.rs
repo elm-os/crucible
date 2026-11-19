@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use crucible_records::{ApiKeyId, ExportJobId, ProjectId, Timestamp, UserId, Uuid};
 use futures::future::BoxFuture;
 
+use crate::alerts::{AlertEventRepo, AlertRuleRepo, AlertStateRepo, ChannelRepo};
 use crate::error::TxError;
 use crate::lifecycle::LifecycleRepo;
 use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
@@ -323,6 +324,10 @@ pub trait Claims: Send + Sync {
     /// Parks the row: it stays in the table and is never claimed again, for an operator to inspect. `false`
     /// under the same conditions as `complete`.
     async fn park(&self, claim: &Claim) -> Result<bool, TxError>;
+    /// Deletes the done rows of `queue` whose due time is more than `older_than` before the database clock;
+    /// returns how many. A deleted row's deduplication key is free again, so `older_than` must be longer than
+    /// the time over which an enqueuer can repeat a key.
+    async fn prune_done(&self, queue: Queue, older_than: Duration) -> Result<u64, TxError>;
 }
 
 /// Export jobs (contracts 11.1 and 12.8). The table is also the queue of the export job: its rows are claimed
@@ -425,6 +430,14 @@ pub trait Repos: Send + Sync {
     fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo;
     /// Invitations.
     fn invitations(&self) -> &dyn InvitationRepo;
+    /// Notification channels.
+    fn channels(&self) -> &dyn ChannelRepo;
+    /// Alert rules.
+    fn alert_rules(&self) -> &dyn AlertRuleRepo;
+    /// The state of each series of an alert rule.
+    fn alert_state(&self) -> &dyn AlertStateRepo;
+    /// The history of alert rules.
+    fn alert_events(&self) -> &dyn AlertEventRepo;
     /// Leases.
     fn leases(&self) -> &dyn Leases;
     /// Claimed rows.

@@ -64,7 +64,10 @@ pub use facts::{
 pub use filter_values::{FilterValues, FilterValuesQuery};
 pub use heads::{TRACE_LIST_DEFAULT_LIMIT, TraceListItem};
 pub use live_tail::{NEW_COUNT_MAX, TraceTail, TraceTailQuery};
-pub use metrics::{MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries};
+pub use metrics::{
+    MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries, MetricsTotal,
+    MetricsTotals,
+};
 pub use payload::{PayloadBytes, PayloadQuery};
 pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,

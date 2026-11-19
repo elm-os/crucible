@@ -361,7 +361,8 @@ fn ingest_config() -> IngestConfig {
 }
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
-/// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
+/// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors. With
+/// `control`, retention and deletion start over this WAL and join `modules`.
 #[allow(clippy::too_many_arguments)] // The parts of the node that exist before its WAL is open.
 async fn open_app(
     env: &Env,
@@ -370,7 +371,7 @@ async fn open_app(
     config: WalConfig,
     identity: Option<Arc<Identity>>,
     closed: Option<&str>,
-    exports: Option<Exports>,
+    modules: crucible_api::Modules,
     control: Option<&Control>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -413,10 +414,11 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
-                let service = lifecycle.as_ref().map(|l| l.service.clone());
-                crucible_api::platform_router(
-                    env, None, identity, settings, cursors, None, exports, service,
-                )
+                let modules = crucible_api::Modules {
+                    lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                    ..modules
+                };
+                crucible_api::platform_router(env, None, identity, settings, cursors, modules)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -612,6 +614,8 @@ struct StoreTask {
     exports: ExportRuntime,
     /// The API's exports, with a control plane.
     export_service: Option<Exports>,
+    /// Alerting, with a control plane: what the API serves, and the read that opens with the store.
+    alerts: Option<(crucible_api::AlertsApi, Arc<crate::alerts::LateSource>)>,
     /// Retention and deletion, with a control plane.
     lifecycle: Option<Arc<Lifecycle>>,
 }
@@ -699,6 +703,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         mcp,
         exports,
         export_service,
+        alerts,
         lifecycle,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
@@ -829,6 +834,11 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         None => service,
     };
     exports.set_service(service.clone());
+    // Alert evaluations and previews read through the query service from here on.
+    let alerts = alerts.map(|(api, source)| {
+        source.open(service.clone());
+        api
+    });
     let settings = settings_source(lifecycle.as_ref());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp.open(
@@ -847,9 +857,12 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             identity,
             settings,
             cursors,
-            sql,
-            export_service,
-            lifecycle.as_ref().map(|l| l.service.clone()),
+            crucible_api::Modules {
+                sql,
+                exports: export_service,
+                alerts,
+                lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+            },
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
@@ -1107,6 +1120,14 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     // hold the runtime: its reads hold the WAL through the recent index, so a holder that outlived them would
     // keep the WAL committer from stopping.
     let exports = ExportRuntime::new();
+    let alerting = match &control {
+        Some(control) => Some(crate::alerts::build(env, &config, control)?),
+        None => None,
+    };
+    let (alerts, alert_jobs) = match alerting {
+        Some(alerting) => (Some((alerting.api, alerting.source)), alerting.jobs),
+        None => (None, Vec::new()),
+    };
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1126,12 +1147,25 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         WalConfig::default(),
         identity.clone(),
         closed,
-        export_service.clone(),
+        // The SQL workspace starts with the telemetry store; retention and deletion start with the WAL, in
+        // `open_app`.
+        crucible_api::Modules {
+            sql: None,
+            exports: export_service.clone(),
+            alerts: alerts.as_ref().map(|(api, _)| api.clone()),
+            lifecycle: None,
+        },
         control.as_ref(),
     )
     .await?;
     // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
-    let jobs = crate::jobs::start(env, control.as_ref(), &exports, app.lifecycle.as_deref());
+    let jobs = crate::jobs::start(
+        env,
+        control.as_ref(),
+        &exports,
+        alert_jobs,
+        app.lifecycle.as_deref(),
+    );
     let mode = if clickhouse.is_some() {
         "clickhouse"
     } else {
@@ -1189,6 +1223,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 mcp,
                 exports,
                 export_service,
+                alerts,
                 lifecycle: app.lifecycle.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
@@ -1343,10 +1378,19 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None, None, None)
-            .await
-            .unwrap()
-            .0
+        open_app(
+            env,
+            keys,
+            cursors,
+            config,
+            None,
+            None,
+            crucible_api::Modules::default(),
+            None,
+        )
+        .await
+        .unwrap()
+        .0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -2570,9 +2614,18 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed, None, None)
-            .await
-            .unwrap();
+        let (app, _) = open_app(
+            env,
+            keys,
+            cursors,
+            config,
+            None,
+            closed,
+            crucible_api::Modules::default(),
+            None,
+        )
+        .await
+        .unwrap();
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await

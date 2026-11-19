@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
+crucible-alerts = { path = "../crucible-alerts" }
+crucible-notify = { path = "../crucible-notify" }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
@@ -36,6 +39,7 @@ tracing = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
+crucible-egress = { path = "../crucible-egress" }
 crucible-auth = { workspace = true, features = ["test-support"] }
 crucible-control = { workspace = true }
 crucible-chfmt = { workspace = true }

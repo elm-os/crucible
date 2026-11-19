@@ -62,6 +62,28 @@ pub use writer::{AcceptedFact, FactAppend, FactAuthor, FactRefusal, FactWriter, 
 
 use crate::access::ApiState;
 
+/// Alert rules and channels, as the API serves them.
+#[derive(Clone, Debug)]
+pub struct AlertsApi {
+    /// Rule management.
+    pub alerts: crucible_alerts::Alerts,
+    /// Channel management and test-send.
+    pub channels: crucible_notify::Channels,
+}
+
+/// What a node with a control plane serves besides identity. Each is `None` when the node does not have it.
+#[derive(Clone, Debug, Default)]
+pub struct Modules {
+    /// The SQL workspace.
+    pub sql: Option<SqlWorkspace>,
+    /// Exports.
+    pub exports: Option<Exports>,
+    /// Alert rules and channels.
+    pub alerts: Option<AlertsApi>,
+    /// Retention settings and deletion requests.
+    pub lifecycle: Option<crucible_lifecycle::Service>,
+}
+
 /// The base path of the API (contract 12.1).
 pub const BASE_PATH: &str = "/api/v1";
 
@@ -85,6 +107,8 @@ pub fn router(
         None,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -96,37 +120,36 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None, None, None)
+    build(
+        env, None, keys, settings, cursors, None, None, None, None, None,
+    )
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
 /// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
-/// `None` until a telemetry store is up. `exports` creates, reads and serves the control plane's exports,
-/// and `lifecycle` serves retention settings and deletion requests.
-#[allow(clippy::too_many_arguments)] // The parts of the shared state, as the binary passes them.
+/// `None` until a telemetry store is up. `modules` are the SQL workspace, the control plane's exports, the
+/// alert and channel routes, and retention settings and deletion requests.
 pub fn platform_router(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
     identity: Arc<Identity>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
-    sql: Option<SqlWorkspace>,
-    exports: Option<Exports>,
-    lifecycle: Option<crucible_lifecycle::Service>,
+    modules: Modules,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    let mut state = state(
+    build(
         env,
         store,
         keys,
         settings,
         cursors,
         Some(identity),
-        sql,
-        exports,
-    );
-    state.lifecycle = lifecycle;
-    serve(env, state)
+        modules.sql,
+        modules.exports,
+        modules.alerts,
+        modules.lifecycle,
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // The parts of the shared state, as the public constructors pass them.
@@ -139,24 +162,11 @@ fn build(
     identity: Option<Arc<Identity>>,
     sql: Option<SqlWorkspace>,
     exports: Option<Exports>,
+    alerts: Option<AlertsApi>,
+    lifecycle: Option<crucible_lifecycle::Service>,
 ) -> Router {
-    let state = state(env, store, keys, settings, cursors, identity, sql, exports);
-    serve(env, state)
-}
-
-#[allow(clippy::too_many_arguments)] // The parts of the shared state, as the public constructors pass them.
-fn state(
-    env: &Env,
-    store: Option<(QueryService, Arc<dyn FactWriter>)>,
-    keys: Arc<dyn KeyVerifier>,
-    settings: Arc<dyn ProjectSettingsSource>,
-    cursors: Arc<KeyRing>,
-    identity: Option<Arc<Identity>>,
-    sql: Option<SqlWorkspace>,
-    exports: Option<Exports>,
-) -> ApiState {
     let (service, facts) = store.unzip();
-    ApiState {
+    let state = ApiState {
         env: env.clone(),
         service,
         keys,
@@ -167,11 +177,9 @@ fn state(
         idempotency: Arc::default(),
         sql,
         exports,
-        lifecycle: None,
-    }
-}
-
-fn serve(env: &Env, state: ApiState) -> Router {
+        alerts,
+        lifecycle,
+    };
     let api = routes::router()
         .fallback(unknown_path)
         .method_not_allowed_fallback(unknown_method)

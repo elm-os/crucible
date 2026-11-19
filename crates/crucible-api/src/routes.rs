@@ -4,7 +4,9 @@
 //! the query service, so a request without a store configured is still authenticated and validated before it
 //! is answered with `telemetry_store_unavailable`.
 
+mod alerts;
 mod auth;
+mod channels;
 mod data_bounds;
 pub(crate) mod exports;
 mod facts;
@@ -41,7 +43,9 @@ use crate::problem::{ApiError, problem, request_id};
 /// not matter; the list is kept sorted.
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
+        .merge(alerts::routes())
         .merge(auth::routes())
+        .merge(channels::routes())
         .merge(data_bounds::routes())
         .merge(exports::routes())
         .merge(facts::routes())
@@ -64,7 +68,9 @@ pub(crate) fn router() -> Router<ApiState> {
 /// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
 /// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
+    doc.merge(alerts::Paths::openapi());
     doc.merge(auth::Paths::openapi());
+    doc.merge(channels::Paths::openapi());
     doc.merge(data_bounds::Paths::openapi());
     doc.merge(exports::Paths::openapi());
     doc.merge(facts::Paths::openapi());

@@ -9,20 +9,29 @@ use std::sync::Arc;
 use crucible_control::ControlStore;
 use crucible_env::Env;
 use crucible_export::ExportRuntime;
-use crucible_jobs::{Registry, Running, housekeeping};
+use crucible_jobs::{Job, Registry, Running, housekeeping};
 
 use crate::control::Control;
 use crate::lifecycle::Lifecycle;
 
 /// Every job of the binary. A track adds its job with one line here (docs/architecture/adding-a-job.md). The
 /// export jobs need a control plane, whose rows are the exports: without one, `exports` is `None`, and so
-/// is `lifecycle`, which also needs the WAL of the node.
-fn registry(exports: Option<&ExportRuntime>, lifecycle: Option<&Lifecycle>) -> Registry {
+/// is `lifecycle`, which also needs the WAL of the node. `alerts` are the jobs of alerting, which need what
+/// `crate::alerts::build` wires: the scheduler of evaluations, their consumer and the consumer of the
+/// notification outbox.
+fn registry(
+    exports: Option<&ExportRuntime>,
+    alerts: Vec<Job>,
+    lifecycle: Option<&Lifecycle>,
+) -> Registry {
     let mut registry = Registry::new();
     registry.register(housekeeping::job());
     if let Some(exports) = exports {
         registry.register(crucible_export::job(exports.clone()));
         registry.register(crucible_export::sweep_job());
+    }
+    for job in alerts {
+        registry.register(job);
     }
     for job in lifecycle.into_iter().flat_map(Lifecycle::jobs) {
         registry.register(job);
@@ -36,11 +45,12 @@ pub(crate) fn start(
     env: &Env,
     control: Option<&Control>,
     exports: &ExportRuntime,
+    alerts: Vec<Job>,
     lifecycle: Option<&Lifecycle>,
 ) -> Running {
     let store = control.map(|control| Arc::new(control.store.clone()) as Arc<dyn ControlStore>);
     let holder = format!("node-{}", env.new_id());
-    registry(control.map(|_| exports), lifecycle).start(env, store, &holder)
+    registry(control.map(|_| exports), alerts, lifecycle).start(env, store, &holder)
 }
 
 #[cfg(test)]
@@ -49,11 +59,36 @@ mod tests {
 
     #[test]
     fn the_registry_holds_the_housekeeping_job() {
-        assert_eq!(registry(None, None).names(), ["housekeeping"]);
+        assert_eq!(registry(None, Vec::new(), None).names(), ["housekeeping"]);
         let exports = ExportRuntime::new();
         assert_eq!(
-            registry(Some(&exports), None).names(),
+            registry(Some(&exports), Vec::new(), None).names(),
             ["housekeeping", "exports", "exports-sweep"]
+        );
+    }
+
+    #[derive(Debug)]
+    struct NoSeries;
+
+    #[async_trait::async_trait]
+    impl crucible_alerts::SeriesSource for NoSeries {
+        async fn read(
+            &self,
+            _: &crucible_control::Project,
+            _: &crucible_alerts::RuleSpec,
+            _: crucible_records::TimeWindow,
+        ) -> Result<crucible_alerts::Observed, crucible_alerts::ReadFailure> {
+            Ok(crucible_alerts::Observed::default())
+        }
+    }
+
+    #[test]
+    fn the_registry_holds_the_jobs_of_alerting() {
+        let evaluator = crucible_alerts::Evaluator::new(Arc::new(NoSeries));
+        let jobs = Vec::from(crucible_alerts::jobs(evaluator));
+        assert_eq!(
+            registry(None, jobs, None).names(),
+            ["housekeeping", "alert-scheduler", "alert-evaluations"]
         );
     }
 
@@ -71,7 +106,7 @@ mod tests {
             ));
             let lifecycle = Lifecycle::new(&host.env, control, wal);
             assert_eq!(
-                registry(None, Some(&lifecycle)).names(),
+                registry(None, Vec::new(), Some(&lifecycle)).names(),
                 [
                     "housekeeping",
                     "lifecycle-node",
@@ -88,7 +123,7 @@ mod tests {
         crucible_sim::run(1, |sim| async move {
             let host = sim.host("node", &sim.disk("node"), 0);
             assert_eq!(
-                start(&host.env, None, &ExportRuntime::new(), None).tasks(),
+                start(&host.env, None, &ExportRuntime::new(), Vec::new(), None).tasks(),
                 0
             );
         });

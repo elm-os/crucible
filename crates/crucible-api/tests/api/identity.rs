@@ -104,6 +104,13 @@ pub(crate) struct Platform {
     pub(crate) key: As,
 }
 
+impl Platform {
+    /// The control store behind the platform.
+    pub(crate) fn model(&self) -> &PgModel {
+        &self.model
+    }
+}
+
 /// A node log that takes every tombstone at once.
 #[derive(Debug, Default)]
 struct TestLog(std::sync::atomic::AtomicU64);
@@ -235,9 +242,12 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
         Arc::clone(&identity),
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
-        workspace,
-        Some(exports),
-        Some(lifecycle(env, &model)),
+        crucible_api::Modules {
+            sql: workspace,
+            exports: Some(exports),
+            alerts: Some(crate::alerts::api(env, &model)),
+            lifecycle: Some(lifecycle(env, &model)),
+        },
     );
     Platform {
         router,

@@ -28,15 +28,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
-    ControlStore, ControlTx, Credential, CredentialRepo, DeletionRequest, ExportJobRepo,
-    Invitation, InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName,
-    Leases, LedgerEntry, LifecycleAction, LifecycleRepo, MembershipRepo, Migrations, NewJob, Node,
-    NodeAck, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org, OrgMembership,
-    OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, ProjectSaltRepo, Queue, Repos,
-    RetentionFloor, SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo, SigningKey,
-    SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User,
-    UserRepo, duration_micros,
+    AlertEvent, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState, AlertStateRepo, ApiKey,
+    ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Channel, ChannelRepo,
+    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, DeletionRequest,
+    ExportJobRepo, Invitation, InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot,
+    Lease, LeaseName, Leases, LedgerEntry, LifecycleAction, LifecycleRepo, MembershipRepo,
+    Migrations, NewJob, Node, NodeAck, OauthAccount, OauthAccountRepo, OneTimeToken,
+    OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
+    ProjectRepo, ProjectSaltRepo, Queue, Repos, RetentionFloor, SealedProjectSalt, Secret,
+    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
+    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -139,6 +140,10 @@ enum Tbl {
     AuthFlows,
     OneTimeTokens,
     Invitations,
+    Channels,
+    AlertRules,
+    AlertState,
+    AlertEvents,
     Nodes,
     DeletionRequests,
     DeletionAcks,
@@ -179,6 +184,7 @@ const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
             "notification_outbox_dedup_key_key",
         ),
         Queue::ExportJobs => ("export_jobs_pkey", "export_jobs_dedup_key_key"),
+        Queue::AlertEvaluations => ("alert_evaluations_pkey", "alert_evaluations_dedup_key_key"),
     }
 }
 
@@ -245,6 +251,10 @@ enum Row {
     AuthFlow(AuthFlow),
     OneTimeToken(OneTimeToken),
     Invitation(Invitation),
+    Channel(Channel),
+    AlertRule(AlertRule),
+    AlertState(AlertSeriesState),
+    AlertEvent(AlertEvent),
     Node(Node),
     DeletionRequest(DeletionRequest),
     DeletionAck(NodeAck),
@@ -262,9 +272,15 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
             "api_keys_public_key_key",
             key.public_key.as_bytes().to_vec(),
         )],
+        // The key is unique within its queue's table.
         Row::Job(job) => vec![(
             queue_constraints(job.queue).1,
-            job.dedup_key.as_bytes().to_vec(),
+            [
+                job.queue.as_str().as_bytes(),
+                &[0],
+                job.dedup_key.as_bytes(),
+            ]
+            .concat(),
         )],
         Row::AuthProvider(provider) if provider.seeded => vec![(
             "auth_providers_seeded_kind_key",
@@ -303,6 +319,26 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             "api_keys_project_id_fkey",
             Tbl::Projects,
             project(k.project_id),
+        )],
+        Row::Channel(c) => vec![(
+            "channels_project_id_fkey",
+            Tbl::Projects,
+            project(c.project_id),
+        )],
+        Row::AlertRule(r) => vec![(
+            "alert_rules_project_id_fkey",
+            Tbl::Projects,
+            project(r.project_id),
+        )],
+        Row::AlertState(s) => vec![(
+            "alert_state_rule_id_fkey",
+            Tbl::AlertRules,
+            s.rule_id.to_bytes().to_vec(),
+        )],
+        Row::AlertEvent(e) => vec![(
+            "alert_events_rule_id_fkey",
+            Tbl::AlertRules,
+            e.rule_id.to_bytes().to_vec(),
         )],
         Row::Job(JobRow {
             export: Some(export),
@@ -365,6 +401,7 @@ fn cascades(table: Tbl) -> &'static [Tbl] {
             Tbl::OauthAccounts,
         ],
         Tbl::AuthProviders => &[Tbl::OauthAccounts],
+        Tbl::AlertRules => &[Tbl::AlertState, Tbl::AlertEvents],
         _ => &[],
     }
 }
@@ -1257,6 +1294,18 @@ macro_rules! repos {
             fn invitations(&self) -> &dyn InvitationRepo {
                 &self.runner
             }
+            fn channels(&self) -> &dyn ChannelRepo {
+                &self.runner
+            }
+            fn alert_rules(&self) -> &dyn AlertRuleRepo {
+                &self.runner
+            }
+            fn alert_state(&self) -> &dyn AlertStateRepo {
+                &self.runner
+            }
+            fn alert_events(&self) -> &dyn AlertEventRepo {
+                &self.runner
+            }
             fn leases(&self) -> &dyn Leases {
                 &self.runner
             }
@@ -1336,6 +1385,18 @@ impl Repos for PgModel {
     fn invitations(&self) -> &dyn InvitationRepo {
         &*self.runner
     }
+    fn channels(&self) -> &dyn ChannelRepo {
+        &*self.runner
+    }
+    fn alert_rules(&self) -> &dyn AlertRuleRepo {
+        &*self.runner
+    }
+    fn alert_state(&self) -> &dyn AlertStateRepo {
+        &*self.runner
+    }
+    fn alert_events(&self) -> &dyn AlertEventRepo {
+        &*self.runner
+    }
     fn leases(&self) -> &dyn Leases {
         &*self.runner
     }
@@ -1385,6 +1446,7 @@ macro_rules! all {
     };
 }
 
+mod alerts;
 mod exports;
 mod identity;
 mod lifecycle;
@@ -2250,6 +2312,24 @@ impl Claims for Runner {
     async fn park(&self, claim: &Claim) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| settle(cx, claim, Settle::Parked))
             .await
+    }
+
+    async fn prune_done(&self, queue: Queue, older_than: Duration) -> Result<u64, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let before = cx.now.saturating_add_micros(-duration_micros(older_than));
+            let mut pruned = 0;
+            for job in all!(cx, Tbl::Jobs, Row::Job) {
+                if job.queue == queue
+                    && job.status == JobStatus::Done
+                    && job.next_attempt_at < before
+                {
+                    cx.put(Tbl::Jobs, job_key(queue, job.id), None)?;
+                    pruned += 1;
+                }
+            }
+            Ok(pruned)
+        })
+        .await
     }
 }
 

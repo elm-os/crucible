@@ -35,12 +35,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
-    ControlTx, CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc, KeyFeed, KeyScope,
-    LEASE_TTL, Lease, LeaseName, Leases, LifecycleRepo, MembershipRepo, Migrations, NewJob,
-    OauthAccountRepo, OneTimeTokenRepo, OrgRepo, Project, ProjectRepo, ProjectSaltRepo, Queue,
-    Repos, SavedQueryRepo, SecretRepo, Session, SessionRepo, SigningKeyRepo, SqlIdentityRepo,
-    SqlRunRepo, TokenHash, TxError, User, UserRepo, UserStatus,
+    AlertEventRepo, AlertRuleRepo, AlertStateRepo, ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod,
+    AuthProviderRepo, ChannelRepo, Claim, Claims, ControlStore, ControlTx, CredentialRepo, Email,
+    ExportJobRepo, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease, LeaseName, Leases,
+    LifecycleRepo, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, OrgRepo,
+    Project, ProjectRepo, ProjectSaltRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session,
+    SessionRepo, SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo,
+    UserStatus,
 };
 use crucible_env::{Clock, ClockExt, Env, Instant, Rng};
 use crucible_jobs::housekeeping::{self, KEY_FEED_KEEP};
@@ -457,6 +458,13 @@ impl Claims for ClaimCalls {
         self.gate.thaw().await;
         result
     }
+
+    async fn prune_done(&self, queue: Queue, older_than: Duration) -> Result<u64, TxError> {
+        self.gate.thaw().await;
+        let result = self.model.claims().prune_done(queue, older_than).await;
+        self.gate.thaw().await;
+        result
+    }
 }
 
 /// The control store as one node reaches it.
@@ -539,6 +547,18 @@ impl Repos for NodeStore {
     }
     fn invitations(&self) -> &dyn InvitationRepo {
         self.model.invitations()
+    }
+    fn channels(&self) -> &dyn ChannelRepo {
+        self.model.channels()
+    }
+    fn alert_rules(&self) -> &dyn AlertRuleRepo {
+        self.model.alert_rules()
+    }
+    fn alert_state(&self) -> &dyn AlertStateRepo {
+        self.model.alert_state()
+    }
+    fn alert_events(&self) -> &dyn AlertEventRepo {
+        self.model.alert_events()
     }
     fn leases(&self) -> &dyn Leases {
         &self.leases
@@ -647,6 +667,18 @@ impl Repos for NodeTx {
     }
     fn invitations(&self) -> &dyn InvitationRepo {
         self.inner.invitations()
+    }
+    fn channels(&self) -> &dyn ChannelRepo {
+        self.inner.channels()
+    }
+    fn alert_rules(&self) -> &dyn AlertRuleRepo {
+        self.inner.alert_rules()
+    }
+    fn alert_state(&self) -> &dyn AlertStateRepo {
+        self.inner.alert_state()
+    }
+    fn alert_events(&self) -> &dyn AlertEventRepo {
+        self.inner.alert_events()
     }
     fn leases(&self) -> &dyn Leases {
         self.inner.leases()

@@ -110,7 +110,9 @@ workspace refuse the ambient APIs.
    (`crucible-pg-conformance`, see [`../testing/control-store.md`](../testing/control-store.md)).
 
 3. **The registration line** in `crates/crucible/src/jobs.rs`, and the name in the test
-   `the_registry_holds_the_housekeeping_job` there.
+   `the_registry_holds_the_housekeeping_job` there. A job that needs services the binary wires (alerting needs
+   the query service, the egress policy and the mailer) is built where they are wired and passed to `registry`,
+   as `crates/crucible/src/alerts.rs` does.
 
 4. **A scenario on the virtual clock.** Run the job through the real registry over `PgModel`, as
    `crates/crucible-sim/tests/jobs_directed.rs` does for housekeeping: seed the rows, start the registry on a

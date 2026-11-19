@@ -7,15 +7,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
-    ControlTx, Credential, CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc,
-    KeyChange, KeyChangeKind, KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases,
-    LedgerEntry, LifecycleRepo, MembershipRepo, MigrationKind, Migrations, NewJob,
-    OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, OrgSettings, Project,
-    ProjectMembership, ProjectRepo, ProjectRole, ProjectSaltRepo, Queue, Repos, SealedProjectSalt,
-    Secret, SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState,
-    SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, UserStatus,
-    duration_micros,
+    AlertEventRepo, AlertRuleRepo, AlertStateRepo, ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod,
+    AuthProviderRepo, ChannelRepo, Claim, Claims, ControlStore, ControlTx, Credential,
+    CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc, KeyChange, KeyChangeKind,
+    KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, LifecycleRepo,
+    MembershipRepo, MigrationKind, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, Org,
+    OrgMembership, OrgRepo, OrgRole, OrgSettings, Project, ProjectMembership, ProjectRepo,
+    ProjectRole, ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session,
+    SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP,
+    TokenHash, TxError, User, UserRepo, UserStatus, duration_micros,
 };
 use crucible_env::{Env, Instant};
 use crucible_records::{ApiKeyId, OrgId, ProjectId, Timestamp, UserId, Uuid};
@@ -279,11 +279,13 @@ impl PgControlStore {
              d15 AS (DELETE FROM schema_migrations WHERE kind <> 'postgres'), \
              d16 AS (DELETE FROM oauth_accounts), d17 AS (DELETE FROM auth_providers), \
              d18 AS (DELETE FROM auth_flows), d19 AS (DELETE FROM one_time_tokens), \
-             d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM project_salts), \
-             d22 AS (DELETE FROM export_jobs), d23 AS (DELETE FROM deletion_node_acks), \
-             d24 AS (DELETE FROM deletion_requests), d25 AS (DELETE FROM lifecycle_actions), \
-             d26 AS (DELETE FROM retention_floors), d27 AS (DELETE FROM nodes), \
-             s2 AS (SELECT setval('deletion_seq', 1, false)) \
+             d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM alert_evaluations), \
+             d22 AS (DELETE FROM alert_events), d23 AS (DELETE FROM alert_state), \
+             d24 AS (DELETE FROM alert_rules), d25 AS (DELETE FROM channels), \
+             d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs), \
+             d28 AS (DELETE FROM deletion_node_acks), d29 AS (DELETE FROM deletion_requests), \
+             d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
+             d32 AS (DELETE FROM nodes), s2 AS (SELECT setval('deletion_seq', 1, false)) \
              SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -529,6 +531,18 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn invitations(&self) -> &dyn InvitationRepo {
+                $($deref)* self.handle
+            }
+            fn channels(&self) -> &dyn ChannelRepo {
+                $($deref)* self.handle
+            }
+            fn alert_rules(&self) -> &dyn AlertRuleRepo {
+                $($deref)* self.handle
+            }
+            fn alert_state(&self) -> &dyn AlertStateRepo {
+                $($deref)* self.handle
+            }
+            fn alert_events(&self) -> &dyn AlertEventRepo {
                 $($deref)* self.handle
             }
             fn leases(&self) -> &dyn Leases {
@@ -1504,6 +1518,7 @@ impl Leases for Handle {
 const fn table(queue: Queue) -> &'static str {
     match queue {
         Queue::NotificationOutbox => "notification_outbox",
+        Queue::AlertEvaluations => "alert_evaluations",
         Queue::ExportJobs => "export_jobs",
     }
 }
@@ -1607,6 +1622,15 @@ impl Claims for Handle {
 
     async fn park(&self, claim: &Claim) -> Result<bool, TxError> {
         self.settle(claim, Settle::Parked).await
+    }
+
+    async fn prune_done(&self, queue: Queue, older_than: Duration) -> Result<u64, TxError> {
+        let table = table(queue);
+        let sql = format!(
+            "DELETE FROM {table} WHERE status = 'done' \
+             AND next_attempt_at < clock_timestamp() - $1 * interval '1 microsecond' RETURNING 1"
+        );
+        self.write(&sql, &[micros(older_than)]).await
     }
 }
 

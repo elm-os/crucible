@@ -8,6 +8,7 @@
 //! - [`HeldLease`], the holder's local validity rule for leases.
 //! - [`LifecycleRepo`] and its rows: the node registry, deletion requests, leader actions and retention floors.
 
+mod alerts;
 mod error;
 mod lease;
 mod sqlws;
@@ -17,6 +18,10 @@ mod types;
 mod lifecycle;
 mod repo;
 
+pub use alerts::{
+    AlertEvent, AlertEventKind, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState,
+    AlertStateRepo, AlertStatus, Channel, ChannelKind, ChannelRepo,
+};
 pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use lifecycle::{

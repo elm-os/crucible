@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
-    Auth, ClickHouse, Config, ConfigErrors, Data, Mcp, PgOutageMode, Postgres, Secret, Server,
-    Source, Sql, WalBackend,
+    Auth, ClickHouse, Config, ConfigErrors, Data, Egress, Mcp, PgOutageMode, Postgres, Secret,
+    Server, Smtp, SmtpTls, Source, Sql, WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -49,6 +49,7 @@ const NUMBERS: &[&str] = &[
     "postgres.pool_size",
     "auth.fail_open_max",
     "auth.session_outage_grace",
+    "smtp.port",
 ];
 
 impl Loaded {
@@ -512,9 +513,108 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         ));
     }
 
-    if !(recent_ok && idle_ok && master_key_ok && clickhouse_ok && postgres_ok && fail_open_ok) {
+    let strict = match t.text("egress.mode") {
+        Some("open") => Some(false),
+        Some("strict") => Some(true),
+        other => {
+            if let (Some(value), Some((_, source))) = (other, t.values.get("egress.mode")) {
+                t.errors.push(format!(
+                    "`egress.mode` = {} is not one of open, strict ({source})",
+                    quoted(value)
+                ));
+            }
+            None
+        }
+    };
+    let mut allow_cidrs = Vec::new();
+    let cidrs = t.text("egress.allow_cidrs").unwrap_or_default().to_owned();
+    for cidr in cidrs.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        if is_cidr(cidr) {
+            allow_cidrs.push(cidr.to_owned());
+        } else {
+            t.errors.push(format!(
+                "`egress.allow_cidrs` entry {} must be an address range such as 10.20.0.0/16 or fd12::/48",
+                quoted(cidr)
+            ));
+        }
+    }
+    let smtp_tls = match t.text("smtp.tls") {
+        Some("starttls") => Some(SmtpTls::StartTls),
+        Some("tls") => Some(SmtpTls::Tls),
+        Some("none") => Some(SmtpTls::None),
+        other => {
+            if let (Some(value), Some((_, source))) = (other, t.values.get("smtp.tls")) {
+                t.errors.push(format!(
+                    "`smtp.tls` = {} is not one of starttls, tls, none ({source})",
+                    quoted(value)
+                ));
+            }
+            None
+        }
+    };
+    let smtp_port = t.parsed::<u16>("smtp.port", "a port number");
+    let mut smtp_ok = t.text("smtp.port").is_none() || smtp_port.is_some();
+    let smtp_from = t.text("smtp.from").map(str::to_owned);
+    match (t.text("smtp.host"), &smtp_from) {
+        (Some(_), None) => {
+            t.errors.push(
+                "`smtp.host` needs the sender address: set `smtp.from` (CRUCIBLE_SMTP_FROM), for example \
+                 crucible@example.com"
+                    .to_owned(),
+            );
+            smtp_ok = false;
+        }
+        (Some(_), Some(from)) if !from.contains('@') => {
+            t.errors.push(format!(
+                "`smtp.from` = {} must be an email address",
+                quoted(from)
+            ));
+            smtp_ok = false;
+        }
+        (None, _) => {
+            for key in ["smtp.from", "smtp.username", "smtp.password", "smtp.port"] {
+                if t.text(key).is_some() {
+                    warnings.push(format!(
+                        "`{key}` is set but `smtp.host` is not, so no mail is sent; set `smtp.host` \
+                         (CRUCIBLE_SMTP_HOST)"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if !(recent_ok
+        && idle_ok
+        && master_key_ok
+        && clickhouse_ok
+        && postgres_ok
+        && fail_open_ok
+        && smtp_ok)
+    {
         return None;
     }
+    let smtp = match (t.text("smtp.host"), smtp_from) {
+        (Some(host), Some(from)) => {
+            let tls = smtp_tls?;
+            Some(Smtp {
+                host: host.to_owned(),
+                port: smtp_port.unwrap_or(match tls {
+                    SmtpTls::StartTls => 587,
+                    SmtpTls::Tls => 465,
+                    SmtpTls::None => 25,
+                }),
+                tls,
+                username: t.text("smtp.username").map(str::to_owned),
+                password: t.secret("smtp.password"),
+                from,
+            })
+        }
+        _ => {
+            smtp_tls?;
+            None
+        }
+    };
     Some(Config {
         server: Server {
             listen: listen?,
@@ -550,7 +650,24 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             session_outage_grace: session_outage_grace?,
             require_https: require_https?,
         },
+        egress: Egress {
+            strict: strict?,
+            allow_cidrs,
+        },
+        smtp,
     })
+}
+
+/// Whether `text` is `address/prefix` with a prefix that fits the address family.
+fn is_cidr(text: &str) -> bool {
+    let Some((address, prefix)) = text.split_once('/') else {
+        return false;
+    };
+    match (address.parse::<std::net::IpAddr>(), prefix.parse::<u8>()) {
+        (Ok(std::net::IpAddr::V4(_)), Ok(prefix)) => prefix <= 32,
+        (Ok(std::net::IpAddr::V6(_)), Ok(prefix)) => prefix <= 128,
+        _ => false,
+    }
 }
 
 /// Resolves the layers into a configuration. `read_file` reads the files that `_file` settings name. Every
@@ -816,7 +933,7 @@ pool_size = 4
         let file = r#"
 [server]
 lisen = "0.0.0.0:1"
-[smtp]
+[webhooks]
 host = "mail"
 [clickhouse]
 master_key = "abc"
@@ -830,7 +947,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres], [security], [auth].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp].",
             ]
         );
     }
@@ -1094,6 +1211,12 @@ require_https = false  # default
 [auth]
 pg_outage_mode = "fail_open"  # default
 session_outage_grace = 600  # default
+
+[egress]
+mode = "open"  # default
+
+[smtp]
+tls = "starttls"  # default
 "#
         );
         // What is printed loads again, to the same settings apart from the redacted secrets.
@@ -1108,6 +1231,54 @@ session_outage_grace = 600  # default
             );
         }
         assert_eq!(Secret::new("x").to_string(), "<redacted>");
+    }
+
+    #[test]
+    fn the_egress_policy_and_the_mail_server_parse_and_say_what_is_missing() {
+        let defaults = load(None, &[], &[]).unwrap().config;
+        assert_eq!(defaults.egress, Egress::default());
+        assert_eq!(defaults.smtp, None);
+        let file = "[egress]\nmode = \"strict\"\nallow_cidrs = \"10.20.0.0/16, fd12::/48\"\n\
+                    [smtp]\nhost = \"mail.internal\"\nfrom = \"crucible@example.com\"\ntls = \"none\"\n";
+        let config = load(Some(file), &[], &[]).unwrap().config;
+        assert!(config.egress.strict);
+        assert_eq!(config.egress.allow_cidrs, ["10.20.0.0/16", "fd12::/48"]);
+        let smtp = config.smtp.unwrap();
+        assert_eq!(
+            (smtp.host.as_str(), smtp.port, smtp.tls),
+            ("mail.internal", 25, SmtpTls::None)
+        );
+        let config = load(
+            None,
+            &env(&[
+                ("CRUCIBLE_SMTP_HOST", "smtp.example.com"),
+                ("CRUCIBLE_SMTP_FROM", "crucible@example.com"),
+                ("CRUCIBLE_SMTP_PASSWORD", "hunter2"),
+            ]),
+            &[],
+        )
+        .unwrap()
+        .config;
+        let smtp = config.smtp.unwrap();
+        assert_eq!((smtp.port, smtp.tls), (587, SmtpTls::StartTls));
+        assert!(!format!("{smtp:?}").contains("hunter2"));
+        let errors = load(
+            Some("[egress]\nmode = \"closed\"\nallow_cidrs = \"10.0.0.0/40\"\n[smtp]\nhost = \"mail\"\n"),
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(errors.0.len(), 3, "{errors}");
+        assert!(errors.0[0].contains("`egress.mode` = \"closed\" is not one of open, strict"));
+        assert!(errors.0[1].contains("`egress.allow_cidrs` entry \"10.0.0.0/40\""));
+        assert!(errors.0[2].contains("set `smtp.from` (CRUCIBLE_SMTP_FROM)"));
+        let loaded = load(Some("[smtp]\nfrom = \"crucible@example.com\"\n"), &[], &[]).unwrap();
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("set `smtp.host`"))
+        );
     }
 
     #[test]
