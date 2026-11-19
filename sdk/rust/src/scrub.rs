@@ -32,7 +32,15 @@ struct Rule {
     replacement: String,
     luhn: bool,
     facts: Facts,
+    /// For a lead pattern without a validator: the pattern from its anchor on, anchored where it is tried.
+    rest: Option<Regex>,
 }
+
+/// No rule matches text shorter than this.
+static SHORTEST: LazyLock<usize> = LazyLock::new(|| match &*RULES {
+    Ok(rules) => rules.iter().map(|r| r.facts.min_length).min().unwrap_or(0),
+    Err(_) => 0,
+});
 
 /// Called once per matcher call with the rule's name and the call's steps (see `search_steps`).
 #[cfg(any(test, feature = "test-support"))]
@@ -116,8 +124,17 @@ fn parse(json: &str) -> Result<Vec<Rule>, String> {
                 Some(other) => return Err(format!("rule {}: unknown validator {other}", r.name)),
             };
             let pattern = Regex::new(&r.pattern).map_err(|e| format!("rule {}: {e}", r.name))?;
+            let facts = facts(&r.pattern);
+            let rest = match &facts.lead {
+                Some(lead) if !luhn => Some(
+                    Regex::new(&format!("^(?:{})", lead.rest))
+                        .map_err(|e| format!("rule {}: {e}", r.name))?,
+                ),
+                _ => None,
+            };
             Ok(Rule {
-                facts: facts(&r.pattern),
+                facts,
+                rest,
                 #[cfg(any(test, feature = "test-support"))]
                 name: r.name,
                 pattern,
@@ -129,6 +146,89 @@ fn parse(json: &str) -> Result<Vec<Rule>, String> {
 }
 
 impl Rule {
+    /// The rule behind guards that take time linear in the text and change nothing: text shorter than any
+    /// match, or without the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
+    /// `None` when nothing matched.
+    fn apply(&self, text: &str) -> Option<String> {
+        let f = &self.facts;
+        if text.len() < f.min_length {
+            return None;
+        }
+        if let Some(literals) = &f.literals
+            && !literals.iter().any(|l| text.contains(l.as_str()))
+        {
+            return None;
+        }
+        match (&f.lead, &self.rest) {
+            (Some(lead), Some(rest)) => self.apply_lead(lead, rest, text),
+            _ => self.apply_plain(text),
+        }
+    }
+
+    /// The matches of a lead pattern, found from its anchors. A match ends its class run at an anchor, and every
+    /// start in that run meets the same anchor, so only the run's leftmost possible start is a candidate and the
+    /// rest of the pattern is tried once, anchored there. Each position is scanned a bounded number of times.
+    fn apply_lead(&self, lead: &Lead, rest: &Regex, text: &str) -> Option<String> {
+        let bytes = text.as_bytes();
+        let anchor = char::from(lead.anchor);
+        let find_anchor = |from: usize| text.get(from..)?.find(anchor).map(|i| from + i);
+        let mut out = String::new();
+        let mut changed = false;
+        let (mut copied, mut floor) = (0, 0);
+        let mut at = find_anchor(0);
+        while let Some(a) = at {
+            let mut start = a;
+            while start > floor && lead.class.has(bytes[start - 1]) {
+                start -= 1;
+            }
+            let begin = if lead.prefix.is_empty() {
+                (start < a).then_some(start)
+            } else {
+                text[start..a]
+                    .find(lead.prefix.as_str())
+                    .map(|k| start + k)
+                    .filter(|&b| b + lead.prefix.len() < a)
+            };
+            if let Some(begin) = begin {
+                let found = rest.find(&text[a..]);
+                self.attempted(text, a, found.map(|m| m.end()));
+                if let Some(m) = found {
+                    out.push_str(&text[copied..begin]);
+                    out.push_str(&self.replacement);
+                    changed = true;
+                    copied = a + m.end();
+                    floor = copied;
+                    at = find_anchor(floor);
+                    continue;
+                }
+            }
+            at = find_anchor(a + 1);
+        }
+        if !changed {
+            return None;
+        }
+        out.push_str(&text[copied..]);
+        Some(out)
+    }
+
+    /// Reports an anchored attempt at `at` to the matcher hook: the bytes it can read, which are its match, or the
+    /// anchor, the class run after it and the byte that ends the run.
+    fn attempted(&self, text: &str, at: usize, end: Option<usize>) {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = matcher_hook() {
+            let steps = end.unwrap_or_else(|| {
+                let run = text.as_bytes()[at + 1..]
+                    .iter()
+                    .take_while(|&&b| self.facts.lead.as_ref().is_some_and(|l| l.class.has(b)))
+                    .count();
+                run + 2
+            });
+            hook(&self.name, steps);
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = (text, at, end);
+    }
+
     /// Reports an unanchored search that tried the starts from `from` up to `to` to the matcher hook.
     fn searched(&self, text: &str, from: usize, to: usize) {
         #[cfg(any(test, feature = "test-support"))]
@@ -142,8 +242,9 @@ impl Rule {
         let _ = (text, from, to);
     }
 
-    /// The text with every accepted match replaced, or `None` when nothing matched.
-    fn apply(&self, text: &str) -> Option<String> {
+    /// The text with every accepted match replaced, or `None` when nothing matched: the rule without its guards,
+    /// the reference the differential tests hold `apply` to.
+    fn apply_plain(&self, text: &str) -> Option<String> {
         let mut out = String::new();
         let mut changed = false;
         let mut copied = 0;
@@ -205,6 +306,7 @@ fn luhn(text: &str) -> bool {
 /// `text` with every rule applied in file order.
 pub(crate) fn scrub(text: &str) -> String {
     match &*RULES {
+        Ok(_) if text.len() < *SHORTEST => text.to_owned(),
         Ok(rules) => {
             let mut text = text.to_owned();
             for rule in rules {
@@ -401,10 +503,13 @@ mod tests {
         parse(RULES_JSON).unwrap().len()
     }
 
+    /// A rule's name, shortest match, required literals and lead prefix and anchor.
+    type RuleFacts<'a> = (&'a str, usize, Option<Vec<String>>, Option<(String, char)>);
+
     #[test]
     fn the_rules_patterns_yield_the_facts_the_guards_use() {
         let rules = parse(RULES_JSON).unwrap();
-        let found: Vec<(&str, usize, Option<Vec<String>>, Option<(String, char)>)> = rules
+        let found: Vec<RuleFacts<'_>> = rules
             .iter()
             .map(|r| {
                 (
@@ -445,6 +550,116 @@ mod tests {
             })
             .collect();
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A seeded xorshift generator.
+    struct Random(u64);
+
+    impl Random {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// Pieces of matches, near misses and separators that the generated text is built from.
+    const FRAGMENTS: &[&str] = &[
+        " ",
+        "a",
+        "0",
+        "7",
+        "@",
+        ".",
+        ":",
+        "-",
+        "_",
+        "+",
+        "(",
+        ")",
+        "/",
+        "=",
+        "%",
+        "\n",
+        "é",
+        "😀",
+        "eyJ",
+        "csk_",
+        "bearer ",
+        "Bearer\t",
+        "-----BEGIN ",
+        "-----END ",
+        "-----",
+        "KEY",
+        "::",
+        "@@",
+        "a@b",
+        "a@b.c",
+        "x@y.zz",
+        "ada.lovelace@example.com",
+        "ops+alerts@mail.example.co.uk",
+        "+1 415 555 0134",
+        "(415) 555-0134",
+        "4111 1111 1111 1111",
+        "4111-1111-1111-1112",
+        "378282246310005",
+        "Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+        "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+        "203.0.113.42",
+        "2001:db8::8a2e:370:7334",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl",
+        "eyJa.b",
+        "eyJeyJ.x.",
+        "eyJ.",
+        "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+    ];
+    const RUN_UNITS: &[&str] = &[
+        "a", "Z", "9", "f", ".", "-", "_", "+", "%", "ab@", "eyJ", "1 ",
+    ];
+
+    fn generated(random: &mut Random) -> String {
+        let mut text = String::new();
+        for _ in 0..random.below(14) {
+            if random.below(10) < 7 {
+                text.push_str(FRAGMENTS[random.below(FRAGMENTS.len())]);
+            } else {
+                text.push_str(
+                    &RUN_UNITS[random.below(RUN_UNITS.len())].repeat(1 + random.below(40)),
+                );
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn guarded_application_equals_plain_application_over_generated_text() {
+        let rules = parse(RULES_JSON).unwrap();
+        let mut random = Random(20_261_118);
+        let mut mismatches = Vec::new();
+        for _ in 0..3000 {
+            let text = generated(&mut random);
+            let mut plain = text.clone();
+            for rule in &rules {
+                if rule.apply(&text) != rule.apply_plain(&text) {
+                    mismatches.push(format!("{}: {text:?}", rule.name));
+                }
+                if let Some(changed) = rule.apply_plain(&plain) {
+                    plain = changed;
+                }
+            }
+            if scrub(&text) != plain {
+                mismatches.push(format!("all rules: {text:?}"));
+            }
+            if matcher_steps(&text) > 2 * rules.len() * text.len().max(1) {
+                mismatches.push(format!("steps: {text:?}"));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{:?}",
+            &mismatches[..mismatches.len().min(3)]
+        );
     }
 
     #[test]
