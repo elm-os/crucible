@@ -376,6 +376,7 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
                     errors: report.errors(),
                     non_2xx: report.non_2xx(),
                     invalid: judge(kind, &report, out.offered_spans_per_s, &out.stopped),
+                    context: Some(out.context),
                 };
                 println!(
                     "perf gate: pair {}/{} {name} {arm:?}: {} spans/s acknowledged, p99 {} us, {} errors, {} \

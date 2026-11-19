@@ -4,6 +4,7 @@
 //! socket (the daemon resolves bind paths on its own filesystem). Every container, volume and network of a
 //! session carries the label `crucible.perf-gate=<session>` and is removed when the session ends.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use serde::Serialize;
 
 use super::gate::{Kind, Power};
 
@@ -104,6 +107,17 @@ impl RigSpec {
             ("postgres", self.postgres),
             ("loadgen", self.loadgen),
         ]
+    }
+
+    /// Every CPU that one of the rig's containers pins.
+    pub fn cpus(&self) -> Vec<usize> {
+        self.containers()
+            .iter()
+            .flat_map(|(_, limits)| {
+                let (first, last) = limits.range();
+                first..=last
+            })
+            .collect()
     }
 
     /// The requests per second and seconds of a measurement.
@@ -605,6 +619,78 @@ pub struct ArmOutput {
     pub offered_spans_per_s: f64,
     /// Rig containers that were not running after the measurement.
     pub stopped: Vec<String>,
+    /// What else the machine did during the measurement.
+    pub context: Context,
+}
+
+/// What else the Docker host did while an arm measured, to tell an order effect from other jobs' load: the
+/// busy CPU time of the CPUs the rig pins and of the other CPUs, the load average, and the containers that ran
+/// outside the session. The other jobs' containers have no cpuset, so they can run on the rig's CPUs too.
+#[derive(Clone, Debug, Serialize)]
+pub struct Context {
+    /// When the measurement started and finished, UTC.
+    pub started_at: String,
+    /// See `started_at`.
+    pub finished_at: String,
+    /// Busy cores, averaged over the measurement, on the CPUs that the rig's containers pin.
+    pub rig_cpus_busy: f64,
+    /// Busy cores, averaged over the measurement, on the Docker host's other CPUs.
+    pub other_cpus_busy: f64,
+    /// The host's 1-minute load average before the measurement.
+    pub load_before: f64,
+    /// The 1-minute load average after it.
+    pub load_after: f64,
+    /// The containers that ran outside the session when the measurement started.
+    pub others: Vec<String>,
+}
+
+/// Busy and total time per CPU, in clock ticks, from the `cpuN` lines of `/proc/stat`.
+pub fn cpu_ticks(stat: &str) -> BTreeMap<usize, (u64, u64)> {
+    stat.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let cpu = fields.next()?.strip_prefix("cpu")?.parse().ok()?;
+            // user nice system idle iowait irq softirq steal; guest time is already in user.
+            let ticks: Vec<u64> = fields.take(8).map(|f| f.parse().unwrap_or(0)).collect();
+            let total: u64 = ticks.iter().sum();
+            let idle = ticks.get(3).copied().unwrap_or(0) + ticks.get(4).copied().unwrap_or(0);
+            Some((cpu, (total.saturating_sub(idle), total)))
+        })
+        .collect()
+}
+
+/// Busy cores over the interval between two `/proc/stat` readings, on the CPUs of `set` and on the others.
+pub fn busy_cores(
+    before: &BTreeMap<usize, (u64, u64)>,
+    after: &BTreeMap<usize, (u64, u64)>,
+    set: &[usize],
+) -> (f64, f64) {
+    let (mut inside, mut outside) = (0.0, 0.0);
+    for (cpu, (busy, total)) in after {
+        let Some((busy0, total0)) = before.get(cpu) else {
+            continue;
+        };
+        let elapsed = total.saturating_sub(*total0);
+        if elapsed == 0 {
+            continue;
+        }
+        let share = busy.saturating_sub(*busy0) as f64 / elapsed as f64;
+        if set.contains(cpu) {
+            inside += share;
+        } else {
+            outside += share;
+        }
+    }
+    (inside, outside)
+}
+
+/// The 1-minute load average from `/proc/loadavg`.
+fn load_1m(loadavg: &str) -> f64 {
+    loadavg
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0)
 }
 
 /// A gate session: its network, the load generator's container, and the rig of the arm in progress.
@@ -922,7 +1008,23 @@ impl<'r> Session<'r> {
         fs::write(runs.join(format!("{tag}-warmup.json")), warmup)
             .map_err(|e| format!("{}: {e}", runs.display()))?;
         let (rps, secs) = self.rig.schedule(kind);
+        let others = self.others();
+        let (stat_before, load_before) = self.host_sample(client);
+        let started_at = super::now().0;
         let report = self.loadgen(&target, lane, rps, secs);
+        let finished_at = super::now().0;
+        let (stat_after, load_after) = self.host_sample(client);
+        let (rig_cpus_busy, other_cpus_busy) =
+            busy_cores(&stat_before, &stat_after, &self.rig.cpus());
+        let context = Context {
+            started_at,
+            finished_at,
+            rig_cpus_busy,
+            other_cpus_busy,
+            load_before,
+            load_after,
+            others,
+        };
         let stopped: Vec<String> = [
             (&crucible, "crucible"),
             (&clickhouse, "clickhouse"),
@@ -939,7 +1041,34 @@ impl<'r> Session<'r> {
             report,
             offered_spans_per_s: (rps * u64::from(lane.spans_per_request())) as f64,
             stopped,
+            context,
         })
+    }
+
+    /// The host's CPU ticks and 1-minute load average, read in the load generator's container: neither file
+    /// is namespaced, so the container sees the Docker host's. Empty when the read fails.
+    fn host_sample(&self, client: &str) -> (BTreeMap<usize, (u64, u64)>, f64) {
+        match docker(["exec", client, "cat", "/proc/stat", "/proc/loadavg"]) {
+            Ok(text) => {
+                let loadavg = text.lines().last().unwrap_or_default();
+                (cpu_ticks(&text), load_1m(loadavg))
+            }
+            Err(_) => (BTreeMap::new(), 0.0),
+        }
+    }
+
+    /// The names of the running containers that are not this session's.
+    fn others(&self) -> Vec<String> {
+        let mine = self.name("");
+        docker(["ps", "--format", "{{.Names}}"])
+            .map(|names| {
+                names
+                    .lines()
+                    .filter(|name| !name.is_empty() && !name.starts_with(&mine))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// One load generator run against `target`; an overloaded run lasts until every request is sent, so the
@@ -1040,6 +1169,30 @@ mod tests {
             cpus.dedup();
             assert_eq!(cpus.len(), all, "{} rig cpusets overlap", rig.name);
         }
+    }
+
+    #[test]
+    fn busy_cores_split_the_rigs_cpus_from_the_others() {
+        // The aggregate line and the other lines of /proc/stat are not CPUs.
+        let before = cpu_ticks(
+            "cpu  10 0 10 280 0 0 0 0 0 0\ncpu0 0 0 0 100 0 0 0 0 0 0\ncpu1 0 0 0 100 0 0 0 0 0 0\n\
+             cpu2 0 0 0 100 0 0 0 0 0 0\nintr 1 2 3\nctxt 4\n",
+        );
+        assert_eq!(before.len(), 3);
+        // cpu0 is fully busy, cpu1 a quarter busy (iowait counts as idle), cpu2 fully busy.
+        let after = cpu_ticks(
+            "cpu0 50 0 50 100 0 0 0 0 0 0\ncpu1 0 0 25 150 25 0 0 0 0 0\ncpu2 90 0 0 100 0 0 10 0 0 0\n",
+        );
+        let (inside, outside) = busy_cores(&before, &after, &[0, 1]);
+        assert!((inside - 1.25).abs() < 1e-9, "{inside}");
+        assert!((outside - 1.0).abs() < 1e-9, "{outside}");
+        // A CPU missing from either reading, or with no elapsed ticks, counts nowhere.
+        assert_eq!(busy_cores(&BTreeMap::new(), &after, &[0]), (0.0, 0.0));
+        assert_eq!(busy_cores(&after, &after, &[0]), (0.0, 0.0));
+        assert!((load_1m("0.52 0.58 0.59 1/467 12345\n") - 0.52).abs() < 1e-9);
+        assert_eq!(load_1m(""), 0.0);
+        assert_eq!(SMALL.cpus(), [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(FULL.cpus().len(), 23);
     }
 
     #[test]

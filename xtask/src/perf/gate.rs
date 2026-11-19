@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+use super::rig::Context;
 use super::stats::{SignedRank, Tail, median, signed_rank};
 
 /// The `schema` value of [`GateReport`].
@@ -147,6 +148,8 @@ pub struct Run {
     pub non_2xx: u64,
     /// Why this arm cannot be compared; `None` when it can.
     pub invalid: Option<String>,
+    /// What else the machine did during the measurement.
+    pub context: Option<Context>,
 }
 
 impl Run {
@@ -230,6 +233,12 @@ pub struct Comparison {
     pub wilcoxon: SignedRank,
     /// The signed change beyond which, with p below [`ALPHA`], the metric blocks.
     pub threshold: f64,
+    /// In each pair, the value of the arm that ran second minus the value of the arm that ran first.
+    pub order_differences: Vec<f64>,
+    /// The order effect relative to the median of every value: the mean of the median second-minus-first
+    /// difference of the AB pairs and that of the BA pairs, in which the builds' difference cancels. `None`
+    /// without pairs of both orders, or when the median is 0.
+    pub order_change: Option<f64>,
     /// Whether this metric may block.
     pub gated: bool,
     /// Whether every arm could be compared.
@@ -274,7 +283,31 @@ pub fn compare(kind: Kind, runs: &[Run], not_gated: Option<String>) -> Compariso
     let median_base = median(&base).unwrap_or(0.0);
     let median_candidate = median(&candidate).unwrap_or(0.0);
     let change = (median_base != 0.0).then(|| median_candidate / median_base - 1.0);
+    // In an AB pair, second minus first is the builds' difference plus the order effect; in a BA pair it is the
+    // order effect minus the builds' difference. Averaging the two orders cancels the builds' difference.
+    let (mut order_differences, mut ab, mut ba) = (Vec::new(), Vec::new(), Vec::new());
+    for (ra, rb) in a.iter().zip(&b) {
+        let (first, second, group) = match order(ra.pair.saturating_sub(1)) {
+            [Arm::A, _] => (ra, rb, &mut ab),
+            _ => (rb, ra, &mut ba),
+        };
+        let difference = second.value() - first.value();
+        order_differences.push(difference);
+        group.push(difference);
+    }
+    let all: Vec<f64> = base.iter().chain(&candidate).copied().collect();
+    let order_change = match (median(&ab), median(&ba), median(&all)) {
+        (Some(ab), Some(ba), Some(level)) if level != 0.0 => Some((ab + ba) / 2.0 / level),
+        _ => None,
+    };
     let mut notes: Vec<String> = not_gated.iter().cloned().collect();
+    if order_change.is_some_and(|c| c.abs() > threshold.abs()) {
+        notes.push(format!(
+            "order effect: the arms that ran second measured {} against those that ran first; an order effect \
+             of this size can hide or fake a change of the same size",
+            percent(order_change)
+        ));
+    }
     for run in a.iter().chain(&b) {
         if let Some(reason) = &run.invalid {
             notes.push(format!("pair {} arm {:?}: {reason}", run.pair, run.arm));
@@ -294,6 +327,8 @@ pub fn compare(kind: Kind, runs: &[Run], not_gated: Option<String>) -> Compariso
         differences,
         wilcoxon,
         threshold,
+        order_differences,
+        order_change,
         gated,
         valid,
         notes,
@@ -646,8 +681,8 @@ pub fn summary(report: &GateReport) -> String {
 
     let _ = writeln!(
         out,
-        "\n| Metric | Base median | Candidate median | Change | One-sided p | Blocks when | Gated | Result |\n\
-         |---|---|---|---|---|---|---|---|"
+        "\n| Metric | Base median | Candidate median | Change | One-sided p | Second vs first | Blocks when | Gated | \
+         Result |\n|---|---|---|---|---|---|---|---|---|"
     );
     for c in &report.comparisons {
         let (name, rule) = match c.metric {
@@ -671,11 +706,12 @@ pub fn summary(report: &GateReport) -> String {
         };
         let _ = writeln!(
             out,
-            "| {name} | {} | {} | {} | {:.4} | {rule} | {} | {result} |",
+            "| {name} | {} | {} | {} | {:.4} | {} | {rule} | {} | {result} |",
             metric_value(c.metric, c.median_base),
             metric_value(c.metric, c.median_candidate),
             percent(c.change),
             c.wilcoxon.p,
+            percent(c.order_change),
             if c.gated { "yes" } else { "no" }
         );
     }
@@ -717,6 +753,36 @@ pub fn summary(report: &GateReport) -> String {
             "| {pair} | {order} | {ta} | {tb} | {td} | {la} | {lb} | {ld} |"
         );
     }
+    let _ = writeln!(
+        out,
+        "\n## Runs in order\n\nBusy cores are averaged over each measurement. Other jobs' containers have no cpuset, \
+         so they can also run on the rig's CPUs.\n\n| Run | Pair | Measurement | Arm | Value | Rig CPUs busy | \
+         Other CPUs busy | Load before, after | Other containers |\n|---|---|---|---|---|---|---|---|---|"
+    );
+    for (index, run) in (1..).zip(&report.runs) {
+        let (kind, value) = match run.kind {
+            Kind::Throughput => ("throughput", thousands(run.value())),
+            Kind::Latency => ("p99, ms", milliseconds(run.value())),
+        };
+        let context = run.context.as_ref().map_or_else(
+            || "n/a | n/a | n/a | n/a".to_owned(),
+            |c| {
+                format!(
+                    "{:.1} | {:.1} | {:.1}, {:.1} | {}",
+                    c.rig_cpus_busy,
+                    c.other_cpus_busy,
+                    c.load_before,
+                    c.load_after,
+                    c.others.len()
+                )
+            },
+        );
+        let _ = writeln!(
+            out,
+            "| {index} | {} | {kind} | {:?} | {value} | {context} |",
+            run.pair, run.arm
+        );
+    }
     out
 }
 
@@ -743,6 +809,7 @@ mod tests {
             errors: 0,
             non_2xx: 0,
             invalid: None,
+            context: None,
         }
     }
 
@@ -925,6 +992,41 @@ mod tests {
         lat[0].invalid = Some("not clean".to_owned());
         let lat = compare(Kind::Latency, &lat, None);
         assert_eq!(verdict(&[thr, lat]), Verdict::Regression);
+    }
+
+    #[test]
+    fn the_order_effect_compares_the_arms_that_ran_second_with_those_that_ran_first() {
+        // One build in both arms, and in every pair the arm that ran second measured about 10% more. Pairs run
+        // AB, BA, AB, BA, so A ran first in pairs 1 and 3.
+        let base = [100.0, 112.2, 98.0, 111.1];
+        let candidate = [110.0, 102.0, 107.8, 101.0];
+        let c = compare(
+            Kind::Throughput,
+            &runs(Kind::Throughput, &base, &candidate),
+            None,
+        );
+        assert_eq!(c.order_differences.len(), 4);
+        for (difference, expected) in c.order_differences.iter().zip([10.0, 10.2, 9.8, 10.1]) {
+            assert!((difference - expected).abs() < 1e-9, "{difference}");
+        }
+        // The AB pairs' median difference is 9.9 and the BA pairs' 10.15; the median of every value is 104.9.
+        let order = c.order_change.unwrap();
+        assert!((order - 10.025 / 104.9).abs() < 1e-9, "{order}");
+        // The arms' medians barely differ, so nothing blocks, but the note names the order effect.
+        assert!(c.change.unwrap().abs() < 0.01 && !c.blocks);
+        assert!(
+            c.notes.iter().any(|n| n.starts_with("order effect: ")),
+            "{:?}",
+            c.notes
+        );
+        // Without an order effect there is no note.
+        let flat = compare(
+            Kind::Throughput,
+            &runs(Kind::Throughput, &[100.0; 4], &[100.0; 4]),
+            None,
+        );
+        assert_eq!(flat.order_change, Some(0.0));
+        assert!(flat.notes.is_empty());
     }
 
     #[test]

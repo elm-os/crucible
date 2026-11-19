@@ -129,6 +129,20 @@ The verdict is `regression` when a valid, gated metric blocks, otherwise `invali
 otherwise `pass`. The command exits with 0 for `pass`, 1 for `regression` or `invalid`, and 2 when it could not
 run: a bad argument, a failed build, a rig that did not start.
 
+### Order effects and other jobs
+
+The gate also estimates how much running second rather than first moves a metric, so that an A/A run (the same
+commit as base and candidate) can show whether the rig favours a position. In an AB pair the second arm minus the
+first is the builds' difference plus the order effect; in a BA pair it is the order effect minus the builds'
+difference. The order effect is the mean of the AB pairs' median second-minus-first difference and the BA pairs',
+relative to the median of every value, so the builds' difference cancels. It is reported for every metric (the
+summary's "Second vs first" column), and a note names it when it exceeds the metric's threshold. It never blocks.
+
+Each measured arm also records what else the machine did: busy cores on the rig's CPUs and on the Docker host's
+other CPUs (from `/proc/stat`, which a container reads unnamespaced), the 1-minute load average before and after,
+and the containers that ran outside the session. Other jobs' containers carry no cpuset, so they can take the
+rig's CPUs as well; the summary's last table lists every run in order with this context.
+
 ### Output
 
 The run writes `perf/results/local/gate/<time>-<base>-<candidate>[-smoke]/` (ignored by git): `gate.json`
@@ -204,8 +218,8 @@ Paths are relative to the results directory.
 | `loadgen_sha256` | string | The load generator binary that measured both arms |
 | `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
 | `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
-| `comparisons[]` | array | `throughput`, then `latency`, each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `gated`, `valid`, `notes[]` and `blocks` |
-| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx` and `invalid` (null, or why the arm cannot be compared) |
+| `comparisons[]` | array | `throughput`, then `latency`, each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `load_before`, `load_after` and `others[]` (the other containers' names) |
 | `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe
