@@ -728,6 +728,7 @@ fn run_config(server: &Server, bearer: &str, seconds: u64) -> RunConfig {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_str(bearer).unwrap(),
         )],
+        spread: Duration::ZERO,
     }
 }
 

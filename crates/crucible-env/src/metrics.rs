@@ -306,6 +306,26 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Store reads each request of the read services issued, by request class (`crucible-query`'s
+    /// `READ_CLASSES`): the count is the requests, the sum the reads.
+    pub static API_STORE_READS: HistogramDef = HistogramDef {
+        name: "crucible_api_store_reads",
+        help: "Store reads each request of the read services issued, by request class.",
+        labels: &["class"],
+        buckets: &[0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 50, 100],
+    };
+
+    /// How long each request of the read services that waits for the recent index's read barrier waited, by
+    /// request class, timed by the caller with the `Env` clock.
+    pub static API_BARRIER_WAIT: HistogramDef = HistogramDef {
+        name: "crucible_api_barrier_wait_microseconds",
+        help: "How long each read that waits for the recent index's read barrier waited, in microseconds.",
+        labels: &["class"],
+        buckets: &[
+            0, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000,
+        ],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -384,6 +404,16 @@ pub mod registry {
                 CLICKHOUSE_CONNECTIONS_OPENED.name,
                 CLICKHOUSE_CONNECTIONS_OPENED.labels,
                 &[],
+            ),
+            (
+                API_STORE_READS.name,
+                API_STORE_READS.labels,
+                API_STORE_READS.buckets,
+            ),
+            (
+                API_BARRIER_WAIT.name,
+                API_BARRIER_WAIT.labels,
+                API_BARRIER_WAIT.buckets,
             ),
         ]
     }

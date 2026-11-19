@@ -88,7 +88,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: PayloadQuery,
     ) -> Result<PayloadBytes, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "payload");
         let scope = ctx.scope;
         let (offset, len) = query.range.unwrap_or((0, WHOLE));
         if len == 0 {

@@ -56,7 +56,7 @@ pub const MAX_REQUESTS: u64 = 1 << 32;
 /// production timer's lateness (up to about 2.5 ms in the accuracy baseline of `docs/testing/perf.md`).
 pub const SPIN_WINDOW: Duration = Duration::from_millis(3);
 /// Histograms track values up to one hour, in microseconds; larger values are recorded as one hour.
-const HISTOGRAM_MAX_US: u64 = 3_600_000_000;
+pub(crate) const HISTOGRAM_MAX_US: u64 = 3_600_000_000;
 
 /// What to send, where and how fast.
 #[derive(Clone, Debug)]
@@ -79,6 +79,28 @@ pub struct RunConfig {
     pub timeout: Duration,
     /// Extra headers on every request, such as `Authorization`.
     pub headers: Vec<(HeaderName, HeaderValue)>,
+    /// Zero: span times follow the schedule. Otherwise the requests' span times spread evenly over this much time
+    /// before the schedule's start ([`span_base_nanos`]), to load a dataset that covers a read window.
+    pub spread: Duration,
+}
+
+/// The start time, in Unix nanoseconds, of request `index`'s first span, for a schedule that started at
+/// `wall_start_nanos` with `requests` requests at `rate` per second: its intended send time, or with a nonzero
+/// `spread_nanos` an even share of the `spread_nanos` before the start.
+pub fn span_base_nanos(
+    wall_start_nanos: u64,
+    rate: u64,
+    requests: u64,
+    spread_nanos: u64,
+    index: u64,
+) -> u64 {
+    if spread_nanos == 0 {
+        return wall_start_nanos.saturating_add(offset_nanos(index, rate));
+    }
+    let share = u128::from(index) * u128::from(spread_nanos) / u128::from(requests.max(1));
+    wall_start_nanos
+        .saturating_sub(spread_nanos)
+        .saturating_add(u64::try_from(share).unwrap_or(u64::MAX))
 }
 
 /// Why a run could not start or finish.
@@ -169,6 +191,9 @@ pub struct Lane {
     pub gzip: bool,
     /// The most bodies compressed at a time; 0 without gzip.
     pub gzip_threads: usize,
+    /// 0: span times follow the schedule. Otherwise the seconds before `started_at` that the requests' span
+    /// times spread over evenly.
+    pub spread_s: f64,
     /// Distinct pre-encoded templates.
     pub templates: usize,
     /// Mean protobuf body size of sent requests, before compression.
@@ -255,7 +280,7 @@ pub struct Summary {
 }
 
 impl Summary {
-    fn of(histogram: &Histogram<u64>) -> Self {
+    pub(crate) fn of(histogram: &Histogram<u64>) -> Self {
         if histogram.is_empty() {
             return Self::default();
         }
@@ -368,6 +393,7 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         wall_start_nanos: u64::try_from(wall_start.micros())
             .unwrap_or(0)
             .saturating_mul(1_000),
+        spread_nanos: nanos(config.spread),
     });
     let shared = Arc::new(Shared {
         next: AtomicU64::new(0),
@@ -423,6 +449,7 @@ struct Plan {
     start: Instant,
     wall_start: Timestamp,
     wall_start_nanos: u64,
+    spread_nanos: u64,
 }
 
 impl Plan {
@@ -495,7 +522,7 @@ async fn pace(env: Env, plan: Arc<Plan>, shared: Arc<Shared>) {
 }
 
 /// One HTTP/1.1 connection; dropping it closes the socket.
-struct Connection {
+pub(crate) struct Connection {
     sender: SendRequest<Full<Bytes>>,
     driver: JoinHandle<()>,
 }
@@ -507,7 +534,11 @@ impl Drop for Connection {
 }
 
 impl Connection {
-    async fn open(env: &Env, target: SocketAddr, timeout: Duration) -> Result<Self, ConnectError> {
+    pub(crate) async fn open(
+        env: &Env,
+        target: SocketAddr,
+        timeout: Duration,
+    ) -> Result<Self, ConnectError> {
         let stream = env
             .net
             .connect(target, env.clock.now().saturating_add(timeout))
@@ -520,7 +551,12 @@ impl Connection {
         Ok(Self { sender, driver })
     }
 
-    async fn exchange(
+    /// Waits until the connection can take a request; an error when the peer closed it.
+    pub(crate) async fn ready(&mut self) -> Result<(), hyper::Error> {
+        self.sender.ready().await
+    }
+
+    pub(crate) async fn exchange(
         &mut self,
         request: Request<Full<Bytes>>,
     ) -> Result<(StatusCode, Bytes), hyper::Error> {
@@ -593,7 +629,14 @@ async fn worker(
         }
         let offset = offset_nanos(index, plan.rate);
         let intended = plan.start.saturating_add(Duration::from_nanos(offset));
-        let raw = pool.request(index, plan.wall_start_nanos.saturating_add(offset));
+        let span_time = span_base_nanos(
+            plan.wall_start_nanos,
+            plan.rate,
+            plan.requests,
+            plan.spread_nanos,
+            index,
+        );
+        let raw = pool.request(index, span_time);
         let request_bytes = raw.len();
         let body = match &shared.compressors {
             Some(compressors) => compressors.compress(&env, raw).await?,
@@ -873,6 +916,7 @@ impl Stats {
                 rootless: pool_config.rootless,
                 gzip: config.gzip,
                 gzip_threads: if config.gzip { config.gzip_threads } else { 0 },
+                spread_s: config.spread.as_secs_f64(),
                 templates: pool_config.templates,
                 request_bytes_mean: mean(self.request_bytes),
                 wire_bytes_mean: mean(self.wire_bytes),

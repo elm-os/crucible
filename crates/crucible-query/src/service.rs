@@ -3,8 +3,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crucible_env::{Clock, QueryError, Stores};
+use crucible_env::metrics::registry;
+use crucible_env::{Clock, Histogram, Metrics, QueryError, Stores};
 use crucible_plan::{MAX_LIST, PlanError, QueryPlan, RetentionClamp, Row, trace_page_stats};
 use crucible_recent::{Consistency, ReadState, RecentIndex, RecentSpan};
 use crucible_records::{
@@ -32,6 +34,30 @@ pub struct QueryService {
     pub(crate) index: Arc<RecentIndex>,
     /// The epoch of the WAL that feeds `index`: the LSNs of this node's head cursors count its frames.
     pub(crate) wal_epoch: WalEpoch,
+    /// The per-request counters, when the service records them.
+    meters: Option<Arc<Meters>>,
+}
+
+/// The request classes of the read services, which label the per-request counters: one per method.
+pub const READ_CLASSES: [&str; 11] = [
+    "trace_by_id",
+    "trace_list",
+    "trace_list_since",
+    "span_children",
+    "payload",
+    "facts",
+    "fact_target_bounds",
+    "filter_values",
+    "data_bounds",
+    "search",
+    "metrics",
+];
+
+/// The handles of the per-request counters, fetched once per class.
+#[derive(Debug)]
+struct Meters {
+    /// Per class: the store reads of one request, and its wait for the read barrier.
+    classes: BTreeMap<&'static str, (Histogram, Histogram)>,
 }
 
 impl QueryService {
@@ -47,10 +73,33 @@ impl QueryService {
             clock,
             index,
             wal_epoch,
+            meters: None,
         }
     }
 
-    pub(crate) fn read(&self, ctx: &ReadContext) -> Read<'_> {
+    /// The service, recording for every request, by class ([`READ_CLASSES`]), the store reads it issued
+    /// (`crucible_api_store_reads`) and, for the reads that wait for the recent index's read barrier, how long
+    /// they waited (`crucible_api_barrier_wait_microseconds`), timed with the service's clock.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: &dyn Metrics) -> Self {
+        let classes = READ_CLASSES
+            .iter()
+            .map(|class| {
+                (
+                    *class,
+                    (
+                        metrics.histogram(&registry::API_STORE_READS, &[class]),
+                        metrics.histogram(&registry::API_BARRIER_WAIT, &[class]),
+                    ),
+                )
+            })
+            .collect();
+        self.meters = Some(Arc::new(Meters { classes }));
+        self
+    }
+
+    /// A read of request class `class`, one of [`READ_CLASSES`].
+    pub(crate) fn read(&self, ctx: &ReadContext, class: &'static str) -> Read<'_> {
         let now = self.clock.wall_now();
         Read {
             service: self,
@@ -58,6 +107,9 @@ impl QueryService {
             clamp: RetentionClamp::new(ctx.retention, now),
             now,
             store_down: None,
+            class,
+            store_reads: 0,
+            barrier_wait: None,
         }
     }
 
@@ -80,9 +132,34 @@ pub(crate) struct Read<'a> {
     pub(crate) now: Timestamp,
     /// Set when a store read failed as unavailable; the read goes on with what the recent index holds.
     store_down: Option<String>,
+    /// The request's class, which labels its counters.
+    class: &'static str,
+    /// Store reads issued so far.
+    store_reads: u64,
+    /// How long the request waited for the read barrier, when it waited.
+    barrier_wait: Option<Duration>,
+}
+
+impl Drop for Read<'_> {
+    /// Records the request's counters, however it ended.
+    fn drop(&mut self) {
+        let Some(meters) = &self.service.meters else {
+            return;
+        };
+        if let Some((reads, barrier)) = meters.classes.get(self.class) {
+            reads.record(self.store_reads);
+            if let Some(waited) = self.barrier_wait {
+                barrier.record(u64::try_from(waited.as_micros()).unwrap_or(u64::MAX));
+            }
+        }
+    }
 }
 
 impl Read<'_> {
+    /// Notes how long the request waited for the read barrier.
+    pub(crate) fn barrier_waited(&mut self, waited: Duration) {
+        self.barrier_wait = Some(self.barrier_wait.unwrap_or_default() + waited);
+    }
     /// The rows of a plan. No plan (the window has expired) is no rows. An unavailable store is no rows too,
     /// and is remembered: the response is then partial, or an error when the index has nothing to offer.
     pub(crate) async fn rows(
@@ -95,6 +172,7 @@ impl Read<'_> {
         if self.store_down.is_some() {
             return Ok(Vec::new());
         }
+        self.store_reads += 1;
         let result = match self.service.stores.telemetry.execute(plan).await {
             Ok(stream) => stream.rows().await,
             Err(error) => Err(error),

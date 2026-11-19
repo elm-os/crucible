@@ -223,12 +223,74 @@ impl Markers {
     }
 }
 
+/// The identity scheme of one run (the module documentation's table): trace ids, span ids and sequence numbers
+/// from the run id and the request shape alone, so that a reader can name every span of a loaded run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Identity {
+    run_tag: [u8; 8],
+    spans_per_request: u32,
+    traces_per_request: u32,
+}
+
+impl Identity {
+    /// The identities of run `run_id`, whose requests hold `spans_per_request` spans in `traces_per_request`
+    /// traces (both at least 1).
+    pub fn new(run_id: Uuid, spans_per_request: u32, traces_per_request: u32) -> Self {
+        let halves = u128::from_be_bytes(run_id.to_bytes());
+        Self {
+            run_tag: (((halves >> 64) as u64) ^ (halves as u64)).to_be_bytes(),
+            spans_per_request: spans_per_request.max(1),
+            traces_per_request: traces_per_request.max(1),
+        }
+    }
+
+    /// The trace id of trace `trace` (from 0) of request `index`.
+    pub fn trace_id(&self, index: u64, trace: u32) -> TraceId {
+        let number = index
+            .wrapping_mul(u64::from(self.traces_per_request))
+            .wrapping_add(u64::from(trace));
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&self.run_tag);
+        bytes[8..].copy_from_slice(&mix64(number.wrapping_add(1)).to_be_bytes());
+        TraceId::from_bytes(bytes)
+    }
+
+    /// The trace, from 0, of the span at `position` in a request.
+    pub fn trace_of(&self, position: usize) -> u32 {
+        let trace = position as u64 * u64::from(self.traces_per_request)
+            / u64::from(self.spans_per_request);
+        u32::try_from(trace).unwrap_or(u32::MAX)
+    }
+
+    /// The positions of trace `trace`'s spans in a request: its first span (the root) up to the next trace's.
+    pub fn positions(&self, trace: u32) -> std::ops::Range<usize> {
+        let first = |trace: u64| {
+            (trace * u64::from(self.spans_per_request)).div_ceil(u64::from(self.traces_per_request))
+                as usize
+        };
+        let end = first(u64::from(trace) + 1).min(self.spans_per_request as usize);
+        first(u64::from(trace)).min(end)..end
+    }
+
+    /// The sequence number of the span at `position` in request `index`.
+    pub fn seq(&self, index: u64, position: usize) -> u64 {
+        index
+            .saturating_mul(u64::from(self.spans_per_request))
+            .saturating_add(position as u64)
+    }
+}
+
+/// How far after its request's start time the span at `position` starts.
+pub const fn span_offset_nanos(position: usize) -> u64 {
+    position as u64 * CHILD_STAGGER_NANOS
+}
+
 /// Pre-encoded request templates for one run; see the module documentation.
 #[derive(Debug)]
 pub struct Pool {
     config: PoolConfig,
     run_id: Uuid,
-    run_tag: [u8; 8],
+    identity: Identity,
     templates: Vec<Template>,
 }
 
@@ -251,11 +313,10 @@ impl Pool {
         if estimate > MAX_BODY_BYTES {
             return Err(PoolError::TooLarge(estimate));
         }
-        let halves = u128::from_be_bytes(run_id.to_bytes());
         let mut pool = Self {
             config,
             run_id,
-            run_tag: (((halves >> 64) as u64) ^ (halves as u64)).to_be_bytes(),
+            identity: Identity::new(run_id, config.spans_per_request, config.traces_per_request),
             templates: Vec::with_capacity(config.templates),
         };
         let content = ChaChaRng::from_u64(config.seed);
@@ -290,29 +351,24 @@ impl Pool {
         body
     }
 
+    /// The identity scheme of the pool's run.
+    pub fn identity(&self) -> Identity {
+        self.identity
+    }
+
     /// The trace id of trace `trace` (from 0) of request `index`.
     pub fn trace_id(&self, index: u64, trace: u32) -> TraceId {
-        let number = index
-            .wrapping_mul(u64::from(self.config.traces_per_request))
-            .wrapping_add(u64::from(trace));
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&self.run_tag);
-        bytes[8..].copy_from_slice(&mix64(number.wrapping_add(1)).to_be_bytes());
-        TraceId::from_bytes(bytes)
+        self.identity.trace_id(index, trace)
     }
 
     /// The trace, from 0, of the span at `position` in a request.
     pub fn trace_of(&self, position: usize) -> u32 {
-        let trace = position as u64 * u64::from(self.config.traces_per_request)
-            / u64::from(self.config.spans_per_request);
-        u32::try_from(trace).unwrap_or(u32::MAX)
+        self.identity.trace_of(position)
     }
 
     /// The sequence number of the span at `position` in request `index`.
     pub fn seq(&self, index: u64, position: usize) -> u64 {
-        index
-            .saturating_mul(u64::from(self.config.spans_per_request))
-            .saturating_add(position as u64)
+        self.identity.seq(index, position)
     }
 
     /// The span id of the span with sequence number `seq`.
@@ -353,7 +409,7 @@ impl Pool {
             if is_root {
                 root = position;
             }
-            let offset = position as u64 * CHILD_STAGGER_NANOS;
+            let offset = span_offset_nanos(position);
             let duration = if is_root {
                 // The root lasts past every span of its trace.
                 let length = (position..spans_per_request)
@@ -803,6 +859,26 @@ mod tests {
             let longest = lengths.values().max().copied().unwrap_or(0);
             let shortest = lengths.values().min().copied().unwrap_or(0);
             prop_assert!(longest - shortest <= 1);
+        }
+
+        /// The positions of a trace are exactly the positions `trace_of` assigns to it, and every position
+        /// belongs to one trace.
+        #[test]
+        fn trace_positions_invert_trace_of(
+            (spans, traces) in (1u32..300).prop_flat_map(|s| (Just(s), 1..=s)),
+        ) {
+            let identity = Identity::new(RUN, spans, traces);
+            let mut covered = 0;
+            for trace in 0..traces {
+                let positions = identity.positions(trace);
+                prop_assert!(!positions.is_empty());
+                prop_assert_eq!(positions.start, covered);
+                for position in positions.clone() {
+                    prop_assert_eq!(identity.trace_of(position), trace);
+                }
+                covered = positions.end;
+            }
+            prop_assert_eq!(covered, spans as usize);
         }
 
         /// A missing parent never names a span of a run: sequence numbers stay below 2^48.

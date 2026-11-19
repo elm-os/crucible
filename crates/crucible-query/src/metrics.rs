@@ -187,7 +187,7 @@ impl QueryService {
         let MetricsRequest { window, query } = request;
         let shape = metrics_shape(window, &query)
             .map_err(|error| QueryServiceError::Internal(error.to_string()))?;
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "metrics");
         let (scope, caller) = (ctx.scope, ctx.caller);
         let consistency = self.consistency();
         let state = self.index.read_state(scope);

@@ -766,7 +766,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
-    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch)
+        .with_metrics(env.metrics.as_ref());
     let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
