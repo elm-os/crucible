@@ -1,0 +1,13 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&sessions)
+---
+SELECT session_id, max(start_time) AS m0, min(start_time) AS m1, uniqCombined64(trace_id) AS m2 FROM crucible.trace_heads WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND (user_id = {p3:String} AND session_id != {p4:String}) GROUP BY session_id HAVING (m0, session_id) < ({p5:DateTime64(6, 'UTC')}, {p6:String}) ORDER BY m0 DESC, session_id DESC LIMIT {p7:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000001"
+p3: String = "user-9"
+p4: String = ""
+p5: DateTime64(6, 'UTC') = "1794907800.000000"
+p6: String = "session-9"
+p7: UInt64 = "51"

@@ -35,11 +35,13 @@ pub use span_children::{
 pub use span_list::{SPAN_LIST_MAX_LIMIT, SpanListRequest, span_list};
 pub use trace_bounds::trace_time_bounds;
 pub use trace_list::{
-    TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, trace_list, trace_page_stats,
+    TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, filtered_trace_list, trace_list,
+    trace_page_stats,
 };
 pub use trace_spans::{
     TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT, spans_of_parents, trace_roots, trace_spans,
 };
 pub use users::{
-    USER_LIST_MAX_LIMIT, UserListRequest, user_detail, user_list, user_session_counts,
+    USER_LIST_MAX_LIMIT, USER_SESSIONS_MAX_LIMIT, UserListRequest, UserSessionsRequest,
+    user_detail, user_list, user_session_counts, user_sessions,
 };

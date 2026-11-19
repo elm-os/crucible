@@ -10,6 +10,8 @@ mod metrics;
 mod payload;
 mod properties;
 mod search;
+mod sessions;
+mod span_list;
 mod store;
 mod trace;
 mod world;

@@ -1,9 +1,11 @@
 //! The REST API under `/api/v1` (contract section 12): the routes of milestone 1, principal resolution and the
 //! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
 //!
-//! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
-//!   and `.../data-bounds` over a [`QueryService`], and the SQL workspace under `.../sql/` over a
-//!   [`SqlWorkspace`]; one module per route group; DTOs come from `crucible-api-types`.
+//! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`,
+//!   `.../spans`, `.../sessions`, `.../sessions/{session_id}`, `.../users`, `.../users/{user_id}`,
+//!   `.../users/{user_id}/sessions` and `.../data-bounds` over a [`QueryService`], and the SQL workspace
+//!   under `.../sql/` over a [`SqlWorkspace`]; one module per route group; DTOs come from
+//!   `crucible-api-types`.
 //! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
 //!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
 //!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
@@ -23,6 +25,7 @@ mod body;
 mod control;
 mod convert;
 mod cursor;
+mod filters;
 mod idempotency;
 mod layers;
 mod openapi;
