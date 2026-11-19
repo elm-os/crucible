@@ -107,7 +107,9 @@ travel in search params.
 ## Writing style for docs and UI copy
 
 - No em dashes.
-- Features that are not shipped are described in planned tense ("will", "is designed to").
+- Describe Crucible as the released product it is: document what exists on main, in the present tense, and leave
+  out what is not built. Never write "preview", "under development", "planned" or "coming soon". A caveat an
+  operator needs, such as one about upgrades between versions, is stated as a plain operational fact.
 - Plain, specific sentences; every claim checkable against the code or a measurement.
 
 ## Ways of working
