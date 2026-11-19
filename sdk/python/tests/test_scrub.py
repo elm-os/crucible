@@ -8,6 +8,7 @@ import re
 import time
 from importlib import resources
 from pathlib import Path
+from random import Random
 from typing import Any
 
 import pytest
@@ -148,6 +149,67 @@ def test_the_rules_patterns_yield_the_facts_the_guards_use() -> None:
 @pytest.mark.parametrize("text", STEP_INPUTS.values(), ids=STEP_INPUTS.keys())
 def test_matcher_steps_stay_linear_in_the_length(text: str) -> None:
     assert matcher_steps(text) <= 2 * len(RULES["rules"]) * len(text)
+
+
+# Pieces of matches, near misses and separators that the generated text is built from.
+FRAGMENTS = [
+    *" a07@.:-_+()/=%\néé😀",
+    "eyJ",
+    "csk_",
+    "bearer ",
+    "Bearer\t",
+    "-----BEGIN ",
+    "-----END ",
+    "-----",
+    "KEY",
+    "::",
+    "@@",
+    "a@b",
+    "a@b.c",
+    "x@y.zz",
+    "ada.lovelace@example.com",
+    "ops+alerts@mail.example.co.uk",
+    "+1 415 555 0134",
+    "(415) 555-0134",
+    "4111 1111 1111 1111",
+    "4111-1111-1111-1112",
+    "378282246310005",
+    "Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+    "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+    "203.0.113.42",
+    "2001:db8::8a2e:370:7334",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl",
+    "eyJa.b",
+    "eyJeyJ.x.",
+    "eyJ.",
+    "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+]
+RUN_UNITS = ["a", "Z", "9", "f", ".", "-", "_", "+", "%", "ab@", "eyJ", "1 "]
+
+
+def generated(random: Random) -> str:
+    parts = []
+    for _ in range(random.randrange(14)):
+        if random.random() < 0.7:
+            parts.append(random.choice(FRAGMENTS))
+        else:
+            parts.append(random.choice(RUN_UNITS) * random.randint(1, 40))
+    return "".join(parts)
+
+
+def test_guarded_application_equals_plain_application_over_generated_text() -> None:
+    random = Random(20261118)
+    mismatches: list[str] = []
+    for _ in range(3000):
+        text = generated(random)
+        for rule in SCRUBBER.rules:
+            if rule.apply(text) != rule.apply_plain(text):
+                mismatches.append(f"{rule.name}: {text!r}")
+        if SCRUBBER.text(text) != SCRUBBER.text_plain(text):
+            mismatches.append(f"all rules: {text!r}")
+        if matcher_steps(text) > 2 * len(RULES["rules"]) * max(len(text), 1):
+            mismatches.append(f"steps: {text!r}")
+    assert mismatches[:5] == []
 
 
 def test_a_long_run_scrubs_within_a_generous_ceiling() -> None:

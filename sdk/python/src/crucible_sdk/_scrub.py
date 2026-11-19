@@ -173,6 +173,17 @@ def outside_subset(pattern: str) -> str | None:
     return None
 
 
+def _attempt_steps(lead: Lead, text: str, at: int, match: re.Match[str] | None) -> int:
+    """The characters an anchored attempt of a lead pattern's rest can read: its match, or the anchor, the class run
+    after it and the character that ends the run."""
+    if match is not None:
+        return match.end() - at
+    end = at + 1
+    while end < len(text) and lead.in_class(text[end]):
+        end += 1
+    return end - at + 1
+
+
 @dataclass(frozen=True)
 class _Rule:
     name: str
@@ -180,12 +191,54 @@ class _Rule:
     replacement: str
     luhn: bool
     facts: Facts
+    rest: re.Pattern[str] | None
+    """For a lead pattern without a validator: the pattern from its anchor on, tried at one position."""
 
     def _searched(self, text: str, start: int, stop: int) -> None:
         if _matcher_hook is not None:
             _matcher_hook(self.name, _search_steps(self.facts.lead, text, start, stop))
 
     def apply(self, text: str) -> str:
+        """The rule behind guards that take time linear in the text and change nothing: text shorter than any match,
+        or without the rule's required literal, is left alone, and a lead pattern is tried once per anchor."""
+        f = self.facts
+        if len(text) < f.min_length or (f.literals is not None and not any(lit in text for lit in f.literals)):
+            return text
+        if f.lead is not None and self.rest is not None:
+            return self._apply_lead(f.lead, self.rest, text)
+        return self.apply_plain(text)
+
+    def _apply_lead(self, lead: Lead, rest: re.Pattern[str], text: str) -> str:
+        """The matches of a lead pattern, found from its anchors. A match ends its class run at an anchor, and every
+        start in that run meets the same anchor, so only the run's leftmost possible start is a candidate and the
+        rest of the pattern is tried once, anchored there. Each position is scanned a bounded number of times."""
+        out: list[str] = []
+        copied = floor = 0
+        at = text.find(lead.anchor)
+        while at != -1:
+            start = at
+            while start > floor and lead.in_class(text[start - 1]):
+                start -= 1
+            if not lead.prefix:
+                begin = start if start < at else -1
+            else:
+                k = text.find(lead.prefix, start, at)
+                begin = k if k != -1 and k + len(lead.prefix) < at else -1
+            if begin != -1:
+                match = rest.match(text, at)
+                if _matcher_hook is not None:
+                    _matcher_hook(self.name, _attempt_steps(lead, text, at, match))
+                if match is not None:
+                    out += (text[copied:begin], self.replacement)
+                    copied = floor = match.end()
+                    at = text.find(lead.anchor, floor)
+                    continue
+            at = text.find(lead.anchor, at + 1)
+        out.append(text[copied:])
+        return "".join(out)
+
+    def apply_plain(self, text: str) -> str:
+        """The rule without its guards: the reference the differential tests hold `apply` to."""
         if not self.luhn:
             self._searched(text, 0, len(text))
             return self.regex.sub(self.replacement, text)
@@ -226,10 +279,12 @@ class Scrubber:
             validator = entry.get("validator")
             if validator not in (None, "luhn"):
                 raise ValueError(f"scrub rule {name!r}: unknown validator {validator!r}; use 'luhn' or leave it out")
-            rules.append(
-                _Rule(name, re.compile(pattern), str(entry["replacement"]), validator == "luhn", facts(pattern))
-            )
+            found = facts(pattern)
+            rest = None if found.lead is None or validator == "luhn" else re.compile(found.lead.rest)
+            rules.append(_Rule(name, re.compile(pattern), str(entry["replacement"]), validator == "luhn", found, rest))
         self.rules = tuple(rules)
+        # No rule matches text shorter than this.
+        self._shortest = min((rule.facts.min_length for rule in self.rules), default=0)
 
     @classmethod
     def builtin(cls) -> Scrubber:
@@ -239,8 +294,16 @@ class Scrubber:
 
     def text(self, value: str) -> str:
         """`value` with every rule applied in order."""
+        if len(value) < self._shortest:
+            return value
         for rule in self.rules:
             value = rule.apply(value)
+        return value
+
+    def text_plain(self, value: str) -> str:
+        """`value` with every rule applied in order without its guards, for the differential tests."""
+        for rule in self.rules:
+            value = rule.apply_plain(value)
         return value
 
     def bounded_text(self, value: str, max_chars: int) -> str:
