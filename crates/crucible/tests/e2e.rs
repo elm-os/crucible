@@ -1187,8 +1187,11 @@ fn http_url(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> (
     use std::net::ToSocketAddrs as _;
     let rest = url.strip_prefix("http://").expect("an http URL");
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let addr = host.to_socket_addrs().unwrap().next().unwrap();
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+    let mut stream = host
+        .to_socket_addrs()
+        .unwrap()
+        .find_map(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(5)).ok())
+        .expect("the URL's host answers");
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
