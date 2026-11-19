@@ -446,6 +446,8 @@ Decisions made while implementing the traits above; they bind every backend.
 
 | Topic | Rule |
 |---|---|
+| Store connections (#76) | Startup detection reads the server's `keep_alive_timeout` (`system.server_settings`); the pool keeps an idle connection for that value minus min(1 s, half of it) (default; revisit), rebuilt once after detection; 2 s when it cannot be read; `clickhouse.idle_timeout` overrides it, for a balancer in front of the store. A read whose connection could not be opened is sent once more; inserts are unchanged. Metric `crucible_clickhouse_connections_opened_total`, counted at `Net::connect` |
+| Memory budgets (#76) | At startup the node adds up its byte budgets (the recent index, the shipper and ingest) and warns above 90% (default; revisit) of the memory the process may use, naming each budget and the setting that changes it |
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
 | `ChildProcess` | Not a field of `Env`: only the proxy uses it, and takes it as an argument. Linux delivers the parent-death signal through a re-exec trampoline (a hidden `crucible proxy exec-child`), so the workspace stays free of `unsafe`; macOS has no parent-death signal. The simulation of a scripted MCP server (seeded chunk splits, stalls, crashes) lives in `crucible-proxy`'s tests; exit codes are covered by the scripted and real-process tests, because `ProxyCore` takes no exit status |
 | Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
@@ -1791,7 +1793,7 @@ ClickHouse serves it.
 | Entry | About 200 bytes: ids, times, type, level, model, cost, tokens, interned name, user and session, `lsn`, and a WAL locator (segment, offset, span ordinal). No payload and no previews |
 | Payload of a recent span | Re-read the frame at the locator and re-normalize that span (the normalizer is pure) |
 | Maps | By (project, trace_id); by (project, start_time, span_id); by (project, lsn) for live tail; a per-trace summary that includes rootless traces. 16 shards behind read-write locks; one writer (stage B) |
-| Bound | `recent.max_bytes`, default min(1 GiB, 10% of RAM) |
+| Bound | `recent.max_bytes`, default min(1 GiB, 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), else of the host's RAM) |
 | Eviction | Oldest LSN first, and only entries with `lsn <=` the checkpoint watermark whose checkpoint is older than the visibility grace (2 s single node; 10 s clustered or Cloud) |
 | Read barrier | Trace-by-id snapshots the node's durable LSN on arrival and waits, at most 250 ms (`recent.read_barrier`), until stage B has applied through it. If the wait expires the response carries `consistency: lagging` |
 | Gap rule | When the bound is hit before entries are evictable (a store outage), the oldest entries are dropped and the dropped LSN range is recorded as a gap. A gap closes when the watermark has passed its upper LSN and the grace has elapsed. Any read whose result could include rows from an open gap must return `partial: true` with `partial_reason: store_unavailable`. A silent miss is a contract violation |
@@ -1814,7 +1816,7 @@ it may trail (barrier expired, peer fan-out incomplete, or replica lag beyond th
 
 | Endpoint | Plan |
 |---|---|
-| Trace list | `Scan(trace_heads)` in key order with the cursor `(start_time, trace_hash, trace_id)`, over-reading 3 times the limit; then `Aggregate(trace_stats)` and the four fact lookups for the page ids; drop hidden provisional heads; merge recent |
+| Trace list | `Scan(trace_heads)` in key order with the cursor `(start_time, trace_hash, trace_id)`, over-reading 3 times the limit; then `Aggregate(trace_stats)` and three fact lookups for the page ids (scores without comment and metadata, tags, flags; trace detail and `GET facts` read all four); drop hidden provisional heads; merge recent |
 | Trace detail | Recent index with the read barrier, in parallel with `Aggregate(trace_stats)` for time bounds; then `Scan(span_core)` bounded by them and by `trace_hash` and the bloom index; de-duplicate by `span_id` |
 | Span children | `Scan(span_core)` with `parent_span_id = X` inside the trace bounds, keyset `(start_time, span_id)` |
 | Span list | `Scan(span_core)` ordered by `start_minute`, `start_time`, `span_id` descending |
@@ -1904,6 +1906,18 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - `KILL QUERY` is sent to one node, not `ON CLUSTER`.
 - The window on `mcp_tool_inventory` and `mcp_deploys` applies after grouping (`max(last_seen) >= from` and
   `min(first_seen) < to`), because their time columns are aggregated.
+- Search (#59): `TextSearch` takes a key order (descending), a keyset cursor and arrival bounds (`received_at <=
+  as_of`). Each field kind is searched by its own plan and merged by key, and the page and cursor come from the hit
+  stream. In phrase mode the snippet needle is the tokens joined by single spaces, and a phrase is verified on its
+  snippets (anchored on the phrase, else on the field's start), so a phrase written with other separators is found
+  only within a field's first 240 bytes. Tokens are lowered only for lowered indexes; metadata entries are compared as
+  written, a metadata term needs an `=`, and a phrase over metadata means all of its entries. Mixing metadata with
+  the text fields in one plan is refused (`PlanError::Tokenizers`).
+- Metrics (#61): the `traces` source is compiled (one measure, `traces`, counting root heads of `trace_heads` by
+  `start_time`, class `analytics_raw`, tier `core`, no dimensions or filters); `metrics/schema` lists `spans` and
+  `traces`; `metrics/query` and `filter-values` responses carry `saturated` and `meta`. Not built yet: the
+  `analytics_raw` fallback of the spans source over `span_core`, and filter values beyond the `span_metrics`
+  dimensions. A `timezone` other than UTC is refused (`validation_failed`, code `unsupported`).
 
 ## 9. MCP
 
@@ -2626,6 +2640,18 @@ shows server text. Guardrail errors are never retried by the server.
 - The Crucible MCP server at `/mcp` accepts control-plane keys only with the `read` scope, and answers 503 with
   `Retry-After` when the control plane cannot check a key (the fail-open rule of 11.8 for unknown keys).
 - A 405 carries an `Allow` header built from the route's methods.
+- Fact-write idempotency keys live in the node's memory (at most 10,000, oldest dropped first, lost on restart) until
+  the control plane's `idempotency_keys` table exists; a key whose first request is still running answers `conflict`,
+  and a failed or cancelled request frees its key. A fact write answers 201 with `fact_id`, `key`, `version`,
+  `created_at` and `target_time`. A span's facts are filed under its trace's earliest known start; a fact about an
+  unknown target is `not_found` only when the lookup is whole and strong, else 503 with `Retry-After: 1`. The API's
+  1 MiB body limit caps a correction request at 1 MiB.
+- Search and payload routes (#59): `POST search` takes query, mode, fields (input, output, metadata), from, to,
+  limit and cursor (cursor route 3: window, `as_of` and `(start_minute, trace_hash, span_id)`; its filter hash covers
+  the mode, the fields and the tokens); `name` and `filters` are refused with a 422 until the shared filter DTO lands.
+  The payload route takes a required `start_time`, serves only the nine `FieldRange` fields (others are a 422),
+  honours a single byte range (206, or 416 without a problem body), and answers a miss that is not whole and strong
+  with 503 `telemetry_store_unavailable`, because a byte response cannot carry `meta`.
 
 ### 12.6 Endpoints
 
@@ -2933,3 +2959,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
 | v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
 | v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |
+| v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
