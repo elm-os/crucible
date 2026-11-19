@@ -754,7 +754,9 @@ pub fn summary(report: &GateReport) -> String {
             "Measurements".to_owned(),
             match lane.path {
                 "e2e" => format!(
-                    "sustained: {} requests/s offered ({} spans/s) for {} s, then the drain (at most {} s);                      acknowledged spans/s over the run and its drain. Freshness: {} requests/s ({} spans/s) for {}                      s; p95 from `received_at` to readable. Both check zero loss",
+                    "sustained: {} requests/s offered ({} spans/s) for {} s, then the drain (at most {} s); \
+                     acknowledged spans/s over the run and its drain. Freshness: {} requests/s ({} spans/s) for {} \
+                     s; p95 from `received_at` to readable. Both check zero loss",
                     thousands(lane.sustained_requests_per_s as f64),
                     spans(lane.sustained_requests_per_s),
                     lane.sustained_s,
@@ -764,7 +766,8 @@ pub fn summary(report: &GateReport) -> String {
                     lane.freshness_s
                 ),
                 _ => format!(
-                    "throughput: {} requests/s offered ({} spans/s) for {} s; acknowledged spans/s. Latency: {}                      requests/s ({} spans/s) for {} s; `latency_us.p99`",
+                    "throughput: {} requests/s offered ({} spans/s) for {} s; acknowledged spans/s. Latency: {} \
+                     requests/s ({} spans/s) for {} s; `latency_us.p99`",
                     thousands(lane.throughput_requests_per_s as f64),
                     spans(lane.throughput_requests_per_s),
                     lane.throughput_s,

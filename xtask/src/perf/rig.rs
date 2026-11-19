@@ -635,54 +635,79 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A project key: the prefix, a leading zero and 42 base62 digits, so the value stays below 2^256.
-fn project_key(prefix: &str) -> Result<String, String> {
-    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let digits: String = random(42)?
-        .iter()
-        .map(|b| char::from(DIGITS[usize::from(*b) % DIGITS.len()]))
-        .collect();
-    Ok(format!("{prefix}0{digits}"))
-}
-
 /// The throwaway secrets of a session's rig, which no published port exposes.
 struct Secrets {
     clickhouse: String,
     postgres: String,
     master_key: String,
-    secret_key: String,
-    keys_toml: String,
-    /// The project of the key, whose rows the end-to-end checks read.
-    project_id: String,
+    /// The password of the first owner, which `crucible admin init` reads from a file.
+    owner_password: String,
 }
 
 impl Secrets {
     fn new() -> Result<Self, String> {
-        let mut project = random(16)?;
-        project[6] = 0x40 | (project[6] & 0x0f);
-        project[8] = 0x80 | (project[8] & 0x3f);
-        let project = hex(&project);
-        let project_id = format!(
-            "{}-{}-{}-{}-{}",
-            &project[..8],
-            &project[8..12],
-            &project[12..16],
-            &project[16..20],
-            &project[20..]
-        );
-        let secret_key = project_key("csk_")?;
-        let keys_toml = format!(
-            "[[project_key]]\nproject_id = \"{project_id}\"\npublic_key = \"{}\"\nsecret = \"{secret_key}\"\n",
-            project_key("cpk_")?
-        );
         Ok(Self {
             clickhouse: hex(&random(16)?),
             postgres: hex(&random(16)?),
             master_key: hex(&random(32)?),
-            secret_key,
-            keys_toml,
-            project_id,
+            owner_password: hex(&random(16)?),
         })
+    }
+}
+
+/// The path of the server binary in the images under test.
+const CRUCIBLE_PATH: &str = "/usr/local/bin/crucible";
+/// Where each Crucible container finds the session's files, among them the owner's password.
+const CONFIG_DIR: &str = "/etc/crucible";
+
+/// The project key of one arm's rig, made with `crucible admin create-key`: with a control plane, keys live in
+/// Postgres, and the server refuses a keys file (contract 11).
+#[derive(Clone)]
+pub struct ArmKey {
+    /// The project the key belongs to, whose rows the end-to-end checks read.
+    pub project_id: String,
+    /// The secret key, sent as a Bearer token.
+    pub secret: String,
+}
+
+impl std::fmt::Debug for ArmKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArmKey")
+            .field("project_id", &self.project_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ArmKey {
+    /// Reads the `project_id = "..."` and `secret_key = "..."` lines that `crucible admin create-key` prints.
+    /// The project id goes into SQL text and the secret into a header, so both are checked for their shapes.
+    pub fn parse(printed: &str) -> Result<Self, String> {
+        let field = |name: &str| {
+            printed.lines().find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == name).then(|| value.trim().trim_matches('"').to_owned())
+            })
+        };
+        let project_id = field("project_id").unwrap_or_default();
+        let secret = field("secret_key").unwrap_or_default();
+        let uuid = project_id.len() == 36
+            && project_id.chars().enumerate().all(|(i, c)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    c == '-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            });
+        let key = secret.starts_with("csk_")
+            && secret.len() > 4
+            && secret
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if uuid && key {
+            Ok(Self { project_id, secret })
+        } else {
+            Err("crucible admin create-key printed no project id and secret key of the expected shapes".to_owned())
+        }
     }
 }
 
@@ -846,7 +871,7 @@ pub struct Session<'r> {
     rig: &'r RigSpec,
     id: String,
     secrets: Secrets,
-    /// A local directory with `keys.toml`, copied to `/etc/crucible` in each Crucible container.
+    /// A local directory with the owner's password, copied to [`CONFIG_DIR`] in each Crucible container.
     config: PathBuf,
     network: Option<String>,
     client: Option<String>,
@@ -867,8 +892,11 @@ impl<'r> Session<'r> {
             .join(format!("crucible-gate-{id}"))
             .join("crucible");
         fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
-        fs::write(config.join("keys.toml"), &secrets.keys_toml)
-            .map_err(|e| format!("{}: {e}", config.display()))?;
+        fs::write(
+            config.join("owner-password"),
+            format!("{}\n", secrets.owner_password),
+        )
+        .map_err(|e| format!("{}: {e}", config.display()))?;
         Ok(Self {
             rig,
             id,
@@ -1116,11 +1144,10 @@ impl<'r> Session<'r> {
             "serve".to_owned(),
             "--migrate".to_owned(),
             "--data-dir=/var/lib/crucible/data".to_owned(),
-            "--keys-file=/etc/crucible/keys.toml".to_owned(),
             format!("--recent-max-bytes={}", self.rig.recent_max_bytes),
         ]);
         self.container(&["create"], &crucible, self.rig.crucible, &rest)?;
-        self.copy_in(&self.config, &format!("{crucible}:/etc/crucible"))?;
+        self.copy_in(&self.config, &format!("{crucible}:{CONFIG_DIR}"))?;
         docker(["start", &crucible])?;
         let log = dir.join("logs").join(format!("{tag}.log"));
         let readyz = format!("http://{crucible}:8080/readyz");
@@ -1140,24 +1167,28 @@ impl<'r> Session<'r> {
                 ])
                 .is_ok()
         });
-        if let Err(e) =
-            ready.and_then(|()| exited.map_or(Ok(()), |stopped| Err(format!("stopped: {stopped}"))))
-        {
-            let tail = Self::save_log(&crucible, &log);
-            return Err(format!(
-                "crucible from {image}: {e}; the end of its log:\n{tail}"
-            ));
-        }
+        let key = ready
+            .and_then(|()| exited.map_or(Ok(()), |stopped| Err(format!("stopped: {stopped}"))))
+            .and_then(|()| self.provision(&crucible, client));
+        let key = match key {
+            Ok(key) => key,
+            Err(e) => {
+                let tail = Self::save_log(&crucible, &log);
+                return Err(format!(
+                    "crucible from {image}: {e}; the end of its log:\n{tail}"
+                ));
+            }
+        };
 
         let target = format!("{crucible}:4318");
-        let warmup = self.loadgen(&target, lane, self.rig.latency_rps, self.rig.warmup_s)?;
+        let warmup = self.loadgen(&target, &key, lane, self.rig.latency_rps, self.rig.warmup_s)?;
         let runs = dir.join("runs");
         fs::write(runs.join(format!("{tag}-warmup.json")), &warmup)
             .map_err(|e| format!("{}: {e}", runs.display()))?;
         // An end-to-end measurement starts with the warm-up in the store, so no backlog carries into it.
         let warmed = if kind.end_to_end() {
             let acked = RunFields::parse(&warmup)?.outcome.acked_spans;
-            if !self.drained(acked, Duration::from_secs(self.rig.drain_s))? {
+            if !self.drained(&key, acked, Duration::from_secs(self.rig.drain_s))? {
                 return Err(format!(
                     "the store did not take the warm-up's {acked} spans within {} s",
                     self.rig.drain_s
@@ -1171,7 +1202,7 @@ impl<'r> Session<'r> {
         let others = self.others();
         let (stat_before, load_before) = self.host_sample(client);
         let started_at = super::now().0;
-        let report = self.loadgen(&target, lane, rps, secs);
+        let report = self.loadgen(&target, &key, lane, rps, secs);
         let finished_at = super::now().0;
         let (stat_after, load_after) = self.host_sample(client);
         let (rig_cpus_busy, other_cpus_busy) =
@@ -1186,7 +1217,7 @@ impl<'r> Session<'r> {
             others,
         };
         let stored = match &report {
-            Ok(report) if kind.end_to_end() => Some(self.check_store(report, warmed)),
+            Ok(report) if kind.end_to_end() => Some(self.check_store(&key, report, warmed)),
             _ => None,
         };
         let stopped: Vec<String> = [
@@ -1246,12 +1277,12 @@ impl<'r> Session<'r> {
             .unwrap_or(0.0))
     }
 
-    /// Waits until `span_core` holds at least `rows` rows of the session's project, polling twice a second for
-    /// at most `limit`; whether it did.
-    fn drained(&self, rows: u64, limit: Duration) -> Result<bool, String> {
+    /// Waits until `span_core` holds at least `rows` rows of the key's project, polling twice a second for at
+    /// most `limit`; whether it did.
+    fn drained(&self, key: &ArmKey, rows: u64, limit: Duration) -> Result<bool, String> {
         let sql = format!(
             "SELECT count() AS n FROM crucible.span_core WHERE project_id = toUUID('{}')",
-            self.secrets.project_id
+            key.project_id
         );
         let started = Instant::now();
         loop {
@@ -1268,12 +1299,12 @@ impl<'r> Session<'r> {
     /// Waits for the drain of the run of `report`, after `before` spans of the warm-up, then reads from the store
     /// when it ended, the freshness of the run's spans, and which acknowledged spans are missing or stored
     /// twice (invariant I1).
-    fn check_store(&self, report: &str, before: u64) -> Result<Stored, String> {
+    fn check_store(&self, key: &ArmKey, report: &str, before: u64) -> Result<Stored, String> {
         let run = RunFields::parse(report)?;
         let acked = run.outcome.acked_spans;
-        let drained = self.drained(before + acked, Duration::from_secs(self.rig.drain_s))?;
+        let drained = self.drained(key, before + acked, Duration::from_secs(self.rig.drain_s))?;
         self.clickhouse_text("SYSTEM FLUSH LOGS")?;
-        let project = &self.secrets.project_id;
+        let project = &key.project_id;
         let start = format!("parseDateTime64BestEffort('{}', 6, 'UTC')", run.started_at);
         let drained_s = if drained {
             Some(self.clickhouse_number(
@@ -1379,14 +1410,74 @@ impl<'r> Session<'r> {
             .unwrap_or_default()
     }
 
+    /// Makes the arm's project key once Crucible is ready: `crucible admin init` creates the first owner and the
+    /// project `default`, `crucible admin create-key` a key for it with the ingest and read scopes, and the arm
+    /// waits until the server accepts the key (its snapshot polls Postgres every few seconds). The image has no
+    /// shell, so each command runs the binary itself.
+    fn provision(&self, crucible: &str, client: &str) -> Result<ArmKey, String> {
+        let password = format!("--password-file={CONFIG_DIR}/owner-password");
+        docker([
+            "exec",
+            crucible,
+            CRUCIBLE_PATH,
+            "admin",
+            "init",
+            "--org-name=Perf gate",
+            "--email=owner@perf-gate.test",
+            "--name=Perf gate",
+            &password,
+        ])
+        .map_err(|e| format!("crucible admin init: {e}"))?;
+        let printed = docker([
+            "exec",
+            crucible,
+            CRUCIBLE_PATH,
+            "admin",
+            "create-key",
+            "--project=default",
+            "--scopes=ingest,read",
+            "--note=perf gate",
+        ])
+        .map_err(|e| format!("crucible admin create-key: {e}"))?;
+        let key = ArmKey::parse(&printed)?;
+        let header = format!("Authorization: Bearer {}", key.secret);
+        let url = format!(
+            "http://{crucible}:8080/api/v1/projects/{}/data-bounds",
+            key.project_id
+        );
+        wait("the project key", Duration::from_secs(60), || {
+            docker([
+                "exec",
+                client,
+                "curl",
+                "--silent",
+                "--fail",
+                "--output",
+                "/dev/null",
+                "--header",
+                &header,
+                &url,
+            ])
+            .is_ok()
+        })?;
+        Ok(key)
+    }
+
     /// One load generator run against `target`; an overloaded run lasts until every request is sent, so the
     /// deadline allows twenty times the schedule.
-    fn loadgen(&self, target: &str, lane: Lane, rps: u64, secs: u64) -> Result<String, String> {
+    fn loadgen(
+        &self,
+        target: &str,
+        key: &ArmKey,
+        lane: Lane,
+        rps: u64,
+        secs: u64,
+    ) -> Result<String, String> {
         let client = self
             .client
             .as_deref()
             .ok_or("the session has not started")?;
-        let header = format!("Authorization: Bearer {}", self.secrets.secret_key);
+        let header = format!("Authorization: Bearer {}", key.secret);
         let (rate, duration) = (rps.to_string(), secs.to_string());
         let (spans, connections) = (
             lane.spans_per_request().to_string(),
@@ -1563,14 +1654,31 @@ mod tests {
     fn secrets_have_the_documented_shapes() {
         let secrets = Secrets::new().unwrap();
         assert_eq!(secrets.master_key.len(), 64);
-        assert!(secrets.secret_key.starts_with("csk_0") && secrets.secret_key.len() == 47);
-        assert!(
-            secrets.secret_key[4..]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric())
-        );
-        assert!(secrets.keys_toml.contains("public_key = \"cpk_0"));
+        // `crucible admin init` takes a password of 12 to 128 characters.
+        assert_eq!(secrets.owner_password.len(), 32);
         assert_eq!(format!("{secrets:?}"), "Secrets(redacted)");
+    }
+
+    #[test]
+    fn project_keys_are_read_from_create_key_and_checked() {
+        let printed = "project_id = \"019a6b2e-7c3d-7e4f-8a5b-6c7d8e9f0a1b\"\npublic_key = \"cpk_0abc\"\n\
+                       secret_key = \"csk_0Abc123\"\n";
+        let key = ArmKey::parse(printed).unwrap();
+        assert_eq!(
+            (key.project_id.as_str(), key.secret.as_str()),
+            ("019a6b2e-7c3d-7e4f-8a5b-6c7d8e9f0a1b", "csk_0Abc123")
+        );
+        // The secret never reaches a debug print.
+        assert!(!format!("{key:?}").contains("csk_"));
+        // The project id goes into SQL and the secret into a header: anything else is refused.
+        for bad in [
+            printed.replace("019a6b2e", "x' OR 1"),
+            printed.replace("csk_0Abc123", "csk_0Abc 123"),
+            printed.replace("csk_", "cpk_"),
+            "the server already has an owner".to_owned(),
+        ] {
+            assert!(ArmKey::parse(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
