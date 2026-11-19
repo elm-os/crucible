@@ -1,6 +1,7 @@
 //! One MCP operation: its SERVER span from the moment the wrapper sees the message to the moment the handler
 //! returns, with the keys of contract 9.1.
 
+use std::borrow::Cow;
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
@@ -8,7 +9,8 @@ use std::sync::{Arc, PoisonError};
 use opentelemetry::trace::{SpanBuilder, SpanKind, Status, TraceContextExt as _, Tracer as _};
 use opentelemetry::{Context, KeyValue};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Extensions, JsonObject,
+    AudioContent, CallToolRequestParams, CallToolResult, ContentBlock, EmbeddedResource, ErrorData,
+    Extensions, ImageContent, JsonObject, ResourceContents, TextContent,
 };
 use serde::Serialize;
 
@@ -211,15 +213,6 @@ impl Op {
 
     /// Records the captured result of a tool call.
     pub(super) fn tool_result(&mut self, result: &CallToolResult) {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct View<'a> {
-            content: &'a [ContentBlock],
-            #[serde(skip_serializing_if = "Option::is_none")]
-            structured_content: Option<&'a serde_json::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            is_error: Option<bool>,
-        }
         let Some(capture) = &self.capture else {
             return;
         };
@@ -227,14 +220,10 @@ impl Op {
             return;
         }
         let max = capture.rule.max_bytes;
-        // Content and structured content only: never the request state or input requests of a multi-round
-        // exchange.
-        let view = View {
-            content: &result.content,
-            structured_content: result.structured_content.as_ref(),
-            is_error: result.is_error,
-        };
-        let (text, cut) = self.captured(Field::Result, &view, max);
+        let (json, cut, produced) = result_json(result, scrub::window(max));
+        note_work(produced, json.len());
+        let (text, cut_after) = self.scrubbed(Field::Result, &json, max);
+        let cut = cut || cut_after;
         if let Some(capture) = &mut self.capture {
             capture.truncated |= cut;
         }
@@ -252,7 +241,8 @@ impl Op {
         value: &T,
         max: usize,
     ) -> (Option<String>, bool) {
-        let (json, cut) = json_prefix(value, scrub::window(max));
+        let (json, cut, produced) = json_prefix(value, scrub::window(max));
+        note_work(produced, json.len());
         let (text, cut_after) = self.scrubbed(field, &json, max);
         (text, cut || cut_after)
     }
@@ -494,16 +484,169 @@ fn glob(pattern: &str, name: &str) -> bool {
     pattern[p..].iter().all(|&c| c == '*')
 }
 
-/// The first `limit` bytes of a value's JSON text, cut on a character boundary, and whether the text is
-/// longer. Serialization stops at the limit, so a large value costs no more than the cap.
-fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool) {
+/// The first `limit` bytes of a tool result's captured JSON (content and structured content only: never the
+/// request state or input requests of a multi-round exchange), as [`json_prefix`] gives them. serde_json reads a
+/// string whole before it writes any of it, so every string longer than the window is cut first: the blocks are
+/// serialized one at a time, each cut as it is reached, and the output is the same up to the limit.
+fn result_json(result: &CallToolResult, limit: usize) -> (String, bool, usize) {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct View<'a> {
+        content: CutBlocks<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_content: Option<CutValue<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    }
+    // A string longer than this ends past the window wherever it starts, and its first `need` bytes, a character
+    // boundary short at most, show all the window can.
+    let need = limit + 4;
+    let view = View {
+        content: CutBlocks {
+            blocks: &result.content,
+            need,
+        },
+        structured_content: result
+            .structured_content
+            .as_ref()
+            .map(|value| CutValue { value, need }),
+        is_error: result.is_error,
+    };
+    json_prefix(&view, limit)
+}
+
+/// Content blocks serialized one at a time, each with its long strings cut to `need` bytes.
+struct CutBlocks<'a> {
+    blocks: &'a [ContentBlock],
+    need: usize,
+}
+
+impl Serialize for CutBlocks<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        let mut seq = serializer.serialize_seq(Some(self.blocks.len()))?;
+        for block in self.blocks {
+            seq.serialize_element(&cut_block(block, self.need))?;
+        }
+        seq.end()
+    }
+}
+
+/// `block` with every string field longer than `need` bytes cut to `need`; borrowed when none is that long.
+fn cut_block(block: &ContentBlock, need: usize) -> Cow<'_, ContentBlock> {
+    let long = |s: &str| s.len() > need;
+    let cut = |s: &str| scrub::prefix(s, need).0.to_owned();
+    match block {
+        ContentBlock::Text(t) if long(&t.text) => {
+            let mut c = TextContent::new(cut(&t.text));
+            c.meta.clone_from(&t.meta);
+            c.annotations.clone_from(&t.annotations);
+            Cow::Owned(ContentBlock::Text(c))
+        }
+        ContentBlock::Image(i) if long(&i.data) || long(&i.mime_type) => {
+            let mut c = ImageContent::new(cut(&i.data), cut(&i.mime_type));
+            c.meta.clone_from(&i.meta);
+            c.annotations.clone_from(&i.annotations);
+            Cow::Owned(ContentBlock::Image(c))
+        }
+        ContentBlock::Audio(a) if long(&a.data) || long(&a.mime_type) => {
+            let mut c = AudioContent::new(cut(&a.data), cut(&a.mime_type));
+            c.meta.clone_from(&a.meta);
+            c.annotations.clone_from(&a.annotations);
+            Cow::Owned(ContentBlock::Audio(c))
+        }
+        ContentBlock::Resource(r) => {
+            let resource = match &r.resource {
+                ResourceContents::TextResourceContents {
+                    uri,
+                    mime_type,
+                    text,
+                    meta,
+                } if long(uri) || long(text) || mime_type.as_deref().is_some_and(long) => {
+                    ResourceContents::TextResourceContents {
+                        uri: cut(uri),
+                        mime_type: mime_type.as_deref().map(cut),
+                        text: cut(text),
+                        meta: meta.clone(),
+                    }
+                }
+                ResourceContents::BlobResourceContents {
+                    uri,
+                    mime_type,
+                    blob,
+                    meta,
+                } if long(uri) || long(blob) || mime_type.as_deref().is_some_and(long) => {
+                    ResourceContents::BlobResourceContents {
+                        uri: cut(uri),
+                        mime_type: mime_type.as_deref().map(cut),
+                        blob: cut(blob),
+                        meta: meta.clone(),
+                    }
+                }
+                _ => return Cow::Borrowed(block),
+            };
+            let mut c = EmbeddedResource::new(resource);
+            c.meta.clone_from(&r.meta);
+            c.annotations.clone_from(&r.annotations);
+            Cow::Owned(ContentBlock::Resource(c))
+        }
+        _ => Cow::Borrowed(block),
+    }
+}
+
+/// A JSON value with every string longer than `need` bytes cut to `need`, map keys included.
+struct CutValue<'a> {
+    value: &'a serde_json::Value,
+    need: usize,
+}
+
+impl Serialize for CutValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap as _, SerializeSeq as _};
+        let need = self.need;
+        match self.value {
+            serde_json::Value::String(s) => serializer.serialize_str(scrub::prefix(s, need).0),
+            serde_json::Value::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for value in items {
+                    seq.serialize_element(&CutValue { value, need })?;
+                }
+                seq.end()
+            }
+            serde_json::Value::Object(map) => {
+                let mut entries = serializer.serialize_map(Some(map.len()))?;
+                for (key, value) in map {
+                    entries
+                        .serialize_entry(scrub::prefix(key, need).0, &CutValue { value, need })?;
+                }
+                entries.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
+/// Reports one captured field's work to the test hook (feature `test-support`).
+fn note_work(serialized: usize, scrubbed: usize) {
+    #[cfg(feature = "test-support")]
+    super::test_support::note(serialized, scrubbed);
+    #[cfg(not(feature = "test-support"))]
+    let _ = (serialized, scrubbed);
+}
+
+/// The first `limit` bytes of a value's JSON text, cut on a character boundary, whether the text is longer,
+/// and how many bytes the serializer produced before it stopped. Serialization stops at the limit, so a large
+/// value costs no more than the cap.
+fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool, usize) {
     struct Limited {
         buf: Vec<u8>,
         limit: usize,
         full: bool,
+        produced: usize,
     }
     impl io::Write for Limited {
         fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.produced += data.len();
             let room = self.limit - self.buf.len();
             if data.len() > room {
                 self.buf.extend_from_slice(&data[..room]);
@@ -522,6 +665,7 @@ fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool)
         buf: Vec::new(),
         limit,
         full: false,
+        produced: 0,
     };
     let _done = serde_json::to_writer(&mut out, value);
     let text = match String::from_utf8(out.buf) {
@@ -533,7 +677,7 @@ fn json_prefix<T: Serialize + ?Sized>(value: &T, limit: usize) -> (String, bool)
             String::from_utf8(bytes).unwrap_or_default()
         }
     };
-    (text, out.full)
+    (text, out.full, out.produced)
 }
 
 #[cfg(test)]
@@ -555,14 +699,148 @@ mod tests {
         assert!(!glob("", "x"));
     }
 
+    /// The prefix of the whole captured form, which `result_json` must write.
+    fn whole_form_prefix(result: &CallToolResult, limit: usize) -> (String, bool) {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct View<'a> {
+            content: &'a [ContentBlock],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            structured_content: Option<&'a serde_json::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            is_error: Option<bool>,
+        }
+        let view = View {
+            content: &result.content,
+            structured_content: result.structured_content.as_ref(),
+            is_error: result.is_error,
+        };
+        let (text, cut, _) = json_prefix(&view, limit);
+        (text, cut)
+    }
+
+    /// A seeded xorshift generator.
+    struct Random(u64);
+
+    impl Random {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// Pieces of strings serde_json treats differently: escapes, multi-byte characters and U+2028.
+    const PIECES: &[&str] = &[
+        "a", "Z", "0", " ", "\"", "\\", "\n", "\u{1}", "é", "中", "😀", "\u{2028}", "<", "&", "/",
+    ];
+
+    fn text(r: &mut Random, longest: usize) -> String {
+        (0..r.below(longest + 1))
+            .map(|_| PIECES[r.below(PIECES.len())])
+            .collect()
+    }
+
+    fn value(r: &mut Random, depth: usize) -> serde_json::Value {
+        use serde_json::Value;
+        match r.below(if depth > 2 { 5 } else { 7 }) {
+            0 => Value::Null,
+            1 => Value::Bool(r.below(2) == 0),
+            2 => [
+                serde_json::json!(1.5),
+                serde_json::json!(-2e21),
+                serde_json::json!(1e-7),
+                serde_json::json!(42),
+                serde_json::json!(-7),
+            ][r.below(5)]
+            .clone(),
+            3 => Value::String(text(r, 8)),
+            4 => Value::String(text(r, 400)),
+            5 => Value::Array((0..r.below(5)).map(|_| value(r, depth + 1)).collect()),
+            _ => Value::Object(
+                (0..r.below(5))
+                    .map(|_| (text(r, 6), value(r, depth + 1)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn block(r: &mut Random) -> ContentBlock {
+        let meta = (r.below(3) == 0).then(|| {
+            rmcp::model::MetaObject(serde_json::Map::from_iter([(
+                "k".to_owned(),
+                serde_json::Value::String(text(r, 4)),
+            )]))
+        });
+        match r.below(5) {
+            0 => {
+                let mut c = TextContent::new(text(r, 600));
+                c.meta = meta;
+                ContentBlock::Text(c)
+            }
+            1 => {
+                let mut c = ImageContent::new(text(r, 900), text(r, 3));
+                c.meta = meta;
+                ContentBlock::Image(c)
+            }
+            2 => ContentBlock::audio(text(r, 900), "audio/wav"),
+            3 => ContentBlock::embedded_text(text(r, 30), text(r, 600)),
+            _ => ContentBlock::resource(ResourceContents::blob(text(r, 900), text(r, 12))),
+        }
+    }
+
+    #[test]
+    fn the_result_json_equals_the_whole_form_followed_by_the_cut() {
+        let mut r = Random(18_112_026);
+        for _ in 0..2000 {
+            let mut result =
+                CallToolResult::success((0..r.below(5)).map(|_| block(&mut r)).collect());
+            if r.below(2) == 0 {
+                result.structured_content = Some(value(&mut r, 0));
+            }
+            if r.below(3) == 0 {
+                result.is_error = None;
+            }
+            for limit in [0, 1, r.below(64), r.below(2000), 1 << 20] {
+                let (text, cut, _) = result_json(&result, limit);
+                assert_eq!(
+                    (text, cut),
+                    whole_form_prefix(&result, limit),
+                    "limit {limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_result_is_serialized_no_further_than_the_cap_needs() {
+        let results = [
+            CallToolResult::success(vec![ContentBlock::text("x".repeat(5 << 20))]),
+            CallToolResult::success(vec![ContentBlock::image("A".repeat(1 << 20), "image/png")]),
+            CallToolResult::success(vec![ContentBlock::embedded_text(
+                "file:///a",
+                "é".repeat(1 << 19),
+            )]),
+            CallToolResult::structured(serde_json::json!({ "note": "y".repeat(70_000) })),
+        ];
+        for result in &results {
+            let (_, _, produced) = result_json(result, scrub::window(16384));
+            assert!(
+                produced <= 16384 + 8192,
+                "serialized {produced} bytes for one result"
+            );
+        }
+    }
+
     #[test]
     fn json_prefixes_stop_at_the_limit_on_a_boundary() {
         let value = serde_json::json!({ "note": "é".repeat(100) });
         let full = value.to_string();
-        let (all, cut) = json_prefix(&value, 10_000);
+        let (all, cut, _) = json_prefix(&value, 10_000);
         assert_eq!((all.as_str(), cut), (full.as_str(), false));
         for limit in 0..40 {
-            let (text, cut) = json_prefix(&value, limit);
+            let (text, cut, _) = json_prefix(&value, limit);
             assert!(cut);
             assert!(text.len() <= limit);
             assert!(full.starts_with(&text));

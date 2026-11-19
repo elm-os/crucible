@@ -338,6 +338,59 @@ and ``; no anchors, inline flags, lookaround, backreferences or capturing group
 quantifiers; counts up to 1,000; and no unbounded quantifier on a group that holds one. The driver refuses a rules
 file that breaks the subset or any of its vectors, so an SDK can load the file and trust it.
 
+## Capture overhead
+
+`conformance/capture-overhead.json` is the capture-overhead scenario: what opt-in content capture (contract 9.10)
+may cost per call. It is not a driver case. Each SDK plays it in process with its own test, because it reads work
+counts through a hook inside the SDK.
+
+- Each SDK serves one tool, `shape`, from two in-process instances of a server it instruments: one without capture
+  rules and one capturing the tool's arguments and result at `max_bytes`. Calls alternate between the two in paired
+  rounds whose order flips every round.
+- The result shapes: 200 B of text, text at the cap, 500 short records (structured content), a 64 KiB hexadecimal
+  string, a 64 KiB alphanumeric run, a 1 MiB base64 image block and 5 MiB of text.
+- The check, independent of the machine: through the SDK's capture work hook, the JSON the capture path serialized
+  for each captured field before any cut, and the text it handed to the scrubber, stay at or below `work_bound`
+  (the cap plus 8 KiB). Through the matcher hook, the scrubber's matcher steps per captured call stay at or below
+  `matcher_steps_per_rule_char` (2) per rule per character scrubbed. A generous wall-clock ceiling backs both up:
+  the slowest captured call may exceed the median uncaptured call by at most `ceiling_ms`.
+- Matcher steps count what the scrubber asks of its regular-expression matcher as a backtracking matcher takes the
+  steps at the least: one per start position a search tries, plus, from a start where a pattern that opens with a
+  class repetition can begin, the class run the repetition consumes before it backtracks. The scrubbers of the
+  four SDKs and of this crate guard the matcher with linear checks (a text shorter than any match is skipped, a rule
+  whose required literal is absent is skipped, and a pattern that opens with a literal prefix, a class repetition
+  and an anchor outside the class, as the email and jwt rules do, is tried once per anchor), so the steps stay
+  linear in the text; a differential property test in each holds the guarded scrubber to the plain one.
+- The latency gate: every run prints the added p99 per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to the laptop's
+  round counts and fails a shape whose added p99 is above `gate_added_p99_ms` (1 ms). CI never gates on timing.
+
+| SDK | Test | Command, from the repository root |
+|---|---|---|
+| TypeScript | `sdk/typescript/test/capture-overhead.test.ts` | `pnpm --filter @elm-os/crucible exec vitest run test/capture-overhead.test.ts` |
+| Python | `sdk/python/tests/test_capture_overhead.py` | `cd sdk/python && uv run --locked pytest -q -s tests/test_capture_overhead.py` |
+| Go | `sdk/go/cruciblemcp/capture_overhead_test.go` | `go -C sdk/go test -count=1 -run TestCaptureOverhead -v ./cruciblemcp` |
+| Rust | `sdk/rust/tests/capture_overhead.rs` | `cargo test --manifest-path sdk/rust/Cargo.toml --features mcp,test-support --test capture_overhead -- --nocapture`, with `--release` for the gate |
+
+The sdk-conformance workflow runs each SDK's test in that SDK's matrix entry.
+
+## Export queue under a stalled collector
+
+`conformance/export-stall.json` is the stalled-collector scenario: the export queue (contract 9.10) is bounded by
+spans and by bytes, each SDK estimating a span's size from lengths it already knows (its name, attributes, events
+and status message, plus 256 bytes). The SDK starts with its default queue against a collector that accepts
+connections and never answers, captures a tool returning 16 KiB of text, and calls it 1,024 times. After every
+call the estimated bytes of the queue, the batch being exported included, stay at or below 8 MiB, and at the end the
+dropped counter is above zero; the call count is below the 2,048-span bound, so the byte bound did the dropping.
+
+| SDK | Test |
+|---|---|
+| TypeScript | `sdk/typescript/test/export-stall.test.ts` |
+| Python | `sdk/python/tests/test_export_stall.py` |
+| Go | `sdk/go/cruciblemcp/export_stall_test.go` (`TestAStalledCollectorKeepsTheQueueUnderItsByteCeiling`) |
+| Rust | `sdk/rust/tests/export_stall.rs` (feature `mcp`) |
+
+The sdk-conformance workflow runs it with the capture-overhead test.
+
 ## Capability manifest
 
 Each SDK commits one manifest (schema in `conformance/capability-manifest.schema.json`):

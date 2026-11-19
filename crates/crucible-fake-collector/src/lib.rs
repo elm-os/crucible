@@ -21,6 +21,7 @@ pub mod collector;
 mod driver;
 pub mod golden;
 mod hash;
+mod pattern;
 mod records;
 pub mod registry;
 pub mod scrub;

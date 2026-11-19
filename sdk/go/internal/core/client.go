@@ -45,6 +45,7 @@ type Config struct {
 	Release        string
 	DeployID       string
 	QueueSize      int
+	QueueBytes     int64
 	BatchSize      int
 	FlushInterval  time.Duration
 }
@@ -73,7 +74,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	processor := NewProcessor(exporter, cfg.Release, cfg.QueueSize, cfg.BatchSize, cfg.FlushInterval)
+	processor := NewProcessor(exporter, cfg.Release, cfg.QueueSize, cfg.QueueBytes, cfg.BatchSize, cfg.FlushInterval)
 	provider := sdktrace.NewTracerProvider(
 		// Every span is kept: a remote parent that was not sampled must not suppress an MCP operation.
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),

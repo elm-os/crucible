@@ -69,7 +69,7 @@ func main() {
 }
 ```
 
-It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0}`.
+It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0}`.
 
 `Init` configures the process-wide client. Spans go to `Endpoint + "/v1/traces"` as OTLP/HTTP protobuf with
 `Authorization: Bearer <SecretKey>`; plain `http` works.
@@ -83,6 +83,7 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0}`.
 | `Release` | `crucible.release` on every span; when it is empty, Crucible uses the service version |
 | `DeployID` | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `QueueSize` | Finished spans waiting for export; 0 means 2,048 |
+| `QueueBytes` | Bytes of spans waiting for export or being exported, estimated from their names, attributes, events and status messages; 0 means 8 MiB |
 | `FlushInterval` | How often the queue is exported; 0 means one second |
 
 The SDK reads no `CRUCIBLE_*` environment variables: pass every value in `Options`. `Init` returns an error that says
@@ -478,8 +479,8 @@ share one params value between concurrent calls. `ClientOptions.Transport` is th
 ## The export queue
 
 Finished spans go on a bounded queue that one goroutine exports in batches of up to 512: as soon as a batch is full,
-every `FlushInterval`, and whenever `Flush` asks. When the queue is full, a span is dropped and counted; ending a span
-never waits for the network.
+every `FlushInterval`, and whenever `Flush` asks. When the queue holds `QueueSize` spans, or `QueueBytes` bytes of
+spans with the batch being exported, a span is dropped and counted; ending a span never waits for the network.
 
 The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 or a 503, and waits for the server's
 `Retry-After`; by default it gives up after a minute. A batch that still fails is dropped and counted.
@@ -491,6 +492,7 @@ The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 
 | `Exported` | Spans the server accepted |
 | `QueueFull` | Spans dropped because the export queue was full |
 | `ExportFailed` | Spans dropped because their export failed |
+| `QueuedBytes` | Estimated bytes of the queued spans and of the batch being exported |
 
 ## Configuration
 

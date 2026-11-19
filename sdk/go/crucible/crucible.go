@@ -34,12 +34,17 @@ type Options struct {
 	// QueueSize is how many finished spans wait for export; when the queue is full, new spans are dropped and
 	// counted in Stats. 0 means 2048.
 	QueueSize int
+	// QueueBytes bounds the bytes of the spans waiting for export and of the batch being exported, as estimated
+	// from their names, attributes, events and status messages; beyond it new spans are dropped and counted in
+	// Stats too. 0 means 8 MiB.
+	QueueBytes int
 	// FlushInterval is how often queued spans are exported. 0 means one second.
 	FlushInterval time.Duration
 }
 
 const (
 	defaultQueueSize     = 2048
+	defaultQueueBytes    = 8 << 20 // the proxy's telemetry buffer (contract 9.10)
 	defaultBatchSize     = 512
 	defaultFlushInterval = time.Second
 )
@@ -80,6 +85,9 @@ func validate(opts Options) (core.Config, error) {
 	if opts.QueueSize < 0 {
 		return core.Config{}, errors.New("crucible: Options.QueueSize is negative; set it to 0 for the default of 2048")
 	}
+	if opts.QueueBytes < 0 {
+		return core.Config{}, errors.New("crucible: Options.QueueBytes is negative; set it to 0 for the default of 8 MiB")
+	}
 	if opts.FlushInterval < 0 {
 		return core.Config{}, errors.New("crucible: Options.FlushInterval is negative; set it to 0 for the default of one second")
 	}
@@ -92,11 +100,15 @@ func validate(opts Options) (core.Config, error) {
 		Release:        opts.Release,
 		DeployID:       opts.DeployID,
 		QueueSize:      opts.QueueSize,
+		QueueBytes:     int64(opts.QueueBytes),
 		BatchSize:      defaultBatchSize,
 		FlushInterval:  opts.FlushInterval,
 	}
 	if cfg.QueueSize == 0 {
 		cfg.QueueSize = defaultQueueSize
+	}
+	if cfg.QueueBytes == 0 {
+		cfg.QueueBytes = defaultQueueBytes
 	}
 	if cfg.FlushInterval == 0 {
 		cfg.FlushInterval = defaultFlushInterval
@@ -133,6 +145,8 @@ type Stats struct {
 	QueueFull uint64
 	// ExportFailed is the number of spans dropped because their export failed.
 	ExportFailed uint64
+	// QueuedBytes is the estimated size of the spans waiting for export and of the batch being exported.
+	QueuedBytes int64
 }
 
 // CurrentStats returns the counters of the process-wide client; zero before Init.
@@ -142,7 +156,7 @@ func CurrentStats() Stats {
 		return Stats{}
 	}
 	s := c.Stats()
-	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed}
+	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed, QueuedBytes: s.QueuedBytes}
 }
 
 // WithSession returns a context whose spans carry the session id (crucible.session.id).
