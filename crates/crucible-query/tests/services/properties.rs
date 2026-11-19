@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crucible_plan::{Caller, Pred};
+use crucible_plan::{Caller, Filter};
 use crucible_query::{
     Consistency, QueryServiceError, ReadContext, SpanChildrenQuery, TraceListQuery,
 };
@@ -126,7 +126,7 @@ proptest! {
         let mut cursor = None;
         for page_no in 0.. {
             prop_assert!(page_no <= oracle.len() + 2, "paging does not end");
-            let query = TraceListQuery { window, filter: Pred::all(), limit: Some(limit), cursor };
+            let query = TraceListQuery { window, filter: Filter::all(), limit: Some(limit), cursor };
             let page = run(world.service.trace_list(&ctx(1), query)).unwrap();
             prop_assert!(page.data.len() <= limit as usize);
             prop_assert_eq!(page.has_more, page.next_cursor.is_some());
@@ -235,7 +235,7 @@ proptest! {
 
         // The trace list over a window that reaches far behind the horizon.
         let window = TimeWindow::new(NOW.saturating_add_micros(-60 * DAY), NOW.saturating_add_micros(DAY));
-        let query = TraceListQuery { window: window.unwrap(), filter: Pred::all(), limit: Some(200), cursor: None };
+        let query = TraceListQuery { window: window.unwrap(), filter: Filter::all(), limit: Some(200), cursor: None };
         let page = run(world.service.trace_list(&context, query)).unwrap();
         let mut listed: Vec<TraceId> = page.data.iter().map(|item| item.head.trace_id).collect();
         let mut expected: Vec<TraceId> = spans

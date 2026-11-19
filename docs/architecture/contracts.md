@@ -126,7 +126,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
 | `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
-| `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp` |
+| `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp`, `crucible-normalize` (it runs every export through the real normalizer) |
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
@@ -1923,6 +1923,17 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   `traces`; `metrics/query` and `filter-values` responses carry `saturated` and `meta`. Not built yet: the
   `analytics_raw` fallback of the spans source over `span_core`, and filter values beyond the `span_metrics`
   dimensions. A `timezone` other than UTC is refused (`validation_failed`, code `unsupported`).
+- Lists (#58): the filtered trace list filters `trace_heads` on the fields heads carry; `observation_type` and
+  `metadata` keep only traces with a matching span, through a semi-join into the trace ids of `span_core` (or
+  `span_payload` for metadata), at most 10,000 traces. It refuses metadata combined with `observation_type`, or
+  metadata under `or`/`not` with any field but `user_id` and `session_id` (422 `validation_failed`, pointer
+  `/metadata`, code `conflict`). The span list accepts metadata with `observation_type` (other conditions on
+  `span_core`, metadata semi-joined by `span_id`, up to 10,000 payload rows). The sessions of a user are
+  `Aggregate(trace_heads)` for that user with a non-empty `session_id`, ordered by (latest start, `session_id`)
+  descending, class `list`; for sessions and users, "for the window" means the rollup rows of the window's UTC days.
+  Session and user reads read the store only and answer `lagging` while the recent index holds unconfirmed spans on
+  those days; their detail follows the trace-detail `not_found` rule; a filtered trace list counts the span table it
+  reads toward the quarantine rule.
 
 ## 9. MCP
 
@@ -2105,7 +2116,7 @@ Alert measures over `mcp_ops`: `mcp.calls`, `mcp.error_rate` (caller faults excl
 |---|---|
 | Defaults | MCP metadata is always captured. Arguments and results are opt-in per server or tool glob, sampled before any copy, cut at 16 KiB per field by default, and scrubbed in the sender |
 | Scrub rules | Data in `conformance/scrub-rules.json` with test vectors, shared by the four SDKs and the proxy; patterns stay in the linear-time regular-expression subset |
-| Export | Off the request path through a bounded queue (default 2,048 spans); a full queue drops and counts, never blocks |
+| Export | Off the request path through a queue bounded by spans and by bytes (defaults 2,048 spans and 8 MiB). The byte bound counts the batch being exported and estimates each span from the lengths of its name, attributes, events and status message; a span beyond either bound is dropped and counted, never blocks. Whether the span bound counts the in-flight batch is left to each SDK (default; revisit) |
 | Proxy passthrough | Bytes are forwarded unchanged and immediately in both directions; analysis runs on a copy through a bounded non-blocking channel; the proxy never injects; telemetry buffer 8 MiB or 10,000 operations, drop-oldest; logs go to stderr only |
 | Proxy correlation | Pending operations are keyed by (direction, JSON-RPC id); operations pending at child exit become `transport` errors |
 | Shipping | OTLP HTTP protobuf to `/v1/traces` with a project key holding the `ingest` scope |
@@ -2116,6 +2127,14 @@ accepted) with the `read` scope builds the `ProjectScope`; no tool takes a proje
 plus `create_export` and `get_export`; every telemetry tool requires `from` and `to`; previews only; any result is
 capped at 64 KiB with `truncated` and `next_cursor`; guardrail problem codes return `isError: true` with the stable
 code; a SQL tool exists only for keys with the `sql` scope.
+
+### 9.11 Settled in code
+
+- MCP storage (#79): the tool inventory key is `crucible.mcp.tools` (JSON text, registry type string); the normalizer
+  computes the schema hash. An explicit error class of `transport` or `timeout` is the capture source's observation;
+  a numeric `error.type` equal to the HTTP status is not read as a JSON-RPC code. Content without the captured flag
+  counts as captured when arguments or a result are present; a content block type is cut at 64 bytes. The normalizer
+  version is 5.
 
 ## 10. Compat dialect registry
 
@@ -2307,7 +2326,7 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 | `api_keys` | `id`, `project_id`, `public_key` (unique), `secret_salt`, `secret_hash`, `lookup_tag`, `scopes`, `import`, `note`, `expires_at`, `last_used_at`, `revoked_at`, `version` | Section 11.3 |
 | `key_feed` | `seq` (pk, sequence), `key_id`, `change`, `key_version`, `at` | Written in the transaction that changes the key |
 | `secrets` | `id`, `scope`, `kind`, `key_id`, `nonce`, `ciphertext` | AAD binds id, kind and scope |
-| `project_salts` | `project_id`, encrypted salt | Immutable for the project's life |
+| `project_salts` | `project_id`, encrypted salt | Immutable for the project's life: 32 random bytes sealed with the project id as associated data, inserted if absent and re-read, never replaced. Until salts are created with the project, a frame carrying a subject for a project whose salt was never loaded waits for it (a Postgres outage holds the shipper); without a control store the identity keys are dropped |
 | `signing_keys` | `kid`, `purpose` (cursor, download, media_token), encrypted key, `state` (active, verify_only, retired) | |
 | `channels` | `id`, `project_id`, `kind` (slack, email, webhook), `config`, `secret_id`, `enabled`, `last_test`, `version` | |
 | `alert_rules`, `alert_state`, `alert_events` | rule; (`rule_id`, `series_key`); history | |
@@ -2659,6 +2678,14 @@ message, because a user writing SQL needs the engine's error. Guardrail errors a
   The payload route takes a required `start_time`, serves only the nine `FieldRange` fields (others are a 422),
   honours a single byte range (206, or 416 without a problem body), and answers a miss that is not whole and strong
   with 503 `telemetry_store_unavailable`, because a byte response cannot carry `meta`.
+- List routes (#58): `GET users/{user_id}/sessions` joins the session and user routes. `GET traces` and `GET spans`
+  take the filters environment, release, version, level, observation_type, user_id, session_id, tags, metadata
+  (`key=value`, split at the first `=`) and name (a case-insensitive substring, at most once); repeating a parameter
+  matches any of its values, different parameters must all hold, at most 100 values per parameter. Cursor routes 4
+  to 7 are the span list, the session list, the user list and the sessions of a user; a span-list page holds the
+  window, `as_of` and `(start_time, span_id)`, and an id page holds the list, the window and `(last_seen, id)` with
+  no `as_of`. Trace and span cursors bind to `Filter::hash`, the sessions of a user to a hash of the user id, and the
+  session and user lists to an empty filter.
 
 ### 12.6 Endpoints
 
@@ -2968,3 +2995,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |
 | v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
 | v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |
+| v2 | 2026-11-18 | Settled in code by #58, #78 and #79: SDK export queues bounded by spans and bytes (9.10); the MCP storage readings and normalizer version 5 (9.11); project salts (11.1); the fake collector's normalizer edge (1.5); the filtered trace list, span list, sessions of a user and list consistency (8.9); list filters, routes and cursor routes 4 to 7 (12.5) |

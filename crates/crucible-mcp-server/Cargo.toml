@@ -15,6 +15,8 @@ crucible-api-types = { workspace = true }
 crucible-auth = { workspace = true }
 crucible-cursor = { workspace = true }
 crucible-env = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-export = { path = "../crucible-export" }
 crucible-plan = { workspace = true }
 crucible-query = { workspace = true }
 crucible-records = { workspace = true }
@@ -31,6 +33,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-control = { workspace = true }
 crucible-chfmt = { workspace = true }
 crucible-recent = { workspace = true, features = ["test-support"] }
 crucible-sim = { path = "../crucible-sim" }

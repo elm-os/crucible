@@ -3,6 +3,7 @@
 //! exports. What the builders share is in `build`.
 
 mod data_bounds;
+mod export;
 mod facts;
 mod filter_values;
 mod mcp;
@@ -21,6 +22,10 @@ mod trace_spans;
 mod users;
 
 pub use data_bounds::{DataBoundsPlans, data_bounds};
+pub use export::{
+    EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, export_facts, export_mcp_content,
+    export_mcp_ops, export_payloads, export_spans, export_ties,
+};
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
 pub use mcp::{
@@ -55,11 +60,13 @@ pub use span_children::{
 pub use span_list::{SPAN_LIST_MAX_LIMIT, SpanListRequest, span_list};
 pub use trace_bounds::trace_time_bounds;
 pub use trace_list::{
-    TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, trace_list, trace_page_stats,
+    TRACE_LIST_MAX_LIMIT, TRACE_LIST_OVER_READ, TraceListRequest, filtered_trace_list, trace_list,
+    trace_page_stats,
 };
 pub use trace_spans::{
     TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT, spans_of_parents, trace_roots, trace_spans,
 };
 pub use users::{
-    USER_LIST_MAX_LIMIT, UserListRequest, user_detail, user_list, user_session_counts,
+    USER_LIST_MAX_LIMIT, USER_SESSIONS_MAX_LIMIT, UserListRequest, UserSessionsRequest,
+    user_detail, user_list, user_session_counts, user_sessions,
 };

@@ -15,11 +15,11 @@ use crucible_plan::{
     MetricsQuery, Node, Order, PayloadField, PayloadRangeRequest, PlanError, PointLookup, Pred,
     QueryClass, QueryPlan, RetentionClamp, Scan, SearchField, SearchRequest, SemiJoin,
     SessionListRequest, Snippet, Source, SpanListRequest, Step, TextField, TextSearch, TimeSeries,
-    TokenMode, TraceBounds, TraceListRequest, UserListRequest, child_counts, data_bounds,
-    metrics_other, metrics_ranking, metrics_series, payload_range, search, search_spans,
-    session_detail, session_list, span_children, span_list, spans_of_parents, trace_list,
-    trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
-    user_session_counts,
+    TokenMode, TraceBounds, TraceListRequest, UserListRequest, UserSessionsRequest, child_counts,
+    data_bounds, filtered_trace_list, metrics_other, metrics_ranking, metrics_series,
+    payload_range, search, search_spans, session_detail, session_list, span_children, span_list,
+    spans_of_parents, trace_list, trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
+    user_detail, user_list, user_session_counts, user_sessions,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -567,6 +567,52 @@ fn m2_sessions() {
 }
 
 #[test]
+fn m2_lists() {
+    let request = TraceListRequest {
+        filter: Pred::all(),
+        limit: 50,
+        cursor: None,
+        as_of: T0.saturating_add_micros(60_000_000),
+        since: None,
+    };
+    let filtered = |filter: &Filter| {
+        live(filtered_trace_list(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            request.clone(),
+            filter,
+        ))
+    };
+    let typed = Filter::And(vec![
+        Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
+        Filter::ObservationType(vec![ObservationType::Tool, ObservationType::Generation]),
+    ]);
+    insta::assert_snapshot!("m2_trace_list_span_types", rendered(&filtered(&typed)));
+    let metadata = Filter::And(vec![
+        Filter::Level(vec![Level::Error]),
+        Filter::Metadata {
+            key: "tenant".to_owned(),
+            value: "acme".to_owned(),
+        },
+    ]);
+    insta::assert_snapshot!("m2_trace_list_metadata", rendered(&filtered(&metadata)));
+    let sessions = live(user_sessions(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        UserSessionsRequest {
+            user_id: "user-9".to_owned(),
+            limit: 50,
+            cursor: Some((T0, "session-9".to_owned())),
+        },
+    ));
+    insta::assert_snapshot!("m2_user_sessions", rendered(&sessions));
+}
+
+#[test]
 fn m2_users() {
     let request = UserListRequest {
         limit: 50,
@@ -856,6 +902,58 @@ fn m2_metrics_traces() {
     };
     let series = metrics_series(project(), window(), &clamp(), Caller::Session, &query, None);
     insta::assert_snapshot!("m2_metrics_traces", rendered(&series.unwrap().unwrap()));
+}
+
+#[test]
+fn m2_export() {
+    use crucible_plan::{
+        ExportSelection, FactTable, export_facts, export_mcp_content, export_mcp_ops,
+        export_payloads, export_spans, export_ties,
+    };
+    let traces = [trace(), TraceId::from_bytes([7; 16])];
+    let narrowed = ExportSelection {
+        trace_ids: &traces,
+        user_id: Some("user-1"),
+        session_id: Some("session-1"),
+    };
+    let after = (T0, 42, T0.saturating_add_micros(5), span(3));
+    let first = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        ExportSelection::default(),
+        T0,
+        None,
+        1_000,
+    );
+    insta::assert_snapshot!("m2_export_spans_first_page", rendered(&live(first)));
+    let next = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        narrowed,
+        T0,
+        Some(after),
+        1_000,
+    );
+    insta::assert_snapshot!("m2_export_spans_after_position", rendered(&live(next)));
+    let ties = export_ties(project(), window(), &clamp(), narrowed, T0, after);
+    insta::assert_snapshot!("m2_export_ties", rendered(&live(ties)));
+    let spans = [
+        (T0, trace(), span(1)),
+        (T0.saturating_add_micros(90_000_000), traces[1], span(2)),
+    ];
+    let payloads = export_payloads(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_payloads", rendered(&live(payloads)));
+    let ops = export_mcp_ops(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_mcp_ops", rendered(&live(ops)));
+    let content = export_mcp_content(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_mcp_content", rendered(&live(content)));
+    for table in FactTable::ALL {
+        let name = table.table().name();
+        let facts = export_facts(project(), window(), &clamp(), table, &traces);
+        insta::assert_snapshot!(format!("m2_export_facts_{name}"), rendered(&live(facts)));
+    }
 }
 
 #[test]
