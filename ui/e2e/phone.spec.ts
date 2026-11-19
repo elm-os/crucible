@@ -10,7 +10,6 @@ import {
   metrics,
   PROJECT,
   PROVIDERS_PATH,
-  SIGN_IN_CHECK,
   signedIn,
   signInOptions,
   TRACE_PATH,
@@ -50,7 +49,6 @@ test.describe("phone at 390 px", () => {
     );
     await page.goto(`/home/?project=${PROJECT}`);
     await expect(page.getByRole("region", { name: "Set up" })).toBeVisible();
-    expect(api.calls).toEqual([SIGN_IN_CHECK]);
     await expectNoPageScrollX(page);
     await expectAccessible(page, "home on a phone");
   });

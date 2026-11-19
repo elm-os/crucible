@@ -323,10 +323,12 @@ export function sessionInfo(fields: Partial<SessionInfo> = {}): SessionInfo {
   };
 }
 
-// The server has a control plane, and this browser holds a session.
+// The server has a control plane, and this browser holds a session. Signed in, Crucible opens on home, whose
+// tiles and charts read metrics: they get an empty answer unless a test sets its own.
 export function signedIn(api: Api, session: SessionInfo = sessionInfo()): void {
   api.on(PROVIDERS_PATH, json(signInOptions()));
   api.on(SESSION_PATH, json(session));
+  api.on(/\/projects\/[^/]+\/metrics\/query$/, json(metrics([])));
 }
 
 // Answers `path` with `reply` and keeps each request, to check what the page sent.
