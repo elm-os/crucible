@@ -37,6 +37,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 name = "crucible-pg-conformance"
 path = "src/pg_main.rs"
 
+# The isolation suite of the SQL workspace (contract 7.5).
+[[bin]]
+name = "crucible-sqliso"
+path = "src/sqliso_main.rs"
+
 [dev-dependencies]
 insta = { workspace = true }
 proptest = { workspace = true }

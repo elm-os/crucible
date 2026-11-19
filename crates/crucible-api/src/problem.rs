@@ -41,6 +41,11 @@ struct Extra {
     limit: Option<ProblemLimit>,
     retry_after_s: Option<u32>,
     suggested_granularity: Option<String>,
+    /// The place of the error in a query text, for `sql_invalid`.
+    line: Option<u32>,
+    column: Option<u32>,
+    /// Why a module is unavailable, for `sql_workspace_unavailable`.
+    reason: Option<String>,
 }
 
 impl ApiError {
@@ -132,6 +137,41 @@ impl ApiError {
         &self.errors
     }
 
+    /// The same problem with these entries in `errors`.
+    pub(crate) fn with_errors(self, errors: Vec<FieldError>) -> Self {
+        Self { errors, ..self }
+    }
+
+    /// Sets the place of the error in a query text.
+    pub(crate) fn with_position(self, line: Option<u32>, column: Option<u32>) -> Self {
+        if line.is_none() && column.is_none() {
+            return self;
+        }
+        self.extra(|extra| {
+            extra.line = line;
+            extra.column = column;
+        })
+    }
+
+    /// Sets `retry_after_s` and the `Retry-After` header from a wait, rounded up to whole seconds.
+    pub(crate) fn with_retry_after_wait(self, wait: Option<std::time::Duration>) -> Self {
+        match wait {
+            Some(wait) => {
+                let whole = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+                self.with_retry_after(u32::try_from(whole.max(1)).unwrap_or(u32::MAX))
+            }
+            None => self,
+        }
+    }
+
+    /// Sets the reason a module is unavailable.
+    pub(crate) fn with_reason(self, reason: Option<String>) -> Self {
+        match reason {
+            Some(reason) => self.extra(|extra| extra.reason = Some(reason)),
+            None => self,
+        }
+    }
+
     pub(crate) fn with_limit(self, name: &str, value: u32) -> Self {
         self.extra(|extra| {
             extra.limit = Some(ProblemLimit {
@@ -217,6 +257,9 @@ impl IntoResponse for ApiError {
             retry_after_s: extra.retry_after_s,
             limit: extra.limit,
             suggested_granularity: extra.suggested_granularity,
+            line: extra.line,
+            column: extra.column,
+            reason: extra.reason,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();

@@ -106,6 +106,11 @@ impl PasswordHash {
             Err(InvalidPasswordHash)
         }
     }
+
+    /// The digest. It appears in `CREATE USER` and `ALTER USER` statements only.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Debug for PasswordHash {

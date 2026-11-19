@@ -23,6 +23,10 @@ const FILES: &[(&str, &str)] = &[
         "V2__identity",
         include_str!("../migrations/V2__identity.sql"),
     ),
+    (
+        "V3__sql_workspace",
+        include_str!("../migrations/V3__sql_workspace.sql"),
+    ),
 ];
 
 fn failed(what: &str, error: impl std::fmt::Display) -> TxError {

@@ -22,6 +22,7 @@ futures = { workspace = true }
 http = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

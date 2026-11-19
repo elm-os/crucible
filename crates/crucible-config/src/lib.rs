@@ -22,7 +22,7 @@ pub use resolve::{Layers, Loaded, resolve};
 pub use settings::{SETTINGS, Setting};
 pub use types::{
     Auth, ClickHouse, Config, ConfigErrors, Data, Mcp, PgOutageMode, Postgres, Secret, Server,
-    Source, WalBackend,
+    Source, Sql, WalBackend,
 };
 
 /// The environment variable that names the configuration file, like the `--config` flag.

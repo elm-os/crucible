@@ -16,6 +16,7 @@ mod search;
 mod sessions;
 mod span_list;
 mod spans;
+pub(crate) mod sql;
 mod trace_detail;
 mod traces;
 mod users;
@@ -50,6 +51,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(sessions::routes())
         .merge(span_list::routes())
         .merge(spans::routes())
+        .merge(sql::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
         .merge(users::routes())
@@ -70,6 +72,7 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(sessions::Paths::openapi());
     doc.merge(span_list::Paths::openapi());
     doc.merge(spans::Paths::openapi());
+    doc.merge(sql::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
     doc.merge(users::Paths::openapi());

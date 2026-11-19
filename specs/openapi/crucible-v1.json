@@ -3701,6 +3701,1064 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/sql/export": {
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Export SQL",
+        "description": "Runs the statement like `sql/run` and returns the result as a file: CSV, JSON lines or Parquet, under the\ninteractive limits. In CSV, text cells that start with `=`, `+`, `-` or `@` get a leading apostrophe, so\na spreadsheet does not evaluate them.",
+        "operationId": "export_sql",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SqlExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The file.",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`sql_forbidden` or `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`sql_invalid`, `sql_time_window_required`, `query_too_broad`, `query_memory_exceeded` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`sql_quota_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/run": {
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Run SQL",
+        "description": "Runs one read-only statement as the project's own ClickHouse identity and returns the result as a typed\ngrid of at most 10,000 rows. The text must filter on the time window with `{from:DateTime64(6)}` and\n`{to:DateTime64(6)}`. Every refusal says how to fix the query in `detail`; a ClickHouse error is in\n`errors[0].message`, with `line` and `column` when the server gave them.",
+        "operationId": "run_sql",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SqlRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result grid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SqlResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`sql_forbidden`: the statement writes, changes a setting or reads something the workspace does not offer. `forbidden`: the caller's role is too low.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: the run was cancelled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`sql_invalid`, `sql_time_window_required`, `query_too_broad`, `query_memory_exceeded` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`sql_quota_exceeded`: a concurrency, rate or hourly limit; see `retry_after_s`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable`, with a `reason`; or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/runs": {
+      "get": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "List SQL runs",
+        "description": "The caller's recent runs, newest first, with how each ended.",
+        "operationId": "list_sql_runs",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many runs: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SqlRunList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/runs/{run_id}": {
+      "delete": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Cancel a SQL run",
+        "description": "Stops a running statement. The run's own request then ends with `conflict`. Cancelling a run that has\nended does nothing.",
+        "operationId": "cancel_sql_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "The run id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The cancel was issued, or the run had ended."
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: only the run's starter or a project admin cancels it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/saved-queries": {
+      "get": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "List saved queries",
+        "description": "The saved queries the caller may see: the project-visible ones and its own.",
+        "operationId": "list_saved_queries",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The saved queries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQueryList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Create a saved query",
+        "description": "Saves a query with its declared parameters. The text is checked like a run's, and every `{name:Type}` of\nthe text other than the window must be declared.",
+        "operationId": "create_saved_query",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedQueryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The saved query; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQuery"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: saving needs the `edit_content` permission, which members have and API keys never do.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`sql_invalid`, `sql_time_window_required` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}": {
+      "get": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Get a saved query",
+        "operationId": "get_saved_query",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query_id",
+            "in": "path",
+            "description": "The saved query id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The saved query; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQuery"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such query, or one the caller may not see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Delete a saved query",
+        "operationId": "delete_saved_query",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query_id",
+            "in": "path",
+            "description": "The saved query id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: only the owner, or a project admin for a project-visible query.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Update a saved query",
+        "description": "Replaces the query's fields if its version is still the one in `If-Match`.",
+        "operationId": "update_saved_query",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query_id",
+            "in": "path",
+            "description": "The saved query id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The version the change is based on, as `ETag` gave it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedQueryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The changed query; `ETag` is its new version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQuery"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: only the owner, or a project admin for a project-visible query.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`: the query changed since that version.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`sql_invalid`, `sql_time_window_required` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`: `If-Match` is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}/run": {
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Run a saved query",
+        "description": "Runs the stored text with the window and the declared parameters only. Viewers may run project-visible\nsaved queries.",
+        "operationId": "run_saved_query",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query_id",
+            "in": "path",
+            "description": "The saved query id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedQueryRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result grid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SqlResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`sql_forbidden` or `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such query, or one the caller may not see.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: the run was cancelled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`sql_invalid`, `sql_time_window_required`, `query_too_broad`, `query_memory_exceeded` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`sql_quota_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`sql_workspace_unavailable` or `control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sql/schema": {
+      "get": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Get the SQL schema",
+        "description": "The relations a query may read, each with its columns, its time column and a query to start from; the\nlimits of a run; and whether the workspace is available.",
+        "operationId": "get_sql_schema",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The schema.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SqlSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/tags": {
       "post": {
         "tags": [
@@ -6572,6 +7630,12 @@
             "$ref": "#/components/schemas/ProblemCode",
             "description": "The stable code."
           },
+          "column": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The column of the error in a query text, one-based, for `sql_invalid`.",
+            "minimum": 0
+          },
           "detail": {
             "type": "string",
             "description": "What went wrong with this request, for logs and developers."
@@ -6587,6 +7651,16 @@
             "$ref": "#/components/schemas/ProblemLimit",
             "description": "The limit the request exceeded, for `query_too_broad`."
           },
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The line of the error in a query text, one-based, for `sql_invalid`.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why a module is unavailable, for `sql_workspace_unavailable`: a stable word such as\n`isolation_probe_failed`."
+          },
           "request_id": {
             "type": "string",
             "description": "The request id, also sent as `X-Request-Id`."
@@ -6594,7 +7668,7 @@
           "retry_after_s": {
             "type": "integer",
             "format": "int32",
-            "description": "Seconds to wait before retrying, for `rate_limited`.",
+            "description": "Seconds to wait before retrying, for `rate_limited` and `sql_quota_exceeded`.",
             "minimum": 0
           },
           "status": {
@@ -6913,6 +7987,204 @@
         "description": "An unsigned integer at most 2^53 - 1.",
         "maximum": 9007199254740991,
         "minimum": 0
+      },
+      "SavedQuery": {
+        "type": "object",
+        "description": "A saved query.",
+        "required": [
+          "id",
+          "owner",
+          "name",
+          "description",
+          "visibility",
+          "sql",
+          "parameters",
+          "version",
+          "created_at",
+          "updated_at",
+          "can_edit",
+          "can_run"
+        ],
+        "properties": {
+          "can_edit": {
+            "type": "boolean",
+            "description": "Whether the caller may change or delete it."
+          },
+          "can_run": {
+            "type": "boolean",
+            "description": "Whether the caller may run it."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "description": {
+            "type": "string",
+            "description": "What it is for."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SqlActor",
+            "description": "Who owns it."
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedQueryParameter"
+            },
+            "description": "The declared parameters."
+          },
+          "sql": {
+            "type": "string",
+            "description": "The query text."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it last changed."
+          },
+          "version": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The version; send it as `If-Match` to change the query."
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/SavedQueryVisibility",
+            "description": "Who may see it."
+          }
+        }
+      },
+      "SavedQueryInput": {
+        "type": "object",
+        "description": "The body of `POST sql/saved-queries` and `PATCH sql/saved-queries/{query_id}`.",
+        "required": [
+          "name",
+          "visibility",
+          "sql"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What it is for."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name, 1 to 120 characters."
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedQueryParameter"
+            },
+            "description": "The declared parameters, besides the window. Every `{name:Type}` of the text other than `from` and\n`to` must be declared."
+          },
+          "sql": {
+            "type": "string",
+            "description": "The query text."
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/SavedQueryVisibility",
+            "description": "Who may see it."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SavedQueryList": {
+        "type": "object",
+        "description": "The answer of `GET sql/saved-queries`: the saved queries the caller may see.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedQuery"
+            },
+            "description": "The queries."
+          }
+        }
+      },
+      "SavedQueryParameter": {
+        "type": "object",
+        "description": "One declared parameter of a saved query.",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "default": {
+            "type": "string",
+            "description": "The value used when a run gives none; without it the parameter is required."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name, as the text uses it in `{name:Type}`."
+          },
+          "type": {
+            "$ref": "#/components/schemas/SavedQueryParameterType",
+            "description": "The type a value is checked against."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SavedQueryParameterType": {
+        "type": "string",
+        "description": "The type of a declared parameter.",
+        "enum": [
+          "string",
+          "int",
+          "float",
+          "bool",
+          "timestamp",
+          "uuid"
+        ]
+      },
+      "SavedQueryRunRequest": {
+        "type": "object",
+        "description": "The body of `POST sql/saved-queries/{query_id}/run`.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the time window (RFC 3339)."
+          },
+          "params": {
+            "type": "object",
+            "description": "Values of the query's declared parameters, by name. A parameter with a default may be left out.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the time window (RFC 3339)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SavedQueryVisibility": {
+        "type": "string",
+        "description": "Who may see a saved query.",
+        "enum": [
+          "private",
+          "project"
+        ]
       },
       "SchemaDimension": {
         "type": "object",
@@ -8036,6 +9308,453 @@
           }
         }
       },
+      "SqlActor": {
+        "type": "object",
+        "description": "Who made something: a signed-in user or an API key.",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The user id or the API key id."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SqlActorKind",
+            "description": "`user` or `api_key`."
+          }
+        }
+      },
+      "SqlActorKind": {
+        "type": "string",
+        "description": "The kind of an actor.",
+        "enum": [
+          "user",
+          "api_key"
+        ]
+      },
+      "SqlColumn": {
+        "type": "object",
+        "description": "One column of a result.",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The column name."
+          },
+          "type": {
+            "type": "string",
+            "description": "The ClickHouse type."
+          }
+        }
+      },
+      "SqlExportFormat": {
+        "type": "string",
+        "description": "A download format.",
+        "enum": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ]
+      },
+      "SqlExportRequest": {
+        "type": "object",
+        "description": "The body of `POST sql/export`.",
+        "required": [
+          "sql",
+          "from",
+          "to",
+          "format"
+        ],
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/SqlExportFormat",
+            "description": "The file format."
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the time window (RFC 3339)."
+          },
+          "params": {
+            "type": "object",
+            "description": "Values of the other parameters.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "sql": {
+            "type": "string",
+            "description": "The query text, as in a run."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the time window (RFC 3339)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SqlLimits": {
+        "type": "object",
+        "description": "The limits of a run, for the editor's hints.",
+        "required": [
+          "max_rows",
+          "max_bytes",
+          "max_cell_bytes",
+          "max_execution_s",
+          "max_sql_bytes"
+        ],
+        "properties": {
+          "max_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bytes a grid holds.",
+            "minimum": 0
+          },
+          "max_cell_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bytes of one cell before it is cut.",
+            "minimum": 0
+          },
+          "max_execution_s": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds a query may run.",
+            "minimum": 0
+          },
+          "max_rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows a grid holds.",
+            "minimum": 0
+          },
+          "max_sql_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bytes of query text.",
+            "minimum": 0
+          }
+        }
+      },
+      "SqlRelation": {
+        "type": "object",
+        "description": "One relation a query may read.",
+        "required": [
+          "name",
+          "description",
+          "time_column",
+          "window_required",
+          "columns",
+          "example"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SqlColumn"
+            },
+            "description": "The columns."
+          },
+          "description": {
+            "type": "string",
+            "description": "One sentence about it."
+          },
+          "example": {
+            "type": "string",
+            "description": "A query to start from."
+          },
+          "name": {
+            "type": "string",
+            "description": "The qualified name, for example `crucible_sql.spans`."
+          },
+          "time_column": {
+            "type": "string",
+            "description": "The column to filter with the window."
+          },
+          "window_required": {
+            "type": "boolean",
+            "description": "Whether a query that does not filter on `time_column` is refused."
+          }
+        }
+      },
+      "SqlResult": {
+        "type": "object",
+        "description": "The result of a run: a typed grid.",
+        "required": [
+          "run_id",
+          "columns",
+          "rows",
+          "truncated",
+          "cut_cells",
+          "stats"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SqlColumn"
+            },
+            "description": "The columns."
+          },
+          "cut_cells": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How many cells were cut at 64 KiB; a cut cell ends with `…[cut]`."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "description": "The rows, one array of cells per row in column order. A cell is a JSON value in ClickHouse's JSON\nform: 64-bit integers are strings, dates are ISO strings."
+          },
+          "run_id": {
+            "type": "string",
+            "description": "The run's id; `DELETE sql/runs/{run_id}` cancels it while it runs."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/SqlRunStats",
+            "description": "Read statistics."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether rows were left out: the grid holds at most 10,000 rows and 16 MiB."
+          }
+        }
+      },
+      "SqlRun": {
+        "type": "object",
+        "description": "One run of the history.",
+        "required": [
+          "id",
+          "actor",
+          "kind",
+          "sql",
+          "started_at",
+          "outcome",
+          "result_rows",
+          "truncated",
+          "rows_read",
+          "elapsed_ms"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/SqlActor",
+            "description": "Who ran it."
+          },
+          "elapsed_ms": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Server-side time in milliseconds."
+          },
+          "error_code": {
+            "type": "string",
+            "description": "The problem code of a failed run."
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it ended."
+          },
+          "id": {
+            "type": "string",
+            "description": "The run id."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SqlRunKind",
+            "description": "What it was."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/SqlRunOutcome",
+            "description": "How it ended."
+          },
+          "result_rows": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Rows returned."
+          },
+          "rows_read": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Rows the server read."
+          },
+          "saved_query_id": {
+            "type": "string",
+            "description": "The saved query it ran."
+          },
+          "sql": {
+            "type": "string",
+            "description": "The query text."
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it started."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the result was cut at a limit."
+          }
+        }
+      },
+      "SqlRunKind": {
+        "type": "string",
+        "description": "What a run was.",
+        "enum": [
+          "ad_hoc",
+          "saved",
+          "export"
+        ]
+      },
+      "SqlRunList": {
+        "type": "object",
+        "description": "The answer of `GET sql/runs`: the caller's recent runs, newest first (a project admin sees everyone's).",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SqlRun"
+            },
+            "description": "The runs."
+          }
+        }
+      },
+      "SqlRunOutcome": {
+        "type": "string",
+        "description": "How a run ended.",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "SqlRunRequest": {
+        "type": "object",
+        "description": "The body of `POST sql/run`.",
+        "required": [
+          "sql",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the time window, bound to `{from}` (RFC 3339)."
+          },
+          "params": {
+            "type": "object",
+            "description": "Values of the other `{name:Type}` parameters the text uses, by name, in ClickHouse's text form.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "sql": {
+            "type": "string",
+            "description": "The query text: one `SELECT` or `WITH` statement that uses the window parameters `{from:DateTime64(6)}`\nand `{to:DateTime64(6)}`. It is sent to ClickHouse verbatim."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the time window, bound to `{to}` (RFC 3339)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SqlRunStats": {
+        "type": "object",
+        "description": "What the server read to answer a run.",
+        "required": [
+          "rows_read",
+          "bytes_read",
+          "elapsed_ms",
+          "estimated_rows"
+        ],
+        "properties": {
+          "bytes_read": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Bytes read."
+          },
+          "elapsed_ms": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Server-side time in milliseconds."
+          },
+          "estimated_rows": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Rows the server expected to read before it ran the query."
+          },
+          "rows_read": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Rows read."
+          }
+        }
+      },
+      "SqlSchema": {
+        "type": "object",
+        "description": "The answer of `GET sql/schema`: what the workspace offers.",
+        "required": [
+          "status",
+          "relations",
+          "limits"
+        ],
+        "properties": {
+          "limits": {
+            "$ref": "#/components/schemas/SqlLimits",
+            "description": "The limits of a run."
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SqlRelation"
+            },
+            "description": "The readable relations."
+          },
+          "status": {
+            "$ref": "#/components/schemas/SqlWorkspaceStatus",
+            "description": "Whether the workspace serves requests."
+          }
+        }
+      },
+      "SqlWorkspaceStatus": {
+        "type": "object",
+        "description": "Whether the workspace serves requests (also in the session's `features.sql_workspace`).",
+        "required": [
+          "enabled",
+          "failed_checks"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether runs are accepted."
+          },
+          "failed_checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The checks of the isolation self-probe that failed, by name."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why not: `not_configured`, `probe_pending`, `probe_unavailable` or `isolation_probe_failed`."
+          }
+        }
+      },
       "StatusCode": {
         "type": "string",
         "description": "The OTel status of a span.",
@@ -8667,6 +10386,10 @@
     {
       "name": "sessions",
       "description": "Sessions: the spans that share a session id, aggregated."
+    },
+    {
+      "name": "sql",
+      "description": "The read-only SQL workspace: runs, exports, history and saved queries."
     },
     {
       "name": "traces",

@@ -1,6 +1,6 @@
 //! Sign-in, sessions and the user's own account (contracts 11.4, 11.5, 12.6 and 12.7).
 
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{COOKIE, LOCATION};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -58,11 +58,12 @@ pub(super) struct Paths;
 
 /// A response that signs the browser in: the session DTO and the session cookie.
 async fn signed_in(
+    state: &ApiState,
     identity: &Identity,
     rid: crucible_records::RequestId,
     new: NewSession,
 ) -> Result<Response, ApiError> {
-    let info = session_info(identity, &new.principal)
+    let info = session_info(identity, &new.principal, state.sql.as_ref())
         .await
         .map_err(auth(rid))?;
     let cookies = identity.config().cookies();
@@ -121,6 +122,7 @@ pub(crate) async fn get_providers(public: Public) -> Result<Json<SignInOptions>,
     security(()),
 )]
 pub(crate) async fn login(
+    State(state): State<ApiState>,
     pre: Prelogin,
     ApiJson(body): ApiJson<wire::LoginRequest>,
 ) -> Result<Response, ApiError> {
@@ -130,7 +132,7 @@ pub(crate) async fn login(
         .login(&body.email, &body.password)
         .await
         .map_err(auth(rid))?;
-    signed_in(&pre.identity, rid, new).await
+    signed_in(&state, &pre.identity, rid, new).await
 }
 
 /// Sign out
@@ -174,8 +176,11 @@ pub(crate) async fn logout(signed: Signed) -> Result<Response, ApiError> {
     ),
     security(("session" = [])),
 )]
-pub(crate) async fn get_session(signed: Signed) -> Result<Json<SessionInfo>, ApiError> {
-    let info = session_info(&signed.identity, &signed.principal)
+pub(crate) async fn get_session(
+    State(state): State<ApiState>,
+    signed: Signed,
+) -> Result<Json<SessionInfo>, ApiError> {
+    let info = session_info(&signed.identity, &signed.principal, state.sql.as_ref())
         .await
         .map_err(auth(signed.request_id))?;
     Ok(Json(info))
@@ -408,6 +413,7 @@ pub(crate) async fn change_password(
     security(()),
 )]
 pub(crate) async fn accept_invitation(
+    State(state): State<ApiState>,
     pre: Prelogin,
     ApiJson(body): ApiJson<wire::InvitationAccept>,
 ) -> Result<Response, ApiError> {
@@ -416,7 +422,7 @@ pub(crate) async fn accept_invitation(
         .accept_invitation(&body.token, &body.name, &body.password)
         .await
         .map_err(auth(pre.request_id))?;
-    signed_in(&pre.identity, pre.request_id, new).await
+    signed_in(&state, &pre.identity, pre.request_id, new).await
 }
 
 /// Set up the first owner
@@ -436,6 +442,7 @@ pub(crate) async fn accept_invitation(
     security(()),
 )]
 pub(crate) async fn setup(
+    State(state): State<ApiState>,
     pre: Prelogin,
     ApiJson(body): ApiJson<wire::SetupRequest>,
 ) -> Result<Response, ApiError> {
@@ -450,7 +457,7 @@ pub(crate) async fn setup(
         )
         .await
         .map_err(auth(pre.request_id))?;
-    signed_in(&pre.identity, pre.request_id, new).await
+    signed_in(&state, &pre.identity, pre.request_id, new).await
 }
 
 /// Get the account

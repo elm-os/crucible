@@ -26,6 +26,12 @@ pnpm --filter crucible-ui exec playwright test
 - Every state runs axe (`@axe-core/playwright`) and fails on any serious or critical violation.
 - Two projects run: `desktop` (1280 by 900) and `phone` (390 by 844, touch). CI runs both in
   `.github/workflows/ui-e2e.yml` on pull requests that touch `ui/`.
+- The SQL workspace is the one surface that shows a server sentence: a workspace refusal writes how to fix the
+  request in `detail` (contract 12.3), and the page shows it under a title it owns, with ClickHouse's message
+  beside it. Its tests use the `sqlProblem` fixture for those refusals and still check that `title` never reaches
+  the page.
+- The `phone` project matches only `phone.spec.ts`, so `sql.spec.ts` sets the 390 by 844 viewport itself for its
+  phone test.
 
 ## Surface-by-state table
 
@@ -53,6 +59,12 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: child spans (paged traces) | A "Loading child spans" row, busy, when a span opens | The page's spans under their parent; a "Show more child spans" row while the cursor has more | A "Couldn't load child spans" row whose activation refetches only that page (or restarts the span's pages after `cursor_invalid`) | A span whose count ran ahead shows no row once its page comes back empty |
 | Trace: agent graph | The layout library loads only for the graph, behind a skeleton after 300 ms | Agents, tools and models as nodes with spans and errors; each node describes its calls; choosing a node filters the timeline | The section card with "Retry agent graph" when the layout library can't load, and the retry works | "This trace has no agents, tools or model calls." with "Show the timeline"; on a paged trace, none among the loaded spans |
 | Trace: links | Not applicable | Not applicable | Not applicable | No trace in the URL, or an id that isn't 32 hex characters, points back to the list and requests nothing |
+| SQL: schema | Four skeleton lines after 300 ms, announced; saved queries and history wait for its answer | One collapsible item per relation: description, time column and whether the window is required, columns with types, and "Insert example"; the first relation's example starts the editor | In-section card with the mapped copy, reference id and a retry that refetches only the schema | "No relations to query."; the editor starts empty and Run is off |
+| SQL: workspace unavailable | Not applicable: it is the schema's answer | Not applicable | A page state by reason (`isolation_probe_failed`, `not_configured`, `probe_pending`, `probe_unavailable`, or the server's sentence for any other) with operator guidance, the failed checks and "Check again"; Run, export and saving are off, and saved queries and history are not requested | Not applicable |
+| SQL: query and result | Run is off and Cancel is on while a run is in flight; the result shows an indeterminate progress bar named for the run | A typed grid: column name and ClickHouse type, numbers right-aligned by type, null marked, nested values as compact JSON, 100 rows per page; notices for a truncated result and cut values; rows returned, rows and bytes read, elapsed | An alert with the title for the code, the server's fix sentence, "ClickHouse said" in a monospace block, "Line L, column C" with the caret moved there and "Go to line", the seconds to wait for `sql_quota_exceeded`, and the reference id; a cancelled run says "The run was cancelled." and is not an error | "No result yet." before the first run; "The query returned no rows." for a result without rows |
+| SQL: export | A progress bar named "Exporting CSV" (or JSON lines, Parquet); the export buttons are off | The file downloads and the section says "Downloaded crucible-sql.csv." | The same alert as a run, inside the query section | Not applicable |
+| SQL: saved queries | Three skeleton rows after 300 ms, announced | One item per query: name, description, visibility, declared parameters; Open, Run when `can_run`, Delete when `can_edit`; Run opens a form built from the declared parameters with defaults prefilled; "Save as new" and "Save changes" open a form with the detected parameters and a type select | In-section card with the fix, reference id and a retry that refetches only the list; a stale save says the query changed and offers "Reload saved query"; a refused delete stays in the section | "No saved queries yet." |
+| SQL: history | Five skeleton rows after 300 ms, announced | One row per run: started, outcome as icon and label, kind, rows, elapsed, first line of the query, "Load into editor"; refetched after every run, cancel and export | In-section card with the mapped copy, reference id and a retry that refetches only the history | "No runs yet." |
 | Shell: sign-in check | Nothing for 300 ms, then "Connecting to Crucible", announced; the page waits for the check | Without a control plane, the page and the Connect dialog. Signed in, the page, the user's name, Sign out, and the session's projects in the project menu (switching keeps the page and range and drops entity ids) | A "Connection" card with the mapped copy and "Retry connection". No session, or a session that ends during any read, sends the browser to `/login/` with the page as `next` | Not applicable |
 | Sign in | Field skeletons after 300 ms, announced | Provider buttons (full-page links to the server, carrying `next`), the password form and "Forgot your password?"; signing in opens `next`, or `/` when `next` leaves the server or points under `/api/`. A failed sign-in, or a provider failure in `?error=`, is an alert in the page's own words | Options that fail to load show the mapped copy, the reference id and "Try again" | A server with no owner points to setup; one without a control plane has no sign-in; one with no sign-in method turned on says so |
 | Setup | Not applicable: requests nothing until submitted | Opens Crucible signed in as the owner | Checked before sending (password 12 to 128 characters, checked off live). `token_invalid` marks the token field; `conflict` links to sign in | Not applicable |
@@ -88,6 +100,12 @@ pnpm --filter crucible-ui exec playwright test
 | Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
 | Trace: tags, flags and feedback | `trace.spec.ts` "facts": loading, success with a tag written, empty, error (4) | `trace-facts.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
+| SQL: schema | `sql.spec.ts` "schema browser": loading, success with insert example, error with retry, empty (4) | `errors.test.ts` (in `features/sql`) |
+| SQL: workspace unavailable | `sql.spec.ts` "workspace unavailable": `isolation_probe_failed` with "Check again", `not_configured` and `probe_pending` from a 503 (2); "editor and result": a run refused because the workspace went away (1) | `errors.test.ts` |
+| SQL: query and result | `sql.spec.ts` "editor and result": loading, success grid, truncated with paging, empty, `sql_invalid` with caret, `sql_time_window_required`, `sql_forbidden`, `query_too_broad`, `forbidden`, `sql_quota_exceeded`, unexplained failure, cancel, Ctrl+Enter, parameters (14); "desktop layout" (1) | `sql-workspace.test.tsx`, `params.test.ts`, `cells.test.ts`, `errors.test.ts` |
+| SQL: export | `sql.spec.ts` "export": download, feedback and failure (2) | `errors.test.ts` |
+| SQL: saved queries | `sql.spec.ts` "saved queries": loading, success with open, error with retry, empty, run with parameters, run without parameters and Escape, save as new, update with `If-Match` and reload, delete, refused delete (10) | `params.test.ts`, `errors.test.ts` |
+| SQL: history | `sql.spec.ts` "history": loading, success with load into editor, error with retry, empty then refreshed after a run (4) | `cells.test.ts` |
 | Shell: sign-in check | `sign-in.spec.ts` "sessions": loading then error with retry, no session, a session that ends while reading, signed-in header and sign-out (4) | `auth-gate.test.tsx`, `client.test.ts` |
 | Sign in | `sign-in.spec.ts` "sign in": loading then success, unsafe `next`, sign-in errors, options error, provider errors, setup and no control plane (6); `phone.spec.ts` | `login-form.test.tsx`, `next-path.test.ts`, `client.test.ts` |
 | Setup | `onboarding.spec.ts` "first-run setup": success, checked before sending, token and owner errors (3); `phone.spec.ts` | `onboarding-forms.test.tsx`, `client.test.ts` |
@@ -96,7 +114,7 @@ pnpm --filter crucible-ui exec playwright test
 | Settings: members and invitations | `settings.spec.ts` "members": loading then success, role change, remove, invite link once, revoke, error with retry, read-only roles, no control plane (8); `phone.spec.ts` | `settings.test.tsx` |
 | Settings: API keys | `settings.spec.ts` "API keys": loading then success, secret once, revoke with `If-Match`, error with retry, no permission (5); `phone.spec.ts` | `settings.test.tsx`, `client.test.ts` |
 | Settings: new project | `projects.spec.ts`: create opens the API keys page, a taken slug, no control for a member (3); `phone.spec.ts` | `new-project.test.tsx`, `slug.test.ts` |
-| Phone | `phone.spec.ts` (11), including the list pages, one session and one user, and a long filter chip | |
+| Phone | `phone.spec.ts` (11), including the list pages, one session and one user, and a long filter chip; `sql.spec.ts` "phone at 390 px" (1) | |
 
 ## Keyboard paths
 
@@ -111,6 +129,11 @@ pnpm --filter crucible-ui exec playwright test
   and loads its children from the worker, Left closes it; only the rows in view are mounted.
 - **Connect dialog.** Enter opens it with focus in the project id field; Escape closes it and focus returns to
   its trigger.
+- **SQL editor.** Ctrl+Enter or Cmd+Enter in the query text runs the query and focus stays in the editor; Enter
+  in a parameter field runs it too. "Go to line" in a query error moves focus and the caret to the reported
+  position.
+- **SQL saved queries.** Enter on "Run" opens the parameter form; Escape closes it without running and focus
+  returns to the button. The save form opens with focus in the name field.
 - **Settings confirmations.** A row's Remove or Revoke opens one confirmation shared by the table, starting on
   Cancel; Cancel or Escape returns focus to that row's button. Each row button's name carries its row, like
   "Remove Grace Hopper".
@@ -124,6 +147,9 @@ At 390 px each page reads without the page scrolling sideways: the traces table 
 waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap. The
 sign-in, setup and invitation pages fit, the settings tables scroll inside their frames with the signed-in header
 wrapping, and a new key's secret wraps inside its dialog.
+
+On the SQL page the schema, query, result, saved queries and history stack in that order; the result grid and the
+history table scroll inside their frames.
 
 ## Not covered yet
 

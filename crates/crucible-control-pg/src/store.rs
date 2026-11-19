@@ -25,6 +25,9 @@ use tokio_postgres::types::{ToSql, Type};
 use crate::conn::{Connector, PgConfig, Pool, Pooled, RESERVED_POOL, STATEMENT_TIMEOUT, pool};
 use crate::sql::{Cols, P, failure, int};
 
+/// The SQL workspace's repositories.
+mod sqlws;
+
 /// How much longer than the server's statement timeout the client waits for an answer before it gives the
 /// connection up.
 const ANSWER_GRACE: Duration = Duration::from_secs(2);
@@ -527,6 +530,15 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn migrations(&self) -> &dyn Migrations {
+                $($deref)* self.handle
+            }
+            fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
+                $($deref)* self.handle
+            }
+            fn saved_queries(&self) -> &dyn crucible_control::SavedQueryRepo {
+                $($deref)* self.handle
+            }
+            fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
                 $($deref)* self.handle
             }
         }

@@ -235,6 +235,61 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "POST",
+        "/api/v1/projects/{project_id}/sql/export",
+        Project(ProjectPermission::RunSql),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/sql/run",
+        Project(ProjectPermission::RunSql),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sql/runs",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/sql/runs/{run_id}",
+        Project(ProjectPermission::RunSavedQuery),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sql/saved-queries",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/sql/saved-queries",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/sql/saved-queries/{query_id}/run",
+        Project(ProjectPermission::RunSavedQuery),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sql/schema",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
         "/api/v1/projects/{project_id}/tags",
         Project(ProjectPermission::WriteFacts),
     ),
