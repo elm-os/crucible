@@ -2,8 +2,8 @@
 //! permission check, problem documents, the middleware of contract 12.1 and the OpenAPI document.
 //!
 //! - **Routes.** `GET projects/{project_id}/traces`, `.../traces/{trace_id}`, `.../traces/{trace_id}/spans`
-//!   and `.../data-bounds` over a [`QueryService`], one module per route group; DTOs come from
-//!   `crucible-api-types`.
+//!   and `.../data-bounds` over a [`QueryService`], and the SQL workspace under `.../sql/` over a
+//!   [`SqlWorkspace`]; one module per route group; DTOs come from `crucible-api-types`.
 //! - **Auth.** A project's secret key as `Authorization: Bearer` (contract 12.2), verified by a
 //!   [`KeyVerifier`]. The key's project must be the path's; any other project, or a malformed id, is
 //!   `not_found` (contract 11.6). Reads run in the `agent` class with the project's retention, which a
@@ -44,9 +44,10 @@ use crucible_auth::service::Identity;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
+use crucible_sqlws::SqlWorkspace;
 
 pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
-pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
+pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use settings::{
@@ -70,7 +71,15 @@ pub fn router(
     cursors: Arc<KeyRing>,
     facts: Arc<dyn FactWriter>,
 ) -> Router {
-    build(env, Some((service, facts)), keys, settings, cursors, None)
+    build(
+        env,
+        Some((service, facts)),
+        keys,
+        settings,
+        cursors,
+        None,
+        None,
+    )
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -81,7 +90,7 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None)
+    build(env, None, keys, settings, cursors, None, None)
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
@@ -93,9 +102,10 @@ pub fn platform_router(
     identity: Arc<Identity>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, store, keys, settings, cursors, Some(identity))
+    build(env, store, keys, settings, cursors, Some(identity), sql)
 }
 
 fn build(
@@ -105,6 +115,7 @@ fn build(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     identity: Option<Arc<Identity>>,
+    sql: Option<SqlWorkspace>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -116,6 +127,7 @@ fn build(
         identity,
         facts,
         idempotency: Arc::default(),
+        sql,
     };
     let api = routes::router()
         .fallback(unknown_path)

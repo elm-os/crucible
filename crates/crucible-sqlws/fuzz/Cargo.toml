@@ -1,0 +1,24 @@
+[package]
+name = "crucible-sqlws-fuzz"
+description = "cargo-fuzz targets of the SQL workspace's lexical check."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+crucible-sqlws = { path = ".." }
+libfuzzer-sys = "=0.4.13"
+
+# Not a member of the root workspace.
+[workspace]
+
+[[bin]]
+name = "lexer"
+path = "fuzz_targets/lexer.rs"
+test = false
+doc = false
+bench = false

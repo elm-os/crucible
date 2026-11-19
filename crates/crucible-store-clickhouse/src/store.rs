@@ -159,6 +159,8 @@ struct Clients {
     /// How long the pool keeps an idle connection.
     idle: Duration,
     by_identity: [clickhouse::Client; 5],
+    /// The read endpoint without credentials: workspace identities are attached per statement.
+    workspace: clickhouse::Client,
 }
 
 impl Clients {
@@ -173,6 +175,7 @@ impl Clients {
         };
         Self {
             idle,
+            workspace: base.clone().with_url(read_url),
             // In the order of `slot`.
             by_identity: [
                 client(&config.url, &config.admin),
@@ -331,6 +334,11 @@ pub(crate) struct Reading {
 impl Reading {
     /// The next chunk of the answer; `None` at its end. An error ends the read.
     pub(crate) async fn next(&mut self) -> Option<Result<Bytes, QueryError>> {
+        Some(self.next_chunk().await?.map_err(Failure::into_query))
+    }
+
+    /// [`Reading::next`] with the failure before it is mapped to an error type.
+    pub(crate) async fn next_chunk(&mut self) -> Option<Result<Bytes, Failure>> {
         let cursor = self.cursor.as_mut()?;
         // The request is sent by the first poll, so from here on the statement may be running.
         if let Some(kill) = &mut self.kill {
@@ -366,11 +374,11 @@ impl Reading {
             }
             Ok(Err(error)) => {
                 self.disarm();
-                Some(Err(Failure::from_client(error).into_query()))
+                Some(Err(Failure::from_client(error)))
             }
             Err(_elapsed) => {
                 self.abandon();
-                Some(Err(QueryError::Timeout))
+                Some(Err(Failure::Timeout))
             }
         }
     }
@@ -383,7 +391,7 @@ impl Reading {
     }
 
     /// Stops reading a statement that may still run.
-    fn abandon(&mut self) {
+    pub(crate) fn abandon(&mut self) {
         self.cursor = None;
         if let Some(kill) = &mut self.kill {
             kill.fire();
@@ -538,11 +546,24 @@ impl ClickHouseStore {
         kill_on_drop: bool,
     ) -> Result<(Uuid, Reading), QueryError> {
         let (query_id, query) = self.query(identity, statement, settings);
+        let reading = self
+            .reading(query, query_id, format, deadline, kill_on_drop)
+            .map_err(Failure::into_query)?;
+        Ok((query_id, reading))
+    }
+
+    /// The streaming read of a prepared query that carries `query_id`.
+    pub(crate) fn reading(
+        &self,
+        query: clickhouse::query::Query,
+        query_id: Uuid,
+        format: &str,
+        deadline: Duration,
+        kill_on_drop: bool,
+    ) -> Result<Reading, Failure> {
         let resend = (query.clone(), format.to_owned());
-        let cursor = query
-            .fetch_bytes(format)
-            .map_err(|e| Failure::from_client(e).into_query())?;
-        let reading = Reading {
+        let cursor = query.fetch_bytes(format).map_err(Failure::from_client)?;
+        Ok(Reading {
             cursor: Some(cursor),
             resend: Some(resend),
             deadline: self.inner.env.clock.now().saturating_add(deadline),
@@ -552,8 +573,17 @@ impl ClickHouseStore {
                 armed: false,
             }),
             inner: Arc::clone(&self.inner),
-        };
-        Ok((query_id, reading))
+        })
+    }
+
+    /// The read endpoint's client without credentials, for the SQL workspace's per-project identities.
+    pub(crate) fn workspace_client(&self) -> clickhouse::Client {
+        self.clients().workspace.clone()
+    }
+
+    /// The environment the store runs over.
+    pub(crate) fn env(&self) -> &Env {
+        &self.inner.env
     }
 
     /// The flavour: the configured one, or the detected one once [`TelemetryStore::detect`] has run.

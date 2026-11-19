@@ -793,6 +793,7 @@ dependencies = [
  "crucible-schema",
  "crucible-shipper",
  "crucible-sim",
+ "crucible-sqlws",
  "crucible-store-clickhouse",
  "crucible-ui-assets",
  "crucible-wal",
@@ -869,6 +870,7 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "crucible-sim",
+ "crucible-sqlws",
  "futures",
  "http-body-util",
  "insta",
@@ -1059,6 +1061,7 @@ dependencies = [
  "proptest",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -1454,6 +1457,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-sqlws"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-env",
+ "crucible-records",
+ "crucible-schema",
+ "crucible-sim",
+ "proptest",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-store-clickhouse"
 version = "0.0.0"
 dependencies = [
@@ -1472,6 +1493,9 @@ dependencies = [
  "hyper-util",
  "insta",
  "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tower",
  "tracing",

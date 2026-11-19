@@ -23,6 +23,7 @@ mod payload;
 mod problem;
 mod search;
 mod spans;
+mod sql;
 mod trace_detail;
 mod traces;
 mod wire;
@@ -60,6 +61,12 @@ pub use search::{
     SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
 };
 pub use spans::{SpanPage, SpanPageParams};
+pub use sql::{
+    SavedQuery, SavedQueryInput, SavedQueryList, SavedQueryParameter, SavedQueryParameterType,
+    SavedQueryRunRequest, SavedQueryVisibility, SqlActor, SqlActorKind, SqlColumn, SqlExportFormat,
+    SqlExportRequest, SqlLimits, SqlRelation, SqlResult, SqlRun, SqlRunKind, SqlRunList,
+    SqlRunOutcome, SqlRunRequest, SqlRunStats, SqlSchema, SqlWorkspaceStatus,
+};
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
@@ -103,6 +110,10 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<PasswordResetRequest>();
     visitor.visit::<PayloadParams>();
     visitor.visit::<Problem>();
+    visitor.visit::<SavedQuery>();
+    visitor.visit::<SavedQueryInput>();
+    visitor.visit::<SavedQueryList>();
+    visitor.visit::<SavedQueryRunRequest>();
     visitor.visit::<ProjectCreate>();
     visitor.visit::<ProjectList>();
     visitor.visit::<ProjectMemberAdd>();
@@ -116,6 +127,11 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<SignInOptions>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
+    visitor.visit::<SqlExportRequest>();
+    visitor.visit::<SqlResult>();
+    visitor.visit::<SqlRunList>();
+    visitor.visit::<SqlRunRequest>();
+    visitor.visit::<SqlSchema>();
     visitor.visit::<TagRequest>();
     visitor.visit::<TraceDetail>();
     visitor.visit::<TraceDetailParams>();
