@@ -5,19 +5,32 @@ import {
   expectNoPageScrollX,
   json,
   LIST_PATH,
+  listPage,
   METRICS_PATH,
   measuresOf,
   metrics,
   PROJECT,
   PROVIDERS_PATH,
+  SESSION,
+  SESSION_DETAIL_PATH,
+  SESSIONS_PATH,
+  SPANS_PATH,
+  sessionItem,
   signedIn,
   signInOptions,
+  spanListItem,
   TRACE_PATH,
   test,
   traceDetail,
   traceItem,
   tracePage,
   traceUrl,
+  USER,
+  USER_PATH,
+  USER_SESSIONS_PATH,
+  USERS_PATH,
+  userItem,
+  userSessionItem,
 } from "./fixtures";
 
 // On a touch screen the sheet moves by native scroll snapping. Locator.tap scrolls its target into view
@@ -252,5 +265,37 @@ test.describe("phone at 390 px", () => {
     await expect(page.getByText(secret)).toBeInViewport({ ratio: 1 });
     await expectNoPageScrollX(page);
     await expectAccessible(page, "new key on a phone");
+  });
+});
+
+test.describe("phone at 390 px: lists", () => {
+  const whole = { as_of: "2026-11-17T14:00:05.000000Z", partial: false, consistency: "strong" };
+  const longId = "conversation-".repeat(6);
+
+  test("sessions, users, spans and their pages read without sideways scrolling", async ({
+    page,
+    api,
+  }) => {
+    api.on(SESSIONS_PATH, json(listPage([sessionItem({ session_id: longId })])));
+    api.on(USERS_PATH, json(listPage([userItem()])));
+    api.on(SPANS_PATH, json(listPage([spanListItem()])));
+    api.on(SESSION_DETAIL_PATH, json({ session: sessionItem(), meta: whole }));
+    api.on(USER_PATH, json({ user: userItem(), meta: whole }));
+    api.on(USER_SESSIONS_PATH, json(listPage([userSessionItem()])));
+    api.on(LIST_PATH, json(tracePage([traceItem()])));
+    for (const [url, region] of [
+      [`/sessions/?project=${PROJECT}`, "Sessions"],
+      [`/session/?project=${PROJECT}&session=${SESSION}`, "Summary"],
+      [`/users/?project=${PROJECT}`, "Users"],
+      [`/user/?project=${PROJECT}&user=${USER}`, "Sessions of this user"],
+      [`/spans/?project=${PROJECT}&level=error&name=${longId}`, "Spans"],
+      [`/traces/?project=${PROJECT}&environment=${longId}`, "Recent traces"],
+    ] as const) {
+      await page.goto(url);
+      await expect(page.getByRole("region", { name: region })).toBeVisible();
+      await expect(page.getByRole("region", { name: region }).getByRole("status")).toHaveCount(0);
+      await expectNoPageScrollX(page);
+    }
+    await expectAccessible(page, "traces with a filter chip on a phone");
   });
 });

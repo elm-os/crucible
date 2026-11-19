@@ -15,11 +15,11 @@ use crucible_plan::{
     MetricsQuery, Node, Order, PayloadField, PayloadRangeRequest, PlanError, PointLookup, Pred,
     QueryClass, QueryPlan, RetentionClamp, Scan, SearchField, SearchRequest, SemiJoin,
     SessionListRequest, Snippet, Source, SpanListRequest, Step, TextField, TextSearch, TimeSeries,
-    TokenMode, TraceBounds, TraceListRequest, UserListRequest, child_counts, data_bounds,
-    metrics_other, metrics_ranking, metrics_series, payload_range, search, search_spans,
-    session_detail, session_list, span_children, span_list, spans_of_parents, trace_list,
-    trace_page_stats, trace_roots, trace_spans, trace_time_bounds, user_detail, user_list,
-    user_session_counts,
+    TokenMode, TraceBounds, TraceListRequest, UserListRequest, UserSessionsRequest, child_counts,
+    data_bounds, filtered_trace_list, metrics_other, metrics_ranking, metrics_series,
+    payload_range, search, search_spans, session_detail, session_list, span_children, span_list,
+    spans_of_parents, trace_list, trace_page_stats, trace_roots, trace_spans, trace_time_bounds,
+    user_detail, user_list, user_session_counts, user_sessions,
 };
 use crucible_records::{
     CivilDate, Lsn, PartitionId, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -564,6 +564,52 @@ fn m2_sessions() {
         "session-9",
     ));
     insta::assert_snapshot!("m2_session_detail", rendered(&detail));
+}
+
+#[test]
+fn m2_lists() {
+    let request = TraceListRequest {
+        filter: Pred::all(),
+        limit: 50,
+        cursor: None,
+        as_of: T0.saturating_add_micros(60_000_000),
+        since: None,
+    };
+    let filtered = |filter: &Filter| {
+        live(filtered_trace_list(
+            project(),
+            window(),
+            &clamp(),
+            Caller::Session,
+            request.clone(),
+            filter,
+        ))
+    };
+    let typed = Filter::And(vec![
+        Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
+        Filter::ObservationType(vec![ObservationType::Tool, ObservationType::Generation]),
+    ]);
+    insta::assert_snapshot!("m2_trace_list_span_types", rendered(&filtered(&typed)));
+    let metadata = Filter::And(vec![
+        Filter::Level(vec![Level::Error]),
+        Filter::Metadata {
+            key: "tenant".to_owned(),
+            value: "acme".to_owned(),
+        },
+    ]);
+    insta::assert_snapshot!("m2_trace_list_metadata", rendered(&filtered(&metadata)));
+    let sessions = live(user_sessions(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        UserSessionsRequest {
+            user_id: "user-9".to_owned(),
+            limit: 50,
+            cursor: Some((T0, "session-9".to_owned())),
+        },
+    ));
+    insta::assert_snapshot!("m2_user_sessions", rendered(&sessions));
 }
 
 #[test]

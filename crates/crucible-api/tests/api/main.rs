@@ -18,6 +18,7 @@ mod errors;
 mod exports;
 mod facts;
 mod identity;
+mod lists;
 mod metrics;
 mod payload;
 mod search;

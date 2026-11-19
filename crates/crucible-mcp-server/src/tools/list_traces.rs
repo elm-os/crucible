@@ -1,6 +1,6 @@
 //! `list_traces`: one page of the trace list (contract 8.7), newest first, with previews of each head span.
 
-use crucible_plan::Pred;
+use crucible_plan::Filter;
 use crucible_query::{HeadKey, PageCursor, TraceListQuery};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ impl Tool for ListTraces {
             .map_err(ToolError::cursor)?;
         let query = TraceListQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(limit),
             cursor,
         };
