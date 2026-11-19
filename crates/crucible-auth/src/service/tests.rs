@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use crucible_control::{OrgRole, ProjectRole, ProviderKind, Repos as _};
 use crucible_env::Env;
+use crucible_records::ProjectId;
 use crucible_sim::pg_model::{PgFaults, PgModel};
 
 use super::*;
 use crate::csrf::Origins;
 use crate::db_keys::{DbKeys, KeyVerdict, OutageMode};
 use crate::password::HashCost;
+use crate::seal::{Sealed, Unsealable};
 use crate::test_support::idp::{CLIENT_ID, CLIENT_SECRET, FakeIdp, FakeUser, ISSUER};
 
 const PASSWORD: &str = "correct horse battery";
@@ -460,6 +462,100 @@ fn the_command_line_finds_projects_and_marks_import_keys() {
             identity.project_by_reference("agents").await.unwrap_err(),
             AuthError::NotFound
         );
+    });
+}
+
+/// The salt of `project` as the control store holds it, opened as the sealer of [`identity`] opens it, with the
+/// associated data that binds it to the project: `None` when the project has no salt row.
+async fn stored_salt(model: &PgModel, project: ProjectId) -> Option<Result<Vec<u8>, Unsealable>> {
+    let row = model.project_salts().get(project).await.unwrap()?;
+    let sealed = Sealed {
+        key_id: row.key_id,
+        nonce: row.nonce,
+        ciphertext: row.ciphertext,
+    };
+    let aad = format!("{}\0project_salt", project.uuid());
+    Some(Sealer::new("master-0", [6; 32]).open(&sealed, aad.as_bytes()))
+}
+
+/// Contract 9.3: a project gets its salt in the transaction that creates it, on every path that creates one:
+/// first-owner setup and `crucible admin init` (the default project) and project creation. Each salt is 32 bytes
+/// of its own, sealed under the master key and bound to its project.
+#[test]
+fn projects_are_created_with_their_salt() {
+    sim(9, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        let default = identity.project_by_reference("default").await.unwrap();
+        let first = stored_salt(&model, default.id)
+            .await
+            .expect("setup made the default project's salt")
+            .expect("the salt opens");
+        let project = identity.create_project("Agents", "agents").await.unwrap();
+        let second = stored_salt(&model, project.id)
+            .await
+            .expect("the project's salt exists as soon as the project does")
+            .expect("the salt opens");
+        assert_eq!((first.len(), second.len()), (32, 32));
+        assert_ne!(first, second, "each project has a salt of its own");
+        // Bound to its project: one project's row does not open as another's.
+        let row = model.project_salts().get(project.id).await.unwrap().unwrap();
+        let aad = format!("{}\0project_salt", default.id.uuid());
+        let sealed = Sealed {
+            key_id: row.key_id,
+            nonce: row.nonce,
+            ciphertext: row.ciphertext,
+        };
+        assert_eq!(
+            Sealer::new("master-0", [6; 32]).open(&sealed, aad.as_bytes()),
+            Err(Unsealable)
+        );
+        // A taken slug is still a conflict that says what to do.
+        assert!(matches!(
+            identity.create_project("Again", "agents").await,
+            Err(AuthError::Conflict(_))
+        ));
+    });
+    sim(10, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        identity
+            .init_owner("Acme", "owner@example.com", "Olivia", PASSWORD)
+            .await
+            .unwrap();
+        let default = identity.project_by_reference("default").await.unwrap();
+        assert!(matches!(
+            stored_salt(&model, default.id).await,
+            Some(Ok(salt)) if salt.len() == 32
+        ));
+    });
+}
+
+/// A project and its salt commit together: while connections drop and commits end with an unknown outcome,
+/// every project that exists has its salt.
+#[test]
+fn a_project_never_exists_without_its_salt() {
+    sim(11, async |env, model| {
+        let identity = identity(&env, &model, OUTAGE_GRACE);
+        owner(&identity).await;
+        model.set_faults(PgFaults {
+            unavailable_ppm: 150_000,
+            commit_unknown_ppm: 150_000,
+            ..PgFaults::default()
+        });
+        for n in 0..60 {
+            // A failed creation may or may not have committed; either way the pair is whole.
+            let _ = identity.create_project("Project", &format!("p-{n}")).await;
+        }
+        model.set_faults(PgFaults::default());
+        let projects = model.projects().list().await.unwrap();
+        assert!(projects.len() > 20, "{} projects", projects.len());
+        for project in projects {
+            assert!(
+                stored_salt(&model, project.id).await.is_some(),
+                "project {} has no salt",
+                project.slug
+            );
+        }
     });
 }
 

@@ -28,7 +28,8 @@
 //! - **I7** every `span_core` row carries the tokens, the cost and the error status its span reported, and at
 //!   quiescence `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics` equal the reference
 //!   aggregation over `span_core` exactly: counts, error counts, token and cost sums, first and last seen,
-//!   and the duration histograms.
+//!   and the duration histograms. No row of `span_core`, `span_payload`, `mcp_ops` or `mcp_content` holds a
+//!   value that a span carried in an event under a key that must never be stored.
 //! - **I8** every `mcp_ops` row carries the status, the error class, the subclass, the JSON-RPC code and the
 //!   caller-fault flag that the shared classifier gives for the exchange the client simulated, and the other
 //!   fields of the wire contract as the exchange had them. At quiescence `mcp_tool_rollup`, `mcp_deploys` and
@@ -79,6 +80,7 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
 };
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, KeyValueList, any_value};
 use opentelemetry_proto::tonic::resource::v1::Resource;
+use opentelemetry_proto::tonic::trace::v1::span::Event;
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -349,6 +351,10 @@ pub enum Violation {
     },
     /// I8: an `mcp_ops` row is not classified as the shared classifier classifies its exchange.
     Classification(String),
+    /// A stored row holds a value that the generator planted under a key that must never be stored (contracts
+    /// 3.5, 9.3 and 9.4). The catalogue has no invariant of its own for it; it is reported under I7, beside the
+    /// other checks that a row carries what the wire contract says of its span.
+    NeverStored(String),
 }
 
 impl Violation {
@@ -361,7 +367,7 @@ impl Violation {
             }
             Self::FactRow(_) => "I2",
             Self::FactResolution(_) => "I4",
-            Self::Aggregate(_) => "I7",
+            Self::Aggregate(_) | Self::NeverStored(_) => "I7",
             Self::Classification(_) => "I8",
             Self::Backpressure(_) => "I5",
             Self::Locator { .. } => "I3",
@@ -1420,9 +1426,47 @@ struct McpOpSpec {
     bytes: (u64, u64),
 }
 
+/// What every value starts with that the generator plants under a key that must never be stored. The oracle
+/// looks for it in every text cell of the span tables and the plain MCP tables.
+const PLANTED: &str = "sim-planted:";
+
+/// The keys that must never be stored, as the contract names them: Authorization values, cookies,
+/// `Mcp-Param-*` values, baggage and raw IP addresses (3.5), the raw subject and issuer (9.3) and the raw session
+/// id (9.4), with a header name in another case. The list follows the contract and not the normalizer, so that
+/// a key the normalizer forgets is planted all the same.
+const NEVER_STORED: [&str; 11] = [
+    "crucible.mcp.user.subject",
+    "crucible.mcp.user.issuer",
+    "mcp.session.id",
+    "client.address",
+    "network.peer.address",
+    "http.request.header.authorization",
+    "http.request.header.cookie",
+    "HTTP.Request.Header.Cookie",
+    "http.response.header.set-cookie",
+    "http.request.header.mcp-param-region",
+    "baggage.tenant",
+];
+
+/// An event of an MCP operation's span with every key of [`NEVER_STORED`], each with a value the span never
+/// sends otherwise. It takes no draw: the values follow from the span id.
+fn planted_event(span: [u8; 8], time_unix_nano: u64) -> Event {
+    Event {
+        time_unix_nano,
+        name: "sim.planted".to_owned(),
+        attributes: NEVER_STORED
+            .iter()
+            .enumerate()
+            .map(|(i, key)| attribute(key, text(format!("{PLANTED}{i}:{}", hex(&span)))))
+            .collect(),
+        dropped_attributes_count: 0,
+    }
+}
+
 /// The wire span of one MCP operation and what the oracle expects of its rows. The keys follow what each
 /// capture source sends: an SDK wrapper writes the `crucible.mcp.*` keys, the proxy the keys it can observe on
-/// the wire, and a server without either only the semantic-convention keys.
+/// the wire, and a server without either only the semantic-convention keys. Every span also carries an event
+/// with the keys that must never be stored ([`planted_event`]).
 fn mcp_span(call: &McpCall, op: &McpOpSpec) -> (Span, SpanInfo, McpSent) {
     use Exchange as X;
     let sdk = op.capture == CaptureSource::Sdk;
@@ -1624,6 +1668,7 @@ fn mcp_span(call: &McpCall, op: &McpOpSpec) -> (Span, SpanInfo, McpSent) {
         start_time_unix_nano: start_nanos,
         end_time_unix_nano: start_nanos + op.duration_us * 1_000,
         attributes,
+        events: vec![planted_event(op.span, start_nanos)],
         status: failed.then(|| Status {
             message: String::new(),
             code: 2,
@@ -3042,6 +3087,13 @@ impl Run<'_> {
             let mut by_key: BTreeMap<SpanKey, u32> = BTreeMap::new();
             for part in model.parts(table) {
                 let block = &part.block;
+                // Contracts 3.5, 9.3 and 9.4: no row holds what a span carried under a key that must never be
+                // stored, in its attributes or its events.
+                if system_oracle::holds_text(block, PLANTED.as_bytes()) {
+                    found.push(Violation::NeverStored(format!(
+                        "a block of {name} holds a value that a span carried under a key that must never be stored"
+                    )));
+                }
                 for row in 0..block.rows {
                     let cells = (|| {
                         let lsn = u64_at(block, "lsn", row)?;

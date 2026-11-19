@@ -21,7 +21,7 @@ use crucible_records::{
 use hmac::{Hmac, KeyInit, Mac};
 use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::trace::v1::Span;
-use opentelemetry_proto::tonic::trace::v1::span::Link;
+use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use prost::Message;
@@ -1426,6 +1426,92 @@ proptest! {
                 (salted && !suppressed)
                     .then(|| salt.subject_hash("https://issuer.example", &subject))
             );
+        }
+    }
+}
+
+/// Contracts 3.5, 9.3 and 9.4 for span events and links: each key that must never be stored, planted in an event
+/// and in a link of an MCP operation and of a plain span with a value of its own, is in no record, whatever
+/// stage B knows of the project's salt. The other attributes of the event and the link stay. The span's own
+/// issuer is kept where contract 9.1 keeps it, in `user_issuer`, and nowhere else.
+#[test]
+fn what_must_never_be_stored_is_in_no_event_or_link() {
+    let mut planted: Vec<String> = keys::NEVER_STORED.map(str::to_owned).to_vec();
+    planted.extend(
+        keys::NEVER_STORED_PREFIXES
+            .iter()
+            .map(|prefix| format!("{prefix}region")),
+    );
+    planted.extend([keys::USER_SUBJECT, keys::USER_ISSUER, keys::SESSION_ID].map(str::to_owned));
+    // Header names compare without regard to case.
+    planted.extend(["HTTP.Request.Header.Authorization", "Client.Address"].map(str::to_owned));
+    let value = |i: usize| format!("planted:{i}:");
+    let attributes = |kept: &str| -> Vec<KeyValue> {
+        let mut list: Vec<KeyValue> = planted
+            .iter()
+            .enumerate()
+            .map(|(i, key)| s(key, &value(i)))
+            .collect();
+        list.push(s("kept", kept));
+        list
+    };
+    let salt = ProjectSalt::new([9; 32]);
+    for is_op in [false, true] {
+        for identity in [
+            IdentityCtx::Suppressed,
+            IdentityCtx::Salted(None),
+            IdentityCtx::Salted(Some(&salt)),
+        ] {
+            let mut own = vec![
+                s(keys::USER_ISSUER, "https://issuer.example"),
+                s(keys::USER_SUBJECT, "subject-1"),
+            ];
+            if is_op {
+                own.push(s(keys::METHOD, "tools/call"));
+                own.push(s(keys::PROTOCOL_VERSION, "2025-11-25"));
+            }
+            let span = Span {
+                events: vec![Event {
+                    time_unix_nano: common::BASE_NANOS + 1_000,
+                    name: "audit".to_owned(),
+                    attributes: attributes("event-stays"),
+                    dropped_attributes_count: 0,
+                }],
+                links: vec![Link {
+                    trace_id: vec![2; 16],
+                    span_id: vec![3; 8],
+                    attributes: attributes("link-stays"),
+                    ..Link::default()
+                }],
+                ..span(SERVER, 1, 1, None, own)
+            };
+            let resource = vec![s("service.name", "svc")];
+            let a = stage_a(resource.clone(), vec![span.clone()]);
+            let b = stages(resource, vec![span], &identity);
+            for out in [&a, &b] {
+                let bytes = everything(out);
+                for (i, key) in planted.iter().enumerate() {
+                    assert!(
+                        !holds(&bytes, value(i).as_bytes()),
+                        "{key} of an event or a link is stored (operation: {is_op}, {identity:?})"
+                    );
+                }
+                assert!(holds(&bytes, b"event-stays") && holds(&bytes, b"link-stays"));
+                if !is_op {
+                    assert!(
+                        !holds(&bytes, b"https://issuer.example"),
+                        "the issuer of a plain span is stored ({identity:?})"
+                    );
+                }
+            }
+            if is_op && identity != IdentityCtx::Suppressed {
+                let expected = if identity == IdentityCtx::Salted(None) {
+                    ""
+                } else {
+                    "https://issuer.example"
+                };
+                assert_eq!(&*b.mcp_ops[0].record.user_issuer, expected);
+            }
         }
     }
 }
