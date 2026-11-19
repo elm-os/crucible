@@ -63,6 +63,7 @@ under an observation's context nest under it.
 | `release` | `crucible.release` on every span; when empty Crucible uses the service version |
 | `deploy_id` | Resource `crucible.deploy.id`; when empty, Crucible is designed to use the MCP server version (contracts 9.7) |
 | `queue_size` | Finished spans waiting for export; default 2,048 |
+| `queue_bytes` | Bytes of spans waiting for export or being exported, estimated from their strings; default 8 MiB |
 | `flush_interval` | How often the queue is exported; default one second |
 | `export_timeout` | Bound on one export, and on each `flush` and `shutdown`; default ten seconds |
 
@@ -74,9 +75,10 @@ resource, lower its span limits or turn its sampling off.
 
 Finished spans go on a bounded queue that one background thread exports in batches. The thread runs an async
 runtime of its own, so `init` works inside or outside an application's runtime and exporting never shares a thread
-with the application. When the queue is full a span is dropped and counted; ending a span never waits for the
-network, whether the server is up, refusing connections or not answering. `crucible_sdk::stats()` returns the
-counters (`exported`, `dropped`, `failed`). `flush` exports what has ended and returns the export error if there is
+with the application. When the queue holds `queue_size` spans, or `queue_bytes` bytes of spans with the batch being
+exported, a span is dropped and counted; ending a span never waits for the network, whether the server is up,
+refusing connections or not answering. `crucible_sdk::stats()` returns the counters (`exported`, `dropped`,
+`failed`, `queued_bytes`). `flush` exports what has ended and returns the export error if there is
 one, and `shutdown` exports the rest and stops the thread; both wait at most `export_timeout`.
 
 ## Instrument an MCP server

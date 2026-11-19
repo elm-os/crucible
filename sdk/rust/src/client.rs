@@ -25,6 +25,8 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const SCOPE: &str = "crucible-sdk";
 
 const DEFAULT_QUEUE_SIZE: usize = 2048;
+/// The proxy's telemetry buffer size (contract 9.10).
+const DEFAULT_QUEUE_BYTES: usize = 8 << 20;
 const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -49,6 +51,9 @@ pub struct Options {
     /// Finished spans waiting for export. When the queue is full a span is dropped and counted in [`stats`].
     /// 0 means 2,048.
     pub queue_size: usize,
+    /// Bytes of spans waiting for export and of the batch being exported, estimated from their names, attributes,
+    /// events and status messages. Beyond it a span is dropped and counted in [`stats`] too. 0 means 8 MiB.
+    pub queue_bytes: usize,
     /// How often queued spans are exported. Zero means one second.
     pub flush_interval: Duration,
     /// Bound on one export, and on each [`flush`] and [`shutdown`]. Zero means ten seconds.
@@ -66,6 +71,7 @@ impl fmt::Debug for Options {
             .field("release", &self.release)
             .field("deploy_id", &self.deploy_id)
             .field("queue_size", &self.queue_size)
+            .field("queue_bytes", &self.queue_bytes)
             .field("flush_interval", &self.flush_interval)
             .field("export_timeout", &self.export_timeout)
             .finish()
@@ -149,6 +155,7 @@ pub(crate) struct Config {
     pub(crate) secret_key: String,
     pub(crate) release: String,
     pub(crate) queue_size: usize,
+    pub(crate) queue_bytes: u64,
     pub(crate) flush_interval: Duration,
     pub(crate) export_timeout: Duration,
     pub(crate) resource: Resource,
@@ -257,6 +264,8 @@ fn validate(options: Options) -> Result<Config, InitError> {
         secret_key: options.secret_key,
         release: options.release,
         queue_size: nonzero(options.queue_size, DEFAULT_QUEUE_SIZE),
+        queue_bytes: u64::try_from(nonzero(options.queue_bytes, DEFAULT_QUEUE_BYTES))
+            .unwrap_or(u64::MAX),
         flush_interval: nonzero(options.flush_interval, DEFAULT_FLUSH_INTERVAL),
         export_timeout: nonzero(options.export_timeout, DEFAULT_EXPORT_TIMEOUT),
         resource,

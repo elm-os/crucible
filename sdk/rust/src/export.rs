@@ -97,10 +97,12 @@ impl Drop for Release {
 
 /// The SDK's span processor. At span start it copies the session, user, tags and metadata that the parent
 /// context carries onto the span (contract 3.3: every span carries them). At span end it queues the span, or
-/// drops and counts it when the queue is full.
+/// drops and counts it when the queue holds its spans or would pass its bytes (the batch being exported counts).
 #[derive(Debug)]
 pub(crate) struct Processor {
     queue: mpsc::Sender<(SpanData, u64)>,
+    /// Bound on the estimated bytes of the queue and of the batch being exported.
+    queue_bytes: u64,
     commands: mpsc::UnboundedSender<Command>,
     release: Option<KeyValue>,
     counters: Arc<Counters>,
@@ -145,6 +147,7 @@ pub(crate) fn start(
     Ok((
         Processor {
             queue,
+            queue_bytes: config.queue_bytes,
             commands: commands.clone(),
             release,
             counters: counters.clone(),
@@ -165,9 +168,19 @@ impl SpanProcessor for Processor {
 
     fn on_end(&self, span: SpanData) {
         let size = span_bytes(&span);
-        self.counters
+        let reserved = self
+            .counters
             .queued_bytes
-            .fetch_add(size, Ordering::Relaxed);
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                queued
+                    .checked_add(size)
+                    .filter(|&total| total <= self.queue_bytes)
+            })
+            .is_ok();
+        if !reserved {
+            Counters::add(&self.counters.dropped, 1);
+            return;
+        }
         if self.queue.try_send((span, size)).is_err() {
             self.counters
                 .queued_bytes
