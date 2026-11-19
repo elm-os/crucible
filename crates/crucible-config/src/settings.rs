@@ -81,7 +81,8 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "recent.max_bytes",
         None,
-        "bound on the memory of the recent-span index, in bytes (default: 10% of RAM, at most 1 GiB)",
+        "bound on the memory of the recent-span index, in bytes (default: 10% of the container's memory limit, \
+         else of RAM, at most 1 GiB)",
     ),
     plain(
         "mcp.calls_per_second",

@@ -118,7 +118,8 @@ struct ConfigArgs {
     /// CRUCIBLE_MASTER_KEY.
     #[arg(long)]
     master_key_file: Option<String>,
-    /// Bound on the memory of the recent-span index, in bytes. The default is 10% of RAM, at most 1 GiB.
+    /// Bound on the memory of the recent-span index, in bytes. The default is 10% of the container's memory
+    /// limit, or of RAM without one, at most 1 GiB.
     #[arg(long)]
     recent_max_bytes: Option<String>,
     /// The control plane, `postgres://user@host:5432/database`; add `?sslmode=require` for TLS. Without it

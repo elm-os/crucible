@@ -106,7 +106,7 @@ ships them. The API answers 503 as described above.
 | `--clickhouse-password-file` | `CRUCIBLE_CLICKHOUSE_PASSWORD_FILE` | A file with the admin password. Without it the password is read from `CRUCIBLE_CLICKHOUSE_PASSWORD` |
 | `--master-key-file` | `CRUCIBLE_MASTER_KEY_FILE` | A file with the master key, 64 hexadecimal characters. Without it the key is read from `CRUCIBLE_MASTER_KEY` |
 | `--migrate` | | Apply the schema and create the service identities before the startup checks |
-| `--recent-max-bytes` | | Memory bound of the recent-span index; default 10% of RAM, at most 1 GiB |
+| `--recent-max-bytes` | `CRUCIBLE_RECENT_MAX_BYTES` | Memory bound of the recent-span index; default 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), or of RAM without one, at most 1 GiB |
 
 Secrets have no flag that takes the value itself, so they never appear in a process list.
 
