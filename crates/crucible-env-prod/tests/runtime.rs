@@ -107,6 +107,14 @@ async fn tasks_are_named_joined_and_aborted() {
     assert_eq!(blocking.join().await, Ok(499_500));
 
     let mut forever = env.spawn("forever", futures::future::pending::<()>());
+    // A finished task leaves the scope just after it delivers its result, so a join can return while its name is
+    // still listed. Wait, bounded, for the finished tasks to leave.
+    for _ in 0..1000 {
+        if spawner.task_names() == ["forever"] {
+            break;
+        }
+        env.clock.sleep(MS).await;
+    }
     assert_eq!(spawner.task_names(), ["forever"]);
     forever.abort();
     assert_eq!(forever.join().await, Err(Cancelled));
