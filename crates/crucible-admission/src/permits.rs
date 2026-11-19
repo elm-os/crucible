@@ -104,16 +104,19 @@ impl<W> Queue<W> {
         }
     }
 
-    /// Waiter `ticket` gives up: it leaves the queue, or gives back the permit it was handed, which goes to the
-    /// next waiter (returned for waking) or to the free permits.
+    /// Waiter `ticket` gives up: it leaves the queue, or takes the permit it was handed and gives it back, so that
+    /// it goes to the next waiter (returned for waking) or to the free permits.
     fn leave(&mut self, ticket: u64) -> Option<W> {
         if self.take_handed(ticket) {
             return self.give_back();
         }
-        if let Some(at) = self.waiting.iter().position(|(t, _)| *t == ticket) {
-            self.waiting.remove(at);
-        }
+        self.dequeue(ticket);
         None
+    }
+
+    /// Takes waiter `ticket` out of the queue, if it is there.
+    fn dequeue(&mut self, ticket: u64) {
+        self.waiting.retain(|(t, _)| *t != ticket);
     }
 
     /// What wakes waiter `ticket` while it is in the queue.
@@ -232,83 +235,187 @@ impl Drop for Acquire {
 mod proofs {
     use super::*;
 
-    /// A task of the proof, which the queue knows by its index.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Task {
-        Idle,
-        Waiting(u64),
-        Holding,
+    /// The most waiters, and the most permits handed to waiters, in a proof's queue.
+    const MOST: u64 = 3;
+
+    /// A queue and the permits its holders hold.
+    struct State {
+        queue: Queue<u64>,
+        total: u32,
+        held: u32,
     }
 
-    const TASKS: usize = 3;
+    /// Any state with up to [`MOST`] permits handed and [`MOST`] waiters. Each satisfies [`holds`], which a proof
+    /// below checks, so the others may assume it. Waiter `t` has ticket `t` and is woken by the value `t`. The
+    /// queue's operations compare tickets only for equality and mint new ones from `next`, so these states stand
+    /// for every state of their size whose tickets are distinct and below `next`. With the new pool's state, the
+    /// proofs below are an induction: the invariant holds after any sequence of operations whose queues stay within
+    /// these sizes.
+    fn any_state() -> State {
+        let handed: u64 = kani::any();
+        let waiting: u64 = kani::any();
+        kani::assume(handed <= MOST && waiting <= MOST);
+        let mut queue = Queue::new(0);
+        // Room for one more waiter than the state holds, so that no operation reallocates: the verifier then
+        // reasons about buffers of one fixed size.
+        queue.handed = Vec::with_capacity(MOST as usize + 1);
+        queue.waiting = VecDeque::with_capacity(MOST as usize + 1);
+        for ticket in 0..handed {
+            queue.handed.push(ticket);
+        }
+        for ticket in handed..handed + waiting {
+            queue.waiting.push_back((ticket, ticket));
+        }
+        queue.next = handed + waiting;
+        if waiting == 0 {
+            queue.free = kani::any();
+        }
+        let held: u32 = kani::any();
+        let total = queue
+            .free
+            .checked_add(held)
+            .and_then(|n| n.checked_add(handed as u32));
+        kani::assume(total.is_some());
+        let total = total.unwrap_or(0);
+        State { queue, total, held }
+    }
 
-    /// Three tasks share a pool of up to two permits. At each step one of them, in any order, starts an
-    /// acquisition (a free permit, or the end of the queue), polls its waiting acquisition again, gives up waiting,
-    /// or gives its permit back. After every step:
-    ///
-    /// - no permit is lost or double-released: the free permits, the permits held and the permits handed to a
-    ///   waiter add up to the total, so the permits held never exceed it;
-    /// - a free permit never leaves a waiter waiting;
-    /// - a permit given back, by its holder or by a waiter that was handed it and gave up, goes to the first
-    ///   waiter, and only that waiter is woken; with nobody waiting it is free again;
-    /// - a waiting task's poll resolves exactly when it was handed a permit.
+    /// The pool's invariant: the free permits, the permits held and the permits handed to a waiter add up to the
+    /// total, so no permit is lost or made and the permits held never exceed the total; a free permit leaves
+    /// nobody waiting; tickets are distinct and below `next`; each waiter keeps its own waker.
+    fn holds(state: &State) -> bool {
+        let q = &state.queue;
+        let accounted = u64::from(q.free) + u64::from(state.held) + q.handed.len() as u64;
+        // Tickets here stay below 64, so one bit per ticket shows whether they are distinct.
+        let mut seen = 0u64;
+        let mut tickets_ok = q.next < 64;
+        let mut note = |ticket: u64| {
+            let bit = 1u64 << (ticket % 64);
+            tickets_ok &= ticket < q.next && seen & bit == 0;
+            seen |= bit;
+        };
+        for ticket in &q.handed {
+            note(*ticket);
+        }
+        let mut wakers_ok = true;
+        for (ticket, wake) in &q.waiting {
+            note(*ticket);
+            wakers_ok &= ticket == wake;
+        }
+        accounted == u64::from(state.total)
+            && state.held <= state.total
+            && (q.free == 0 || q.waiting.is_empty())
+            && tickets_ok
+            && wakers_ok
+    }
+
+    /// The states the other proofs start from satisfy the invariant, so none of them starts from nothing.
     #[kani::proof]
     #[kani::unwind(5)]
-    fn permits_are_conserved_and_a_release_wakes_the_first_waiter() {
-        let total: u32 = kani::any();
-        kani::assume(total <= 2);
-        let mut queue: Queue<usize> = Queue::new(total);
-        let mut tasks = [Task::Idle; TASKS];
-        for _ in 0..4 {
-            let task: usize = kani::any();
-            kani::assume(task < TASKS);
-            let first = queue.waiting.front().map(|(_, waiter)| *waiter);
-            let free = queue.free;
-            match tasks[task] {
-                Task::Idle => {
-                    tasks[task] = if queue.try_take() {
-                        assert!(free > 0);
-                        Task::Holding
-                    } else {
-                        assert!(free == 0);
-                        Task::Waiting(queue.join(task))
-                    };
-                }
-                Task::Holding => {
-                    tasks[task] = Task::Idle;
-                    assert!(queue.give_back() == first);
-                    assert!(queue.free == free + u32::from(first.is_none()));
-                }
-                Task::Waiting(ticket) => {
-                    let handed = queue.handed.contains(&ticket);
-                    if kani::any() {
-                        assert!(queue.take_handed(ticket) == handed);
-                        if handed {
-                            tasks[task] = Task::Holding;
-                        }
-                    } else {
-                        tasks[task] = Task::Idle;
-                        let woken = queue.leave(ticket);
-                        if handed {
-                            assert!(woken == first);
-                            assert!(queue.free == free + u32::from(first.is_none()));
-                        } else {
-                            assert!(woken.is_none() && queue.free == free);
-                        }
-                    }
-                }
-            }
+    fn the_proofs_start_from_states_that_satisfy_the_invariant() {
+        assert!(holds(&any_state()));
+    }
 
-            let held = tasks.iter().filter(|t| **t == Task::Holding).count() as u32;
-            let waiting = tasks
-                .iter()
-                .filter(|t| matches!(t, Task::Waiting(_)))
-                .count();
-            assert!(queue.free <= total && held <= total);
-            assert!(queue.free + held + queue.handed.len() as u32 == total);
-            assert!(queue.free == 0 || queue.waiting.is_empty());
-            assert!(queue.waiting.len() + queue.handed.len() == waiting);
+    /// A new pool satisfies the invariant: every permit is free and nobody waits.
+    #[kani::proof]
+    fn a_new_pool_satisfies_the_invariant() {
+        let total: u32 = kani::any();
+        let state = State {
+            queue: Queue::new(total),
+            total,
+            held: 0,
+        };
+        assert!(holds(&state));
+    }
+
+    /// An acquisition's first poll takes a free permit, which means nobody waits, so a newcomer never passes a
+    /// waiter; or else it joins the end of the queue with a fresh ticket. The invariant is kept.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn an_acquisition_takes_a_free_permit_or_joins_the_end() {
+        let mut state = any_state();
+        kani::assume(holds(&state));
+        let free = state.queue.free;
+        let waiting = state.queue.waiting.len();
+        if state.queue.try_take() {
+            assert!(free > 0 && waiting == 0);
+            state.held += 1;
+        } else {
+            assert!(free == 0);
+            let next = state.queue.next;
+            let ticket = state.queue.join(next);
+            assert!(ticket == next && state.queue.next == next + 1);
+            assert!(state.queue.waiting.len() == waiting + 1);
+            assert!(state.queue.waiting.back() == Some(&(ticket, ticket)));
         }
+        assert!(holds(&state));
+    }
+
+    /// A permit given back goes to the first waiter, which alone is woken, leaves the queue and takes the permit
+    /// at its next poll; with nobody waiting the permit is free again. The invariant is kept at each step.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_permit_given_back_wakes_the_first_waiter() {
+        let mut state = any_state();
+        kani::assume(holds(&state));
+        kani::assume(state.held > 0);
+        state.held -= 1;
+        let first = state.queue.waiting.front().map(|(ticket, _)| *ticket);
+        let free = state.queue.free;
+        let woken = state.queue.give_back();
+        assert!(woken == first);
+        assert!(holds(&state));
+        match first {
+            Some(ticket) => {
+                assert!(state.queue.free == free);
+                assert!(state.queue.wake_of(ticket).is_none());
+                assert!(state.queue.take_handed(ticket));
+                state.held += 1;
+            }
+            None => assert!(state.queue.free == free + 1),
+        }
+        assert!(holds(&state));
+    }
+
+    /// A waiting acquisition's poll takes a permit exactly when one was handed to it; until then it stays in the
+    /// queue, and the waker its poll finds is its own. The invariant is kept.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_waiter_takes_a_permit_only_once_handed_one() {
+        let mut state = any_state();
+        kani::assume(holds(&state));
+        let ticket: u64 = kani::any();
+        kani::assume(ticket < state.queue.next);
+        let handed = state.queue.handed.contains(&ticket);
+        if state.queue.take_handed(ticket) {
+            assert!(handed);
+            state.held += 1;
+        } else {
+            // It is still queued, under its own waker, which a later poll may replace.
+            assert!(!handed && state.queue.wake_of(ticket).map(|wake| *wake) == Some(ticket));
+        }
+        assert!(holds(&state));
+    }
+
+    /// A waiter that gives up while queued leaves the queue, and nothing else changes: no permit moves and nobody
+    /// is woken. The invariant is kept. A waiter that gives up after it was handed a permit takes the permit and
+    /// gives it back ([`Queue::leave`]), two steps that the proofs above cover.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_queued_waiter_that_gives_up_leaves_the_queue() {
+        let mut state = any_state();
+        kani::assume(holds(&state));
+        // `any_state` queues the tickets from the number handed up to `next`.
+        let ticket: u64 = kani::any();
+        kani::assume(state.queue.handed.len() as u64 <= ticket && ticket < state.queue.next);
+        let free = state.queue.free;
+        let handed = state.queue.handed.len();
+        let waiting = state.queue.waiting.len();
+        state.queue.dequeue(ticket);
+        assert!(state.queue.free == free && state.queue.handed.len() == handed);
+        assert!(state.queue.waiting.len() + 1 == waiting);
+        assert!(state.queue.wake_of(ticket).is_none());
+        assert!(holds(&state));
     }
 }
 
