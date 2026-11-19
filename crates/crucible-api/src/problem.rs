@@ -97,6 +97,31 @@ impl ApiError {
         self.extra(|extra| extra.retry_after_s = Some(seconds))
     }
 
+    /// The problem of an identity call.
+    pub(crate) fn auth(request_id: RequestId, error: crucible_auth::service::AuthError) -> Self {
+        use crucible_auth::service::AuthError as E;
+        let detail = error.to_string();
+        match error {
+            E::Unauthenticated => Self::new(request_id, ProblemCode::Unauthenticated, detail),
+            E::InvalidCredentials => Self::new(request_id, ProblemCode::InvalidCredentials, detail),
+            E::Forbidden(_) => Self::new(request_id, ProblemCode::Forbidden, detail),
+            E::NotFound => Self::not_found(request_id),
+            E::Conflict(_) => Self::new(request_id, ProblemCode::Conflict, detail),
+            E::Invalid { field, message } => {
+                Self::validation(request_id, vec![field_error(field, "invalid", &message)])
+            }
+            E::TokenInvalid => Self::new(request_id, ProblemCode::TokenInvalid, detail),
+            E::PreconditionFailed => Self::new(request_id, ProblemCode::PreconditionFailed, detail),
+            E::Busy => Self::new(request_id, ProblemCode::RateLimited, detail).with_retry_after(1),
+            E::Unavailable => Self::new(request_id, ProblemCode::ControlPlaneUnavailable, detail)
+                .with_retry_after(5),
+            E::Internal(cause) => {
+                tracing::error!(request_id = %request_id, %cause, "an identity call failed");
+                Self::new(request_id, ProblemCode::InternalError, "internal error")
+            }
+        }
+    }
+
     /// Sets `suggested_granularity`: the granularity under which a refused metrics query fits.
     pub(crate) fn with_suggested_granularity(self, granularity: Option<String>) -> Self {
         self.extra(|extra| extra.suggested_granularity = granularity)

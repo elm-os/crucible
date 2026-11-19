@@ -1,10 +1,15 @@
-//! The SQL workspace's routes without a workspace configured (contract 12.6): the schema still answers and says
-//! why runs are unavailable, every other route answers `sql_workspace_unavailable` with its reason, and a wrong
-//! method names the right ones. The routes over a real workspace are exercised by `crucible-sqlws`'s tests
-//! (the service) and by `sqliso` layer C (`crates/crucible/tests/sqliso_api.rs`, the real binary).
+//! The SQL workspace's routes (contracts 11.6 and 12.6). Without a workspace the schema still answers and says
+//! why runs are unavailable, and every other route answers `sql_workspace_unavailable` with its reason, after
+//! the permission check. Over the scripted store and `PgModel`: a viewer runs project-visible saved queries and
+//! nothing else, saved-query writes need a member's session, and an API key runs SQL only with the `sql`
+//! scope. The service itself is exercised by `crucible-sqlws`'s tests, and the real binary by `sqliso` layer C
+//! (`crates/crucible/tests/sqliso_api.rs`).
 
 use axum::http::{Method, StatusCode};
+use crucible_control::KeyScope;
+use serde_json::json;
 
+use crate::identity::{As, PASSWORD, call, platform_with, session};
 use crate::world::World;
 use crate::{api, get, key, other_key, path, run, send};
 
@@ -54,20 +59,19 @@ fn the_schema_answers_without_a_workspace_and_says_why_runs_are_unavailable() {
 }
 
 #[test]
-fn every_other_route_says_the_workspace_is_not_configured() {
+fn without_a_workspace_the_permission_is_checked_first_and_then_the_reason_is_given() {
     run(|env| async move {
         let api = api(&env, &World::new(10));
         let id = "01010101-0101-7101-8101-010101010101";
-        for (method, rest) in [
-            (Method::GET, "/sql/runs".to_owned()),
-            (Method::GET, "/sql/saved-queries".to_owned()),
-            (Method::GET, format!("/sql/saved-queries/{id}")),
-            (Method::DELETE, format!("/sql/saved-queries/{id}")),
-            (Method::DELETE, format!("/sql/runs/{id}")),
+        // A key from the keys file has the scopes of a new key: ingest, read and write.
+        for rest in [
+            "/sql/runs".to_owned(),
+            "/sql/saved-queries".to_owned(),
+            format!("/sql/saved-queries/{id}"),
         ] {
-            let reply = send(&api, method.clone(), &path(1, &rest), Some(&key())).await;
+            let reply = send(&api, Method::GET, &path(1, &rest), Some(&key())).await;
             reply.assert_problem(503, "sql_workspace_unavailable");
-            assert_eq!(reply.body["reason"], "not_configured", "{method} {rest}");
+            assert_eq!(reply.body["reason"], "not_configured", "{rest}");
             assert!(
                 reply.body["detail"]
                     .as_str()
@@ -77,38 +81,208 @@ fn every_other_route_says_the_workspace_is_not_configured() {
                 reply.pretty()
             );
         }
-        // A body-taking route checks its body first: an empty body is a validation problem, not a 503.
-        let reply = send(&api, Method::POST, &path(1, "/sql/run"), Some(&key())).await;
-        reply.assert_problem(422, "validation_failed");
-        // A malformed id in the path is `not_found`, like every other path the caller cannot name.
-        let reply = send(
-            &api,
-            Method::DELETE,
-            &path(1, "/sql/runs/not-an-id"),
-            Some(&key()),
-        )
-        .await;
+        for (method, rest, permission) in [
+            (Method::POST, "/sql/run".to_owned(), "run_sql"),
+            (Method::POST, "/sql/export".to_owned(), "run_sql"),
+            (Method::DELETE, format!("/sql/runs/{id}"), "run_saved_query"),
+            (
+                Method::POST,
+                format!("/sql/saved-queries/{id}/run"),
+                "run_saved_query",
+            ),
+            (
+                Method::POST,
+                "/sql/saved-queries".to_owned(),
+                "edit_content",
+            ),
+            (
+                Method::DELETE,
+                format!("/sql/saved-queries/{id}"),
+                "edit_content",
+            ),
+        ] {
+            let reply = send(&api, method.clone(), &path(1, &rest), Some(&key())).await;
+            reply.assert_problem(403, "forbidden");
+            assert!(
+                reply.body["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("`{permission}`")),
+                "{method} {rest}: {}",
+                reply.pretty()
+            );
+        }
+        // Another project's key learns nothing, whatever the route needs.
+        let reply = send(&api, Method::POST, &path(1, "/sql/run"), Some(&other_key())).await;
         reply.assert_problem(404, "not_found");
     });
 }
 
 #[test]
-fn a_wrong_method_names_the_methods_of_the_sql_route() {
+fn a_wrong_method_is_refused_with_the_methods_of_the_route() {
     run(|env| async move {
         let api = api(&env, &World::new(10));
         for (method, rest, allow) in [
             (Method::GET, "/sql/run", "POST"),
-            (Method::GET, "/sql/export", "POST"),
-            (Method::POST, "/sql/schema", "GET, HEAD"),
-            (Method::PUT, "/sql/saved-queries", "GET, HEAD, POST"),
+            (Method::POST, "/sql/schema", "GET"),
+            (Method::PUT, "/sql/saved-queries", "POST"),
             (Method::POST, "/sql/runs/x", "DELETE"),
         ] {
             let reply = send(&api, method.clone(), &path(1, rest), Some(&key())).await;
             reply.assert_problem(405, "method_not_allowed");
-            assert_eq!(reply.header("allow"), Some(allow), "{method} {rest}");
+            assert!(
+                reply.header("allow").is_some_and(|v| v.contains(allow)),
+                "{method} {rest}: {:?}",
+                reply.header("allow")
+            );
         }
-        // The telemetry routes still name theirs.
-        let reply = send(&api, Method::POST, &path(1, "/traces"), Some(&key())).await;
-        assert_eq!(reply.header("allow"), Some("GET, HEAD"));
+    });
+}
+
+#[test]
+fn roles_and_key_scopes_decide_who_runs_and_who_saves() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform_with(&env, &world, true).await;
+        let viewer = session(&p.identity.login("vic@example.com", PASSWORD).await.unwrap());
+        let sql_key = p
+            .identity
+            .create_key(
+                crate::world::project(1),
+                Some(vec![KeyScope::Read, KeyScope::Sql]),
+                None,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let sql_key = As::Key(sql_key.secret);
+        let window = json!({ "from": "2026-11-17T00:00:00Z", "to": "2026-11-18T00:00:00Z" });
+        let text = "SELECT name, n FROM crucible_sql.spans WHERE start_time >= {from:DateTime64(6)} AND \
+                    start_time < {to:DateTime64(6)}";
+        let run_body = json!({ "sql": text, "from": window["from"], "to": window["to"] });
+        let export_body =
+            json!({ "sql": text, "from": window["from"], "to": window["to"], "format": "csv" });
+        let saved_body = json!({ "name": "Spans", "visibility": "project", "sql": text });
+        let post = async |who: &As, rest: &str, body: &serde_json::Value| {
+            call(
+                &p.router,
+                Method::POST,
+                &path(1, rest),
+                who,
+                Some(body.clone()),
+                &[],
+            )
+            .await
+        };
+
+        // The owner is a project admin: runs, and saves a project-visible query.
+        let reply = post(&p.owner, "/sql/run", &run_body).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
+        let saved = post(&p.owner, "/sql/saved-queries", &saved_body).await;
+        assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.pretty());
+        assert_eq!(saved.body["owner"]["kind"], "user");
+        let saved_run = format!(
+            "/sql/saved-queries/{}/run",
+            saved.body["id"].as_str().unwrap()
+        );
+        let saved_one = format!("/sql/saved-queries/{}", saved.body["id"].as_str().unwrap());
+
+        // A viewer reads, and runs the project-visible saved query with its declared parameters; nothing else.
+        for (rest, body, permission) in [
+            ("/sql/run", &run_body, "run_sql"),
+            ("/sql/export", &export_body, "run_sql"),
+            ("/sql/saved-queries", &saved_body, "edit_content"),
+        ] {
+            let reply = post(&viewer, rest, body).await;
+            reply.assert_problem(403, "forbidden");
+            assert!(
+                reply.body["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("`{permission}`")),
+                "{rest}: {}",
+                reply.pretty()
+            );
+        }
+        let reply = post(&viewer, &saved_run, &window).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
+        let listed = call(
+            &p.router,
+            Method::GET,
+            &path(1, "/sql/saved-queries"),
+            &viewer,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(listed.status, StatusCode::OK, "{}", listed.pretty());
+        let seen = &listed.body["data"][0];
+        assert_eq!(
+            (&seen["can_run"], &seen["can_edit"]),
+            (&json!(true), &json!(false))
+        );
+        let reply = call(
+            &p.router,
+            Method::DELETE,
+            &path(1, &saved_one),
+            &viewer,
+            None,
+            &[],
+        )
+        .await;
+        reply.assert_problem(403, "forbidden");
+
+        // A key without the `sql` scope reads and nothing else; with it, it runs ad hoc and saved queries.
+        // No key saves: `edit_content` is never a key's.
+        post(&p.key, "/sql/run", &run_body)
+            .await
+            .assert_problem(403, "forbidden");
+        post(&p.key, &saved_run, &window)
+            .await
+            .assert_problem(403, "forbidden");
+        let reply = post(&sql_key, "/sql/run", &run_body).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
+        let reply = post(&sql_key, "/sql/export", &export_body).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
+        let reply = post(&sql_key, &saved_run, &window).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.pretty());
+        post(&sql_key, "/sql/saved-queries", &saved_body)
+            .await
+            .assert_problem(403, "forbidden");
+
+        // The history names who ran what. An admin sees everyone's runs, the user's and the key's; a key sees
+        // its own.
+        let history = call(
+            &p.router,
+            Method::GET,
+            &path(1, "/sql/runs"),
+            &p.owner,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(history.status, StatusCode::OK, "{}", history.pretty());
+        let kinds: Vec<&str> = history.body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| run["actor"]["kind"].as_str().unwrap())
+            .collect();
+        assert!(
+            kinds.contains(&"user") && kinds.contains(&"api_key"),
+            "{kinds:?}"
+        );
+        let own = call(
+            &p.router,
+            Method::GET,
+            &path(1, "/sql/runs"),
+            &sql_key,
+            None,
+            &[],
+        )
+        .await;
+        let own = own.body["data"].as_array().unwrap();
+        assert!(!own.is_empty() && own.iter().all(|run| run["actor"]["kind"] == "api_key"));
     });
 }

@@ -18,7 +18,9 @@
 //!   checked with the other parameters before the store is asked.
 
 mod access;
+mod authz;
 mod body;
+mod control;
 mod convert;
 mod cursor;
 mod idempotency;
@@ -34,17 +36,17 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::HeaderValue;
-use axum::http::header::ALLOW;
 use axum::middleware;
 use axum::response::Response;
 use crucible_api_types::ProblemCode;
 use crucible_auth::KeyVerifier;
+use crucible_auth::service::Identity;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
 use crucible_sqlws::SqlWorkspace;
 
+pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
 pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
@@ -68,9 +70,16 @@ pub fn router(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     facts: Arc<dyn FactWriter>,
-    sql: Option<SqlWorkspace>,
 ) -> Router {
-    build(env, Some((service, facts)), keys, settings, cursors, sql)
+    build(
+        env,
+        Some((service, facts)),
+        keys,
+        settings,
+        cursors,
+        None,
+        None,
+    )
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -80,9 +89,23 @@ pub fn router_without_store(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+) -> Router {
+    build(env, None, keys, settings, cursors, None, None)
+}
+
+/// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
+/// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
+/// `None` until a telemetry store is up.
+pub fn platform_router(
+    env: &Env,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
+    identity: Arc<Identity>,
+    settings: Arc<dyn ProjectSettingsSource>,
+    cursors: Arc<KeyRing>,
     sql: Option<SqlWorkspace>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, sql)
+    let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
+    build(env, store, keys, settings, cursors, Some(identity), sql)
 }
 
 fn build(
@@ -91,6 +114,7 @@ fn build(
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    identity: Option<Arc<Identity>>,
     sql: Option<SqlWorkspace>,
 ) -> Router {
     let (service, facts) = store.unzip();
@@ -100,6 +124,7 @@ fn build(
         keys,
         settings,
         cursors,
+        identity,
         facts,
         idempotency: Arc::default(),
         sql,
@@ -127,18 +152,12 @@ async fn unknown_path(State(state): State<ApiState>, request: Request) -> Respon
     problem(id, ProblemCode::NotFound, "no resource exists at this path")
 }
 
-/// A route exists at the path, for other methods; `Allow` names them. The telemetry routes are reads; the SQL
-/// workspace's routes name their own methods.
+/// A method the path does not support. axum lists the supported ones in `Allow`.
 async fn unknown_method(State(state): State<ApiState>, request: Request) -> Response {
     let id = request_id(request.extensions(), &state.env);
-    let allow = routes::sql::allowed_methods(request.uri().path()).unwrap_or("GET, HEAD");
-    let mut response = problem(
+    problem(
         id,
         ProblemCode::MethodNotAllowed,
-        &format!("the resource supports {allow} only"),
-    );
-    response
-        .headers_mut()
-        .insert(ALLOW, HeaderValue::from_static(allow));
-    response
+        "the resource does not support this method; see the Allow header",
+    )
 }

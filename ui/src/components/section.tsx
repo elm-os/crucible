@@ -2,8 +2,11 @@
 
 import type { UseQueryResult } from "@tanstack/react-query";
 import { Button } from "@ui-sdk/react/button";
+import type { Route } from "next";
+import Link from "next/link";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { asUiError, type UiError } from "@/api/errors";
+import { currentPath, loginHref } from "@/lib/next-path";
 import { AlertIcon } from "./icons";
 import { ConnectTrigger } from "./shell/connect-dialog";
 
@@ -32,11 +35,13 @@ export function useLoadingPhase(loading: boolean): LoadingPhase {
 export function SectionFrame({
   title,
   busy = false,
+  actions,
   className,
   children,
 }: {
   title: string;
   busy?: boolean;
+  actions?: ReactNode;
   className?: string;
   children: ReactNode;
 }) {
@@ -47,12 +52,14 @@ export function SectionFrame({
       aria-busy={busy || undefined}
       className={`rounded-xl border border-ash-border bg-warm-sand ${className ?? ""}`}
     >
-      <h2
-        id={headingId}
-        className="border-b border-ash-border px-4 py-2.5 text-label font-medium text-ink-soft"
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 border-b border-ash-border px-4 ${actions ? "py-1.5" : "py-2.5"}`}
       >
-        {title}
-      </h2>
+        <h2 id={headingId} className="text-label font-medium text-ink-soft">
+          {title}
+        </h2>
+        {actions}
+      </div>
       <div className="px-4 py-3">{children}</div>
     </section>
   );
@@ -67,6 +74,8 @@ export function Section<T>({
   isEmpty,
   empty,
   children,
+  actions,
+  label = title.toLowerCase(),
   className,
 }: {
   title: string;
@@ -75,11 +84,13 @@ export function Section<T>({
   isEmpty: (data: T) => boolean;
   empty: ReactNode;
   children: (data: T) => ReactNode;
+  actions?: ReactNode;
+  // What "Loading" and "Retry" name, for a title that lowercasing would spoil.
+  label?: string;
   className?: string;
 }) {
   const phase = useLoadingPhase(query.isPending);
   const retry = () => query.refetch();
-  const label = title.toLowerCase();
 
   let body: ReactNode;
   if (query.isPending) {
@@ -115,7 +126,7 @@ export function Section<T>({
   }
 
   return (
-    <SectionFrame title={title} busy={query.isPending} className={className}>
+    <SectionFrame title={title} busy={query.isPending} actions={actions} className={className}>
       {body}
     </SectionFrame>
   );
@@ -139,7 +150,10 @@ export function ErrorCard({
       <p className="text-data text-ink-soft">{error.detail}</p>
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
         {error.action === "retry" ? <Button onClick={onRetry}>Retry {label}</Button> : null}
-        {error.action === "sign_in" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
+        {error.kind === "signed_out" ? (
+          <Link href={loginHref(currentPath()) as Route}>Sign in</Link>
+        ) : null}
+        {error.kind === "unauthenticated" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
         <Reference id={error.requestId} />
       </div>
     </div>

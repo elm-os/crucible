@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, AuthMethod, Claim, Claims, ControlStore, ControlTx, Credential,
-    CredentialRepo, Email, JsonDoc, KeyChange, KeyChangeKind, KeyFeed, KeyScope, KeySnapshot,
-    Lease, LeaseName, Leases, LedgerEntry, MembershipRepo, MigrationKind, Migrations, NewJob, Org,
+    ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
+    ControlTx, Credential, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyChange,
+    KeyChangeKind, KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
+    MembershipRepo, MigrationKind, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, Org,
     OrgMembership, OrgRepo, OrgRole, OrgSettings, Project, ProjectMembership, ProjectRepo,
     ProjectRole, Queue, Repos, Secret, SecretRepo, Session, SessionRepo, SigningKey,
     SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User,
@@ -121,7 +122,7 @@ impl Drop for Tx {
 
 /// Runs statements: each on a pooled connection as its own commit (`tx` is `None`), or inside one
 /// transaction.
-struct Handle {
+pub(crate) struct Handle {
     shared: Arc<Shared>,
     tx: Option<Tx>,
 }
@@ -203,12 +204,22 @@ impl Handle {
         }
     }
 
-    async fn read(&self, sql: &str, params: &[P<'_>]) -> Result<Vec<Row>, TxError> {
+    pub(crate) async fn read(&self, sql: &str, params: &[P<'_>]) -> Result<Vec<Row>, TxError> {
         self.query(Which::Main, false, sql, params).await
     }
 
+    /// Runs one statement on the main pool and returns its rows.
+    pub(crate) async fn query_main(
+        &self,
+        writes: bool,
+        sql: &str,
+        params: &[P<'_>],
+    ) -> Result<Vec<Row>, TxError> {
+        self.query(Which::Main, writes, sql, params).await
+    }
+
     /// Runs a writing statement that returns one row per row it changed; answers how many.
-    async fn write(&self, sql: &str, params: &[P<'_>]) -> Result<u64, TxError> {
+    pub(crate) async fn write(&self, sql: &str, params: &[P<'_>]) -> Result<u64, TxError> {
         let rows = self.query(Which::Main, true, sql, params).await?;
         Ok(rows.len() as u64)
     }
@@ -264,7 +275,10 @@ impl PgControlStore {
              d8 AS (DELETE FROM projects), d9 AS (DELETE FROM org), d10 AS (DELETE FROM secrets), \
              d11 AS (DELETE FROM signing_keys), d12 AS (DELETE FROM job_leases), \
              d13 AS (DELETE FROM job_cursors), d14 AS (DELETE FROM notification_outbox), \
-             d15 AS (DELETE FROM schema_migrations WHERE kind <> 'postgres') \
+             d15 AS (DELETE FROM schema_migrations WHERE kind <> 'postgres'), \
+             d16 AS (DELETE FROM oauth_accounts), d17 AS (DELETE FROM auth_providers), \
+             d18 AS (DELETE FROM auth_flows), d19 AS (DELETE FROM one_time_tokens), \
+             d20 AS (DELETE FROM invitations) \
              SELECT * FROM s";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -494,6 +508,21 @@ macro_rules! repos {
             fn secrets(&self) -> &dyn SecretRepo {
                 $($deref)* self.handle
             }
+            fn auth_providers(&self) -> &dyn AuthProviderRepo {
+                $($deref)* self.handle
+            }
+            fn oauth_accounts(&self) -> &dyn OauthAccountRepo {
+                $($deref)* self.handle
+            }
+            fn auth_flows(&self) -> &dyn AuthFlowRepo {
+                $($deref)* self.handle
+            }
+            fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo {
+                $($deref)* self.handle
+            }
+            fn invitations(&self) -> &dyn InvitationRepo {
+                $($deref)* self.handle
+            }
             fn leases(&self) -> &dyn Leases {
                 $($deref)* self.handle
             }
@@ -519,7 +548,7 @@ macro_rules! repos {
 repos!(PgControlStore, &*);
 repos!(PgTx, &);
 
-fn first<T>(
+pub(crate) fn first<T>(
     rows: &[Row],
     decode: impl Fn(&mut Cols<'_>) -> Result<T, TxError>,
 ) -> Result<Option<T>, TxError> {
@@ -528,7 +557,7 @@ fn first<T>(
         .transpose()
 }
 
-fn every<T>(
+pub(crate) fn every<T>(
     rows: &[Row],
     decode: impl Fn(&mut Cols<'_>) -> Result<T, TxError>,
 ) -> Result<Vec<T>, TxError> {

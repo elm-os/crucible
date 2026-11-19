@@ -146,16 +146,16 @@ impl<'a> Cols<'a> {
         Ok(self.take::<PgUuid>()?.0)
     }
 
+    pub(crate) fn opt_uuid(&mut self) -> Result<Option<Uuid>, TxError> {
+        Ok(self.take::<Option<PgUuid>>()?.map(|id| id.0))
+    }
+
     pub(crate) fn text(&mut self) -> Result<String, TxError> {
         self.take()
     }
 
     pub(crate) fn opt_text(&mut self) -> Result<Option<String>, TxError> {
         self.take()
-    }
-
-    pub(crate) fn opt_uuid(&mut self) -> Result<Option<Uuid>, TxError> {
-        Ok(self.take::<Option<PgUuid>>()?.map(|id| id.0))
     }
 
     pub(crate) fn bool(&mut self) -> Result<bool, TxError> {

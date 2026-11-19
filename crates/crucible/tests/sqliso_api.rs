@@ -1,7 +1,9 @@
 //! `sqliso` layer C (contract 7.5): the SQL workspace attacked and exercised through the REST API of the real
 //! `crucible serve` binary, in front of a real ClickHouse and a real Postgres.
 //!
-//! Two projects, A and B, each with a key. B's rows hold a random canary. Every response that A's key receives,
+//! Two projects, A and B, each with an API key that holds the `read` and `sql` scopes, made with
+//! `crucible admin create-key`; the owner, made with `crucible admin init`, signs in for what keys never do
+//! (saved-query writes). B's rows hold a random canary. Every response that a caller receives on project A,
 //! grids, exports and problem documents alike, passes one oracle: B's canary is not in it. On top of that the
 //! test checks what the API adds to ClickHouse's isolation: the validation messages (each refusal says how to
 //! fix the query), the mapping of server limits to problem codes, the concurrency cap, cancellation, the audit
@@ -45,16 +47,10 @@ use crucible_store_clickhouse::render::Statement;
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
 use serde_json::{Value, json};
 
+const OWNER_EMAIL: &str = "owner@sqliso.test";
+const OWNER_PASSWORD: &str = "correct horse battery staple";
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
 const WINDOW: &str = "start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)}";
-
-fn secret(fill: char) -> String {
-    format!("csk_{}", fill.to_string().repeat(43))
-}
-
-fn public(fill: char) -> String {
-    format!("cpk_{}", fill.to_string().repeat(43))
-}
 
 fn free_addr() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
@@ -141,12 +137,13 @@ impl Drop for Server {
     }
 }
 
-/// A client of one project's key. Every response passes the canary oracle.
+/// A caller on one project: an API key or the owner's session. Every response passes the canary oracle.
 #[derive(Clone)]
 struct Client {
     api: SocketAddr,
     project: String,
-    bearer: String,
+    /// The headers that authenticate the caller.
+    auth: Vec<(&'static str, String)>,
     /// What must never appear in a response to this client.
     forbidden: String,
 }
@@ -163,7 +160,11 @@ impl Client {
         let bytes = body
             .map(|body| serde_json::to_vec(body).unwrap())
             .unwrap_or_default();
-        let mut headers = vec![("Authorization", self.bearer.as_str())];
+        let mut headers: Vec<(&str, &str)> = self
+            .auth
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
         if body.is_some() {
             headers.push(("Content-Type", "application/json"));
         }
@@ -172,7 +173,7 @@ impl Client {
         let text = String::from_utf8_lossy(&body);
         assert!(
             !text.contains(&self.forbidden) && !head.contains(&self.forbidden),
-            "LEAK: another project's canary reached this key through {method} {path}: {text}"
+            "LEAK: another project's canary reached this caller through {method} {path}: {text}"
         );
         (status, head, body)
     }
@@ -256,18 +257,6 @@ async fn the_sql_workspace_holds_through_the_api() {
     );
     let canary_a = format!("cnry_a_{}", env.new_id().to_string().replace('-', ""));
     let canary_b = format!("cnry_b_{}", env.new_id().to_string().replace('-', ""));
-    std::fs::write(
-        dir.join("keys.toml"),
-        format!(
-            "[[project_key]]\nproject_id = \"{a}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n\n\
-             [[project_key]]\nproject_id = \"{b}\"\npublic_key = \"{}\"\nsecret = \"{}\"\n",
-            public('a'),
-            secret('a'),
-            public('b'),
-            secret('b')
-        ),
-    )
-    .unwrap();
     std::fs::write(dir.join("master-key"), format!("{MASTER_KEY}\n")).unwrap();
     std::fs::write(dir.join("clickhouse-password"), &admin.password).unwrap();
 
@@ -282,8 +271,6 @@ async fn the_sql_workspace_holds_through_the_api() {
         .args(["--metrics-listen", &metrics.to_string()])
         .arg("--data-dir")
         .arg(dir.join("data"))
-        .arg("--keys-file")
-        .arg(dir.join("keys.toml"))
         .args(["--clickhouse-url", &clickhouse_url])
         .args(["--clickhouse-user", &admin.user])
         .arg("--clickhouse-password-file")
@@ -360,14 +347,131 @@ async fn the_sql_workspace_holds_through_the_api() {
         ))
         .await;
     }
-    let client = |project: ProjectId, fill: char, forbidden: &str| Client {
+    // The owner and the keys, made with the binary's own admin commands. With a control plane the keys are
+    // Postgres rows with scopes; the keys file is not read.
+    std::fs::write(dir.join("owner-password"), format!("{OWNER_PASSWORD}\n")).unwrap();
+    let admin_command = |args: &[&str]| {
+        let output = Command::new(&binary)
+            .arg("admin")
+            .args(args)
+            .arg("--master-key-file")
+            .arg(dir.join("master-key"))
+            .env_remove("CRUCIBLE_CLICKHOUSE_URL")
+            .env("CRUCIBLE_POSTGRES_URL", &postgres_url)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let password_file = dir.join("owner-password");
+    // On a database an earlier run used, the owner exists already and signing in below is the check.
+    let (created, _, stderr) = admin_command(&[
+        "init",
+        "--org-name",
+        "sqliso",
+        "--email",
+        OWNER_EMAIL,
+        "--name",
+        "Owner",
+        "--password-file",
+        password_file.to_str().unwrap(),
+    ]);
+    if !created {
+        eprintln!("crucible admin init did not create an owner: {stderr}");
+    }
+    let key = |project: ProjectId, scopes: &str| {
+        let (ok, stdout, stderr) = admin_command(&[
+            "create-key",
+            "--project",
+            &project.to_string(),
+            "--scopes",
+            scopes,
+        ]);
+        assert!(ok, "crucible admin create-key: {stderr}");
+        let secret = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("secret_key = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("no secret key in {stdout:?}"))
+            .to_owned();
+        vec![("Authorization", format!("Bearer {secret}"))]
+    };
+    let client = |project: ProjectId, auth: Vec<(&'static str, String)>, forbidden: &str| Client {
         api,
         project: project.to_string(),
-        bearer: format!("Bearer {}", secret(fill)),
+        auth,
         forbidden: forbidden.to_owned(),
     };
-    let alice = client(a, 'a', &canary_b);
-    let bob = client(b, 'b', &canary_a);
+    let alice = client(a, key(a, "read,sql"), &canary_b);
+    let bob = client(b, key(b, "read,sql"), &canary_a);
+    let reader = client(a, key(a, "read"), &canary_b);
+    // The owner signs in: the session cookie, and the CSRF token and origin that its writes carry.
+    let origin = "http://sqliso";
+    let login = json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD });
+    let (status, head, body) = http(
+        api,
+        "POST",
+        "/api/v1/auth/login",
+        &[
+            ("Content-Type", "application/json"),
+            ("Origin", origin),
+            ("X-Crucible-CSRF", "prelogin"),
+        ],
+        &serde_json::to_vec(&login).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status, 200, "sign-in: {}", String::from_utf8_lossy(&body));
+    let cookie = head
+        .lines()
+        .filter_map(|line| line.split_once(": "))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+        .find_map(|(_, value)| {
+            value
+                .split(';')
+                .next()
+                .filter(|c| c.starts_with("crucible_session="))
+        })
+        .expect("a session cookie")
+        .to_owned();
+    let session: Value = serde_json::from_slice(&body).unwrap();
+    let owner_auth = vec![
+        ("Cookie", cookie),
+        (
+            "X-Crucible-CSRF",
+            session["csrf_token"].as_str().unwrap().to_owned(),
+        ),
+        ("Origin", origin.to_owned()),
+    ];
+    let owner = client(a, owner_auth.clone(), &canary_b);
+    let owner_on_b = client(b, owner_auth, &canary_a);
+    // The server learns of the new keys from the key feed.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while [&alice, &bob, &reader]
+        .iter()
+        .any(|client| client.json("GET", "schema", None).0 == 401)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the server never accepted the new keys"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // A key without the `sql` scope reads the schema and runs nothing; no key saves a query.
+    let (status, body) = reader.run(&format!(
+        "SELECT name FROM crucible_sql.spans WHERE {WINDOW}"
+    ));
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("forbidden")),
+        "{body:#}"
+    );
+    assert!(
+        body["detail"].as_str().unwrap().contains("`run_sql`"),
+        "{body:#}"
+    );
 
     // 3. The workspace is enabled once the runtime self-probe has passed.
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -633,7 +737,7 @@ async fn the_sql_workspace_holds_through_the_api() {
         let head = format!(
             "POST /api/v1/projects/{a}/sql/run HTTP/1.1\r\nHost: sqliso\r\nAuthorization: {}\r\nContent-Type: \
              application/json\r\nContent-Length: {}\r\n\r\n",
-            alice.bearer,
+            alice.auth[0].1,
             body.len()
         );
         stream.write_all(head.as_bytes()).unwrap();
@@ -698,6 +802,7 @@ async fn the_sql_workspace_holds_through_the_api() {
         assert_eq!(row["outcome"], "cancelled", "{row:#}");
     }
     assert!(runs.iter().all(|run| run["actor"]["kind"] == "api_key"));
+    // The refused run of the key without the `sql` scope never reached the workspace: it has no audit row.
     // Lexical refusals never reached ClickHouse, so they have no row.
     assert!(!runs.iter().any(|run| run["sql"] == "SELECT 1"));
     // B's history is its own.
@@ -717,7 +822,17 @@ async fn the_sql_workspace_holds_through_the_api() {
         "sql": format!("SELECT name FROM crucible_sql.spans WHERE {WINDOW} AND name = {{name:String}} LIMIT {{n:Int64}}"),
         "parameters": [{ "name": "name", "type": "string" }, { "name": "n", "type": "int", "default": "5" }],
     });
-    let (status, head, body) = alice.send("POST", "saved-queries", Some(&input), &[]);
+    let (status, body) = alice.json("POST", "saved-queries", Some(&input));
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("forbidden")),
+        "{body:#}"
+    );
+    assert!(
+        body["detail"].as_str().unwrap().contains("`edit_content`"),
+        "{body:#}"
+    );
+    let (status, head, body) = owner.send("POST", "saved-queries", Some(&input), &[]);
     assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
     assert!(head.to_ascii_lowercase().contains("etag: \"1\""), "{head}");
     let saved: Value = serde_json::from_slice(&body).unwrap();
@@ -748,34 +863,43 @@ async fn the_sql_workspace_holds_through_the_api() {
             "{bad}"
         );
     }
-    // Another project cannot see, run or change it.
+    // Another project cannot see, run or change it: not its key, and not the owner acting on project B.
+    let (status, _) = bob.json("GET", &format!("saved-queries/{saved_id}"), None);
+    assert_eq!(status, 404);
     for (method, path) in [
         ("GET", format!("saved-queries/{saved_id}")),
         ("DELETE", format!("saved-queries/{saved_id}")),
     ] {
-        let (status, _) = bob.json(method, &path, None);
+        let (status, _) = owner_on_b.json(method, &path, None);
         assert_eq!(status, 404, "{method} {path}");
     }
+    // The key sees it and may run it, not edit it.
+    let (status, seen) = alice.json("GET", &format!("saved-queries/{saved_id}"), None);
+    assert_eq!(status, 200, "{seen:#}");
+    assert_eq!(
+        (seen["can_edit"].as_bool(), seen["can_run"].as_bool()),
+        (Some(false), Some(true))
+    );
     let (status, _) = bob.json("POST", &run_path, Some(&with(json!({ "name": "x" }))));
     assert_eq!(status, 404);
     let (_, listed) = bob.json("GET", "saved-queries", None);
     assert_eq!(listed["data"], json!([]));
     // Changing it needs the current version.
-    let (status, _, _) = alice.send(
+    let (status, _, _) = owner.send(
         "PATCH",
         &format!("saved-queries/{saved_id}"),
         Some(&input),
         &[],
     );
     assert_eq!(status, 428);
-    let (status, _, _) = alice.send(
+    let (status, _, _) = owner.send(
         "PATCH",
         &format!("saved-queries/{saved_id}"),
         Some(&input),
         &[("If-Match", "\"1\"")],
     );
     assert_eq!(status, 200);
-    let (status, _, _) = alice.send(
+    let (status, _, _) = owner.send(
         "PATCH",
         &format!("saved-queries/{saved_id}"),
         Some(&input),
@@ -785,12 +909,12 @@ async fn the_sql_workspace_holds_through_the_api() {
     // A saved query whose text uses an undeclared parameter is refused when it is saved.
     let mut undeclared = input.clone();
     undeclared["parameters"] = json!([]);
-    let (status, body) = alice.json("POST", "saved-queries", Some(&undeclared));
+    let (status, body) = owner.json("POST", "saved-queries", Some(&undeclared));
     assert_eq!(
         (status, body["code"].as_str()),
         (422, Some("validation_failed"))
     );
-    let (status, _, _) = alice.send("DELETE", &format!("saved-queries/{saved_id}"), None, &[]);
+    let (status, _, _) = owner.send("DELETE", &format!("saved-queries/{saved_id}"), None, &[]);
     assert_eq!(status, 204);
 
     // 11. Exports: CSV carries the formula guard; JSON lines and Parquet are the server's own encodings.

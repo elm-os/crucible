@@ -10,6 +10,7 @@ import type { SqlRunList } from "@/api/generated/SqlRunList";
 import type { SqlRunRequest } from "@/api/generated/SqlRunRequest";
 import type { SqlSchema } from "@/api/generated/SqlSchema";
 import type { ProblemBody } from "@/api/types";
+import { currentAuth } from "@/lib/auth";
 import { connectionKey } from "@/lib/connection";
 import { sqlErrorFrom } from "./errors";
 
@@ -38,15 +39,23 @@ function sqlPath(project: string, rest: string): string {
 }
 
 async function send(path: string, options: Options = {}): Promise<Response> {
-  const key = connectionKey();
+  const method = options.method ?? "GET";
+  const auth = currentAuth();
   const headers: Record<string, string> = { Accept: options.accept ?? "application/json" };
-  if (key !== null) headers.Authorization = `Bearer ${key}`;
+  if (auth.mode === "session") {
+    // A key in `Authorization` makes the server ignore the session cookie, so a session never sends one;
+    // its writes carry the session's CSRF token (contract 11.4).
+    if (method !== "GET") headers["X-Crucible-CSRF"] = auth.session.csrf_token;
+  } else {
+    const key = connectionKey();
+    if (key !== null) headers.Authorization = `Bearer ${key}`;
+  }
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.ifMatch !== undefined) headers["If-Match"] = options.ifMatch;
   let response: Response;
   try {
     response = await fetch(path, {
-      method: options.method ?? "GET",
+      method,
       signal: options.signal,
       credentials: "same-origin",
       headers,

@@ -16,6 +16,9 @@ pnpm --filter crucible-ui exec playwright test
   `x/index.html`, slashless routes as the page, and `404.html` for anything else. It has no dependencies.
 - Each test answers every `/api/v1/**` request itself through route interception. A request no test answers,
   or an uncaught error in the page, fails the test.
+- Unless a test signs in, the fixture answers the shell's sign-in check (`GET auth/providers`) with 404
+  `feature_disabled`: the server has no control plane and the Connect dialog applies. `signedIn(api)` gives the
+  server a control plane and the browser a session (`GET auth/session`).
 - Loading states hold the response until the test has checked the skeleton; the loading ladder shows nothing
   for 300 ms, then the skeleton, announced through a `status` region.
 - Error states keep the route failing across the client's own retries (one for a 5xx), then check the mapped
@@ -52,6 +55,15 @@ pnpm --filter crucible-ui exec playwright test
 | SQL: export | A progress bar named "Exporting CSV" (or JSON lines, Parquet); the export buttons are off | The file downloads and the section says "Downloaded crucible-sql.csv." | The same alert as a run, inside the query section | Not applicable |
 | SQL: saved queries | Three skeleton rows after 300 ms, announced | One item per query: name, description, visibility, declared parameters; Open, Run when `can_run`, Delete when `can_edit`; Run opens a form built from the declared parameters with defaults prefilled; "Save as new" and "Save changes" open a form with the detected parameters and a type select | In-section card with the fix, reference id and a retry that refetches only the list; a stale save says the query changed and offers "Reload saved query"; a refused delete stays in the section | "No saved queries yet." |
 | SQL: history | Five skeleton rows after 300 ms, announced | One row per run: started, outcome as icon and label, kind, rows, elapsed, first line of the query, "Load into editor"; refetched after every run, cancel and export | In-section card with the mapped copy, reference id and a retry that refetches only the history | "No runs yet." |
+| Shell: sign-in check | Nothing for 300 ms, then "Connecting to Crucible", announced; the page waits for the check | Without a control plane, the page and the Connect dialog. Signed in, the page, the user's name, Sign out, and the session's projects in the project menu (switching keeps the page and range and drops entity ids) | A "Connection" card with the mapped copy and "Retry connection". No session, or a session that ends during any read, sends the browser to `/login/` with the page as `next` | Not applicable |
+| Sign in | Field skeletons after 300 ms, announced | Provider buttons (full-page links to the server, carrying `next`), the password form and "Forgot your password?"; signing in opens `next`, or `/` when `next` leaves the server or points under `/api/`. A failed sign-in, or a provider failure in `?error=`, is an alert in the page's own words | Options that fail to load show the mapped copy, the reference id and "Try again" | A server with no owner points to setup; one without a control plane has no sign-in; one with no sign-in method turned on says so |
+| Setup | Not applicable: requests nothing until submitted | Opens Crucible signed in as the owner | Checked before sending (password 12 to 128 characters, checked off live). `token_invalid` marks the token field; `conflict` links to sign in | Not applicable |
+| Invitation | Not applicable: requests nothing until submitted | Opens Crucible signed in | `token_invalid` says to ask for a new link; `conflict` links to sign in | A link without its token says it is incomplete and requests nothing |
+| Password reset | Not applicable: requests nothing until submitted | Requesting a link focuses "Request received" with the administrator's command (this version sends no email); a new password with the link's token focuses "Password changed" with a sign-in link | `token_invalid` says how to get a new link | Not applicable: the page always names `crucible admin reset-password <email>` |
+| Settings: members | Three skeleton rows after 300 ms, announced; the invitations section loads on its own | Name, email, role and status. Owners and admins get a role menu (never owner) and Remove, which asks first, on other non-owner rows; nobody edits their own row | In-section card with the mapped copy, reference id and a retry that refetches only the members | "No members yet." Without a control plane, says which setting turns members on and requests nothing |
+| Settings: invitations | Three skeleton rows after 300 ms, announced | Email, role, status and expiry; Revoke, which asks first, on pending ones. "Invite member" creates one and shows its link once, until the dialog closes | In-section card with a retry that refetches only the invitations | First use: "No invitations yet." |
+| Settings: API keys | Three skeleton rows after 300 ms, announced | Public key, note, scopes, last use and status; Revoke on active keys asks first and sends `If-Match`. "Create key" shows the secret and public keys once, until the dialog closes | In-section card with a retry that refetches only the keys; a stale version (`precondition_failed`) refreshes the list | First use: "No API keys yet." Without the `manage` permission, for a project outside the session, with no projects, or without a control plane, the page explains and requests no keys |
+| Settings: new project | Not applicable: requests nothing until submitted | For organization owners and admins, "New project" beside the settings tabs opens a dialog; the slug follows the name until edited. Creating refreshes the session, selects the project and opens its API keys page | Checked before sending (slug of lowercase letters, digits and hyphens). `conflict` marks the slug as taken; `validation_failed` marks the field it points at; `forbidden` says to ask an owner or admin | Not applicable: members and viewers, and servers without a control plane, get no control |
 | Trace: tags, flags and feedback | The frame holds its place, busy, while the trace loads | Bookmark and Public toggles; the effective tags with a remove button each and an add form; scores with value, comment and source, and an add form. Each write carries an `Idempotency-Key`, shows its pending state, and the acknowledged value stays until a read shows it | A refused write says so beside its control with the reference id, and nothing else changes; the trace's own failure shows in the spans section | "No tags yet." and "No scores or feedback yet.", with the forms still offered |
 
 ## Tests per row
@@ -77,7 +89,15 @@ pnpm --filter crucible-ui exec playwright test
 | SQL: export | `sql.spec.ts` "export": download, feedback and failure (2) | `errors.test.ts` |
 | SQL: saved queries | `sql.spec.ts` "saved queries": loading, success with open, error with retry, empty, run with parameters, run without parameters and Escape, save as new, update with `If-Match` and reload, delete, refused delete (10) | `params.test.ts`, `errors.test.ts` |
 | SQL: history | `sql.spec.ts` "history": loading, success with load into editor, error with retry, empty then refreshed after a run (4) | `cells.test.ts` |
-| Phone | `phone.spec.ts` (5); `sql.spec.ts` "phone at 390 px" (1) | |
+| Shell: sign-in check | `sign-in.spec.ts` "sessions": loading then error with retry, no session, a session that ends while reading, signed-in header and sign-out (4) | `auth-gate.test.tsx`, `client.test.ts` |
+| Sign in | `sign-in.spec.ts` "sign in": loading then success, unsafe `next`, sign-in errors, options error, provider errors, setup and no control plane (6); `phone.spec.ts` | `login-form.test.tsx`, `next-path.test.ts`, `client.test.ts` |
+| Setup | `onboarding.spec.ts` "first-run setup": success, checked before sending, token and owner errors (3); `phone.spec.ts` | `onboarding-forms.test.tsx`, `client.test.ts` |
+| Invitation | `onboarding.spec.ts` "invitations": success, error, no token (3); `phone.spec.ts` | `onboarding-forms.test.tsx`, `client.test.ts` |
+| Password reset | `onboarding.spec.ts` "password reset": request, confirm, error (3) | `onboarding-forms.test.tsx`, `client.test.ts` |
+| Settings: members and invitations | `settings.spec.ts` "members": loading then success, role change, remove, invite link once, revoke, error with retry, read-only roles, no control plane (8); `phone.spec.ts` | `settings.test.tsx` |
+| Settings: API keys | `settings.spec.ts` "API keys": loading then success, secret once, revoke with `If-Match`, error with retry, no permission (5); `phone.spec.ts` | `settings.test.tsx`, `client.test.ts` |
+| Settings: new project | `projects.spec.ts`: create opens the API keys page, a taken slug, no control for a member (3); `phone.spec.ts` | `new-project.test.tsx`, `slug.test.ts` |
+| Phone | `phone.spec.ts` (10); `sql.spec.ts` "phone at 390 px" (1) | |
 
 ## Keyboard paths
 
@@ -97,11 +117,19 @@ pnpm --filter crucible-ui exec playwright test
   position.
 - **SQL saved queries.** Enter on "Run" opens the parameter form; Escape closes it without running and focus
   returns to the button. The save form opens with focus in the name field.
+- **Settings confirmations.** A row's Remove or Revoke opens one confirmation shared by the table, starting on
+  Cancel; Cancel or Escape returns focus to that row's button. Each row button's name carries its row, like
+  "Remove Grace Hopper".
+- **Forms replaced by their result.** On the password reset pages, focus moves to the result's heading.
+- **New project.** The dialog opens with focus in Name; after a project is created, the dialog closes and a
+  status message says so.
 
 ## Phone width
 
 At 390 px each page reads without the page scrolling sideways: the traces table scrolls inside its frame, the
-waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap.
+waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap. The
+sign-in, setup and invitation pages fit, the settings tables scroll inside their frames with the signed-in header
+wrapping, and a new key's secret wraps inside its dialog.
 
 On the SQL page the schema, query, result, saved queries and history stack in that order; the result grid and the
 history table scroll inside their frames.
@@ -112,5 +140,7 @@ history table scroll inside their frames.
   selectors (contract 12.6), which it does not serve yet.
 - A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
   `ancestors_of` (contract 8.8); the panel says how to find it.
+- The account page, password change, organization settings, ownership transfer, project members and the
+  sign-in provider settings have API routes (contract 12.6) but no pages yet.
 - The set-up steps will read data bounds and API keys once those screens land.
 - Brush-to-zoom on charts is planned; the crosshair, the bucket slider and the table view cover reading values.

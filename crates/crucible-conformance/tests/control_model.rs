@@ -61,6 +61,11 @@ fn claims() {
 }
 
 #[test]
+fn identity() {
+    insta::assert_snapshot!(transcript("identity"));
+}
+
+#[test]
 fn pools() {
     insta::assert_snapshot!(transcript("pools"));
 }
@@ -72,5 +77,5 @@ fn jobs() {
 
 #[test]
 fn every_script_has_a_test() {
-    assert_eq!(SCRIPTS.len(), 7);
+    assert_eq!(SCRIPTS.len(), 8);
 }

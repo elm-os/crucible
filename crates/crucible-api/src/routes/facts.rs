@@ -21,18 +21,18 @@ use crucible_api_types::{
 };
 use crucible_query::{Consistency, FactTarget, Facts, Meta, TargetFacts};
 use crucible_records::{
-    AuthorKind, CorrectionBody, FactBody, FlagBody, ScoreBody, ScoreDataType, ScoreSource, SpanId,
-    TagBody, TraceId, caps,
+    CorrectionBody, FactBody, FlagBody, ScoreBody, ScoreDataType, ScoreSource, SpanId, TagBody,
+    TraceId, caps,
 };
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, Project};
+use crate::access::{ApiState, Project, ProjectWrite};
 use crate::body::json;
 use crate::convert;
 use crate::idempotency::{self, Begin};
 use crate::params::Params;
 use crate::problem::{ApiError, field_error};
-use crate::writer::{FactAuthor, FactRefusal, NewFact};
+use crate::writer::{FactRefusal, NewFact};
 
 /// The group's routes, relative to the base path.
 pub(super) fn routes() -> Router<ApiState> {
@@ -239,10 +239,7 @@ async fn append(
         retracted: draft.retracted,
         body: draft.body,
     };
-    let author = FactAuthor {
-        kind: AuthorKind::ApiKey,
-        id: project.api_key_id.uuid(),
-    };
+    let author = project.author;
     let accepted = writer.append(project.ctx.scope(), author, vec![fact]).await;
     let accepted = accepted.map_err(|e| refusal(project, e))?;
     let accepted = accepted.first().ok_or_else(|| {
@@ -280,7 +277,7 @@ async fn write(
     })?;
     let reservation = match &key {
         Some(key) => {
-            let slot = (project.api_key_id, route, key.as_str());
+            let slot = (project.author, route, key.as_str());
             let hash = idempotency::request_hash(route, raw);
             match state
                 .idempotency
@@ -367,7 +364,7 @@ fn target_of(
 )]
 pub(crate) async fn post_feedback(
     State(state): State<ApiState>,
-    project: Project,
+    ProjectWrite(project): ProjectWrite,
     headers: HeaderMap,
     raw: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -482,7 +479,7 @@ pub(crate) async fn post_feedback(
 )]
 pub(crate) async fn post_tag(
     State(state): State<ApiState>,
-    project: Project,
+    ProjectWrite(project): ProjectWrite,
     headers: HeaderMap,
     raw: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -542,7 +539,7 @@ pub(crate) async fn post_tag(
 )]
 pub(crate) async fn post_flag(
     State(state): State<ApiState>,
-    project: Project,
+    ProjectWrite(project): ProjectWrite,
     headers: HeaderMap,
     raw: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -604,7 +601,7 @@ pub(crate) async fn post_flag(
 )]
 pub(crate) async fn post_correction(
     State(state): State<ApiState>,
-    project: Project,
+    ProjectWrite(project): ProjectWrite,
     headers: HeaderMap,
     raw: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {

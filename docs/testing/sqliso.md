@@ -67,8 +67,11 @@ the strict switch and 1,000 under the permissive one; the nightly run sends 500,
 
 ## Layer C: through the API
 
-The real binary, started with `--migrate` against a real ClickHouse and Postgres, with a key for each of two
-projects. Every response to project A's key passes the canary oracle. The test also checks what the API adds:
+The real binary, started with `--migrate` against a real ClickHouse and Postgres. `crucible admin init` makes
+the owner and `crucible admin create-key` a key with the `read` and `sql` scopes for each of two projects. The
+keys run the queries; the owner signs in for the saved-query writes, which need `edit_content` and so are
+never a key's. Every response to a caller on project A passes the canary oracle. A key without the `sql` scope
+is refused with `forbidden`, and a key is refused when it saves a query. The test also checks what the API adds:
 the validation messages (each refusal says how to fix the query), the mapping of ClickHouse's refusals to problem
 codes, a statement that outlives its limit ending as `query_timeout`, the result cap, the concurrency cap,
 cancellation by `DELETE` and by closing the connection (the audit row says cancelled and ClickHouse holds no

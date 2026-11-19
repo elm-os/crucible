@@ -1,7 +1,9 @@
 //! The SQL workspace: `projects/{project_id}/sql/...` (contracts 7.4 and 12.6).
 //!
-//! The handlers only translate: the workspace service authorizes, checks, limits, runs and records. Every
-//! refusal carries a sentence that says how to fix the query (contract 1.7), and a query error carries
+//! Each route names its project permission through [`Scoped`] (contract 11.6): reading needs `read`, ad hoc
+//! runs and exports `run_sql`, saved runs and cancelling `run_saved_query`, and saved-query writes
+//! `edit_content`, which no API key holds. The workspace service then decides what depends on the object: who
+//! owns a saved query, who started a run. The handlers only translate. Every refusal carries a sentence that says how to fix the query (contract 1.7), and a query error carries
 //! ClickHouse's own message beside it, with the line and column when the server gave them.
 
 use std::collections::BTreeMap;
@@ -18,6 +20,7 @@ use crucible_api_types::{
     FieldError, Problem, ProblemCode, SafeU64, SavedQuery, SavedQueryInput, SavedQueryList,
     SavedQueryRunRequest, SqlExportRequest, SqlResult, SqlRunList, SqlRunRequest, SqlSchema,
 };
+use crucible_control::{KeyScope, ProjectRole};
 use crucible_records::{RequestId, SavedQueryId, SqlRunId, Timestamp};
 use crucible_sqlws as sqlws;
 use crucible_sqlws::{
@@ -26,7 +29,7 @@ use crucible_sqlws::{
 };
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, Project};
+use crate::access::{ApiState, EditContent, Principal, Read, RunSavedQuery, RunSql, Scoped};
 use crate::params::Params;
 use crate::problem::{ApiError, field_error};
 
@@ -55,20 +58,6 @@ pub(super) fn routes() -> Router<ApiState> {
         )
 }
 
-/// The methods a SQL path supports, for the `Allow` header of a 405.
-pub(crate) fn allowed_methods(path: &str) -> Option<&'static str> {
-    let (_, rest) = path.split_once("/sql/")?;
-    let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
-    match parts.as_slice() {
-        ["schema"] | ["runs"] => Some("GET, HEAD"),
-        ["run"] | ["export"] | ["saved-queries", _, "run"] => Some("POST"),
-        ["runs", _] => Some("DELETE"),
-        ["saved-queries"] => Some("GET, HEAD, POST"),
-        ["saved-queries", _] => Some("GET, HEAD, PATCH, DELETE"),
-        _ => None,
-    }
-}
-
 /// The OpenAPI paths of the group.
 #[derive(OpenApi)]
 #[openapi(paths(
@@ -86,13 +75,31 @@ pub(crate) fn allowed_methods(path: &str) -> Option<&'static str> {
 ))]
 pub(super) struct Paths;
 
-/// The caller of a request. A project key acts as a member of its project: it runs ad hoc SQL and owns what it
-/// saves.
-fn caller(project: &Project) -> SqlCaller {
+/// The caller of an authorized request. A signed-in user acts with the effective project role. An API key is a
+/// project principal: with the `sql` scope it acts as a member, without it as a viewer.
+fn caller<P>(scoped: &Scoped<P>) -> SqlCaller {
+    let (actor, role) = match &scoped.principal {
+        Principal::Key(grant) => (
+            SqlActor::ApiKey(grant.principal.api_key_id),
+            if grant.scopes.has(KeyScope::Sql) {
+                SqlRole::Member
+            } else {
+                SqlRole::Viewer
+            },
+        ),
+        Principal::Session(session) => (
+            SqlActor::User(session.user.id),
+            match session.project_role(scoped.scope.project_id()) {
+                Some(ProjectRole::Admin) => SqlRole::Admin,
+                Some(ProjectRole::Member) => SqlRole::Member,
+                Some(ProjectRole::Viewer) | None => SqlRole::Viewer,
+            },
+        ),
+    };
     SqlCaller {
-        scope: project.ctx.scope(),
-        actor: SqlActor::ApiKey(project.api_key_id),
-        role: SqlRole::Member,
+        scope: scoped.scope,
+        actor,
+        role,
     }
 }
 
@@ -150,8 +157,8 @@ fn timestamp(request_id: RequestId, name: &str, text: &str) -> Result<Timestamp,
     })
 }
 
-fn path_id<T>(
-    project: &Project,
+fn path_id<T, P>(
+    project: &Scoped<P>,
     name: &str,
     parse: impl Fn(&str) -> Option<T>,
 ) -> Result<T, ApiError> {
@@ -297,13 +304,13 @@ fn run_input(
     responses(
         (status = 200, description = "The schema.", body = SqlSchema),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("project_key" = [])),
 )]
 pub(crate) async fn get_sql_schema(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<Read>,
     uri: Uri,
 ) -> Result<Json<SqlSchema>, ApiError> {
     Params::new(project.request_id, &uri)?.finish()?;
@@ -375,7 +382,7 @@ pub(crate) async fn get_sql_schema(
         (status = 200, description = "The result grid.", body = SqlResult),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "`sql_forbidden`: the statement writes, changes a setting or reads something the workspace does not offer. `forbidden`: the caller's role is too low.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "`conflict`: the run was cancelled.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "`sql_invalid`, `sql_time_window_required`, `query_too_broad`, `query_memory_exceeded` or `validation_failed`.", body = Problem, content_type = "application/problem+json"),
         (status = 429, description = "`sql_quota_exceeded`: a concurrency, rate or hourly limit; see `retry_after_s`.", body = Problem, content_type = "application/problem+json"),
@@ -386,7 +393,7 @@ pub(crate) async fn get_sql_schema(
 )]
 pub(crate) async fn run_sql(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<RunSql>,
     request: Result<Json<SqlRunRequest>, JsonRejection>,
 ) -> Result<Json<SqlResult>, ApiError> {
     let rid = project.request_id;
@@ -415,7 +422,7 @@ pub(crate) async fn run_sql(
         (status = 200, description = "The file.", content_type = "application/octet-stream"),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "`sql_forbidden` or `forbidden`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "`sql_invalid`, `sql_time_window_required`, `query_too_broad`, `query_memory_exceeded` or `validation_failed`.", body = Problem, content_type = "application/problem+json"),
         (status = 429, description = "`sql_quota_exceeded`.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`sql_workspace_unavailable` or `control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
@@ -425,7 +432,7 @@ pub(crate) async fn run_sql(
 )]
 pub(crate) async fn export_sql(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<RunSql>,
     request: Result<Json<SqlExportRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let rid = project.request_id;
@@ -471,7 +478,7 @@ pub(crate) async fn export_sql(
     responses(
         (status = 200, description = "The runs.", body = SqlRunList),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "`validation_failed`.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`sql_workspace_unavailable` or `control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
     ),
@@ -479,7 +486,7 @@ pub(crate) async fn export_sql(
 )]
 pub(crate) async fn list_sql_runs(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<Read>,
     uri: Uri,
 ) -> Result<Json<SqlRunList>, ApiError> {
     let rid = project.request_id;
@@ -547,7 +554,7 @@ pub(crate) async fn list_sql_runs(
 )]
 pub(crate) async fn cancel_sql_run(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<RunSavedQuery>,
 ) -> Result<StatusCode, ApiError> {
     let rid = project.request_id;
     let run_id = path_id(&project, "run_id", |text| SqlRunId::parse(text).ok())?;
@@ -570,14 +577,14 @@ pub(crate) async fn cancel_sql_run(
     responses(
         (status = 200, description = "The saved queries.", body = SavedQueryList),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`sql_workspace_unavailable` or `control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("project_key" = [])),
 )]
 pub(crate) async fn list_saved_queries(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<Read>,
     uri: Uri,
 ) -> Result<Json<SavedQueryList>, ApiError> {
     let rid = project.request_id;
@@ -618,8 +625,8 @@ fn with_etag(query: SavedQuery, status: StatusCode) -> Response {
     responses(
         (status = 201, description = "The saved query; `ETag` is its version.", body = SavedQuery),
         (status = 401, description = "`unauthenticated`.", body = Problem, content_type = "application/problem+json"),
-        (status = 403, description = "`forbidden`: saving needs the member role.", body = Problem, content_type = "application/problem+json"),
-        (status = 404, description = "`not_found`: the key cannot see the project.", body = Problem, content_type = "application/problem+json"),
+        (status = 403, description = "`forbidden`: saving needs the `edit_content` permission, which members have and API keys never do.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "`not_found`: the caller cannot see the project.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "`sql_invalid`, `sql_time_window_required` or `validation_failed`.", body = Problem, content_type = "application/problem+json"),
         (status = 503, description = "`sql_workspace_unavailable` or `control_plane_unavailable`.", body = Problem, content_type = "application/problem+json"),
     ),
@@ -627,7 +634,7 @@ fn with_etag(query: SavedQuery, status: StatusCode) -> Response {
 )]
 pub(crate) async fn create_saved_query(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<EditContent>,
     request: Result<Json<SavedQueryInput>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let rid = project.request_id;
@@ -660,7 +667,7 @@ pub(crate) async fn create_saved_query(
 )]
 pub(crate) async fn get_saved_query(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<Read>,
 ) -> Result<Response, ApiError> {
     let rid = project.request_id;
     let id = path_id(&project, "query_id", |text| SavedQueryId::parse(text).ok())?;
@@ -722,7 +729,7 @@ fn if_match(request_id: RequestId, headers: &HeaderMap) -> Result<u64, ApiError>
 )]
 pub(crate) async fn update_saved_query(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<EditContent>,
     headers: HeaderMap,
     request: Result<Json<SavedQueryInput>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -759,7 +766,7 @@ pub(crate) async fn update_saved_query(
 )]
 pub(crate) async fn delete_saved_query(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<EditContent>,
 ) -> Result<StatusCode, ApiError> {
     let rid = project.request_id;
     let id = path_id(&project, "query_id", |text| SavedQueryId::parse(text).ok())?;
@@ -799,7 +806,7 @@ pub(crate) async fn delete_saved_query(
 )]
 pub(crate) async fn run_saved_query(
     State(state): State<ApiState>,
-    project: Project,
+    project: Scoped<RunSavedQuery>,
     request: Result<Json<SavedQueryRunRequest>, JsonRejection>,
 ) -> Result<Json<SqlResult>, ApiError> {
     let rid = project.request_id;
@@ -823,29 +830,6 @@ pub(crate) async fn run_saved_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn each_sql_path_names_its_methods() {
-        let base = "/api/v1/projects/p/sql";
-        for (path, methods) in [
-            ("schema", "GET, HEAD"),
-            ("runs", "GET, HEAD"),
-            ("run", "POST"),
-            ("export", "POST"),
-            ("runs/r", "DELETE"),
-            ("saved-queries", "GET, HEAD, POST"),
-            ("saved-queries/q", "GET, HEAD, PATCH, DELETE"),
-            ("saved-queries/q/run", "POST"),
-        ] {
-            assert_eq!(
-                allowed_methods(&format!("{base}/{path}")),
-                Some(methods),
-                "{path}"
-            );
-        }
-        assert_eq!(allowed_methods("/api/v1/projects/p/traces"), None);
-        assert_eq!(allowed_methods(&format!("{base}/nope")), None);
-    }
 
     #[test]
     fn if_match_reads_a_quoted_or_bare_version() {
