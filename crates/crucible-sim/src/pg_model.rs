@@ -30,13 +30,14 @@ use async_trait::async_trait;
 use crucible_control::{
     AlertEvent, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState, AlertStateRepo, ApiKey,
     ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Channel, ChannelRepo,
-    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, ExportJobRepo, Invitation,
-    InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases,
-    LedgerEntry, MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
+    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, DeletionRequest,
+    ExportJobRepo, Invitation, InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot,
+    Lease, LeaseName, Leases, LedgerEntry, LifecycleAction, LifecycleRepo, MembershipRepo,
+    Migrations, NewJob, Node, NodeAck, OauthAccount, OauthAccountRepo, OneTimeToken,
     OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
-    ProjectRepo, ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session,
-    SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP,
-    TokenHash, TxError, User, UserRepo, duration_micros,
+    ProjectRepo, ProjectSaltRepo, Queue, Repos, RetentionFloor, SealedProjectSalt, Secret,
+    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
+    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -143,6 +144,11 @@ enum Tbl {
     AlertRules,
     AlertState,
     AlertEvents,
+    Nodes,
+    DeletionRequests,
+    DeletionAcks,
+    Actions,
+    Floors,
 }
 
 type Key = Vec<u8>;
@@ -249,6 +255,11 @@ enum Row {
     AlertRule(AlertRule),
     AlertState(AlertSeriesState),
     AlertEvent(AlertEvent),
+    Node(Node),
+    DeletionRequest(DeletionRequest),
+    DeletionAck(NodeAck),
+    Action(LifecycleAction),
+    Floor((ProjectId, RetentionFloor)),
 }
 
 /// The secondary unique constraints of a row, by the names of the production schema.
@@ -275,6 +286,11 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
             "auth_providers_seeded_kind_key",
             provider.kind.as_str().as_bytes().to_vec(),
         )],
+        Row::DeletionRequest(request) => lifecycle::idempotency_key(request)
+            .map(|key| ("deletion_requests_idempotency_key", key))
+            .into_iter()
+            .collect(),
+        Row::Action(action) => vec![("lifecycle_actions_key_key", action.key.as_bytes().to_vec())],
         _ => Vec::new(),
     }
 }
@@ -360,6 +376,21 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             ),
             ("oauth_accounts_user_id_fkey", Tbl::Users, user(a.user_id)),
         ],
+        Row::DeletionRequest(r) => vec![(
+            "deletion_requests_project_id_fkey",
+            Tbl::Projects,
+            project(r.project_id),
+        )],
+        Row::DeletionAck(a) => vec![(
+            "deletion_node_acks_request_id_fkey",
+            Tbl::DeletionRequests,
+            a.request_id.to_bytes().to_vec(),
+        )],
+        Row::Floor((id, _)) => vec![(
+            "retention_floors_project_id_fkey",
+            Tbl::Projects,
+            project(*id),
+        )],
         _ => Vec::new(),
     }
 }
@@ -417,6 +448,7 @@ struct Db {
     commit_seq: u64,
     next_tx: u64,
     feed_seq: u64,
+    deletion_seq: u64,
     /// Increases at every failover; a transaction of an older generation is lost.
     generation: u64,
     /// Monotonic nanoseconds until which every call fails.
@@ -1009,6 +1041,7 @@ impl PgModel {
                 commit_seq: 0,
                 next_tx: 0,
                 feed_seq: 0,
+                deletion_seq: 0,
                 generation: 0,
                 outage_until: 0,
                 db_offset_micros: 0,
@@ -1291,6 +1324,9 @@ macro_rules! repos {
             fn migrations(&self) -> &dyn Migrations {
                 &self.runner
             }
+            fn lifecycle(&self) -> &dyn LifecycleRepo {
+                &self.runner
+            }
             fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
                 &self.runner
             }
@@ -1379,6 +1415,9 @@ impl Repos for PgModel {
     fn migrations(&self) -> &dyn Migrations {
         &*self.runner
     }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        &*self.runner
+    }
     fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
         &*self.runner
     }
@@ -1416,6 +1455,7 @@ macro_rules! all {
 mod alerts;
 mod exports;
 mod identity;
+mod lifecycle;
 /// The SQL workspace's repositories. Declared after the macros above, which it uses.
 mod sqlws;
 

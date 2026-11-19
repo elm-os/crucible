@@ -11,6 +11,7 @@ mod data_bounds;
 pub(crate) mod exports;
 mod facts;
 mod filter_values;
+mod lifecycle;
 mod metrics;
 mod org;
 mod payload;
@@ -49,6 +50,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(exports::routes())
         .merge(facts::routes())
         .merge(filter_values::routes())
+        .merge(lifecycle::routes())
         .merge(metrics::routes())
         .merge(org::routes())
         .merge(payload::routes())
@@ -73,6 +75,7 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(exports::Paths::openapi());
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
+    doc.merge(lifecycle::Paths::openapi());
     doc.merge(metrics::Paths::openapi());
     doc.merge(org::Paths::openapi());
     doc.merge(payload::Paths::openapi());

@@ -80,6 +80,8 @@ pub struct Modules {
     pub exports: Option<Exports>,
     /// Alert rules and channels.
     pub alerts: Option<AlertsApi>,
+    /// Retention settings and deletion requests.
+    pub lifecycle: Option<crucible_lifecycle::Service>,
 }
 
 /// The base path of the API (contract 12.1).
@@ -106,6 +108,7 @@ pub fn router(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -117,13 +120,15 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None, None, None, None)
+    build(
+        env, None, keys, settings, cursors, None, None, None, None, None,
+    )
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
 /// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
-/// `None` until a telemetry store is up. `modules` are the SQL workspace, the control plane's exports and
-/// the alert and channel routes.
+/// `None` until a telemetry store is up. `modules` are the SQL workspace, the control plane's exports, the
+/// alert and channel routes, and retention settings and deletion requests.
 pub fn platform_router(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -143,6 +148,7 @@ pub fn platform_router(
         modules.sql,
         modules.exports,
         modules.alerts,
+        modules.lifecycle,
     )
 }
 
@@ -157,6 +163,7 @@ fn build(
     sql: Option<SqlWorkspace>,
     exports: Option<Exports>,
     alerts: Option<AlertsApi>,
+    lifecycle: Option<crucible_lifecycle::Service>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -171,6 +178,7 @@ fn build(
         sql,
         exports,
         alerts,
+        lifecycle,
     };
     let api = routes::router()
         .fallback(unknown_path)

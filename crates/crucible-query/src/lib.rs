@@ -46,8 +46,9 @@ mod trace_list;
 mod users;
 
 pub use context::{Meta, PartialReason, QueryServiceError, ReadContext};
-pub use crucible_recent::Consistency;
 /// Re-exported for callers that build a [`ReadContext`] without depending on `crucible-schema`.
+pub use crucible_plan::{Hidden, HiddenSelector, RetentionFloors};
+pub use crucible_recent::Consistency;
 pub use crucible_schema::RetentionSettings;
 pub use cursor::{ChildCursor, HeadCursor, HeadKey, IdCursor, PageCursor, SpanListCursor};
 pub use data_bounds::{DataBounds, MinuteRange};
@@ -72,7 +73,7 @@ pub use search::{
     Fragment, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_TOKENS, SearchCursor, SearchHit, SearchMatch,
     SearchPage, SearchQuery, search_tokens,
 };
-pub use service::{QueryService, TraceSummary};
+pub use service::{HiddenSource, QueryService, TraceSummary};
 pub use sessions::{SessionDetail, SessionListPage, SessionListQuery, SessionSummary};
 pub use span_children::{SpanChildrenPage, SpanChildrenQuery};
 pub use span_list::{SpanListPage, SpanListQuery};

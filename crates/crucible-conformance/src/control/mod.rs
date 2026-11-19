@@ -13,6 +13,7 @@ mod feed;
 mod identity;
 mod jobs;
 mod leases;
+mod lifecycle;
 mod pools;
 mod repos;
 mod transactions;
@@ -96,6 +97,7 @@ pub const SCRIPTS: &[(&str, Script)] = &[
     ("jobs", |c, t| Box::pin(jobs::run(c, t))),
     ("exports", |c, t| Box::pin(exports::run(c, t))),
     ("alerts", |c, t| Box::pin(alerts::run(c, t))),
+    ("lifecycle", |c, t| Box::pin(lifecycle::run(c, t))),
 ];
 
 /// The main pool size the scripts are written for; both stores under test are built with it.

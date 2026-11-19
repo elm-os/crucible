@@ -8,6 +8,7 @@ mod facts;
 mod identity;
 mod jobs;
 mod keys;
+mod lifecycle;
 mod mcp;
 mod proxy;
 mod recent;

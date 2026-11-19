@@ -38,9 +38,10 @@ use crucible_control::{
     AlertEventRepo, AlertRuleRepo, AlertStateRepo, ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod,
     AuthProviderRepo, ChannelRepo, Claim, Claims, ControlStore, ControlTx, CredentialRepo, Email,
     ExportJobRepo, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease, LeaseName, Leases,
-    MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, OrgRepo, Project,
-    ProjectRepo, ProjectSaltRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session, SessionRepo,
-    SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo, UserStatus,
+    LifecycleRepo, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, OrgRepo,
+    Project, ProjectRepo, ProjectSaltRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session,
+    SessionRepo, SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo,
+    UserStatus,
 };
 use crucible_env::{Clock, ClockExt, Env, Instant, Rng};
 use crucible_jobs::housekeeping::{self, KEY_FEED_KEEP};
@@ -568,6 +569,9 @@ impl Repos for NodeStore {
     fn migrations(&self) -> &dyn Migrations {
         self.model.migrations()
     }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        self.model.lifecycle()
+    }
     fn sql_identities(&self) -> &dyn SqlIdentityRepo {
         self.model.sql_identities()
     }
@@ -684,6 +688,9 @@ impl Repos for NodeTx {
     }
     fn migrations(&self) -> &dyn Migrations {
         self.inner.migrations()
+    }
+    fn lifecycle(&self) -> &dyn LifecycleRepo {
+        self.inner.lifecycle()
     }
     fn sql_identities(&self) -> &dyn SqlIdentityRepo {
         self.inner.sql_identities()
