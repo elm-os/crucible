@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(Progress::parse("not json"), Progress::default());
         assert_eq!(
             Progress::default().to_text(),
-            r#"{"pages":0,"traces":0,"planned":false}"#
+            r#"{"pages":0,"traces":0,"resolved":false,"planned":false}"#
         );
         let mut progress = Progress {
             cursor: Some("ab".to_owned()),
