@@ -87,7 +87,12 @@ fn lifecycle() {
 
 #[test]
 fn every_script_has_a_test() {
-    assert_eq!(SCRIPTS.len(), 11);
+    assert_eq!(SCRIPTS.len(), 12);
+}
+
+#[test]
+fn media() {
+    insta::assert_snapshot!(transcript("media"));
 }
 
 #[test]

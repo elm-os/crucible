@@ -20,6 +20,7 @@ mod exports;
 mod facts;
 mod identity;
 mod lifecycle;
+mod media;
 mod meta;
 mod metrics;
 mod payload;
@@ -64,6 +65,10 @@ pub use identity::{
 pub use lifecycle::{
     DeletionKind, DeletionPlace, DeletionRequest, DeletionRequestCreate, DeletionRequestList,
     DeletionState, Retention, RetentionHidden, RetentionUpdate,
+};
+pub use media::{
+    Media, MediaCreate, MediaDisposition, MediaList, MediaListParams, MediaState, MediaUpload,
+    MediaUploadUrl, MediaUse, SignedHeader,
 };
 pub use meta::Meta;
 pub use metrics::{
@@ -137,6 +142,11 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<InvitationCreated>();
     visitor.visit::<InvitationList>();
     visitor.visit::<LoginRequest>();
+    visitor.visit::<Media>();
+    visitor.visit::<MediaCreate>();
+    visitor.visit::<MediaList>();
+    visitor.visit::<MediaListParams>();
+    visitor.visit::<MediaUpload>();
     visitor.visit::<MetricsQueryRequest>();
     visitor.visit::<MetricsResponse>();
     visitor.visit::<MetricsSchema>();

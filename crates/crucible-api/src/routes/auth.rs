@@ -63,9 +63,14 @@ async fn signed_in(
     rid: crucible_records::RequestId,
     new: NewSession,
 ) -> Result<Response, ApiError> {
-    let info = session_info(identity, &new.principal, state.sql.as_ref())
-        .await
-        .map_err(auth(rid))?;
+    let info = session_info(
+        identity,
+        &new.principal,
+        state.sql.as_ref(),
+        state.media.as_ref(),
+    )
+    .await
+    .map_err(auth(rid))?;
     let cookies = identity.config().cookies();
     let mut headers = HeaderMap::new();
     set_cookies(
@@ -180,9 +185,14 @@ pub(crate) async fn get_session(
     State(state): State<ApiState>,
     signed: Signed,
 ) -> Result<Json<SessionInfo>, ApiError> {
-    let info = session_info(&signed.identity, &signed.principal, state.sql.as_ref())
-        .await
-        .map_err(auth(signed.request_id))?;
+    let info = session_info(
+        &signed.identity,
+        &signed.principal,
+        state.sql.as_ref(),
+        state.media.as_ref(),
+    )
+    .await
+    .map_err(auth(signed.request_id))?;
     Ok(Json(info))
 }
 

@@ -55,6 +55,7 @@ pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID,
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use routes::exports::export_dto;
+pub use routes::media::{media_invalid, media_not_supported, media_refusal};
 pub use settings::{
     DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
 };
@@ -82,6 +83,8 @@ pub struct Modules {
     pub alerts: Option<AlertsApi>,
     /// Retention settings and deletion requests.
     pub lifecycle: Option<crucible_lifecycle::Service>,
+    /// Media on the object store.
+    pub media: Option<crucible_media::Media>,
 }
 
 /// The base path of the API (contract 12.1).
@@ -109,6 +112,7 @@ pub fn router(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -121,7 +125,7 @@ pub fn router_without_store(
     cursors: Arc<KeyRing>,
 ) -> Router {
     build(
-        env, None, keys, settings, cursors, None, None, None, None, None,
+        env, None, keys, settings, cursors, None, None, None, None, None, None,
     )
 }
 
@@ -149,6 +153,7 @@ pub fn platform_router(
         modules.exports,
         modules.alerts,
         modules.lifecycle,
+        modules.media,
     )
 }
 
@@ -164,6 +169,7 @@ fn build(
     exports: Option<Exports>,
     alerts: Option<AlertsApi>,
     lifecycle: Option<crucible_lifecycle::Service>,
+    media: Option<crucible_media::Media>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -179,6 +185,7 @@ fn build(
         exports,
         alerts,
         lifecycle,
+        media,
     };
     let api = routes::router()
         .fallback(unknown_path)

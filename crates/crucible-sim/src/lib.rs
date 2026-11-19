@@ -18,6 +18,8 @@
 //!   fencing rules of contract 11.7.
 //! - [`jobs_sim`]: the job runners of `crucible-jobs` over `pg_model`: crashes, freezes, clock skew, lost
 //!   connections and lease steals, and the oracle for the job invariants J1 to J3.
+//! - [`object_model`]: the simulated object store: presigned grants, lax uploads, a lagging listing and
+//!   throttling.
 //! - [`alerts_sim`]: alerting end to end over `pg_model` and rollup rows in `ch_model`: crashes, downtime,
 //!   clock skips, store faults and receivers that are down, and the oracle for the alert invariants A1 to A3.
 //!
@@ -37,6 +39,7 @@ mod disk;
 pub mod jobs_sim;
 pub mod lease_sim;
 pub mod lifecycle_sim;
+pub mod object_model;
 pub mod pg_model;
 mod runtime;
 pub mod ship_sim;

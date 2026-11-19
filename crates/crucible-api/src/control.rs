@@ -305,6 +305,7 @@ pub(crate) async fn session_info(
     identity: &Identity,
     principal: &SessionPrincipal,
     sql: Option<&SqlWorkspace>,
+    media: Option<&crucible_media::Media>,
 ) -> Result<wire::SessionInfo, AuthError> {
     // The reasons are those of `GET sql/schema`: `not_configured`, or what the self-probe said.
     let sql_workspace = match sql.map(SqlWorkspace::status) {
@@ -357,8 +358,10 @@ pub(crate) async fn session_info(
         features: wire::Features {
             sql_workspace,
             media: wire::MediaFeature {
-                enabled: false,
-                max_bytes: 0,
+                enabled: media.is_some(),
+                max_bytes: media.map_or(0, |media| {
+                    u32::try_from(media.config().max_bytes).unwrap_or(u32::MAX)
+                }),
             },
             smtp: false,
             signup_mode: principal.org.settings.signup_mode.as_str().to_owned(),

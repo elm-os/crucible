@@ -569,6 +569,9 @@ macro_rules! repos {
             fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
                 $($deref)* self.handle
             }
+            fn media(&self) -> &dyn crucible_control::MediaRepo {
+                $($deref)* self.handle
+            }
         }
     };
 }

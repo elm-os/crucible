@@ -213,6 +213,52 @@ pub const SETTINGS: &[Setting] = &[
         None,
         "the sender address of notification email, for example crucible@example.com",
     ),
+    plain(
+        "object_store.endpoint",
+        None,
+        "the S3-compatible endpoint this server reaches, for example http://versitygw:7070; with postgres.url \
+         it turns media on",
+    ),
+    plain(
+        "object_store.public_endpoint",
+        None,
+        "the endpoint clients and browsers reach, which presigned URLs name (default: object_store.endpoint)",
+    ),
+    plain(
+        "object_store.region",
+        Some("us-east-1"),
+        "the region the request signatures name",
+    ),
+    plain("object_store.bucket", None, "the bucket that holds media"),
+    plain(
+        "object_store.access_key",
+        None,
+        "the access key id of the bucket",
+    ),
+    secret(
+        "object_store.secret_key",
+        "the secret access key of the bucket",
+    ),
+    plain(
+        "object_store.secret_key_file",
+        None,
+        "a file that holds the secret access key",
+    ),
+    plain(
+        "object_store.url_style",
+        Some("path"),
+        "how URLs name the bucket: path (host/bucket) or virtual_host (bucket.host)",
+    ),
+    plain(
+        "object_store.prefix",
+        Some("media"),
+        "the key prefix under which media objects are stored",
+    ),
+    plain(
+        "media.max_bytes",
+        Some("67108864"),
+        "the largest media object, in bytes (default 64 MiB)",
+    ),
 ];
 
 /// The setting with this dotted key.

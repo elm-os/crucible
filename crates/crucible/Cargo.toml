@@ -27,6 +27,7 @@ crucible-control-pg = { workspace = true }
 crucible-export = { path = "../crucible-export" }
 crucible-jobs = { path = "../crucible-jobs" }
 crucible-lifecycle = { path = "../crucible-lifecycle" }
+crucible-media = { path = "../crucible-media" }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-cursor = { workspace = true }
 # The compat ingest routes that the ingest listeners serve (contract 12.1).

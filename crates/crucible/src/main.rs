@@ -10,6 +10,7 @@ mod jobs;
 mod keys;
 mod lifecycle;
 mod mcp;
+mod media;
 mod proxy;
 mod recent;
 mod salts;

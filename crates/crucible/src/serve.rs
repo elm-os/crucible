@@ -72,6 +72,7 @@ use tower::ServiceExt as _;
 use crate::control::Control;
 use crate::lifecycle::Lifecycle;
 use crate::mcp::McpGate;
+use crate::media::NodeMedia;
 use crate::recent::WalSpans;
 use crate::salts::StoreSalts;
 use crate::store::{self, ClickHouse};
@@ -194,6 +195,8 @@ fn observed(router: Router, env: &Env, listener: &'static str) -> Router {
 struct Ui {
     env: Env,
     source: Arc<dyn AssetSource>,
+    /// The object store's public origin, which pages may load media from.
+    media_origin: Option<String>,
 }
 
 /// A problem 404 for a path that no route serves.
@@ -218,6 +221,7 @@ async fn serve_ui(State(ui): State<Ui>, request: Request) -> Response {
         request.method(),
         request.uri(),
         request.headers(),
+        ui.media_origin.as_deref(),
     );
     match outcome {
         Outcome::Response(response) => response.map(Body::from),
@@ -324,6 +328,10 @@ struct App {
     gate: Arc<Gate>,
     /// Retention and deletion; `None` without a control plane.
     lifecycle: Option<Arc<Lifecycle>>,
+    /// The compat media endpoint, on both HTTP ingest listeners.
+    compat_media: Router,
+    /// The object store's public origin, when media are on.
+    media_origin: Option<String>,
 }
 
 /// Where the API finds the retention of a project: the snapshot of Postgres that the node keeps, or the
@@ -362,7 +370,7 @@ fn ingest_config() -> IngestConfig {
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
 /// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors. With
-/// `control`, retention and deletion start over this WAL and join `modules`.
+/// `control`, retention and deletion start over this WAL and join `modules`, and so do `media` when they are on.
 #[allow(clippy::too_many_arguments)] // The parts of the node that exist before its WAL is open.
 async fn open_app(
     env: &Env,
@@ -373,6 +381,7 @@ async fn open_app(
     closed: Option<&str>,
     modules: crucible_api::Modules,
     control: Option<&Control>,
+    media: Option<&NodeMedia>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -402,8 +411,16 @@ async fn open_app(
             env,
             Arc::new(control.store.clone()),
             wal.clone(),
+            media.is_some(),
         ))
     });
+    let service = media.map(|media| media.service.clone());
+    let compat_media = crate::media::compat_routes(
+        env,
+        Arc::clone(&keys),
+        mcp_keys(identity.as_ref(), &keys),
+        service.clone(),
+    );
     let settings = settings_source(lifecycle.as_ref());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
@@ -416,6 +433,7 @@ async fn open_app(
             Some(identity) => {
                 let modules = crucible_api::Modules {
                     lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                    media: service,
                     ..modules
                 };
                 crucible_api::platform_router(env, None, identity, settings, cursors, modules)
@@ -429,6 +447,8 @@ async fn open_app(
         keys,
         gate,
         lifecycle,
+        compat_media,
+        media_origin: media.map(|media| media.origin.clone()),
     };
     Ok((app, report))
 }
@@ -487,8 +507,10 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
         .with_state(Ui {
             env: env.clone(),
             source: ui,
+            media_origin: app.media_origin.clone(),
         })
         .merge(gated_ingest(app))
+        .merge(app.compat_media.clone())
         .merge(api)
         .merge(mcp);
     crucible_api::common_layers(observed(router, env, "api"), env)
@@ -498,10 +520,13 @@ fn api_router(env: &Env, app: &App, ui: Arc<dyn AssetSource>) -> Router {
 /// response carries a request id.
 fn ingest_router(env: &Env, app: &App) -> Router {
     let fallback_env = env.clone();
-    let router = gated_ingest(app).fallback(move |request: Request| {
-        let env = fallback_env.clone();
-        async move { not_found(&env, &request) }
-    });
+    let router =
+        gated_ingest(app)
+            .merge(app.compat_media.clone())
+            .fallback(move |request: Request| {
+                let env = fallback_env.clone();
+                async move { not_found(&env, &request) }
+            });
     observed(crucible_api::common_layers(router, env), env, "ingest")
 }
 
@@ -618,6 +643,8 @@ struct StoreTask {
     alerts: Option<(crucible_api::AlertsApi, Arc<crate::alerts::LateSource>)>,
     /// Retention and deletion, with a control plane.
     lifecycle: Option<Arc<Lifecycle>>,
+    /// Media, with an object store and a control plane.
+    media: Option<crucible_media::Media>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -705,6 +732,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         export_service,
         alerts,
         lifecycle,
+        media,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -862,6 +890,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
                 exports: export_service,
                 alerts,
                 lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                media,
             },
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
@@ -1109,6 +1138,14 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         }
         None => None,
     };
+    // Media need the control plane; the configuration refuses an object store without one.
+    let media = match &control {
+        Some(control) => crate::media::build(env, &config, control)?,
+        None => None,
+    };
+    if let Some(media) = &media {
+        media.check(env);
+    }
     let control_mode = if control.is_some() {
         "postgres"
     } else {
@@ -1154,8 +1191,10 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
             exports: export_service.clone(),
             alerts: alerts.as_ref().map(|(api, _)| api.clone()),
             lifecycle: None,
+            media: None,
         },
         control.as_ref(),
+        media.as_ref(),
     )
     .await?;
     // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
@@ -1165,6 +1204,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         &exports,
         alert_jobs,
         app.lifecycle.as_deref(),
+        media.as_ref().map(NodeMedia::job),
     );
     let mode = if clickhouse.is_some() {
         "clickhouse"
@@ -1225,6 +1265,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 export_service,
                 alerts,
                 lifecycle: app.lifecycle.clone(),
+                media: media.as_ref().map(|media| media.service.clone()),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1386,6 +1427,7 @@ mod tests {
             None,
             None,
             crucible_api::Modules::default(),
+            None,
             None,
         )
         .await
@@ -2622,6 +2664,7 @@ mod tests {
             None,
             closed,
             crucible_api::Modules::default(),
+            None,
             None,
         )
         .await

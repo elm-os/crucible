@@ -1,0 +1,47 @@
+[package]
+name = "crucible-media"
+description = "Optional media on S3-compatible object storage: the presigned upload, confirm and download flow, the object store adapter and garbage collection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# `fetch`, with which tests play a client of presigned URLs. Never enabled by the binary.
+test-support = []
+
+[dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+# Path dependencies: these crates have no entry in the root [workspace.dependencies] table yet.
+crucible-control = { path = "../crucible-control" }
+crucible-jobs = { path = "../crucible-jobs" }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Signs and presigns S3 requests without doing any IO; the requests go out through `Net`.
+rusty-s3 = "=0.11.0"
+# The time type rusty-s3 signs with: signatures take the `Env` clock's time, never the ambient one.
+jiff = { version = "=0.2.46", default-features = false, features = ["std"] }
+# The endpoint URLs rusty-s3 takes.
+url = "=2.5.8"
+
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

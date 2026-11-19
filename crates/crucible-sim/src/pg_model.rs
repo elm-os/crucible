@@ -32,12 +32,13 @@ use crucible_control::{
     ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Channel, ChannelRepo,
     Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, DeletionRequest,
     ExportJobRepo, Invitation, InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot,
-    Lease, LeaseName, Leases, LedgerEntry, LifecycleAction, LifecycleRepo, MembershipRepo,
-    Migrations, NewJob, Node, NodeAck, OauthAccount, OauthAccountRepo, OneTimeToken,
-    OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
-    ProjectRepo, ProjectSaltRepo, Queue, Repos, RetentionFloor, SealedProjectSalt, Secret,
-    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
-    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
+    Lease, LeaseName, Leases, LedgerEntry, LifecycleAction, LifecycleRepo, MediaObject, MediaRef,
+    MembershipRepo, Migrations, NewJob, Node, NodeAck, OauthAccount, OauthAccountRepo,
+    OneTimeToken, OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project,
+    ProjectMembership, ProjectRepo, ProjectSaltRepo, Queue, Repos, RetentionFloor,
+    SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo,
+    SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User, UserRepo,
+    duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -149,6 +150,8 @@ enum Tbl {
     DeletionAcks,
     Actions,
     Floors,
+    MediaObjects,
+    MediaRefs,
 }
 
 type Key = Vec<u8>;
@@ -260,6 +263,8 @@ enum Row {
     DeletionAck(NodeAck),
     Action(LifecycleAction),
     Floor((ProjectId, RetentionFloor)),
+    MediaObject(MediaObject),
+    MediaRef(MediaRef),
 }
 
 /// The secondary unique constraints of a row, by the names of the production schema.
@@ -291,6 +296,10 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
             .into_iter()
             .collect(),
         Row::Action(action) => vec![("lifecycle_actions_key_key", action.key.as_bytes().to_vec())],
+        Row::MediaObject(object) => vec![(
+            "media_objects_project_id_sha256_key",
+            [&object.project_id.to_bytes()[..], &object.sha256].concat(),
+        )],
         _ => Vec::new(),
     }
 }
@@ -386,7 +395,26 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             Tbl::Projects,
             project(*id),
         )],
+        Row::MediaObject(o) => vec![(
+            "media_objects_project_id_fkey",
+            Tbl::Projects,
+            project(o.project_id),
+        )],
+        Row::MediaRef(r) => vec![(
+            "media_refs_media_id_fkey",
+            Tbl::MediaObjects,
+            r.media_id.to_bytes().to_vec(),
+        )],
         _ => Vec::new(),
+    }
+}
+
+/// The tables whose rows keep a row of `table` from being deleted (a foreign key without a cascade), with the
+/// constraint's name.
+fn restricts(table: Tbl) -> &'static [(Tbl, &'static str)] {
+    match table {
+        Tbl::MediaObjects => &[(Tbl::MediaRefs, "media_refs_media_id_fkey")],
+        _ => &[],
     }
 }
 
@@ -741,6 +769,25 @@ impl Cx<'_> {
                         if refers(&row) {
                             self.put(*child, child_key, None)?;
                         }
+                    }
+                }
+                for (child, name) in restricts(table) {
+                    let refers = |row: &Row| {
+                        parents(row)
+                            .iter()
+                            .any(|(_, parent, parent_key)| *parent == table && *parent_key == key)
+                    };
+                    // A referencing row this transaction cannot see is a conflict with its writer; one it can
+                    // see keeps the row.
+                    let unseen = self
+                        .latest_rows(*child)
+                        .iter()
+                        .any(|(k, row)| refers(row) && self.changed_since_snapshot(*child, k));
+                    if unseen {
+                        return Err(TxError::SerializationFailure.into());
+                    }
+                    if self.scan(*child).iter().any(|(_, row)| refers(row)) {
+                        return Err(TxError::ForeignKeyViolation((*name).to_owned()).into());
                     }
                 }
             }
@@ -1330,6 +1377,9 @@ macro_rules! repos {
             fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
                 &self.runner
             }
+            fn media(&self) -> &dyn crucible_control::MediaRepo {
+                &self.runner
+            }
         }
     };
 }
@@ -1421,6 +1471,9 @@ impl Repos for PgModel {
     fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
         &*self.runner
     }
+    fn media(&self) -> &dyn crucible_control::MediaRepo {
+        &*self.runner
+    }
 }
 
 /// Reads one row of a known variant.
@@ -1450,6 +1503,7 @@ mod alerts;
 mod exports;
 mod identity;
 mod lifecycle;
+mod media;
 /// The SQL workspace's repositories. Declared after the macros above, which it uses.
 mod sqlws;
 

@@ -26,6 +26,7 @@ mod m2_facts;
 mod maintenance;
 mod mcp;
 mod reads;
+pub mod s3;
 pub mod sqliso;
 mod startup;
 

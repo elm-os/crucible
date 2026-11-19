@@ -64,6 +64,8 @@ pub(crate) struct ApiState {
     pub(crate) lifecycle: Option<crucible_lifecycle::Service>,
     /// Exports; `None` without a control plane, which holds them.
     pub(crate) exports: Option<Exports>,
+    /// Media; `None` without an object store and a control plane.
+    pub(crate) media: Option<crucible_media::Media>,
 }
 
 impl ApiState {
@@ -289,6 +291,8 @@ permissions! {
     Channels => Channels,
     /// Create exports.
     CreateExports => Export,
+    /// Upload and confirm media (API keys with the `ingest` scope).
+    IngestMedia => Ingest,
 }
 
 /// A request authorized for permission `P` on the project of its path (contract 11.6).

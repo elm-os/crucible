@@ -584,6 +584,9 @@ impl Repos for NodeStore {
     fn export_jobs(&self) -> &dyn ExportJobRepo {
         self.model.export_jobs()
     }
+    fn media(&self) -> &dyn crucible_control::MediaRepo {
+        self.model.media()
+    }
 }
 
 #[async_trait]
@@ -703,6 +706,9 @@ impl Repos for NodeTx {
     }
     fn export_jobs(&self) -> &dyn ExportJobRepo {
         self.inner.export_jobs()
+    }
+    fn media(&self) -> &dyn crucible_control::MediaRepo {
+        self.inner.media()
     }
 }
 

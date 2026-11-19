@@ -280,6 +280,26 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "GET",
+        "/api/v1/projects/{project_id}/media",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/media",
+        Project(ProjectPermission::Ingest),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/media/{media_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/media/{media_id}",
+        Project(ProjectPermission::Ingest),
+    ),
+    route(
+        "GET",
         "/api/v1/projects/{project_id}/members",
         Project(ProjectPermission::Manage),
     ),

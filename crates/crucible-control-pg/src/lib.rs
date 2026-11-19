@@ -18,6 +18,7 @@ mod conn;
 mod exports;
 mod identity;
 mod lifecycle;
+mod media;
 mod migrate;
 mod sql;
 mod store;

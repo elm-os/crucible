@@ -31,6 +31,7 @@ mod id;
 mod mailer;
 pub mod metrics;
 mod net;
+mod object;
 mod rng;
 mod spawner;
 mod sqlws;
@@ -56,6 +57,9 @@ pub use metrics::{
     Counter, CounterDef, Gauge, GaugeDef, Histogram, HistogramDef, MemoryRecorder, Metrics,
 };
 pub use net::{Listener, Net, NetError, Stream, StreamIo, TlsRoots};
+pub use object::{
+    ByteStream, Disposition, ObjectError, ObjectMeta, ObjectPage, ObjectStore, Presigned,
+};
 pub use rng::{ChaChaRng, Rng, RngAdapter};
 pub use spawner::{
     Cancelled, JoinHandle, ShutdownSignal, ShutdownTrigger, Spawner, TaskAbort, shutdown_channel,
@@ -166,6 +170,8 @@ pub struct Stores {
     pub telemetry: Arc<dyn TelemetryStore>,
     /// The SQL workspace's path to ClickHouse. `None` when the workspace is not configured.
     pub sql: Option<Arc<dyn SqlWorkspaceStore>>,
+    /// Object storage for media. `None` when no object store is configured.
+    pub object: Option<Arc<dyn ObjectStore>>,
 }
 
 impl Stores {
@@ -175,6 +181,7 @@ impl Stores {
             control: None,
             telemetry,
             sql: None,
+            object: None,
         }
     }
 
@@ -189,6 +196,13 @@ impl Stores {
     #[must_use]
     pub fn with_sql(mut self, sql: Arc<dyn SqlWorkspaceStore>) -> Self {
         self.sql = Some(sql);
+        self
+    }
+
+    /// The same bundle with the object store.
+    #[must_use]
+    pub fn with_object(mut self, object: Arc<dyn ObjectStore>) -> Self {
+        self.object = Some(object);
         self
     }
 }
