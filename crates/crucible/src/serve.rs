@@ -40,8 +40,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
-use crucible_auth::{KeyVerifier, StaticKeys};
+use crucible_auth::service::Identity;
+use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
 use crucible_config::Config;
+use crucible_control::KeyScope;
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
 use crucible_env::{
@@ -55,9 +57,11 @@ use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::QueryService;
 use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
+use crucible_schema::SqlProfile;
 use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
+use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
@@ -225,16 +229,39 @@ struct Gate {
     api: OnceLock<Router>,
     /// The API until then.
     api_without_store: Router,
+    /// The Postgres key snapshot, with a control plane: until it loads the node is not ready and ingest stays
+    /// closed (contract 11.8: a cold start without Postgres accepts nothing).
+    snapshot: Option<Arc<DbKeys>>,
     /// The MCP server at `/mcp`, mounted over the store with the API.
     mcp: Arc<McpGate>,
 }
 
+/// The keys of the MCP server. Its tools read, so with a control plane a key needs the `read` scope (contract
+/// 11.3), as ingest needs `ingest`; keys from the keys file carry no scopes to check.
+fn mcp_keys(identity: Option<&Arc<Identity>>, keys: &Arc<dyn KeyVerifier>) -> Arc<dyn KeyVerifier> {
+    match identity {
+        Some(identity) => Arc::new(identity.keys().with_scope(KeyScope::Read)),
+        None => Arc::clone(keys),
+    }
+}
+
 impl Gate {
     fn closed(&self) -> Option<String> {
-        self.closed
+        let closed = self
+            .closed
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .clone();
+        closed.or_else(|| {
+            self.snapshot
+                .as_ref()
+                .filter(|keys| !keys.is_loaded())
+                .map(|_| {
+                    "the API key snapshot is not loaded yet: Postgres has not answered, or its migrations have \
+                     not run (`--migrate` and `crucible migrate` apply them); the log has the error"
+                        .to_owned()
+                })
+        })
     }
 
     fn close(&self, reason: String) {
@@ -324,6 +351,7 @@ async fn open_app(
     keys: StaticKeys,
     cursors: Arc<KeyRing>,
     config: WalConfig,
+    identity: Option<Arc<Identity>>,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -336,7 +364,11 @@ async fn open_app(
         segments = report.segments.len(),
         "wal opened"
     );
-    let keys: Arc<dyn KeyVerifier> = Arc::new(keys);
+    // With a control plane the keys are the Postgres snapshot; the keys file is the mode without one.
+    let keys: Arc<dyn KeyVerifier> = match &identity {
+        Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
+        None => Arc::new(keys),
+    };
     let ingest = Ingest::new(
         env,
         wal.clone(),
@@ -344,16 +376,20 @@ async fn open_app(
         Arc::clone(&keys),
         ingest_config(),
     );
+    let settings = Arc::new(StaticProjectSettings::default());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
-        api_without_store: crucible_api::router_without_store(
-            env,
-            Arc::clone(&keys),
-            Arc::new(StaticProjectSettings::default()),
-            cursors,
-        ),
-        mcp: Arc::new(McpGate::new(env, Arc::clone(&keys))),
+        snapshot: identity
+            .as_ref()
+            .map(|identity| Arc::clone(identity.keys())),
+        mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
+        api_without_store: match identity {
+            Some(identity) => {
+                crucible_api::platform_router(env, None, identity, settings, cursors, None)
+            }
+            None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
+        },
     });
     let app = App {
         ingest,
@@ -535,6 +571,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// Identity, with a control plane.
+    identity: Option<Arc<Identity>>,
     /// Where the API's fact writes go: this node's ingest.
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
@@ -619,6 +657,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        identity,
         facts: fact_writer,
         mcp,
     } = task;
@@ -681,10 +720,45 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("reading the quarantine manifests")?;
     hook.restore_quarantined(pairs);
     hook.restore_unshippable(frames);
+    // The SQL workspace needs the control plane: its identities, saved queries and audit rows live there.
+    let sql = match &control {
+        Some(control) => {
+            let sql_store = Arc::new(config.sql_store(&store)?);
+            // A server upgrade can add settings the workspace's profile should pin, and the operator can change
+            // `sql.statements_per_hour`; the ledger would not apply access step A2 again, so the profile and the
+            // quota are brought up to date at every start.
+            let profile = async {
+                let profile = sql_store.server_profile(SqlProfile::default()).await?;
+                sql_store.apply_profile(&profile).await?;
+                sql_store.apply_quota().await
+            };
+            if let Err(error) = profile.await {
+                tracing::warn!(%error, "the SQL workspace's settings profile and quota were not updated; run with --migrate");
+            }
+            let workspace = SqlWorkspace::new(
+                env.clone(),
+                sql_store.clone(),
+                Arc::new(control.store.clone()),
+                true,
+            );
+            // Dropping a handle detaches its task; both loops end with the host's shutdown scope.
+            drop(env.spawn("sql-probe", workspace.clone().run_probe_loop()));
+            drop(env.spawn(
+                "sql-reconciler",
+                workspace.clone().run_reconciler(report.epoch.to_string()),
+            ));
+            Some((workspace, sql_store))
+        }
+        None => None,
+    };
     let stores = Stores::new(Arc::new(store));
     let stores = match control {
         Some(control) => stores.with_control(Arc::new(control.store)),
         None => stores,
+    };
+    let (sql, stores) = match sql {
+        Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
+        None => (None, stores),
     };
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
@@ -693,17 +767,21 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
-    let (mcp_keys, mcp_cursors) = (Arc::clone(&keys), Arc::clone(&cursors));
+    let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
-    gate.open(crucible_api::router(
-        &env,
-        service,
-        keys,
-        Arc::new(StaticProjectSettings::default()),
-        cursors,
-        fact_writer,
-    ));
+    let settings = Arc::new(StaticProjectSettings::default());
+    gate.open(match identity {
+        Some(identity) => crucible_api::platform_router(
+            &env,
+            Some((service, fact_writer)),
+            identity,
+            settings,
+            cursors,
+            sql,
+        ),
+        None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
+    });
     tracing::info!(
         watermark = %watermark,
         last_lsn = %report.last_lsn,
@@ -846,7 +924,7 @@ fn clickhouse(config: &Config, migrate: bool) -> anyhow::Result<Option<ClickHous
         );
         return Ok(None);
     };
-    ClickHouse::new(clickhouse).map(Some)
+    ClickHouse::new(clickhouse, config.sql).map(Some)
 }
 
 /// Resolves with the name of the first termination signal the process receives.
@@ -926,17 +1004,25 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Some(path) => crate::keys::load(path, env)?,
         None => StaticKeys::new(env.rng.as_ref(), Vec::new())?,
     };
-    if keys.is_empty() {
+    if keys.is_empty() && config.postgres.is_none() {
         tracing::warn!(
             "no project keys are configured (--keys-file); ingest refuses every request"
         );
     }
     let key_count = keys.len();
     let clickhouse = clickhouse(&config, migrate)?;
-    // Nothing reads the control plane yet in this milestone except the migrations ledger; the store opens its
-    // first connection when something does.
     let control = match &config.postgres {
         Some(postgres) => Some(Control::new(env, postgres)?),
+        None => None,
+    };
+    // With a control plane, identity serves sessions and the Postgres keys. Until its tables exist and the key
+    // snapshot has loaded, the node is not ready and ingest stays closed; listeners still bind.
+    let identity = match &control {
+        Some(control) => {
+            let identity = crate::identity::build(env, &config, control)?;
+            crate::identity::start(env, &identity, control, migrate);
+            Some(identity)
+        }
         None => None,
     };
     let control_mode = if control.is_some() {
@@ -960,6 +1046,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         keys,
         Arc::clone(&cursors),
         WalConfig::default(),
+        identity.clone(),
         closed,
     )
     .await?;
@@ -1015,6 +1102,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
             };
@@ -1170,7 +1258,10 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None).await.unwrap().0
+        open_app(env, keys, cursors, config, None, None)
+            .await
+            .unwrap()
+            .0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -1457,6 +1548,7 @@ mod tests {
                 closed: RwLock::new(None),
                 api: OnceLock::new(),
                 api_without_store: Router::new(),
+                snapshot: None,
                 mcp: Arc::new(McpGate::new(&host.env, Arc::new(no_keys(&host.env)))),
             };
             let readiness = |wal: &Wal| {
@@ -2385,7 +2477,9 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, closed).await.unwrap();
+        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+            .await
+            .unwrap();
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await

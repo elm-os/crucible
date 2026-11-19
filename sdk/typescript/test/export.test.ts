@@ -1,11 +1,11 @@
 // Setup and the export path: OTLP/HTTP protobuf with Bearer auth, the bounded queue, and the collector states.
 
 import { createServer } from "node:net";
-import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, test } from "vitest";
 import { flush, init, observe, shutdown, stats } from "../src/index.ts";
-import { QueueSpanProcessor } from "../src/queue.ts";
+import { QueueSpanProcessor, spanBytes } from "../src/queue.ts";
 import { startCollector } from "./support/collector.ts";
 
 afterEach(async () => {
@@ -56,7 +56,7 @@ describe("init", () => {
       "telemetry.sdk.name": "opentelemetry",
       "telemetry.sdk.version": "2.12.1",
     });
-    expect(stats()).toEqual({ queued: 0, dropped: 0, exported: 1, failed: 0 });
+    expect(stats()).toEqual({ queued: 0, queuedBytes: 0, dropped: 0, exported: 1, failed: 0 });
     await collector.close();
   });
 
@@ -129,7 +129,7 @@ describe("init", () => {
   test("before init, helpers run and nothing is exported", async () => {
     expect(observe("work", () => 7)).toBe(7);
     expect(await observe("work", async () => 8)).toBe(8);
-    expect(stats()).toEqual({ queued: 0, dropped: 0, exported: 0, failed: 0 });
+    expect(stats()).toEqual({ queued: 0, queuedBytes: 0, dropped: 0, exported: 0, failed: 0 });
     await flush();
     await shutdown();
   });
@@ -194,6 +194,7 @@ describe("queue", () => {
     const exporter = stalledExporter();
     const queue = new QueueSpanProcessor(exporter, {
       maxQueueSize: 2_048,
+      maxQueueBytes: 1 << 30,
       maxBatchSize: 512,
       flushIntervalMs: 60_000,
       timeoutMs: 60_000,
@@ -203,12 +204,42 @@ describe("queue", () => {
       tracer.startSpan("s").end();
     }
     expect(exporter.batches.map((batch) => batch.length)).toEqual([512]);
-    expect(queue.stats()).toEqual({ queued: 2_048, dropped: 1, exported: 0, failed: 0 });
+    expect(queue.stats()).toMatchObject({ queued: 2_048, dropped: 1, exported: 0, failed: 0 });
+  });
+
+  test("the byte bound counts the batch in flight and drops beyond it", () => {
+    const exporter = stalledExporter();
+    const ended: ReadableSpan[] = [];
+    const recorder: SpanProcessor = {
+      onStart: () => {},
+      onEnd: (span) => void ended.push(span),
+      forceFlush: async () => {},
+      shutdown: async () => {},
+    };
+    new BasicTracerProvider({ spanProcessors: [recorder] })
+      .getTracer("size")
+      .startSpan("s", { attributes: { note: "x".repeat(1_000) } })
+      .end();
+    const size = spanBytes(ended[0] as ReadableSpan);
+    const queue = new QueueSpanProcessor(exporter, {
+      maxQueueSize: 2_048,
+      maxQueueBytes: 10 * size,
+      maxBatchSize: 4,
+      flushIntervalMs: 60_000,
+      timeoutMs: 60_000,
+    });
+    const bounded = new BasicTracerProvider({ spanProcessors: [queue] }).getTracer("test");
+    for (let i = 0; i < 12; i += 1) {
+      bounded.startSpan("s", { attributes: { note: "x".repeat(1_000) } }).end();
+    }
+    expect(exporter.batches.map((batch) => batch.length)).toEqual([4]);
+    expect(queue.stats()).toMatchObject({ queued: 10, queuedBytes: 10 * size, dropped: 2 });
   });
 
   test("a full queue drops in constant time and never blocks", () => {
     const queue = new QueueSpanProcessor(stalledExporter(), {
       maxQueueSize: 16,
+      maxQueueBytes: 1 << 30,
       maxBatchSize: 8,
       flushIntervalMs: 60_000,
       timeoutMs: 60_000,
@@ -226,6 +257,7 @@ describe("queue", () => {
     const exporter = stalledExporter();
     const queue = new QueueSpanProcessor(exporter, {
       maxQueueSize: 64,
+      maxQueueBytes: 1 << 30,
       maxBatchSize: 2,
       flushIntervalMs: 5,
       timeoutMs: 20,

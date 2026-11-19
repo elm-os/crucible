@@ -121,7 +121,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws` |
 | `crucible-cursor` | `crucible-records` |
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
@@ -130,12 +130,13 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
+| `crucible-sqlws` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-control` |
 | `crucible-proxy` | `crucible-env`, `crucible-records` |
 | `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
 | `crucible-sdk` | none (it depends on no internal crate) |
 | `crucible-sdk-conformance` | `crucible-sdk` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
-| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`) |
+| `xtask` | `crucible-sim` (`cargo xtask sim`), `crucible-api-types` (`cargo xtask gen-ts`), `crucible-api` (`cargo xtask authz-matrix`) |
 
 Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
 `crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
@@ -446,6 +447,8 @@ Decisions made while implementing the traits above; they bind every backend.
 
 | Topic | Rule |
 |---|---|
+| Store connections (#76) | Startup detection reads the server's `keep_alive_timeout` (`system.server_settings`); the pool keeps an idle connection for that value minus min(1 s, half of it) (default; revisit), rebuilt once after detection; 2 s when it cannot be read; `clickhouse.idle_timeout` overrides it, for a balancer in front of the store. A read whose connection could not be opened is sent once more; inserts are unchanged. Metric `crucible_clickhouse_connections_opened_total`, counted at `Net::connect` |
+| Memory budgets (#76) | At startup the node adds up its byte budgets (the recent index, the shipper and ingest) and warns above 90% (default; revisit) of the memory the process may use, naming each budget and the setting that changes it |
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
 | `ChildProcess` | Not a field of `Env`: only the proxy uses it, and takes it as an argument. Linux delivers the parent-death signal through a re-exec trampoline (a hidden `crucible proxy exec-child`), so the workspace stays free of `unsafe`; macOS has no parent-death signal. The simulation of a scripted MCP server (seeded chunk splits, stalls, crashes) lives in `crucible-proxy`'s tests; exit codes are covered by the scripted and real-process tests, because `ProxyCore` takes no exit status |
 | Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
@@ -1617,8 +1620,9 @@ The retention term uses the table's retention binding (section 6.3) and time col
 `minute`, `day`, `row_day` or `last_seen`). The reconciler rewrites per-project policies when retention changes,
 so retention hides rows from SQL immediately.
 
-**Provisioning order** (binding): per-project policies (both forms, every table), then the user, then the role
-grant. Deprovisioning is the reverse. Identities are provisioned lazily on first workspace use and dropped after
+**Provisioning order** (binding): the user without its role, then per-project policies (both forms, every table),
+then the role grant. ClickHouse refuses a policy for a user that does not exist (code 511), so the user comes
+first; it can read nothing until the grant. Deprovisioning is the reverse. Identities are provisioned lazily on first workspace use and dropped after
 30 idle days. State lives in Postgres `ch_sql_identities` (`project_id`, `generation`, `state`, `last_probe`).
 The reconciler runs every 5 minutes and on project creation, under the leader lease.
 
@@ -1636,8 +1640,11 @@ Values are deployment defaults, tunable through config before provisioning.
 | HTTP | `cancel_http_readonly_queries_on_client_close = 1`, 64-bit integers quoted in JSON output, ISO date output |
 | Window backstops | `force_index_by_date = 1` and `max_partitions_to_read`, enabled only if conformance script W13 shows they work through the views |
 
-**Quota `crucible_sql_quota`**, keyed by user name: per hour 600 queries, 300 errors, 20,000,000,000 read rows and
-1,800 s of execution time.
+**Quota `crucible_sql_quota`**, keyed by user name: per hour 1,800 queries (the operator setting
+`sql.statements_per_hour`, `CRUCIBLE_SQL_STATEMENTS_PER_HOUR`; one API run is about three statements because the
+validation `EXPLAIN`s count, so about 600 runs), 300 errors, 20,000,000,000 read rows and 1,800 s of execution time.
+The quota is applied at every start, beside the profile; a refusal on the `queries` limit names the setting. The probe
+identities are outside the quota.
 
 **The time window is a guardrail, not isolation.** The API requires `from` and `to` and passes them as the query
 parameters `{from}` and `{to}`; a lexical check requires the text to use both (`sql_time_window_required`). If the
@@ -1791,7 +1798,7 @@ ClickHouse serves it.
 | Entry | About 200 bytes: ids, times, type, level, model, cost, tokens, interned name, user and session, `lsn`, and a WAL locator (segment, offset, span ordinal). No payload and no previews |
 | Payload of a recent span | Re-read the frame at the locator and re-normalize that span (the normalizer is pure) |
 | Maps | By (project, trace_id); by (project, start_time, span_id); by (project, lsn) for live tail; a per-trace summary that includes rootless traces. 16 shards behind read-write locks; one writer (stage B) |
-| Bound | `recent.max_bytes`, default min(1 GiB, 10% of RAM) |
+| Bound | `recent.max_bytes`, default min(1 GiB, 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), else of the host's RAM) |
 | Eviction | Oldest LSN first, and only entries with `lsn <=` the checkpoint watermark whose checkpoint is older than the visibility grace (2 s single node; 10 s clustered or Cloud) |
 | Read barrier | Trace-by-id snapshots the node's durable LSN on arrival and waits, at most 250 ms (`recent.read_barrier`), until stage B has applied through it. If the wait expires the response carries `consistency: lagging` |
 | Gap rule | When the bound is hit before entries are evictable (a store outage), the oldest entries are dropped and the dropped LSN range is recorded as a gap. A gap closes when the watermark has passed its upper LSN and the grace has elapsed. Any read whose result could include rows from an open gap must return `partial: true` with `partial_reason: store_unavailable`. A silent miss is a contract violation |
@@ -1814,7 +1821,7 @@ it may trail (barrier expired, peer fan-out incomplete, or replica lag beyond th
 
 | Endpoint | Plan |
 |---|---|
-| Trace list | `Scan(trace_heads)` in key order with the cursor `(start_time, trace_hash, trace_id)`, over-reading 3 times the limit; then `Aggregate(trace_stats)` and the four fact lookups for the page ids; drop hidden provisional heads; merge recent |
+| Trace list | `Scan(trace_heads)` in key order with the cursor `(start_time, trace_hash, trace_id)`, over-reading 3 times the limit; then `Aggregate(trace_stats)` and three fact lookups for the page ids (scores without comment and metadata, tags, flags; trace detail and `GET facts` read all four); drop hidden provisional heads; merge recent |
 | Trace detail | Recent index with the read barrier, in parallel with `Aggregate(trace_stats)` for time bounds; then `Scan(span_core)` bounded by them and by `trace_hash` and the bloom index; de-duplicate by `span_id` |
 | Span children | `Scan(span_core)` with `parent_span_id = X` inside the trace bounds, keyset `(start_time, span_id)` |
 | Span list | `Scan(span_core)` ordered by `start_minute`, `start_time`, `span_id` descending |
@@ -1904,6 +1911,18 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
 - `KILL QUERY` is sent to one node, not `ON CLUSTER`.
 - The window on `mcp_tool_inventory` and `mcp_deploys` applies after grouping (`max(last_seen) >= from` and
   `min(first_seen) < to`), because their time columns are aggregated.
+- Search (#59): `TextSearch` takes a key order (descending), a keyset cursor and arrival bounds (`received_at <=
+  as_of`). Each field kind is searched by its own plan and merged by key, and the page and cursor come from the hit
+  stream. In phrase mode the snippet needle is the tokens joined by single spaces, and a phrase is verified on its
+  snippets (anchored on the phrase, else on the field's start), so a phrase written with other separators is found
+  only within a field's first 240 bytes. Tokens are lowered only for lowered indexes; metadata entries are compared as
+  written, a metadata term needs an `=`, and a phrase over metadata means all of its entries. Mixing metadata with
+  the text fields in one plan is refused (`PlanError::Tokenizers`).
+- Metrics (#61): the `traces` source is compiled (one measure, `traces`, counting root heads of `trace_heads` by
+  `start_time`, class `analytics_raw`, tier `core`, no dimensions or filters); `metrics/schema` lists `spans` and
+  `traces`; `metrics/query` and `filter-values` responses carry `saturated` and `meta`. Not built yet: the
+  `analytics_raw` fallback of the spans source over `span_core`, and filter values beyond the `span_metrics`
+  dimensions. A `timezone` other than UTC is refused (`validation_failed`, code `unsupported`).
 
 ## 9. MCP
 
@@ -2389,6 +2408,7 @@ provider asserts a verified email.
 | Write tags, flags, comments, feedback, corrections | yes | yes | no |
 | Create and edit dashboards, saved queries, alert rules | yes | yes | no |
 | Run ad hoc SQL; create exports | yes | yes | no |
+| SQL workspace routes (#73) | `GET sql/schema`, `runs`, `saved-queries`: `read`; `POST sql/run` and `POST sql/export`: `run_sql` (export takes query text, so it needs `run_sql`, not `export`); running a saved query and cancelling a run: `run_saved_query`; saved-query create, edit, delete: `edit_content`. A key acts as a member with the `sql` scope and as a viewer without it; no key saves a query. The permission check runs before body validation | | |
 | Run a project-visible saved query (declared parameters only) | yes | yes | yes |
 | Channels (they hold secrets), test-send | yes | no | no |
 | API keys, project settings, retention, model prices, project members | yes | no | no |
@@ -2503,8 +2523,12 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 - `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
   `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots), `--wal-backend`
   (`auto`, `portable`, `uring`), `--ui-dir` (serve a UI build from a directory instead of the embedded one),
-  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `id`,
-  `project_id` and `secret`; error messages never echo the file).
+  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `project_id`,
+  `public_key` and `secret`; error messages never echo the file). The keys file is the mode without Postgres
+  (ingest and the API on file keys, no sign-in); with Postgres configured, keys live in the control plane and a keys
+  file is refused with a message that says how to fix it. `crucible admin create-key --project <slug|id>
+  [--scopes ...] [--note ...] [--import]` creates a key from the command line; running servers see it within 5 s
+  (the key feed, 11.8).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
   code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product; on a compat route
   that declares SDK identity headers, from those headers when present.
@@ -2553,7 +2577,8 @@ Errors are `application/problem+json` (RFC 9457):
 ```
 
 `code` is stable. `title` and `detail` are for logs and developers; the UI maps `code` to its own copy and never
-shows server text. Guardrail errors are never retried by the server.
+shows server text, with one exception: the `/sql/` page shows a `sql_*` problem's `detail` and the database's own
+message, because a user writing SQL needs the engine's error. Guardrail errors are never retried by the server.
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -2616,7 +2641,24 @@ shows server text. Guardrail errors are never retried by the server.
   require `If-Match`: a missing header is `precondition_required`, a mismatch is `precondition_failed`.
 - `Idempotency-Key` (1 to 128 characters of `[A-Za-z0-9_-]`) is honoured on POST creates for exports, deletion
   requests, media and fact writes. Stored for 24 h per (principal, route, key) with a request hash; a replay
-  returns the stored response; a different request under one key is `idempotency_key_reused`.
+  returns the stored response; a different request under one key is `idempotency_key_reused`. For fact writes the
+  principal is the author: a signed-in user writes facts as themselves (author kind `user`, capability
+  `write_facts`), a key as the key, and idempotency keys are kept per author.
+- The Crucible MCP server at `/mcp` accepts control-plane keys only with the `read` scope, and answers 503 with
+  `Retry-After` when the control plane cannot check a key (the fail-open rule of 11.8 for unknown keys).
+- A 405 carries an `Allow` header built from the route's methods.
+- Fact-write idempotency keys live in the node's memory (at most 10,000, oldest dropped first, lost on restart) until
+  the control plane's `idempotency_keys` table exists; a key whose first request is still running answers `conflict`,
+  and a failed or cancelled request frees its key. A fact write answers 201 with `fact_id`, `key`, `version`,
+  `created_at` and `target_time`. A span's facts are filed under its trace's earliest known start; a fact about an
+  unknown target is `not_found` only when the lookup is whole and strong, else 503 with `Retry-After: 1`. The API's
+  1 MiB body limit caps a correction request at 1 MiB.
+- Search and payload routes (#59): `POST search` takes query, mode, fields (input, output, metadata), from, to,
+  limit and cursor (cursor route 3: window, `as_of` and `(start_minute, trace_hash, span_id)`; its filter hash covers
+  the mode, the fields and the tokens); `name` and `filters` are refused with a 422 until the shared filter DTO lands.
+  The payload route takes a required `start_time`, serves only the nine `FieldRange` fields (others are a 422),
+  honours a single byte range (206, or 416 without a problem body), and answers a miss that is not whole and strong
+  with 503 `telemetry_store_unavailable`, because a byte response cannot carry `meta`.
 
 ### 12.6 Endpoints
 
@@ -2737,7 +2779,7 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `password_login_enabled` | bool |
 | `csrf_token` | string |
 | `session` | `{ expires_at, idle_expires_at, auth_method }` |
-| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }` |
+| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }`; `sql_workspace` reports the workspace's real state: `enabled`, or `not_configured`, or the runtime probe's reason |
 | `server` | `{ version }` |
 
 ### 12.8 Export formats
@@ -2923,3 +2965,6 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Settled in code by the dialect contract's implementation: the usage descendant set evicts and forgets by support (the LSN of the frame carrying the usage), and the 3.1 known limit covers a descendant whose frame the WAL collected (3.1, 5.3) |
 | v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
 | v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
+| v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |
+| v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
+| v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |

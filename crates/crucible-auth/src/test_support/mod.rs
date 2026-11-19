@@ -1,4 +1,7 @@
-//! Scopes for tests in other crates. Enabled by the `test-support` feature, which product builds never enable.
+//! Helpers for tests in other crates: scopes, and a fake sign-in provider. Enabled by the `test-support` feature,
+//! which product builds never enable.
+
+pub mod idp;
 
 use crucible_records::{NilProjectId, ProjectId, ProjectScope};
 

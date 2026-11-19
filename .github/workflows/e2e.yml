@@ -1,8 +1,9 @@
 name: e2e
 
 # Milestone 1 end to end on real infrastructure (crates/crucible/tests/e2e.rs): the release-shaped
-# `crucible serve` binary with the embedded UI in front of ClickHouse 26.8. OTLP traces as protobuf, JSON and
-# gRPC, and one on a compat ingest route, come back through the REST API and the UI's traces table; a 20,000-span burst, then two kill -9 and one SIGTERM in the middle of
+# `crucible serve` binary with the embedded UI in front of ClickHouse 26.8, and with Postgres 18 for the control
+# plane (sign-in, a project and an API key that ingests). OTLP traces as protobuf, JSON and gRPC, and one on a
+# compat ingest route, come back through the REST API and the UI's traces table; a 20,000-span burst, then two kill -9 and one SIGTERM in the middle of
 # further runs, each followed by a restart, lose no acknowledged span and duplicate no row.
 
 on:
@@ -42,6 +43,20 @@ jobs:
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
         ports:
           - 8123:8123
+      # The control plane: the second test signs in, makes an API key, ingests with it and reads back.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: crucible
+          POSTGRES_PASSWORD: e2e
+          POSTGRES_DB: crucible
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crucible -d crucible"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,6 +105,7 @@ jobs:
           CRUCIBLE_E2E_CLICKHOUSE_URL: http://localhost:8123
           CRUCIBLE_E2E_CLICKHOUSE_USER: crucible_admin
           CRUCIBLE_E2E_CLICKHOUSE_PASSWORD: e2e-admin
+          CRUCIBLE_E2E_POSTGRES_URL: postgres://crucible:e2e@localhost:5432/crucible
         run: |
           export CRUCIBLE_E2E_BIN="$PWD/target/release/crucible"
           export CRUCIBLE_E2E_OUT="$PWD/e2e-out"

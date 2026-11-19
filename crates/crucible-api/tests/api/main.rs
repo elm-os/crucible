@@ -16,9 +16,11 @@ mod document;
 mod endpoints;
 mod errors;
 mod facts;
+mod identity;
 mod metrics;
 mod payload;
 mod search;
+mod sql;
 
 use std::future::Future;
 use std::sync::Arc;

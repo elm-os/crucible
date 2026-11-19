@@ -10,19 +10,27 @@
 mod error;
 mod lease;
 mod repo;
+mod sqlws;
 mod types;
 
 pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use repo::{
-    ApiKeyRepo, Claims, ControlStore, ControlTx, CredentialRepo, KeyFeed, Leases, MembershipRepo,
-    Migrations, OrgRepo, ProjectRepo, Repos, SecretRepo, SessionRepo, SigningKeyRepo,
+    ApiKeyRepo, AuthFlowRepo, AuthProviderRepo, Claims, ControlStore, ControlTx, CredentialRepo,
+    InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,
+    OneTimeTokenRepo, OrgRepo, ProjectRepo, Repos, SecretRepo, SessionRepo, SigningKeyRepo,
     TRANSACTION_CAP, UserRepo, transaction,
 };
+pub use sqlws::{
+    AppliedRetention, SavedParam, SavedQuery, SavedQueryRepo, SqlActor, SqlIdentity,
+    SqlIdentityRepo, SqlIdentityState, SqlParamType, SqlRun, SqlRunEnd, SqlRunKind, SqlRunOutcome,
+    SqlRunRepo, SqlVisibility,
+};
 pub use types::{
-    ApiKey, AuthMethod, Claim, Credential, Email, JsonDoc, KeyChange, KeyChangeKind, KeyScope,
-    KeySnapshot, Lease, LeaseName, LedgerEntry, MigrationKind, NewJob, Org, OrgMembership, OrgRole,
-    OrgSettings, Project, ProjectAccess, ProjectMembership, ProjectRole, Queue, Secret, Session,
-    SigningKey, SigningKeyState, SigningPurpose, SignupMode, TokenHash, User, UserStatus,
-    duration_micros,
+    ApiKey, AuthFlow, AuthMethod, AuthProvider, Claim, Credential, Email, Invitation, JsonDoc,
+    KeyChange, KeyChangeKind, KeyScope, KeySnapshot, Lease, LeaseName, LedgerEntry, MigrationKind,
+    NewJob, OauthAccount, OneTimeToken, Org, OrgMembership, OrgRole, OrgSettings, Project,
+    ProjectAccess, ProjectMembership, ProjectRole, ProviderKind, Queue, Secret, Session,
+    SigningKey, SigningKeyState, SigningPurpose, SignupMode, TokenHash, TokenKind, User,
+    UserStatus, duration_micros,
 };

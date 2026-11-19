@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/elm-os/crucible/sdk/go/internal/core"
 	"github.com/elm-os/crucible/sdk/go/internal/scrub"
@@ -159,6 +160,7 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		truncated := false
 		if rule != nil && rule.Args {
 			window, cut := scrub.Window(args, rule.MaxBytes)
+			noteWork(len(window), len(window))
 			truncated = cut
 			if text, cut, ok := s.captured(FieldArguments, window, rule.MaxBytes); ok {
 				kv = append(kv, attribute.String(keyToolArguments, text))
@@ -186,7 +188,7 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		okv, class := outcomeAttrs(out, o, notification, true)
 		kv = append(kv, okv...)
 		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {
-			if text, cut, ok := s.captured(FieldResult, resultText(r), rule.MaxBytes); ok {
+			if text, cut, ok := s.capturedResult(r, rule.MaxBytes); ok {
 				kv = append(kv, attribute.String(keyToolResult, text))
 				truncated = truncated || cut
 			}
@@ -301,6 +303,17 @@ func (s *server) rule(tool string) *CaptureRule {
 	return nil
 }
 
+// workHook, when set, is called once per captured field with the bytes of JSON the capture path serialized for
+// it before any cut and the bytes it handed to the scrubber. The capture-overhead scenario reads its work bound
+// from it.
+var workHook atomic.Pointer[func(serialized, scrubbed int)]
+
+func noteWork(serialized, scrubbed int) {
+	if h := workHook.Load(); h != nil {
+		(*h)(serialized, scrubbed)
+	}
+}
+
 // captured scrubs and caps one value, then applies the Scrub option. ok is false when there is nothing to
 // send.
 func (s *server) captured(field, value string, max int) (text string, truncated, ok bool) {
@@ -314,16 +327,15 @@ func (s *server) captured(field, value string, max int) (text string, truncated,
 	return text, truncated, text != ""
 }
 
-// resultText is the captured form of a tool result: its content and structured content only, never the
-// request state or input requests of a multi-round exchange.
-func resultText(r *mcp.CallToolResult) string {
-	b, err := json.Marshal(struct {
-		Content           []mcp.Content `json:"content"`
-		StructuredContent any           `json:"structuredContent,omitempty"`
-		IsError           bool          `json:"isError,omitempty"`
-	}{r.Content, r.StructuredContent, r.IsError})
-	if err != nil {
-		return ""
+// capturedResult is the captured form of a tool result (its content, structured content and error flag, never
+// the request state or input requests of a multi-round exchange), scrubbed and capped as captured does it. Only
+// the window the scrubber reads is serialized.
+func (s *server) capturedResult(r *mcp.CallToolResult, max int) (text string, truncated, ok bool) {
+	w := resultWindow(r, scrub.WindowSize(max))
+	noteWork(w.produced, len(w.buf))
+	if w.err != nil {
+		return "", false, false
 	}
-	return string(b)
+	text, truncated, ok = s.captured(FieldResult, string(w.buf), max)
+	return text, truncated || w.more, ok
 }

@@ -35,10 +35,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    ApiKey, ApiKeyRepo, AuthMethod, Claim, Claims, ControlStore, ControlTx, CredentialRepo, Email,
-    JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease, LeaseName, Leases, MembershipRepo, Migrations,
-    NewJob, OrgRepo, Project, ProjectRepo, Queue, Repos, SecretRepo, Session, SessionRepo,
-    SigningKeyRepo, TokenHash, TxError, User, UserRepo, UserStatus,
+    ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
+    ControlTx, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyFeed, KeyScope, LEASE_TTL, Lease,
+    LeaseName, Leases, MembershipRepo, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo,
+    OrgRepo, Project, ProjectRepo, Queue, Repos, SavedQueryRepo, SecretRepo, Session, SessionRepo,
+    SigningKeyRepo, SqlIdentityRepo, SqlRunRepo, TokenHash, TxError, User, UserRepo, UserStatus,
 };
 use crucible_env::{Clock, ClockExt, Env, Instant, Rng};
 use crucible_jobs::housekeeping::{self, KEY_FEED_KEEP};
@@ -520,6 +521,21 @@ impl Repos for NodeStore {
     fn secrets(&self) -> &dyn SecretRepo {
         self.model.secrets()
     }
+    fn auth_providers(&self) -> &dyn AuthProviderRepo {
+        self.model.auth_providers()
+    }
+    fn oauth_accounts(&self) -> &dyn OauthAccountRepo {
+        self.model.oauth_accounts()
+    }
+    fn auth_flows(&self) -> &dyn AuthFlowRepo {
+        self.model.auth_flows()
+    }
+    fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo {
+        self.model.one_time_tokens()
+    }
+    fn invitations(&self) -> &dyn InvitationRepo {
+        self.model.invitations()
+    }
     fn leases(&self) -> &dyn Leases {
         &self.leases
     }
@@ -528,6 +544,15 @@ impl Repos for NodeStore {
     }
     fn migrations(&self) -> &dyn Migrations {
         self.model.migrations()
+    }
+    fn sql_identities(&self) -> &dyn SqlIdentityRepo {
+        self.model.sql_identities()
+    }
+    fn saved_queries(&self) -> &dyn SavedQueryRepo {
+        self.model.saved_queries()
+    }
+    fn sql_runs(&self) -> &dyn SqlRunRepo {
+        self.model.sql_runs()
     }
 }
 
@@ -595,6 +620,21 @@ impl Repos for NodeTx {
     fn secrets(&self) -> &dyn SecretRepo {
         self.inner.secrets()
     }
+    fn auth_providers(&self) -> &dyn AuthProviderRepo {
+        self.inner.auth_providers()
+    }
+    fn oauth_accounts(&self) -> &dyn OauthAccountRepo {
+        self.inner.oauth_accounts()
+    }
+    fn auth_flows(&self) -> &dyn AuthFlowRepo {
+        self.inner.auth_flows()
+    }
+    fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo {
+        self.inner.one_time_tokens()
+    }
+    fn invitations(&self) -> &dyn InvitationRepo {
+        self.inner.invitations()
+    }
     fn leases(&self) -> &dyn Leases {
         self.inner.leases()
     }
@@ -603,6 +643,15 @@ impl Repos for NodeTx {
     }
     fn migrations(&self) -> &dyn Migrations {
         self.inner.migrations()
+    }
+    fn sql_identities(&self) -> &dyn SqlIdentityRepo {
+        self.inner.sql_identities()
+    }
+    fn saved_queries(&self) -> &dyn SavedQueryRepo {
+        self.inner.saved_queries()
+    }
+    fn sql_runs(&self) -> &dyn SqlRunRepo {
+        self.inner.sql_runs()
     }
 }
 

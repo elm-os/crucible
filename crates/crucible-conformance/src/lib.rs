@@ -23,6 +23,7 @@ mod m2;
 mod m2_facts;
 mod maintenance;
 mod reads;
+pub mod sqliso;
 mod startup;
 
 use std::sync::Arc;

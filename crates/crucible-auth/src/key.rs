@@ -122,6 +122,15 @@ pub trait KeyVerifier: fmt::Debug + Send + Sync {
     /// `secret` verifies to, when `public` is that key's public key. The public key is compared in constant
     /// time, and only once the secret has verified.
     fn verify_pair(&self, public: &str, secret: &str) -> Result<KeyPrincipal, PairError>;
+
+    /// When `secret` was refused because the verifier cannot tell a new key from an invalid one now (contract
+    /// 11.8: Postgres is unreachable and the key is not in the snapshot, or the snapshot is not loaded), how long
+    /// to wait before trying again. `None` for a key that is simply invalid, and always for keys from
+    /// configuration.
+    fn retry_after(&self, secret: &str) -> Option<core::time::Duration> {
+        let _ = secret;
+        None
+    }
 }
 
 /// A project key from configuration.

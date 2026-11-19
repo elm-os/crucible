@@ -1,0 +1,29 @@
+[package]
+name = "crucible-sqlws"
+description = "The SQL workspace: lexical checks, limits, saved queries, exports, the identity reconciler and the self-probe."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+crucible-env = { workspace = true }
+crucible-records = { workspace = true }
+crucible-schema = { workspace = true }
+# A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-control = { path = "../crucible-control" }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crucible-auth = { workspace = true, features = ["test-support"] }
+crucible-sim = { path = "../crucible-sim" }
+async-trait = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

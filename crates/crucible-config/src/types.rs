@@ -93,8 +93,34 @@ pub struct Server {
     pub metrics_listen: SocketAddr,
     /// Serve the UI from this directory instead of the one compiled in.
     pub ui_dir: Option<PathBuf>,
-    /// TOML file of the project keys that ingest accepts.
+    /// TOML file of the project keys, for a server without Postgres.
     pub keys_file: Option<PathBuf>,
+    /// The URL people reach the server at.
+    pub public_url: Option<String>,
+    /// Origins besides the server's own that may send cookie-authenticated writes.
+    pub allowed_origins: Vec<String>,
+}
+
+/// `auth.pg_outage_mode`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PgOutageMode {
+    /// Known keys keep working for ingest.
+    FailOpen,
+    /// Every secret key is refused after 5 s without a successful poll.
+    FailClosed,
+}
+
+/// The `[auth]` section.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Auth {
+    /// API keys during a Postgres outage.
+    pub pg_outage_mode: PgOutageMode,
+    /// Seconds after which a fail-open outage behaves as fail-closed; `None` is unlimited.
+    pub fail_open_max: Option<u64>,
+    /// Seconds that cached sessions stay valid during a Postgres outage.
+    pub session_outage_grace: u64,
+    /// `security.require_https`: refuse sign-in unless the public URL is HTTPS.
+    pub require_https: bool,
 }
 
 /// The `[data]` section.
@@ -113,6 +139,14 @@ pub struct Mcp {
     pub calls_per_second: u32,
     /// Tool calls one key may make at once after a quiet spell.
     pub burst: u32,
+}
+
+/// The `[sql]` section: the SQL workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sql {
+    /// Statements one project's workspace identity may send to ClickHouse per hour. A run through the API is
+    /// three: two checks and the query.
+    pub statements_per_hour: u64,
 }
 
 /// The `[clickhouse]` section, present when `clickhouse.url` is set.
@@ -152,12 +186,16 @@ pub struct Config {
     pub recent_max_bytes: Option<u64>,
     /// The MCP server's rate limit.
     pub mcp: Mcp,
+    /// The SQL workspace.
+    pub sql: Sql,
     /// The master key, 64 hexadecimal characters.
     pub master_key: Option<Secret>,
     /// The telemetry store; `None` for the ingest-only mode.
     pub clickhouse: Option<ClickHouse>,
     /// The control plane; `None` to run without one.
     pub postgres: Option<Postgres>,
+    /// Sign-in and API keys.
+    pub auth: Auth,
 }
 
 /// Everything that is wrong with a configuration, one message per problem.
