@@ -303,7 +303,7 @@ proptest! {
 
     // The shape a kind takes, for every query the registry accepts: a stat is one measure without
     // dimensions, a bar one measure with dimensions, a chart at most four series (each measure with each key,
-    // and `other` for an additive measure), and a table anything.
+    // and `other` for an additive measure) of one unit, and a table anything.
     #[test]
     fn a_kind_takes_exactly_its_shapes(
         kind in prop_oneof![
@@ -335,9 +335,14 @@ proptest! {
                 if m != 1 { expected.push(pair("/widgets/0/query/measures", "invalid")); }
                 if d == 0 { expected.push(pair("/widgets/0/query/dimensions", "required")); }
             }
-            WidgetKind::Timeseries if series > 4 => {
-                let member = if d == 0 { "measures" } else { "top_n" };
-                expected.push(pair(&format!("/widgets/0/query/{member}"), "invalid"));
+            WidgetKind::Timeseries => {
+                if measures.iter().any(|(m, _)| m.unit() != measures[0].0.unit()) {
+                    expected.push(pair("/widgets/0/query/measures", "invalid"));
+                }
+                if series > 4 {
+                    let member = if d == 0 { "measures" } else { "top_n" };
+                    expected.push(pair(&format!("/widgets/0/query/{member}"), "invalid"));
+                }
             }
             _ => {}
         }

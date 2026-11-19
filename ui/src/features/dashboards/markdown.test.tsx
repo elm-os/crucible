@@ -14,7 +14,9 @@ describe("markdown", () => {
 
   test("inline marks render as elements and HTML stays text", () => {
     render(
-      <Markdown source={"Read **this** and *that*, run `pnpm build`.\n\n<img src=x onerror=alert(1)>"} />,
+      <Markdown
+        source={"Read **this** and *that*, run `pnpm build`.\n\n<img src=x onerror=alert(1)>"}
+      />,
     );
     expect(screen.getByText("this").tagName).toBe("STRONG");
     expect(screen.getByText("that").tagName).toBe("EM");

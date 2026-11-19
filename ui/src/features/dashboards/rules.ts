@@ -53,10 +53,11 @@ export function fits(kind: WidgetKind, layout: WidgetLayout): boolean {
   );
 }
 
+const meet = (a0: number, aLen: number, b0: number, bLen: number) =>
+  Math.max(a0, b0) < Math.min(a0 + aLen, b0 + bLen);
+
 /** Whether two rectangles share a cell. An empty rectangle shares none. */
 export function overlaps(a: WidgetLayout, b: WidgetLayout): boolean {
-  const meet = (a0: number, aLen: number, b0: number, bLen: number) =>
-    Math.max(a0, b0) < Math.min(a0 + aLen, b0 + bLen);
   return meet(a.x, a.w, b.x, b.w) && meet(a.y, a.h, b.y, b.h);
 }
 
@@ -139,8 +140,15 @@ export function shapeProblem(
     return measures[1] === 1 ? "Choose one measure." : "Choose one to four measures.";
   }
   if (d < dimensions[0]) return "Group by at least one dimension.";
-  if (d > dimensions[1]) return kind === "stat" ? "A stat shows one number: remove the grouping." : "Group by at most two dimensions.";
+  if (d > dimensions[1])
+    return kind === "stat"
+      ? "A stat shows one number: remove the grouping."
+      : "Group by at most two dimensions.";
   if (kind === "timeseries") {
+    const units = new Set(
+      shape.measures.map((request) => catalog.find((c) => c.id === request.measure)?.unit),
+    );
+    if (units.size > 1) return "A chart has one axis: choose measures of one unit.";
     const series = chartSeries(shape, catalog);
     if (series > MAX_CHART_SERIES) {
       return `A chart draws at most ${MAX_CHART_SERIES} series; this one would draw ${series}. Show fewer keys.`;
@@ -149,12 +157,14 @@ export function shapeProblem(
   return null;
 }
 
-/** The most keys a chart of these measures can show with its `other` series, or null without a grouping. */
+/** The most keys a chart of these measures can show with the `other` series of its additive measures. */
 export function maxChartKeys(
   measures: readonly MeasureRequest[],
   catalog: readonly SchemaMeasure[],
 ): number {
   const perKey = measures.length;
-  const other = measures.filter((m) => catalog.find((c) => c.id === m.measure)?.additive ?? true).length;
+  const other = measures.filter(
+    (m) => catalog.find((c) => c.id === m.measure)?.additive ?? true,
+  ).length;
   return Math.max(0, Math.floor((MAX_CHART_SERIES - other) / Math.max(1, perKey)));
 }

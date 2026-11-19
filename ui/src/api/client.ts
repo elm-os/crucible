@@ -651,7 +651,10 @@ export async function createDeletionRequest(
 
 // Dashboards (contract 12.6). Reads go as telemetry reads do, so the built-in dashboards work without a
 // control plane; writes need a session. A built-in dashboard's id is its key.
-export async function listDashboards(project: string, signal?: AbortSignal): Promise<DashboardList> {
+export async function listDashboards(
+  project: string,
+  signal?: AbortSignal,
+): Promise<DashboardList> {
   return read<DashboardList>(
     await call(projectPath(project, "/dashboards"), "telemetry", { signal }),
   );

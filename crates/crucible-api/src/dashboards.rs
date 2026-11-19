@@ -5,8 +5,8 @@
 //! - A widget sits on a grid of 12 columns and 600 rows, at least its kind's smallest size and at most 12 by 12
 //!   cells, and overlaps no other widget.
 //! - A widget's kind decides the shape of its query: a `stat` is one measure without dimensions, a `bar` is one
-//!   measure split by one or two dimensions, a `timeseries` draws at most four series, and a `table` takes any
-//!   query. A `markdown` widget has text and no query. Every query passes the checks of `metrics/query`, for a
+//!   measure split by one or two dimensions, a `timeseries` draws at most four series of one unit (one axis),
+//!   and a `table` takes any query. A `markdown` widget has text and no query. Every query passes the checks of `metrics/query`, for a
 //!   window that every granularity fits, so the dashboard's time range is the only thing that can still make a
 //!   widget too broad.
 
@@ -262,6 +262,12 @@ fn check_query(
             }
         }
         WidgetKind::Timeseries => {
+            // One axis: two measures of different units belong in two charts.
+            let first = parsed.measures.first().map(|(m, _)| m.unit());
+            if parsed.measures.iter().any(|(m, _)| Some(m.unit()) != first) {
+                let message = "a chart has one axis: choose measures of one unit, or one chart per unit";
+                errors.push(error(&at, "measures", "invalid", message));
+            }
             let series = chart_series(&parsed);
             if series > MAX_CHART_SERIES {
                 let (member, fix) = if dimensions == 0 {

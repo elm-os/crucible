@@ -17,8 +17,22 @@ import {
 } from "./rules";
 
 const CATALOG: SchemaMeasure[] = [
-  { id: "count", label: "Spans", unit: "count", aggregations: ["sum"], additive: true, tier: "rollup" },
-  { id: "duration", label: "Duration", unit: "us", aggregations: ["p50", "p95"], additive: false, tier: "rollup" },
+  {
+    id: "count",
+    label: "Spans",
+    unit: "count",
+    aggregations: ["sum"],
+    additive: true,
+    tier: "rollup",
+  },
+  {
+    id: "duration",
+    label: "Duration",
+    unit: "us",
+    aggregations: ["p50", "p95"],
+    additive: false,
+    tier: "rollup",
+  },
 ];
 
 // A small deterministic generator, so a failing case reruns the same.
@@ -32,6 +46,13 @@ function generator(seed: number) {
 
 const at = (x: number, y: number, w: number, h: number): WidgetLayout => ({ x, y, w, h });
 
+function cells(r: WidgetLayout): Set<string> {
+  const set = new Set<string>();
+  for (let x = r.x; x < r.x + r.w; x += 1)
+    for (let y = r.y; y < r.y + r.h; y += 1) set.add(`${x},${y}`);
+  return set;
+}
+
 describe("rectangles", () => {
   test("overlap means a shared cell; touching edges and empty rectangles share none", () => {
     expect(overlaps(at(0, 0, 4, 2), at(3, 1, 4, 2))).toBe(true);
@@ -43,11 +64,6 @@ describe("rectangles", () => {
   // The same model as the server's property test: the cells each rectangle covers.
   test("overlap agrees with the cells two rectangles cover", () => {
     const next = generator(7);
-    const cells = (r: WidgetLayout) => {
-      const set = new Set<string>();
-      for (let x = r.x; x < r.x + r.w; x += 1) for (let y = r.y; y < r.y + r.h; y += 1) set.add(`${x},${y}`);
-      return set;
-    };
     for (let i = 0; i < 2_000; i += 1) {
       const a = at(next(14), next(20), next(15), next(15));
       const b = at(next(14), next(20), next(15), next(15));
@@ -151,5 +167,8 @@ describe("query shapes", () => {
     expect(shapeProblem("table", shape(4, 2, 20), CATALOG)).toBeNull();
     expect(shapeProblem("timeseries", shape(1, 1, 3), CATALOG)).toBeNull();
     expect(shapeProblem("timeseries", shape(1, 1, 4), CATALOG)).toMatch(/at most 4 series/);
+    expect(
+      shapeProblem("timeseries", { measures: [count, p95], dimensions: [], topN: null }, CATALOG),
+    ).toMatch(/one axis/);
   });
 });

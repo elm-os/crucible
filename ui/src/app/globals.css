@@ -221,3 +221,47 @@ body {
     animation: none;
   }
 }
+
+/* Dashboards: 12 columns whose rows are at least as tall as a column is wide. A widget whose content needs
+   more makes its rows taller instead of clipping. Phones read the widgets one under another. */
+[data-dashboard] {
+  container-type: inline-size;
+}
+
+[data-dashboard-grid] {
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (min-width: 48rem) {
+  [data-dashboard-grid] {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-auto-rows: minmax(calc((100cqi - 8.25rem) / 12), auto);
+  }
+
+  [data-dashboard-cell] {
+    grid-column: var(--cell-x) / span var(--cell-w);
+    grid-row: var(--cell-y) / span var(--cell-h);
+  }
+}
+
+/* The layout editor: boxes placed in cells of one pitch, the width of a column with its 12px gap. A box being
+   dragged follows its draft. */
+[data-slot="dashboard-grid"] {
+  --pitch: calc((100cqi + 12px) / 12);
+  position: relative;
+  min-height: calc(var(--grid-rows, 6) * var(--pitch));
+}
+
+[data-slot="dashboard-grid-box"] {
+  position: absolute;
+  left: calc(var(--drag-x, var(--box-x)) * var(--pitch));
+  top: calc(var(--drag-y, var(--box-y)) * var(--pitch));
+  width: calc(var(--drag-w, var(--box-w)) * var(--pitch) - 12px);
+  height: calc(var(--drag-h, var(--box-h)) * var(--pitch) - 12px);
+}
+
+[data-slot="dashboard-grid-box"][data-dragging] {
+  z-index: 1;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-midnight-ink) 18%, transparent);
+}
