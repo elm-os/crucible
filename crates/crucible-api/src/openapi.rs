@@ -35,6 +35,8 @@ impl Modify for ProjectKey {
     ),
     modifiers(&ProjectKey),
     tags(
+        (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
+        (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
         (name = "search", description = "Full-text search over the spans' inputs, outputs and metadata."),
         (name = "sql", description = "The read-only SQL workspace: runs, exports, history and saved queries."),
         (name = "traces", description = "Traces, their spans and their payloads, and the project's data bounds."),

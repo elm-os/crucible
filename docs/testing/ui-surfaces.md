@@ -35,7 +35,8 @@ pnpm --filter crucible-ui exec playwright test
 | Surface: section | Loading | Success | Error | Empty |
 |---|---|---|---|---|
 | Home: set up | Not applicable: static steps until data bounds land | Four steps, each marked to do | Not applicable: makes no request | Not applicable |
-| Home: tiles | Not applicable: static until the metrics API lands | Five tiles marked planned | Not applicable: makes no request | Not applicable |
+| Home: tiles (traces, error rate, latency, cost, tokens) | Each tile holds its size with a skeleton after 300 ms, busy and announced | The headline for the range with a sparkline: the trace count, errors over spans, p50 and p95 of the newest bucket with spans, cost, tokens | Per tile: the mapped copy, reference id and a retry that refetches only that tile; the other tiles stay | Whole and no data: "No data in the last 24 hours." with "Show last 30 days"; first use at 30 days; partial or lagging: "No data to show yet." with "Check again" |
+| Home: charts (traces over time, spans and errors, latency percentiles) | A chart-sized skeleton after 300 ms | SVG series with a dash and a marker each (percentiles in one ink family), a legend for two or more series, a crosshair driven by the pointer or the bucket slider's arrow keys, and "View as table" | As the tiles: the chart shares its tile's query and retry | As the tiles |
 | Traces: recent traces | Twelve skeleton rows after 300 ms, announced | One row per trace with started, name (a link to the trace), duration, spans, cost and status as icon and label | In-section card with the mapped copy, reference id and a retry that refetches only the list; a 401 asks to connect and offers the dialog | Filtered: "No traces in the last 24 hours." with "Show last 30 days"; first use at 30 days; incomplete (partial or lagging): "No traces to show yet." with "Check again" |
 | Trace: summary | Skeleton lines after 300 ms | Name, status as icon and label, start, duration, cost, tokens, span count; the partial or lagging notice from `meta`; on a paged trace, that totals cover the loaded spans | The page title and trace id stay; the spans section carries the one error card for the trace | Not applicable: a trace with no spans shows the spans section's empty state |
 | Trace: spans (timeline) | Eight skeleton rows after 300 ms, announced | The span tree as a virtualized UI SDK waterfall: type, name, error marker, bar on the shared axis and duration; unpaged traces open fully | In-pane card with a retry that refetches only the trace; a missing trace uses the not-found copy, without a retry | "This trace has no spans to show yet." with "Check again", distinct from not found |
@@ -51,12 +52,14 @@ pnpm --filter crucible-ui exec playwright test
 | SQL: export | A progress bar named "Exporting CSV" (or JSON lines, Parquet); the export buttons are off | The file downloads and the section says "Downloaded crucible-sql.csv." | The same alert as a run, inside the query section | Not applicable |
 | SQL: saved queries | Three skeleton rows after 300 ms, announced | One item per query: name, description, visibility, declared parameters; Open, Run when `can_run`, Delete when `can_edit`; Run opens a form built from the declared parameters with defaults prefilled; "Save as new" and "Save changes" open a form with the detected parameters and a type select | In-section card with the fix, reference id and a retry that refetches only the list; a stale save says the query changed and offers "Reload saved query"; a refused delete stays in the section | "No saved queries yet." |
 | SQL: history | Five skeleton rows after 300 ms, announced | One row per run: started, outcome as icon and label, kind, rows, elapsed, first line of the query, "Load into editor"; refetched after every run, cancel and export | In-section card with the mapped copy, reference id and a retry that refetches only the history | "No runs yet." |
+| Trace: tags, flags and feedback | The frame holds its place, busy, while the trace loads | Bookmark and Public toggles; the effective tags with a remove button each and an add form; scores with value, comment and source, and an add form. Each write carries an `Idempotency-Key`, shows its pending state, and the acknowledged value stays until a read shows it | A refused write says so beside its control with the reference id, and nothing else changes; the trace's own failure shows in the spans section | "No tags yet." and "No scores or feedback yet.", with the forms still offered |
 
 ## Tests per row
 
 | Row | Playwright (`ui/e2e/`) | Vitest |
 |---|---|---|
-| Home | `home.spec.ts` (1); `phone.spec.ts`: home reads without sideways scrolling | `app-shell.test.tsx` |
+| Home: set up | `home.spec.ts` "static" (1); `phone.spec.ts`: home reads without sideways scrolling | `app-shell.test.tsx` |
+| Home: tiles and charts | `home.spec.ts`: loading, success with the table view and the bucket slider, error with retry, empty (4) | `home-overview.test.tsx`, `chart-model.test.ts` |
 | Traces: recent traces | `traces.spec.ts`: loading, success, error, unauthenticated, empty (filtered, first use), empty (incomplete), keyboard link (7) | `traces-section.test.tsx` |
 | Trace: summary | `trace.spec.ts` "summary": loading, success, partial and lagging, error (4) | `trace-detail.test.tsx` |
 | Trace: spans | `trace.spec.ts` "spans": loading, success, error with retry, not found, empty, keyboard (6) | `trace-detail.test.tsx`, `trace-tree.test.ts` |
@@ -66,6 +69,7 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: links | `trace.spec.ts` "links" (2) | `trace-detail.test.tsx` |
 | Trace: payload | `trace.spec.ts` "payload": loading, success (tree), success (messages), large field by ranges, error with retry, empty and not stored (6) | `payload-viewer.test.tsx`, `payload-model.test.ts` |
 | Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
+| Trace: tags, flags and feedback | `trace.spec.ts` "facts": loading, success with a tag written, empty, error (4) | `trace-facts.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
 | SQL: schema | `sql.spec.ts` "schema browser": loading, success with insert example, error with retry, empty (4) | `errors.test.ts` (in `features/sql`) |
 | SQL: workspace unavailable | `sql.spec.ts` "workspace unavailable": `isolation_probe_failed` with "Check again", `not_configured` and `probe_pending` from a 503 (2); "editor and result": a run refused because the workspace went away (1) | `errors.test.ts` |
@@ -108,5 +112,5 @@ history table scroll inside their frames.
   selectors (contract 12.6), which it does not serve yet.
 - A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
   `ancestors_of` (contract 8.8); the panel says how to find it.
-- Home's sections will fetch once the data-bounds and metrics screens land; their four states will join this
-  table then.
+- The set-up steps will read data bounds and API keys once those screens land.
+- Brush-to-zoom on charts is planned; the crosshair, the bucket slider and the table view cover reading values.

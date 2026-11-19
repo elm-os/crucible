@@ -7,7 +7,7 @@ yanked = "deny"
 # Each ignore names its reason and is revisited at every release (decisions 84).
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack affects private-key operations; openidconnect uses rsa only to verify ID-token signatures with public keys, and Crucible holds no RSA private keys" },
-  { id = "RUSTSEC-2026-0543", reason = "chrono reported unmaintained; pulled by oauth2 and openidconnect with no maintained alternative yet" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono reported unmaintained; pulled by oauth2, openidconnect and rmcp with no maintained alternative yet" },
 ]
 
 [licenses]

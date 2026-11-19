@@ -22,9 +22,11 @@ crucible-records = { workspace = true }
 crucible-sqlws = { path = "../crucible-sqlws" }
 axum = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 # Names the JSON pointer of the member that failed in a request body (contract 12.3); already in the lockfile.
 serde_path_to_error = "=0.1.20"
+sha2 = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true }
 

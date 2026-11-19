@@ -18,8 +18,10 @@ use crucible_records::{ApiKeyId, ProjectId, RequestId};
 use crucible_sqlws::SqlWorkspace;
 
 use crate::cursor::Cursors;
+use crate::idempotency::Keys;
 use crate::problem::{ApiError, request_id};
 use crate::settings::{ProjectSettings, ProjectSettingsSource};
+use crate::writer::FactWriter;
 
 /// What every handler shares.
 #[derive(Clone, Debug)]
@@ -32,6 +34,10 @@ pub(crate) struct ApiState {
     pub(crate) settings: Arc<dyn ProjectSettingsSource>,
     /// The cursor-signing keys.
     pub(crate) cursors: Arc<KeyRing>,
+    /// Where fact writes go; `None` until a telemetry store is configured.
+    pub(crate) facts: Option<Arc<dyn FactWriter>>,
+    /// The `Idempotency-Key`s of fact writes.
+    pub(crate) idempotency: Arc<Keys>,
     /// The SQL workspace; `None` when it is not configured.
     pub(crate) sql: Option<SqlWorkspace>,
 }
@@ -72,10 +78,10 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 #[derive(Debug)]
 pub(crate) struct Project {
     pub(crate) request_id: RequestId,
+    /// The key that authorized the request: the author of the facts it writes.
+    pub(crate) api_key_id: ApiKeyId,
     pub(crate) ctx: ReadContext,
     pub(crate) settings: ProjectSettings,
-    /// The key that authenticated the request.
-    pub(crate) api_key_id: ApiKeyId,
     /// The path parameters, `project_id` included.
     pub(crate) path: BTreeMap<String, String>,
 }
@@ -101,9 +107,9 @@ impl FromRequestParts<ApiState> for Project {
         let settings = state.settings.settings(project_id);
         Ok(Self {
             request_id,
+            api_key_id: principal.api_key_id,
             ctx: ReadContext::new(principal.scope, settings.retention, Caller::Agent),
             settings,
-            api_key_id: principal.api_key_id,
             path,
         })
     }

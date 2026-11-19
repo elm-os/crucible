@@ -31,17 +31,20 @@ pub(crate) struct ApiError {
     code: ProblemCode,
     detail: String,
     errors: Vec<FieldError>,
-    limit: Option<ProblemLimit>,
-    /// The members only the SQL workspace sets, boxed so that the common error stays small.
-    sql: Option<Box<SqlExtras>>,
+    /// The rarer members, boxed so that every `Result` of a handler stays small.
+    extra: Option<Box<Extra>>,
 }
 
-/// The optional members of a SQL workspace problem.
+/// The members of a problem that only some codes carry.
 #[derive(Clone, PartialEq, Debug, Default)]
-struct SqlExtras {
+struct Extra {
+    limit: Option<ProblemLimit>,
     retry_after_s: Option<u32>,
+    suggested_granularity: Option<String>,
+    /// The place of the error in a query text, for `sql_invalid`.
     line: Option<u32>,
     column: Option<u32>,
+    /// Why a module is unavailable, for `sql_workspace_unavailable`.
     reason: Option<String>,
 }
 
@@ -52,44 +55,12 @@ impl ApiError {
             code,
             detail: detail.into(),
             errors: Vec::new(),
-            limit: None,
-            sql: None,
+            extra: None,
         }
     }
 
-    fn extras(&mut self) -> &mut SqlExtras {
-        self.sql.get_or_insert_with(Box::default)
-    }
-
-    /// The same problem with these entries in `errors`.
-    pub(crate) fn with_errors(self, errors: Vec<FieldError>) -> Self {
-        Self { errors, ..self }
-    }
-
-    /// The same problem with the place of the error in a query text.
-    pub(crate) fn with_position(mut self, line: Option<u32>, column: Option<u32>) -> Self {
-        if line.is_some() || column.is_some() {
-            let extras = self.extras();
-            extras.line = line;
-            extras.column = column;
-        }
-        self
-    }
-
-    /// The same problem with `retry_after_s` and the `Retry-After` header, rounded up to whole seconds.
-    pub(crate) fn with_retry_after(mut self, after: Option<std::time::Duration>) -> Self {
-        if let Some(d) = after {
-            let whole = d.as_secs() + u64::from(d.subsec_nanos() > 0);
-            self.extras().retry_after_s = Some(u32::try_from(whole.max(1)).unwrap_or(u32::MAX));
-        }
-        self
-    }
-
-    /// The same problem with the reason a module is unavailable.
-    pub(crate) fn with_reason(mut self, reason: Option<String>) -> Self {
-        if reason.is_some() {
-            self.extras().reason = reason;
-        }
+    fn extra(mut self, set: impl FnOnce(&mut Extra)) -> Self {
+        set(self.extra.get_or_insert_with(Box::default));
         self
     }
 
@@ -121,14 +92,68 @@ impl ApiError {
         }
     }
 
+    /// Sets `retry_after_s` and the `Retry-After` header.
+    pub(crate) fn with_retry_after(self, seconds: u32) -> Self {
+        self.extra(|extra| extra.retry_after_s = Some(seconds))
+    }
+
+    /// Sets `suggested_granularity`: the granularity under which a refused metrics query fits.
+    pub(crate) fn with_suggested_granularity(self, granularity: Option<String>) -> Self {
+        self.extra(|extra| extra.suggested_granularity = granularity)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> ProblemCode {
+        self.code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn errors(&self) -> &[FieldError] {
+        &self.errors
+    }
+
+    /// The same problem with these entries in `errors`.
+    pub(crate) fn with_errors(self, errors: Vec<FieldError>) -> Self {
+        Self { errors, ..self }
+    }
+
+    /// Sets the place of the error in a query text.
+    pub(crate) fn with_position(self, line: Option<u32>, column: Option<u32>) -> Self {
+        if line.is_none() && column.is_none() {
+            return self;
+        }
+        self.extra(|extra| {
+            extra.line = line;
+            extra.column = column;
+        })
+    }
+
+    /// Sets `retry_after_s` and the `Retry-After` header from a wait, rounded up to whole seconds.
+    pub(crate) fn with_retry_after_wait(self, wait: Option<std::time::Duration>) -> Self {
+        match wait {
+            Some(wait) => {
+                let whole = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+                self.with_retry_after(u32::try_from(whole.max(1)).unwrap_or(u32::MAX))
+            }
+            None => self,
+        }
+    }
+
+    /// Sets the reason a module is unavailable.
+    pub(crate) fn with_reason(self, reason: Option<String>) -> Self {
+        match reason {
+            Some(reason) => self.extra(|extra| extra.reason = Some(reason)),
+            None => self,
+        }
+    }
+
     pub(crate) fn with_limit(self, name: &str, value: u32) -> Self {
-        Self {
-            limit: Some(ProblemLimit {
+        self.extra(|extra| {
+            extra.limit = Some(ProblemLimit {
                 name: name.to_owned(),
                 value,
-            }),
-            ..self
-        }
+            });
+        })
     }
 
     /// A failed read. Store failures keep their details in the log: the detail of a problem is public.
@@ -195,8 +220,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let extras = self.sql.map(|extras| *extras).unwrap_or_default();
-        let retry_after_s = extras.retry_after_s;
+        let extra = self.extra.map(|extra| *extra).unwrap_or_default();
         let body = Problem {
             problem_type: Problem::type_uri(self.code),
             title: title(self.code),
@@ -205,25 +229,26 @@ impl IntoResponse for ApiError {
             code: self.code,
             request_id: self.request_id.to_string(),
             errors: (!self.errors.is_empty()).then_some(self.errors),
-            retry_after_s,
-            limit: self.limit,
-            suggested_granularity: None,
-            line: extras.line,
-            column: extras.column,
-            reason: extras.reason,
+            retry_after_s: extra.retry_after_s,
+            limit: extra.limit,
+            suggested_granularity: extra.suggested_granularity,
+            line: extra.line,
+            column: extra.column,
+            reason: extra.reason,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();
         let mut response = (status, [(CONTENT_TYPE, PROBLEM_JSON)], json).into_response();
+        if let Some(value) = extra
+            .retry_after_s
+            .and_then(|seconds| HeaderValue::from_str(&seconds.to_string()).ok())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
         if self.code == ProblemCode::Unauthenticated {
             response
                 .headers_mut()
                 .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        }
-        if let Some(seconds) = retry_after_s {
-            response
-                .headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from(seconds));
         }
         response
     }

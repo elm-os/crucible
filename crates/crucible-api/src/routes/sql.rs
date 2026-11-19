@@ -114,7 +114,7 @@ fn sql_problem(request_id: RequestId, problem: SqlProblem) -> ApiError {
     }
     error
         .with_position(problem.line, problem.column)
-        .with_retry_after(problem.retry_after)
+        .with_retry_after_wait(problem.retry_after)
         .with_reason(problem.reason)
 }
 

@@ -61,7 +61,7 @@ fn every_documented_operation_reaches_a_handler() {
                 );
             }
         }
-        // The telemetry and search operations and the eleven operations of the SQL workspace.
-        assert_eq!(operations, 17);
+        // The telemetry, search, fact and metrics operations and the eleven operations of the SQL workspace.
+        assert_eq!(operations, 25);
     });
 }

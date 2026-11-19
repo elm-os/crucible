@@ -1,0 +1,191 @@
+---
+source: crates/crucible-api/tests/api/metrics.rs
+expression: schema.pretty()
+---
+{
+  "sources": [
+    {
+      "dimensions": [
+        {
+          "high_cardinality": false,
+          "id": "environment",
+          "type": "string"
+        },
+        {
+          "high_cardinality": false,
+          "id": "observation_type",
+          "type": "enum"
+        },
+        {
+          "high_cardinality": false,
+          "id": "model",
+          "type": "string"
+        },
+        {
+          "high_cardinality": false,
+          "id": "level",
+          "type": "enum"
+        },
+        {
+          "high_cardinality": true,
+          "id": "release",
+          "type": "string"
+        }
+      ],
+      "filter_fields": [
+        {
+          "field": "environment",
+          "operator": "in"
+        },
+        {
+          "field": "release",
+          "operator": "in"
+        },
+        {
+          "field": "level",
+          "operator": "in"
+        },
+        {
+          "field": "observation_type",
+          "operator": "in"
+        }
+      ],
+      "granularities": [
+        "minute",
+        "five_minutes",
+        "fifteen_minutes",
+        "hour",
+        "day",
+        "week"
+      ],
+      "limits": {
+        "max_buckets": 500,
+        "max_dimensions": 2,
+        "max_measures": 4,
+        "max_points": 10000,
+        "max_series": 20
+      },
+      "measures": [
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "count",
+          "label": "Spans",
+          "tier": "rollup",
+          "unit": "count"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "error_count",
+          "label": "Errors",
+          "tier": "rollup",
+          "unit": "count"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "input_tokens",
+          "label": "Input tokens",
+          "tier": "rollup",
+          "unit": "tokens"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "output_tokens",
+          "label": "Output tokens",
+          "tier": "rollup",
+          "unit": "tokens"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "total_tokens",
+          "label": "Total tokens",
+          "tier": "rollup",
+          "unit": "tokens"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "total_cost",
+          "label": "Total cost",
+          "tier": "rollup",
+          "unit": "usd"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "p50",
+            "p90",
+            "p95",
+            "p99"
+          ],
+          "id": "duration",
+          "label": "Duration",
+          "tier": "rollup",
+          "unit": "us"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "p50",
+            "p90",
+            "p95",
+            "p99"
+          ],
+          "id": "ttft",
+          "label": "Time to first token",
+          "tier": "rollup",
+          "unit": "us"
+        }
+      ],
+      "source": "spans"
+    },
+    {
+      "dimensions": [],
+      "filter_fields": [],
+      "granularities": [
+        "minute",
+        "five_minutes",
+        "fifteen_minutes",
+        "hour",
+        "day",
+        "week"
+      ],
+      "limits": {
+        "max_buckets": 500,
+        "max_dimensions": 0,
+        "max_measures": 4,
+        "max_points": 10000,
+        "max_series": 20
+      },
+      "measures": [
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "traces",
+          "label": "Traces",
+          "tier": "core",
+          "unit": "count"
+        }
+      ],
+      "source": "traces"
+    }
+  ]
+}
