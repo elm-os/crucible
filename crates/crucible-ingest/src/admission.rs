@@ -176,14 +176,23 @@ pub(crate) struct Held {
 }
 
 impl Held {
+    /// Grows the reservation to at least `bytes` when the budget can hold them, and says whether it did. When it
+    /// cannot, nothing changes and no refusal is decided: for a reservation made ahead of the bytes, on a hint.
+    pub(crate) fn try_grow_to(&mut self, bytes: u64) -> bool {
+        if bytes <= self.bytes {
+            return true;
+        }
+        let grown = self.admission.change(true, bytes - self.bytes);
+        if grown {
+            self.bytes = bytes;
+        }
+        grown
+    }
+
     /// Grows the reservation to at least `bytes`. When the budget cannot hold them, the request is refused
     /// with the decision for an exceeded budget: 429, or 503 when the WAL refuses as well.
     pub(crate) fn grow_to(&mut self, bytes: u64) -> Result<(), Reject> {
-        if bytes <= self.bytes {
-            return Ok(());
-        }
-        if self.admission.change(true, bytes - self.bytes) {
-            self.bytes = bytes;
+        if self.try_grow_to(bytes) {
             return Ok(());
         }
         Err(self

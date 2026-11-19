@@ -115,26 +115,49 @@ pub(crate) async fn read(
     Ok(out)
 }
 
-/// Inflates a gzip body of one or more members to at most [`MAX_BODY_BYTES`]. `reserve(bytes)` grows the
-/// in-flight reservation to cover an output of `bytes` before the output holds them, so the reservation follows
-/// the bytes held; its refusal ends the inflate.
+/// The in-flight reservation that an inflate grows as its output grows.
+pub(crate) trait Reserve {
+    /// Covers an output of `bytes` when the budget can, and says whether it did; otherwise nothing changes.
+    fn try_reserve(&mut self, bytes: u64) -> bool;
+    /// Covers an output of `bytes`, or refuses the request.
+    fn reserve(&mut self, bytes: u64) -> Result<(), Reject>;
+}
+
+/// A request's reservation, with `base` bytes held for its other buffers below the output.
+#[derive(Debug)]
+pub(crate) struct Above<'a> {
+    /// The request's reservation.
+    pub(crate) held: &'a mut Held,
+    /// Bytes held for other buffers.
+    pub(crate) base: u64,
+}
+
+impl Reserve for Above<'_> {
+    fn try_reserve(&mut self, bytes: u64) -> bool {
+        self.held.try_grow_to(self.base.saturating_add(bytes))
+    }
+
+    fn reserve(&mut self, bytes: u64) -> Result<(), Reject> {
+        self.held.grow_to(self.base.saturating_add(bytes))
+    }
+}
+
+/// Inflates a gzip body of one or more members to at most [`MAX_BODY_BYTES`]. The reservation covers the output
+/// before the output holds the bytes, so it follows the bytes held; its refusal ends the inflate.
 ///
 /// The last member's trailer states its inflated size modulo 2^32 (RFC 1952). That is the client's claim, so it
 /// is only a hint, clamped to the cap and to deflate's largest expansion of the body: when the reservation can
 /// hold it, the output is allocated once at that size and the decoder writes straight into it. A body whose
 /// output outgrows the hint (several members, or a trailer that understates) continues as it would without
 /// one, and a trailer that lies still fails the decoder's check, so neither the output nor any refusal depends
-/// on the hint.
-pub(crate) fn inflate(
-    compressed: &[u8],
-    mut reserve: impl FnMut(u64) -> Result<(), Reject>,
-) -> Result<Vec<u8>, Reject> {
+/// on the hint. Reserving the hint ahead decides nothing when the budget cannot hold it.
+pub(crate) fn inflate(compressed: &[u8], held: &mut impl Reserve) -> Result<Vec<u8>, Reject> {
     let mut decoder = MultiGzDecoder::new(compressed);
     let mut out = Vec::new();
     let hint = trailer_size(compressed)
         .min(MAX_BODY_BYTES)
         .min(compressed.len().saturating_mul(MAX_INFLATE_RATIO));
-    if hint > 0 && reserve(hint as u64).is_ok() {
+    if hint > 0 && held.try_reserve(hint as u64) {
         out.resize(hint, 0);
         let mut filled = 0;
         while let Some(spare) = out.get_mut(filled..).filter(|spare| !spare.is_empty()) {
@@ -155,7 +178,7 @@ pub(crate) fn inflate(
         if len > MAX_BODY_BYTES {
             return Err(too_large("the inflated request body", MAX_BODY_BYTES));
         }
-        reserve(len as u64)?;
+        held.reserve(len as u64)?;
         out.push(next[0]);
     }
     let mut chunk = vec![0; INFLATE_CHUNK];
@@ -168,7 +191,7 @@ pub(crate) fn inflate(
         if len > MAX_BODY_BYTES {
             return Err(too_large("the inflated request body", MAX_BODY_BYTES));
         }
-        reserve(len as u64)?;
+        held.reserve(len as u64)?;
         out.extend_from_slice(chunk.get(..n).unwrap_or_default());
     }
 }
@@ -228,8 +251,50 @@ mod tests {
         out
     }
 
-    fn unlimited(_: u64) -> Result<(), Reject> {
-        Ok(())
+    /// A budget of `limit` bytes: `reserve` above it refuses with [`REFUSAL`], `try_reserve` above it declines.
+    /// It records every reservation that `reserve` refused, to show that `try_reserve` refuses nothing.
+    struct Budget {
+        limit: u64,
+        held: u64,
+        refusals: u32,
+    }
+
+    impl Budget {
+        fn of(limit: u64) -> Self {
+            Self {
+                limit,
+                held: 0,
+                refusals: 0,
+            }
+        }
+    }
+
+    const REFUSAL: Reject = Reject::TooManyRequests {
+        retry_after_s: 1,
+        detail: "budget",
+    };
+
+    impl Reserve for Budget {
+        fn try_reserve(&mut self, bytes: u64) -> bool {
+            let fits = bytes <= self.limit;
+            if fits {
+                self.held = self.held.max(bytes);
+            }
+            fits
+        }
+
+        fn reserve(&mut self, bytes: u64) -> Result<(), Reject> {
+            if self.try_reserve(bytes) {
+                Ok(())
+            } else {
+                self.refusals += 1;
+                Err(REFUSAL)
+            }
+        }
+    }
+
+    fn unlimited() -> Budget {
+        Budget::of(u64::MAX)
     }
 
     /// The work count of SPD-15's inflate item: an honest single-member body is inflated into one allocation of
@@ -238,9 +303,12 @@ mod tests {
     fn an_honest_body_is_inflated_into_one_allocation_of_its_size() {
         for len in [1_000, 102_400, 1_048_576 + 12_345] {
             let body = words(len, 7);
-            let out = inflate(&gzip(&body), unlimited).unwrap();
+            let mut budget = unlimited();
+            let out = inflate(&gzip(&body), &mut budget).unwrap();
             assert_eq!(out, body);
             assert_eq!(out.capacity(), out.len(), "a {len}-byte body");
+            // The reservation covered exactly the output, ahead of it.
+            assert_eq!(budget.held, len as u64);
         }
     }
 
@@ -285,7 +353,7 @@ mod tests {
                 let started = env.clock.now();
                 for _ in 0..bodies {
                     std::hint::black_box(
-                        inflate(std::hint::black_box(&compressed), unlimited).unwrap(),
+                        inflate(std::hint::black_box(&compressed), &mut unlimited()).unwrap(),
                     );
                 }
                 after.push(env.clock.now().saturating_duration_since(started));
@@ -330,8 +398,6 @@ mod tests {
                 let end = compressed.len();
                 compressed[end - 4..].copy_from_slice(&size.to_le_bytes());
             }
-            let refusal = Reject::TooManyRequests { retry_after_s: 1, detail: "budget" };
-            let reserve = |bytes: u64| if bytes <= budget { Ok(()) } else { Err(refusal.clone()) };
             // A plain read keeps what inflated before an error: past the budget, the reservation refuses first.
             let mut reference = Vec::new();
             let read = MultiGzDecoder::new(compressed.as_slice()).read_to_end(&mut reference);
@@ -342,14 +408,17 @@ mod tests {
             } else {
                 Ok(reference)
             };
-            let got = match inflate(&compressed, reserve) {
+            let mut held = Budget::of(budget);
+            let got = match inflate(&compressed, &mut held) {
                 Ok(out) => Ok(out),
                 Err(Reject::Malformed(_)) => Err("malformed"),
                 Err(other) => {
-                    prop_assert_eq!(&other, &refusal);
+                    prop_assert_eq!(&other, &REFUSAL);
                     Err("budget")
                 }
             };
+            // A refusal comes only from an output that needs more than the budget, never from a hint.
+            prop_assert_eq!(held.refusals, u32::from(got == Err("budget")));
             prop_assert_eq!(got, expected);
         }
     }
