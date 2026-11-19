@@ -1,3 +1,4 @@
+import type { TraceDetail } from "../src/api/generated/TraceDetail";
 import {
   AGENT_SPANS,
   AS_OF,
@@ -708,5 +709,94 @@ test.describe("trace detail: payload", () => {
     api.on(PAYLOAD_PATH, problem(404, "not_found"));
     await page.getByRole("tab", { name: "Output" }).click();
     await expect(page.getByText("This span's output isn't stored.")).toBeVisible();
+  });
+});
+
+const FACT_PATH = new RegExp(`/projects/${PROJECT}/(tags|flags|feedback)$`);
+const written = { fact_id: "f-1", key: "k", version: 1, created_at: AS_OF, target_time: AS_OF };
+const facts = (fields: Partial<TraceDetail["facts"]> = {}) => ({
+  tags: [],
+  bookmarked: false,
+  public: null,
+  scores: [],
+  correction: null,
+  ...fields,
+});
+
+test.describe("trace detail: facts", () => {
+  test("loading: the facts frame holds its place while the trace loads", async ({ page, api }) => {
+    const release = api.hold(TRACE_PATH, json(traceDetail()));
+    await page.goto(traceUrl());
+    const frame = page.getByRole("region", { name: "Tags, flags and feedback" });
+    await expect(frame).toHaveAttribute("aria-busy", "true");
+    release();
+    await expect(frame).not.toHaveAttribute("aria-busy", "true");
+  });
+
+  test("success: tags, flags and scores show; a new tag is written and stays", async ({
+    page,
+    api,
+  }) => {
+    const score = {
+      name: "helpful",
+      score_id: null,
+      data_type: "boolean" as const,
+      value: true,
+      source: "feedback" as const,
+      comment: "thanks",
+      metadata: null,
+      fact: {
+        fact_id: "f-0",
+        version: 1,
+        created_at: AS_OF,
+        author_kind: "api_key" as const,
+        author_id: "k",
+      },
+    };
+    api.on(
+      TRACE_PATH,
+      json(traceDetail({ facts: facts({ tags: ["seen"], bookmarked: true, scores: [score] }) })),
+    );
+    api.on(FACT_PATH, json(written, 201));
+    await page.goto(traceUrl());
+    const frame = page.getByRole("region", { name: "Tags, flags and feedback" });
+    await expect(frame.getByText("seen")).toBeVisible();
+    await expect(frame.getByRole("button", { name: "Bookmark" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(frame.locator("[data-score=helpful]")).toContainText("thanks");
+    await frame.getByRole("textbox", { name: "New tag" }).fill("urgent");
+    await frame.getByRole("button", { name: "Add tag" }).click();
+    await expect(frame.getByRole("button", { name: "Remove tag urgent" })).toBeVisible();
+    expect(api.count(/\/tags$/)).toBe(1);
+    await expectAccessible(page, "trace facts");
+  });
+
+  test("empty: a trace without facts says so and still offers the forms", async ({ page, api }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    await page.goto(traceUrl());
+    const frame = page.getByRole("region", { name: "Tags, flags and feedback" });
+    await expect(frame).toContainText("No tags yet.");
+    await expect(frame).toContainText("No scores or feedback yet.");
+    await expect(frame.getByRole("button", { name: "Add score" })).toBeVisible();
+  });
+
+  test("error: a refused write says so with its reference, never the server text", async ({
+    page,
+    api,
+  }) => {
+    api.on(TRACE_PATH, json(traceDetail()));
+    api.on(FACT_PATH, problem(503, "ingest_unavailable", "0193a5b2-fact"));
+    await page.goto(traceUrl());
+    const frame = page.getByRole("region", { name: "Tags, flags and feedback" });
+    await frame.getByRole("button", { name: "Bookmark" }).click();
+    await expect(frame.getByRole("alert")).toContainText("Couldn't save the flag.");
+    await expect(frame.getByRole("alert")).toContainText("0193a5b2-fact");
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expect(frame.getByRole("button", { name: "Bookmark" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 });

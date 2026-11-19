@@ -64,10 +64,11 @@ only within the VM.
   `50b14e3de580f108...` for `crucible` and `e3edafdbeb514444...` for `crucible-loadgen`. Since then `main` has
   changed none of the code these runs exercise, apart from a simulation-only flag in ingest; its other changes are on
   the API's read side.
-- The recent-span index defaults to 10% of the host's memory, at most 1 GiB. The default reads `/proc/meminfo`, which
-  shows the VM's 16 GB rather than the container's limit, so inside 2 GB it would leave too little for the shipper's
-  batches. The runs bound it at 256 MiB. A sample during a sustained run showed 1.35 GiB in use and no memory
-  events.
+- At the time of these runs the recent-span index defaulted to 10% of the host's memory, at most 1 GiB. The default
+  read `/proc/meminfo`, which shows the VM's 16 GB rather than the container's limit, so inside 2 GB it would have
+  left too little for the shipper's batches. The runs bound it at 256 MiB. A sample during a sustained run showed 1.35 GiB in use and no memory
+  events. The default has since taken the container's limit into account (about 205 MiB in 2 GB), and
+  `tools/perf/baseline.sh` passes `--recent-max-bytes` only when `RECENT_MAX_BYTES` is set.
 
 ## Method
 

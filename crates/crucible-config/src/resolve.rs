@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
@@ -42,6 +43,7 @@ const NUMBERS: &[&str] = &[
     "recent.max_bytes",
     "mcp.calls_per_second",
     "mcp.burst",
+    "clickhouse.idle_timeout",
     "postgres.pool_size",
 ];
 
@@ -300,6 +302,10 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     };
     let recent_max_bytes = t.parsed::<u64>("recent.max_bytes", "a whole number of bytes");
     let recent_ok = t.text("recent.max_bytes").is_none() || recent_max_bytes.is_some();
+    let idle_timeout = t
+        .parsed::<u64>("clickhouse.idle_timeout", "a whole number of seconds")
+        .map(Duration::from_secs);
+    let idle_ok = t.text("clickhouse.idle_timeout").is_none() || idle_timeout.is_some();
     let calls_per_second = t.parsed::<u32>("mcp.calls_per_second", "a whole number of calls");
     let burst = t.parsed::<u32>("mcp.burst", "a whole number of calls");
     if burst == Some(0) {
@@ -365,6 +371,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
                     user: user.to_owned(),
                     password,
                     master_key: master_key.clone(),
+                    idle_timeout,
                 }),
                 _ => {
                     clickhouse_ok = false;
@@ -403,7 +410,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         }
     };
 
-    if !(recent_ok && master_key_ok && clickhouse_ok && postgres_ok) {
+    if !(recent_ok && idle_ok && master_key_ok && clickhouse_ok && postgres_ok) {
         return None;
     }
     Some(Config {
@@ -598,6 +605,7 @@ max_bytes = 1048576
 [clickhouse]
 url = "http://clickhouse:8123"
 password = "pw"
+idle_timeout = 50
 
 [postgres]
 url = "postgres://crucible@postgres:5432/crucible"
@@ -620,6 +628,7 @@ pool_size = 4
         assert_eq!(clickhouse.user, "crucible_admin");
         assert_eq!(clickhouse.password.expose(), "pw");
         assert_eq!(clickhouse.master_key.expose(), KEY);
+        assert_eq!(clickhouse.idle_timeout, Some(Duration::from_secs(50)));
         let postgres = config.postgres.unwrap();
         assert_eq!(
             postgres.url.expose(),
@@ -926,6 +935,30 @@ pool_size = 8  # default
             let errors = load(Some(file), &[], &[]).unwrap_err();
             assert!(errors.to_string().contains(says), "{errors}");
         }
+    }
+
+    #[test]
+    fn the_clickhouse_idle_timeout_is_optional_whole_seconds() {
+        let env = env(&[
+            ("CRUCIBLE_CLICKHOUSE_URL", "http://clickhouse:8123"),
+            ("CRUCIBLE_CLICKHOUSE_PASSWORD", "pw"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+        ]);
+        let clickhouse = load(None, &env, &[]).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.idle_timeout, None);
+        let mut with = env.clone();
+        with.push((
+            "CRUCIBLE_CLICKHOUSE_IDLE_TIMEOUT".to_owned(),
+            "0".to_owned(),
+        ));
+        let clickhouse = load(None, &with, &[]).unwrap().config.clickhouse.unwrap();
+        assert_eq!(clickhouse.idle_timeout, Some(Duration::ZERO));
+        let ConfigErrors(errors) =
+            load(Some("[clickhouse]\nidle_timeout = \"soon\"\n"), &env, &[]).unwrap_err();
+        assert_eq!(
+            errors,
+            ["`clickhouse.idle_timeout` = \"soon\" is not a whole number of seconds (file)"]
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ One simulated node, on one thread with a paused virtual clock and seeded random 
 | Shipper | Real | `crucible-shipper`: stage A and B, the span tables, the rollups, the five MCP tables and the fact tables, seals, inserts, probes, pair and frame quarantine, checkpoints, garbage collection |
 | Project salts | Model | One fixed salt per project behind the shipper's `ProjectSalts` hook; with `mcp_identity` a share of its reads fails, and without it the node has no control store |
 | Recent-span index | Real | `crucible-recent`, fed by stage B through `crucible_shipper::RecentHook` |
-| Query service | Real | `crucible_query::QueryService`: trace by id and the trace list |
+| Query service | Real | `crucible_query::QueryService`: trace by id and the trace list, decorated with their facts; the facts of a target; the metrics query |
 | ClickHouse | Model | `ChModel`: inserts, deduplication, probes, the typed-plan interpreter, merges, and seeded faults |
 | Keys | Real | `crucible_auth::StaticKeys`, one secret key per project |
 
@@ -43,8 +43,8 @@ the control plane (later milestones), and several nodes (milestone 1 is one node
 
 The simulation's `WalView` re-reads a span through its locator as the binary does (`Wal::read_at`, then stage A),
 and the oracle follows the locator of a span that a read returned from the index: a frame that reads must hold
-that span at the locator's ordinal. The fact routes do not exist yet, so facts are checked in the store model's
-parts, not through a read.
+that span at the locator's ordinal. The fact routes write through `Ingest::append_facts`, which the clients call
+directly; at quiescence every target's facts are read back through `QueryService::facts`.
 
 ### A run
 
@@ -94,7 +94,7 @@ probability 95.7% (`1 - (1 - 2^-6)^200`).
 |---|---|---|
 | I1 | At every restart: every span of every acknowledged request is in `span_core` and `span_payload`, or in a durable frame above the recovered watermark, or in a quarantine copy: the frames of a quarantined pair, or the copy of a frame that does not normalize, which must hold the frame its manifest names. A frame quarantined as a frame has no row anywhere | The same after the drain, and the watermark has passed the last frame that warrants a seal |
 | I2 | The model refuses a malformed block (one without its marker row, for instance) and records a second block of one (batch, table, partition); no (table, LSN, span) row twice, in the span tables, `mcp_ops` and `mcp_content`; no span with more rows than requests that carried it; every row belongs to a request that was sent; no two batch identities over the same frames; a pair the store had accepted is quarantined only after a probe that read absent. A restart keeps and flags the same spans of a frame in a sealed batch as the process before it did | In runs without a quarantine directory, repeats included: every root span has its head row and the `trace_stats` span counts sum to the `span_core` rows. Without a quarantined pair: `mcp_ops` holds one row per `span_core` row of a span with an MCP side, and `mcp_content` one per operation with captured content |
-| I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain |
+| I4 | Every fact row is a fact that was written and lands once (I2); every acknowledged fact is in its table, in a durable `FactBatch` frame above the watermark, or in a quarantine copy (I1). The rows resolve through `crucible_records::fold_facts` to what the facts as written resolve to, in either order of the rows | The same after the drain, and every target with fact rows reads back through `QueryService::facts` exactly the winning facts the reference fold picks over the stored rows (`system_sim/reads.rs`) |
 | I5 | A refusal for load is a 429 or a 503 with `Retry-After`, a 429 only with `project_rate`; a fact write is refused only for load. The rows the shipper holds stay within `shipper.encoded_bytes` plus one frame | |
 | I7 | Every `span_core` row carries the tokens, the cost in nano-USD and the error status its span reported. Every `mcp_ops` row carries the fields of the wire contract as the exchange had them (side, capture source, era, transport, method, target, server, deploy, client, times, sizes, parent, multi-round state, session key, group key, the hashed subject or, without a control store, no identity) | Without a quarantined pair: `trace_stats`, `session_rollup`, `user_rollup` and `span_metrics`, merged by key, equal the reference aggregation over `span_core` exactly (counts, trace counts, error counts, token and cost sums, first and last seen, both histograms). The token and cost sums of the reference count every span that is not a usage aggregate, whatever its type. The `usage_aggregate` flag of every row is what the rule gives (see "Usage aggregates, exactly"). `mcp_tool_rollup`, merged by its key, equals the reference over `mcp_ops` (count, byte sums, both histograms, last seen), and counts per capture source what `mcp_ops` holds of that source, so rows of different sources are never summed; `mcp_deploys` equals the deploys of the server-side rows; `mcp_tool_inventory` equals the tools the listed operations sent, with the schema hash of their canonical JSON. One binary runs the whole simulation, so the upgrade exception of contract 5.3 does not arise |
 | I8 | Every `mcp_ops` row has the status, error class, subclass, JSON-RPC code, HTTP status and caller-fault flag that `crucible_records::classify_mcp_error` gives for the exchange the client simulated: what happened (a result, `isError`, a code, an HTTP status, a cancellation, a deadline, a broken transport, an exception), the side, and the class an SDK annotated | The same after the drain |
@@ -108,8 +108,9 @@ While the workload runs, a marker excuses a missing span, and `consistency: lagg
 the oracle cannot tell from outside whether stage B had a reason to trail. So the suite also requires that live
 reads mostly need no marker: over the smoke budget more than half of the live trace reads return every span,
 whole and strong, and in configurations with the store faults switched off (outages, read faults, insert
-faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 698
-of 708). The smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
+faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 572
+of 580 over 20 configurations; every trace read also reads the trace's facts, so fewer reads fit a run). The
+smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
 every later read of its project, and a small row budget holds stage B behind the batches in flight.
 
 ### Repeats and restarts
@@ -171,7 +172,7 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 
 Of the 600 runs of the budget, the mutants are caught by 587, 147, 65, 50, 101, 497, 485, 78, 161, 169, 24, 53,
 238, 293 and 2 runs, in the order of the table. Before the dimensions, the weighted profile and the oracle checks
-of milestone 3, the first eleven were caught by 591, 165, 43, 32, 107, 475, 481, 84, 173, 178 and 0 runs.
+of milestone 3, the first eleven were caught by 592, 163, 41, 25, 106, 474, 480, 84, 169, 175 and 0 runs.
 
 `collect-what-frames-rely-on` was caught by no run of the budget before. Two things changed that. The profile
 `collection_under_repeats` makes a quarter of the configurations ones where garbage collection can run inside an
@@ -231,11 +232,60 @@ A failing run prints its replay command and the line to append to the corpus; `-
 
 ## Continuous integration
 
-`.github/workflows/sim.yml`:
+`.github/workflows/sim.yml` has three lanes. Each runs the corpus first (the realistic lanes its realistic lines,
+the stress lane every line, each line in the tier it records), then fresh configurations that start at the
+workflow run id, so each run explores configurations no earlier run has seen.
 
-- every pull request runs the corpus and 200 fresh configurations with 3 seeds each in the realistic tier, split
-  over 4 shards. The fresh configurations start at the workflow run id;
-- a nightly job runs 5,000 fresh configurations in the stress tier, split the same way.
+| Lane | When | Fresh runs | Shards | A failed run |
+|---|---|---|---|---|
+| `swarm` | Every pull request | 200 configurations with 3 seeds each, realistic tier | 4 | Fails the check |
+| `nightly realistic` | Every night (02:41 UTC) | 3,400 configurations with 3 seeds each (10,200 runs), realistic tier | 16 | Is filed and fails the workflow |
+| `nightly stress` | Every night (02:41 UTC) | 5,000 configurations with 1 seed each, stress tier | 4 | Is filed and does not fail the workflow |
+
+With 3,400 configurations, any 9 chosen dimensions are all on in at least one of them with probability 99.87%,
+and any 10 with 96.4%.
+
+Each nightly shard writes its run log with `--out` and uploads it as the artifact `sim-log-<lane>-<shard>`. A
+stress shard passes when the runner exits with 1 (some runs failed); any other exit code fails it. Then the job
+`nightly report` (`tools/sim-nightly/report.py`):
+
+- writes its job summary: for each lane the shard logs, the runs, the fresh runs, the passes, the failures and
+  the expected losses, then every failed run with its invariant, tier, replay command and corpus line, under one
+  heading per tier. A run keeps its own tier, so a realistic corpus line that fails in the stress lane is a
+  realistic-tier failure. A shard without a log is listed too: one of its runs did not finish before the job
+  timeout, or the job failed before its runs;
+- uploads every failure as the artifact `sim-failures` (the summary and the issue list as many as their size
+  limits hold);
+- when a run failed, opens the issue `nightly simulation: <date>` (the UTC date, label `sim-nightly`) or, when
+  that issue is open already, comments with the failures it does not list yet;
+- fails when a realistic-tier run failed, when a shard wrote no log, or when a lane ran fewer fresh runs than its
+  budget. Stress-tier failures never fail it.
+
+By hand, any lane runs on any ref: `gh workflow run sim.yml --ref <branch> -f lane=<lane>`, with `pull-request`
+(the default), `nightly` (both nightly lanes and the report, as the schedule runs them), `nightly-realistic` or
+`nightly-stress`. A nightly lane run by hand files to the same issue, which names the ref and commit of each run.
 
 Measured in the dev container on 3 CPUs with a debug build: the 600 runs of the pull-request budget take about
 70 s, so one shard of 150 runs and the corpus stays far inside the 10 minute target, most of which is the build.
+Measured on GitHub-hosted runners with a debug build (run 44408176506, both nightly lanes): a realistic shard of
+638 or 639 runs took 2.6 to 4.7 minutes (the runs 117 to 226 s, the build 14 to 122 s), inside its 30 minute
+timeout, and a stress shard of 1,255 or 1,256 runs took 6.5 to 10.6 minutes (the runs 242 to 548 s), inside its
+150 minutes.
+
+## Triaging a nightly failure
+
+The issue, or the summary of the run, gives each failure's invariant, tier, replay command and corpus line, and
+the commit the run used. A replay is bit-exact on the same commit with the same lockfile.
+
+1. Replay it in the dev container, on that commit and then on `origin/main`. The replay command prints the
+   violations, the dimensions and the statistics of the run. On the same commit it must give the same outcome and
+   trace hash; if it does not, the defect is nondeterminism (I14).
+2. If it fails on `origin/main`, fix it in a pull request that also appends the corpus line to
+   `sim/corpus/seeds.jsonl`, with the note changed to `failed: <what it found>`, so that every later pull request
+   runs it. Close the issue when that pull request merges.
+3. If it passes on `origin/main`, a later commit fixed it or moved it: a change to the workload, the fault model or
+   the product changes what a seed does. Replaying on the commits in between tells which.
+4. For a shard without a log, rerun its failed job. The run id fixes the runs of the shard, so another timeout
+   means a run that does not finish; a pass means the runner failed.
+5. A stress-tier failure takes the same steps. The stress tier is outside the realism envelope, so its failures
+   are filed and go into the corpus, but they block nothing.

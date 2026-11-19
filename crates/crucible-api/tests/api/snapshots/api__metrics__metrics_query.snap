@@ -1,0 +1,129 @@
+---
+source: crates/crucible-api/tests/api/metrics.rs
+expression: reply.pretty()
+---
+{
+  "as_of": "2026-11-17T09:30:00.000000Z",
+  "granularity": "fifteen_minutes",
+  "meta": {
+    "as_of": "2026-11-17T09:30:00.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "partial_last_bucket": false,
+  "saturated": false,
+  "series": [
+    {
+      "aggregation": "sum",
+      "key": [
+        {
+          "dimension": "environment",
+          "value": "prod"
+        }
+      ],
+      "measure": "count",
+      "other": false,
+      "points": [
+        {
+          "bucket": "2026-11-17T08:30:00.000000Z",
+          "value": 5.0
+        },
+        {
+          "bucket": "2026-11-17T08:45:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:00:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:15:00.000000Z",
+          "value": 3.0
+        }
+      ],
+      "unit": "count"
+    },
+    {
+      "aggregation": "sum",
+      "key": [
+        {
+          "dimension": "environment",
+          "value": "prod"
+        }
+      ],
+      "measure": "total_cost",
+      "other": false,
+      "points": [
+        {
+          "bucket": "2026-11-17T08:30:00.000000Z",
+          "value": 7.5
+        },
+        {
+          "bucket": "2026-11-17T08:45:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:00:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:15:00.000000Z",
+          "value": 4.5
+        }
+      ],
+      "unit": "usd"
+    },
+    {
+      "aggregation": "sum",
+      "key": [],
+      "measure": "count",
+      "other": true,
+      "points": [
+        {
+          "bucket": "2026-11-17T08:30:00.000000Z",
+          "value": 2.0
+        },
+        {
+          "bucket": "2026-11-17T08:45:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:00:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:15:00.000000Z",
+          "value": 1.0
+        }
+      ],
+      "unit": "count"
+    },
+    {
+      "aggregation": "sum",
+      "key": [],
+      "measure": "total_cost",
+      "other": true,
+      "points": [
+        {
+          "bucket": "2026-11-17T08:30:00.000000Z",
+          "value": 3.0
+        },
+        {
+          "bucket": "2026-11-17T08:45:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:00:00.000000Z",
+          "value": 0.0
+        },
+        {
+          "bucket": "2026-11-17T09:15:00.000000Z",
+          "value": 1.5
+        }
+      ],
+      "unit": "usd"
+    }
+  ],
+  "source_tier": "rollup",
+  "truncated": false
+}

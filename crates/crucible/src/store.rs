@@ -96,6 +96,8 @@ pub(crate) struct ClickHouse {
     pub(crate) url: String,
     pub(crate) admin: Credentials,
     pub(crate) master_key: MasterKey,
+    /// `clickhouse.idle_timeout`; `None` lets detection derive it from the server.
+    pub(crate) idle_timeout: Option<Duration>,
 }
 
 impl ClickHouse {
@@ -108,6 +110,7 @@ impl ClickHouse {
                 password: config.password.expose().to_owned(),
             },
             master_key: MasterKey::parse(config.master_key.expose())?,
+            idle_timeout: config.idle_timeout,
         })
     }
 
@@ -136,6 +139,7 @@ impl ClickHouse {
                 flavour: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: CONNECT_TIMEOUT,
+                idle_timeout: self.idle_timeout,
             },
         )
     }
@@ -361,6 +365,7 @@ mod tests {
                 password: "admin-secret".to_owned(),
             },
             master_key: MasterKey::parse(KEY).unwrap(),
+            idle_timeout: None,
         };
         let steps = config.steps().unwrap();
         assert_eq!(

@@ -81,7 +81,8 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "recent.max_bytes",
         None,
-        "bound on the memory of the recent-span index, in bytes (default: 10% of RAM, at most 1 GiB)",
+        "bound on the memory of the recent-span index, in bytes (default: 10% of the container's memory limit, \
+         else of RAM, at most 1 GiB)",
     ),
     plain(
         "mcp.calls_per_second",
@@ -111,6 +112,12 @@ pub const SETTINGS: &[Setting] = &[
         "clickhouse.password_file",
         None,
         "a file that holds the ClickHouse admin user's password",
+    ),
+    plain(
+        "clickhouse.idle_timeout",
+        None,
+        "seconds an idle connection to ClickHouse is kept for the next statement; set it below the idle timeout \
+         of a balancer in front of the store (default: a margin below the server's keep_alive_timeout)",
     ),
     plain(
         "postgres.url",

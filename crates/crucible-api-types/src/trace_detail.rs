@@ -5,6 +5,7 @@ use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::enums::{IoShape, Level, ObservationType, StatusCode};
+use crate::facts::TraceFacts;
 use crate::meta::Meta;
 use crate::wire::SafeU64;
 
@@ -65,6 +66,8 @@ pub struct TraceDetail {
     pub paged: bool,
     /// The spans in start order. Empty only when `meta` says the response is partial or lagging.
     pub spans: Vec<Span>,
+    /// The trace's facts: effective tags, flags, scores and the correction of its output.
+    pub facts: TraceFacts,
     /// How complete and how fresh the response is.
     pub meta: Meta,
     /// Whether `span_count` saturated at 2^53 - 1.

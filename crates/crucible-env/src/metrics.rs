@@ -298,6 +298,13 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Connections the telemetry store opened to ClickHouse, counted at `Net::connect`.
+    pub static CLICKHOUSE_CONNECTIONS_OPENED: CounterDef = CounterDef {
+        name: "crucible_clickhouse_connections_opened_total",
+        help: "Connections the telemetry store opened to ClickHouse.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
@@ -370,6 +377,11 @@ pub mod registry {
             (
                 SHIPPER_DRAIN_BYTES_PER_SECOND.name,
                 SHIPPER_DRAIN_BYTES_PER_SECOND.labels,
+                &[],
+            ),
+            (
+                CLICKHOUSE_CONNECTIONS_OPENED.name,
+                CLICKHOUSE_CONNECTIONS_OPENED.labels,
                 &[],
             ),
         ]
