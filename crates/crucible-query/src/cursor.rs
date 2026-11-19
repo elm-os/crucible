@@ -111,6 +111,92 @@ impl HeadCursor {
     }
 }
 
+/// A cursor of kind `page` for the span list: the sort tuple `(start_time, span_id)` of the last row and the
+/// `as_of` the first page fixed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SpanListCursor {
+    project_id: ProjectId,
+    window: TimeWindow,
+    as_of: Timestamp,
+    last: (Timestamp, SpanId),
+}
+
+impl SpanListCursor {
+    /// A cursor from its decoded parts, for the cursor codec.
+    pub const fn from_parts(
+        project_id: ProjectId,
+        window: TimeWindow,
+        as_of: Timestamp,
+        last: (Timestamp, SpanId),
+    ) -> Self {
+        Self {
+            project_id,
+            window,
+            as_of,
+            last,
+        }
+    }
+
+    /// The parts, for the cursor codec: project, window, `as_of` and the last sort tuple.
+    pub const fn parts(&self) -> (ProjectId, TimeWindow, Timestamp, (Timestamp, SpanId)) {
+        (self.project_id, self.window, self.as_of, self.last)
+    }
+
+    pub(crate) fn check(
+        &self,
+        scope: ProjectScope,
+        window: TimeWindow,
+    ) -> Result<(Timestamp, (Timestamp, SpanId)), QueryServiceError> {
+        if (self.project_id, self.window) == (scope.project_id(), window) {
+            Ok((self.as_of, self.last))
+        } else {
+            Err(QueryServiceError::CursorInvalid)
+        }
+    }
+}
+
+/// A cursor of kind `page` for a list keyed by a text id (sessions, users, the sessions of a user): the sort
+/// tuple `(last_seen, id)` of the last row. These lists merge rollup partials at read time, so they carry no
+/// `as_of`: a later page reflects what arrived since the first.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct IdCursor {
+    project_id: ProjectId,
+    window: TimeWindow,
+    last: (Timestamp, String),
+}
+
+impl IdCursor {
+    /// A cursor from its decoded parts, for the cursor codec.
+    pub const fn from_parts(
+        project_id: ProjectId,
+        window: TimeWindow,
+        last: (Timestamp, String),
+    ) -> Self {
+        Self {
+            project_id,
+            window,
+            last,
+        }
+    }
+
+    /// The parts, for the cursor codec: project, window and the last sort tuple.
+    pub fn parts(&self) -> (ProjectId, TimeWindow, (Timestamp, &str)) {
+        (self.project_id, self.window, (self.last.0, &self.last.1))
+    }
+
+    pub(crate) fn check(
+        &self,
+        scope: ProjectScope,
+        window: TimeWindow,
+    ) -> Result<(Timestamp, String), QueryServiceError> {
+        if (self.project_id, self.window) == (scope.project_id(), window) {
+            Ok(self.last.clone())
+        } else {
+            Err(QueryServiceError::CursorInvalid)
+        }
+    }
+}
+
 /// A cursor for the children of one span: the `(start_time, span_id)` of the last child returned.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ChildCursor {

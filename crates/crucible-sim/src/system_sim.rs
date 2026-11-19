@@ -53,7 +53,7 @@ use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConf
 use crucible_normalize::{
     Admission, IngestFrame, NormCtx, NormalizedFrame, PriceTable, ProjectSalt, normalize,
 };
-use crucible_plan::{Caller, Pred};
+use crucible_plan::{Caller, Filter};
 use crucible_query::{
     Consistency, Meta, PartialReason, QueryService, QueryServiceError, ReadContext, SpanSource,
     TraceListQuery,
@@ -97,6 +97,7 @@ use crate::system_oracle::{self, Admitted, FactRow, FrameSpan, McpKey, McpSent};
 use crate::trace::Trace;
 use crate::wal_sim::{self, LogState, coin, pick, read_log};
 
+mod lists;
 mod reads;
 
 /// How hostile a run is.
@@ -2572,7 +2573,7 @@ async fn read_list(
     for _ in 0..pages {
         let query = TraceListQuery {
             window,
-            filter: Pred::all(),
+            filter: Filter::all(),
             limit: Some(if whole { 200 } else { 10 }),
             cursor: cursor.take(),
         };
@@ -3738,6 +3739,7 @@ impl Run<'_> {
             self.violate(Violation::RestartNotIdempotent);
         }
         self.read_everything(&node, "after the last restart").await;
+        lists::check(&self.shared, &node, &self.model).await;
         drop(node);
         drop(wal);
         host.stop().await;

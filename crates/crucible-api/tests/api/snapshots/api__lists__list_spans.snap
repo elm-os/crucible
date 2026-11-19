@@ -1,0 +1,69 @@
+---
+source: crates/crucible-api/tests/api/lists.rs
+expression: spans.pretty()
+---
+{
+  "data": [
+    {
+      "duration_us": 1000,
+      "environment": "default",
+      "level": "default",
+      "model": "",
+      "name": "span-30",
+      "observation_type": "span",
+      "parent_span_id": null,
+      "saturated": false,
+      "session_id": "s2",
+      "span_id": "000000000000001e",
+      "start_time": "2026-11-17T09:29:40.000000Z",
+      "status_code": "ok",
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000003",
+      "user_id": "ada"
+    },
+    {
+      "duration_us": 1000,
+      "environment": "default",
+      "level": "default",
+      "model": "",
+      "name": "span-21",
+      "observation_type": "generation",
+      "parent_span_id": "0000000000000014",
+      "saturated": false,
+      "session_id": "s2",
+      "span_id": "0000000000000015",
+      "start_time": "2026-11-17T09:29:21.000000Z",
+      "status_code": "ok",
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000002",
+      "user_id": "bob"
+    },
+    {
+      "duration_us": 1000,
+      "environment": "default",
+      "level": "default",
+      "model": "",
+      "name": "span-20",
+      "observation_type": "span",
+      "parent_span_id": null,
+      "saturated": false,
+      "session_id": "s2",
+      "span_id": "0000000000000014",
+      "start_time": "2026-11-17T09:29:20.000000Z",
+      "status_code": "ok",
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_id": "a5a5a5a5a5a5a5a50000000000000002",
+      "user_id": "bob"
+    }
+  ],
+  "has_more": true,
+  "meta": {
+    "as_of": "2026-11-17T09:30:02.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": "v1.test.AQEEAQEBAQEBAQEBAQEBAQEBAQHjsMRCmPwcFJr79MiZb7kkAAZlFyiYgAAABmUrRm_gAAAGYGFr-3YAAAZgdmBmegAABmB1ifFagAAGYHWHcHwAAAAAAAAAABQ.1BgUXbw_HdJHBl0I_hNigg"
+}

@@ -1,0 +1,29 @@
+---
+source: crates/crucible-api/tests/api/lists.rs
+expression: theirs.pretty()
+---
+{
+  "data": [
+    {
+      "first_trace_at": "2026-11-17T09:29:40.000000Z",
+      "last_trace_at": "2026-11-17T09:29:40.000000Z",
+      "saturated": false,
+      "session_id": "s2",
+      "trace_count": 1
+    },
+    {
+      "first_trace_at": "2026-11-17T09:29:00.000000Z",
+      "last_trace_at": "2026-11-17T09:29:00.000000Z",
+      "saturated": false,
+      "session_id": "s 1",
+      "trace_count": 1
+    }
+  ],
+  "has_more": false,
+  "meta": {
+    "as_of": "2026-11-17T09:30:02.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": null
+}
