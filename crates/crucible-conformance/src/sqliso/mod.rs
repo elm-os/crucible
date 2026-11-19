@@ -156,6 +156,7 @@ impl Iso {
                 passwords: Arc::new(Passwords),
                 variant: ctx.variant.clone(),
                 admin_user: Ident::new(&ctx.config.admin.user)?,
+                statements_per_hour: SQL_QUOTA_QUERIES_PER_HOUR,
             },
         );
         let profile = sql

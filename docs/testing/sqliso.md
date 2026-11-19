@@ -47,7 +47,7 @@ path.
 | W5 | Writes, DDL, temporary and attached objects, `SYSTEM`, `KILL`, users, roles, grants, policies, quotas, profiles, backups, `OUTFILE` | Refused, and the admin sees an unchanged catalogue |
 | W6 | Every function the server lists, with six argument shapes | No canary, an unchanged catalogue, a healthy admin ping |
 | W7 | Each resource guard | Its error code: rows to read, sleep, AST depth and size, subquery depth, query size, join, set and group-by caps, the result cap, the window backstop, the concurrency cap |
-| W8 | The quota, at its real limits, on an identity of its own | Statement 601 of the hour is refused with code 201; another identity is unaffected |
+| W8 | The quota, at its real limits, on an identity of its own | Statement 1,801 of the hour is refused with code 201; another identity is unaffected |
 | W9 | Settings a read-only identity may still change | No profile element is changeable; what the server itself leaves changeable is a presentation setting and shows no other row |
 | W10 | Error text, `EXPLAIN` in nine forms, the query cache | Errors quote project A's rows only; no row of B is evaluated; the same text answers A and B with their own rows |
 | W11 | Lifecycle races: the user before its policies, policies dropped, a malformed user name, a retention change, deprovisioning | No state reads another project; a retention change hides old rows at once |
@@ -110,7 +110,8 @@ What the suite found on real servers, and what was done about each.
   statement: the lexical check admits `SELECT` and `WITH` only.
 - **A `SETTINGS` clause inside a subquery is accepted and ignored.** The value it names never takes effect.
 - **A constant `SELECT 1` does not count against the quota; `EXPLAIN` does.** A run through the API is three
-  statements (two validations and the run), so the quota's 600 statements an hour are about 200 runs.
+  statements (two validations and the run), so the quota's default of 1,800 statements an hour is about 600 runs.
+  The operator setting `sql.statements_per_hour` changes it, and the refusal names the setting.
 - **A probe is about twenty refused statements.** The probe identities are outside the hourly quota, so probing
   from several nodes cannot use up an error allowance and read as a probe that cannot run. The suite runs 21
   probes in a row at the real quota and checks that the probe identity has no quota usage.

@@ -94,6 +94,11 @@ pub const SETTINGS: &[Setting] = &[
         "MCP tool calls one key may make at once after a quiet spell",
     ),
     plain(
+        "sql.statements_per_hour",
+        Some("1800"),
+        "statements one project's SQL workspace may send to ClickHouse per hour; a run is three",
+    ),
+    plain(
         "clickhouse.url",
         None,
         "HTTP endpoint of the ClickHouse telemetry store; without it the server only ingests",

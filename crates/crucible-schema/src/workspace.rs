@@ -68,8 +68,10 @@ pub fn workspace_user(project: ProjectId) -> String {
     format!("{SQL_USER_PREFIX}{}", project_hex(project))
 }
 
-/// The hourly limits of [`SQL_QUOTA`] (contract 7.4).
-pub const SQL_QUOTA_QUERIES_PER_HOUR: u64 = 600;
+/// The hourly limits of [`SQL_QUOTA`] (contract 7.4). Statements per hour, by default: the operator setting
+/// `sql.statements_per_hour` replaces it. A run through the API is three statements, two checks and the query,
+/// so the default is about 600 runs.
+pub const SQL_QUOTA_QUERIES_PER_HOUR: u64 = 1_800;
 /// Errors per hour.
 pub const SQL_QUOTA_ERRORS_PER_HOUR: u64 = 300;
 /// Rows read per hour.
@@ -268,6 +270,8 @@ pub struct WorkspaceParams {
     pub admin_user: Ident,
     /// The settings profile.
     pub profile: SqlProfile,
+    /// The statements an identity may send per hour (`sql.statements_per_hour`).
+    pub statements_per_hour: u64,
     /// The password digests of the two probe identities, in the order of [`PROBE_PROJECTS`].
     pub probe: [PasswordHash; 2],
 }
@@ -604,11 +608,25 @@ impl CuratedView {
 }
 
 /// The limits of [`SQL_QUOTA`], keyed by user name, as a quota statement writes them.
-fn quota_limits() -> String {
+fn quota_limits(statements_per_hour: u64) -> String {
     format!(
-        "KEYED BY user_name FOR INTERVAL 1 hour MAX queries = {SQL_QUOTA_QUERIES_PER_HOUR}, errors = \
+        "KEYED BY user_name FOR INTERVAL 1 hour MAX queries = {statements_per_hour}, errors = \
          {SQL_QUOTA_ERRORS_PER_HOUR}, read_rows = {SQL_QUOTA_READ_ROWS_PER_HOUR}, execution_time = \
          {SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR}"
+    )
+}
+
+/// The statement that brings the existing quota to its limits, with `statements_per_hour` statements an hour.
+/// Altering keeps the usage counters. The probe identities are outside the quota: a probe is about twenty
+/// refused statements every five minutes on every node, which would use up the hourly error allowance and
+/// then read as a probe that cannot run.
+pub fn alter_quota(variant: &Variant, statements_per_hour: u64) -> String {
+    format!(
+        "ALTER QUOTA {SQL_QUOTA}{} {} TO {SQL_READER_ROLE} EXCEPT {}, {}",
+        variant.on_cluster(),
+        quota_limits(statements_per_hour),
+        workspace_user(PROBE_PROJECTS[0]),
+        workspace_user(PROBE_PROJECTS[1])
     )
 }
 
@@ -652,7 +670,7 @@ pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> Migratio
             }
             WorkspaceAction::CreateQuota => statements.push(format!(
                 "CREATE QUOTA IF NOT EXISTS {SQL_QUOTA}{on} {} TO {SQL_READER_ROLE}",
-                quota_limits()
+                quota_limits(params.statements_per_hour)
             )),
             WorkspaceAction::GrantColumns(id) => statements.push(grant_columns(table(id), variant)),
             WorkspaceAction::StaticPolicy(id, form) => {
@@ -674,16 +692,8 @@ pub fn access_workspace(variant: &Variant, params: &WorkspaceParams) -> Migratio
                         variant,
                     ));
                 }
-                // Altering keeps the usage counters and brings a drifted quota back to its limits. The probe
-                // identities are outside the quota: a probe is about twenty refused statements every five
-                // minutes on every node, which would use up the hourly error allowance and then read as a
-                // probe that cannot run.
-                statements.push(format!(
-                    "ALTER QUOTA {SQL_QUOTA}{on} {} TO {SQL_READER_ROLE} EXCEPT {}, {}",
-                    quota_limits(),
-                    workspace_user(PROBE_PROJECTS[0]),
-                    workspace_user(PROBE_PROJECTS[1])
-                ));
+                // The probe identities exist now, so the quota can leave them out.
+                statements.push(alter_quota(variant, params.statements_per_hour));
             }
         }
     }
@@ -737,6 +747,7 @@ mod tests {
         WorkspaceParams {
             admin_user: Ident::new("crucible_admin").unwrap(),
             profile: SqlProfile::default(),
+            statements_per_hour: SQL_QUOTA_QUERIES_PER_HOUR,
             probe: [hash("a"), hash("b")],
         }
     }

@@ -20,7 +20,7 @@ use crucible_env::{
 use crucible_records::{ProjectId, ProjectScope, Uuid};
 use crucible_schema::{
     Ident, JOIN_SPILL_SETTINGS, PROBE_PROJECTS, PasswordHash, RetentionSettings, ServiceIdentity,
-    SqlProfile, TABLES, Variant, WorkspaceParams, deprovision_identity, probe_canary,
+    SqlProfile, TABLES, Variant, WorkspaceParams, alter_quota, deprovision_identity, probe_canary,
     provision_identity, service_policy_check, workspace_user,
 };
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -51,6 +51,8 @@ pub struct SqlStoreConfig {
     pub variant: Variant,
     /// The operator-supplied admin user, named by the service policies.
     pub admin_user: Ident,
+    /// The statements an identity may send per hour (`sql.statements_per_hour`).
+    pub statements_per_hour: u64,
 }
 
 /// The production `SqlWorkspaceStore`, over the connection pool of a [`ClickHouseStore`].
@@ -520,12 +522,23 @@ impl ClickHouseSqlStore {
         self.admin(&[profile.alter(&self.config.variant)]).await
     }
 
+    /// Brings the existing quota to the configured statements per hour, as `crucible_admin`. The migration
+    /// ledger applies access step A2 once, so a changed `sql.statements_per_hour` reaches the server here.
+    pub async fn apply_quota(&self) -> Result<(), SqlError> {
+        self.admin(&[alter_quota(
+            &self.config.variant,
+            self.config.statements_per_hour,
+        )])
+        .await
+    }
+
     /// The inputs of access step A2: the admin user, the profile and the digests of the two probe identities'
     /// passwords at generation 0.
     pub fn workspace_params(&self, profile: SqlProfile) -> Result<WorkspaceParams, SqlError> {
         Ok(WorkspaceParams {
             admin_user: self.config.admin_user.clone(),
             profile,
+            statements_per_hour: self.config.statements_per_hour,
             probe: [
                 self.password_hash(PROBE_PROJECTS[0], 0)?,
                 self.password_hash(PROBE_PROJECTS[1], 0)?,

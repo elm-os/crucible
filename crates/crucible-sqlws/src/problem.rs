@@ -289,15 +289,23 @@ impl From<SqlError> for SqlProblem {
                 "The query needed more than 2 GiB of memory. Narrow the time window, select fewer columns, or \
                  group by fewer keys.",
             ),
-            SqlError::QuotaExceeded { message } => Self {
-                server_message: Some(message),
-                retry_after: Some(Duration::from_secs(60)),
-                ..Self::new(
-                    SqlProblemCode::QuotaExceeded,
+            SqlError::QuotaExceeded { message } => {
+                // ClickHouse names the limit that was passed, as in `queries = 1801/1800`.
+                let fix = if message.contains("queries = ") {
+                    "The project has used its SQL statements for this hour; a run is three statements, two checks \
+                     and the query. Wait for the next hour, or ask the operator to raise \
+                     `sql.statements_per_hour` (CRUCIBLE_SQL_STATEMENTS_PER_HOUR, 1,800 by default) and restart \
+                     the server."
+                } else {
                     "The project's SQL allowance for this hour is used up, or too many of its queries are running. \
-                     Wait and run the query again.",
-                )
-            },
+                     Wait and run the query again."
+                };
+                Self {
+                    server_message: Some(message),
+                    retry_after: Some(Duration::from_secs(60)),
+                    ..Self::new(SqlProblemCode::QuotaExceeded, fix)
+                }
+            }
             SqlError::Cancelled => Self::new(SqlProblemCode::Conflict, "The run was cancelled."),
             SqlError::Unavailable(_) => Self {
                 retry_after: Some(Duration::from_secs(5)),
@@ -357,6 +365,18 @@ mod tests {
         });
         assert_eq!((syntax.line, syntax.column), (Some(2), Some(5)));
         assert_eq!(syntax.server_message.as_deref(), Some("Syntax error"));
+        // The hourly statement limit names the operator setting that raises it; another limit does not.
+        let fix = |message: &str| {
+            SqlProblem::from(SqlError::QuotaExceeded {
+                message: message.to_owned(),
+            })
+            .fix
+        };
+        assert!(
+            fix("Quota for user `u` for 3600s has been exceeded: queries = 1801/1800.")
+                .contains("`sql.statements_per_hour` (CRUCIBLE_SQL_STATEMENTS_PER_HOUR")
+        );
+        assert!(!fix("has been exceeded: errors = 301/300.").contains("sql.statements_per_hour"));
     }
 
     #[test]

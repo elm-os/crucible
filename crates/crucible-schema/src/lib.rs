@@ -48,8 +48,8 @@ pub use workspace::{
     CURATED_VIEWS, CuratedView, JOIN_SPILL_SETTINGS, PROBE_PROJECTS, SQL_PROFILE, SQL_QUOTA,
     SQL_QUOTA_ERRORS_PER_HOUR, SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR, SQL_QUOTA_QUERIES_PER_HOUR,
     SQL_QUOTA_READ_ROWS_PER_HOUR, SQL_READER_ROLE, SQL_USER_PREFIX, STATIC_PREDICATE, SqlProfile,
-    ViewColumn, WorkspaceParams, access_workspace, deprovision_identity, expected_policies,
-    policy_inventory, probe_canary, project_hex, project_policies, project_policy_name,
-    project_predicate, provision_identity, sql_tables, static_policy, static_policy_name,
-    workspace_user,
+    ViewColumn, WorkspaceParams, access_workspace, alter_quota, deprovision_identity,
+    expected_policies, policy_inventory, probe_canary, project_hex, project_policies,
+    project_policy_name, project_predicate, provision_identity, sql_tables, static_policy,
+    static_policy_name, workspace_user,
 };

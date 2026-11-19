@@ -115,11 +115,16 @@ pub(crate) struct ClickHouse {
     pub(crate) url: String,
     pub(crate) admin: Credentials,
     pub(crate) master_key: MasterKey,
+    /// `sql.statements_per_hour`: the hourly allowance of each SQL workspace identity.
+    pub(crate) sql_statements_per_hour: u64,
 }
 
 impl ClickHouse {
-    /// The settings of the `[clickhouse]` section.
-    pub(crate) fn new(config: &crucible_config::ClickHouse) -> anyhow::Result<Self> {
+    /// The settings of the `[clickhouse]` section, with the `[sql]` section's allowance.
+    pub(crate) fn new(
+        config: &crucible_config::ClickHouse,
+        sql: crucible_config::Sql,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             url: config.url.clone(),
             admin: Credentials {
@@ -127,6 +132,7 @@ impl ClickHouse {
                 password: config.password.expose().to_owned(),
             },
             master_key: MasterKey::parse(config.master_key.expose())?,
+            sql_statements_per_hour: sql.statements_per_hour,
         })
     }
 
@@ -186,6 +192,7 @@ impl ClickHouse {
                 variant: Variant::SingleNode,
                 admin_user: Ident::new(&self.admin.user)
                     .context("the ClickHouse admin user is not a plain identifier")?,
+                statements_per_hour: self.sql_statements_per_hour,
             },
         ))
     }
@@ -202,6 +209,7 @@ impl ClickHouse {
             admin_user: Ident::new(&self.admin.user)
                 .context("the ClickHouse admin user is not a plain identifier")?,
             profile,
+            statements_per_hour: self.sql_statements_per_hour,
             probe: [hash(PROBE_PROJECTS[0])?, hash(PROBE_PROJECTS[1])?],
         })
     }
@@ -416,8 +424,14 @@ mod tests {
                 password: "admin-secret".to_owned(),
             },
             master_key: MasterKey::parse(KEY).unwrap(),
+            sql_statements_per_hour: 90,
         };
         let steps = config.steps(SqlProfile::default()).unwrap();
+        // `sql.statements_per_hour` reaches the quota of access step A2.
+        assert!(steps[2].statements.iter().any(|statement| {
+            statement.starts_with("ALTER QUOTA crucible_sql_quota")
+                && statement.contains("MAX queries = 90,")
+        }));
         assert_eq!(
             steps.each_ref().map(|step| step.id),
             [

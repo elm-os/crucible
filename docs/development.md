@@ -142,6 +142,8 @@ password_file = "/run/secrets/postgres"
 
 - A secret (`master_key`, `clickhouse.password`, `postgres.password`) is given as the value or as a path in its
   `_file` twin. Given both in one layer, the file is used and a warning says so.
+- `sql.statements_per_hour` (default 1,800) is the hourly allowance of each project's SQL workspace identity. A run
+  through the API is three statements, two checks and the query. The value is applied to ClickHouse at every start.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `crucible config check` loads the configuration and reports every problem at once; `crucible config print`

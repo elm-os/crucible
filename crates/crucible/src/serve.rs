@@ -684,14 +684,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let sql = match &control {
         Some(control) => {
             let sql_store = Arc::new(config.sql_store(&store)?);
-            // A server upgrade can add settings the workspace's profile should pin; the ledger would not apply
-            // access step A2 again, so the profile is brought up to date at every start.
+            // A server upgrade can add settings the workspace's profile should pin, and the operator can change
+            // `sql.statements_per_hour`; the ledger would not apply access step A2 again, so the profile and the
+            // quota are brought up to date at every start.
             let profile = async {
                 let profile = sql_store.server_profile(SqlProfile::default()).await?;
-                sql_store.apply_profile(&profile).await
+                sql_store.apply_profile(&profile).await?;
+                sql_store.apply_quota().await
             };
             if let Err(error) = profile.await {
-                tracing::warn!(%error, "the SQL workspace's settings profile was not updated; run with --migrate");
+                tracing::warn!(%error, "the SQL workspace's settings profile and quota were not updated; run with --migrate");
             }
             let workspace = SqlWorkspace::new(
                 env.clone(),
@@ -769,7 +771,7 @@ fn clickhouse(config: &Config, migrate: bool) -> anyhow::Result<Option<ClickHous
         );
         return Ok(None);
     };
-    ClickHouse::new(clickhouse).map(Some)
+    ClickHouse::new(clickhouse, config.sql).map(Some)
 }
 
 /// Resolves with the name of the first termination signal the process receives.

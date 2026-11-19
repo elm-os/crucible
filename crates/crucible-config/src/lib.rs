@@ -21,7 +21,7 @@ use std::path::Path;
 pub use resolve::{Layers, Loaded, resolve};
 pub use settings::{SETTINGS, Setting};
 pub use types::{
-    ClickHouse, Config, ConfigErrors, Data, Mcp, Postgres, Secret, Server, Source, WalBackend,
+    ClickHouse, Config, ConfigErrors, Data, Mcp, Postgres, Secret, Server, Source, Sql, WalBackend,
 };
 
 /// The environment variable that names the configuration file, like the `--config` flag.

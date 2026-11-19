@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
-    ClickHouse, Config, ConfigErrors, Data, Mcp, Postgres, Secret, Server, Source, WalBackend,
+    ClickHouse, Config, ConfigErrors, Data, Mcp, Postgres, Secret, Server, Source, Sql, WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -42,6 +42,7 @@ const NUMBERS: &[&str] = &[
     "recent.max_bytes",
     "mcp.calls_per_second",
     "mcp.burst",
+    "sql.statements_per_hour",
     "postgres.pool_size",
 ];
 
@@ -309,6 +310,15 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         );
     }
     let burst = burst.filter(|burst| *burst > 0);
+    let statements_per_hour =
+        t.parsed::<u64>("sql.statements_per_hour", "a whole number of statements");
+    if statements_per_hour == Some(0) {
+        t.errors.push(
+            "`sql.statements_per_hour` must be at least 1; a run through the API is three statements"
+                .to_owned(),
+        );
+    }
+    let statements_per_hour = statements_per_hour.filter(|statements| *statements > 0);
     let pool_size = t.parsed::<usize>("postgres.pool_size", "a number of connections");
     if pool_size == Some(0) {
         t.errors
@@ -423,6 +433,9 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         mcp: Mcp {
             calls_per_second: calls_per_second?,
             burst: burst?,
+        },
+        sql: Sql {
+            statements_per_hour: statements_per_hour?,
         },
         master_key,
         clickhouse,
@@ -569,6 +582,7 @@ mod tests {
                 burst: 200
             }
         );
+        assert_eq!(config.sql.statements_per_hour, 1_800);
         assert_eq!(config.clickhouse, None);
         assert_eq!(config.postgres, None);
         assert_eq!(config.master_key, None);
@@ -711,7 +725,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [mcp], [clickhouse], [postgres].",
+                "crucible.toml: unknown section [smtp]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres].",
             ]
         );
     }
@@ -880,6 +894,9 @@ max_bytes = 4096  # file
 calls_per_second = 50  # default
 burst = 200  # default
 
+[sql]
+statements_per_hour = 1800  # default
+
 [clickhouse]
 url = "http://clickhouse:8123"  # env CRUCIBLE_CLICKHOUSE_URL
 user = "crucible_admin"  # default
@@ -902,6 +919,21 @@ pool_size = 8  # default
             );
         }
         assert_eq!(Secret::new("x").to_string(), "<redacted>");
+    }
+
+    #[test]
+    fn the_sql_allowance_comes_from_the_file_or_the_environment_and_is_checked() {
+        let file = "[sql]\nstatements_per_hour = 6000\n";
+        let config = load(Some(file), &[], &[]).unwrap().config;
+        assert_eq!(config.sql.statements_per_hour, 6_000);
+        let lower = env(&[("CRUCIBLE_SQL_STATEMENTS_PER_HOUR", "90")]);
+        let config = load(Some(file), &lower, &[]).unwrap().config;
+        assert_eq!(config.sql.statements_per_hour, 90);
+        let errors = load(Some("[sql]\nstatements_per_hour = 0\n"), &[], &[]).unwrap_err();
+        assert!(
+            errors.0[0].contains("`sql.statements_per_hour` must be at least 1"),
+            "{errors}"
+        );
     }
 
     #[test]

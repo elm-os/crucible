@@ -36,6 +36,7 @@ CONFIG=crates/crucible-conformance/scripts/.sqliso-config.xml
 
 in_container() {
   docker run --rm --cpus=3 --memory=2g --network "$NETWORK" -e CARGO_BUILD_JOBS=3 \
+    -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_DEV_DEBUG=line-tables-only -e CARGO_PROFILE_TEST_DEBUG=line-tables-only \
     -v "$ROOT:/work" -w /work -v "$TARGET_VOLUME:/target" -v crucible-cargo:/usr/local/cargo/registry \
     "$IMAGE" "$@"
 }
