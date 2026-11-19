@@ -560,7 +560,6 @@ impl ClickHouseSqlStore {
         let mut query = self
             .store
             .workspace_client()
-            .clone()
             .with_user(user)
             .with_password(password)
             .query_raw(sql)

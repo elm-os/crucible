@@ -132,7 +132,6 @@ impl ClickHouseStore {
     ) -> Result<RawReply, StoreError> {
         let mut query = self
             .workspace_client()
-            .clone()
             .with_user(user)
             .with_password(password)
             .query_raw(sql);

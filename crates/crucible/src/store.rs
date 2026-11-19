@@ -117,6 +117,8 @@ pub(crate) struct ClickHouse {
     pub(crate) master_key: MasterKey,
     /// `sql.statements_per_hour`: the hourly allowance of each SQL workspace identity.
     pub(crate) sql_statements_per_hour: u64,
+    /// `clickhouse.idle_timeout`; `None` lets detection derive it from the server.
+    pub(crate) idle_timeout: Option<Duration>,
 }
 
 impl ClickHouse {
@@ -133,6 +135,7 @@ impl ClickHouse {
             },
             master_key: MasterKey::parse(config.master_key.expose())?,
             sql_statements_per_hour: sql.statements_per_hour,
+            idle_timeout: config.idle_timeout,
         })
     }
 
@@ -161,6 +164,7 @@ impl ClickHouse {
                 flavour: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: CONNECT_TIMEOUT,
+                idle_timeout: self.idle_timeout,
             },
         )
     }
@@ -425,6 +429,7 @@ mod tests {
             },
             master_key: MasterKey::parse(KEY).unwrap(),
             sql_statements_per_hour: 90,
+            idle_timeout: None,
         };
         let steps = config.steps(SqlProfile::default()).unwrap();
         // `sql.statements_per_hour` reaches the quota of access step A2.

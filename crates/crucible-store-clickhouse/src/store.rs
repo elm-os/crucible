@@ -23,7 +23,7 @@ use crucible_records::{
 use crucible_schema::{DATABASE, IndexKind, MigrationStep, ServiceIdentity, table};
 use futures::Stream;
 
-use crate::codes::{Failure, parse_code};
+use crate::codes::{self, Failure, parse_code};
 use crate::connect;
 use crate::decode::Decoder;
 use crate::render::{self, Binder, Statement};
@@ -148,14 +148,52 @@ pub struct StoreConfig {
     pub tls_roots: TlsRoots,
     /// How long opening a connection may take.
     pub connect_timeout: Duration,
+    /// How long an idle connection is kept for the next statement (`clickhouse.idle_timeout`), for a balancer in
+    /// front of the store that drops idle connections sooner than the server. `None`: detection derives it from
+    /// the server's `keep_alive_timeout`.
+    pub idle_timeout: Option<Duration>,
+}
+
+/// One client per service identity, in the order of `slot`, over one connection pool.
+struct Clients {
+    /// How long the pool keeps an idle connection.
+    idle: Duration,
+    by_identity: [clickhouse::Client; 5],
+    /// The read endpoint without credentials: workspace identities are attached per statement.
+    workspace: clickhouse::Client,
+}
+
+impl Clients {
+    fn new(env: &Env, config: &StoreConfig, idle: Duration) -> Self {
+        let base = connect::client(env, config.tls_roots.clone(), config.connect_timeout, idle);
+        let read_url = config.read_url.as_deref().unwrap_or(&config.url);
+        let client = |url: &str, credentials: &Credentials| {
+            base.clone()
+                .with_url(url)
+                .with_user(credentials.user.as_str())
+                .with_password(credentials.password.as_str())
+        };
+        Self {
+            idle,
+            workspace: base.clone().with_url(read_url),
+            // In the order of `slot`.
+            by_identity: [
+                client(&config.url, &config.admin),
+                client(&config.url, &config.ingest),
+                client(read_url, &config.read_ui),
+                client(read_url, &config.read_agent),
+                client(&config.url, &config.maint),
+            ],
+        }
+    }
 }
 
 struct Inner {
     env: Env,
-    clients: [clickhouse::Client; 5],
-    /// The read endpoint without credentials: workspace identities are attached per statement.
-    workspace_client: clickhouse::Client,
-    configured_flavour: Option<StoreFlavour>,
+    config: StoreConfig,
+    /// Replaced when detection learns the server's keep-alive timeout, because a pool keeps the idle timeout it
+    /// was built with.
+    clients: Mutex<Arc<Clients>>,
     flavour: Mutex<Option<StoreFlavour>>,
 }
 
@@ -169,7 +207,7 @@ pub struct ClickHouseStore {
 impl fmt::Debug for ClickHouseStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClickHouseStore")
-            .field("configured_flavour", &self.inner.configured_flavour)
+            .field("configured_flavour", &self.inner.config.flavour)
             .finish_non_exhaustive()
     }
 }
@@ -215,6 +253,11 @@ fn version(text: &str) -> Option<StoreVersion> {
         major: parts.next()?.parse().ok()?,
         minor: parts.next()?.parse().ok()?,
     })
+}
+
+/// The server's `keep_alive_timeout` from its row in `system.server_settings`: whole seconds.
+fn keep_alive(text: &str) -> Option<Duration> {
+    text.trim().parse().ok().map(Duration::from_secs)
 }
 
 /// A one-row block for `dedup_selftest`.
@@ -280,6 +323,9 @@ impl Drop for KillOnDrop {
 /// The state of one streaming read.
 pub(crate) struct Reading {
     cursor: Option<BytesCursor>,
+    /// The statement and its output format until the first poll, to send it once more if its request could not
+    /// be sent.
+    resend: Option<(clickhouse::query::Query, String)>,
     deadline: Instant,
     kill: Option<KillOnDrop>,
     inner: Arc<Inner>,
@@ -299,7 +345,21 @@ impl Reading {
             kill.armed = true;
         }
         let clock = Arc::clone(&self.inner.env.clock);
-        let outcome = clock.timeout_at(self.deadline, cursor.next()).await;
+        let first = clock.timeout_at(self.deadline, cursor.next()).await;
+        let outcome = match (first, self.resend.take()) {
+            // No byte of the request was sent, so the read changed nothing: it is sent once more, on a new
+            // connection.
+            (Ok(Err(error)), Some((query, format))) if codes::not_sent(&error) => {
+                match query.fetch_bytes(format) {
+                    Ok(fresh) => {
+                        *cursor = fresh;
+                        clock.timeout_at(self.deadline, cursor.next()).await
+                    }
+                    Err(error) => Ok(Err(error)),
+                }
+            }
+            (first, _) => first,
+        };
         let finished = !matches!(outcome, Ok(Ok(Some(_))));
         if finished {
             // Dropping the cursor closes the connection, which cancels the statement on the server
@@ -342,31 +402,34 @@ impl Reading {
 impl ClickHouseStore {
     /// A store over `env`. No connection is opened until the first call.
     pub fn new(env: Env, config: StoreConfig) -> Self {
-        let base = connect::client(&env, config.tls_roots.clone(), config.connect_timeout);
-        let read_url = config.read_url.as_deref().unwrap_or(&config.url);
-        let client = |url: &str, credentials: &Credentials| {
-            base.clone()
-                .with_url(url)
-                .with_user(credentials.user.as_str())
-                .with_password(credentials.password.as_str())
-        };
-        // In the order of `slot`.
-        let clients = [
-            client(&config.url, &config.admin),
-            client(&config.url, &config.ingest),
-            client(read_url, &config.read_ui),
-            client(read_url, &config.read_agent),
-            client(&config.url, &config.maint),
-        ];
+        let idle = config
+            .idle_timeout
+            .unwrap_or(connect::FALLBACK_IDLE_TIMEOUT);
+        let clients = Mutex::new(Arc::new(Clients::new(&env, &config, idle)));
         Self {
             inner: Arc::new(Inner {
                 env,
-                workspace_client: base.clone().with_url(read_url),
-                clients,
-                configured_flavour: config.flavour,
                 flavour: Mutex::new(config.flavour),
+                config,
+                clients,
             }),
         }
+    }
+
+    fn clients(&self) -> Arc<Clients> {
+        Arc::clone(
+            &self
+                .inner
+                .clients
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// How long the connection pool keeps an idle connection: the operator's `clickhouse.idle_timeout`, or,
+    /// once [`TelemetryStore::detect`] has read it, a margin below the server's `keep_alive_timeout`.
+    pub fn idle_timeout(&self) -> Duration {
+        self.clients().idle
     }
 
     /// A query as `identity` with an explicit query id, its bound values and its settings.
@@ -377,7 +440,7 @@ impl ClickHouseStore {
         settings: &[(&str, String)],
     ) -> (Uuid, clickhouse::query::Query) {
         let query_id = self.inner.env.new_id();
-        let mut query = self.inner.clients[slot(identity)]
+        let mut query = self.clients().by_identity[slot(identity)]
             .query_raw(&statement.sql)
             .with_setting("query_id", query_id.to_string());
         for (n, param) in statement.params.iter().enumerate() {
@@ -417,13 +480,21 @@ impl ClickHouseStore {
         let deadline = Duration::from_secs(secs + DEADLINE_SLACK_SECS);
         let settings = [("max_execution_time", secs.to_string())];
         let (_, query) = self.query(identity, statement, &settings);
-        let read = async {
+        let read = |query: clickhouse::query::Query| async move {
             let mut cursor = query.fetch_bytes("TabSeparated")?;
             cursor.collect().await
         };
-        match self.inner.env.timeout(deadline, read).await {
+        let attempts = async {
+            match read(query.clone()).await.map_err(Failure::from_client) {
+                // No byte of the request was sent, so the read changed nothing: it is sent once more, on a new
+                // connection.
+                Err(Failure::NotSent(_)) => read(query).await.map_err(Failure::from_client),
+                other => other,
+            }
+        };
+        match self.inner.env.timeout(deadline, attempts).await {
             Ok(Ok(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
-            Ok(Err(error)) => Err(Failure::from_client(error)),
+            Ok(Err(failure)) => Err(failure),
             Err(_elapsed) => Err(Failure::Timeout),
         }
     }
@@ -446,7 +517,7 @@ impl ClickHouseStore {
         settings: &[(&str, String)],
     ) -> Result<(), Failure> {
         let query_id = self.inner.env.new_id();
-        let mut insert = self.inner.clients[slot(ServiceIdentity::Ingest)]
+        let mut insert = self.clients().by_identity[slot(ServiceIdentity::Ingest)]
             .insert_formatted_with(sql)
             .with_setting("query_id", query_id.to_string())
             // The body is already in the server's framed compression, so the client compresses nothing.
@@ -490,9 +561,11 @@ impl ClickHouseStore {
         deadline: Duration,
         kill_on_drop: bool,
     ) -> Result<Reading, Failure> {
+        let resend = (query.clone(), format.to_owned());
         let cursor = query.fetch_bytes(format).map_err(Failure::from_client)?;
         Ok(Reading {
             cursor: Some(cursor),
+            resend: Some(resend),
             deadline: self.inner.env.clock.now().saturating_add(deadline),
             kill: kill_on_drop.then(|| KillOnDrop {
                 inner: Arc::clone(&self.inner),
@@ -504,8 +577,8 @@ impl ClickHouseStore {
     }
 
     /// The read endpoint's client without credentials, for the SQL workspace's per-project identities.
-    pub(crate) fn workspace_client(&self) -> &clickhouse::Client {
-        &self.inner.workspace_client
+    pub(crate) fn workspace_client(&self) -> clickhouse::Client {
+        self.clients().workspace.clone()
     }
 
     /// The environment the store runs over.
@@ -611,7 +684,7 @@ impl ClickHouseStore {
             text_indexes.iter().all(|present| *present)
         };
 
-        let flavour = match self.inner.configured_flavour {
+        let flavour = match self.inner.config.flavour {
             Some(flavour) => flavour,
             None => {
                 let cloud = self.setting_value("settings", "cloud_mode").await?;
@@ -651,6 +724,49 @@ impl ClickHouseStore {
             text_index,
             ddl_initial_user_and_roles,
         })
+    }
+
+    /// Keeps idle connections for as long as the server does, less a margin: reads the server's
+    /// `keep_alive_timeout` as `crucible_maint` and, when the pool's idle timeout differs, rebuilds the clients,
+    /// because a pool keeps the timeout it was built with. An operator's `clickhouse.idle_timeout` is never
+    /// replaced, and a value that cannot be read keeps the fallback.
+    async fn follow_keep_alive(&self) {
+        if self.inner.config.idle_timeout.is_some() {
+            return;
+        }
+        let keep_alive = match self
+            .setting_value("server_settings", "keep_alive_timeout")
+            .await
+        {
+            Ok(answer) => {
+                keep_alive(&answer).ok_or_else(|| format!("the server answered {answer:?}"))
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        let idle = match keep_alive {
+            Ok(keep_alive) => connect::idle_timeout(keep_alive),
+            Err(reason) => {
+                tracing::warn!(
+                    reason,
+                    "the server's keep_alive_timeout could not be read, so idle connections to ClickHouse are \
+                     dropped after {:?}; clickhouse.idle_timeout sets how long they are kept",
+                    connect::FALLBACK_IDLE_TIMEOUT
+                );
+                connect::FALLBACK_IDLE_TIMEOUT
+            }
+        };
+        let mut clients = self
+            .inner
+            .clients
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if clients.idle != idle {
+            *clients = Arc::new(Clients::new(&self.inner.env, &self.inner.config, idle));
+            tracing::info!(
+                ?idle,
+                "idle connections to ClickHouse are kept a margin below the server's keep_alive_timeout"
+            );
+        }
     }
 
     /// Inserts one row into `dedup_selftest` as `crucible_ingest`, `times` times with one token, and returns
@@ -1024,6 +1140,7 @@ impl TelemetryStore for ClickHouseStore {
 
     async fn detect(&self) -> Result<StoreFacts, StoreError> {
         let facts = self.detect_catalogue().await?;
+        self.follow_keep_alive().await;
         // The check needs the table and the identities, so it starts with the first migration.
         let migrated = facts
             .engines
@@ -1129,6 +1246,16 @@ mod tests {
             engine_family("AggregatingMergeTree"),
             EngineFamily::MergeTree
         );
+    }
+
+    #[test]
+    fn the_keep_alive_timeout_is_read_in_whole_seconds() {
+        assert_eq!(keep_alive("10\n"), Some(Duration::from_secs(10)));
+        assert_eq!(keep_alive("30"), Some(Duration::from_secs(30)));
+        // The setting is not listed, or the answer is not a number of seconds.
+        for unusable in ["", "\n", "ten", "-1", "1.5"] {
+            assert_eq!(keep_alive(unusable), None, "{unusable:?}");
+        }
     }
 
     #[test]

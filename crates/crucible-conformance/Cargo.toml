@@ -25,6 +25,8 @@ crucible-sim = { path = "../crucible-sim" }
 crucible-control = { path = "../crucible-control" }
 crucible-control-pg = { path = "../crucible-control-pg", features = ["test-support"] }
 anyhow = { workspace = true }
+# The connection-counting `Net` of the idle-connection rows.
+async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 sha2 = { workspace = true }

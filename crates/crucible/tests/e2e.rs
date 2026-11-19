@@ -4,7 +4,8 @@
 //! REST API and, when a Chrome binary is given, the UI's traces table. Four traces take the four ways in:
 //! OTLP/HTTP protobuf, OTLP/HTTP JSON, OTLP/gRPC with gzip, and a compat ingest route with gzip and the key pair
 //! as Basic auth. A load burst and a `kill -9` in the middle of three further runs must lose no acknowledged
-//! span and duplicate no row.
+//! span and duplicate no row. At startup the recent-span index is sized from the memory the server may use
+//! (about 200 MiB in a container limited to 2 GiB) and the memory budgets fit without a warning.
 //!
 //! The test needs a ClickHouse 26.3 or newer whose admin user may manage access, so it runs only when
 //! `CRUCIBLE_E2E_CLICKHOUSE_URL` is set and passes as skipped otherwise:
@@ -696,6 +697,12 @@ fn plain(log: &str) -> String {
     out
 }
 
+/// The number a log line gives for ` field=`, from its first occurrence.
+fn log_number(log: &str, field: &str) -> Option<u64> {
+    let rest = log.split(&format!(" {field}=")).nth(1)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 fn millis(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e6).round() / 1e3
 }
@@ -844,6 +851,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
                 flavour: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: Duration::from_secs(10),
+                idle_timeout: None,
             },
         ),
         project: project.to_owned(),
@@ -867,6 +875,25 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     let boot = Instant::now();
     let mut server = rig.start(true);
     let ready_after = boot.elapsed();
+    // The memory-derived defaults follow the memory the server may use: in a container limited to 2 GiB the
+    // recent-span index is bounded near 200 MiB, and the memory budgets fit without a warning.
+    let boot_log = plain(&std::fs::read_to_string(&server.log).unwrap());
+    let recent_max_bytes =
+        log_number(&boot_log, "recent_max_bytes").expect("the serving line gives the recent bound");
+    let memory_limit = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    const TWO_GIB: u64 = 2 << 30;
+    match memory_limit {
+        Some(TWO_GIB) => assert!(
+            (190 << 20..=210 << 20).contains(&recent_max_bytes),
+            "in a container limited to 2 GiB the recent bound is {recent_max_bytes} bytes"
+        ),
+        Some(limit) => assert!(recent_max_bytes <= limit / 10, "{recent_max_bytes}"),
+        None => assert!(recent_max_bytes <= 1 << 30, "{recent_max_bytes}"),
+    }
+    let budget_warning = boot_log.contains("the memory budgets add up to");
+    assert!(!budget_warning, "{boot_log}");
     let api = |server: &Server| Api {
         addr: server.api,
         project: traces_project.clone(),
@@ -1082,6 +1109,11 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
 
     let report = json!({
         "ready_after_ms": millis(ready_after),
+        "memory": {
+            "container_limit_bytes": memory_limit,
+            "recent_max_bytes": recent_max_bytes,
+            "budget_warning": budget_warning,
+        },
         "freshness_ms": freshness.into_iter().collect::<serde_json::Map<_, _>>(),
         "burst": {
             "acked_requests": burst.report.outcome.acked,
