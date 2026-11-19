@@ -1,4 +1,4 @@
-//! The export-job repository of the model (migration V3): the rows of `export_jobs` are claim rows of
+//! The export-job repository of the model (migration V4): the rows of `export_jobs` are claim rows of
 //! [`Queue::ExportJobs`] that also carry the export's own columns.
 
 use async_trait::async_trait;

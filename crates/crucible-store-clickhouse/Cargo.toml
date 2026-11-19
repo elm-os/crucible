@@ -25,6 +25,9 @@ futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio", "client-legacy", "http1"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }

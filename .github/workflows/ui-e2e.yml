@@ -1,6 +1,6 @@
 name: ui-e2e
 
-# Playwright with axe against the static export: each section of /home/, /traces/ and /trace/ in its
+# Playwright with axe against the static export: each section of /home/, /traces/, /trace/ and /sql/ in its
 # loading, success, error and empty states, keyboard paths, and phone width. The surface-by-state table
 # is docs/testing/ui-surfaces.md.
 

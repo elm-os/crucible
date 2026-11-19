@@ -1,4 +1,4 @@
-//! The export-job repository over Postgres (migration V3): the rows of `export_jobs`, which is also the queue the
+//! The export-job repository over Postgres (migration V4): the rows of `export_jobs`, which is also the queue the
 //! export job claims (contract 11.7).
 
 use async_trait::async_trait;

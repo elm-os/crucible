@@ -13,6 +13,7 @@ use crucible_records::{ApiKeyId, ExportJobId, ProjectId, Timestamp, UserId, Uuid
 use futures::future::BoxFuture;
 
 use crate::error::TxError;
+use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, ExportCommit, ExportJob, Invitation,
     KeyChange, KeyChangeKind, KeySnapshot, Lease, LeaseName, LedgerEntry, NewExport, NewJob,
@@ -415,6 +416,12 @@ pub trait Repos: Send + Sync {
     fn export_jobs(&self) -> &dyn ExportJobRepo;
     /// The migrations ledger.
     fn migrations(&self) -> &dyn Migrations;
+    /// The SQL workspace's ClickHouse identities.
+    fn sql_identities(&self) -> &dyn SqlIdentityRepo;
+    /// Saved SQL queries.
+    fn saved_queries(&self) -> &dyn SavedQueryRepo;
+    /// The audit rows of SQL runs.
+    fn sql_runs(&self) -> &dyn SqlRunRepo;
 }
 
 /// Postgres behind repositories (contract 2.7). Through [`Repos`], each call is its own statement.

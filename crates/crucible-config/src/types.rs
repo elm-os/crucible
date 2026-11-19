@@ -141,6 +141,14 @@ pub struct Mcp {
     pub burst: u32,
 }
 
+/// The `[sql]` section: the SQL workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sql {
+    /// Statements one project's workspace identity may send to ClickHouse per hour. A run through the API is
+    /// three: two checks and the query.
+    pub statements_per_hour: u64,
+}
+
 /// The `[clickhouse]` section, present when `clickhouse.url` is set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClickHouse {
@@ -178,6 +186,8 @@ pub struct Config {
     pub recent_max_bytes: Option<u64>,
     /// The MCP server's rate limit.
     pub mcp: Mcp,
+    /// The SQL workspace.
+    pub sql: Sql,
     /// The master key, 64 hexadecimal characters.
     pub master_key: Option<Secret>,
     /// The telemetry store; `None` for the ingest-only mode.
