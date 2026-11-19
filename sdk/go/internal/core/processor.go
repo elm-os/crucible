@@ -23,6 +23,46 @@ type Stats struct {
 	Exported     uint64
 	QueueFull    uint64
 	ExportFailed uint64
+	// QueuedBytes is the estimated size of the queued spans and of the batch being exported (see spanBytes).
+	QueuedBytes int64
+}
+
+// spanOverheadBytes is what a span costs beyond its strings: ids, times, kind, status code, links and the
+// resource and scope references.
+const spanOverheadBytes = 256
+
+// spanBytes estimates a span's size from lengths already known: its name, attributes, events and status message,
+// plus a fixed allowance. The attribute count limit bounds the work.
+func spanBytes(s sdktrace.ReadOnlySpan) int64 {
+	n := spanOverheadBytes + len(s.Name()) + len(s.Status().Description) + attributeBytes(s.Attributes())
+	for _, e := range s.Events() {
+		n += len(e.Name) + attributeBytes(e.Attributes)
+	}
+	return int64(n)
+}
+
+func attributeBytes(kvs []attribute.KeyValue) int {
+	n := 0
+	for _, kv := range kvs {
+		n += len(kv.Key)
+		switch kv.Value.Type() {
+		case attribute.STRING:
+			n += len(kv.Value.AsString())
+		case attribute.STRINGSLICE:
+			for _, v := range kv.Value.AsStringSlice() {
+				n += len(v)
+			}
+		default:
+			n += 8
+		}
+	}
+	return n
+}
+
+// queued is a span on the queue with its estimated size.
+type queued struct {
+	span sdktrace.ReadOnlySpan
+	size int64
 }
 
 // Processor is the SDK's span processor. At span start it copies the session, user, tags and metadata carried in the
@@ -34,7 +74,7 @@ type Processor struct {
 	batchSize int
 	interval  time.Duration
 
-	queue   chan sdktrace.ReadOnlySpan
+	queue   chan queued
 	flushes chan chan error
 	stop    chan struct{}
 	done    chan struct{}
@@ -45,6 +85,7 @@ type Processor struct {
 	stopOnce     sync.Once
 
 	exported, queueFull, exportFailed atomic.Uint64
+	queuedBytes                       atomic.Int64
 }
 
 var _ sdktrace.SpanProcessor = (*Processor)(nil)
@@ -57,7 +98,7 @@ func NewProcessor(exporter sdktrace.SpanExporter, release string, queueSize, bat
 		release:      release,
 		batchSize:    batchSize,
 		interval:     interval,
-		queue:        make(chan sdktrace.ReadOnlySpan, queueSize),
+		queue:        make(chan queued, queueSize),
 		flushes:      make(chan chan error),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -88,9 +129,12 @@ func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 
 // OnEnd queues the span, or drops and counts it when the queue is full. It never blocks.
 func (p *Processor) OnEnd(s sdktrace.ReadOnlySpan) {
+	size := spanBytes(s)
+	p.queuedBytes.Add(size)
 	select {
-	case p.queue <- s:
+	case p.queue <- queued{span: s, size: size}:
 	default:
+		p.queuedBytes.Add(-size)
 		p.queueFull.Add(1)
 	}
 }
@@ -133,6 +177,7 @@ func (p *Processor) Stats() Stats {
 		Exported:     p.exported.Load(),
 		QueueFull:    p.queueFull.Load(),
 		ExportFailed: p.exportFailed.Load(),
+		QueuedBytes:  p.queuedBytes.Load(),
 	}
 }
 
@@ -142,6 +187,7 @@ func (p *Processor) run() {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	batch := make([]sdktrace.ReadOnlySpan, 0, p.batchSize)
+	var batchBytes int64
 	var failed error
 	export := func() {
 		if len(batch) == 0 {
@@ -153,11 +199,13 @@ func (p *Processor) run() {
 		} else {
 			p.exported.Add(uint64(len(batch)))
 		}
+		p.queuedBytes.Add(-batchBytes)
 		clear(batch)
-		batch = batch[:0]
+		batch, batchBytes = batch[:0], 0
 	}
-	add := func(s sdktrace.ReadOnlySpan) {
-		batch = append(batch, s)
+	add := func(q queued) {
+		batch = append(batch, q.span)
+		batchBytes += q.size
 		if len(batch) >= p.batchSize {
 			export()
 		}

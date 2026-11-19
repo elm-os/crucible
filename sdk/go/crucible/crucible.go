@@ -133,6 +133,8 @@ type Stats struct {
 	QueueFull uint64
 	// ExportFailed is the number of spans dropped because their export failed.
 	ExportFailed uint64
+	// QueuedBytes is the estimated size of the spans waiting for export and of the batch being exported.
+	QueuedBytes int64
 }
 
 // CurrentStats returns the counters of the process-wide client; zero before Init.
@@ -142,7 +144,7 @@ func CurrentStats() Stats {
 		return Stats{}
 	}
 	s := c.Stats()
-	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed}
+	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed, QueuedBytes: s.QueuedBytes}
 }
 
 // WithSession returns a context whose spans carry the session id (crucible.session.id).
