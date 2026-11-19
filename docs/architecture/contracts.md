@@ -121,7 +121,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws`, `crucible-alerts`, `crucible-notify`, `crucible-export`, `crucible-lifecycle` |
 | `crucible-cursor` | `crucible-records` |
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
@@ -131,6 +131,11 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-sqlws` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-control` |
+| `crucible-egress` | `crucible-env` |
+| `crucible-notify` | `crucible-env`, `crucible-records`, `crucible-control`, `crucible-auth` (sealing channel secrets), `crucible-jobs`, `crucible-egress` |
+| `crucible-alerts` | `crucible-env`, `crucible-records`, `crucible-control`, `crucible-auth`, `crucible-jobs`, `crucible-plan`, `crucible-query`, `crucible-notify` |
+| `crucible-export` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-plan`, `crucible-query`, `crucible-control`, `crucible-jobs`, `crucible-auth` |
+| `crucible-lifecycle` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-control`, `crucible-auth`, `crucible-jobs`, `crucible-wal`, `crucible-wal-codec`, `crucible-export` |
 | `crucible-proxy` | `crucible-env`, `crucible-records` |
 | `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
 | `crucible-sdk` | none (it depends on no internal crate) |
@@ -2507,6 +2512,27 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 | Channel test-send | 6 per minute per channel |
 | Ingest | Not rate-limited; backpressure governs (section 4.8). Optional per-key byte rate |
 
+### 11.10 Settled in code
+
+- Alerts (#84): a second claimed queue, `alert_evaluations`, beside the outbox; `Claims::prune_done` prunes done
+  outbox and evaluation rows. The outbox allows 50 attempts (not the per-queue default of 12), so a row is never
+  parked while its channel is enabled. `channels` adds `name`, `disabled_reason` and `failures`; `alert_rules` adds
+  `interval_secs`, `last_eval_seq`, `eval_failures` and `skipped_ticks`. Rules take the `spans` source (and
+  `mcp_ops` once the MCP analytics source lands); each scheduled evaluation runs at a stable offset within its
+  interval derived from its rule id. `GET channels` (names and states only) needs `edit_content`, so members can pick
+  channels for a rule; everything else on channels needs the admin `channels` permission, which no key holds.
+  `Mailer` is an optional trait in `crucible-env`, not a field of `Env`, built from `smtp.*`. The egress client is
+  HTTP/1 over `Net::connect` or `tls_connect` to the vetted address; strict mode's infrastructure list is the
+  ClickHouse and Postgres hosts (node addresses and the object store are a follow-up).
+- Exports (#87): files live 7 days; the export claim lasts 30 minutes (crucible-jobs has no heartbeat for long
+  runs); an export's idempotency key lives in its row for the row's life, and a replay answers 202 with the current
+  state; the rate limit counts Postgres rows, so it applies across the deployment; until an object store exists, a
+  file downloads only from the node that wrote it.
+- Lifecycle (#85): `lifecycle_actions` records every ClickHouse action under the fencing token before it is issued;
+  `retention_floors`, `nodes` heartbeats, `deletion_node_acks` and the deletion request columns `requested_by`,
+  `idempotency_key`, `request_hash`, `places`, `attempts`, `error` and `updated_at` hold the executor's state.
+  Export files that predate a request are expired and removed through `crucible_export::purge`.
+
 ## 12. API
 
 ### 12.1 Base path, ports and versioning
@@ -2925,6 +2951,18 @@ requests and drop matching rows before shipping. `crucible wal drain` does likew
 | Media objects | 24 h; presigned links 5 minutes |
 | Minute rollup counts | Kept unless the operator rebuilds |
 
+### 13.6 Settled in code
+
+- Immediate hiding (13.5) is bounded per read: each read carries at most 128 trace ids and 32 user or session
+  requests, because ClickHouse caps a request at 1,000 parameters. Until the delete runs, reads hide MCP rows of a
+  deletion by user by `user_id` only, not by subject hash. A `Tombstone` record carries no issuer; anything that
+  needs it reads the Postgres request.
+- Not built yet: replay filtering of tombstoned spans in stage B and startup seeding of the pending set before
+  shipping (the single-writer queue); the weekly purge of `mcp_tool_inventory` and `mcp_deploys` (13.2 step 4); the
+  marker purge (5.5); the `project` deletion kind; a route to resume a failed request; `crucible admin
+  rebuild-rollups`; the mask fallback (mask application passes on 26.3, 26.8 and latest). Comments and media do not
+  exist yet, so a completed request reports both as `not_present`. Export reads do not consult the pending set yet.
+
 ## 14. Media
 
 Optional. Owner: `crucible-media` on `ObjectStore`. Without an object store, clients keep inline base64 under the
@@ -2996,3 +3034,4 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
 | v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |
 | v2 | 2026-11-18 | Settled in code by #58, #78 and #79: SDK export queues bounded by spans and bytes (9.10); the MCP storage readings and normalizer version 5 (9.11); project salts (11.1); the fake collector's normalizer edge (1.5); the filtered trace list, span list, sessions of a user and list consistency (8.9); list filters, routes and cursor routes 4 to 7 (12.5) |
+| v2 | 2026-11-19 | Settled in code by wave B (#84 alerts, #85 lifecycle, #87 exports): five crate rows and the `crucible-api` edges (1.5); queues, columns, permissions, egress and export rules (11.10); deletion hiding bounds and what is not built (13.6) |
