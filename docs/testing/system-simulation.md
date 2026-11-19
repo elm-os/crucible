@@ -154,24 +154,24 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 
 | Mutant | Crate | Defect | Caught as | Seed | Config |
 |---|---|---|---|---|---|
-| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | liveness: the log does not drain after a lost frame (other runs of the budget report I1 or I3) | 0 | `0x304e3dca437a47` |
+| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace read right after the ack answers `not_found` (other runs of the budget report I1 or a liveness failure) | 1 | `0x304e3dca437a47` |
 | `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 0 | `0x304e3dca437a47` |
-| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 0 | `0x304e3dca437a47` |
+| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 1 | `0x304e3dca437a47` |
 | `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 1 | `0x304e3dca437a47` |
-| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 0 | `0x304e3dca437a47` |
+| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x4443c5fa7b02ff` |
 | `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I1: an acknowledged request is in no table and no frame (other runs report I3) | 0 | `0x304e3dca437a47` |
 | `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 0 | `0x304e3dca437a47` |
 | `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3001 | `0x7fce3d29abb2c7` |
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0x304e3dca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x1f2fe574beef1d` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 14000 | `0x1aad7dced818fe` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 0 | `0x304e3dca437a47` |
 | `misclassify-caller-fault` | `crucible-normalize` | An invalid-params error on a server-side row is not the caller's fault | I8: an `mcp_ops` row differs from the shared classifier in `caller_fault` | 2001 | `0x21c6206ca7c81b` |
 | `sum-capture-sources` | `crucible-shipper` | Every `mcp_tool_rollup` partial gets one capture source | I7: the rollup differs from the reference over `mcp_ops`, and its counts per capture source are not those of `mcp_ops` | 0 | `0x304e3dca437a47` |
 | `drop-rollup-marker` | `crucible-shipper` | The blocks of `mcp_tool_rollup` are sent without their marker row | I2: the store model refuses the block | 0 | `0x304e3dca437a47` |
 | `mark-after-duplicate-drop` | `crucible-normalize` | Stage B flags the usage aggregates of a frame after its exact repeats were dropped | I7: a span is not a usage aggregate although a dropped repeat of its frame passes the mark on to it | 107000 | `0x71a57f98c89770` |
 
-Of the 600 runs of the budget, the mutants are caught by 587, 147, 65, 50, 101, 497, 485, 78, 161, 169, 24, 53,
-238, 293 and 2 runs, in the order of the table. Before the dimensions, the weighted profile and the oracle checks
+Of the 600 runs of the budget, the mutants are caught by 587, 147, 59, 43, 102, 498, 479, 71, 157, 161, 22, 49,
+233, 292 and 2 runs, in the order of the table. Before the dimensions, the weighted profile and the oracle checks
 of milestone 3, the first eleven were caught by 592, 163, 41, 25, 106, 474, 480, 84, 169, 175 and 0 runs.
 
 `collect-what-frames-rely-on` was caught by no run of the budget before. Two things changed that. The profile
