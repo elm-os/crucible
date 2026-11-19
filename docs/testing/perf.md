@@ -82,9 +82,13 @@ cargo xtask perf gate --base main --path e2e --lane 1kb-gzip   # shipped spans/s
 2. Builds `crucible-loadgen` in release from the checkout that runs the gate. That one binary measures both arms,
    and the report records its SHA-256.
 3. Runs the fsync-honesty probe on a fresh WAL volume of the session, with Crucible's CPUs and memory.
-4. Runs the pairs. Each pair runs the path's capacity measurement for A and B back to back, then its latency
-   measurement for both, with the same lane and offered load. The order alternates from pair to pair (AB, BA,
-   AB, ...), so that slow drift in temperature or background load does not favour one arm. Every arm gets a fresh
+4. Runs a discarded latency arm of A, then of B, so that neither image starts cold in a measured arm and the
+   first measured arm follows the same kind of work as every later one. Then runs the pairs. In a pair, the first
+   build runs the path's capacity measurement and then its latency measurement, and the second build the same,
+   with the same lane and offered load: every capacity arm follows a latency arm and every latency arm follows
+   its own build's capacity arm, whichever build goes first (see the A/A calibration below for why). The order
+   alternates from pair to pair (AB, BA, AB, ...), so that slow drift in temperature or background load does not
+   favour one arm. Every arm gets a fresh
    rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume; then the
    first owner and a key with the `ingest` and `read` scopes for the project `default` (`crucible admin init` and
    `crucible admin create-key`, run with the image's own binary, because with Postgres the keys live there and a
@@ -167,9 +171,45 @@ relative to the median of every value, so the builds' difference cancels. It is 
 summary's "Second vs first" column), and a note names it when it exceeds the metric's threshold. It never blocks.
 
 Each measured arm also records what else the machine did: busy cores on the rig's CPUs and on the Docker host's
-other CPUs (from `/proc/stat`, which a container reads unnamespaced), the 1-minute load average before and after,
+other CPUs (from `/proc/stat`, which a container reads unnamespaced), the share of the measurement during which
+the busiest block device had I/O in flight (from `/proc/diskstats`), the 1-minute load average before and after,
 and the containers that ran outside the session. Other jobs' containers carry no cpuset, so they can take the
-rig's CPUs as well; the summary's last table lists every run in order with this context.
+rig's CPUs as well, and they write to the disk the WAL flushes to; the summary's last table lists every run in
+order with this context.
+
+### A/A calibration
+
+Two early smoke runs of `main` against itself on the small rig, with 2 pairs each, differed by +12.9% and +43.7%
+in median throughput, and arm A was slower in all four throughput pairs. The question was whether the rig
+favours a position (warm caches, image layers, the page cache, Docker network or volume set-up) or whether other
+jobs' load made the noise. Both runs below measured one image (`39360ec`) as A and B on the small rig, ack path,
+1 KiB lane, 8 pairs, on 2026-11-19, **measured on a laptop, not reference hardware**, with other tracks' builds
+sharing the machine. The pass criterion for the second run was written down before it ran: the verdict is `pass`;
+for each metric the two-sided sign test of the per-pair second-minus-first differences gives p of at least 0.05;
+and the throughput order effect is below the throughput threshold of 5%.
+
+| Run | Schedule | Throughput medians A, B | Throughput order effect | Second arm higher | p99 order effect | Second arm higher | Verdict |
+|---|---|---|---|---|---|---|---|
+| Before | each pair: both capacity arms, then both latency arms; no warm-up arm | 573,840; 575,878 spans/s | -0.6% | 2 of 8 pairs (sign test p = 0.29) | -11.4% | 3 of 8 (p = 0.73) | pass |
+| After | a discarded latency arm of each build, then each build's capacity and latency arms in turn | 542,391; 529,760 spans/s | -3.1% | 3 of 8 pairs (p = 0.73) | +8.0% | 5 of 8 (p = 0.73) | pass |
+
+- **Neither run shows a systematic order effect.** No sign test comes near significance, and the throughput
+  order effect stays within its threshold in both. The early smoke runs' differences were noise from other jobs:
+  over the first run, throughput fell as the other CPUs' load rose (correlation -0.73 between an arm's
+  throughput and the busy cores on the other CPUs), and the second run, with heavier load from other jobs (1-minute
+  load average 7 to 10), had two throughput arms at 410,000 and 152,000 spans/s, one in second position and one in
+  first. With 2 pairs, one build slower in all four pairs happens one time in eight by chance.
+- **The one structural asymmetry is gone.** In the first schedule the second capacity arm of a pair always
+  followed a capacity arm, which writes gigabytes and whose rig removal precedes it, while the first followed a
+  light latency arm; it measured 1.0% less than the first in the median (6 of 8 pairs, not significant). In the
+  current schedule every capacity arm follows a latency arm, and every latency arm its own build's capacity arm,
+  whichever build goes first, and the warm-up arms load both images before the first measured arm. A property test
+  checks the schedule (`every_arm_follows_the_same_kind_of_work`).
+- **Small-rig p99 is too noisy to bound an order effect** at 10% with 8 pairs: single arms swung from 4 ms to 67
+  ms while other jobs wrote to the shared disk. Durable-ack p99 decides only on the full rig, alone on the machine.
+- Other jobs can only be measured, not removed: the disk busy share now in every arm's context shows when a slow
+  arm waited behind other jobs' writes, since the ack path is bound by the WAL's flushes on this disk
+  ([`perf-baseline.md`](perf-baseline.md)).
 
 ### Output
 
@@ -247,7 +287,7 @@ Paths are relative to the results directory.
 | `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
 | `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
 | `comparisons[]` | array | The path's two metrics (`throughput` and `latency`, or `sustained` and `freshness`), each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
-| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `disk_busy` (the busiest block device's share of the measurement with I/O in flight), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
 | `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe

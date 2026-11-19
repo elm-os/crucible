@@ -50,6 +50,39 @@ pub fn order_names(pairs: usize) -> Vec<String> {
         .collect()
 }
 
+/// One arm of a session, each on a fresh rig.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// A discarded latency arm of a build, before the pairs.
+    Warmup(Arm),
+    /// Measurement `kind` of a build in pair `pair` (from 0).
+    Measure {
+        /// The pair, from 0.
+        pair: usize,
+        /// The measurement.
+        kind: Kind,
+        /// The build.
+        arm: Arm,
+    },
+}
+
+/// The arms of a session in run order: a discarded latency arm of each build, then each pair build by build, the
+/// path's capacity measurement before its latency one. So every capacity arm follows a latency arm and every
+/// latency arm follows the capacity arm of its own build, whichever build runs first in the pair: neither
+/// position follows heavier work than the other (a capacity arm writes gigabytes, and its rig's removal follows),
+/// and neither build's image starts cold in the first measured arm.
+pub fn schedule(pairs: usize, kinds: [Kind; 2]) -> Vec<Step> {
+    let mut steps: Vec<Step> = order(0).into_iter().map(Step::Warmup).collect();
+    for pair in 0..pairs {
+        for arm in order(pair) {
+            for kind in kinds {
+                steps.push(Step::Measure { pair, kind, arm });
+            }
+        }
+    }
+    steps
+}
+
 /// The measurements of the gate: two per path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -780,7 +813,8 @@ pub fn summary(report: &GateReport) -> String {
         (
             "Pairs".to_owned(),
             format!(
-                "{} in the order {}; every arm on a fresh rig after {} s of warm-up",
+                "{} in the order {}, after a discarded latency arm of each build; in a pair each build runs its \
+                 capacity measurement, then its latency one; every arm on a fresh rig after {} s of warm-up",
                 report.pairs,
                 report.order.join(", "),
                 lane.warmup_s
@@ -889,18 +923,21 @@ pub fn summary(report: &GateReport) -> String {
     let _ = writeln!(
         out,
         "\n## Runs in order\n\nBusy cores are averaged over each measurement. Other jobs' containers have no cpuset, \
-         so they can also run on the rig's CPUs.\n\n| Run | Pair | Measurement | Arm | Value | Rig CPUs busy | \
-         Other CPUs busy | Load before, after | Other containers |\n|---|---|---|---|---|---|---|---|---|"
+         so they can also run on the rig's CPUs, and they share its disk: disk busy is the share of the measurement \
+         during which the busiest block device had I/O in flight.\n\n| Run | Pair | Measurement | Arm | Value | Rig \
+         CPUs busy | Other CPUs busy | Disk busy | Load before, after | Other containers |\n\
+         |---|---|---|---|---|---|---|---|---|---|"
     );
     for (index, run) in (1..).zip(&report.runs) {
         let (kind, value) = (heading(run.kind).0, metric_value(run.kind, run.value()));
         let context = run.context.as_ref().map_or_else(
-            || "n/a | n/a | n/a | n/a".to_owned(),
+            || "n/a | n/a | n/a | n/a | n/a".to_owned(),
             |c| {
                 format!(
-                    "{:.1} | {:.1} | {:.1}, {:.1} | {}",
+                    "{:.1} | {:.1} | {:.0}% | {:.1}, {:.1} | {}",
                     c.rig_cpus_busy,
                     c.other_cpus_busy,
+                    c.disk_busy * 100.0,
                     c.load_before,
                     c.load_after,
                     c.others.len()
@@ -1034,6 +1071,22 @@ mod tests {
         assert_eq!(order_names(5), ["AB", "BA", "AB", "BA", "AB"]);
         assert_eq!(order(0), [Arm::A, Arm::B]);
         assert_eq!(order(1), [Arm::B, Arm::A]);
+        let measure = |pair, kind, arm| Step::Measure { pair, kind, arm };
+        assert_eq!(
+            schedule(2, [Kind::Throughput, Kind::Latency]),
+            [
+                Step::Warmup(Arm::A),
+                Step::Warmup(Arm::B),
+                measure(0, Kind::Throughput, Arm::A),
+                measure(0, Kind::Latency, Arm::A),
+                measure(0, Kind::Throughput, Arm::B),
+                measure(0, Kind::Latency, Arm::B),
+                measure(1, Kind::Throughput, Arm::B),
+                measure(1, Kind::Latency, Arm::B),
+                measure(1, Kind::Throughput, Arm::A),
+                measure(1, Kind::Latency, Arm::A),
+            ]
+        );
     }
 
     proptest! {
@@ -1051,6 +1104,36 @@ mod tests {
                 a_first += usize::from(first == Arm::A);
             }
             prop_assert_eq!(a_first, pairs.div_ceil(2));
+        }
+
+        /// Each build warms up once before any measurement, every measurement of every pair runs once, every
+        /// capacity arm follows a latency arm (or a warm-up, which measures latency), and every latency arm
+        /// follows the capacity arm of its own build and pair: what precedes an arm never depends on its position.
+        #[test]
+        fn every_arm_follows_the_same_kind_of_work(pairs in 1usize..60, e2e: bool) {
+            let kinds = if e2e { [Kind::Sustained, Kind::Freshness] } else { [Kind::Throughput, Kind::Latency] };
+            let steps = schedule(pairs, kinds);
+            prop_assert_eq!(&steps[..2], &[Step::Warmup(Arm::A), Step::Warmup(Arm::B)]);
+            prop_assert_eq!(steps.len(), 2 + 4 * pairs);
+            let mut seen = std::collections::BTreeSet::new();
+            for (index, step) in steps.iter().enumerate().skip(2) {
+                let Step::Measure { pair, kind, arm } = *step else {
+                    return Err(TestCaseError::fail("a warm-up after the first measurement"));
+                };
+                let first_time = seen.insert((pair, kind.name(), arm == Arm::A));
+                prop_assert!(first_time);
+                let previous = steps[index - 1];
+                if kind == kinds[0] {
+                    let after_latency = match previous {
+                        Step::Warmup(_) => true,
+                        Step::Measure { kind: before, .. } => before == kinds[1],
+                    };
+                    prop_assert!(after_latency, "{:?} follows {:?}", step, previous);
+                } else {
+                    prop_assert_eq!(previous, Step::Measure { pair, kind: kinds[0], arm });
+                }
+            }
+            prop_assert_eq!(seen.len(), 4 * pairs);
         }
     }
 

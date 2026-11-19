@@ -2,6 +2,7 @@
 //! (`docs/testing/perf.md`).
 
 mod gate;
+mod reads;
 mod rig;
 mod stats;
 
@@ -12,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gate::{
     Build, Container, GateReport, Kind, LaneReport, LoadgenReport, Probe, RUN_SCHEMA, Rig, Run,
-    Verdict, compare, judge, order, order_names, status_args, summary, verdict,
+    Step, Verdict, compare, judge, order_names, schedule, status_args, summary, verdict,
 };
 use rig::{GatePath, Lane, RigSpec, Session};
 use serde::Deserialize;
@@ -26,7 +27,13 @@ pub const USAGE: &str = "  perf gate --base <ref> [--candidate <ref>] [--path ac
                        --post sets the perf-gate commit status through gh (never for the small rig's smoke runs)
   perf fsync-probe [--rig full|small] [--out FILE]
                        classify the rig's WAL volume with the fsync-honesty probe and write its report
-                       (default perf/results/local/fsync-probe/<time>.json)";
+                       (default perf/results/local/fsync-probe/<time>.json)
+  perf reads [--image <ref>] [--rig small|full] [--spans N] [--spread-days D] [--rate R] [--seconds S]
+          [--probes P]
+                       the read bench of one build (default HEAD) on one rig (default small): ack-to-API on the
+                       empty store, a dataset of N spans loaded through ingest over D days, then one open-loop
+                       lane per read class with the per-request store-read, connection and barrier counters;
+                       writes reads.json and summary.md under perf/results/local/reads/";
 
 /// The fewest pairs of a gate run on the full rig: with fewer, p < 0.05 is out of reach.
 pub const MIN_PAIRS: usize = 5;
@@ -165,6 +172,7 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<bool, String> {
     match args.next().as_deref() {
         Some("gate") => Ok(run_gate(&parse_gate(args)?)? == Verdict::Pass),
         Some("fsync-probe") => fsync_probe(&parse_probe(args)?).map(|()| true),
+        Some("reads") => reads::run_reads(&reads::parse_reads(args)?).map(|()| true),
         _ => Err("usage:\n".to_owned() + USAGE),
     }
 }
@@ -352,64 +360,68 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
         probe.verdict
     );
 
+    let image = |arm: gate::Arm| match arm {
+        gate::Arm::A => &base_image.0,
+        gate::Arm::B => &candidate_image.0,
+    };
     let mut runs = Vec::new();
-    for pair in 0..args.pairs {
-        for kind in args.path.kinds() {
-            for arm in order(pair) {
-                let image = match arm {
-                    gate::Arm::A => &base_image.0,
-                    gate::Arm::B => &candidate_image.0,
-                };
-                let name = kind.name();
-                let tag = format!("pair-{}-{name}-{arm:?}", pair + 1);
-                let out = session.arm(image, args.lane, kind, &dir, &tag)?;
-                let report: LoadgenReport = serde_json::from_str(&out.report)
-                    .map_err(|e| format!("runs/{tag}.json: {e}"))?;
-                if report.schema != RUN_SCHEMA {
-                    return Err(format!(
-                        "runs/{tag}.json has schema `{}`, not {RUN_SCHEMA}",
-                        report.schema
-                    ));
-                }
-                let run = Run {
-                    pair: pair + 1,
-                    kind,
-                    arm,
-                    report: format!("runs/{tag}.json"),
-                    log: format!("logs/{tag}.log"),
-                    offered_spans_per_s: out.offered_spans_per_s,
-                    acked_spans_per_s: report.outcome.acked_spans_per_s,
-                    latency_p99_us: report.latency_us.p99,
-                    errors: report.errors(),
-                    non_2xx: report.non_2xx(),
-                    invalid: judge(
-                        kind,
-                        &report,
-                        out.offered_spans_per_s,
-                        &out.stopped,
-                        out.stored.as_ref(),
-                    ),
-                    context: Some(out.context),
-                    stored: out.stored,
-                };
-                println!(
-                    "perf gate: pair {}/{} {name} {arm:?}: {} spans/s acknowledged, p99 {} us, {} errors, {} \
-                     non-2xx{}",
-                    pair + 1,
-                    args.pairs,
-                    gate::thousands(run.acked_spans_per_s),
-                    gate::thousands(run.latency_p99_us as f64),
-                    run.errors,
-                    run.non_2xx,
-                    run.invalid
-                        .as_ref()
-                        .map_or_else(String::new, |reason| format!(
-                            "; cannot be compared: {reason}"
-                        ))
-                );
-                runs.push(run);
+    for step in schedule(args.pairs, args.path.kinds()) {
+        let (pair, kind, arm) = match step {
+            Step::Warmup(arm) => {
+                let tag = format!("session-warmup-{arm:?}");
+                session.arm(image(arm), args.lane, args.path.kinds()[1], &dir, &tag)?;
+                println!("perf gate: discarded the session's warm-up arm of {arm:?}");
+                continue;
             }
+            Step::Measure { pair, kind, arm } => (pair, kind, arm),
+        };
+        let name = kind.name();
+        let tag = format!("pair-{}-{name}-{arm:?}", pair + 1);
+        let out = session.arm(image(arm), args.lane, kind, &dir, &tag)?;
+        let report: LoadgenReport =
+            serde_json::from_str(&out.report).map_err(|e| format!("runs/{tag}.json: {e}"))?;
+        if report.schema != RUN_SCHEMA {
+            return Err(format!(
+                "runs/{tag}.json has schema `{}`, not {RUN_SCHEMA}",
+                report.schema
+            ));
         }
+        let run = Run {
+            pair: pair + 1,
+            kind,
+            arm,
+            report: format!("runs/{tag}.json"),
+            log: format!("logs/{tag}.log"),
+            offered_spans_per_s: out.offered_spans_per_s,
+            acked_spans_per_s: report.outcome.acked_spans_per_s,
+            latency_p99_us: report.latency_us.p99,
+            errors: report.errors(),
+            non_2xx: report.non_2xx(),
+            invalid: judge(
+                kind,
+                &report,
+                out.offered_spans_per_s,
+                &out.stopped,
+                out.stored.as_ref(),
+            ),
+            context: Some(out.context),
+            stored: out.stored,
+        };
+        println!(
+            "perf gate: pair {}/{} {name} {arm:?}: {} spans/s acknowledged, p99 {} us, {} errors, {} non-2xx{}",
+            pair + 1,
+            args.pairs,
+            gate::thousands(run.acked_spans_per_s),
+            gate::thousands(run.latency_p99_us as f64),
+            run.errors,
+            run.non_2xx,
+            run.invalid
+                .as_ref()
+                .map_or_else(String::new, |reason| format!(
+                    "; cannot be compared: {reason}"
+                ))
+        );
+        runs.push(run);
     }
     drop(session);
 

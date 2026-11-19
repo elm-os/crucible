@@ -657,6 +657,8 @@ impl Secrets {
 
 /// The path of the server binary in the images under test.
 const CRUCIBLE_PATH: &str = "/usr/local/bin/crucible";
+/// The port of Crucible's metrics listener on the session's network.
+pub const METRICS_PORT: u16 = 9464;
 /// Where each Crucible container finds the session's files, among them the owner's password.
 const CONFIG_DIR: &str = "/etc/crucible";
 
@@ -812,8 +814,48 @@ pub struct Context {
     pub load_before: f64,
     /// The 1-minute load average after it.
     pub load_after: f64,
+    /// The share of the measurement during which the busiest block device of the Docker host had I/O in flight
+    /// (from `/proc/diskstats`): the WAL's flushes wait behind other jobs' writes on a shared disk.
+    pub disk_busy: f64,
     /// The containers that ran outside the session when the measurement started.
     pub others: Vec<String>,
+}
+
+/// Milliseconds spent with I/O in flight per block device, from `/proc/diskstats` (its 13th field).
+pub fn disk_ticks(diskstats: &str) -> BTreeMap<String, u64> {
+    diskstats
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            Some(((*fields.get(2)?).to_owned(), fields.get(12)?.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The busiest device's share of `elapsed` with I/O in flight between two `/proc/diskstats` readings.
+pub fn disk_busy(
+    before: &BTreeMap<String, u64>,
+    after: &BTreeMap<String, u64>,
+    elapsed: Duration,
+) -> f64 {
+    let elapsed_ms = elapsed.as_secs_f64() * 1e3;
+    if elapsed_ms <= 0.0 {
+        return 0.0;
+    }
+    after
+        .iter()
+        .filter_map(|(device, ticks)| Some(ticks.saturating_sub(*before.get(device)?)))
+        .map(|busy| (busy as f64 / elapsed_ms).min(1.0))
+        .fold(0.0, f64::max)
+}
+
+/// One reading of the Docker host's activity: CPU ticks, the 1-minute load average, the block devices' busy
+/// time, and when it was taken.
+struct HostSample {
+    cpus: BTreeMap<usize, (u64, u64)>,
+    load: f64,
+    disks: BTreeMap<String, u64>,
+    at: Instant,
 }
 
 /// Busy and total time per CPU, in clock ticks, from the `cpuN` lines of `/proc/stat`.
@@ -1052,25 +1094,35 @@ impl<'r> Session<'r> {
         tag: &str,
     ) -> Result<ArmOutput, String> {
         let result = self.measure(image, lane, kind, dir, tag);
+        self.down();
+        result
+    }
+
+    /// Removes the rig of the arm in progress: Crucible, ClickHouse and Postgres with their volumes.
+    pub fn down(&self) {
         for role in ["crucible", "clickhouse", "postgres"] {
             let _ = docker(["rm", "--force", "--volumes", &self.name(role)]);
         }
         let _ = docker(["volume", "rm", "--force", &self.name("wal")]);
-        result
     }
 
-    fn measure(
-        &self,
-        image: &str,
-        lane: Lane,
-        kind: Kind,
-        dir: &Path,
-        tag: &str,
-    ) -> Result<ArmOutput, String> {
-        let client = self
-            .client
+    /// The container name of the rig's Crucible, which is also its host name on the session's network.
+    pub fn crucible(&self) -> String {
+        self.name("crucible")
+    }
+
+    /// The load generator's container.
+    pub fn client(&self) -> Result<&str, String> {
+        self.client
             .as_deref()
-            .ok_or("the session has not started")?;
+            .ok_or_else(|| "the session has not started".to_owned())
+    }
+
+    /// Starts a fresh rig for one arm: ClickHouse and Postgres, then Crucible from `image` (`serve --migrate`)
+    /// on a fresh WAL volume, with its metrics on port 9464; then makes the arm's project key. On failure the
+    /// end of Crucible's log is saved to `dir/logs/<tag>.log` and returned.
+    pub fn up(&self, image: &str, dir: &Path, tag: &str) -> Result<ArmKey, String> {
+        let client = self.client()?;
         let (clickhouse, postgres, crucible) = (
             self.name("clickhouse"),
             self.name("postgres"),
@@ -1144,6 +1196,7 @@ impl<'r> Session<'r> {
             "serve".to_owned(),
             "--migrate".to_owned(),
             "--data-dir=/var/lib/crucible/data".to_owned(),
+            format!("--metrics-listen=0.0.0.0:{METRICS_PORT}"),
             format!("--recent-max-bytes={}", self.rig.recent_max_bytes),
         ]);
         self.container(&["create"], &crucible, self.rig.crucible, &rest)?;
@@ -1179,7 +1232,25 @@ impl<'r> Session<'r> {
                 ));
             }
         };
+        Ok(key)
+    }
 
+    fn measure(
+        &self,
+        image: &str,
+        lane: Lane,
+        kind: Kind,
+        dir: &Path,
+        tag: &str,
+    ) -> Result<ArmOutput, String> {
+        let key = self.up(image, dir, tag)?;
+        let client = self.client()?;
+        let (clickhouse, postgres, crucible) = (
+            self.name("clickhouse"),
+            self.name("postgres"),
+            self.name("crucible"),
+        );
+        let log = dir.join("logs").join(format!("{tag}.log"));
         let target = format!("{crucible}:4318");
         let warmup = self.loadgen(&target, &key, lane, self.rig.latency_rps, self.rig.warmup_s)?;
         let runs = dir.join("runs");
@@ -1200,20 +1271,25 @@ impl<'r> Session<'r> {
         };
         let (rps, secs) = self.rig.schedule(kind);
         let others = self.others();
-        let (stat_before, load_before) = self.host_sample(client);
+        let before = self.host_sample(client);
         let started_at = super::now().0;
         let report = self.loadgen(&target, &key, lane, rps, secs);
         let finished_at = super::now().0;
-        let (stat_after, load_after) = self.host_sample(client);
+        let after = self.host_sample(client);
         let (rig_cpus_busy, other_cpus_busy) =
-            busy_cores(&stat_before, &stat_after, &self.rig.cpus());
+            busy_cores(&before.cpus, &after.cpus, &self.rig.cpus());
         let context = Context {
             started_at,
             finished_at,
             rig_cpus_busy,
             other_cpus_busy,
-            load_before,
-            load_after,
+            load_before: before.load,
+            load_after: after.load,
+            disk_busy: disk_busy(
+                &before.disks,
+                &after.disks,
+                after.at.saturating_duration_since(before.at),
+            ),
             others,
         };
         let stored = match &report {
@@ -1386,13 +1462,20 @@ impl<'r> Session<'r> {
 
     /// The host's CPU ticks and 1-minute load average, read in the load generator's container: neither file
     /// is namespaced, so the container sees the Docker host's. Empty when the read fails.
-    fn host_sample(&self, client: &str) -> (BTreeMap<usize, (u64, u64)>, f64) {
-        match docker(["exec", client, "cat", "/proc/stat", "/proc/loadavg"]) {
-            Ok(text) => {
-                let loadavg = text.lines().last().unwrap_or_default();
-                (cpu_ticks(&text), load_1m(loadavg))
-            }
-            Err(_) => (BTreeMap::new(), 0.0),
+    fn host_sample(&self, client: &str) -> HostSample {
+        let script = "cat /proc/stat; echo ---; cat /proc/loadavg; echo ---; cat /proc/diskstats";
+        let text = docker(["exec", client, "sh", "-c", script]).unwrap_or_default();
+        let mut parts = text.split("---\n");
+        let (stat, loadavg, diskstats) = (
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        HostSample {
+            cpus: cpu_ticks(stat),
+            load: load_1m(loadavg),
+            disks: disk_ticks(diskstats),
+            at: Instant::now(),
         }
     }
 
@@ -1408,6 +1491,41 @@ impl<'r> Session<'r> {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Runs `crucible-loadgen <args>` in the load generator's container and returns what it printed, stopping it
+    /// after `deadline`.
+    pub fn loadgen_exec(&self, args: &[String], deadline: Duration) -> Result<String, String> {
+        let client = self.client()?;
+        let mut command = Command::new("docker");
+        command.args(["exec", client, LOADGEN_PATH]).args(args);
+        capture_within(&mut command, deadline)
+    }
+
+    /// Runs `args` in the load generator's container and returns what it printed.
+    pub fn client_exec(&self, args: &[&str]) -> Result<String, String> {
+        let client = self.client()?;
+        docker(["exec", client].iter().chain(args))
+    }
+
+    /// Crucible's metrics, in the Prometheus text format.
+    pub fn metrics(&self) -> Result<String, String> {
+        let url = format!("http://{}:{METRICS_PORT}/metrics", self.crucible());
+        self.client_exec(&["curl", "--silent", "--fail", &url])
+    }
+
+    /// Waits until `span_core` holds at least `rows` spans of the key's project; whether it did within `limit`.
+    pub fn wait_for_store(&self, key: &ArmKey, rows: u64, limit: Duration) -> Result<bool, String> {
+        self.drained(key, rows, limit)
+    }
+
+    /// The first row of a ClickHouse `SELECT` as JSON, for the record of a run.
+    pub fn clickhouse_row(&self, sql: &str) -> Result<serde_json::Value, String> {
+        Ok(self
+            .clickhouse(sql)?
+            .into_iter()
+            .next()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     /// Makes the arm's project key once Crucible is ready: `crucible admin init` creates the first owner and the
@@ -1593,6 +1711,20 @@ mod tests {
         assert_eq!(busy_cores(&after, &after, &[0]), (0.0, 0.0));
         assert!((load_1m("0.52 0.58 0.59 1/467 12345\n") - 0.52).abs() < 1e-9);
         assert_eq!(load_1m(""), 0.0);
+        // The busiest device's share of the interval with I/O in flight; a device in one reading only counts not.
+        let disks = |text: &str| disk_ticks(text);
+        let before = disks(
+            "   8       0 sda 1559 0 0 0 0 0 0 0 0 100 0\n   8      32 sdc 3444480 0 0 0 0 0 0 0 0 2000 0\n",
+        );
+        let after = disks(
+            "   8       0 sda 1559 0 0 0 0 0 0 0 0 150 0\n   8      32 sdc 3444480 0 0 0 0 0 0 0 0 2750 0\n\
+             259       0 nvme0n1 1 0 0 0 0 0 0 0 0 999 0\n",
+        );
+        assert_eq!(after.len(), 3);
+        let busy = disk_busy(&before, &after, Duration::from_secs(1));
+        assert!((busy - 0.75).abs() < 1e-9, "{busy}");
+        assert_eq!(disk_busy(&before, &after, Duration::ZERO), 0.0);
+        assert_eq!(disk_busy(&before, &after, Duration::from_millis(500)), 1.0);
         assert_eq!(SMALL.cpus(), [0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(FULL.cpus().len(), 23);
     }
