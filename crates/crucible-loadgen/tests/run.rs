@@ -37,6 +37,8 @@ fn pool(env: &Env, spans_per_request: u32) -> Arc<Pool> {
     let config = PoolConfig {
         span_size: SpanSize::Kib1,
         spans_per_request,
+        traces_per_request: 1,
+        rootless: false,
         templates: 3,
         seed: 5,
     };
@@ -51,6 +53,7 @@ fn config(target: SocketAddr, rate: u64, duration: Duration, concurrency: usize)
         duration,
         concurrency,
         gzip: false,
+        gzip_threads: 2,
         timeout: Duration::from_secs(5),
         headers: Vec::new(),
     }
@@ -92,9 +95,54 @@ async fn every_scheduled_request_is_sent_and_acked_in_both_lanes() {
         );
         if gzip {
             assert!(report.lane.wire_bytes_mean < report.lane.request_bytes_mean / 2.0);
+            assert_eq!(report.lane.gzip_threads, 2);
         } else {
             assert_eq!(report.lane.wire_bytes_mean, report.lane.request_bytes_mean);
+            assert_eq!(report.lane.gzip_threads, 0);
         }
+        // RFC 3339 with six fractional digits, in UTC.
+        assert_eq!(report.started_at.len(), 27, "{}", report.started_at);
+        assert!(report.started_at.ends_with('Z'), "{}", report.started_at);
+    }
+    stub.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_request_shape_decodes_at_the_stub() {
+    // Several traces per request, with and without roots, gzipped by one compression thread for eight
+    // connections: the stub answers 400 to any body that does not decode.
+    let env = env();
+    let (addr, stub) = start_stub(&env, StubConfig::default()).await;
+    for rootless in [false, true] {
+        let shape = PoolConfig {
+            span_size: SpanSize::Kib1,
+            spans_per_request: 10,
+            traces_per_request: 3,
+            rootless,
+            templates: 2,
+            seed: 9,
+        };
+        let pool = Arc::new(Pool::build(shape, env.new_id()).unwrap());
+        let gzipped = RunConfig {
+            gzip: true,
+            gzip_threads: 1,
+            ..config(addr, 200, Duration::from_millis(500), 8)
+        };
+        let report = run(&env, pool, &gzipped).await.unwrap().report;
+        assert_eq!(
+            report.outcome.status_counts.get(&200),
+            Some(&100),
+            "{:?}",
+            report.outcome
+        );
+        assert_eq!(
+            (
+                report.lane.traces_per_request,
+                report.lane.rootless,
+                report.lane.gzip_threads
+            ),
+            (3, rootless, 1)
+        );
     }
     stub.abort();
 }
@@ -248,7 +296,12 @@ async fn unrunnable_schedules_are_refused() {
     let env = env();
     let empty = config(LOOPBACK, 1, Duration::from_millis(500), 1);
     let no_connections = config(LOOPBACK, 10, Duration::from_secs(1), 0);
-    for config in [empty, no_connections] {
+    let no_compression = RunConfig {
+        gzip: true,
+        gzip_threads: 0,
+        ..config(LOOPBACK, 10, Duration::from_secs(1), 1)
+    };
+    for config in [empty, no_connections, no_compression] {
         let result = run(&env, pool(&env, 1), &config).await;
         assert!(matches!(result, Err(RunError::Config(_))), "{result:?}");
     }

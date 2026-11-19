@@ -715,6 +715,7 @@ fn run_config(server: &Server, bearer: &str, seconds: u64) -> RunConfig {
         duration: Duration::from_secs(seconds),
         concurrency: 16,
         gzip: false,
+        gzip_threads: 1,
         timeout: Duration::from_secs(5),
         headers: vec![(
             http::header::AUTHORIZATION,
@@ -727,6 +728,8 @@ fn pool(env: &Env) -> Arc<Pool> {
     let config = PoolConfig {
         span_size: "1k".parse().unwrap(),
         spans_per_request: SPANS_PER_REQUEST,
+        traces_per_request: 1,
+        rootless: false,
         templates: 4,
         seed: 1,
     };

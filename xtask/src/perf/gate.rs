@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use super::rig::Context;
+use super::rig::{Context, Stored};
 use super::stats::{SignedRank, Tail, median, signed_rank};
 
 /// The `schema` value of [`GateReport`].
@@ -50,14 +50,41 @@ pub fn order_names(pairs: usize) -> Vec<String> {
         .collect()
 }
 
-/// The two measurements of the gate.
+/// The measurements of the gate: two per path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// Offered load above capacity; the metric is acknowledged spans per second.
+    /// Ack path: offered load above capacity; the metric is acknowledged spans per second.
     Throughput,
-    /// A fixed rate below capacity; the metric is `latency_us.p99`.
+    /// Ack path: a fixed rate below capacity; the metric is `latency_us.p99`.
     Latency,
+    /// End to end: offered load above what the store path keeps up with for a fixed time, then the drain; the
+    /// metric is acknowledged spans per second over the run and its drain.
+    Sustained,
+    /// End to end: a fixed rate below capacity; the metric is the freshness p95 of the run's spans.
+    Freshness,
+}
+
+impl Kind {
+    /// Whether the measurement reads the store after the run.
+    pub fn end_to_end(self) -> bool {
+        matches!(self, Self::Sustained | Self::Freshness)
+    }
+
+    /// Whether the metric measures capacity (higher is better) rather than latency.
+    pub fn capacity(self) -> bool {
+        matches!(self, Self::Throughput | Self::Sustained)
+    }
+
+    /// The name in the report and the status.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Throughput => "throughput",
+            Self::Latency => "latency",
+            Self::Sustained => "sustained",
+            Self::Freshness => "freshness",
+        }
+    }
 }
 
 /// The fields of a `crucible-loadgen.run.v1` report that the gate reads.
@@ -150,6 +177,8 @@ pub struct Run {
     pub invalid: Option<String>,
     /// What else the machine did during the measurement.
     pub context: Option<Context>,
+    /// What the store held after an end-to-end measurement.
+    pub stored: Option<Stored>,
 }
 
 impl Run {
@@ -158,42 +187,93 @@ impl Run {
         match self.kind {
             Kind::Throughput => self.acked_spans_per_s,
             Kind::Latency => self.latency_p99_us as f64,
+            Kind::Sustained => self.stored.as_ref().map_or(0.0, |s| s.shipped_spans_per_s),
+            Kind::Freshness => self
+                .stored
+                .as_ref()
+                .map_or(0.0, |s| s.freshness_p95_us as f64),
         }
     }
 }
 
+/// Of an end-to-end arm's time (run plus drain), the least share the drain after the last response must take:
+/// below it the store kept up with what was acknowledged, so the ack path or the generator set the rate.
+pub const DRAIN_SHARE_AT_LEAST: f64 = 0.1;
+
 /// Why an arm's measurement cannot be compared, or `None`. `stopped` lists the rig containers that were
-/// not running after the measurement.
+/// not running after the measurement; `stored` is what the store held after an end-to-end measurement.
 pub fn judge(
     kind: Kind,
     report: &LoadgenReport,
     offered_spans_per_s: f64,
     stopped: &[String],
+    stored: Option<&Stored>,
 ) -> Option<String> {
     let mut reasons = Vec::new();
     if !stopped.is_empty() {
         reasons.push(format!("stopped during the run: {}", stopped.join(", ")));
     }
+    let not_clean = || {
+        let (errors, non_2xx) = (report.errors(), report.non_2xx());
+        (errors > 0 || non_2xx > 0).then(|| {
+            format!(
+                "not clean: {errors} requests failed and {non_2xx} responses were not 2xx, so the measurement \
+                 does not cover them"
+            )
+        })
+    };
+    let saturated = |value: f64, what: &str| {
+        (value >= SATURATED_BELOW * offered_spans_per_s).then(|| {
+            format!(
+                "not saturated: {what} {} of {} offered spans/s, so the offered load did not exceed the build's \
+                 capacity",
+                thousands(value),
+                thousands(offered_spans_per_s)
+            )
+        })
+    };
     match kind {
         Kind::Throughput => {
-            if report.outcome.acked_spans_per_s >= SATURATED_BELOW * offered_spans_per_s {
-                reasons.push(format!(
-                    "not saturated: acknowledged {} of {} offered spans/s, so the offered load did not exceed \
-                     the build's capacity",
-                    thousands(report.outcome.acked_spans_per_s),
-                    thousands(offered_spans_per_s)
-                ));
-            }
+            reasons.extend(saturated(report.outcome.acked_spans_per_s, "acknowledged"))
         }
-        Kind::Latency => {
-            let (errors, non_2xx) = (report.errors(), report.non_2xx());
-            if errors > 0 || non_2xx > 0 {
-                reasons.push(format!(
-                    "not clean: {errors} requests failed and {non_2xx} responses were not 2xx, so latency_us \
-                     does not cover them"
-                ));
+        Kind::Latency => reasons.extend(not_clean()),
+        Kind::Sustained | Kind::Freshness => match stored {
+            None => reasons.push("the store was not read after the run".to_owned()),
+            Some(stored) => {
+                if stored.lost_spans > 0 || stored.duplicate_spans > 0 {
+                    reasons.push(format!(
+                        "zero loss failed (invariant I1): {} acknowledged spans missing, {} stored twice",
+                        stored.lost_spans, stored.duplicate_spans
+                    ));
+                }
+                match (stored.drained_s, stored.drain_after_run_s) {
+                    (Some(total), Some(after)) => {
+                        if kind == Kind::Sustained {
+                            reasons.extend(saturated(stored.shipped_spans_per_s, "shipped"));
+                            if after < DRAIN_SHARE_AT_LEAST * total {
+                                reasons.push(format!(
+                                    "the store kept up: the drain took {after:.1} s of {total:.1} s after the \
+                                     last response, so the ack path or the generator set the rate"
+                                ));
+                            }
+                        }
+                    }
+                    _ => reasons.push(format!(
+                        "not drained: the store did not hold all {} acknowledged spans within the drain limit",
+                        stored.acked_spans
+                    )),
+                }
+                if kind == Kind::Freshness {
+                    reasons.extend(not_clean());
+                    if stored.freshness_spans < stored.acked_spans {
+                        reasons.push(format!(
+                            "freshness covers {} of {} acknowledged spans",
+                            stored.freshness_spans, stored.acked_spans
+                        ));
+                    }
+                }
             }
-        }
+        },
     }
     (!reasons.is_empty()).then(|| reasons.join("; "))
 }
@@ -275,9 +355,10 @@ pub fn compare(kind: Kind, runs: &[Run], not_gated: Option<String>) -> Compariso
     let base: Vec<f64> = a.iter().map(|r| r.value()).collect();
     let candidate: Vec<f64> = b.iter().map(|r| r.value()).collect();
     let differences: Vec<f64> = base.iter().zip(&candidate).map(|(a, b)| b - a).collect();
-    let (better, unit, tail, threshold) = match kind {
-        Kind::Throughput => (Better::Higher, "spans/s", Tail::Lower, -THROUGHPUT_DROP),
-        Kind::Latency => (Better::Lower, "us", Tail::Upper, P99_RISE),
+    let (better, unit, tail, threshold) = if kind.capacity() {
+        (Better::Higher, "spans/s", Tail::Lower, -THROUGHPUT_DROP)
+    } else {
+        (Better::Lower, "us", Tail::Upper, P99_RISE)
     };
     let wilcoxon = signed_rank(&differences, tail);
     let median_base = median(&base).unwrap_or(0.0);
@@ -408,12 +489,16 @@ pub struct Rig {
 /// One lane of the run.
 #[derive(Clone, Debug, Serialize)]
 pub struct LaneReport {
-    /// `1kb` or `10kb`.
+    /// `1kb`, `10kb`, `1kb-gzip` or `10kb-gzip`.
     pub name: &'static str,
+    /// `ack` or `e2e`.
+    pub path: &'static str,
     /// `--span-size`.
     pub span_size: &'static str,
     /// `--spans-per-request`.
     pub spans_per_request: u32,
+    /// `--gzip`.
+    pub gzip: bool,
     /// `--concurrency`.
     pub concurrency: u32,
     /// Seconds of discarded load at the latency rate before each measurement.
@@ -426,6 +511,16 @@ pub struct LaneReport {
     pub latency_requests_per_s: u64,
     /// See `latency_requests_per_s`.
     pub latency_s: u64,
+    /// The sustained measurement's requests per second and seconds.
+    pub sustained_requests_per_s: u64,
+    /// See `sustained_requests_per_s`.
+    pub sustained_s: u64,
+    /// The freshness measurement's requests per second and seconds.
+    pub freshness_requests_per_s: u64,
+    /// See `freshness_requests_per_s`.
+    pub freshness_s: u64,
+    /// The longest an end-to-end arm waits for its drain.
+    pub drain_s: u64,
 }
 
 /// The fsync-honesty probe of this session.
@@ -511,17 +606,19 @@ pub fn status_description(report: &GateReport) -> String {
         .iter()
         .map(|c| {
             let name = match c.metric {
-                Kind::Throughput => "throughput",
                 Kind::Latency => "p99",
+                Kind::Freshness => "freshness p95",
+                other => other.name(),
             };
             let gated = if c.gated { "" } else { " not gated" };
             format!("{name} {} p={:.3}{gated}", percent(c.change), c.wilcoxon.p)
         })
         .collect();
     let text = format!(
-        "{verdict}: {}; {} pairs, {}",
+        "{verdict}: {}; {} pairs, {} {}",
         metrics.join(", "),
         report.pairs,
+        report.lane.path,
         report.lane.name
     );
     text.chars().take(140).collect()
@@ -553,9 +650,36 @@ fn milliseconds(us: f64) -> String {
 }
 
 fn metric_value(kind: Kind, x: f64) -> String {
+    if kind.capacity() {
+        thousands(x)
+    } else {
+        milliseconds(x)
+    }
+}
+
+/// A metric's column heading and, in the metric table, its name and the rule that blocks it.
+fn heading(kind: Kind) -> (&'static str, &'static str, &'static str) {
     match kind {
-        Kind::Throughput => thousands(x),
-        Kind::Latency => milliseconds(x),
+        Kind::Throughput => (
+            "Throughput",
+            "Throughput, acknowledged spans/s",
+            "it drops more than 5% with p < 0.05",
+        ),
+        Kind::Latency => (
+            "p99, ms",
+            "Durable-ack p99, ms",
+            "it rises more than 10% with p < 0.05",
+        ),
+        Kind::Sustained => (
+            "Sustained",
+            "Sustained, shipped spans/s",
+            "it drops more than 5% with p < 0.05",
+        ),
+        Kind::Freshness => (
+            "Freshness p95, ms",
+            "Freshness p95, ms",
+            "it rises more than 10% with p < 0.05",
+        ),
     }
 }
 
@@ -617,30 +741,38 @@ pub fn summary(report: &GateReport) -> String {
         (
             "Lane".to_owned(),
             format!(
-                "{}: spans of {}, {} per request, uncompressed protobuf, {} connections",
+                "{}: spans of {}, {} per request, {} protobuf, {} connections",
                 lane.name,
                 lane.span_size.replace('k', " KiB"),
                 lane.spans_per_request,
+                if lane.gzip { "gzipped" } else { "uncompressed" },
                 lane.concurrency
             ),
         ),
+        ("Path".to_owned(), lane.path.to_owned()),
         (
-            "Throughput".to_owned(),
-            format!(
-                "{} requests/s offered ({} spans/s) for {} s; acknowledged spans/s",
-                thousands(lane.throughput_requests_per_s as f64),
-                spans(lane.throughput_requests_per_s),
-                lane.throughput_s
-            ),
-        ),
-        (
-            "Latency".to_owned(),
-            format!(
-                "{} requests/s ({} spans/s) for {} s; `latency_us.p99`",
-                thousands(lane.latency_requests_per_s as f64),
-                spans(lane.latency_requests_per_s),
-                lane.latency_s
-            ),
+            "Measurements".to_owned(),
+            match lane.path {
+                "e2e" => format!(
+                    "sustained: {} requests/s offered ({} spans/s) for {} s, then the drain (at most {} s);                      acknowledged spans/s over the run and its drain. Freshness: {} requests/s ({} spans/s) for {}                      s; p95 from `received_at` to readable. Both check zero loss",
+                    thousands(lane.sustained_requests_per_s as f64),
+                    spans(lane.sustained_requests_per_s),
+                    lane.sustained_s,
+                    lane.drain_s,
+                    thousands(lane.freshness_requests_per_s as f64),
+                    spans(lane.freshness_requests_per_s),
+                    lane.freshness_s
+                ),
+                _ => format!(
+                    "throughput: {} requests/s offered ({} spans/s) for {} s; acknowledged spans/s. Latency: {}                      requests/s ({} spans/s) for {} s; `latency_us.p99`",
+                    thousands(lane.throughput_requests_per_s as f64),
+                    spans(lane.throughput_requests_per_s),
+                    lane.throughput_s,
+                    thousands(lane.latency_requests_per_s as f64),
+                    spans(lane.latency_requests_per_s),
+                    lane.latency_s
+                ),
+            },
         ),
         (
             "Pairs".to_owned(),
@@ -685,16 +817,7 @@ pub fn summary(report: &GateReport) -> String {
          Result |\n|---|---|---|---|---|---|---|---|---|"
     );
     for c in &report.comparisons {
-        let (name, rule) = match c.metric {
-            Kind::Throughput => (
-                "Throughput, acknowledged spans/s",
-                "it drops more than 5% with p < 0.05",
-            ),
-            Kind::Latency => (
-                "Durable-ack p99, ms",
-                "it rises more than 10% with p < 0.05",
-            ),
-        };
+        let (_, name, rule) = heading(c.metric);
         let result = if c.blocks {
             "regression"
         } else if !c.valid {
@@ -723,10 +846,17 @@ pub fn summary(report: &GateReport) -> String {
         }
     }
 
+    // The path's two measurements, capacity first.
+    let kinds: Vec<Kind> = report.comparisons.iter().map(|c| c.metric).collect();
+    let (first, second) = match kinds[..] {
+        [first, second] => (first, second),
+        _ => (Kind::Throughput, Kind::Latency),
+    };
+    let (h1, h2) = (heading(first).0, heading(second).0);
     let _ = writeln!(
         out,
-        "\n## Pairs\n\n| Pair | Order | Throughput A | Throughput B | Difference | p99 A, ms | p99 B, ms | \
-         Difference |\n|---|---|---|---|---|---|---|---|"
+        "\n## Pairs\n\n| Pair | Order | {h1} A | {h1} B | Difference | {h2} A | {h2} B | Difference |\n\
+         |---|---|---|---|---|---|---|---|"
     );
     let row = |kind: Kind, pair: usize| -> [String; 3] {
         let value = |arm: Arm| {
@@ -746,8 +876,8 @@ pub fn summary(report: &GateReport) -> String {
         }
     };
     for (pair, order) in (1..).zip(&report.order) {
-        let [ta, tb, td] = row(Kind::Throughput, pair);
-        let [la, lb, ld] = row(Kind::Latency, pair);
+        let [ta, tb, td] = row(first, pair);
+        let [la, lb, ld] = row(second, pair);
         let _ = writeln!(
             out,
             "| {pair} | {order} | {ta} | {tb} | {td} | {la} | {lb} | {ld} |"
@@ -760,10 +890,7 @@ pub fn summary(report: &GateReport) -> String {
          Other CPUs busy | Load before, after | Other containers |\n|---|---|---|---|---|---|---|---|---|"
     );
     for (index, run) in (1..).zip(&report.runs) {
-        let (kind, value) = match run.kind {
-            Kind::Throughput => ("throughput", thousands(run.value())),
-            Kind::Latency => ("p99, ms", milliseconds(run.value())),
-        };
+        let (kind, value) = (heading(run.kind).0, metric_value(run.kind, run.value()));
         let context = run.context.as_ref().map_or_else(
             || "n/a | n/a | n/a | n/a".to_owned(),
             |c| {
@@ -810,6 +937,7 @@ mod tests {
             non_2xx: 0,
             invalid: None,
             context: None,
+            stored: None,
         }
     }
 
@@ -856,14 +984,21 @@ mod tests {
             },
             lane: LaneReport {
                 name: "1kb",
+                path: "ack",
                 span_size: "1k",
                 spans_per_request: 100,
+                gzip: false,
                 concurrency: 128,
                 warmup_s: 3,
                 throughput_requests_per_s: 20_000,
                 throughput_s: 10,
                 latency_requests_per_s: 1_000,
                 latency_s: 30,
+                sustained_requests_per_s: 1_500,
+                sustained_s: 20,
+                freshness_requests_per_s: 300,
+                freshness_s: 30,
+                drain_s: 300,
             },
             base: Build {
                 reference: "main".to_owned(),
@@ -1064,28 +1199,81 @@ mod tests {
         let offered = 1_000_000.0;
         // Throughput: refusals and timeouts are expected; only saturation matters.
         let busy = loadgen(600_000.0, &[("200", 900), ("429", 100)], 3);
-        assert_eq!(judge(Kind::Throughput, &busy, offered, &[]), None);
+        assert_eq!(judge(Kind::Throughput, &busy, offered, &[], None), None);
         let idle = loadgen(899_999.0, &[("200", 1000)], 0);
-        assert_eq!(judge(Kind::Throughput, &idle, offered, &[]), None);
+        assert_eq!(judge(Kind::Throughput, &idle, offered, &[], None), None);
         let kept_up = loadgen(900_000.0, &[("200", 1000)], 0);
         assert!(
-            judge(Kind::Throughput, &kept_up, offered, &[])
+            judge(Kind::Throughput, &kept_up, offered, &[], None)
                 .unwrap()
                 .starts_with("not saturated")
         );
         // Latency: every request must succeed with 2xx.
         let clean = loadgen(10.0, &[("200", 1000)], 0);
-        assert_eq!(judge(Kind::Latency, &clean, offered, &[]), None);
+        assert_eq!(judge(Kind::Latency, &clean, offered, &[], None), None);
         assert_eq!((busy.errors(), busy.non_2xx()), (3, 100));
-        assert!(judge(Kind::Latency, &busy, offered, &[]).is_some());
+        assert!(judge(Kind::Latency, &busy, offered, &[], None).is_some());
         let refused = loadgen(10.0, &[("200", 999), ("503", 1)], 0);
-        assert!(judge(Kind::Latency, &refused, offered, &[]).is_some());
+        assert!(judge(Kind::Latency, &refused, offered, &[], None).is_some());
         // A rig container that stopped invalidates any arm.
         let stopped = ["crucible (OOM killed)".to_owned()];
         assert_eq!(
-            judge(Kind::Latency, &clean, offered, &stopped).unwrap(),
+            judge(Kind::Latency, &clean, offered, &stopped, None).unwrap(),
             "stopped during the run: crucible (OOM killed)"
         );
+    }
+
+    #[test]
+    fn end_to_end_arms_are_judged_by_what_the_store_held() {
+        let offered = 100_000.0;
+        let clean = loadgen(0.0, &[("200", 1000)], 0);
+        let stored = |shipped: f64, drained: Option<f64>, after: f64, lost: u64| Stored {
+            acked_spans: 1_000_000,
+            drained_s: drained,
+            drain_after_run_s: drained.map(|_| after),
+            shipped_spans_per_s: shipped,
+            freshness_p95_us: 900_000,
+            freshness_spans: 1_000_000,
+            lost_spans: lost,
+            duplicate_spans: 0,
+        };
+        let judged = |kind, report: &LoadgenReport, s: &Stored| {
+            judge(kind, report, offered, &[], Some(s)).unwrap_or_default()
+        };
+        // Half the offered rate, with half the time spent draining the backlog: comparable either way.
+        let good = stored(50_000.0, Some(20.0), 10.0, 0);
+        assert_eq!(judged(Kind::Sustained, &clean, &good), "");
+        assert_eq!(judged(Kind::Freshness, &clean, &good), "");
+        // The store kept pace with the acknowledgements, so something else set the rate.
+        let kept_up = stored(50_000.0, Some(20.0), 1.0, 0);
+        assert!(judged(Kind::Sustained, &clean, &kept_up).starts_with("the store kept up"));
+        // The offered load was within the end-to-end capacity.
+        let idle = stored(95_000.0, Some(10.5), 5.0, 0);
+        assert!(judged(Kind::Sustained, &clean, &idle).starts_with("not saturated"));
+        // No drain within the limit, or a lost span.
+        let stuck = stored(0.0, None, 0.0, 0);
+        assert!(judged(Kind::Freshness, &clean, &stuck).starts_with("not drained"));
+        let lost = stored(50_000.0, Some(20.0), 10.0, 3);
+        assert!(judged(Kind::Sustained, &clean, &lost).starts_with("zero loss failed"));
+        // Freshness must cover every acknowledged span of a clean run.
+        let partial = Stored {
+            freshness_spans: 10,
+            ..good.clone()
+        };
+        assert!(judged(Kind::Freshness, &clean, &partial).contains("freshness covers 10 of"));
+        let refused = loadgen(0.0, &[("200", 999), ("503", 1)], 0);
+        assert!(judged(Kind::Freshness, &refused, &good).starts_with("not clean"));
+        assert!(
+            judge(Kind::Sustained, &clean, offered, &[], None)
+                .unwrap()
+                .contains("not read")
+        );
+        // The value of an end-to-end arm comes from the store.
+        let mut arm = run(1, Kind::Sustained, Arm::A, 0.0);
+        arm.stored = Some(good);
+        assert_eq!(arm.value(), 50_000.0);
+        arm.kind = Kind::Freshness;
+        assert_eq!(arm.value(), 900_000.0);
     }
 
     #[test]
@@ -1205,7 +1393,7 @@ mod tests {
         );
         assert_eq!(
             args[9],
-            "description=regression: throughput -10.0% p=0.031, p99 +1.2% p=0.031 not gated; 5 pairs, 1kb"
+            "description=regression: throughput -10.0% p=0.031, p99 +1.2% p=0.031 not gated; 5 pairs, ack 1kb"
         );
         assert!(status_description(&r).chars().count() <= 140);
     }

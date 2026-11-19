@@ -52,9 +52,19 @@ struct RunArgs {
     /// Spans per request.
     #[arg(long, default_value_t = 100)]
     spans_per_request: u32,
+    /// Traces per request: the request's spans split into this many traces of consecutive spans.
+    #[arg(long, default_value_t = 1)]
+    traces_per_request: u32,
+    /// Give no trace a root: the first span of every trace names a parent that no span carries.
+    #[arg(long)]
+    rootless: bool,
     /// Gzip every request body.
     #[arg(long)]
     gzip: bool,
+    /// With --gzip, the most bodies compressed at a time, each on its own blocking thread; the default is half
+    /// the CPUs available to the process, at least one.
+    #[arg(long)]
+    gzip_threads: Option<usize>,
     /// Connections, which bound the requests in flight.
     #[arg(long, default_value_t = 64)]
     concurrency: usize,
@@ -73,12 +83,28 @@ struct RunArgs {
     /// Extra request header as `Name: value`, for example an Authorization header; repeatable.
     #[arg(long = "header", value_parser = parse_header)]
     headers: Vec<(HeaderName, HeaderValue)>,
-    /// Runtime worker threads; the default is the CPUs available to the process.
+    /// Runtime worker threads; the default is the CPUs available to the process, less the gzip threads with
+    /// --gzip, so that compression never competes with the pacer for a CPU.
     #[arg(long)]
     threads: Option<usize>,
     /// Write the report here instead of to stdout.
     #[arg(long)]
     out: Option<PathBuf>,
+}
+
+impl RunArgs {
+    /// The compression threads and the runtime's worker threads.
+    fn threads(&self) -> (usize, usize) {
+        let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+        if !self.gzip {
+            return (0, self.threads.unwrap_or(cpus));
+        }
+        let gzip = self.gzip_threads.unwrap_or((cpus / 2).max(1));
+        (
+            gzip,
+            self.threads.unwrap_or(cpus.saturating_sub(gzip).max(1)),
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -120,7 +146,8 @@ fn runtime(threads: Option<usize>) -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
-    let runtime = runtime(args.threads)?;
+    let (gzip_threads, threads) = args.threads();
+    let runtime = runtime(Some(threads))?;
     let prod = crucible_env_prod::build(runtime.handle().clone(), &ProdConfig::default())?;
     let env = prod.env;
     let report = runtime.block_on(async {
@@ -130,6 +157,8 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             PoolConfig {
                 span_size: args.span_size,
                 spans_per_request: args.spans_per_request,
+                traces_per_request: args.traces_per_request,
+                rootless: args.rootless,
                 templates: args.templates,
                 seed: args.seed,
             },
@@ -142,6 +171,7 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             duration: Duration::from_secs(args.duration_secs),
             concurrency: args.concurrency,
             gzip: args.gzip,
+            gzip_threads,
             timeout: Duration::from_millis(args.timeout_ms),
             headers: args.headers.clone(),
         };

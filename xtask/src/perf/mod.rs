@@ -14,14 +14,15 @@ use gate::{
     Build, Container, GateReport, Kind, LaneReport, LoadgenReport, Probe, RUN_SCHEMA, Rig, Run,
     Verdict, compare, judge, order, order_names, status_args, summary, verdict,
 };
-use rig::{Lane, RigSpec, Session};
+use rig::{GatePath, Lane, RigSpec, Session};
 use serde::Deserialize;
 
-pub const USAGE: &str = "  perf gate --base <ref> [--candidate <ref>] [--lane 1kb|10kb] [--pairs N] [--rig full|small]
-          [--post]
+pub const USAGE: &str = "  perf gate --base <ref> [--candidate <ref>] [--path ack|e2e] [--lane 1kb|10kb|1kb-gzip|10kb-gzip]
+          [--pairs N] [--rig full|small] [--post]
                        compare the candidate build (default HEAD) with the base build: N interleaved pairs
-                       (default 5, at least 5 on the full rig) of a throughput and a latency measurement, each
-                       arm on a fresh rig; writes gate.json and summary.md under perf/results/local/gate/;
+                       (default 5, at least 5 on the full rig) of the path's two measurements (ack: throughput
+                       and durable-ack p99; e2e: sustained spans/s over a run and its drain, and freshness p95),
+                       each arm on a fresh rig; writes gate.json and summary.md under perf/results/local/gate/;
                        --post sets the perf-gate commit status through gh (never for the small rig's smoke runs)
   perf fsync-probe [--rig full|small] [--out FILE]
                        classify the rig's WAL volume with the fsync-honesty probe and write its report
@@ -63,6 +64,7 @@ impl RigName {
 pub struct GateArgs {
     pub base: String,
     pub candidate: String,
+    pub path: GatePath,
     pub lane: Lane,
     pub pairs: usize,
     pub rig: RigName,
@@ -85,6 +87,7 @@ pub fn parse_gate(args: impl IntoIterator<Item = String>) -> Result<GateArgs, St
     let mut parsed = GateArgs {
         base: String::new(),
         candidate: "HEAD".to_owned(),
+        path: GatePath::Ack,
         lane: Lane::Kib1,
         pairs: MIN_PAIRS,
         rig: RigName::Full,
@@ -95,10 +98,16 @@ pub fn parse_gate(args: impl IntoIterator<Item = String>) -> Result<GateArgs, St
         match flag.as_str() {
             "--base" => parsed.base = value(&mut args, &flag)?,
             "--candidate" => parsed.candidate = value(&mut args, &flag)?,
+            "--path" => {
+                let path = value(&mut args, &flag)?;
+                parsed.path = GatePath::parse(&path)
+                    .ok_or_else(|| format!("--path: `{path}` is not ack or e2e"))?;
+            }
             "--lane" => {
                 let lane = value(&mut args, &flag)?;
-                parsed.lane = Lane::parse(&lane)
-                    .ok_or_else(|| format!("--lane: `{lane}` is not 1kb or 10kb"))?;
+                parsed.lane = Lane::parse(&lane).ok_or_else(|| {
+                    format!("--lane: `{lane}` is not 1kb, 10kb, 1kb-gzip or 10kb-gzip")
+                })?;
             }
             "--pairs" => {
                 let pairs = value(&mut args, &flag)?;
@@ -296,9 +305,10 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
     let base_sha = rig::resolve(&root, &args.base)?;
     let candidate_sha = rig::resolve(&root, &args.candidate)?;
     println!(
-        "perf gate: {} ({base_sha}) against {} ({candidate_sha}), lane {}, {} pairs, {} rig",
+        "perf gate: {} ({base_sha}) against {} ({candidate_sha}), path {}, lane {}, {} pairs, {} rig",
         args.base,
         args.candidate,
+        args.path.name(),
         args.lane.name(),
         args.pairs,
         rig.name
@@ -344,16 +354,13 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
 
     let mut runs = Vec::new();
     for pair in 0..args.pairs {
-        for kind in [Kind::Throughput, Kind::Latency] {
+        for kind in args.path.kinds() {
             for arm in order(pair) {
                 let image = match arm {
                     gate::Arm::A => &base_image.0,
                     gate::Arm::B => &candidate_image.0,
                 };
-                let name = match kind {
-                    Kind::Throughput => "throughput",
-                    Kind::Latency => "latency",
-                };
+                let name = kind.name();
                 let tag = format!("pair-{}-{name}-{arm:?}", pair + 1);
                 let out = session.arm(image, args.lane, kind, &dir, &tag)?;
                 let report: LoadgenReport = serde_json::from_str(&out.report)
@@ -375,8 +382,15 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
                     latency_p99_us: report.latency_us.p99,
                     errors: report.errors(),
                     non_2xx: report.non_2xx(),
-                    invalid: judge(kind, &report, out.offered_spans_per_s, &out.stopped),
+                    invalid: judge(
+                        kind,
+                        &report,
+                        out.offered_spans_per_s,
+                        &out.stopped,
+                        out.stored.as_ref(),
+                    ),
                     context: Some(out.context),
+                    stored: out.stored,
                 };
                 println!(
                     "perf gate: pair {}/{} {name} {arm:?}: {} spans/s acknowledged, p99 {} us, {} errors, {} \
@@ -408,10 +422,16 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
             "durable-ack p99 is reported and not gated: the fsync probe classified the WAL volume {verdict}"
         )),
     };
-    let comparisons = vec![
-        compare(Kind::Throughput, &runs, None),
-        compare(Kind::Latency, &runs, not_gated),
-    ];
+    // Only durable-ack p99 depends on the WAL volume's flushes enough to need an honest probe.
+    let comparisons = args
+        .path
+        .kinds()
+        .into_iter()
+        .map(|kind| {
+            let gate = (kind == Kind::Latency).then(|| not_gated.clone()).flatten();
+            compare(kind, &runs, gate)
+        })
+        .collect::<Vec<_>>();
     let lane = args.lane;
     let containers = rig
         .containers()
@@ -448,14 +468,21 @@ fn run_gate(args: &GateArgs) -> Result<Verdict, String> {
         },
         lane: LaneReport {
             name: lane.name(),
+            path: args.path.name(),
             span_size: lane.span_size(),
             spans_per_request: lane.spans_per_request(),
+            gzip: lane.gzip(),
             concurrency: rig::CONCURRENCY,
             warmup_s: rig.warmup_s,
             throughput_requests_per_s: rig.throughput_rps,
             throughput_s: rig.throughput_s,
             latency_requests_per_s: rig.latency_rps,
             latency_s: rig.latency_s,
+            sustained_requests_per_s: rig.sustained_rps,
+            sustained_s: rig.sustained_s,
+            freshness_requests_per_s: rig.freshness_rps,
+            freshness_s: rig.freshness_s,
+            drain_s: rig.drain_s,
         },
         base: build(&args.base, base_sha, base_image),
         candidate: build(&args.candidate, candidate_sha, candidate_image),
@@ -539,6 +566,7 @@ mod tests {
             GateArgs {
                 base: "main".to_owned(),
                 candidate: "HEAD".to_owned(),
+                path: GatePath::Ack,
                 lane: Lane::Kib1,
                 pairs: 5,
                 rig: RigName::Full,
@@ -562,7 +590,13 @@ mod tests {
         refuse("", "needs --base");
         refuse("--candidate HEAD", "needs --base");
         refuse("--base", "--base needs a value");
-        refuse("--base main --lane 1k", "`1k` is not 1kb or 10kb");
+        refuse(
+            "--base main --lane 1k",
+            "`1k` is not 1kb, 10kb, 1kb-gzip or 10kb-gzip",
+        );
+        refuse("--base main --path store", "`store` is not ack or e2e");
+        let e2e = gate_args("--base main --path e2e --lane 10kb-gzip").unwrap();
+        assert_eq!((e2e.path, e2e.lane), (GatePath::E2e, Lane::Kib10Gzip));
         refuse("--base main --rig huge", "`huge` is not full or small");
         refuse("--base main --pairs 0", "from 1 to 100");
         refuse("--base main --pairs 101", "from 1 to 100");

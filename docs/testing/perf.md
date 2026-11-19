@@ -60,13 +60,15 @@ Results are reported per lane and never averaged across lanes:
 ```sh
 cargo xtask perf gate --base main                          # the candidate is HEAD
 cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --post
+cargo xtask perf gate --base main --path e2e --lane 1kb-gzip   # shipped spans/s and freshness, gzip bodies
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--base` | required | The base ref (A) |
 | `--candidate` | `HEAD` | The candidate ref (B) |
-| `--lane` | `1kb` | `1kb`: 1 KiB spans, 100 per request. `10kb`: 10 KiB spans, 10 per request, which keep the generator accurate ([`perf-baseline.md`](perf-baseline.md)) |
+| `--path` | `ack` | `ack`: receive to durable acknowledgement (throughput and durable-ack p99). `e2e`: receive to readable in the store (sustained spans/s over a run and its drain, and freshness p95, each with the zero-loss check) |
+| `--lane` | `1kb` | `1kb`: 1 KiB spans, 100 per request. `10kb`: 10 KiB spans, 10 per request, which keep the generator accurate ([`perf-baseline.md`](perf-baseline.md)). `1kb-gzip`, `10kb-gzip`: the same with gzip bodies, compressed on half the generator's CPUs |
 | `--pairs` | 5 | Interleaved pairs: at least 5 on the full rig, at least 1 on the small rig, at most 100 |
 | `--rig` | `full` | `full`: the rig above. `small`: reduced limits for smoke runs (below) |
 | `--post` | off | Set the `perf-gate` commit status on the candidate commit through `gh`. Refused with `--rig small` |
@@ -80,7 +82,7 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
 2. Builds `crucible-loadgen` in release from the checkout that runs the gate. That one binary measures both arms,
    and the report records its SHA-256.
 3. Runs the fsync-honesty probe on a fresh WAL volume of the session, with Crucible's CPUs and memory.
-4. Runs the pairs. Each pair runs the throughput measurement for A and B back to back, then the latency
+4. Runs the pairs. Each pair runs the path's capacity measurement for A and B back to back, then its latency
    measurement for both, with the same lane and offered load. The order alternates from pair to pair (AB, BA,
    AB, ...), so that slow drift in temperature or background load does not favour one arm. Every arm gets a fresh
    rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume, then a
@@ -95,16 +97,32 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
      requests per second times `service_time_us.p50` comes near 128) while `generator_cpu` stays below the
      generator's CPUs.
    - Latency: offer a fixed rate below both builds' capacity, and the measurement is `latency_us.p99`.
+   - Sustained (`--path e2e`): offer more than the end-to-end path keeps up with, but less than the ack path
+     takes, for a fixed time, then wait until `span_core` holds every acknowledged span (the drain). The
+     measurement is acknowledged spans per second over the run and its drain: from the schedule's start
+     (`started_at` of the generator's report) to the end of the last `span_core` insert, from
+     `system.query_log`. Once the shipper saturates, the backlog drains at its rate, so the measurement is the
+     end-to-end capacity whatever the schedule's length.
+   - Freshness (`--path e2e`): offer a fixed rate below the end-to-end capacity, drain, and the measurement is
+     the p95 over the run's spans of the time from `received_at` (stamped by the WAL committer just before the
+     frame's append and sync) to the end of the `span_core` insert that made the span readable, matched through
+     the insert's deduplication token in `system.query_log`.
+   - Both end-to-end measurements start after the warm-up has drained, so no backlog carries into them, and
+     both check zero loss (invariant I1) after the drain: the run's stored `loadgen.seq` values in
+     `span_payload` must cover every acknowledged sequence number exactly once, and `span_core` must hold one
+     row per span.
 5. Compares the builds, writes the report and the summary, and with `--post` sets the commit status.
 
-| Rig | Throughput schedule | Latency schedule | Warm-up | `--recent-max-bytes` |
-|---|---|---|---|---|
-| `full` | 20,000 requests/s for 10 s | 1,000 requests/s for 30 s | 3 s | 256 MiB |
-| `small` | 10,000 requests/s for 3 s | 100 requests/s for 5 s | 2 s | 64 MiB |
+| Rig | Throughput schedule | Latency schedule | Sustained schedule | Freshness schedule | Drain limit | Warm-up | `--recent-max-bytes` |
+|---|---|---|---|---|---|---|---|
+| `full` | 20,000 requests/s for 10 s | 1,000 requests/s for 30 s | 1,500 requests/s for 20 s | 300 requests/s for 30 s | 300 s | 3 s | 256 MiB |
+| `small` | 10,000 requests/s for 3 s | 100 requests/s for 5 s | 1,000 requests/s for 10 s | 100 requests/s for 10 s | 180 s | 2 s | 64 MiB |
 
-On the full rig the 1 KiB lane offers 2,000,000 spans/s for throughput and 100,000 for latency, and the 10 KiB
-lane 200,000 and 10,000. Both measurements use 128 connections and uncompressed protobuf. The recent-span index
-is bounded explicitly because its default is a share of the VM's memory, not the container's.
+A request is 100 KiB of spans in both span sizes, so one schedule serves both. On the full rig the 1 KiB lane
+offers 2,000,000 spans/s for throughput and 100,000 for latency, and the 10 KiB lane 200,000 and 10,000; the
+end-to-end path offers 150,000 and 30,000 spans/s of 1 KiB spans, above and below the shipper's limit of about
+69,000 in the baseline ([`perf-baseline.md`](perf-baseline.md)). Every measurement uses 128 connections. The
+recent-span index is bounded explicitly because its default is a share of the VM's memory, not the container's.
 
 ### The decision
 
@@ -118,12 +136,20 @@ distribution is counted exactly over every assignment of signs.
   five pairs move in the regression direction (p = 1/32). More pairs make the test more sensitive.
 - Durable-ack p99 gates only when the probe classified the WAL volume `honest` in the same session. On a
   `suspicious` volume, or when the probe failed, the latency is reported, labelled `not gated`, and cannot block.
+  Sustained spans/s and freshness p95 always gate: the sync is a small part of either. The sustained rate follows
+  the throughput rule (a drop of more than 5%) and freshness the p99 rule (a rise of more than 10%).
 - An arm cannot be compared, which makes its metric's comparison **invalid**, when:
   - a throughput arm acknowledged 90% or more of the offered spans per second: the offered load did not exceed
     the build's capacity, so the value measures the schedule;
   - a latency arm had a failed request or a non-2xx response. `latency_us` covers 2xx responses only, so a stall
     longer than `--timeout-ms` shows up in `errors.timeout` rather than in the latency;
-  - Crucible, ClickHouse or Postgres was not running after the measurement, for example after an OOM kill.
+  - Crucible, ClickHouse or Postgres was not running after the measurement, for example after an OOM kill;
+  - an end-to-end arm did not drain within the limit, or lost or duplicated an acknowledged span (the reason says
+    how many);
+  - a sustained arm shipped 90% or more of the offered spans per second, or its drain after the last response
+    took less than a tenth of its time: the store kept up, so the ack path or the generator set the rate;
+  - a freshness arm had a failed request or a non-2xx response, or its freshness covers fewer spans than it
+    acknowledged.
 
 The verdict is `regression` when a valid, gated metric blocks, otherwise `invalid` when a comparison did not hold,
 otherwise `pass`. The command exits with 0 for `pass`, 1 for `regression` or `invalid`, and 2 when it could not
@@ -213,13 +239,13 @@ Paths are relative to the results directory.
 | `started_at`, `finished_at` | string | UTC, RFC 3339 |
 | `ac_power` | object | `state` (`online`, `battery` or `unknown`) and `source` |
 | `rig` | object | `name`, `containers[]` (`role`, `image`, `cpuset`, `memory`) and `docker` (server version, CPUs, memory, kernel, operating system) |
-| `lane` | object | `name`, `span_size`, `spans_per_request`, `concurrency`, `warmup_s`, `throughput_requests_per_s`, `throughput_s`, `latency_requests_per_s`, `latency_s` |
+| `lane` | object | `name`, `path` (`ack` or `e2e`), `span_size`, `spans_per_request`, `gzip`, `concurrency`, `warmup_s`, `throughput_requests_per_s`, `throughput_s`, `latency_requests_per_s`, `latency_s`, `sustained_requests_per_s`, `sustained_s`, `freshness_requests_per_s`, `freshness_s`, `drain_s` |
 | `base`, `candidate` | object | `reference` as given, `sha`, `image`, `image_id` |
 | `loadgen_sha256` | string | The load generator binary that measured both arms |
 | `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
 | `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
-| `comparisons[]` | array | `throughput`, then `latency`, each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
-| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `load_before`, `load_after` and `others[]` (the other containers' names) |
+| `comparisons[]` | array | The path's two metrics (`throughput` and `latency`, or `sustained` and `freshness`), each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
 | `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe

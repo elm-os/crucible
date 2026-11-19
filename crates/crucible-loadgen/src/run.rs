@@ -3,7 +3,10 @@
 //! Request `i` is due at `start + i * 1e9 / rate` nanoseconds, computed from `i` alone: the schedule never
 //! looks at responses. Each of `concurrency` workers owns one HTTP/1.1 connection, which bounds the requests
 //! in flight. A free worker takes the lowest request index nobody has taken, prepares its body (a pool copy,
-//! gzipped in the gzip lane), waits until the request is released and sends it. When every worker is busy,
+//! gzipped in the gzip lane), waits until the request is released and sends it. Gzip runs on the runtime's
+//! blocking threads, at most `gzip_threads` bodies at a time, never on a worker thread: a 1 MiB body takes
+//! milliseconds to compress, and on a worker thread it held up the pacer and the other connections that thread
+//! served, so the generator sent late. When every worker is busy,
 //! released requests wait for a free one, and that wait shows up in their latency, because latency is
 //! measured from the intended send time, not from the moment the request left. Retries are off: a failed
 //! request is counted and never resent, and its connection is replaced.
@@ -26,6 +29,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use crucible_env::{Env, Instant, JoinHandle, NetError};
+use crucible_records::Timestamp;
 use flate2::write::DeflateEncoder;
 use flate2::{Compression, Crc};
 use hdrhistogram::{CreationError, Histogram};
@@ -37,7 +41,7 @@ use hyper_util::rt::TokioIo;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use serde::Serialize;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::ledger::AckLedger;
 use crate::pool::Pool;
@@ -69,6 +73,8 @@ pub struct RunConfig {
     pub concurrency: usize,
     /// Send `Content-Encoding: gzip` bodies.
     pub gzip: bool,
+    /// With `gzip`, the most bodies compressed at a time, each on a blocking thread of the runtime.
+    pub gzip_threads: usize,
     /// Deadline for connecting and for each request.
     pub timeout: Duration,
     /// Extra headers on every request, such as `Authorization`.
@@ -126,6 +132,9 @@ pub struct RunReport {
     pub seed: u64,
     /// The target as given.
     pub target: String,
+    /// The wall-clock time of the schedule's start, RFC 3339 with microseconds: the clock that stamps
+    /// `received_at` on the same host, for a drain or freshness check against the store.
+    pub started_at: String,
     /// What each request looked like.
     pub lane: Lane,
     /// What was asked for.
@@ -152,8 +161,14 @@ pub struct Lane {
     pub span_bytes: usize,
     /// Spans per request.
     pub spans_per_request: u32,
+    /// Traces per request.
+    pub traces_per_request: u32,
+    /// Whether every trace's first span names a parent that no span carries.
+    pub rootless: bool,
     /// Whether bodies were gzipped.
     pub gzip: bool,
+    /// The most bodies compressed at a time; 0 without gzip.
+    pub gzip_threads: usize,
     /// Distinct pre-encoded templates.
     pub templates: usize,
     /// Mean protobuf body size of sent requests, before compression.
@@ -324,6 +339,11 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
     if config.concurrency == 0 {
         return Err(RunError::Config("concurrency must be at least 1"));
     }
+    if config.gzip && config.gzip_threads == 0 {
+        return Err(RunError::Config(
+            "gzip needs at least one compression thread",
+        ));
+    }
     let authority = HeaderValue::from_str(&config.authority)
         .map_err(|_| RunError::Config("the target is not a valid Host header"))?;
     let spans_per_request = pool.config().spans_per_request;
@@ -334,6 +354,7 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         connections.push(Connection::open(env, config.target, config.timeout).await?);
     }
 
+    let wall_start = env.clock.wall_now();
     let plan = Arc::new(Plan {
         target: config.target,
         authority,
@@ -343,7 +364,8 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         gzip: config.gzip,
         timeout: config.timeout,
         start: env.clock.now(),
-        wall_start_nanos: u64::try_from(env.clock.wall_now().micros())
+        wall_start,
+        wall_start_nanos: u64::try_from(wall_start.micros())
             .unwrap_or(0)
             .saturating_mul(1_000),
     });
@@ -351,6 +373,7 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         next: AtomicU64::new(0),
         released: AtomicU64::new(0),
         slots: (0..config.concurrency).map(|_| Notify::new()).collect(),
+        compressors: config.gzip.then(|| Compressors::new(config.gzip_threads)),
         stats: Mutex::new(stats),
     });
     let mut pacer = env.spawn(
@@ -398,6 +421,7 @@ struct Plan {
     gzip: bool,
     timeout: Duration,
     start: Instant,
+    wall_start: Timestamp,
     wall_start_nanos: u64,
 }
 
@@ -430,6 +454,8 @@ struct Shared {
     released: AtomicU64,
     /// Wakes the worker waiting for request `i` through slot `i % slots.len()`.
     slots: Vec<Notify>,
+    /// The gzip encoders, in the gzip lane.
+    compressors: Option<Compressors>,
     stats: Mutex<Stats>,
 }
 
@@ -560,7 +586,6 @@ async fn worker(
     connection: Connection,
 ) -> Result<(), RunError> {
     let mut connection = Some(connection);
-    let mut gzip = plan.gzip.then(Gzip::new);
     loop {
         let index = shared.next.fetch_add(1, Ordering::Relaxed);
         if index >= plan.requests {
@@ -570,8 +595,8 @@ async fn worker(
         let intended = plan.start.saturating_add(Duration::from_nanos(offset));
         let raw = pool.request(index, plan.wall_start_nanos.saturating_add(offset));
         let request_bytes = raw.len();
-        let body = match gzip.as_mut() {
-            Some(gzip) => gzip.compress(&raw)?,
+        let body = match &shared.compressors {
+            Some(compressors) => compressors.compress(&env, raw).await?,
             None => raw,
         };
         let wire_bytes = body.len();
@@ -624,6 +649,55 @@ async fn send(env: &Env, plan: &Plan, connection: &mut Option<Connection>, body:
                 timed_out: failed.is_err(),
             }
         }
+    }
+}
+
+/// The gzip encoders that the workers share: at most one compression per encoder runs at a time, on the
+/// runtime's blocking threads, so the pool holds as many threads as encoders.
+struct Compressors {
+    permits: Semaphore,
+    idle: Mutex<Vec<Gzip>>,
+}
+
+impl std::fmt::Debug for Compressors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compressors")
+            .field("available", &self.permits.available_permits())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Compressors {
+    fn new(threads: usize) -> Self {
+        Self {
+            permits: Semaphore::new(threads),
+            idle: Mutex::new((0..threads).map(|_| Gzip::new()).collect()),
+        }
+    }
+
+    /// One gzip member holding `body`, compressed on a blocking thread once an encoder is free.
+    async fn compress(&self, env: &Env, body: Vec<u8>) -> Result<Vec<u8>, RunError> {
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|_| RunError::Cancelled)?;
+        let mut gzip = self
+            .idle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .unwrap_or_else(Gzip::new);
+        let mut task = env.spawn_blocking("loadgen-gzip", move || {
+            let member = gzip.compress(&body);
+            (gzip, member)
+        });
+        let (gzip, member) = task.join().await.map_err(|_| RunError::Cancelled)?;
+        self.idle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(gzip);
+        Ok(member?)
     }
 }
 
@@ -791,10 +865,14 @@ impl Stats {
             run_id: pool.run_id().to_string(),
             seed: pool_config.seed,
             target: config.authority.clone(),
+            started_at: plan.wall_start.to_string(),
             lane: Lane {
                 span_bytes: pool_config.span_size.bytes(),
                 spans_per_request: pool_config.spans_per_request,
+                traces_per_request: pool_config.traces_per_request,
+                rootless: pool_config.rootless,
                 gzip: config.gzip,
+                gzip_threads: if config.gzip { config.gzip_threads } else { 0 },
                 templates: pool_config.templates,
                 request_bytes_mean: mean(self.request_bytes),
                 wire_bytes_mean: mean(self.wire_bytes),

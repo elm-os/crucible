@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::gate::{Kind, Power};
 
@@ -96,6 +96,17 @@ pub struct RigSpec {
     pub latency_rps: u64,
     /// The latency schedule's length.
     pub latency_s: u64,
+    /// Requests per second the sustained measurement offers: above what the end-to-end path keeps up with,
+    /// below what the ack path takes.
+    pub sustained_rps: u64,
+    /// The sustained schedule's length; the arm then waits for the drain.
+    pub sustained_s: u64,
+    /// Requests per second of the freshness measurement, below what the end-to-end path keeps up with.
+    pub freshness_rps: u64,
+    /// The freshness schedule's length.
+    pub freshness_s: u64,
+    /// The longest an end-to-end arm waits, after its load, until the store holds every acknowledged span.
+    pub drain_s: u64,
 }
 
 impl RigSpec {
@@ -125,6 +136,8 @@ impl RigSpec {
         match kind {
             Kind::Throughput => (self.throughput_rps, self.throughput_s),
             Kind::Latency => (self.latency_rps, self.latency_s),
+            Kind::Sustained => (self.sustained_rps, self.sustained_s),
+            Kind::Freshness => (self.freshness_rps, self.freshness_s),
         }
     }
 }
@@ -155,6 +168,11 @@ pub const FULL: RigSpec = RigSpec {
     throughput_s: 10,
     latency_rps: 1_000,
     latency_s: 30,
+    sustained_rps: 1_500,
+    sustained_s: 20,
+    freshness_rps: 300,
+    freshness_s: 30,
+    drain_s: 300,
 };
 
 /// Reduced limits and short schedules for smoke runs on a busy machine, 3.5 GB in all.
@@ -183,23 +201,34 @@ pub const SMALL: RigSpec = RigSpec {
     throughput_s: 3,
     latency_rps: 100,
     latency_s: 5,
+    sustained_rps: 1_000,
+    sustained_s: 10,
+    freshness_rps: 100,
+    freshness_s: 10,
+    drain_s: 180,
 };
 
-/// The span size of a run.
+/// The span size and encoding of a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
     /// 1 KiB spans, 100 per request.
     Kib1,
     /// 10 KiB spans, 10 per request, which keep the generator accurate (`docs/testing/perf-baseline.md`).
     Kib10,
+    /// [`Lane::Kib1`] with gzip bodies.
+    Kib1Gzip,
+    /// [`Lane::Kib10`] with gzip bodies.
+    Kib10Gzip,
 }
 
 impl Lane {
-    /// `1kb` or `10kb`.
+    /// `1kb`, `10kb`, `1kb-gzip` or `10kb-gzip`.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "1kb" => Some(Self::Kib1),
             "10kb" => Some(Self::Kib10),
+            "1kb-gzip" => Some(Self::Kib1Gzip),
+            "10kb-gzip" => Some(Self::Kib10Gzip),
             _ => None,
         }
     }
@@ -209,22 +238,66 @@ impl Lane {
         match self {
             Self::Kib1 => "1kb",
             Self::Kib10 => "10kb",
+            Self::Kib1Gzip => "1kb-gzip",
+            Self::Kib10Gzip => "10kb-gzip",
         }
     }
 
     /// The load generator's `--span-size`.
     pub fn span_size(self) -> &'static str {
         match self {
-            Self::Kib1 => "1k",
-            Self::Kib10 => "10k",
+            Self::Kib1 | Self::Kib1Gzip => "1k",
+            Self::Kib10 | Self::Kib10Gzip => "10k",
         }
     }
 
     /// The load generator's `--spans-per-request`.
     pub fn spans_per_request(self) -> u32 {
         match self {
-            Self::Kib1 => 100,
-            Self::Kib10 => 10,
+            Self::Kib1 | Self::Kib1Gzip => 100,
+            Self::Kib10 | Self::Kib10Gzip => 10,
+        }
+    }
+
+    /// Whether the bodies are gzipped (the load generator's `--gzip`).
+    pub fn gzip(self) -> bool {
+        matches!(self, Self::Kib1Gzip | Self::Kib10Gzip)
+    }
+}
+
+/// The path a gate run measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatePath {
+    /// Receive to durable acknowledgement: acknowledged spans/s in overload, and durable-ack p99 at a fixed rate.
+    Ack,
+    /// Receive to readable in the store: shipped spans/s over an overloaded run and its drain, and freshness p95
+    /// at a fixed rate, each with the zero-loss check.
+    E2e,
+}
+
+impl GatePath {
+    /// `ack` or `e2e`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "ack" => Some(Self::Ack),
+            "e2e" => Some(Self::E2e),
+            _ => None,
+        }
+    }
+
+    /// The path's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ack => "ack",
+            Self::E2e => "e2e",
+        }
+    }
+
+    /// The path's two measurements: capacity, then latency.
+    pub fn kinds(self) -> [Kind; 2] {
+        match self {
+            Self::Ack => [Kind::Throughput, Kind::Latency],
+            Self::E2e => [Kind::Sustained, Kind::Freshness],
         }
     }
 }
@@ -579,6 +652,8 @@ struct Secrets {
     master_key: String,
     secret_key: String,
     keys_toml: String,
+    /// The project of the key, whose rows the end-to-end checks read.
+    project_id: String,
 }
 
 impl Secrets {
@@ -606,6 +681,7 @@ impl Secrets {
             master_key: hex(&random(32)?),
             secret_key,
             keys_toml,
+            project_id,
         })
     }
 }
@@ -621,6 +697,77 @@ pub struct ArmOutput {
     pub stopped: Vec<String>,
     /// What else the machine did during the measurement.
     pub context: Context,
+    /// What the store held after an end-to-end measurement drained.
+    pub stored: Option<Stored>,
+}
+
+/// What the store held after an end-to-end measurement, read from ClickHouse once it held every acknowledged
+/// span of the run (or the drain limit passed).
+#[derive(Clone, Debug, Serialize)]
+pub struct Stored {
+    /// Spans the measured run acknowledged.
+    pub acked_spans: u64,
+    /// Seconds from the schedule's start to the end of the last `span_core` insert (`system.query_log`), once
+    /// the store held every acknowledged span; `None` when it did not within the drain limit.
+    pub drained_s: Option<f64>,
+    /// Of `drained_s`, the seconds after the run's last response: the backlog the store still had to take.
+    pub drain_after_run_s: Option<f64>,
+    /// Acknowledged spans per second over the run and its drain; 0 when it did not drain.
+    pub shipped_spans_per_s: f64,
+    /// Freshness p95 over the run's spans, in microseconds: from `received_at` to the end of the `span_core`
+    /// insert that made the span readable.
+    pub freshness_p95_us: u64,
+    /// The spans that the freshness covers.
+    pub freshness_spans: u64,
+    /// Acknowledged spans of the run whose sequence number `span_payload` lacks.
+    pub lost_spans: u64,
+    /// Rows beyond one per span: in `span_payload` by sequence number, plus in `span_core` by span.
+    pub duplicate_spans: u64,
+}
+
+/// The fields of a `crucible-loadgen.run.v1` report that the end-to-end checks read.
+#[derive(Debug, Deserialize)]
+struct RunFields {
+    run_id: String,
+    started_at: String,
+    lane: RunLane,
+    outcome: RunOutcomeFields,
+    not_acked_requests: Vec<[u64; 2]>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunLane {
+    spans_per_request: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunOutcomeFields {
+    acked_spans: u64,
+    elapsed_s: f64,
+}
+
+impl RunFields {
+    fn parse(report: &str) -> Result<Self, String> {
+        let fields: Self = serde_json::from_str(report)
+            .map_err(|e| format!("the load generator's report: {e}"))?;
+        // Both go into SQL text: allow only the characters of a UUID and of an RFC 3339 time.
+        let safe = |s: &str| {
+            s.chars()
+                .all(|c| c.is_ascii_hexdigit() || "-:.TZ".contains(c))
+        };
+        if safe(&fields.run_id) && safe(&fields.started_at) {
+            Ok(fields)
+        } else {
+            Err("the load generator's report has an unexpected run id or start time".to_owned())
+        }
+    }
+}
+
+/// A JSON number, or a string that holds one: ClickHouse quotes 64-bit integers in JSON.
+fn number(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// What else the Docker host did while an arm measured, to tell an order effect from other jobs' load: the
@@ -1005,8 +1152,21 @@ impl<'r> Session<'r> {
         let target = format!("{crucible}:4318");
         let warmup = self.loadgen(&target, lane, self.rig.latency_rps, self.rig.warmup_s)?;
         let runs = dir.join("runs");
-        fs::write(runs.join(format!("{tag}-warmup.json")), warmup)
+        fs::write(runs.join(format!("{tag}-warmup.json")), &warmup)
             .map_err(|e| format!("{}: {e}", runs.display()))?;
+        // An end-to-end measurement starts with the warm-up in the store, so no backlog carries into it.
+        let warmed = if kind.end_to_end() {
+            let acked = RunFields::parse(&warmup)?.outcome.acked_spans;
+            if !self.drained(acked, Duration::from_secs(self.rig.drain_s))? {
+                return Err(format!(
+                    "the store did not take the warm-up's {acked} spans within {} s",
+                    self.rig.drain_s
+                ));
+            }
+            acked
+        } else {
+            0
+        };
         let (rps, secs) = self.rig.schedule(kind);
         let others = self.others();
         let (stat_before, load_before) = self.host_sample(client);
@@ -1025,6 +1185,10 @@ impl<'r> Session<'r> {
             load_after,
             others,
         };
+        let stored = match &report {
+            Ok(report) if kind.end_to_end() => Some(self.check_store(report, warmed)),
+            _ => None,
+        };
         let stopped: Vec<String> = [
             (&crucible, "crucible"),
             (&clickhouse, "clickhouse"),
@@ -1042,6 +1206,150 @@ impl<'r> Session<'r> {
             offered_spans_per_s: (rps * u64::from(lane.spans_per_request())) as f64,
             stopped,
             context,
+            stored: stored.transpose()?,
+        })
+    }
+
+    /// Runs `sql` with `clickhouse-client` in the rig's ClickHouse container, as the admin user, and returns
+    /// what it printed.
+    fn clickhouse_text(&self, sql: &str) -> Result<String, String> {
+        docker([
+            "exec",
+            &self.name("clickhouse"),
+            "clickhouse-client",
+            "--user",
+            "crucible_admin",
+            "--password",
+            &self.secrets.clickhouse,
+            "--query",
+            sql,
+        ])
+    }
+
+    /// The rows of a `SELECT` as JSON objects.
+    fn clickhouse(&self, sql: &str) -> Result<Vec<serde_json::Value>, String> {
+        self.clickhouse_text(&format!("{sql} FORMAT JSONEachRow"))?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line).map_err(|e| format!("ClickHouse answered `{line}`: {e}"))
+            })
+            .collect()
+    }
+
+    /// The first row's numeric field `field` of a `SELECT`, or 0.
+    fn clickhouse_number(&self, sql: &str, field: &str) -> Result<f64, String> {
+        Ok(self
+            .clickhouse(sql)?
+            .first()
+            .and_then(|row| number(&row[field]))
+            .unwrap_or(0.0))
+    }
+
+    /// Waits until `span_core` holds at least `rows` rows of the session's project, polling twice a second for
+    /// at most `limit`; whether it did.
+    fn drained(&self, rows: u64, limit: Duration) -> Result<bool, String> {
+        let sql = format!(
+            "SELECT count() AS n FROM crucible.span_core WHERE project_id = toUUID('{}')",
+            self.secrets.project_id
+        );
+        let started = Instant::now();
+        loop {
+            if self.clickhouse_number(&sql, "n")? >= rows as f64 {
+                return Ok(true);
+            }
+            if started.elapsed() > limit {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// Waits for the drain of the run of `report`, after `before` spans of the warm-up, then reads from the store
+    /// when it ended, the freshness of the run's spans, and which acknowledged spans are missing or stored
+    /// twice (invariant I1).
+    fn check_store(&self, report: &str, before: u64) -> Result<Stored, String> {
+        let run = RunFields::parse(report)?;
+        let acked = run.outcome.acked_spans;
+        let drained = self.drained(before + acked, Duration::from_secs(self.rig.drain_s))?;
+        self.clickhouse_text("SYSTEM FLUSH LOGS")?;
+        let project = &self.secrets.project_id;
+        let start = format!("parseDateTime64BestEffort('{}', 6, 'UTC')", run.started_at);
+        let drained_s = if drained {
+            Some(self.clickhouse_number(
+                &format!(
+                    "SELECT dateDiff('microsecond', {start}, max(event_time_microseconds)) / 1e6 AS s \
+                     FROM system.query_log WHERE type = 'QueryFinish' AND query_kind = 'Insert' \
+                     AND event_date >= yesterday() AND has(tables, 'crucible.span_core') \
+                     AND event_time_microseconds >= {start}"
+                ),
+                "s",
+            )?)
+        } else {
+            None
+        };
+        let spans = run.lane.spans_per_request;
+        let not_acked: Vec<String> = run
+            .not_acked_requests
+            .iter()
+            .map(|[from, to]| format!("(seq >= {} AND seq < {})", from * spans, to * spans))
+            .collect();
+        let acked_seq = if not_acked.is_empty() {
+            "1".to_owned()
+        } else {
+            format!("NOT ({})", not_acked.join(" OR "))
+        };
+        let payload = self.clickhouse(&format!(
+            "SELECT count() AS rows, uniqExact(seq) AS distinct_seqs, uniqExactIf(seq, {acked_seq}) AS acked \
+             FROM (SELECT toUInt64OrZero(JSONExtractString(attributes, 'loadgen.seq')) AS seq \
+             FROM crucible.span_payload WHERE project_id = toUUID('{project}') \
+             AND JSONExtractString(attributes, 'loadgen.run_id') = '{}')",
+            run.run_id
+        ))?;
+        let field = |name: &str| {
+            payload
+                .first()
+                .and_then(|row| number(&row[name]))
+                .unwrap_or(0.0) as u64
+        };
+        let core_duplicates = self.clickhouse_number(
+            &format!(
+                "SELECT count() - uniqExact(trace_id, span_id) AS d FROM crucible.span_core \
+                 WHERE project_id = toUUID('{project}')"
+            ),
+            "d",
+        )? as u64;
+        let fresh = self.clickhouse(&format!(
+            "SELECT quantileExact(0.95)(f) AS p95, count() AS spans FROM ( \
+               SELECT dateDiff('microsecond', s.received_at, i.visible_at) AS f \
+               FROM crucible.span_core AS s INNER JOIN ( \
+                 SELECT toUUID(t[1]) AS epoch, toUInt64(splitByChar('-', t[2])[1]) AS seq, \
+                        min(event_time_microseconds) AS visible_at \
+                 FROM (SELECT splitByChar(':', Settings['insert_deduplication_token']) AS t, \
+                              event_time_microseconds \
+                       FROM system.query_log WHERE type = 'QueryFinish' AND query_kind = 'Insert' \
+                       AND event_date >= yesterday() AND Settings['insert_deduplication_token'] != '') \
+                 WHERE t[3] = '1' GROUP BY epoch, seq \
+               ) AS i ON s.wal_epoch = i.epoch AND s.batch_seq = i.seq \
+               WHERE s.project_id = toUUID('{project}') AND s.received_at >= {start})"
+        ))?;
+        let fresh_field = |name: &str| {
+            fresh
+                .first()
+                .and_then(|row| number(&row[name]))
+                .unwrap_or(0.0)
+        };
+        Ok(Stored {
+            acked_spans: acked,
+            drained_s,
+            drain_after_run_s: drained_s.map(|s| s - run.outcome.elapsed_s),
+            shipped_spans_per_s: drained_s
+                .filter(|s| *s > 0.0)
+                .map_or(0.0, |s| acked as f64 / s),
+            freshness_p95_us: fresh_field("p95").max(0.0) as u64,
+            freshness_spans: fresh_field("spans") as u64,
+            lost_spans: acked.saturating_sub(field("acked")),
+            duplicate_spans: field("rows").saturating_sub(field("distinct_seqs")) + core_duplicates,
         })
     }
 
@@ -1084,29 +1392,32 @@ impl<'r> Session<'r> {
             lane.spans_per_request().to_string(),
             CONCURRENCY.to_string(),
         );
-        capture_within(
-            Command::new("docker").args([
-                "exec",
-                client,
-                LOADGEN_PATH,
-                "run",
-                "--target",
-                target,
-                "--rate",
-                &rate,
-                "--duration-secs",
-                &duration,
-                "--span-size",
-                lane.span_size(),
-                "--spans-per-request",
-                &spans,
-                "--concurrency",
-                &connections,
-                "--header",
-                &header,
-            ]),
-            Duration::from_secs(120 + 20 * secs),
-        )
+        let mut command = Command::new("docker");
+        command.args([
+            "exec",
+            client,
+            LOADGEN_PATH,
+            "run",
+            "--target",
+            target,
+            "--rate",
+            &rate,
+            "--duration-secs",
+            &duration,
+            "--span-size",
+            lane.span_size(),
+            "--spans-per-request",
+            &spans,
+            "--concurrency",
+            &connections,
+            "--header",
+            &header,
+        ]);
+        // The generator compresses on half its CPUs and runs its workers on the rest.
+        if lane.gzip() {
+            command.arg("--gzip");
+        }
+        capture_within(&mut command, Duration::from_secs(120 + 20 * secs))
     }
 }
 
@@ -1196,14 +1507,56 @@ mod tests {
     }
 
     #[test]
-    fn lanes() {
-        assert_eq!(Lane::parse("1kb"), Some(Lane::Kib1));
-        assert_eq!(Lane::parse("10kb"), Some(Lane::Kib10));
+    fn lanes_and_paths() {
+        for lane in [Lane::Kib1, Lane::Kib10, Lane::Kib1Gzip, Lane::Kib10Gzip] {
+            assert_eq!(Lane::parse(lane.name()), Some(lane));
+        }
         assert_eq!(Lane::parse("1k"), None);
         assert_eq!(
             (Lane::Kib10.span_size(), Lane::Kib10.spans_per_request()),
             ("10k", 10)
         );
+        assert_eq!(
+            (
+                Lane::Kib10Gzip.span_size(),
+                Lane::Kib10Gzip.spans_per_request(),
+                Lane::Kib10Gzip.gzip()
+            ),
+            ("10k", 10, true)
+        );
+        assert!(!Lane::Kib1.gzip() && Lane::Kib1Gzip.gzip());
+        assert_eq!(GatePath::parse("ack"), Some(GatePath::Ack));
+        assert_eq!(GatePath::parse("e2e"), Some(GatePath::E2e));
+        assert_eq!(GatePath::parse("store"), None);
+        assert_eq!(GatePath::E2e.kinds(), [Kind::Sustained, Kind::Freshness]);
+        assert!(GatePath::E2e.kinds().iter().all(|kind| kind.end_to_end()));
+        assert!(!GatePath::Ack.kinds().iter().any(|kind| kind.end_to_end()));
+        // Bytes per request are the same in both span sizes, so one schedule serves both lanes.
+        for rig in [&FULL, &SMALL] {
+            assert!(rig.sustained_rps > rig.freshness_rps);
+            assert_eq!(
+                rig.schedule(Kind::Sustained),
+                (rig.sustained_rps, rig.sustained_s)
+            );
+        }
+    }
+
+    #[test]
+    fn load_generator_reports_give_the_end_to_end_fields() {
+        let report = r#"{"schema":"crucible-loadgen.run.v1","run_id":"019a6b2e-7c3d-7e4f-8a5b-6c7d8e9f0a1b",
+            "started_at":"2026-11-18T21:30:00.123456Z","lane":{"spans_per_request":100},
+            "outcome":{"acked_spans":900,"elapsed_s":1.5},"not_acked_requests":[[3,4]]}"#;
+        let fields = RunFields::parse(report).unwrap();
+        assert_eq!(
+            (fields.outcome.acked_spans, fields.not_acked_requests),
+            (900, vec![[3, 4]])
+        );
+        // Text that reaches SQL holds only the characters of a UUID and an RFC 3339 time.
+        let injected = report.replace("019a6b2e", "x' OR 1=1");
+        assert!(RunFields::parse(&injected).is_err());
+        assert_eq!(number(&serde_json::json!("12")), Some(12.0));
+        assert_eq!(number(&serde_json::json!(1.5)), Some(1.5));
+        assert_eq!(number(&serde_json::json!(null)), None);
     }
 
     #[test]
