@@ -16,8 +16,8 @@ use crucible_cursor::{
 };
 use crucible_plan::Filter;
 use crucible_query::{
-    ChildCursor, HeadCursor, IdCursor, McpOperationCursor, McpOperationsQuery, PageCursor, SearchCursor,
-    SearchQuery, SpanListCursor,
+    ChildCursor, HeadCursor, IdCursor, McpOperationCursor, McpOperationsQuery, PageCursor,
+    SearchCursor, SearchQuery, SpanListCursor,
 };
 use crucible_records::{ProjectId, SpanId, TimeWindow, Timestamp, TraceId};
 

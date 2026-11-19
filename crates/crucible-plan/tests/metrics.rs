@@ -391,9 +391,11 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
             "{field}"
         );
     };
+    // An MCP query names its side and capture source, so only the MCP builders take it.
     invalid(
         MetricsQuery {
             source: Source::McpOps,
+            measures: vec![(MeasureId::McpCalls, Aggregation::Sum)],
             ..base.clone()
         },
         "source",
