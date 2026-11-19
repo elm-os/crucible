@@ -110,6 +110,9 @@ function quantile(samples: number[], q: number): number {
 
 const p99 = (samples: number[]): number => quantile(samples, 0.99);
 
+/** Long enough that a stalled export holds the queue still for the whole run; it also bounds `shutdown`. */
+const EXPORT_TIMEOUT_MS = 60_000;
+
 let collector: Collector;
 let off: Client;
 let on: Client;
@@ -122,7 +125,7 @@ beforeAll(async () => {
     endpoint: collector.url,
     secretKey: collector.key,
     flushIntervalMs: 60_000,
-    exportTimeoutMs: 60_000,
+    exportTimeoutMs: EXPORT_TIMEOUT_MS,
   });
   off = await connect(instrument(shapeServer(), { capture: [] }));
   on = await connect(
@@ -138,8 +141,9 @@ afterAll(async () => {
   await off.close();
   await on.close();
   await collector.close();
+  // The laptop rounds fill a batch, so an export to the stalled collector may still be in flight here.
   await shutdown();
-});
+}, EXPORT_TIMEOUT_MS + 10_000);
 
 describe("capture overhead (conformance/capture-overhead.json)", () => {
   test("the scenario file is the version this test reads", () => {
