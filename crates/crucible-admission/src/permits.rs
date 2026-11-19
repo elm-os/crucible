@@ -300,7 +300,10 @@ mod proofs {
             }
 
             let held = tasks.iter().filter(|t| **t == Task::Holding).count() as u32;
-            let waiting = tasks.iter().filter(|t| matches!(t, Task::Waiting(_))).count();
+            let waiting = tasks
+                .iter()
+                .filter(|t| matches!(t, Task::Waiting(_)))
+                .count();
             assert!(queue.free <= total && held <= total);
             assert!(queue.free + held + queue.handed.len() as u32 == total);
             assert!(queue.free == 0 || queue.waiting.is_empty());

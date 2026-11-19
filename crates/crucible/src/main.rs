@@ -377,13 +377,14 @@ fn main() -> anyhow::Result<()> {
             }
             AdminCommand::CreateKey(args) => {
                 let config = args.config.load_for_run()?;
-                let printed = runtime(cpu_permits(&config))?.block_on(identity::admin_create_key(
-                    &config,
-                    &args.project,
-                    &args.scopes,
-                    args.note.clone(),
-                    args.import,
-                ))?;
+                let printed =
+                    runtime(cpu_permits(&config))?.block_on(identity::admin_create_key(
+                        &config,
+                        &args.project,
+                        &args.scopes,
+                        args.note.clone(),
+                        args.import,
+                    ))?;
                 std::io::stdout().lock().write_all(printed.as_bytes())?;
                 writeln!(
                     std::io::stderr().lock(),
@@ -393,8 +394,8 @@ fn main() -> anyhow::Result<()> {
             }
             AdminCommand::ResetPassword(args) => {
                 let config = args.config.load_for_run()?;
-                let link =
-                    runtime(cpu_permits(&config))?.block_on(identity::admin_reset_password(&config, &args.email))?;
+                let link = runtime(cpu_permits(&config))?
+                    .block_on(identity::admin_reset_password(&config, &args.email))?;
                 writeln!(std::io::stdout().lock(), "{link}")?;
                 if config.server.public_url.is_none() {
                     writeln!(
