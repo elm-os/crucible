@@ -191,8 +191,12 @@ text_enum! {
     Queue {
         /// `notification_outbox`.
         NotificationOutbox => "notification_outbox",
+        /// `alert_evaluations`: one row per rule and evaluation tick.
+        AlertEvaluations => "alert_evaluations",
     }
 }
+
+pub(crate) use text_enum;
 
 text_enum! {
     /// The kind of a ledger entry (contract 6.6 and 11.1).

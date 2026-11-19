@@ -11,6 +11,16 @@ pub(crate) fn mint(project_id: ProjectId) -> Result<ProjectScope, NilProjectId> 
     ProjectScope::mint(project_id)
 }
 
+/// The scope of a background job that works on a project without a request: an alert evaluation reads the
+/// project's rollups. The caller shows the project row it read from the control store; a deleted project and
+/// the nil project have no scope.
+pub fn job_scope(project: &crucible_control::Project) -> Option<ProjectScope> {
+    if project.deleted_at.is_some() {
+        return None;
+    }
+    mint(project.id).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

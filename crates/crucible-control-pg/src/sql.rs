@@ -24,6 +24,8 @@ pub(crate) enum P<'a> {
     OptUuid(Option<Uuid>),
     Text(&'a str),
     Int(i64),
+    OptInt(Option<i64>),
+    OptText(Option<&'a str>),
     OptInt4(Option<u32>),
     Int4(u32),
     Bool(bool),
@@ -38,8 +40,8 @@ impl P<'_> {
     pub(crate) fn ty(&self) -> Type {
         match self {
             Self::Uuid(_) | Self::OptUuid(_) => Type::UUID,
-            Self::Text(_) => Type::TEXT,
-            Self::Int(_) => Type::INT8,
+            Self::Text(_) | Self::OptText(_) => Type::TEXT,
+            Self::Int(_) | Self::OptInt(_) => Type::INT8,
             Self::OptInt4(_) | Self::Int4(_) => Type::INT4,
             Self::Bool(_) => Type::BOOL,
             Self::Ts(_) | Self::OptTs(_) => Type::TIMESTAMPTZ,
@@ -61,8 +63,8 @@ impl ToSql for P<'_> {
     fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Boxed> {
         match self {
             Self::Uuid(id) | Self::OptUuid(Some(id)) => out.put_slice(id.as_bytes()),
-            Self::Text(text) => return text.to_sql(ty, out),
-            Self::Int(value) => return value.to_sql(ty, out),
+            Self::Text(text) | Self::OptText(Some(text)) => return text.to_sql(ty, out),
+            Self::Int(value) | Self::OptInt(Some(value)) => return value.to_sql(ty, out),
             Self::Int4(value) => return int4(*value)?.to_sql(ty, out),
             Self::OptInt4(Some(value)) => return int4(*value)?.to_sql(ty, out),
             Self::Bool(value) => return value.to_sql(ty, out),
@@ -70,6 +72,8 @@ impl ToSql for P<'_> {
             Self::Bytes(bytes) | Self::OptBytes(Some(bytes)) => return bytes.to_sql(ty, out),
             Self::TextArray(items) => return items.to_sql(ty, out),
             Self::OptInt4(None)
+            | Self::OptInt(None)
+            | Self::OptText(None)
             | Self::OptTs(None)
             | Self::OptBytes(None)
             | Self::OptUuid(None) => {
@@ -149,6 +153,14 @@ impl<'a> Cols<'a> {
     }
 
     pub(crate) fn text(&mut self) -> Result<String, TxError> {
+        self.take()
+    }
+
+    pub(crate) fn opt_text(&mut self) -> Result<Option<String>, TxError> {
+        self.take()
+    }
+
+    pub(crate) fn opt_i64(&mut self) -> Result<Option<i64>, TxError> {
         self.take()
     }
 

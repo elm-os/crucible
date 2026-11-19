@@ -22,7 +22,8 @@ use crate::node::{AggOutput, Aggregate, Direction, Fill, Measure, Node, Step, Ti
 use crate::plan::QueryPlan;
 use crate::pred::Pred;
 use crate::registry::{
-    Aggregation, DimensionId, METRICS_MAX_BUCKETS, METRICS_MAX_MEASURES, METRICS_MAX_POINTS,
+    Aggregation, DimensionId, METRICS_MAX_BUCKETS, METRICS_MAX_DIMENSIONS, METRICS_MAX_MEASURES,
+    METRICS_MAX_POINTS,
     METRICS_MAX_SERIES, MeasureId, Source, SourceSchema,
 };
 use crate::value::Row;
@@ -417,4 +418,68 @@ pub fn metrics_other(
         shape.other,
     )?;
     series(scope, window, clamp, caller, query, aggregate, shape.step)
+}
+
+/// The read of an alert rule (contract 8.4, class `alert`): one row per dimension key over the whole window,
+/// with the dimensions, then the rule's measure, then the span count. The rows come from the minute rollup
+/// only. A key whose span count is zero, or that has no row, had no data in the window.
+///
+/// The query holds exactly one measure. `largest_first` orders the keys by the measure, largest or smallest
+/// first, so that the keys nearest to a breach are the ones kept when there are more than `limit`; a
+/// percentile cannot be ordered, so its keys are ordered by span count. Ties are in ascending key order.
+pub fn metrics_totals(
+    scope: ProjectScope,
+    window: TimeWindow,
+    clamp: &RetentionClamp,
+    query: &MetricsQuery,
+    largest_first: bool,
+    limit: u32,
+) -> Result<Option<QueryPlan>, MetricsError> {
+    let [(id, aggregation)] = query.measures.as_slice() else {
+        return Err(invalid("measures", "an alert reads exactly one measure"));
+    };
+    if query.source != Source::Spans || id.source() != Source::Spans {
+        return Err(invalid("source", "alerts read the span rollup only"));
+    }
+    if !id.aggregations().contains(aggregation) {
+        return Err(invalid(
+            "measures",
+            "the measure does not allow the aggregation",
+        ));
+    }
+    if query.dimensions.len() > METRICS_MAX_DIMENSIONS {
+        return Err(invalid("dimensions", "at most two dimensions are allowed"));
+    }
+    if let [first, second] = query.dimensions.as_slice()
+        && first == second
+    {
+        return Err(invalid("dimensions", "a dimension is listed twice"));
+    }
+    let group = dimensions(query);
+    let direction = if largest_first {
+        Direction::Desc
+    } else {
+        Direction::Asc
+    };
+    let by = if id.additive() {
+        (AggOutput::Measure(0), direction)
+    } else {
+        (AggOutput::Measure(1), Direction::Desc)
+    };
+    let mut order = vec![by];
+    order.extend((0..group.len()).map(|i| (AggOutput::Group(i), Direction::Asc)));
+    let aggregate = Aggregate::new(
+        SpanMetricsCol::TABLE,
+        filtered(query, None)?,
+        group,
+        vec![id.measure(), MeasureId::Count.measure()],
+    )?
+    .ordered(order)?
+    .limited(limit)?;
+    Ok(clamp.plan(
+        scope,
+        window,
+        QueryClass::Alert,
+        Node::Aggregate(aggregate),
+    )?)
 }

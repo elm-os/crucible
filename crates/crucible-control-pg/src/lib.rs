@@ -13,6 +13,7 @@
 //!
 //! The Postgres client is allowed in this crate only (contract 1.5).
 
+mod alerts;
 mod conn;
 mod identity;
 mod migrate;
