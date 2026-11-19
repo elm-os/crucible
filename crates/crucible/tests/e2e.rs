@@ -20,6 +20,7 @@
 //! | `CRUCIBLE_E2E_NODE` | The Node binary; `node` when unset |
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
 //! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key and reads the trace back with the session |
+//! | `CRUCIBLE_E2E_S3_ENDPOINT` | An S3-compatible endpoint that the server and the test both reach, for example `http://localhost:7070`, with `CRUCIBLE_E2E_S3_BUCKET` (default `media`, which must exist), `CRUCIBLE_E2E_S3_ACCESS_KEY` and `CRUCIBLE_E2E_S3_SECRET_KEY`. When set, the control-plane path also uploads media through the compat media endpoint and reads them back; when unset, it checks that the endpoint answers `media_not_supported` |
 //!
 //! `docs/development.md` ("The end-to-end test") has the commands.
 
@@ -153,6 +154,33 @@ struct Rig {
     starts: u32,
     /// The control plane, when the run has one.
     postgres_url: Option<String>,
+    /// The object store for media, when the run has one.
+    media: Option<Media>,
+}
+
+/// The object store of a run: an S3-compatible endpoint that both the server and the test reach, and a bucket
+/// that exists.
+#[derive(Clone)]
+struct Media {
+    endpoint: String,
+    bucket: String,
+    access_key: String,
+    secret_key: String,
+}
+
+impl Media {
+    /// The store the `CRUCIBLE_E2E_S3_*` variables name, if `CRUCIBLE_E2E_S3_ENDPOINT` is set.
+    fn from_env() -> Option<Self> {
+        let endpoint = std::env::var("CRUCIBLE_E2E_S3_ENDPOINT").ok()?;
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
+        Some(Self {
+            endpoint,
+            bucket: var("CRUCIBLE_E2E_S3_BUCKET", "media"),
+            access_key: var("CRUCIBLE_E2E_S3_ACCESS_KEY", "e2e"),
+            secret_key: var("CRUCIBLE_E2E_S3_SECRET_KEY", "e2e-secret"),
+        })
+    }
 }
 
 impl Rig {
@@ -188,6 +216,13 @@ impl Rig {
             Some(url) => command.args(["--postgres-url", url]),
             None => command.arg("--keys-file").arg(self.dir.join("keys.toml")),
         };
+        if let Some(media) = &self.media {
+            command
+                .env("CRUCIBLE_OBJECT_STORE_ENDPOINT", &media.endpoint)
+                .env("CRUCIBLE_OBJECT_STORE_BUCKET", &media.bucket)
+                .env("CRUCIBLE_OBJECT_STORE_ACCESS_KEY", &media.access_key)
+                .env("CRUCIBLE_OBJECT_STORE_SECRET_KEY", &media.secret_key);
+        }
         let mut server = Server {
             child: command.spawn().unwrap(),
             api,
@@ -877,6 +912,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         out,
         starts: 0,
         postgres_url: None,
+        media: None,
     };
     let load_bearer = format!("Bearer {}", secret('b'));
 
@@ -1145,6 +1181,37 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     eprintln!("{pretty}");
 }
 
+/// One HTTP/1.1 exchange with an absolute `http://` URL, such as a presigned one, whose host it sends: the
+/// signature covers it.
+fn http_url(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> (u16, Vec<u8>) {
+    use std::net::ToSocketAddrs as _;
+    let rest = url.strip_prefix("http://").expect("an http URL");
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let addr = host.to_socket_addrs().unwrap().next().unwrap();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let status = String::from_utf8_lossy(&response[..end])
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    // A chunked answer is not expected from these servers for these small bodies.
+    (status, response[end + 4..].to_vec())
+}
+
 /// One HTTP/1.1 exchange that also answers the response's `Set-Cookie` values.
 fn http_with_cookies(
     addr: SocketAddr,
@@ -1221,6 +1288,7 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         out,
         starts: 0,
         postgres_url: Some(postgres_url.clone()),
+        media: Media::from_env(),
     };
     // 1. Migrations run, the key snapshot loads, and the server becomes ready.
     let server = rig.start(true);
@@ -1551,7 +1619,114 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         assert_eq!(spans[0]["traceId"], trace.trace_id.as_str());
     }
 
-    // 8. Revoking the key stops it at once; signing out ends the session.
+    // 8. Media through the compat media endpoint on the ingest listener, with the key pair. With an object store
+    //    (`CRUCIBLE_E2E_S3_ENDPOINT`), the upload is asked for, put to the presigned URL with its signed headers,
+    //    reported, read back with a presigned download, and listed with its use; without one, the endpoint
+    //    refuses with the settings that turn media on.
+    {
+        use base64::Engine as _;
+        let standard = base64::engine::general_purpose::STANDARD;
+        let pair = standard.encode(format!(
+            "{}:{}",
+            created["key"]["public_key"].as_str().unwrap(),
+            created["secret_key"].as_str().unwrap()
+        ));
+        let pair = format!("Basic {pair}");
+        let collection = crucible_compat::media::MEDIA_ROUTES[0].collection;
+        let bytes = format!("e2e media of {}", trace.trace_id).into_bytes();
+        let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        let checksum = standard.encode(sha256);
+        let ask = json!({
+            "traceId": trace.trace_id,
+            "observationId": trace.root_id,
+            "contentType": "image/png",
+            "contentLength": bytes.len(),
+            "sha256Hash": checksum,
+            "field": "input",
+        })
+        .to_string();
+        let json_pair = [
+            ("content-type", "application/json"),
+            ("authorization", pair.as_str()),
+        ];
+        let (status, answer) = http(
+            server.ingest,
+            "POST",
+            collection,
+            &json_pair,
+            ask.as_bytes(),
+        )
+        .unwrap();
+        let answer: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
+        match &rig.media {
+            None => {
+                assert_eq!(status, 501, "{answer}");
+                assert_eq!(answer["code"], "media_not_supported", "{answer}");
+                assert!(
+                    answer["detail"]
+                        .as_str()
+                        .unwrap()
+                        .contains("object_store.endpoint"),
+                    "{answer}"
+                );
+            }
+            Some(_) => {
+                assert_eq!(status, 201, "{answer}");
+                let media_id = crucible_compat::media::media_id(&sha256);
+                assert_eq!(answer["mediaId"], media_id.as_str());
+                let upload = answer["uploadUrl"].as_str().unwrap();
+                let (status, body) = http_url(
+                    "PUT",
+                    upload,
+                    &[
+                        ("content-type", "image/png"),
+                        ("x-amz-checksum-sha256", checksum.as_str()),
+                    ],
+                    &bytes,
+                );
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+                let report = json!({"uploadedAt": "2026-11-19T00:00:00Z", "uploadHttpStatus": 200})
+                    .to_string();
+                let one = format!("{collection}/{media_id}");
+                let (status, body) =
+                    http(server.ingest, "PATCH", &one, &json_pair, report.as_bytes()).unwrap();
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+                let (status, read) = http(server.api, "GET", &one, &json_pair[1..], b"").unwrap();
+                let read: Value = serde_json::from_slice(&read).unwrap();
+                assert_eq!(status, 200, "{read}");
+                assert_eq!(read["contentType"], "image/png");
+                assert_eq!(read["contentLength"], bytes.len());
+                let (status, downloaded) = http_url("GET", read["url"].as_str().unwrap(), &[], b"");
+                assert_eq!((status, downloaded), (200, bytes.clone()));
+                // The same bytes again need no upload.
+                let (status, again) = http(
+                    server.ingest,
+                    "POST",
+                    collection,
+                    &json_pair,
+                    ask.as_bytes(),
+                )
+                .unwrap();
+                let again: Value = serde_json::from_slice(&again).unwrap();
+                assert_eq!(status, 201, "{again}");
+                assert!(again.get("uploadUrl").is_none(), "{again}");
+                // The session reads where the media appear, and that media are on.
+                let uses = format!(
+                    "/api/v1/projects/{project_id}/media?trace_id={}&span_id={}",
+                    trace.trace_id, trace.root_id
+                );
+                let (status, _, listed) = as_owner("GET", &uses, Value::Null);
+                assert_eq!(status, 200, "{listed}");
+                assert_eq!(listed["data"][0]["field"], "input", "{listed}");
+                assert_eq!(listed["data"][0]["media"]["state"], "uploaded", "{listed}");
+                let (status, _, info) = as_owner("GET", "/api/v1/auth/session", Value::Null);
+                assert_eq!(status, 200, "{info}");
+                assert_eq!(info["features"]["media"]["enabled"], true, "{info}");
+            }
+        }
+    }
+
+    // 9. Revoking the key stops it at once; signing out ends the session.
     let key_id = created["key"]["id"].as_str().unwrap();
     let etag = format!("\"{}\"", created["key"]["version"]);
     let (status, _, body) = {

@@ -15,8 +15,10 @@
 | Background jobs: the simulation, its oracle and its mutants | [testing/jobs-simulation.md](testing/jobs-simulation.md) |
 | Alerts: the simulation, its oracle and its mutants | [testing/alerts-simulation.md](testing/alerts-simulation.md) |
 | Retention and deletion: the simulation, its oracle and its mutants | [testing/lifecycle-simulation.md](testing/lifecycle-simulation.md) |
+| Media: the simulation, its oracle and its mutants, and the object store conformance rows | [testing/media-simulation.md](testing/media-simulation.md) |
 | Development setup | [development.md](development.md) |
 | Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |
+| Media on S3-compatible object storage | [self-hosting/media.md](self-hosting/media.md) |
 | Guides for sending telemetry and reading it back | [guides/README.md](guides/README.md) |
 | Sending traces over OTLP from any OpenTelemetry SDK or the Collector | [guides/sending-traces.md](guides/sending-traces.md) |
 | TypeScript SDK | [guides/sdk-typescript.md](guides/sdk-typescript.md) |

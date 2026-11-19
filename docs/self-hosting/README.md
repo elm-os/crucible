@@ -55,6 +55,11 @@ On the first start no one can sign in yet: the server logs a one-time setup link
 ledger table `schema_migrations` and skips it on the next start, and it applies the ClickHouse steps under a lease, so
 two servers that migrate at once do not interleave.
 
+`deploy/compose/compose.media.yaml` adds media to `compose.yaml`: an S3-compatible gateway with its own volume, which
+holds the images, audio and files that SDKs upload beside their traces
+(`docker compose -f compose.yaml -f compose.media.yaml up -d --wait`). Without it media stay inline in payloads. See
+[media.md](media.md).
+
 `deploy/compose/compose.cloud.yaml` runs the server and the `ready` service against a ClickHouse and a Postgres
 elsewhere, configured through `.env`. This preview supports a single-node ClickHouse only: it refuses a ClickHouse Cloud
 service at startup and `/readyz` gives the reason. ClickHouse Cloud support is planned. The Postgres, 15 or newer, is
@@ -120,6 +125,9 @@ Compose reads these from `.env` beside the Compose file:
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | Host port of the UI, the REST API and OTLP/HTTP ingest |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | Host port of OTLP/HTTP ingest |
+| `MEDIA_ACCESS_KEY`, `MEDIA_SECRET_KEY` | none, required by `compose.media.yaml` | The credentials of the bundled S3 gateway ([media.md](media.md)) |
+| `CRUCIBLE_MEDIA_PORT` | `7070` | Host port of the bundled S3 gateway |
+| `CRUCIBLE_MEDIA_PUBLIC_URL` | `http://localhost:7070` | The gateway's address as SDKs and browsers reach it, which upload and download links name |
 
 The server's own flags and environment variables are listed in
 [development.md](../development.md#running-crucible-serve); to change them, edit the `command` or the `environment`

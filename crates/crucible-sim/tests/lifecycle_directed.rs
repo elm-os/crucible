@@ -350,7 +350,11 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
             let media = node.pg.media();
             async move {
                 media
-                    .uses(ProjectId::from_bytes(PROJECT), TraceId::from_bytes([trace; 16]), None)
+                    .uses(
+                        ProjectId::from_bytes(PROJECT),
+                        TraceId::from_bytes([trace; 16]),
+                        None,
+                    )
                     .await
                     .unwrap()
                     .iter()
@@ -360,6 +364,10 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         };
         assert_eq!(left(1).await, [after]);
         assert_eq!(left(2).await, [before]);
-        assert!(done.places.contains("\"media\":\"done\""), "{}", done.places);
+        assert!(
+            done.places.contains("\"media\":\"done\""),
+            "{}",
+            done.places
+        );
     });
 }
