@@ -157,6 +157,11 @@ menu puts it in the address bar as `?project=<project id>`. The trace list takes
   the session cookie `Secure`.
 - If Postgres becomes unreachable, open sessions keep working for `auth.session_outage_grace` (10 minutes by
   default), and keys the server already knows keep working for ingest (`auth.pg_outage_mode = "fail_open"`).
+  Shipping to ClickHouse goes on too: the server keeps each project's salt for MCP user subjects in memory, loaded
+  at startup and every 5 seconds. Only an MCP operation with a user subject of a project whose salt it has not
+  loaded yet (a project created in the last few seconds, a project created by an earlier version that has not
+  needed its salt yet, or any project before the server first reached Postgres) waits for Postgres, and holds back
+  the telemetry received after it.
 
 ## Stop
 
