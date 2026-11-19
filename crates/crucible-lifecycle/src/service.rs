@@ -129,15 +129,13 @@ pub fn check_retention(new: &RetentionSettings) -> Result<(), ServiceError> {
         }
     }
     for (field, days) in &fields[1..] {
-        if let (Some(days), Some(all)) = (days, new.retention_days) {
-            if *days > all {
-                return Err(invalid(
-                    field,
-                    format!(
-                        "at most retention_days ({all}); raise retention_days or lower this value"
-                    ),
-                ));
-            }
+        if let (Some(days), Some(all)) = (days, new.retention_days)
+            && *days > all
+        {
+            return Err(invalid(
+                field,
+                format!("at most retention_days ({all}); raise retention_days or lower this value"),
+            ));
         }
     }
     Ok(())
@@ -362,13 +360,12 @@ impl Service {
             Some((key, hash)) => (Some(key.as_str()), hash.as_str()),
             None => (None, ""),
         };
-        if let Some(key) = key {
-            if let Some(existing) = repo
+        if let Some(key) = key
+            && let Some(existing) = repo
                 .request_by_key(project_id, &new.requested_by, key)
                 .await?
-            {
-                return self.replay(existing, hash).await;
-            }
+        {
+            return self.replay(existing, hash).await;
         }
         let now = self.env.clock.wall_now();
         let mut request = DeletionRequest {

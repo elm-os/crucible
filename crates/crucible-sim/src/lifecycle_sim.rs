@@ -1231,10 +1231,11 @@ fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
                 continue;
             };
             ledger.stats.rows_checked += 1;
-            if table_id == TableId::SpanCore && !masked {
-                if let Some(Value::Bytes(id)) = row.cell("span_id") {
-                    visible_spans.insert(id.clone());
-                }
+            if table_id == TableId::SpanCore
+                && !masked
+                && let Some(Value::Bytes(id)) = row.cell("span_id")
+            {
+                visible_spans.insert(id.clone());
             }
             let state = if masked { "masked" } else { "visible" };
             for request in requests.iter().filter(|r| r.project_id == project) {

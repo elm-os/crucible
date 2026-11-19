@@ -298,10 +298,10 @@ impl Run<'_> {
             .unwrap_or_default();
         let mut rows = vec![self.next(mask, ActionState::Verified)];
         for id in covers {
-            if let Some(delete) = self.open.get(&id) {
-                if delete.state == ActionState::Done {
-                    rows.push(self.next(delete, ActionState::Masked));
-                }
+            if let Some(delete) = self.open.get(&id)
+                && delete.state == ActionState::Done
+            {
+                rows.push(self.next(delete, ActionState::Masked));
             }
         }
         self.write(rows).await?;

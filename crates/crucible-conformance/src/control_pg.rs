@@ -177,7 +177,9 @@ fn row_name(script: &str) -> &'static str {
         "identity" => "PgModel differential: identity",
         "pools" => "PgModel differential: pools",
         "jobs" => "PgModel differential: jobs (park, key-feed prune)",
-        "lifecycle" => "PgModel differential: lifecycle (nodes, deletion requests, actions, floors)",
+        "lifecycle" => {
+            "PgModel differential: lifecycle (nodes, deletion requests, actions, floors)"
+        }
         _ => "PgModel differential",
     }
 }

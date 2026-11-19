@@ -114,8 +114,7 @@ pub fn days_spanned(first: Timestamp, last: Timestamp) -> std::ops::RangeInclusi
     match (day_of(first), day_of(last)) {
         (Some(a), Some(b)) if a <= b => a..=b,
         (Some(a), _) => a..=a,
-        // An empty range.
-        _ => 1..=0,
+        _ => std::ops::RangeInclusive::new(1, 0),
     }
 }
 
