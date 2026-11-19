@@ -175,6 +175,7 @@ fn row_name(script: &str) -> &'static str {
         "leases" => "PgModel differential: leases",
         "claims" => "PgModel differential: claims",
         "pools" => "PgModel differential: pools",
+        "jobs" => "PgModel differential: jobs (park, key-feed prune)",
         _ => "PgModel differential",
     }
 }

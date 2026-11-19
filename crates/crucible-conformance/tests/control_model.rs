@@ -66,6 +66,11 @@ fn pools() {
 }
 
 #[test]
+fn jobs() {
+    insta::assert_snapshot!(transcript("jobs"));
+}
+
+#[test]
 fn every_script_has_a_test() {
-    assert_eq!(SCRIPTS.len(), 6);
+    assert_eq!(SCRIPTS.len(), 7);
 }
