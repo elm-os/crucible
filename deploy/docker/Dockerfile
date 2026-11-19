@@ -1,5 +1,5 @@
 # The Crucible image: the `crucible` binary with the web UI embedded, on a distroless base that runs as a
-# non-root user (uid 65532). Development preview; see docs/self-hosting/README.md. From the repository root:
+# non-root user (uid 65532); see docs/self-hosting/README.md. From the repository root:
 #
 #   docker build -f deploy/docker/Dockerfile -t crucible:dev .
 #
@@ -86,7 +86,7 @@ RUN set -eu; \
 
 FROM ${RUNTIME_IMAGE}
 LABEL org.opencontainers.image.title="Crucible" \
-      org.opencontainers.image.description="Observability and analytics for AI agents and MCP servers (development preview)" \
+      org.opencontainers.image.description="Observability and analytics for AI agents and MCP servers" \
       org.opencontainers.image.source="https://github.com/elm-os/crucible" \
       org.opencontainers.image.documentation="https://github.com/elm-os/crucible/blob/main/docs/self-hosting/README.md" \
       org.opencontainers.image.licenses="MIT"
@@ -98,8 +98,8 @@ COPY --from=build --chown=65532:65532 /out/data /var/lib/crucible
 WORKDIR /var/lib/crucible
 VOLUME ["/var/lib/crucible"]
 USER 65532:65532
-# 8080: UI, REST API, OTLP/HTTP ingest and the health paths. 4318: OTLP/HTTP ingest. 4317: OTLP/gRPC ingest
-# (planned; nothing listens on it yet).
+# 8080: UI, REST API, MCP server, OTLP/HTTP ingest and the health paths. 4318: OTLP/HTTP ingest. 4317: OTLP/gRPC
+# ingest.
 EXPOSE 8080 4318 4317
 ENTRYPOINT ["/usr/local/bin/crucible"]
 CMD ["serve", "--data-dir=/var/lib/crucible/data"]
