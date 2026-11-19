@@ -481,8 +481,10 @@ fn a_raw_value_is_wrapped_in_one_message_and_a_tool_keeps_its_arguments() {
     write_otlp(project(), &record, false, &mut out);
     let attrs = attributes(&one_line(&out));
     assert!(attribute(&attrs, "gen_ai.input.messages").is_none());
-    let arguments = attribute(&attrs, "gen_ai.tool.call.arguments").unwrap();
-    assert_eq!(arguments["kvlistValue"]["values"][0]["key"], "order_id");
+    assert_eq!(
+        attribute(&attrs, "gen_ai.tool.call.arguments"),
+        Some(&json!({"stringValue": "{\"order_id\":\"ORD-104\"}"}))
+    );
     assert_eq!(attribute(&attrs, "gen_ai.tool.name"), Some(&json!({"stringValue": "lookup_order"})));
     // The residual names the operation `chat`, which goes out as sent; the type goes out as `crucible.*`.
     assert_eq!(attribute(&attrs, "crucible.observation.type"), Some(&json!({"stringValue": "tool"})));

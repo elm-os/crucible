@@ -86,18 +86,14 @@ fn any(out: &mut Vec<u8>, value: &Json) {
     obj.end();
 }
 
-/// An attribute list being written, which remembers its keys.
+/// An attribute list being written.
 struct Attrs {
     out: Vec<u8>,
-    keys: Vec<String>,
 }
 
 impl Attrs {
     fn new() -> Self {
-        Self {
-            out: vec![b'['],
-            keys: Vec::new(),
-        }
+        Self { out: vec![b'['] }
     }
 
     fn put(&mut self, key: &str, value: &Json) {
@@ -108,7 +104,6 @@ impl Attrs {
         kv.str("key", key);
         any(kv.key("value"), value);
         kv.end();
-        self.keys.push(key.to_owned());
     }
 
     fn text(&mut self, key: &str, value: &str) {
@@ -124,14 +119,13 @@ impl Attrs {
         }
     }
 
-    /// The residual attributes of a stored object, after the derived ones: a key already written is left out.
+    /// The residual attributes of a stored object, after the derived ones, every member as stored. A member
+    /// whose key a derived attribute also has is an instance the mapping did not take (an empty value, or one
+    /// that lost to a higher-priority source); the derived attribute comes first, so it is again the one taken.
     fn residual(&mut self, stored: &[u8]) {
         if let Some(Json::Obj(members)) = Json::parse(stored) {
-            let derived = self.keys.clone();
             for (key, value) in &members {
-                if !derived.contains(key) {
-                    self.put(key, value);
-                }
+                self.put(key, value);
             }
         }
     }
@@ -209,13 +203,12 @@ fn messages(shape: IoShape, role: &str, body: &[u8], cut: bool) -> (String, bool
         Some(value) => (value.clone(), false),
         None => (wrapped(role, body), true),
     };
-    let mut out = Vec::new();
-    if !wrap && matches!(shape, IoShape::GenaiMessages) {
-        // As stored: the normalizer keeps the semantic-convention text verbatim.
-        json::minify(&mut out, body);
-    } else {
-        value.write(&mut out);
+    if !wrap && matches!(shape, IoShape::GenaiMessages | IoShape::IndexedMessages) {
+        // As stored, byte for byte: the normalizer keeps the message text verbatim.
+        return (String::from_utf8_lossy(body).into_owned(), false);
     }
+    let mut out = Vec::new();
+    value.write(&mut out);
     (String::from_utf8_lossy(&out).into_owned(), wrap)
 }
 
@@ -264,10 +257,8 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
             continue;
         }
         if tool && !cut(field) {
-            match Json::parse(body) {
-                Some(value) => attrs.put(tool_key, &value),
-                None => attrs.text(tool_key, &String::from_utf8_lossy(body)),
-            }
+            // The call's arguments and result as stored, which the native key reads back byte for byte.
+            attrs.text(tool_key, &String::from_utf8_lossy(body));
         } else {
             let (text, wrap) = messages(core.io_shape, role, body, cut(field));
             io_wrapped |= wrap;
@@ -285,13 +276,7 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
         if body.is_empty() {
             continue;
         }
-        let mut text = Vec::new();
-        if cut(field) || !json::valid(body) {
-            text.extend_from_slice(body);
-        } else {
-            json::minify(&mut text, body);
-        }
-        attrs.text(key, &String::from_utf8_lossy(&text));
+        attrs.text(key, &String::from_utf8_lossy(body));
     }
     if core.observation_type == ObservationType::Tool {
         if let Some(name) = core.tool_names.first() {

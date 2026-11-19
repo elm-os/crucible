@@ -29,6 +29,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 crucible-auth = { workspace = true, features = ["test-support"] }
+# The round-trip property re-ingests exported lines through the OTLP/JSON transcoder and the normalizer.
+crucible-normalize = { workspace = true }
+crucible-otlp = { workspace = true }
 proptest = { workspace = true }
 
 [lints]
