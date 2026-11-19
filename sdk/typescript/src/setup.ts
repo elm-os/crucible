@@ -34,6 +34,8 @@ export interface InitOptions {
   deployId?: string;
   /** Spans the export queue holds before it drops. Default 2,048. */
   queueSize?: number;
+  /** Bytes of spans, estimated from their strings, the export queue holds before it drops. Default 8 MiB. */
+  queueBytes?: number;
   /** Longest wait before a partial batch is exported. Default 1,000 ms. */
   flushIntervalMs?: number;
   /** Bound on one export request, and on `flush` and `shutdown`. Default 10,000 ms. */
@@ -75,6 +77,7 @@ export function init(options: InitOptions = {}): void {
     }),
     {
       maxQueueSize: positive(options.queueSize, 2_048, "queueSize"),
+      maxQueueBytes: positive(options.queueBytes, 8 * 1024 * 1024, "queueBytes"),
       maxBatchSize: 512,
       flushIntervalMs: positive(options.flushIntervalMs, 1_000, "flushIntervalMs"),
       timeoutMs,

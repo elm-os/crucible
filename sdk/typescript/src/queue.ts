@@ -1,6 +1,6 @@
 // The export queue (contract 9.10): spans leave the request path through a bounded in-memory queue that a
-// background loop drains in batches. The bound counts the batch being exported too. A full queue drops the span
-// and counts it; ending a span never blocks.
+// background loop drains in batches. It is bounded by spans and by estimated bytes, and both bounds count the batch
+// being exported too. A full queue drops the span and counts it; ending a span never blocks.
 
 import { type Attributes, context } from "@opentelemetry/api";
 import { ExportResultCode, suppressTracing } from "@opentelemetry/core";
@@ -22,6 +22,8 @@ export interface QueueStats {
 
 export interface QueueOptions {
   maxQueueSize: number;
+  /** Bound on the estimated bytes of the queued spans, the batch being exported included. */
+  maxQueueBytes: number;
   maxBatchSize: number;
   flushIntervalMs: number;
   /** Bound on one export, and on the whole of `forceFlush` and `shutdown`. */
@@ -103,6 +105,10 @@ export class QueueSpanProcessor implements SpanProcessor {
       return;
     }
     const size = spanBytes(span);
+    if (this.#queuedBytes + this.#inFlightBytes + size > this.#options.maxQueueBytes) {
+      this.#dropped += 1;
+      return;
+    }
     this.#queue.push(span);
     this.#sizes.push(size);
     this.#queuedBytes += size;
