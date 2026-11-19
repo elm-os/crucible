@@ -153,23 +153,36 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 
 | Mutant | Crate | Defect | Caught as | Seed | Config |
 |---|---|---|---|---|---|
-| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace read right after the ack answers `not_found` (other runs of the budget report I1, I2 or a liveness failure) | 0 | `0xeaeca437a47` |
-| `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x2fe574beef1d` |
-| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 1001 | `0x2fe574beef1d` |
-| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5000 | `0xe48461657e2` |
-| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0x3c5fa7b02ff` |
-| `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace read right after the ack answers `not_found` (other runs report I1) | 0 | `0xeaeca437a47` |
-| `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 0 | `0xeaeca437a47` |
-| `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3000 | `0xebd29ab92c5` |
-| `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0xeaeca437a47` |
-| `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x2fe574beef1d` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I7: after a restart the rollups count a repeat that `span_core` does not hold | 910904000 | `0x2911e418a948` |
+| `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | liveness: the log does not drain after a lost frame (other runs of the budget report I1 or I3) | 0 | `0x304e3dca437a47` |
+| `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 0 | `0x304e3dca437a47` |
+| `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | I12: recovery finds a gap between the watermark and the oldest segment | 0 | `0x304e3dca437a47` |
+| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 1 | `0x304e3dca437a47` |
+| `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 0 | `0x304e3dca437a47` |
+| `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I1: an acknowledged request is in no table and no frame (other runs report I3) | 0 | `0x304e3dca437a47` |
+| `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 0 | `0x304e3dca437a47` |
+| `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy | 3001 | `0x7fce3d29abb2c7` |
+| `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3) | 0 | `0x304e3dca437a47` |
+| `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 1002 | `0x1f2fe574beef1d` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 14000 | `0x1aad7dced818fe` |
+| `misclassify-caller-fault` | `crucible-normalize` | An invalid-params error on a server-side row is not the caller's fault | I8: an `mcp_ops` row differs from the shared classifier in `caller_fault` | 2001 | `0x21c6206ca7c81b` |
+| `sum-capture-sources` | `crucible-shipper` | Every `mcp_tool_rollup` partial gets one capture source | I7: the rollup differs from the reference over `mcp_ops`, and its counts per capture source are not those of `mcp_ops` | 0 | `0x304e3dca437a47` |
+| `drop-rollup-marker` | `crucible-shipper` | The blocks of `mcp_tool_rollup` are sent without their marker row | I2: the store model refuses the block | 0 | `0x304e3dca437a47` |
+| `mark-after-duplicate-drop` | `crucible-normalize` | Stage B flags the usage aggregates of a frame after its exact repeats were dropped | I7: a span is not a usage aggregate although a dropped repeat of its frame passes the mark on to it | 107000 | `0x71a57f98c89770` |
 
-Of the 600 runs of the budget, the first ten mutants are caught by 591, 165, 43, 32, 107, 475, 481, 84, 173 and
-178 runs, in the order of the table. No run of the budget catches `collect-what-frames-rely-on`: it needs a
-repeat, a collection and a crash inside one unchecked batch, which about one run in 200 has. Its recorded run
-has the seed of a line of the regression corpus (the corpus line keeps its own mask, without
-`nested_usage`), and six of the nine corpus lines of this defect catch it.
+Of the 600 runs of the budget, the mutants are caught by 587, 147, 65, 50, 101, 497, 485, 78, 161, 169, 24, 53,
+238, 293 and 2 runs, in the order of the table. Before the dimensions, the weighted profile and the oracle checks
+of milestone 3, the first eleven were caught by 591, 165, 43, 32, 107, 475, 481, 84, 173, 178 and 0 runs.
+
+`collect-what-frames-rely-on` was caught by no run of the budget before. Two things changed that. The profile
+`collection_under_repeats` makes a quarter of the configurations ones where garbage collection can run inside an
+unchecked batch that holds a repeat. And the oracle now checks the rule of contract 5.3 where it is broken, not
+only where its effect lands: at every frame that stage B reads, the WAL must still hold the frame that the
+admission of each unchecked frame relied on (within one process, and across a restart for the frames of a sealed
+batch, whose pairs may have landed), and a restart must keep and flag the same spans of such a frame.
+
+`mark-after-duplicate-drop` is caught by 2 runs of 600: it needs a repeat that is still in the duplicate window, a
+new span in its frame that carries usage under it, and the repeat's parent after it. The directed and property
+tests of `crucible-normalize` (`usage_aggregate.rs`) cover the same defect on every run.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
@@ -211,7 +224,8 @@ cargo nextest run -p crucible-sim --test system_dst
 
 Mutant names: `skip-wal-sync`, `drop-token`, `gc-above-checkpoint`, `silent-eviction`,
 `skip-probe-after-unknown`, `ack-before-append`, `double-count-rollup`, `drop-fact-on-retry`,
-`frame-quarantine-without-copy`, `count-aggregate-usage`.
+`frame-quarantine-without-copy`, `count-aggregate-usage`, `collect-what-frames-rely-on`,
+`misclassify-caller-fault`, `sum-capture-sources`, `drop-rollup-marker`, `mark-after-duplicate-drop`.
 
 A failing run prints its replay command and the line to append to the corpus; `--record` appends it.
 
