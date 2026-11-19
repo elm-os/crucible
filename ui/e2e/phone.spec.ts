@@ -10,11 +10,14 @@ import {
   measuresOf,
   metrics,
   PROJECT,
+  PROVIDERS_PATH,
   SESSION,
-  SESSION_PATH,
+  SESSION_DETAIL_PATH,
   SESSIONS_PATH,
   SPANS_PATH,
   sessionItem,
+  signedIn,
+  signInOptions,
   spanListItem,
   TRACE_PATH,
   test,
@@ -147,6 +150,122 @@ test.describe("phone at 390 px", () => {
     await page.getByRole("button", { name: "Show span details" }).tap();
     await expect(sheet).toContainText("plan reply");
   });
+
+  test("sign in reads without sideways scrolling", async ({ page, api }) => {
+    api.on(
+      PROVIDERS_PATH,
+      json(
+        signInOptions({
+          providers: [{ id: "p-1", kind: "oidc", display_name: "Continue with Acme SSO" }],
+        }),
+      ),
+    );
+    await page.goto("/login/?error=not_invited");
+    await expect(page.getByLabel("Email")).toBeVisible();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "sign in on a phone");
+  });
+
+  test("the New project dialog fits, with the slug it suggests", async ({ page, api }) => {
+    signedIn(api);
+    await page.goto(`/settings/project/?project=${PROJECT}`);
+    await page.getByRole("button", { name: "New project" }).tap();
+    const dialog = page.getByRole("dialog", { name: "New project" });
+    await dialog.getByLabel("Name", { exact: true }).fill("A rather long project name for a phone");
+    await expect(dialog.getByLabel("Slug")).toHaveValue("a-rather-long-project-name-for-a-phone");
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "new project on a phone");
+  });
+
+  test("setup and invitation pages read without sideways scrolling", async ({ page }) => {
+    await page.goto("/setup/");
+    await expect(page.getByLabel("Setup token")).toBeVisible();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "setup on a phone");
+    await page.goto("/invite/?token=invite-token-1");
+    await expect(page.getByLabel("Your name")).toBeVisible();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "invitation on a phone");
+  });
+
+  test("members: the header and both tables fit, the tables scrolling inside their frames", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(
+      /\/api\/v1\/org\/members$/,
+      json({
+        data: [
+          {
+            user_id: "u-2",
+            email: "grace.brewster.murray.hopper@example.com",
+            name: "Grace Hopper",
+            role: "member",
+            status: "active",
+          },
+        ],
+      }),
+    );
+    api.on(
+      /\/api\/v1\/org\/invitations$/,
+      json({
+        data: [
+          {
+            id: "i-1",
+            email: "barbara.liskov.of.mit@example.com",
+            org_role: "viewer",
+            project_roles: [],
+            expires_at: "2099-01-01T00:00:00.000000Z",
+            accepted_at: null,
+            revoked_at: null,
+          },
+        ],
+      }),
+    );
+    await page.goto("/settings/members/");
+    await expect(page.getByRole("cell", { name: "Grace Hopper", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "barbara.liskov.of.mit@example.com", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("banner")).toContainText("Ada Lovelace");
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "members on a phone");
+  });
+
+  test("API keys: the table scrolls inside its frame, and a new key's secret wraps inside its dialog", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    const secret = `csk_${"s".repeat(43)}`;
+    const key = {
+      id: "k-1",
+      public_key: `cpk_${"a".repeat(43)}`,
+      scopes: ["ingest", "read", "write"],
+      note: "checkout-service",
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+      version: 1,
+    };
+    api.on(new RegExp(`/api/v1/projects/${PROJECT}/api-keys$`), (route) =>
+      route.fulfill(
+        route.request().method() === "POST"
+          ? json({ key: { ...key, id: "k-2", note: "" }, secret_key: secret }, 201)
+          : json({ data: [key] }),
+      ),
+    );
+    await page.goto(`/settings/api-keys/?project=${PROJECT}`);
+    await expect(page.getByRole("cell", { name: "checkout-service" })).toBeVisible();
+    await expectNoPageScrollX(page);
+    await page.getByRole("button", { name: "Create key" }).tap();
+    await page.getByRole("dialog").getByRole("button", { name: "Create key" }).tap();
+    await expect(page.getByText(secret)).toBeVisible();
+    await expect(page.getByText(secret)).toBeInViewport({ ratio: 1 });
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "new key on a phone");
+  });
 });
 
 test.describe("phone at 390 px: lists", () => {
@@ -160,7 +279,7 @@ test.describe("phone at 390 px: lists", () => {
     api.on(SESSIONS_PATH, json(listPage([sessionItem({ session_id: longId })])));
     api.on(USERS_PATH, json(listPage([userItem()])));
     api.on(SPANS_PATH, json(listPage([spanListItem()])));
-    api.on(SESSION_PATH, json({ session: sessionItem(), meta: whole }));
+    api.on(SESSION_DETAIL_PATH, json({ session: sessionItem(), meta: whole }));
     api.on(USER_PATH, json({ user: userItem(), meta: whole }));
     api.on(USER_SESSIONS_PATH, json(listPage([userSessionItem()])));
     api.on(LIST_PATH, json(tracePage([traceItem()])));

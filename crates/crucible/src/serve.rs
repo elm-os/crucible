@@ -40,8 +40,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
-use crucible_auth::{KeyVerifier, StaticKeys};
+use crucible_auth::service::Identity;
+use crucible_auth::{DbKeys, KeyVerifier, StaticKeys};
 use crucible_config::Config;
+use crucible_control::KeyScope;
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
 use crucible_env::{
@@ -75,8 +77,11 @@ const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 const STORE_RETRY: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(15));
 /// `Retry-After` of an ingest request refused while the store is not up, in seconds.
 const CLOSED_RETRY_AFTER: u32 = 5;
-/// `recent.max_bytes` when the host's memory cannot be read (contract 8.6 puts the default at 10% of RAM).
+/// `recent.max_bytes` when the memory of the process cannot be read (contract 8.6 puts the default at 10% of it).
 const RECENT_FALLBACK_BYTES: u64 = 256 << 20;
+/// Startup warns when the memory budgets add up to more than this share of the memory the process may use, in
+/// percent (default; revisit). The rest is for the memory no budget tracks.
+const BUDGET_SHARE_PERCENT: u64 = 90;
 
 /// A `Net` listener as an axum listener.
 struct EnvListener {
@@ -222,16 +227,39 @@ struct Gate {
     api: OnceLock<Router>,
     /// The API until then.
     api_without_store: Router,
+    /// The Postgres key snapshot, with a control plane: until it loads the node is not ready and ingest stays
+    /// closed (contract 11.8: a cold start without Postgres accepts nothing).
+    snapshot: Option<Arc<DbKeys>>,
     /// The MCP server at `/mcp`, mounted over the store with the API.
     mcp: Arc<McpGate>,
 }
 
+/// The keys of the MCP server. Its tools read, so with a control plane a key needs the `read` scope (contract
+/// 11.3), as ingest needs `ingest`; keys from the keys file carry no scopes to check.
+fn mcp_keys(identity: Option<&Arc<Identity>>, keys: &Arc<dyn KeyVerifier>) -> Arc<dyn KeyVerifier> {
+    match identity {
+        Some(identity) => Arc::new(identity.keys().with_scope(KeyScope::Read)),
+        None => Arc::clone(keys),
+    }
+}
+
 impl Gate {
     fn closed(&self) -> Option<String> {
-        self.closed
+        let closed = self
+            .closed
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .clone();
+        closed.or_else(|| {
+            self.snapshot
+                .as_ref()
+                .filter(|keys| !keys.is_loaded())
+                .map(|_| {
+                    "the API key snapshot is not loaded yet: Postgres has not answered, or its migrations have \
+                     not run (`--migrate` and `crucible migrate` apply them); the log has the error"
+                        .to_owned()
+                })
+        })
     }
 
     fn close(&self, reason: String) {
@@ -321,6 +349,7 @@ async fn open_app(
     keys: StaticKeys,
     cursors: Arc<KeyRing>,
     config: WalConfig,
+    identity: Option<Arc<Identity>>,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -333,7 +362,11 @@ async fn open_app(
         segments = report.segments.len(),
         "wal opened"
     );
-    let keys: Arc<dyn KeyVerifier> = Arc::new(keys);
+    // With a control plane the keys are the Postgres snapshot; the keys file is the mode without one.
+    let keys: Arc<dyn KeyVerifier> = match &identity {
+        Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
+        None => Arc::new(keys),
+    };
     let ingest = Ingest::new(
         env,
         wal.clone(),
@@ -341,16 +374,18 @@ async fn open_app(
         Arc::clone(&keys),
         ingest_config(),
     );
+    let settings = Arc::new(StaticProjectSettings::default());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
-        api_without_store: crucible_api::router_without_store(
-            env,
-            Arc::clone(&keys),
-            Arc::new(StaticProjectSettings::default()),
-            cursors,
-        ),
-        mcp: Arc::new(McpGate::new(env, Arc::clone(&keys))),
+        snapshot: identity
+            .as_ref()
+            .map(|identity| Arc::clone(identity.keys())),
+        mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
+        api_without_store: match identity {
+            Some(identity) => crucible_api::platform_router(env, None, identity, settings, cursors),
+            None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
+        },
     });
     let app = App {
         ingest,
@@ -532,6 +567,8 @@ struct StoreTask {
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
     recent_max_bytes: u64,
+    /// Identity, with a control plane.
+    identity: Option<Arc<Identity>>,
     /// Where the API's fact writes go: this node's ingest.
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
@@ -616,6 +653,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         cursors,
         gate,
         recent_max_bytes,
+        identity,
         facts: fact_writer,
         mcp,
     } = task;
@@ -647,6 +685,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     tracing::info!(
         version = format!("{}.{}", facts.version.major, facts.version.minor),
         flavour = ?facts.flavour,
+        idle_timeout = ?store.idle_timeout(),
         "the telemetry store passed startup detection and the self-tests"
     );
 
@@ -689,17 +728,20 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
-    let (mcp_keys, mcp_cursors) = (Arc::clone(&keys), Arc::clone(&cursors));
+    let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
-    gate.open(crucible_api::router(
-        &env,
-        service,
-        keys,
-        Arc::new(StaticProjectSettings::default()),
-        cursors,
-        fact_writer,
-    ));
+    let settings = Arc::new(StaticProjectSettings::default());
+    gate.open(match identity {
+        Some(identity) => crucible_api::platform_router(
+            &env,
+            Some((service, fact_writer)),
+            identity,
+            settings,
+            cursors,
+        ),
+        None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
+    });
     tracing::info!(
         watermark = %watermark,
         last_lsn = %report.last_lsn,
@@ -709,18 +751,128 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     shipper.run().await.context("the shipper stopped")
 }
 
-/// `recent.max_bytes` (contract 8.6): min(1 GiB, 10% of RAM), from `/proc/meminfo` where there is one.
-#[allow(clippy::disallowed_methods)] // The binary reads the host's memory size.
-fn default_recent_max_bytes() -> u64 {
-    let total_kib = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|text| {
-            let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
-            line.split_whitespace().nth(1)?.parse::<u64>().ok()
-        });
-    total_kib.map_or(RECENT_FALLBACK_BYTES, |kib| {
-        RecentConfig::default_max_bytes(kib.saturating_mul(1024))
+/// The memory this process may use, from which the memory-derived defaults are sized.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Memory {
+    /// The host's total memory: `MemTotal` in `/proc/meminfo`.
+    Host(u64),
+    /// The container's memory limit, `/sys/fs/cgroup/memory.max`, where it is below the host's total.
+    Container(u64),
+}
+
+impl Memory {
+    /// From the texts of `/proc/meminfo` and `/sys/fs/cgroup/memory.max`, each `None` when it cannot be read. A
+    /// limit of `max`, or no limit file (Windows, macOS, cgroup v1), leaves the host's total.
+    fn from_files(meminfo: Option<&str>, memory_max: Option<&str>) -> Option<Self> {
+        let host = meminfo
+            .and_then(|text| {
+                let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
+                line.split_whitespace().nth(1)?.parse::<u64>().ok()
+            })
+            .map(|kib| kib.saturating_mul(1024));
+        let limit = memory_max.and_then(|text| text.trim().parse::<u64>().ok());
+        match (host, limit) {
+            (Some(host), Some(limit)) if limit >= host => Some(Self::Host(host)),
+            (_, Some(limit)) => Some(Self::Container(limit)),
+            (host, None) => host.map(Self::Host),
+        }
+    }
+
+    const fn bytes(self) -> u64 {
+        match self {
+            Self::Host(bytes) | Self::Container(bytes) => bytes,
+        }
+    }
+}
+
+/// The memory this process may use: the host's total, or the container's limit when that is smaller.
+#[allow(clippy::disallowed_methods)] // The binary reads the host's memory size and the container's limit.
+fn read_memory() -> Option<Memory> {
+    let read = |path: &str| std::fs::read_to_string(path).ok();
+    Memory::from_files(
+        read("/proc/meminfo").as_deref(),
+        read("/sys/fs/cgroup/memory.max").as_deref(),
+    )
+}
+
+/// `recent.max_bytes` (contract 8.6): min(1 GiB, 10% of the memory this process may use).
+fn default_recent_max_bytes(memory: Option<Memory>) -> u64 {
+    memory.map_or(RECENT_FALLBACK_BYTES, |memory| {
+        RecentConfig::default_max_bytes(memory.bytes())
     })
+}
+
+/// One memory budget of the node: its setting, its size, and the flag and variable that change it (`None` for a
+/// budget that has no setting yet).
+#[derive(Clone, Copy, Debug)]
+struct Budget {
+    setting: &'static str,
+    bytes: u64,
+    changed_by: Option<&'static str>,
+}
+
+/// Whole MiB, rounded up.
+fn mib(bytes: u64) -> String {
+    format!("{} MiB", bytes.div_ceil(1 << 20))
+}
+
+/// The sum of the budgets' sizes.
+fn sum<'a>(budgets: impl IntoIterator<Item = &'a Budget>) -> u64 {
+    budgets
+        .into_iter()
+        .fold(0u64, |total, budget| total.saturating_add(budget.bytes))
+}
+
+/// The warning for budgets that add up to more than [`BUDGET_SHARE_PERCENT`] of `memory`, naming each budget and
+/// what changes it (contract 1.7); `None` when they fit.
+fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
+    let limit = memory.bytes();
+    let total = sum(budgets);
+    if total.saturating_mul(100) <= limit.saturating_mul(BUDGET_SHARE_PERCENT) {
+        return None;
+    }
+    let needed = total.saturating_mul(100).div_ceil(BUDGET_SHARE_PERCENT);
+    let source = match memory {
+        Memory::Host(_) => "the host's total memory",
+        Memory::Container(_) => "the container's memory limit",
+    };
+    let sizes: Vec<String> = budgets
+        .iter()
+        .map(|budget| format!("{} {}", budget.setting, mib(budget.bytes)))
+        .collect();
+    let settable: Vec<String> = budgets
+        .iter()
+        .filter_map(|budget| Some(format!("{} ({})", budget.setting, budget.changed_by?)))
+        .collect();
+    let fixed: Vec<&Budget> = budgets
+        .iter()
+        .filter(|budget| budget.changed_by.is_none())
+        .collect();
+    let mut advice = format!("Give the process at least {} of memory", mib(needed));
+    // Lowering the budgets that have a setting helps only when the others fit the share by themselves.
+    let share = limit.saturating_mul(BUDGET_SHARE_PERCENT) / 100;
+    if let Some(room) = share.checked_sub(sum(fixed.iter().copied()))
+        && !settable.is_empty()
+    {
+        let together = if settable.len() > 1 { " together" } else { "" };
+        advice.push_str(&format!(
+            ", or lower {} to at most {} MiB{together}",
+            settable.join(" and "),
+            room >> 20
+        ));
+    }
+    if !fixed.is_empty() {
+        let names: Vec<&str> = fixed.iter().map(|budget| budget.setting).collect();
+        let verb = if fixed.len() > 1 { "have" } else { "has" };
+        advice.push_str(&format!("; {} {verb} no setting yet", names.join(" and ")));
+    }
+    Some(format!(
+        "the memory budgets add up to {}, more than {BUDGET_SHARE_PERCENT}% of the {} this process may use \
+         ({source}): {}. {advice}",
+        mib(total),
+        mib(limit),
+        sizes.join(", "),
+    ))
 }
 
 /// The ClickHouse settings of the configuration, or `None` for the ingest-only mode.
@@ -812,17 +964,25 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Some(path) => crate::keys::load(path, env)?,
         None => StaticKeys::new(env.rng.as_ref(), Vec::new())?,
     };
-    if keys.is_empty() {
+    if keys.is_empty() && config.postgres.is_none() {
         tracing::warn!(
             "no project keys are configured (--keys-file); ingest refuses every request"
         );
     }
     let key_count = keys.len();
     let clickhouse = clickhouse(&config, migrate)?;
-    // Nothing reads the control plane yet in this milestone except the migrations ledger; the store opens its
-    // first connection when something does.
     let control = match &config.postgres {
         Some(postgres) => Some(Control::new(env, postgres)?),
+        None => None,
+    };
+    // With a control plane, identity serves sessions and the Postgres keys. Until its tables exist and the key
+    // snapshot has loaded, the node is not ready and ingest stays closed; listeners still bind.
+    let identity = match &control {
+        Some(control) => {
+            let identity = crate::identity::build(env, &config, control)?;
+            crate::identity::start(env, &identity, control, migrate);
+            Some(identity)
+        }
         None => None,
     };
     let control_mode = if control.is_some() {
@@ -846,6 +1006,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         keys,
         Arc::clone(&cursors),
         WalConfig::default(),
+        identity.clone(),
         closed,
     )
     .await?;
@@ -854,9 +1015,36 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     } else {
         "ingest-only"
     };
+    let memory = read_memory();
     let recent_max_bytes = config
         .recent_max_bytes
-        .unwrap_or_else(default_recent_max_bytes);
+        .unwrap_or_else(|| default_recent_max_bytes(memory));
+    // The budgets in use: the recent-span index and the shipper run only with a telemetry store.
+    let ingest_budget = Budget {
+        setting: "ingest.inflight_bytes",
+        bytes: ingest_config().inflight_bytes,
+        changed_by: None,
+    };
+    let budgets = if clickhouse.is_some() {
+        vec![
+            Budget {
+                setting: "recent.max_bytes",
+                bytes: recent_max_bytes,
+                changed_by: Some("--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES"),
+            },
+            ingest_budget,
+            Budget {
+                setting: "shipper.encoded_bytes",
+                bytes: ShipperConfig::default().encoded_bytes,
+                changed_by: None,
+            },
+        ]
+    } else {
+        vec![ingest_budget]
+    };
+    if let Some(warning) = memory.and_then(|memory| budget_warning(memory, &budgets)) {
+        tracing::warn!("{warning}");
+    }
     let mcp = McpConfig {
         calls_per_second: config.mcp.calls_per_second,
         burst: config.mcp.burst,
@@ -874,6 +1062,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 cursors,
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
+                identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
             };
@@ -902,6 +1091,8 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         mode,
         control = control_mode,
         job_tasks = jobs.tasks(),
+        memory = ?memory,
+        recent_max_bytes,
         "crucible is serving"
     );
 
@@ -1027,7 +1218,10 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None).await.unwrap().0
+        open_app(env, keys, cursors, config, None, None)
+            .await
+            .unwrap()
+            .0
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -1172,6 +1366,134 @@ mod tests {
         assert!(env.net.connect(addrs.api, deadline).await.is_err());
     }
 
+    /// The default bound of the recent-span index, in bytes, is at most 10% of the memory this process may use:
+    /// of the container's limit when `/sys/fs/cgroup/memory.max` holds one, as it does in a container started
+    /// with a memory limit.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // The test reads the file the server reads.
+    fn the_default_recent_bound_fits_the_container() {
+        let limit = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok());
+        let bound = default_recent_max_bytes(read_memory());
+        match limit {
+            Some(limit) => assert!(
+                bound <= limit / 10,
+                "the default recent bound is {bound} bytes, more than 10% of the container's limit of {limit} bytes"
+            ),
+            None => assert!(bound <= 1 << 30, "{bound}"),
+        }
+    }
+
+    /// The texts of `/proc/meminfo` and `/sys/fs/cgroup/memory.max` as a host and a container show them.
+    #[test]
+    fn the_memory_is_the_smaller_of_the_host_and_the_container_limit() {
+        // 16,094,164 kB: the VM of the development rig.
+        const MEMINFO: &str = "MemTotal:       16094164 kB\nMemFree:         8000000 kB\n";
+        let host = 16_094_164 * 1024;
+        let two_gib = 2 << 30;
+        let cases = [
+            // No container limit: `max`, or no file (Windows, macOS, cgroup v1).
+            (Some(MEMINFO), Some("max\n"), Some(Memory::Host(host))),
+            (Some(MEMINFO), None, Some(Memory::Host(host))),
+            // A container limited to 2 GiB.
+            (
+                Some(MEMINFO),
+                Some("2147483648\n"),
+                Some(Memory::Container(two_gib)),
+            ),
+            // A limit above the host's memory limits nothing.
+            (Some(MEMINFO), Some("68719476736"), Some(Memory::Host(host))),
+            (None, Some("2147483648"), Some(Memory::Container(two_gib))),
+            (None, None, None),
+            (Some("no total here"), Some("garbage"), None),
+        ];
+        for (meminfo, memory_max, expected) in cases {
+            assert_eq!(
+                Memory::from_files(meminfo, memory_max),
+                expected,
+                "{meminfo:?} {memory_max:?}"
+            );
+        }
+        // The default recent bound: 10% of the memory, at most 1 GiB; 256 MiB when it cannot be read.
+        assert_eq!(
+            default_recent_max_bytes(Some(Memory::Container(two_gib))),
+            214_748_364
+        );
+        assert_eq!(default_recent_max_bytes(Some(Memory::Host(host))), 1 << 30);
+        assert_eq!(default_recent_max_bytes(None), RECENT_FALLBACK_BYTES);
+    }
+
+    #[test]
+    fn budgets_beyond_their_share_of_the_memory_are_named_with_what_changes_them() {
+        let budgets = |recent: u64| {
+            [
+                Budget {
+                    setting: "recent.max_bytes",
+                    bytes: recent,
+                    changed_by: Some("--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES"),
+                },
+                Budget {
+                    setting: "ingest.inflight_bytes",
+                    bytes: 512 << 20,
+                    changed_by: None,
+                },
+                Budget {
+                    setting: "shipper.encoded_bytes",
+                    bytes: 1 << 30,
+                    changed_by: None,
+                },
+            ]
+        };
+        // A container limited to 2 GiB: the defaults take 85% of it.
+        let two_gib = Memory::Container(2 << 30);
+        assert_eq!(
+            budget_warning(two_gib, &budgets(default_recent_max_bytes(Some(two_gib)))),
+            None
+        );
+        // Up to the share exactly, nothing is said.
+        let fits = (2 << 30) * BUDGET_SHARE_PERCENT / 100 - (1536 << 20);
+        assert_eq!(budget_warning(two_gib, &budgets(fits)), None);
+        assert!(budget_warning(two_gib, &budgets(fits + 1)).is_some());
+        // A container limited to 1.75 GiB: the budgets without a setting fit, so lowering the recent bound to
+        // what the warning names makes them all fit.
+        let roomy = Memory::Container(1792 << 20);
+        let warning =
+            budget_warning(roomy, &budgets(default_recent_max_bytes(Some(roomy)))).unwrap();
+        assert_eq!(
+            warning,
+            "the memory budgets add up to 1716 MiB, more than 90% of the 1792 MiB this process may use (the \
+             container's memory limit): recent.max_bytes 180 MiB, ingest.inflight_bytes 512 MiB, \
+             shipper.encoded_bytes 1024 MiB. Give the process at least 1906 MiB of memory, or lower \
+             recent.max_bytes (--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES) to at most 76 MiB; \
+             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
+        );
+        assert_eq!(budget_warning(roomy, &budgets(76 << 20)), None);
+        assert!(budget_warning(Memory::Container(1906 << 20), &budgets(187_904_819)).is_none());
+        // A container limited to 1.5 GiB: the budgets without a setting take more than the share by themselves,
+        // so only more memory helps.
+        let limited = Memory::Container(1536 << 20);
+        let warning =
+            budget_warning(limited, &budgets(default_recent_max_bytes(Some(limited)))).unwrap();
+        assert_eq!(
+            warning,
+            "the memory budgets add up to 1690 MiB, more than 90% of the 1536 MiB this process may use (the \
+             container's memory limit): recent.max_bytes 154 MiB, ingest.inflight_bytes 512 MiB, \
+             shipper.encoded_bytes 1024 MiB. Give the process at least 1878 MiB of memory; \
+             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
+        );
+        assert!(budget_warning(limited, &budgets(0)).is_some());
+        // Without a telemetry store only ingest holds a budget.
+        let ingest_only = [budgets(0)[1]];
+        assert!(
+            budget_warning(Memory::Host(512 << 20), &ingest_only)
+                .unwrap()
+                .ends_with(
+                    "Give the process at least 569 MiB of memory; ingest.inflight_bytes has no setting yet"
+                )
+        );
+    }
+
     #[test]
     fn readiness_follows_the_wal() {
         crucible_sim::run(1, |sim| async move {
@@ -1186,6 +1508,7 @@ mod tests {
                 closed: RwLock::new(None),
                 api: OnceLock::new(),
                 api_without_store: Router::new(),
+                snapshot: None,
                 mcp: Arc::new(McpGate::new(&host.env, Arc::new(no_keys(&host.env)))),
             };
             let readiness = |wal: &Wal| {
@@ -2114,7 +2437,9 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, closed).await.unwrap();
+        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+            .await
+            .unwrap();
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await

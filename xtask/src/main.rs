@@ -20,10 +20,12 @@ commands:
   help                 show this message
   gen-ts               regenerate the TypeScript types of the REST API in ui/src/api/generated/ from the
                        DTOs of crucible-api-types; commit the result (CI fails on any difference)
+  authz-matrix         regenerate docs/architecture/authz-matrix.md from the route permissions of
+                       crucible-api; commit the result (a test fails on any difference)
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
                        (default ui/out); run it after every UI build that will be embedded or served";
 
-const PLANNED: &str = "Planned: conformance, authz-matrix.";
+const PLANNED: &str = "Planned: conformance.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -48,6 +50,20 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("authz-matrix") => {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../docs/architecture/authz-matrix.md");
+            match std::fs::write(&path, crucible_api::authz_matrix()) {
+                Ok(()) => {
+                    println!("{}: {} routes", path.display(), crucible_api::ROUTES.len());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("authz-matrix: writing {}: {e}", path.display());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("gen-ts") => match gen_ts::generate() {
             Ok((dir, files)) => {
                 println!("{}: {files} files", dir.display());

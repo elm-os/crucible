@@ -2,7 +2,7 @@
 //! is committed at `specs/openapi/crucible-v1.json`; a test fails when the two differ. The document holds the
 //! info, the security scheme and the tags; each route group adds its paths (`routes::document`).
 
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use crate::routes;
@@ -18,10 +18,15 @@ impl Modify for ProjectKey {
                 "A project's secret key (`csk_...`) as `Authorization: Bearer <key>`.",
             ))
             .build();
-        openapi
-            .components
-            .get_or_insert_with(Default::default)
-            .add_security_scheme("project_key", SecurityScheme::Http(scheme));
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme("project_key", SecurityScheme::Http(scheme));
+        components.add_security_scheme(
+            "session",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+                "crucible_session",
+                "The session cookie set by sign-in (`__Host-crucible_session` over HTTPS). Requests other than                  GET and HEAD also send `X-Crucible-CSRF` with the session's CSRF token.",
+            ))),
+        );
     }
 }
 
@@ -35,8 +40,11 @@ impl Modify for ProjectKey {
     ),
     modifiers(&ProjectKey),
     tags(
+        (name = "auth", description = "Sign-in, sessions and the signed-in user's account."),
         (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
         (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
+        (name = "org", description = "The organization, its members, invitations and sign-in providers."),
+        (name = "projects", description = "Projects, project members and API keys."),
         (name = "search", description = "Full-text search over the spans' inputs, outputs and metadata."),
         (name = "sessions", description = "Sessions: the spans that share a session id, aggregated."),
         (name = "traces", description = "Traces, their spans and their payloads, and the project's data bounds."),

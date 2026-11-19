@@ -4,11 +4,14 @@
 //! the query service, so a request without a store configured is still authenticated and validated before it
 //! is answered with `telemetry_store_unavailable`.
 
+mod auth;
 mod data_bounds;
 mod facts;
 mod filter_values;
 mod metrics;
+mod org;
 mod payload;
+mod projects;
 mod search;
 mod sessions;
 mod span_list;
@@ -35,11 +38,14 @@ use crate::problem::{ApiError, problem, request_id};
 /// not matter; the list is kept sorted.
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
+        .merge(auth::routes())
         .merge(data_bounds::routes())
         .merge(facts::routes())
         .merge(filter_values::routes())
         .merge(metrics::routes())
+        .merge(org::routes())
         .merge(payload::routes())
+        .merge(projects::routes())
         .merge(search::routes())
         .merge(sessions::routes())
         .merge(span_list::routes())
@@ -52,11 +58,14 @@ pub(crate) fn router() -> Router<ApiState> {
 /// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
 /// order of the groups does not change it; the list is kept sorted.
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
+    doc.merge(auth::Paths::openapi());
     doc.merge(data_bounds::Paths::openapi());
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
     doc.merge(metrics::Paths::openapi());
+    doc.merge(org::Paths::openapi());
     doc.merge(payload::Paths::openapi());
+    doc.merge(projects::Paths::openapi());
     doc.merge(search::Paths::openapi());
     doc.merge(sessions::Paths::openapi());
     doc.merge(span_list::Paths::openapi());

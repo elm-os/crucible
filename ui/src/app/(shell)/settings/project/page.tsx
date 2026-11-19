@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/coming-soon";
+import { EmptyState } from "@/components/empty-state";
+import { SectionFrame } from "@/components/section";
 
-export const metadata: Metadata = { title: "Settings" };
+export const metadata: Metadata = { title: "Project settings" };
 
 export default function Page() {
   return (
-    <ComingSoon
-      title="Settings"
-      description="Settings will manage the project, members, API keys, retention and model prices."
-    />
+    <SectionFrame title="About project settings">
+      <EmptyState kind="planned" title="Project settings are not built yet.">
+        Project settings will manage the project&apos;s name, retention and model prices.
+      </EmptyState>
+    </SectionFrame>
   );
 }

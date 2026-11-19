@@ -6,7 +6,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { getSession } from "@/api/client";
+import { getSessionDetail } from "@/api/client";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Section, SectionFrame } from "@/components/section";
@@ -93,7 +93,8 @@ function SessionSummary({ session }: { session: string }) {
   const [range] = useTimeRange(project);
   const query = useQuery({
     queryKey: [project, "session", session, range],
-    queryFn: ({ signal }) => getSession(project, session, rangeWindow(range, Date.now()), signal),
+    queryFn: ({ signal }) =>
+      getSessionDetail(project, session, rangeWindow(range, Date.now()), signal),
   });
   return (
     <Section

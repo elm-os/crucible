@@ -8,7 +8,7 @@ import {
   problem,
   SERVER_TEXT,
   SESSION,
-  SESSION_PATH,
+  SESSION_DETAIL_PATH,
   SESSIONS_PATH,
   SPANS_PATH,
   sessionItem,
@@ -71,7 +71,12 @@ test.describe("sessions: list", () => {
     await expectAccessible(page, "sessions success");
     await page.getByRole("button", { name: "Load more sessions" }).click();
     await expect(table.getByRole("link", { name: "chat-7" })).toBeVisible();
-    const [first, second] = api.calls.map((call) => new URL(`http://localhost${call}`));
+    // The shell's sign-in check comes first; the two list pages follow.
+    const pages = api.calls
+      .filter((call) => SESSIONS_PATH.test(call.split("?")[0] ?? ""))
+      .map((call) => new URL(`http://localhost${call}`));
+    expect(pages).toHaveLength(2);
+    const [first, second] = pages;
     expect(second?.searchParams.get("from")).toBe(first?.searchParams.get("from"));
     expect(second?.searchParams.get("to")).toBe(first?.searchParams.get("to"));
   });
@@ -115,7 +120,7 @@ test.describe("session: one session", () => {
     page,
     api,
   }) => {
-    api.on(SESSION_PATH, json({ session: sessionItem(), meta: WHOLE }));
+    api.on(SESSION_DETAIL_PATH, json({ session: sessionItem(), meta: WHOLE }));
     api.on(LIST_PATH, json(tracePage([traceItem()])));
     await page.goto(url);
     const summary = page.getByRole("region", { name: "Summary" });
@@ -134,13 +139,13 @@ test.describe("session: one session", () => {
     page,
     api,
   }) => {
-    api.on(SESSION_PATH, problem(404, "not_found"));
+    api.on(SESSION_DETAIL_PATH, problem(404, "not_found"));
     api.on(LIST_PATH, json(tracePage([])));
     await page.goto(url);
     await expect(page.getByText("This isn't in this project.")).toBeVisible();
     await expect(page.getByText("No traces of this session in the last 24 hours.")).toBeVisible();
     await expectAccessible(page, "session error");
-    api.on(SESSION_PATH, json({ session: null, meta: LAGGING }));
+    api.on(SESSION_DETAIL_PATH, json({ session: null, meta: LAGGING }));
     await page.reload();
     await expect(page.getByText("This session has no data to show yet.")).toBeVisible();
   });

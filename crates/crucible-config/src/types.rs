@@ -3,6 +3,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// A secret value. It never prints: `Debug` and `Display` both write a placeholder.
 #[derive(Clone, PartialEq, Eq)]
@@ -92,8 +93,34 @@ pub struct Server {
     pub metrics_listen: SocketAddr,
     /// Serve the UI from this directory instead of the one compiled in.
     pub ui_dir: Option<PathBuf>,
-    /// TOML file of the project keys that ingest accepts.
+    /// TOML file of the project keys, for a server without Postgres.
     pub keys_file: Option<PathBuf>,
+    /// The URL people reach the server at.
+    pub public_url: Option<String>,
+    /// Origins besides the server's own that may send cookie-authenticated writes.
+    pub allowed_origins: Vec<String>,
+}
+
+/// `auth.pg_outage_mode`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PgOutageMode {
+    /// Known keys keep working for ingest.
+    FailOpen,
+    /// Every secret key is refused after 5 s without a successful poll.
+    FailClosed,
+}
+
+/// The `[auth]` section.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Auth {
+    /// API keys during a Postgres outage.
+    pub pg_outage_mode: PgOutageMode,
+    /// Seconds after which a fail-open outage behaves as fail-closed; `None` is unlimited.
+    pub fail_open_max: Option<u64>,
+    /// Seconds that cached sessions stay valid during a Postgres outage.
+    pub session_outage_grace: u64,
+    /// `security.require_https`: refuse sign-in unless the public URL is HTTPS.
+    pub require_https: bool,
 }
 
 /// The `[data]` section.
@@ -125,6 +152,8 @@ pub struct ClickHouse {
     pub password: Secret,
     /// The master key, 64 hexadecimal characters: the service passwords derive from it.
     pub master_key: Secret,
+    /// How long an idle connection is kept; `None` derives it from the server's keep-alive timeout.
+    pub idle_timeout: Option<Duration>,
 }
 
 /// The `[postgres]` section, present when `postgres.url` is set.
@@ -155,6 +184,8 @@ pub struct Config {
     pub clickhouse: Option<ClickHouse>,
     /// The control plane; `None` to run without one.
     pub postgres: Option<Postgres>,
+    /// Sign-in and API keys.
+    pub auth: Auth,
 }
 
 /// Everything that is wrong with a configuration, one message per problem.

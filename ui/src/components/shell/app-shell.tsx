@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { ConnectDialog } from "./connect-dialog";
+import { AccountControls, ConnectControl } from "./account";
+import { AuthGate } from "./auth-gate";
 import { MobileNav } from "./mobile-nav";
 import { Nav } from "./nav";
 import { ProjectSwitcher } from "./project-switcher";
@@ -19,12 +20,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ash-border px-4 py-3 md:px-8">
           <MobileNav />
           <ProjectSwitcher />
-          <ConnectDialog />
-          <div className="ms-auto">
+          <ConnectControl />
+          <div className="ms-auto flex flex-wrap items-center gap-x-3 gap-y-2">
             <TimeRangeControl />
+            <AccountControls />
           </div>
         </header>
-        <main className="flex-1 px-4 py-6 md:px-8">{children}</main>
+        <main className="flex-1 px-4 py-6 md:px-8">
+          <AuthGate>{children}</AuthGate>
+        </main>
       </div>
     </div>
   );

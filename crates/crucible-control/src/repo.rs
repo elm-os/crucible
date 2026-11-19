@@ -14,9 +14,10 @@ use futures::future::BoxFuture;
 
 use crate::error::TxError;
 use crate::types::{
-    ApiKey, Claim, Credential, KeyChange, KeyChangeKind, KeySnapshot, Lease, LeaseName,
-    LedgerEntry, NewJob, Org, OrgMembership, OrgRole, Project, ProjectMembership, Queue, Secret,
-    Session, SigningKey, SigningKeyState, SigningPurpose, TokenHash, User,
+    ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, Invitation, KeyChange, KeyChangeKind,
+    KeySnapshot, Lease, LeaseName, LedgerEntry, NewJob, OauthAccount, OneTimeToken, Org,
+    OrgMembership, OrgRole, Project, ProjectMembership, Queue, Secret, Session, SigningKey,
+    SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
 };
 
 /// The singleton organization row.
@@ -184,6 +185,91 @@ pub trait SecretRepo: Send + Sync {
     async fn delete(&self, id: Uuid) -> Result<bool, TxError>;
 }
 
+/// Sign-in providers.
+#[async_trait]
+pub trait AuthProviderRepo: Send + Sync {
+    /// The provider with this id.
+    async fn get(&self, id: Uuid) -> Result<Option<AuthProvider>, TxError>;
+    /// Every provider, ordered by id.
+    async fn list(&self) -> Result<Vec<AuthProvider>, TxError>;
+    /// Creates a provider. A second row from configuration of one kind is
+    /// `UniqueViolation("auth_providers_seeded_kind_key")`.
+    async fn insert(&self, provider: &AuthProvider) -> Result<(), TxError>;
+    /// Overwrites the provider's columns. `false` when there is no such provider.
+    async fn update(&self, provider: &AuthProvider) -> Result<bool, TxError>;
+    /// Deletes a provider with its linked accounts. `false` when there is no such provider.
+    async fn delete(&self, id: Uuid) -> Result<bool, TxError>;
+}
+
+/// Provider identities linked to users.
+#[async_trait]
+pub trait OauthAccountRepo: Send + Sync {
+    /// The account of this provider subject.
+    async fn get(&self, provider_id: Uuid, subject: &str) -> Result<Option<OauthAccount>, TxError>;
+    /// The accounts of a user, ordered by provider id then subject.
+    async fn list_for_user(&self, user_id: UserId) -> Result<Vec<OauthAccount>, TxError>;
+    /// Links a provider subject to a user. A subject that is already linked is
+    /// `UniqueViolation("oauth_accounts_pkey")`.
+    async fn insert(&self, account: &OauthAccount) -> Result<(), TxError>;
+}
+
+/// Sign-in attempts through a provider.
+#[async_trait]
+pub trait AuthFlowRepo: Send + Sync {
+    /// Creates a flow.
+    async fn insert(&self, flow: &AuthFlow) -> Result<(), TxError>;
+    /// Uses the flow, in one statement: marks it consumed at `now` and returns it, if it exists, was not
+    /// consumed and has not expired at `now`. `None` otherwise, so a `state` works once.
+    async fn consume(
+        &self,
+        state_hash: &TokenHash,
+        now: Timestamp,
+    ) -> Result<Option<AuthFlow>, TxError>;
+    /// Deletes the flows that expired before `now`; returns how many.
+    async fn delete_expired(&self, now: Timestamp) -> Result<u64, TxError>;
+}
+
+/// Single-use tokens.
+#[async_trait]
+pub trait OneTimeTokenRepo: Send + Sync {
+    /// The token with this hash, used or not.
+    async fn get(&self, token_hash: &TokenHash) -> Result<Option<OneTimeToken>, TxError>;
+    /// Creates a token.
+    async fn insert(&self, token: &OneTimeToken) -> Result<(), TxError>;
+    /// Uses the token, in one statement: marks it consumed at `now` and returns it, if it exists, is of
+    /// `kind`, was not consumed and has not expired at `now`. `None` otherwise, so a token works once.
+    async fn consume(
+        &self,
+        token_hash: &TokenHash,
+        kind: TokenKind,
+        now: Timestamp,
+    ) -> Result<Option<OneTimeToken>, TxError>;
+    /// Deletes the unused tokens of `kind` for `subject`; returns how many.
+    async fn delete_unused(&self, kind: TokenKind, subject: &str) -> Result<u64, TxError>;
+    /// Whether an unused token of `kind` exists that has not expired at `now`.
+    async fn any_open(&self, kind: TokenKind, now: Timestamp) -> Result<bool, TxError>;
+    /// Deletes the tokens that expired before `now`; returns how many.
+    async fn delete_expired(&self, now: Timestamp) -> Result<u64, TxError>;
+}
+
+/// Invitations.
+#[async_trait]
+pub trait InvitationRepo: Send + Sync {
+    /// The invitation with this id.
+    async fn get(&self, id: Uuid) -> Result<Option<Invitation>, TxError>;
+    /// Every invitation, ordered by id.
+    async fn list(&self) -> Result<Vec<Invitation>, TxError>;
+    /// The invitations of this case-folded email, open or not, ordered by id.
+    async fn list_for_email(&self, email: &Email) -> Result<Vec<Invitation>, TxError>;
+    /// Creates an invitation.
+    async fn insert(&self, invitation: &Invitation) -> Result<(), TxError>;
+    /// Marks the invitation accepted at `now`, in one statement, if it is open at `now`. `false` when it is
+    /// not, so an invitation is accepted once.
+    async fn accept(&self, id: Uuid, now: Timestamp) -> Result<bool, TxError>;
+    /// Revokes an invitation that was neither accepted nor revoked. `false` otherwise.
+    async fn revoke(&self, id: Uuid, now: Timestamp) -> Result<bool, TxError>;
+}
+
 /// Leases with fencing tokens (contract 11.7). Expiry is judged by the database clock. Runs on the reserved
 /// pool.
 #[async_trait]
@@ -269,6 +355,16 @@ pub trait Repos: Send + Sync {
     fn signing_keys(&self) -> &dyn SigningKeyRepo;
     /// Sealed secrets.
     fn secrets(&self) -> &dyn SecretRepo;
+    /// Sign-in providers.
+    fn auth_providers(&self) -> &dyn AuthProviderRepo;
+    /// Provider identities linked to users.
+    fn oauth_accounts(&self) -> &dyn OauthAccountRepo;
+    /// Sign-in attempts through a provider.
+    fn auth_flows(&self) -> &dyn AuthFlowRepo;
+    /// Single-use tokens.
+    fn one_time_tokens(&self) -> &dyn OneTimeTokenRepo;
+    /// Invitations.
+    fn invitations(&self) -> &dyn InvitationRepo;
     /// Leases.
     fn leases(&self) -> &dyn Leases;
     /// Claimed rows.
