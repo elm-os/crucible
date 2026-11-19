@@ -11,7 +11,7 @@ use crucible_plan::{
     TraceSelector, Value, deletion_traces, expired_before, lifecycle_oldest,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
-use crucible_schema::{Column, Granularity, SpanCoreCol, route};
+use crucible_schema::{Column, Granularity, SpanPayloadCol, route};
 
 use crate::blocks::Rows;
 use crate::differential::{finished, insert, rows, same};
@@ -26,18 +26,19 @@ fn trace(n: u8) -> TraceId {
     TraceId::from_bytes([n; 16])
 }
 
-/// `count` spans of one trace of one user and one session, received at `received_at`.
+/// `count` spans of the trace `n`, of one session, received at `received_at`. Trace 1 is of the user `ada`,
+/// any other of `bob`.
 fn spans(
+    table: TableId,
     project: ProjectId,
     epoch: WalEpoch,
     seq: u64,
     n: u8,
-    user: &str,
     received_at: Timestamp,
     count: usize,
 ) -> Rows {
     plain_rows(
-        TableId::SpanCore,
+        table,
         project,
         epoch,
         seq,
@@ -47,7 +48,10 @@ fn spans(
     )
     .all("trace_id", Value::Bytes(trace(n).to_bytes().to_vec()))
     .all("trace_hash", Value::UInt(u64::from(trace(n).trace_hash())))
-    .all("user_id", Value::String(user.to_owned()))
+    .all(
+        "user_id",
+        Value::String(if n == 1 { "ada" } else { "bob" }.to_owned()),
+    )
     .all("session_id", Value::String(format!("s-{n}")))
     .all("received_at", Value::Time(received_at))
     .all("lsn", Value::UInt(seq))
@@ -81,10 +85,10 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     let scope = scope(project).map_err(|e| anyhow!("{e}"))?;
     let both: [&dyn TelemetryStore; 2] = [&ctx.store, &ctx.model];
     let table = TableId::SpanCore;
-    let partition = route(table, Granularity::Day, T0)?;
-    // The insert rows stop the merges of `span_core` to count parts, and a table whose merges are stopped
-    // runs no mutation either: a lightweight delete would wait until its deadline.
-    ctx.admin("SYSTEM START MERGES crucible.span_core").await?;
+    // The deletes run on `span_payload`: the insert rows stop the merges of `span_core` to count parts, and a
+    // table whose merges are stopped runs no mutation either.
+    let payload = TableId::SpanPayload;
+    let payload_partition = route(payload, Granularity::Day, T0)?;
     let requested_at = T0.saturating_add_micros(100 * SECOND);
     let (before, after) = (
         T0.saturating_add_micros(10 * SECOND),
@@ -92,14 +96,18 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     );
     // Trace 1 of ada: three spans before the request and two after it. Trace 2 of bob, before it. Another
     // project holds a trace with the same id and the same user.
-    let blocks = [
-        (1, spans(project, epoch, 1, 1, "ada", before, 3)),
-        (2, spans(project, epoch, 2, 1, "ada", after, 2)),
-        (3, spans(project, epoch, 3, 2, "bob", before, 2)),
-        (4, spans(other, epoch, 4, 1, "ada", before, 4)),
-    ];
-    for (seq, block) in blocks {
-        insert(ctx, block, ctx.token(epoch, seq, table, T0)?).await?;
+    let blocks = |table: TableId| {
+        [
+            (1, spans(table, project, epoch, 1, 1, before, 3)),
+            (2, spans(table, project, epoch, 2, 1, after, 2)),
+            (3, spans(table, project, epoch, 3, 2, before, 2)),
+            (4, spans(table, other, epoch, 4, 1, before, 4)),
+        ]
+    };
+    for target in [table, payload] {
+        for (seq, block) in blocks(target) {
+            insert(ctx, block, ctx.token(epoch, seq, target, T0)?).await?;
+        }
     }
     let mut reads = 0usize;
     let mut read = async |plan: QueryPlan, what: &str| -> Result<Vec<Row>> {
@@ -214,7 +222,6 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     // 13.4, typed reads: a plan that carries the pending-deletion set returns none of the selected rows.
     let every =
         TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE).map_err(|e| anyhow!("{e}"))?;
-    let count = |pred: Pred| lifecycle_oldest(scope, table, every, pred);
     let pending = |selector: HiddenSelector| Hidden {
         selector,
         requested_at,
@@ -284,14 +291,16 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
         .map(|n| Literal::from(synthetic(n)))
         .collect();
     page.push(Literal::from(trace(1)));
+    let trace_id = SpanPayloadCol::TraceId.column_ref();
     let selected = Pred::And(vec![
         Pred::Or(vec![
-            Pred::In(SpanCoreCol::TraceId.column_ref(), page),
-            Pred::eq(SpanCoreCol::UserId, "nobody"),
+            Pred::In(trace_id, page),
+            Pred::eq(SpanPayloadCol::UserId, "nobody"),
         ]),
-        Pred::cmp(SpanCoreCol::ReceivedAt, CmpOp::Lt, requested_at),
+        Pred::cmp(SpanPayloadCol::ReceivedAt, CmpOp::Lt, requested_at),
     ]);
-    let delete = DeletePlan::project(scope, table, partition, selected.clone())?;
+    let held = |scope, pred: Pred| lifecycle_oldest(scope, payload, every, pred);
+    let delete = DeletePlan::project(scope, payload, payload_partition, selected.clone())?;
     for store in both {
         let id = store
             .delete(delete.clone())
@@ -299,53 +308,45 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
             .context("the delete of a request")?;
         finished(ctx, store, &id).await?;
     }
-    // 13.3 step 7: the read that verifies it finds nothing, and the rows that arrived later are there.
-    let left = read(count(selected.clone())?, "the verification of the delete").await?;
+    // 13.3 step 7: the read that verifies it finds nothing. The rows of the trace that arrived later, the
+    // other trace and the other project are still there.
+    let left = read(
+        held(scope, selected.clone())?,
+        "the verification of the delete",
+    )
+    .await?;
     expect(left.is_empty(), || format!("the delete left {left:?}"))?;
-    let kept = read(
-        deletion_traces(
+    let other_scope = crucible_auth::test_support::scope(other).map_err(|e| anyhow!("{e}"))?;
+    for (whose, pred, what) in [
+        (
             scope,
-            TraceSelector::Traces(&traces),
-            Timestamp::MAX_EXCLUSIVE,
-            None,
-            10,
-        )?,
-        "the traces after the delete",
-    )
-    .await?;
-    same(
-        "the traces after the delete",
-        &ids(&kept),
-        &vec![trace(1).to_bytes().to_vec(), trace(2).to_bytes().to_vec()],
-    )?;
-    let theirs = read(
-        deletion_traces(
-            crucible_auth::test_support::scope(other).map_err(|e| anyhow!("{e}"))?,
-            ada,
-            requested_at,
-            None,
-            10,
-        )?,
-        "the other project after the delete",
-    )
-    .await?;
-    expect(theirs.len() == 1, || {
-        "the delete reached another project".to_owned()
-    })?;
+            Pred::In(trace_id, vec![Literal::from(trace(1))]),
+            "the later rows of the deleted trace",
+        ),
+        (
+            scope,
+            Pred::In(trace_id, vec![Literal::from(trace(2))]),
+            "the other trace",
+        ),
+        (other_scope, Pred::all(), "the other project"),
+    ] {
+        let kept = read(held(whose, pred)?, what).await?;
+        expect(!kept.is_empty(), || format!("the delete removed {what}"))?;
+    }
 
     // 13.2 step 6: the mask application removes the masked rows for good.
     for store in both {
-        let masked = store.masked_parts(table, partition).await?;
+        let masked = store.masked_parts(payload, payload_partition).await?;
         expect(masked >= 1, || "no part carries a delete mask".to_owned())?;
         let mask = store
-            .apply_deleted_mask(table, partition)
+            .apply_deleted_mask(payload, payload_partition)
             .await
             .context("the mask application")?;
         finished(ctx, store, &mask).await?;
-        let masked = store.masked_parts(table, partition).await?;
+        let masked = store.masked_parts(payload, payload_partition).await?;
         expect(masked == 0, || format!("{masked} parts still carry a mask"))?;
     }
-    let left = read(count(selected)?, "the verification after the mask").await?;
+    let left = read(held(scope, selected)?, "the verification after the mask").await?;
     expect(left.is_empty(), || format!("the mask left {left:?}"))?;
 
     // 13.2 step 3: a monthly partition that straddles the cut-off loses the rows before the cut-off day.
@@ -390,16 +391,16 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     // 13.2 step 2: a partition whose every project has expired is dropped.
     for store in both {
         store
-            .drop_partition(table, partition)
+            .drop_partition(payload, payload_partition)
             .await
             .context("the partition drop")?;
-        let projects = store.partition_projects(table, partition).await?;
+        let projects = store.partition_projects(payload, payload_partition).await?;
         expect(
             !projects.contains(&project) && !projects.contains(&other),
             || format!("the dropped partition still lists {projects:?}"),
         )?;
     }
-    let gone = read(count(Pred::all())?, "the spans after the drop").await?;
+    let gone = read(held(scope, Pred::all())?, "the payloads after the drop").await?;
     expect(gone.is_empty(), || format!("the drop left {gone:?}"))?;
 
     Ok(format!(
