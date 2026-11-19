@@ -47,7 +47,7 @@ print(crucible_sdk.export_stats())
 crucible_sdk.shutdown()
 ```
 
-It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=0)`.
+It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=0, queued_bytes=0)`.
 
 `init` starts the exporter. Spans go to `<endpoint>/v1/traces` as OTLP/HTTP protobuf with
 `Authorization: Bearer <secret_key>`; give the endpoint without the path.
@@ -62,11 +62,12 @@ It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=
 | `deploy_id` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
 | `sample_rate` | `1.0` | Share of traces exported, decided by trace id, so a trace is kept or dropped whole |
 | `queue_size` | `2048` | Spans waiting for export. A full queue drops new spans and counts them |
+| `queue_bytes` | `8 << 20` | Bytes of spans waiting for export or being exported, estimated from their names, attributes, events and status messages. Beyond it new spans are dropped and counted too |
 | `flush_interval` | `1.0` | Seconds between exports of a partial batch |
 
 Without a secret key, `init` logs a warning that says how to set one and runs anyway; Crucible then refuses the
-spans, and they count as failed. A `sample_rate` outside 0 to 1, a `queue_size` below 1 or a `flush_interval` that
-is not positive raises `ValueError`. Calling `init` again replaces the previous settings.
+spans, and they count as failed. A `sample_rate` outside 0 to 1, a `queue_size` or `queue_bytes` below 1 or a
+`flush_interval` that is not positive raises `ValueError`. Calling `init` again replaces the previous settings.
 
 **With an existing OpenTelemetry setup.** When the global tracer provider is an OpenTelemetry SDK
 `TracerProvider`, `init` adds one span processor to it and leaves its other processors and exporters alone.
@@ -304,8 +305,8 @@ server's handling of each call. `read_resource` is tagged but its `_meta` is lef
 
 Export runs on one background thread. `on_end` only appends a span to a bounded queue; the thread sends batches of
 up to 512 spans as OTLP/HTTP protobuf, as soon as a batch is full or every `flush_interval` seconds. When the queue
-holds `queue_size` spans, a span that ends is dropped and counted, and the first drop logs a warning that says which
-setting to raise. A collector that is down, refuses connections or never answers can delay only that thread: ending
+holds `queue_size` spans, or `queue_bytes` bytes of spans with the batch being exported, a span that ends is dropped
+and counted, and the first drop logs a warning that says which settings to raise. A collector that is down, refuses connections or never answers can delay only that thread: ending
 a span takes the same time either way, and `flush` and `shutdown` return when their timeout passes.
 
 Within its 10-second timeout per export, the OpenTelemetry exporter the SDK uses retries a refused export, such as
@@ -318,6 +319,7 @@ failed and is not sent again.
 |---|---|
 | `queued` | Spans waiting in the queue |
 | `dropped` | Spans dropped because the queue was full |
+| `queued_bytes` | Estimated bytes of the queued spans and of the batch being exported |
 | `exported` | Spans the collector accepted |
 | `failed` | Spans in export requests that failed |
 

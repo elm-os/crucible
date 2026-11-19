@@ -52,6 +52,7 @@
     { "key": "crucible.mcp.content.captured", "type": "bool", "contract": "9.10" },
     { "key": "crucible.mcp.content.sample_rate", "type": "number", "min": 0, "max": 1, "contract": "9.10" },
     { "key": "crucible.mcp.content.truncation", "type": "string", "enum": ["none", "cap_exceeded"], "contract": "9.10" },
+    { "key": "crucible.mcp.tools", "type": "string", "contract": "3.6" },
     { "key": "crucible.mcp.server.name", "type": "string", "contract": "9.1" },
     { "key": "crucible.mcp.server.version", "type": "string", "contract": "9.1" },
     { "key": "crucible.deploy.id", "type": "string", "contract": "9.7" },

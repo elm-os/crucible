@@ -61,6 +61,21 @@ def config(**overrides: object) -> _pipeline.Config:
     return _pipeline.Config(**values)  # type: ignore[arg-type]
 
 
+def test_the_byte_bound_counts_the_batch_in_flight_and_drops_beyond_it() -> None:
+    exporter = BlockingExporter()
+    size = _pipeline.span_bytes(span(0))
+    pipeline = _pipeline.Pipeline(config(queue_bytes=3 * size, batch_size=2), exporter)
+    for i in range(5):
+        pipeline.enqueue(span(i))
+        if i == 1:
+            assert exporter.entered.wait(5)
+    stats = pipeline.stats()
+    assert (stats.queued, stats.queued_bytes, stats.dropped) == (1, 3 * size, 2)
+    exporter.release.set()
+    assert pipeline.flush(5)
+    pipeline.shutdown(5)
+
+
 def test_a_full_queue_drops_and_counts_without_blocking(caplog: pytest.LogCaptureFixture) -> None:
     exporter = BlockingExporter()
     pipeline = _pipeline.Pipeline(config(), exporter)

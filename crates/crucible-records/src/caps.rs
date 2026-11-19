@@ -100,6 +100,8 @@ pub const MCP_TENANT_BYTES: usize = 256;
 pub const MCP_HANDLE_ID_BYTES: usize = 256;
 /// MCP `group_key`.
 pub const MCP_GROUP_KEY_BYTES: usize = 256;
+/// MCP `ip_prefix`.
+pub const MCP_IP_PREFIX_BYTES: usize = 64;
 /// MCP `user_agent`.
 pub const MCP_USER_AGENT_BYTES: usize = 512;
 /// Keys in MCP `content_blocks`.

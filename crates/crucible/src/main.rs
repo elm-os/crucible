@@ -10,6 +10,7 @@ mod keys;
 mod mcp;
 mod proxy;
 mod recent;
+mod salts;
 mod serve;
 mod store;
 

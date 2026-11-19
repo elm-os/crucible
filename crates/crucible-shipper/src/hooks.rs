@@ -1,9 +1,9 @@
-//! What the shipper takes from its surroundings besides `Env` and `Stores`: crash barriers (contract 5.9) and the
-//! recent-span index (contract 8.6).
+//! What the shipper takes from its surroundings besides `Env` and `Stores`: crash barriers (contract 5.9), the
+//! recent-span index (contract 8.6) and the project salts (contract 9.3).
 
 use std::fmt;
 
-use crucible_normalize::{Admission, NormalizedFrame};
+use crucible_normalize::{Admission, NormalizedFrame, ProjectSalt};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
 use futures::future::{self, BoxFuture};
@@ -75,6 +75,44 @@ pub trait RecentIndex: fmt::Debug + Send + Sync {
     /// The lowest LSN the index still references, which pins WAL segments against garbage collection
     /// (contract 4.7).
     fn floor(&self) -> Option<Lsn>;
+}
+
+/// Why a project's salt cannot be had now. The shipper holds the frame that needs it and asks again.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+#[error("the salt of the project is not available: {0}")]
+pub struct SaltUnavailable(pub String);
+
+/// Where the project salts come from (contracts 9.3 and 11.1): the control store's `project_salts`.
+///
+/// Stage B hashes a user subject with the salt of its project. A salt is random, immutable for the life of its
+/// project and sealed at rest; it is created on first use (insert if absent, then re-read, so that two nodes
+/// agree on one salt). The hook is a trait the shipper takes, as the barriers are, so that the shipper does not
+/// depend on the control plane.
+pub trait ProjectSalts: fmt::Debug + Send + Sync {
+    /// Whether a control store holds salts. Without one (ingest-only mode) the shipper never asks for a salt:
+    /// stage B drops the identity keys of every MCP operation, as `identity: none` in the sender would.
+    fn configured(&self) -> bool;
+
+    /// The salt of `project`, created when the project has none yet. An error means the store did not answer;
+    /// the frame that needs the salt waits and the shipper asks again, because a row hashed without its salt
+    /// could not be told from one of another attempt.
+    fn salt(&self, project: ProjectId) -> BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>>;
+}
+
+/// No control store: ingest-only mode.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoSalts;
+
+impl ProjectSalts for NoSalts {
+    fn configured(&self) -> bool {
+        false
+    }
+
+    fn salt(&self, _project: ProjectId) -> BoxFuture<'_, Result<ProjectSalt, SaltUnavailable>> {
+        Box::pin(future::ready(Err(SaltUnavailable(
+            "no control store is configured".to_owned(),
+        ))))
+    }
 }
 
 /// No recent-span index: nothing is fed and nothing is pinned.

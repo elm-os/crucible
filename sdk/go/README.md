@@ -58,6 +58,7 @@ and it replaces the calculated cost. `Span()` returns the OpenTelemetry span for
 | `Release` | `crucible.release` on every span; when empty Crucible uses the service version |
 | `DeployID` | Resource `crucible.deploy.id`; when it is empty, Crucible is designed to use the server version (contracts 9.7) |
 | `QueueSize` | Finished spans waiting for export; default 2048 |
+| `QueueBytes` | Bytes of spans waiting for export or being exported, estimated from their strings; default 8 MiB |
 | `FlushInterval` | How often the queue is exported; default one second |
 
 Each process also gets a random `service.instance.id`. Before `Init`, `Observe` and the MCP middleware record

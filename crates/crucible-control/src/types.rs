@@ -613,6 +613,29 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// The salt of a project, sealed (contracts 9.3, 11.1 and 11.2). It is written once and never changes. The
+/// associated data of the seal binds the project.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SealedProjectSalt {
+    /// The project.
+    pub project_id: ProjectId,
+    /// Which master key of the ring sealed it.
+    pub key_id: String,
+    /// The nonce.
+    pub nonce: Vec<u8>,
+    /// The ciphertext with its tag.
+    pub ciphertext: Vec<u8>,
+}
+
+impl fmt::Debug for SealedProjectSalt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SealedProjectSalt")
+            .field("project_id", &self.project_id)
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A sign-in provider (contract 11.1).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AuthProvider {

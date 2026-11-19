@@ -18,8 +18,8 @@ pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use repo::{
     ApiKeyRepo, AuthFlowRepo, AuthProviderRepo, Claims, ControlStore, ControlTx, CredentialRepo,
     ExportJobRepo, InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,
-    OneTimeTokenRepo, OrgRepo, ProjectRepo, Repos, SecretRepo, SessionRepo, SigningKeyRepo,
-    TRANSACTION_CAP, UserRepo, transaction,
+    OneTimeTokenRepo, OrgRepo, ProjectRepo, ProjectSaltRepo, Repos, SecretRepo, SessionRepo,
+    SigningKeyRepo, TRANSACTION_CAP, UserRepo, transaction,
 };
 pub use sqlws::{
     AppliedRetention, SavedParam, SavedQuery, SavedQueryRepo, SqlActor, SqlIdentity,
@@ -31,7 +31,7 @@ pub use types::{
     ExportCommit, ExportFormat, ExportJob, Invitation, JsonDoc, KeyChange, KeyChangeKind, KeyScope,
     KeySnapshot, Lease, LeaseName, LedgerEntry, MigrationKind, NewExport, NewJob, OauthAccount,
     OneTimeToken, Org, OrgMembership, OrgRole, OrgSettings, Project, ProjectAccess,
-    ProjectMembership, ProjectRole, ProviderKind, Queue, Secret, Session, SigningKey,
-    SigningKeyState, SigningPurpose, SignupMode, TokenHash, TokenKind, User, UserStatus,
-    duration_micros,
+    ProjectMembership, ProjectRole, ProviderKind, Queue, SealedProjectSalt, Secret, Session,
+    SigningKey, SigningKeyState, SigningPurpose, SignupMode, TokenHash, TokenKind, User,
+    UserStatus, duration_micros,
 };

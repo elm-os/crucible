@@ -1,13 +1,17 @@
 //! The rows a span yields (contract sections 3.9, 3.10 and 6.4): `span_core`, `span_payload`, `trace_heads`,
-//! `trace_stats` and the rollup partials `session_rollup`, `user_rollup` and `span_metrics`; and the row a fact
-//! yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a test
-//! checks every row against its table's column types.
+//! `trace_stats` and the rollup partials `session_rollup`, `user_rollup` and `span_metrics`; the rows an MCP
+//! operation yields (`mcp_ops`, `mcp_content` when content was captured, and the partials `mcp_tool_rollup` and,
+//! on the server side, `mcp_deploys`); the `mcp_tool_inventory` partial of a tool inventory entry; and the row a
+//! fact yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a
+//! test checks every row against its table's column types.
 
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_records::{
-    Fact, FactBody, HeadKind, Histogram, Ingestion, Level, McpSide, NO_HEAD_START, NanoUsd,
-    ObservationType, PartitionId, Pick, SessionRollupRow, SpanCore, SpanMetricsRow, SpanRecord,
-    StatusCode, TableId, Timestamp, TraceHead, TraceStatsRow, UserRollupRow, Uuid,
+    BucketCounts, CaptureSource, Fact, FactBody, HeadKind, Histogram, Ingestion, Level,
+    McpDeployRecord, McpOpRecord, McpSide, McpToolInventoryRecord, McpToolInventoryRow,
+    McpToolRollupRow, NO_HEAD_START, NanoUsd, ObservationType, PartitionId, Pick, SemconvHistogram,
+    SessionRollupRow, SpanCore, SpanMetricsRow, SpanRecord, StatusCode, TableId, Timestamp,
+    TraceHead, TraceStatsRow, UserRollupRow, Uuid,
 };
 use crucible_schema::{Granularity, OutOfRange, route};
 
@@ -345,6 +349,268 @@ fn histogram(h: &Histogram) -> Value {
     Value::Tuple(Box::new((Value::Array(buckets), Value::Array(counts))))
 }
 
+/// The fixed buckets of the MCP operation-duration metric as their `sumMap` cell.
+fn semconv_histogram(h: &SemconvHistogram) -> Value {
+    let (buckets, counts): (Vec<Value>, Vec<Value>) = h
+        .iter()
+        .map(|(bucket, count)| (Value::U8(bucket), Value::U64(count)))
+        .unzip();
+    Value::Tuple(Box::new((Value::Array(buckets), Value::Array(counts))))
+}
+
+/// 16 optional bytes of a `FixedString(16)` column: all zero when absent (contract 6.1).
+fn hash16(hash: Option<[u8; 16]>) -> Value {
+    Value::bytes(&hash.unwrap_or_default())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    out
+}
+
+/// The `mcp_ops` row of an MCP operation.
+pub fn mcp_ops_row(op: &McpOpRecord) -> Vec<Value> {
+    let nullable = |value: Option<Value>| value.unwrap_or(Value::Null);
+    let mut cells = vec![
+        uuid(op.project_id.uuid()),
+        en(op.side.value()),
+        en(op.capture_source.value()),
+        en(op.era.value()),
+        en(op.transport.value()),
+        en(op.target_kind.value()),
+        en(op.direction.value()),
+        en(op.result_type.value()),
+        en(op.cancel_source.value()),
+        en(op.status.value()),
+        en(op.error_class.value()),
+        en(op.error_subclass.value()),
+        en(op.identity_source.value()),
+        en(op.group_key_kind.value()),
+        en(op.content_truncation.value()),
+        Value::U32(op.start_minute()),
+        Value::U32(op.trace_hash()),
+        Value::time(op.start_time),
+        Value::bytes(op.span_id.as_bytes()),
+        Value::bytes(op.parent_span_id.as_bytes()),
+        Value::bytes(op.transport_link_span_id.as_bytes()),
+        Value::bytes(op.trace_id.as_bytes()),
+        Value::bytes(op.transport_link_trace_id.as_bytes()),
+        hash16(op.user_subject_hash),
+        hash16(op.mrtr_state_in),
+        hash16(op.mrtr_state_out),
+    ];
+    for text in [
+        &op.server_name,
+        &op.method,
+        &op.target_name,
+        &op.client_name,
+        &op.server_version,
+        &op.deploy_id,
+        &op.instance_id,
+        &op.protocol_version,
+        &op.jsonrpc_id,
+        &op.task_id,
+        &op.subscription_id,
+        &op.error_type,
+        &op.error_message,
+        &op.client_version,
+        &op.oauth_client_id,
+        &op.user_id,
+        &op.user_issuer,
+        &op.tenant,
+    ] {
+        cells.push(Value::str(text));
+    }
+    cells.push(Value::str(
+        &op.session_key.map(|key| hex(&key)).unwrap_or_default(),
+    ));
+    for text in [&op.handle_id, &op.group_key, &op.ip_prefix, &op.user_agent] {
+        cells.push(Value::str(text));
+    }
+    cells.extend([
+        Value::flag(op.is_notification),
+        Value::flag(op.is_batch),
+        Value::flag(op.timed_out),
+        Value::flag(op.caller_fault),
+        Value::flag(op.content_captured),
+        Value::U16(op.mrtr_round),
+        Value::U64(op.duration_us),
+        Value::U64(op.request_bytes),
+        Value::U64(op.response_bytes),
+        Value::U64(op.client_capabilities_hash),
+        nullable(op.progress_count.map(Value::U32)),
+        nullable(op.jsonrpc_code.map(Value::I32)),
+        nullable(op.http_status.map(Value::U16)),
+        Value::Array(
+            op.content_blocks
+                .iter()
+                .map(|(kind, _)| Value::str(kind))
+                .collect(),
+        ),
+        Value::Array(
+            op.content_blocks
+                .iter()
+                .map(|(_, count)| Value::U32(*count))
+                .collect(),
+        ),
+        Value::F32(op.content_sample_rate),
+        Value::U32(op.normalizer_version),
+    ]);
+    ingestion(&mut cells, &op.ingestion);
+    cells
+}
+
+/// The `mcp_content` row of an MCP operation whose content was captured.
+pub fn mcp_content_row(op: &McpOpRecord) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(op.project_id.uuid()),
+        en(op.side.value()),
+        Value::U32(op.start_minute()),
+        Value::U32(op.trace_hash()),
+        Value::bytes(op.span_id.as_bytes()),
+        Value::bytes(op.trace_id.as_bytes()),
+        Value::time(op.start_time),
+        Value::str(&op.user_id),
+        hash16(op.user_subject_hash),
+        Value::str(&op.target_name),
+        Value::bytes(&op.args),
+        Value::bytes(&op.result),
+        Value::U64(op.args_bytes),
+        Value::U64(op.result_bytes),
+        en(op.content_truncation.value()),
+    ];
+    ingestion(&mut cells, &op.ingestion);
+    cells
+}
+
+/// The partial one MCP operation contributes to the tool rollup of its minute (contract 3.10). The capture
+/// source is part of the key, so rows of different sources never merge (contract 9.5).
+pub fn mcp_tool_rollup(op: &McpOpRecord) -> McpToolRollupRow {
+    let mut dur_hist = Histogram::new();
+    dur_hist.record(op.duration_us);
+    let mut semconv_hist: SemconvHistogram = BucketCounts::new();
+    semconv_hist.record(op.duration_us);
+    McpToolRollupRow {
+        project_id: op.project_id,
+        side: op.side,
+        minute: Timestamp::from_micros(i64::from(op.start_minute()) * 1_000_000),
+        server_name: op.server_name.clone(),
+        deploy_id: op.deploy_id.clone(),
+        capture_source: op.capture_source,
+        era: op.era,
+        method: op.method.clone(),
+        target_name: op.target_name.clone(),
+        client_name: op.client_name.clone(),
+        error_class: op.error_class,
+        caller_fault: op.caller_fault,
+        count: 1,
+        request_bytes: op.request_bytes,
+        response_bytes: op.response_bytes,
+        dur_hist,
+        semconv_hist,
+        last_seen: op.start_time,
+    }
+}
+
+/// The `mcp_tool_rollup` data row of a partial.
+pub fn mcp_tool_rollup_row(row: &McpToolRollupRow) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        en(row.side.value()),
+        Value::U32(row.minute.start_minute()),
+        Value::str(&row.server_name),
+        Value::str(&row.deploy_id),
+        en(row.capture_source.value()),
+        en(row.era.value()),
+        Value::str(&row.method),
+        Value::str(&row.target_name),
+        Value::str(&row.client_name),
+        en(row.error_class.value()),
+        Value::flag(row.caller_fault),
+    ];
+    no_marker(&mut cells);
+    cells.extend([
+        Value::U64(row.count),
+        Value::U64(row.request_bytes),
+        Value::U64(row.response_bytes),
+        histogram(&row.dur_hist),
+        semconv_histogram(&row.semconv_hist),
+        Value::time(row.last_seen),
+    ]);
+    cells
+}
+
+/// The deploy a server-side MCP operation was seen on (contract 3.7), or `None` for a client-side operation.
+/// The rows of one batch with one key merge when their block is built, so each distinct deploy is one row of
+/// the batch.
+pub fn mcp_deploy(op: &McpOpRecord) -> Option<McpDeployRecord> {
+    (op.side == McpSide::Server).then(|| McpDeployRecord {
+        project_id: op.project_id,
+        server_name: op.server_name.clone(),
+        deploy_id: op.deploy_id.clone(),
+        server_version: op.server_version.clone(),
+        capture_source: op.capture_source,
+        first_seen: op.start_time,
+        last_seen: op.start_time,
+    })
+}
+
+/// The `mcp_deploys` data row of a deploy record.
+pub fn mcp_deploys_row(row: &McpDeployRecord) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        Value::str(&row.server_name),
+        Value::str(&row.deploy_id),
+        Value::str(&row.server_version),
+        en(row.capture_source.value()),
+    ];
+    no_marker(&mut cells);
+    cells.extend([Value::time(row.first_seen), Value::time(row.last_seen)]);
+    cells
+}
+
+/// The partial one tool inventory record contributes to the inventory (contract 3.10).
+pub fn mcp_tool_inventory(record: &McpToolInventoryRecord) -> McpToolInventoryRow {
+    McpToolInventoryRow {
+        project_id: record.project_id,
+        server_name: record.server_name.clone(),
+        deploy_id: record.deploy_id.clone(),
+        tool_name: record.tool_name.clone(),
+        schema_hash: record.schema_hash,
+        first_seen: record.first_seen,
+        last_seen: record.last_seen,
+        capture_sources: vec![record.capture_source],
+    }
+}
+
+/// The `mcp_tool_inventory` data row of a partial.
+pub fn mcp_tool_inventory_row(row: &McpToolInventoryRow) -> Vec<Value> {
+    let mut cells = vec![
+        uuid(row.project_id.uuid()),
+        Value::str(&row.server_name),
+        Value::str(&row.deploy_id),
+        Value::str(&row.tool_name),
+        Value::U64(row.schema_hash),
+    ];
+    no_marker(&mut cells);
+    cells.extend([
+        Value::time(row.first_seen),
+        Value::time(row.last_seen),
+        Value::Array(
+            row.capture_sources
+                .iter()
+                .map(|source| Value::U8(source.value()))
+                .collect(),
+        ),
+    ]);
+    cells
+}
+
 /// The partial one span contributes to its session's day (contract 3.10), or `None` for a span without a
 /// session. `trace_count` counts root spans only.
 pub fn session_rollup(span: &SpanRecord) -> Option<SessionRollupRow> {
@@ -551,25 +817,38 @@ pub struct RoutedRow {
 /// Every row the spans of one frame yield, after stage B: one `span_core` and one `span_payload` row per span, a
 /// `trace_heads` row per root span and per provisional head, one `trace_stats` and one `span_metrics` partial
 /// per span, and a `session_rollup` and a `user_rollup` partial per span that names a session or a user. Every
-/// row of a span routes by the span's `start_time`, read verbatim (contract 5.2). The MCP tables join in
-/// milestone 3.
+/// row of a span routes by the span's `start_time`, read verbatim (contract 5.2).
+///
+/// Then the rows of the frame's MCP operations: one `mcp_ops` row and one `mcp_tool_rollup` partial per
+/// operation, an `mcp_content` row when content was captured and an `mcp_deploys` partial for a server-side
+/// operation, routed by the operation's `start_time`, which is its span's; and one `mcp_tool_inventory` partial
+/// per tool inventory entry, routed by the reporting span's `start_time`.
 pub fn derive(
     frame: &NormalizedFrame,
     admission: &Admission,
     granularity: Granularity,
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
-    derive_rows(frame, admission, granularity, false)
+    derive_rows(frame, admission, granularity, Defects::default())
 }
 
-/// [`derive`], with the defect of the mutant that counts the usage of aggregate spans when `count_aggregates` is
-/// set: the sums then take every span, while `span_core` keeps the flag.
+/// The seeded defects of [`derive_rows`]; none outside the simulation suite.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Defects {
+    /// Count the usage of aggregate spans: the sums then take every span, while `span_core` keeps the flag.
+    pub(crate) count_aggregates: bool,
+    /// Give every `mcp_tool_rollup` partial one capture source, so that rows of different sources are summed.
+    pub(crate) sum_capture_sources: bool,
+}
+
+/// [`derive`], with the seeded defects of `defects`.
 pub(crate) fn derive_rows(
     frame: &NormalizedFrame,
     admission: &Admission,
     granularity: Granularity,
-    count_aggregates: bool,
+    defects: Defects,
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
-    let mut out = Vec::with_capacity(frame.spans.len() * 7);
+    let count_aggregates = defects.count_aggregates;
+    let mut out = Vec::with_capacity(frame.spans.len() * 7 + frame.mcp_ops.len() * 4);
     for (index, span) in frame.spans.iter().enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
         let start = span.core.start_time;
@@ -617,6 +896,48 @@ pub(crate) fn derive_rows(
             push(TableId::UserRollup, user_rollup_row(&row))?;
         }
         push(TableId::SpanMetrics, span_metrics_row(&span_metrics(span)))?;
+    }
+    let mut push = |table: TableId, at: Timestamp, ordinal: u32, cells: Vec<Value>| {
+        out.push(RoutedRow {
+            table,
+            partition: route(table, granularity, at)?,
+            row: Row {
+                cells,
+                lsn: frame.lsn,
+                ordinal,
+            },
+        });
+        Ok::<(), OutOfRange>(())
+    };
+    for op in &frame.mcp_ops {
+        let (record, at) = (&op.record, op.record.start_time);
+        push(TableId::McpOps, at, op.span, mcp_ops_row(record))?;
+        if record.content_captured {
+            push(TableId::McpContent, at, op.span, mcp_content_row(record))?;
+        }
+        let mut rollup = mcp_tool_rollup(record);
+        if defects.sum_capture_sources {
+            rollup.capture_source = CaptureSource::Sdk;
+        }
+        push(
+            TableId::McpToolRollup,
+            at,
+            op.span,
+            mcp_tool_rollup_row(&rollup),
+        )?;
+        if let Some(deploy) = mcp_deploy(record) {
+            push(TableId::McpDeploys, at, op.span, mcp_deploys_row(&deploy))?;
+        }
+    }
+    for (index, entry) in frame.inventory.iter().enumerate() {
+        let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
+        let row = mcp_tool_inventory(&entry.record);
+        push(
+            TableId::McpToolInventory,
+            entry.record.first_seen,
+            ordinal,
+            mcp_tool_inventory_row(&row),
+        )?;
     }
     Ok(out)
 }

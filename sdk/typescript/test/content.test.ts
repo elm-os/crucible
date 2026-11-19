@@ -2,10 +2,11 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { captured, decide, glob } from "../src/mcp/capture.ts";
+import { captured, decide, glob, jsonPrefix, setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
+import { patternFacts } from "../src/pattern.ts";
 import packaged from "../src/scrub-rules.json" with { type: "json" };
-import { cutUtf8, scrub, scrubWithRule } from "../src/scrub.ts";
+import { cutUtf8, scrub, scrubPlain, scrubWithRule, setMatcherHook } from "../src/scrub.ts";
 
 const shared = JSON.parse(
   readFileSync(new URL("../../../conformance/scrub-rules.json", import.meta.url), "utf8"),
@@ -43,6 +44,246 @@ describe("scrub rules", () => {
     }
     const perCallMs = (performance.now() - started) / 20;
     expect(perCallMs).toBeLessThan(20);
+  });
+});
+
+const run = (unit: string, length: number): string =>
+  unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+
+/** Inputs that make a backtracking matcher slow on the shared rules, about 16 KiB each. */
+const ADVERSARIAL: [string, string][] = [
+  ["letters", "a".repeat(16_384)],
+  ["digits", "1".repeat(16_384)],
+  ["digit pairs", "1 ".repeat(8_192)],
+  ["at signs", "a@".repeat(8_192)],
+  ["dots", "a.".repeat(8_192)],
+  ["one at sign", `${"a".repeat(8_000)}@${"a".repeat(8_000)}`],
+  ["hex", run("0123456789abcdef", 16_384)],
+  ["alphanumeric", run("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 16_384)],
+  [
+    "base64",
+    Buffer.from(Uint8Array.from({ length: 12_288 }, (_, i) => i % 256)).toString("base64"),
+  ],
+  ["pem header", `-----BEGIN A-----${"A".repeat(16_000)}`],
+  ["jwt prefixes", "eyJ".repeat(5_461)],
+  ["jwt chain", `${"eyJ".repeat(5_000)}${".eyJ".repeat(400)}`],
+  ["bearer", "bearer ".repeat(2_340)],
+  ["colons", "1:".repeat(8_192)],
+  ["plus ones", "+1".repeat(8_192)],
+  ["phone groups", "(415) ".repeat(2_730)],
+  ["secret key prefixes", "csk_".repeat(4_096)],
+];
+
+/** A seeded xorshift generator of numbers in [0, 1). */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 2 ** 32;
+  };
+}
+
+/** Pieces of matches, near misses and separators that the generated text is built from. */
+const FRAGMENTS = [
+  " ",
+  "a",
+  "0",
+  "7",
+  "@",
+  ".",
+  ":",
+  "-",
+  "_",
+  "+",
+  "(",
+  ")",
+  "/",
+  "=",
+  "%",
+  "\n",
+  "é",
+  "😀",
+  "eyJ",
+  "csk_",
+  "bearer ",
+  "Bearer\t",
+  "-----BEGIN ",
+  "-----END ",
+  "-----",
+  "KEY",
+  "::",
+  "@@",
+  "a@b",
+  "a@b.c",
+  "x@y.zz",
+  "ada.lovelace@example.com",
+  "ops+alerts@mail.example.co.uk",
+  "+1 415 555 0134",
+  "(415) 555-0134",
+  "4111 1111 1111 1111",
+  "4111-1111-1111-1112",
+  "378282246310005",
+  "Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo",
+  "203.0.113.42",
+  "2001:db8::8a2e:370:7334",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl",
+  "eyJa.b",
+  "eyJeyJ.x.",
+  "eyJ.",
+  "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+];
+const RUN_UNITS = ["a", "Z", "9", "f", ".", "-", "_", "+", "%", "ab@", "eyJ", "1 "];
+
+function generated(random: () => number): string {
+  let text = "";
+  const parts = Math.floor(random() * 14);
+  for (let i = 0; i < parts; i += 1) {
+    text +=
+      random() < 0.7
+        ? (FRAGMENTS[Math.floor(random() * FRAGMENTS.length)] ?? "")
+        : (RUN_UNITS[Math.floor(random() * RUN_UNITS.length)] ?? "").repeat(
+            1 + Math.floor(random() * 40),
+          );
+  }
+  return text;
+}
+
+/** Code units JSON escapes, and characters it keeps, surrogate pairs and lone surrogates among them. */
+const CHARS = [
+  "a",
+  "é",
+  '"',
+  "\\",
+  "/",
+  "\n",
+  "\t",
+  "\u0000",
+  "\u001f",
+  "\u007f",
+  " ",
+  "😀",
+  "\ud800",
+  "\udc00",
+];
+
+function generatedText(random: () => number, longest: number): string {
+  let text = "";
+  const length = Math.floor(random() * longest);
+  for (let i = 0; i < length; i += 1) {
+    text += CHARS[Math.floor(random() * CHARS.length)] ?? "";
+  }
+  return text;
+}
+
+/** A value of every kind `JSON.stringify` treats differently, nested a few levels. */
+function generatedValue(random: () => number, depth: number): unknown {
+  const kind = Math.floor(random() * (depth > 3 ? 10 : 13));
+  switch (kind) {
+    case 0:
+      return null;
+    case 1:
+      return random() < 0.5;
+    case 2:
+      return [0, -0, 1.5, -2e21, 1e-7, Number.NaN, Number.POSITIVE_INFINITY, 42][
+        Math.floor(random() * 8)
+      ];
+    case 3:
+      return generatedText(random, 12);
+    case 4:
+      return generatedText(random, 300);
+    case 5:
+      return undefined;
+    case 6:
+      return random() < 0.5 ? () => 1 : Symbol("s");
+    case 7:
+      return new Date(Date.UTC(2026, 10, 18, 9, 30));
+    case 8:
+      return { toJSON: (key: string) => `key:${key}` };
+    case 9:
+      return [new String('bo"x'), new Number(3), new Boolean(false)][Math.floor(random() * 3)];
+    case 10:
+      return Array.from({ length: Math.floor(random() * 6) }, () =>
+        generatedValue(random, depth + 1),
+      );
+    default:
+      return Object.fromEntries(
+        Array.from({ length: Math.floor(random() * 6) }, () => [
+          random() < 0.2 ? String(Math.floor(random() * 3)) : generatedText(random, 6),
+          generatedValue(random, depth + 1),
+        ]),
+      );
+  }
+}
+
+/** Matcher steps of scrubbing `text` with the whole rule list. */
+function matcherSteps(text: string): number {
+  let steps = 0;
+  setMatcherHook((_, s) => {
+    steps += s;
+  });
+  try {
+    scrub(text);
+  } finally {
+    setMatcherHook(undefined);
+  }
+  return steps;
+}
+
+describe("scrubbing work", () => {
+  test("the rules' patterns yield the facts the guards use", () => {
+    const facts = Object.fromEntries(
+      shared.rules.map((rule) => {
+        const { minLength, literals, lead } = patternFacts(rule.pattern);
+        return [rule.name, { minLength, literals, lead: lead && [lead.prefix, lead.anchor] }];
+      }),
+    );
+    expect(facts).toEqual({
+      pem: { minLength: 32, literals: ["-----BEGIN "], lead: undefined },
+      jwt: { minLength: 7, literals: ["eyJ"], lead: ["eyJ", "."] },
+      bearer: { minLength: 23, literals: undefined, lead: undefined },
+      secret_key: { minLength: 12, literals: ["csk_"], lead: undefined },
+      card: { minLength: 14, literals: undefined, lead: undefined },
+      email: { minLength: 6, literals: ["@"], lead: ["", "@"] },
+      ipv6: { minLength: 6, literals: [":", ":"], lead: undefined },
+      ipv4: { minLength: 7, literals: ["."], lead: undefined },
+      phone: { minLength: 8, literals: undefined, lead: undefined },
+    });
+  });
+
+  test.each(ADVERSARIAL)("%s: matcher steps stay linear in the length", (_, text) => {
+    expect(matcherSteps(text)).toBeLessThanOrEqual(2 * shared.rules.length * text.length);
+  });
+
+  test("guarded application equals plain application over generated text", () => {
+    const random = seeded(20_261_118);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 3_000; i += 1) {
+      const text = generated(random);
+      for (const rule of shared.rules) {
+        if (scrubWithRule(rule.name, text) !== scrubPlain(text, rule.name)) {
+          mismatches.push(`${rule.name}: ${JSON.stringify(text)}`);
+        }
+      }
+      if (scrub(text) !== scrubPlain(text)) {
+        mismatches.push(`all rules: ${JSON.stringify(text)}`);
+      }
+      if (matcherSteps(text) > 2 * shared.rules.length * Math.max(text.length, 1)) {
+        mismatches.push(`steps: ${JSON.stringify(text)}`);
+      }
+    }
+    expect(mismatches.slice(0, 5)).toEqual([]);
+  });
+
+  test("a long run scrubs within a generous ceiling", () => {
+    const text = `${"a".repeat(65_536)}@${"a".repeat(65_536)}`;
+    const started = performance.now();
+    scrub(text);
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 });
 
@@ -109,6 +350,58 @@ describe("capture", () => {
     expect(result?.cut).toBe(true);
     expect(result?.text).not.toContain("eyJ");
     expect(result?.text).toBe(`{"note":"${padding} `);
+  });
+
+  test("a large value is serialized no further than the cap and the scrub margin", () => {
+    let serialized = 0;
+    setCaptureWorkHook((s) => {
+      serialized = Math.max(serialized, s);
+    });
+    try {
+      for (const value of [
+        { text: "x".repeat(5 * 1024 * 1024) },
+        ["a".repeat(70_000)],
+        Array.from({ length: 100_000 }, (_, i) => i),
+        { nested: { deep: [{ s: "é\n😀".repeat(100_000) }] } },
+      ]) {
+        captured(value, 16_384);
+      }
+    } finally {
+      setCaptureWorkHook(undefined);
+    }
+    expect(serialized).toBeLessThanOrEqual(16_384 + 1_024);
+  });
+
+  test("the bounded writer equals full serialization followed by the cut", () => {
+    const random = seeded(18_112_026);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 3_000; i += 1) {
+      const value = generatedValue(random, 0);
+      let full: string | undefined;
+      let threw = false;
+      try {
+        full = JSON.stringify(value);
+      } catch {
+        threw = true;
+      }
+      const limits = [0, 1, Math.floor(random() * 64), Math.floor(random() * 600), 1_000_000];
+      for (const limit of threw ? [1_000_000] : limits) {
+        const got = jsonPrefix(value, limit);
+        const want =
+          full === undefined
+            ? undefined
+            : { text: full.slice(0, limit), more: full.length > limit };
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          mismatches.push(`${limit}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
+        }
+      }
+    }
+    expect(mismatches.slice(0, 3)).toEqual([]);
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    expect(jsonPrefix(cyclic, 1_000)).toBeUndefined();
+    expect(jsonPrefix({ big: 1n }, 1_000)).toBeUndefined();
+    expect(jsonPrefix(undefined, 1_000)).toBeUndefined();
   });
 
   test("a value that does not serialize is not captured", () => {

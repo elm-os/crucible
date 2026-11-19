@@ -97,11 +97,10 @@ fn generated_requests_reach_every_mapped_field_and_type_rule() {
                 && r.core.total_cost_nusd.nanos() > 0),
         "no record has a calculated cost"
     );
-    // The MCP rule's key keeps its value in the residual, so its yielding value is visible there; which rule wins
-    // when several apply is `mapping.rs`'s concern.
+    // The MCP rule's key makes the span an MCP operation; which rule wins when several apply is `mapping.rs`'s
+    // concern.
     assert!(records.iter().any(|r| {
-        let residual = core::str::from_utf8(&r.payload.attributes).unwrap_or_default();
         r.core.observation_type == ObservationType::Tool
-            && residual.contains(r#""mcp.method.name":"tools/call""#)
+            && r.core.mcp_side != crucible_records::McpSide::None
     }));
 }
