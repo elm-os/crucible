@@ -294,7 +294,10 @@ mod tests {
     };
 
     /// Runs the observations at one tick per minute and returns the state and notice after each.
-    fn run(params: &Params, observations: &[Observation]) -> Vec<(Option<AlertStatus>, Option<Notice>)> {
+    fn run(
+        params: &Params,
+        observations: &[Observation],
+    ) -> Vec<(Option<AlertStatus>, Option<Notice>)> {
         let mut state = None;
         observations
             .iter()
@@ -311,7 +314,10 @@ mod tests {
 
     #[test]
     fn a_breach_is_pending_for_the_for_duration_then_fires_once() {
-        let trace = run(&PARAMS, &[CLEAN, BREACH, BREACH, BREACH, BREACH, CLEAN, CLEAN]);
+        let trace = run(
+            &PARAMS,
+            &[CLEAN, BREACH, BREACH, BREACH, BREACH, CLEAN, CLEAN],
+        );
         assert_eq!(
             trace,
             vec![
@@ -424,7 +430,11 @@ mod tests {
             ..PARAMS
         };
         let firing = step(&keep, None, BREACH, at(0), None).next;
-        assert!(step(&keep, firing, Observation::NoRows, at(48 * 60), None).next.is_some());
+        assert!(
+            step(&keep, firing, Observation::NoRows, at(48 * 60), None)
+                .next
+                .is_some()
+        );
     }
 
     #[test]
@@ -445,7 +455,10 @@ mod tests {
 
     fn observation() -> impl Strategy<Value = Observation> {
         prop_oneof![
-            (0i64..20).prop_map(|value| Observation::Value { value, breach: value > 10 }),
+            (0i64..20).prop_map(|value| Observation::Value {
+                value,
+                breach: value > 10
+            }),
             Just(Observation::NoRows),
         ]
     }
@@ -461,12 +474,14 @@ mod tests {
             ],
             prop_oneof![Just(0u32), Just(120), Just(300)],
         )
-            .prop_map(|(for_secs, renotify_secs, no_data, no_data_for_secs)| Params {
-                for_secs,
-                renotify_secs,
-                no_data,
-                no_data_for_secs,
-            })
+            .prop_map(
+                |(for_secs, renotify_secs, no_data, no_data_for_secs)| Params {
+                    for_secs,
+                    renotify_secs,
+                    no_data,
+                    no_data_for_secs,
+                },
+            )
     }
 
     proptest! {

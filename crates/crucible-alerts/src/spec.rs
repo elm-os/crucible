@@ -192,7 +192,8 @@ impl RuleSpec {
             _ => issues.push(issue("dimensions", "at most two dimensions are allowed")),
         }
         let (shortest, longest) = WINDOW_SECS;
-        if !(shortest..=longest).contains(&self.window_secs) || self.window_secs % 60 != 0 {
+        if !(shortest..=longest).contains(&self.window_secs) || !self.window_secs.is_multiple_of(60)
+        {
             issues.push(issue(
                 "window",
                 "the window is a whole number of minutes from 1 minute to 24 hours",
@@ -276,7 +277,12 @@ impl RuleSpec {
         let value: Value = serde_json::from_str(&doc.to_text())
             .map_err(|error| TxError::Invalid(format!("alert rule: {error}")))?;
         let bad = |member: &str| TxError::Invalid(format!("alert rule: the stored `{member}`"));
-        let text = |member: &str| value.get(member).and_then(Value::as_str).ok_or_else(|| bad(member));
+        let text = |member: &str| {
+            value
+                .get(member)
+                .and_then(Value::as_str)
+                .ok_or_else(|| bad(member))
+        };
         let seconds = |member: &str| {
             value
                 .get(member)
@@ -337,7 +343,9 @@ pub fn display_value(measure: MeasureId, value: i64) -> String {
             format!("{sign}${padded}")
         }
         "us" => match value {
-            v if v.abs() >= 1_000_000 => format!("{}.{:02} s", v / 1_000_000, (v.abs() % 1_000_000) / 10_000),
+            v if v.abs() >= 1_000_000 => {
+                format!("{}.{:02} s", v / 1_000_000, (v.abs() % 1_000_000) / 10_000)
+            }
             v if v.abs() >= 1_000 => format!("{}.{} ms", v / 1_000, (v.abs() % 1_000) / 100),
             v => format!("{v} µs"),
         },
@@ -365,7 +373,10 @@ pub(crate) mod tests {
             no_data: NoDataPolicy::NoData,
             no_data_for_secs: NO_DATA_FOR_DEFAULT_SECS,
             renotify_secs: RENOTIFY_DEFAULT_SECS,
-            channels: vec![ChannelId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000, 7))],
+            channels: vec![ChannelId::from_uuid(Uuid::from_v7_parts(
+                1_800_000_000_000,
+                7,
+            ))],
         }
     }
 
@@ -382,17 +393,24 @@ pub(crate) mod tests {
         let fields = |change: fn(&mut RuleSpec)| {
             let mut spec = spec();
             change(&mut spec);
-            spec.issues().into_iter().map(|i| i.field).collect::<Vec<_>>()
+            spec.issues()
+                .into_iter()
+                .map(|i| i.field)
+                .collect::<Vec<_>>()
         };
         assert_eq!(fields(|s| s.source = Source::Traces), ["source", "measure"]);
-        assert_eq!(fields(|s| s.aggregation = Aggregation::P95), ["aggregation"]);
+        assert_eq!(
+            fields(|s| s.aggregation = Aggregation::P95),
+            ["aggregation"]
+        );
         assert_eq!(fields(|s| s.measure = MeasureId::Traces), ["measure"]);
         assert_eq!(
             fields(|s| s.dimensions = vec![DimensionId::Level, DimensionId::Level]),
             ["dimensions"]
         );
         assert_eq!(
-            fields(|s| s.dimensions = vec![DimensionId::Level, DimensionId::Model, DimensionId::Release]),
+            fields(|s| s.dimensions =
+                vec![DimensionId::Level, DimensionId::Model, DimensionId::Release]),
             ["dimensions"]
         );
         assert_eq!(fields(|s| s.window_secs = 59), ["window"]);
@@ -403,11 +421,13 @@ pub(crate) mod tests {
         assert_eq!(fields(|s| s.renotify_secs = 299), ["renotify"]);
         assert_eq!(fields(|s| s.no_data_for_secs = 86_401), ["no_data_for"]);
         assert_eq!(fields(|s| s.channels.push(s.channels[0])), ["channels"]);
-        assert!(fields(|s| {
-            s.measure = MeasureId::Duration;
-            s.aggregation = Aggregation::P95;
-        })
-        .is_empty());
+        assert!(
+            fields(|s| {
+                s.measure = MeasureId::Duration;
+                s.aggregation = Aggregation::P95;
+            })
+            .is_empty()
+        );
     }
 
     #[test]

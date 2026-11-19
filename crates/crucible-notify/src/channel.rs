@@ -93,7 +93,10 @@ fn invalid(field: &'static str, message: impl Into<String>) -> TargetError {
 /// Checks a channel's name.
 pub fn check_name(name: &str) -> Result<String, TargetError> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > NAME_MAX_CHARS || name.chars().any(char::is_control) {
+    if name.is_empty()
+        || name.chars().count() > NAME_MAX_CHARS
+        || name.chars().any(char::is_control)
+    {
         return Err(invalid("name", "a name of 1 to 80 characters is required"));
     }
     Ok(name.to_owned())
@@ -101,7 +104,11 @@ pub fn check_name(name: &str) -> Result<String, TargetError> {
 
 /// Checks a target and returns it in its stored form: URLs trimmed, addresses case-folded and distinct.
 /// `smtp` says whether the deployment can send mail.
-pub fn check_target(target: Target, policy: &EgressPolicy, smtp: bool) -> Result<Target, TargetError> {
+pub fn check_target(
+    target: Target,
+    policy: &EgressPolicy,
+    smtp: bool,
+) -> Result<Target, TargetError> {
     let url = |url: String| {
         let url = url.trim().to_owned();
         if url.len() > URL_MAX_BYTES {
@@ -130,7 +137,10 @@ pub fn check_target(target: Target, policy: &EgressPolicy, smtp: bool) -> Result
             let mut addresses = Vec::new();
             for address in &to {
                 let email = Email::new(address.trim()).ok_or_else(|| {
-                    invalid("to", format!("`{}` is not an email address", address.trim()))
+                    invalid(
+                        "to",
+                        format!("`{}` is not an email address", address.trim()),
+                    )
                 })?;
                 if !addresses.contains(&email.as_str().to_owned()) {
                     addresses.push(email.as_str().to_owned());
@@ -224,7 +234,10 @@ mod tests {
         .unwrap();
         let (config, secret) = stored(&ok);
         assert!(!config.to_text().contains("secretpart"));
-        assert_eq!(secret.as_deref(), Some("https://hooks.slack.com/services/T0/B0/secretpart"));
+        assert_eq!(
+            secret.as_deref(),
+            Some("https://hooks.slack.com/services/T0/B0/secretpart")
+        );
         assert_eq!(
             redact_slack(secret.as_deref().unwrap()),
             "https://hooks.slack.com/services/...part"
@@ -235,8 +248,18 @@ mod tests {
             "https://evil.test/hooks.slack.com",
             "https://hooks.slack.com:8443/services/x",
         ] {
-            let error = check_target(Target::Slack { url: url.to_owned() }, &open(), false).unwrap_err();
-            assert!(matches!(error, TargetError::Invalid { field: "url", .. }), "{url}");
+            let error = check_target(
+                Target::Slack {
+                    url: url.to_owned(),
+                },
+                &open(),
+                false,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, TargetError::Invalid { field: "url", .. }),
+                "{url}"
+            );
         }
         assert!(!format!("{ok:?}").contains("secretpart"));
     }
@@ -245,22 +268,34 @@ mod tests {
     fn a_webhook_passes_the_egress_policy_or_says_why_not() {
         assert!(
             check_target(
-                Target::Webhook { url: "http://10.0.0.8:9000/crucible".to_owned() },
+                Target::Webhook {
+                    url: "http://10.0.0.8:9000/crucible".to_owned()
+                },
                 &open(),
                 false
             )
             .is_ok()
         );
         let refused = check_target(
-            Target::Webhook { url: "http://169.254.169.254/latest".to_owned() },
+            Target::Webhook {
+                url: "http://169.254.169.254/latest".to_owned(),
+            },
             &open(),
             false,
         )
         .unwrap_err();
-        assert!(matches!(refused, TargetError::Refused(Refusal::Metadata(_))));
-        let strict = EgressPolicy { mode: Mode::Strict, ..EgressPolicy::default() };
+        assert!(matches!(
+            refused,
+            TargetError::Refused(Refusal::Metadata(_))
+        ));
+        let strict = EgressPolicy {
+            mode: Mode::Strict,
+            ..EgressPolicy::default()
+        };
         let refused = check_target(
-            Target::Webhook { url: "https://10.0.0.8/crucible".to_owned() },
+            Target::Webhook {
+                url: "https://10.0.0.8/crucible".to_owned(),
+            },
             &strict,
             false,
         )
@@ -277,7 +312,9 @@ mod tests {
         );
         assert_eq!(
             check_target(Target::Email { to }, &open(), true),
-            Ok(Target::Email { to: vec!["ada@example.com".to_owned()] })
+            Ok(Target::Email {
+                to: vec!["ada@example.com".to_owned()]
+            })
         );
         for to in [vec![], vec!["nobody".to_owned()]] {
             assert!(check_target(Target::Email { to }, &open(), true).is_err());

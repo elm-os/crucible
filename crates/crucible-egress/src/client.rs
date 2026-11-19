@@ -153,7 +153,10 @@ impl Egress {
         };
         match self
             .env
-            .timeout(RESPONSE_TIMEOUT, self.exchange(&target, stream, headers, body))
+            .timeout(
+                RESPONSE_TIMEOUT,
+                self.exchange(&target, stream, headers, body),
+            )
             .await
         {
             Ok(reply) => reply,
@@ -204,9 +207,7 @@ impl Egress {
             let value = HeaderValue::from_str(value).map_err(|e| protocol(&e))?;
             request = request.header(name, value);
         }
-        let request = request
-            .body(Full::new(body))
-            .map_err(|e| protocol(&e))?;
+        let request = request.body(Full::new(body)).map_err(|e| protocol(&e))?;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(stream))
                 .await

@@ -5,7 +5,7 @@ use hmac::{Hmac, KeyInit as _, Mac as _};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
 
-use crate::notification::{Notification, NoticeKind};
+use crate::notification::{NoticeKind, Notification};
 
 /// The header that carries a webhook's signature.
 pub const SIGNATURE_HEADER: &str = "x-crucible-signature";
@@ -159,7 +159,11 @@ pub fn verify_signature(secret: &[u8], header: &str, body: &str) -> Option<i64> 
         mac.update(body.as_bytes());
         let bytes: Vec<u8> = (0..given.len())
             .step_by(2)
-            .map(|i| given.get(i..i + 2).and_then(|pair| u8::from_str_radix(pair, 16).ok()))
+            .map(|i| {
+                given
+                    .get(i..i + 2)
+                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+            })
             .collect::<Option<_>>()?;
         mac.verify_slice(&bytes).ok().map(|()| t)
     })
@@ -187,11 +191,15 @@ mod tests {
             summary(&notification(NoticeKind::NoData)),
             "error_count (sum) has had no data over the last 5 min."
         );
-        let slack: Value = serde_json::from_str(&slack_body(&firing, Some("https://crucible.test/"))).unwrap();
+        let slack: Value =
+            serde_json::from_str(&slack_body(&firing, Some("https://crucible.test/"))).unwrap();
         let text = slack["text"].as_str().unwrap();
         assert!(text.starts_with("*Firing: High error rate*\n"));
         assert!(text.contains("environment=prod"));
-        assert!(text.ends_with(&format!("https://crucible.test/alerts/?rule={}", firing.rule_id)));
+        assert!(text.ends_with(&format!(
+            "https://crucible.test/alerts/?rule={}",
+            firing.rule_id
+        )));
         let (subject, body) = email(&firing, None);
         assert_eq!(subject, "[Crucible] Firing: High error rate");
         assert!(body.contains("Series: environment=prod") && !body.contains("Open the rule"));
@@ -201,7 +209,12 @@ mod tests {
     fn a_webhook_body_is_json_with_the_event_and_the_delivery() {
         let n = notification(NoticeKind::Renotify);
         let delivery = Uuid::from_v7_parts(1_800_000_000_123, 9);
-        let body = webhook_body(&n, delivery, Timestamp::from_micros(1_800_000_001_000_000), None);
+        let body = webhook_body(
+            &n,
+            delivery,
+            Timestamp::from_micros(1_800_000_001_000_000),
+            None,
+        );
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["event"], "alert.renotify");
         assert_eq!(value["delivery_id"], delivery.to_string());

@@ -23,8 +23,7 @@ use crate::plan::QueryPlan;
 use crate::pred::Pred;
 use crate::registry::{
     Aggregation, DimensionId, METRICS_MAX_BUCKETS, METRICS_MAX_DIMENSIONS, METRICS_MAX_MEASURES,
-    METRICS_MAX_POINTS,
-    METRICS_MAX_SERIES, MeasureId, Source, SourceSchema,
+    METRICS_MAX_POINTS, METRICS_MAX_SERIES, MeasureId, Source, SourceSchema,
 };
 use crate::value::Row;
 
@@ -476,10 +475,5 @@ pub fn metrics_totals(
     )?
     .ordered(order)?
     .limited(limit)?;
-    Ok(clamp.plan(
-        scope,
-        window,
-        QueryClass::Alert,
-        Node::Aggregate(aggregate),
-    )?)
+    Ok(clamp.plan(scope, window, QueryClass::Alert, Node::Aggregate(aggregate))?)
 }

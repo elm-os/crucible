@@ -10,7 +10,7 @@ use crucible_records::{ChannelId, ProjectId, Uuid};
 use serde_json::json;
 
 use crate::channel::{Settings, Target, TargetError, check_name, check_target, stored};
-use crate::notification::{Notification, NoticeKind};
+use crate::notification::{NoticeKind, Notification};
 use crate::outbox::{SecretError, open, seal};
 use crate::transport::{Delivery, Transport};
 
@@ -144,7 +144,11 @@ impl Channels {
     }
 
     /// One channel.
-    pub async fn get(&self, project_id: ProjectId, id: ChannelId) -> Result<ChannelView, ChannelError> {
+    pub async fn get(
+        &self,
+        project_id: ProjectId,
+        id: ChannelId,
+    ) -> Result<ChannelView, ChannelError> {
         view(self.find(project_id, id).await?)
     }
 
@@ -235,7 +239,9 @@ impl Channels {
             if target.kind() != channel.kind {
                 return Err(TargetError::Invalid {
                     field: "kind",
-                    message: "the kind of a channel cannot change; create a channel of the other kind".to_owned(),
+                    message:
+                        "the kind of a channel cannot change; create a channel of the other kind"
+                            .to_owned(),
                 }
                 .into());
             }
@@ -311,7 +317,11 @@ impl Channels {
     /// it says whether the receiver accepted the test and never what the receiver answered. A test does not
     /// count against the channel, and works on a channel that is turned off, so a fix can be checked before
     /// the channel is turned on again.
-    pub async fn test(&self, project_id: ProjectId, id: ChannelId) -> Result<Delivery, ChannelError> {
+    pub async fn test(
+        &self,
+        project_id: ProjectId,
+        id: ChannelId,
+    ) -> Result<Delivery, ChannelError> {
         let channel = self.find(project_id, id).await?;
         let secret = open(&self.sealer, self.store.as_ref(), &channel).await?;
         let now = self.env.clock.wall_now();
@@ -333,7 +343,12 @@ impl Channels {
         };
         let delivery = self
             .transport
-            .deliver(&channel, secret.as_deref(), &notification, self.env.new_id())
+            .deliver(
+                &channel,
+                secret.as_deref(),
+                &notification,
+                self.env.new_id(),
+            )
             .await;
         let outcome = json!({
             "ok": delivery.ok,

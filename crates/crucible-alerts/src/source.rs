@@ -81,7 +81,13 @@ impl SeriesSource for QuerySource {
         let ctx = ReadContext::new(scope, retention, Caller::Session);
         let totals = self
             .service
-            .metrics_totals(&ctx, window, &spec.query(), spec.comparison.upward(), MAX_SERIES)
+            .metrics_totals(
+                &ctx,
+                window,
+                &spec.query(),
+                spec.comparison.upward(),
+                MAX_SERIES,
+            )
             .await
             .map_err(|error| ReadFailure(error.to_string()))?;
         Ok(Observed {

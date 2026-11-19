@@ -28,15 +28,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crucible_control::{
-    AlertEvent, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState, AlertStateRepo,
-    Channel, ChannelRepo,
-    ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
-    ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo, KeyChange,
-    KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
-    Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org,
-    OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, Secret,
-    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
-    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
+    AlertEvent, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState, AlertStateRepo, ApiKey,
+    ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Channel, ChannelRepo,
+    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo,
+    KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
+    MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
+    OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
+    ProjectRepo, Queue, Repos, Secret, SecretRepo, Session, SessionRepo, SigningKey,
+    SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User,
+    UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -248,7 +248,12 @@ fn uniques(row: &Row) -> Vec<(&'static str, Key)> {
         // The key is unique within its queue's table.
         Row::Job(job) => vec![(
             queue_constraints(job.queue).1,
-            [job.queue.as_str().as_bytes(), &[0], job.dedup_key.as_bytes()].concat(),
+            [
+                job.queue.as_str().as_bytes(),
+                &[0],
+                job.dedup_key.as_bytes(),
+            ]
+            .concat(),
         )],
         Row::AuthProvider(provider) if provider.seeded => vec![(
             "auth_providers_seeded_kind_key",
@@ -1378,10 +1383,7 @@ const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
             "notification_outbox_pkey",
             "notification_outbox_dedup_key_key",
         ),
-        Queue::AlertEvaluations => (
-            "alert_evaluations_pkey",
-            "alert_evaluations_dedup_key_key",
-        ),
+        Queue::AlertEvaluations => ("alert_evaluations_pkey", "alert_evaluations_dedup_key_key"),
     }
 }
 

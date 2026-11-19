@@ -108,7 +108,9 @@ fn cidr() -> impl Strategy<Value = Cidr> {
         Just("169.254.0.0/16".parse().unwrap()),
         Just("fd00::/8".parse().unwrap()),
         (any::<[u8; 4]>(), 0u8..=32).prop_map(|(octets, prefix)| {
-            format!("{}/{prefix}", Ipv4Addr::from(octets)).parse().unwrap()
+            format!("{}/{prefix}", Ipv4Addr::from(octets))
+                .parse()
+                .unwrap()
         }),
     ]
 }
@@ -217,7 +219,10 @@ impl Net for ScriptedNet {
         } else {
             dns.front().cloned().unwrap_or_default()
         };
-        self.asked.lock().unwrap().push((host.to_owned(), answer.clone()));
+        self.asked
+            .lock()
+            .unwrap()
+            .push((host.to_owned(), answer.clone()));
         Ok(answer)
     }
 

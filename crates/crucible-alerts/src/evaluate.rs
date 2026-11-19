@@ -20,7 +20,7 @@ use crucible_control::{
     TxError,
 };
 use crucible_jobs::{ClaimCtx, ClaimPolicy, JobError, JobResult};
-use crucible_notify::{Notification, NoticeKind, SeriesLabel};
+use crucible_notify::{NoticeKind, Notification, SeriesLabel};
 use crucible_records::{AlertRuleId, Timestamp, Uuid};
 use serde_json::{Value, json};
 
@@ -47,7 +47,8 @@ pub fn evaluation_job(id: Uuid, rule_id: AlertRuleId, interval_secs: u32, seq: u
         // The interval is part of the key: ticks are numbered by it, so a rule whose interval was edited
         // starts a new numbering that cannot meet a row of the old one.
         dedup_key: format!("{rule_id}:{interval_secs}:{seq}"),
-        payload: json!({ "rule": rule_id.to_string(), "interval": interval_secs, "seq": seq }).to_string(),
+        payload: json!({ "rule": rule_id.to_string(), "interval": interval_secs, "seq": seq })
+            .to_string(),
         run_at: tick_at(rule_id, interval_secs, seq),
     }
 }
@@ -96,15 +97,18 @@ fn to_series(state: &AlertSeriesState) -> Series {
 
 /// The notification of one notice for one channel.
 fn notification(
-    rule: &AlertRule,
-    spec: &RuleSpec,
+    tick: &Tick<'_>,
     channel: Uuid,
     kind: NoticeKind,
     series_key: &str,
     value: Option<i64>,
-    seq: u64,
-    at: Timestamp,
 ) -> Notification {
+    let Tick {
+        rule,
+        spec,
+        seq,
+        at,
+    } = *tick;
     Notification {
         channel_id: channel,
         project_id: rule.project_id.uuid(),
@@ -205,7 +209,10 @@ impl Evaluator {
             at: tick_at(rule_id, rule.interval_secs, seq),
         };
         let tx = store.begin().await?;
-        let (applied, after) = match self.apply(&ctx, tx.as_ref(), &tick, observed.as_ref()).await {
+        let (applied, after) = match self
+            .apply(&ctx, tx.as_ref(), &tick, observed.as_ref())
+            .await
+        {
             Ok(done) => done,
             Err(error) => {
                 tx.rollback().await;
@@ -217,7 +224,10 @@ impl Evaluator {
             // Only the seeded defect has rows here: outbox rows written after the commit, which a crash
             // between the two loses.
             for job in after {
-                store.claims().enqueue(Queue::NotificationOutbox, &job).await?;
+                store
+                    .claims()
+                    .enqueue(Queue::NotificationOutbox, &job)
+                    .await?;
             }
         }
         Ok(())
@@ -231,7 +241,12 @@ impl Evaluator {
         tick: &Tick<'_>,
         observed: Option<&Observed>,
     ) -> Result<(Applied, Vec<NewJob>), TxError> {
-        let Tick { rule, spec, seq, at } = *tick;
+        let Tick {
+            rule,
+            spec,
+            seq,
+            at,
+        } = *tick;
         let Some(stored) = tx.alert_rules().get(rule.id).await? else {
             return Ok((Applied::Skipped, Vec::new()));
         };
@@ -243,16 +258,16 @@ impl Evaluator {
         {
             return Ok((Applied::Skipped, Vec::new()));
         }
-        let skipped = stored.skipped_ticks.saturating_add(match stored.last_eval_seq {
-            Some(last) => seq.saturating_sub(last).saturating_sub(1),
-            None => 0,
-        });
+        let skipped = stored
+            .skipped_ticks
+            .saturating_add(match stored.last_eval_seq {
+                Some(last) => seq.saturating_sub(last).saturating_sub(1),
+                None => 0,
+            });
         let mut outbox = Vec::new();
         let mut enqueue = |kind: NoticeKind, series_key: &str, value: Option<i64>| {
             for channel in &spec.channels {
-                let notification = notification(
-                    rule, spec, channel.uuid(), kind, series_key, value, seq, at,
-                );
+                let notification = notification(tick, channel.uuid(), kind, series_key, value);
                 outbox.push(notification.outbox_job(ctx.env.new_id(), series_key));
             }
         };

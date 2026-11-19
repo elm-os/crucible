@@ -158,7 +158,10 @@ impl NetTransport {
             }
             Err(error) => {
                 if let EgressError::Refused(refusal) = &error {
-                    tracing::warn!(reason = refusal.reason(), "a notification target was refused: {refusal}");
+                    tracing::warn!(
+                        reason = refusal.reason(),
+                        "a notification target was refused: {refusal}"
+                    );
                 }
                 Delivery::failed(error.code())
             }
@@ -179,7 +182,8 @@ impl NetTransport {
                 let Some(url) = secret.and_then(|secret| std::str::from_utf8(secret).ok()) else {
                     return Delivery::failed("secret_missing");
                 };
-                self.post(url, &[json], slack_body(notification, public_url)).await
+                self.post(url, &[json], slack_body(notification, public_url))
+                    .await
             }
             ChannelKind::Webhook => {
                 let (Ok(settings), Some(secret)) = (Settings::of(channel), secret) else {
@@ -196,7 +200,10 @@ impl NetTransport {
                         HeaderName::from_static(SIGNATURE_HEADER),
                         signature(secret, now.micros().div_euclid(1_000_000), &body),
                     ),
-                    (HeaderName::from_static(DELIVERY_HEADER), delivery_id.to_string()),
+                    (
+                        HeaderName::from_static(DELIVERY_HEADER),
+                        delivery_id.to_string(),
+                    ),
                     (
                         HeaderName::from_static(EVENT_HEADER),
                         format!("alert.{}", notification.kind.as_str()),

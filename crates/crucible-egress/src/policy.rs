@@ -232,9 +232,16 @@ mod tests {
     #[test]
     fn the_default_allows_private_receivers_over_plain_http() {
         let open = EgressPolicy::default();
-        let target = open.check_url("http://10.0.0.5:9000/hooks/crucible?x=1").unwrap();
+        let target = open
+            .check_url("http://10.0.0.5:9000/hooks/crucible?x=1")
+            .unwrap();
         assert_eq!(
-            (target.https, target.host.as_str(), target.port, target.path.as_str()),
+            (
+                target.https,
+                target.host.as_str(),
+                target.port,
+                target.path.as_str()
+            ),
             (false, "10.0.0.5", 9000, "/hooks/crucible?x=1")
         );
         assert!(open.check_url("http://localhost/hook").is_ok());
@@ -279,7 +286,10 @@ mod tests {
             Refusal::HttpsRequired
         );
         assert_eq!(
-            strict.check_url("https://ClickHouse.internal:8443/").unwrap_err().reason(),
+            strict
+                .check_url("https://ClickHouse.internal:8443/")
+                .unwrap_err()
+                .reason(),
             "own_infrastructure"
         );
         assert_eq!(
@@ -291,12 +301,28 @@ mod tests {
     #[test]
     fn malformed_targets_are_refused() {
         let open = EgressPolicy::default();
-        for url in ["", "example.com/hook", "/hook", "https://user:pw@example.com/"] {
-            assert_eq!(open.check_url(url).unwrap_err(), Refusal::InvalidUrl, "{url}");
+        for url in [
+            "",
+            "example.com/hook",
+            "/hook",
+            "https://user:pw@example.com/",
+        ] {
+            assert_eq!(
+                open.check_url(url).unwrap_err(),
+                Refusal::InvalidUrl,
+                "{url}"
+            );
         }
-        for url in ["ftp://example.com/", "file:///etc/passwd", "gopher://example.com/"] {
+        for url in [
+            "ftp://example.com/",
+            "file:///etc/passwd",
+            "gopher://example.com/",
+        ] {
             let refusal = open.check_url(url).unwrap_err();
-            assert!(matches!(refusal, Refusal::Scheme | Refusal::InvalidUrl), "{url}");
+            assert!(
+                matches!(refusal, Refusal::Scheme | Refusal::InvalidUrl),
+                "{url}"
+            );
         }
     }
 }

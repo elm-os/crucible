@@ -15,14 +15,21 @@ pub const EVALUATION_LAG: Duration = Duration::from_secs(30);
 
 const MICROS: i64 = 1_000_000;
 
-/// The rule's offset inside its interval, in seconds: FNV-1a over the id's bytes, reduced to the interval. A
-/// function of the id only, so every node and every restart computes the same schedule.
+/// The rule's offset inside its interval, in seconds: FNV-1a over the id's bytes, mixed so that every bit of
+/// the id reaches the low bits, then reduced to the interval. A function of the id only, so every node and
+/// every restart computes the same schedule.
 pub fn offset_secs(rule_id: AlertRuleId, interval_secs: u32) -> u32 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in rule_id.to_bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    // FNV's low bits depend only on the low bits of the bytes; this finalizer spreads the high bits down.
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
     // The interval is at least one second; a zero would be a stored defect, and the offset is then zero.
     (hash % u64::from(interval_secs.max(1))) as u32
 }
@@ -122,9 +129,8 @@ mod tests {
     #[test]
     fn rules_do_not_all_tick_on_the_minute() {
         // 200 rules with a 60 s interval: their offsets cover most of the minute.
-        let offsets: std::collections::BTreeSet<u32> = (0..200u8)
-            .map(|n| offset_secs(rule([n; 16]), 60))
-            .collect();
+        let offsets: std::collections::BTreeSet<u32> =
+            (0..200u8).map(|n| offset_secs(rule([n; 16]), 60)).collect();
         assert!(offsets.len() > 40, "{} distinct offsets", offsets.len());
         assert!(offsets.iter().any(|o| *o >= 30) && offsets.iter().any(|o| *o < 30));
     }

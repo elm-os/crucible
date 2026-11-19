@@ -14,7 +14,9 @@ mod uuid_text {
         serializer.collect_str(id)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uuid, D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Uuid, D::Error> {
         let text = String::deserialize(deserializer)?;
         text.parse().map_err(|_| D::Error::custom("not a UUID"))
     }
@@ -179,18 +181,25 @@ pub(crate) mod tests {
     #[test]
     fn a_notification_survives_its_outbox_row() {
         let n = notification(NoticeKind::Firing);
-        let job = n.outbox_job(Uuid::from_v7_parts(1, 1), "[\"prod\"]").unwrap();
+        let job = n
+            .outbox_job(Uuid::from_v7_parts(1, 1), "[\"prod\"]")
+            .unwrap();
         assert_eq!(Notification::from_payload(&job.payload), Some(n.clone()));
         assert_eq!(job.run_at, n.at());
         // The key separates kinds, channels, ticks and series.
         let mut other = n.clone();
         other.kind = NoticeKind::Resolved;
         assert_ne!(
-            other.outbox_job(Uuid::from_v7_parts(1, 2), "[\"prod\"]").unwrap().dedup_key,
+            other
+                .outbox_job(Uuid::from_v7_parts(1, 2), "[\"prod\"]")
+                .unwrap()
+                .dedup_key,
             job.dedup_key
         );
         assert_ne!(
-            n.outbox_job(Uuid::from_v7_parts(1, 3), "[\"dev\"]").unwrap().dedup_key,
+            n.outbox_job(Uuid::from_v7_parts(1, 3), "[\"dev\"]")
+                .unwrap()
+                .dedup_key,
             job.dedup_key
         );
         assert_eq!(Notification::from_payload("{"), None);

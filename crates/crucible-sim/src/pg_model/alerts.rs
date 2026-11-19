@@ -297,7 +297,8 @@ impl AlertEventRepo for Runner {
         self.run(Pool::Main, false, |cx| {
             let mut events = all!(cx, Tbl::AlertEvents, Row::AlertEvent);
             events.retain(|event| {
-                event.rule_id == rule_id && before.is_none_or(|before| (event.at, event.id) < before)
+                event.rule_id == rule_id
+                    && before.is_none_or(|before| (event.at, event.id) < before)
             });
             events.sort_by_key(|event| std::cmp::Reverse((event.at, event.id)));
             events.truncate(limit as usize);

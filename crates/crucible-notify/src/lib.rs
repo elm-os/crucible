@@ -21,7 +21,7 @@ mod transport;
 pub use channel::{
     MAX_RECIPIENTS, NAME_MAX_CHARS, SLACK_HOST, Settings, Target, TargetError, URL_MAX_BYTES,
 };
-pub use notification::{Notification, NoticeKind, SeriesLabel};
+pub use notification::{NoticeKind, Notification, SeriesLabel};
 pub use outbox::{DISABLE_AFTER, Notifier, OUTBOX_POLICY, POLL_EVERY, SecretError, outbox_job};
 pub use render::{
     DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER, signature, summary, verify_signature,

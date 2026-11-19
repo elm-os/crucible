@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use crucible_control::{
-    AlertEvent, AlertRule, AlertSeriesState, ControlStore, Project, TxError,
-};
+use crucible_control::{AlertEvent, AlertRule, AlertSeriesState, ControlStore, Project, TxError};
 use crucible_env::Env;
 use crucible_records::{AlertRuleId, ProjectId, TimeWindow, Timestamp, Uuid};
 
@@ -128,7 +126,10 @@ impl Alerts {
     async fn check(&self, project_id: ProjectId, input: &RuleInput) -> Result<String, AlertError> {
         let mut issues = input.spec.issues();
         let name = input.name.trim();
-        if name.is_empty() || name.chars().count() > NAME_MAX_CHARS || name.chars().any(char::is_control) {
+        if name.is_empty()
+            || name.chars().count() > NAME_MAX_CHARS
+            || name.chars().any(char::is_control)
+        {
             issues.push(issue("name", "a name of 1 to 120 characters is required"));
         }
         let channels = self.store.channels().list(project_id).await?;
@@ -157,13 +158,21 @@ impl Alerts {
     }
 
     /// One rule.
-    pub async fn get(&self, project_id: ProjectId, id: AlertRuleId) -> Result<RuleView, AlertError> {
+    pub async fn get(
+        &self,
+        project_id: ProjectId,
+        id: AlertRuleId,
+    ) -> Result<RuleView, AlertError> {
         let rule = self.find(project_id, id).await?;
         self.view(rule).await
     }
 
     /// Creates a rule. Its first evaluation is the next tick of its schedule.
-    pub async fn create(&self, project_id: ProjectId, input: RuleInput) -> Result<RuleView, AlertError> {
+    pub async fn create(
+        &self,
+        project_id: ProjectId,
+        input: RuleInput,
+    ) -> Result<RuleView, AlertError> {
         let name = self.check(project_id, &input).await?;
         let now = self.env.clock.wall_now();
         let rule = AlertRule {
@@ -243,7 +252,12 @@ impl Alerts {
         expected: u64,
     ) -> Result<(), AlertError> {
         self.find(project_id, id).await?;
-        if self.store.alert_rules().delete_if_version(id, expected).await? {
+        if self
+            .store
+            .alert_rules()
+            .delete_if_version(id, expected)
+            .await?
+        {
             Ok(())
         } else {
             Err(AlertError::VersionMismatch)
@@ -277,7 +291,8 @@ impl Alerts {
             .wall_now()
             .saturating_add_micros(-lag)
             .floor_minute();
-        let start = end.saturating_add_micros(-i64::from(spec.window_secs).saturating_mul(1_000_000));
+        let start =
+            end.saturating_add_micros(-i64::from(spec.window_secs).saturating_mul(1_000_000));
         let window = TimeWindow::new(start, end)
             .map_err(|_| AlertError::Read("the window is empty".to_owned()))?;
         let observed = source
