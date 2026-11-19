@@ -47,7 +47,9 @@ fn frame(otlp: &[u8], lsn: u64) -> IngestFrame<'_> {
 fn normalized(json: &[u8], lsn: u64) -> Vec<SpanRecord> {
     let otlp = transcode_json(json).expect("the request transcodes");
     let ctx = NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT);
-    normalize(&frame(&otlp, lsn), &ctx).expect("the request normalizes").spans
+    normalize(&frame(&otlp, lsn), &ctx)
+        .expect("the request normalizes")
+        .spans
 }
 
 /// The record without what each request sets for itself.
@@ -99,7 +101,11 @@ fn residual_value() -> impl Strategy<Value = J> {
 fn messages(role: &'static str) -> impl Strategy<Value = String> {
     (text(), any::<bool>()).prop_map(move |(content, pretty)| {
         let value = json!([{"role": role, "parts": [{"type": "text", "content": content}]}]);
-        if pretty { serde_json::to_string_pretty(&value).unwrap() } else { value.to_string() }
+        if pretty {
+            serde_json::to_string_pretty(&value).unwrap()
+        } else {
+            value.to_string()
+        }
     })
 }
 
@@ -118,7 +124,14 @@ fn kind() -> impl Strategy<Value = Kind> {
         Just(Kind::Embedding),
         Just(Kind::Tool),
         Just(Kind::Agent),
-        prop_oneof![Just("span"), Just("chain"), Just("event"), Just("retriever"), Just("guardrail")].prop_map(Kind::Plain),
+        prop_oneof![
+            Just("span"),
+            Just("chain"),
+            Just("event"),
+            Just("retriever"),
+            Just("guardrail")
+        ]
+        .prop_map(Kind::Plain),
         Just(Kind::Generation),
     ]
 }
@@ -307,13 +320,26 @@ fn round_trip(request: &J) -> Result<(), TestCaseError> {
         // As the store returns it: `metadata` only as its keys and values.
         let mut stored = record.clone();
         stored.payload.metadata = bytes::Bytes::new();
-        let export = ExportRecord { span: stored, payload_stored: true, mcp: None, facts: Vec::new() };
+        let export = ExportRecord {
+            span: stored,
+            payload_stored: true,
+            mcp: None,
+            facts: Vec::new(),
+        };
         let mut line = Vec::new();
-        prop_assert_eq!(write_otlp(project, &export, false, &mut line), Written::Line);
+        prop_assert_eq!(
+            write_otlp(project, &export, false, &mut line),
+            Written::Line
+        );
         let again = normalized(&line, 100 + n as u64);
         prop_assert_eq!(again.len(), 1, "one span per line");
         let again = again.into_iter().next().unwrap();
-        prop_assert_eq!(comparable(again), comparable(record), "line: {}", String::from_utf8_lossy(&line));
+        prop_assert_eq!(
+            comparable(again),
+            comparable(record),
+            "line: {}",
+            String::from_utf8_lossy(&line)
+        );
     }
     Ok(())
 }

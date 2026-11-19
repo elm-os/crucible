@@ -28,8 +28,8 @@ use crucible_records::{
     Truncation, UsageEntry, Uuid, WalEpoch, fold_facts,
 };
 use crucible_schema::{
-    Column, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,
-    McpOpsCol, SpanCoreCol, SpanPayloadCol, Ty,
+    Column, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol, McpOpsCol,
+    SpanCoreCol, SpanPayloadCol, Ty,
 };
 
 use crate::context::{QueryServiceError, ReadContext};
@@ -68,7 +68,10 @@ impl ExportQuery {
         self.window.contains(s.start_time)
             && (self.trace_ids.is_empty() || self.trace_ids.contains(&s.trace_id))
             && self.user_id.as_deref().is_none_or(|u| *s.user_id == *u)
-            && self.session_id.as_deref().is_none_or(|v| *s.session_id == *v)
+            && self
+                .session_id
+                .as_deref()
+                .is_none_or(|v| *s.session_id == *v)
     }
 }
 
@@ -107,7 +110,9 @@ impl ExportWait {
     /// What the wait is for, for logs and the job's state.
     pub const fn describe(self) -> &'static str {
         match self {
-            Self::Shipping => "spans acknowledged before the export's as_of are still on their way to the store",
+            Self::Shipping => {
+                "spans acknowledged before the export's as_of are still on their way to the store"
+            }
             Self::Gap => "the store has not caught up after an outage",
             Self::Quarantined => {
                 "some of the project's spans are in a quarantined batch that the store does not hold"
@@ -509,11 +514,11 @@ fn payload(row: &Row) -> Decoded<SpanPayload> {
 /// A fact row's identity for resolution: within one trace, `(table, target kind, span, key)`.
 type FactKey = (FactTable, u8, SpanId, Box<str>);
 
+/// One candidate fact: its trace, its resolution key, its version and its columns.
+type Candidate = (TraceId, FactKey, FactVersion, Vec<ExportColumn>);
+
 /// The candidate facts of one table, by trace: each row's resolution key, version and columns.
-fn fact_candidates(
-    table: FactTable,
-    rows: Vec<Row>,
-) -> Decoded<Vec<(TraceId, FactKey, FactVersion, Vec<ExportColumn>)>> {
+fn fact_candidates(table: FactTable, rows: Vec<Row>) -> Decoded<Vec<Candidate>> {
     macro_rules! decode {
         ($c:ident) => {{
             let mut out = Vec::with_capacity(rows.len());
@@ -529,7 +534,13 @@ fn fact_candidates(
                     retracted: c.flag($c::Retracted)?,
                 };
                 let key = (table, kind, c.span_id($c::SpanId)?, c.text($c::Key)?);
-                let skip = [$c::TargetDay, $c::WalEpoch, $c::BatchSeq, $c::Lsn, $c::ReceivedAt];
+                let skip = [
+                    $c::TargetDay,
+                    $c::WalEpoch,
+                    $c::BatchSeq,
+                    $c::Lsn,
+                    $c::ReceivedAt,
+                ];
                 out.push((c.trace_id($c::TraceId)?, key, version, c.columns(&skip)));
             }
             Ok(out)
@@ -695,7 +706,10 @@ impl QueryService {
         // Payloads: the row of the copy that was kept, else the newest.
         let mut payloads: BTreeMap<(TraceId, SpanId), (Lsn, Row)> = BTreeMap::new();
         for chunk in keys.chunks(MAX_LIST) {
-            for row in read.rows(export_payloads(scope, &read.clamp, chunk)).await? {
+            for row in read
+                .rows(export_payloads(scope, &read.clamp, chunk))
+                .await?
+            {
                 let c = Cols::<SpanPayloadCol>::of(&row);
                 let id = (
                     c.trace_id(SpanPayloadCol::TraceId)?,
@@ -743,7 +757,10 @@ impl QueryService {
                     c.columns(&skip),
                 );
             }
-            for row in read.rows(export_mcp_content(scope, &read.clamp, chunk)).await? {
+            for row in read
+                .rows(export_mcp_content(scope, &read.clamp, chunk))
+                .await?
+            {
                 use McpContentCol as M;
                 let c = Cols::<M>::of(&row);
                 let skip = [

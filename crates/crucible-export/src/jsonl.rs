@@ -239,8 +239,14 @@ fn span(out: &mut Vec<u8>, scope: ProjectScope, record: &ExportRecord) {
     saturated |= json::uint(obj.key("total_tokens"), core.total_tokens);
     json::usd(obj.key("total_cost_usd"), core.total_cost_nusd.nanos());
     obj.str("cost_source", core.cost_source.as_str());
-    uuid(obj.key("price_model_id"), core.price_model_id.unwrap_or(Uuid::NIL));
-    uuid(obj.key("price_tier_id"), core.price_tier_id.unwrap_or(Uuid::NIL));
+    uuid(
+        obj.key("price_model_id"),
+        core.price_model_id.unwrap_or(Uuid::NIL),
+    );
+    uuid(
+        obj.key("price_tier_id"),
+        core.price_tier_id.unwrap_or(Uuid::NIL),
+    );
     obj.bool("usage_aggregate", core.usage_aggregate);
     obj.str("prompt_name", &core.prompt_name);
     obj.str("prompt_version", &core.prompt_version);
@@ -258,7 +264,10 @@ fn span(out: &mut Vec<u8>, scope: ProjectScope, record: &ExportRecord) {
     digest(&mut obj, "output_sha256", core.output_sha256);
     obj.str("source_format", core.source_format.as_str());
     json::uint(obj.key("compat_dialect"), u64::from(core.compat_dialect));
-    json::uint(obj.key("normalizer_version"), u64::from(core.normalizer_version));
+    json::uint(
+        obj.key("normalizer_version"),
+        u64::from(core.normalizer_version),
+    );
     obj.bool("clock_skew", core.clock_skew);
     obj.display("wal_epoch", core.ingestion.wal_epoch);
     saturated |= json::uint(obj.key("lsn"), core.ingestion.lsn.get());
@@ -271,7 +280,11 @@ fn span(out: &mut Vec<u8>, scope: ProjectScope, record: &ExportRecord) {
 
     let cut = |field| opaque(core, payload, field);
     json::body(obj.key("input"), &payload.input, cut(PayloadField::Input));
-    json::body(obj.key("output"), &payload.output, cut(PayloadField::Output));
+    json::body(
+        obj.key("output"),
+        &payload.output,
+        cut(PayloadField::Output),
+    );
     json::body(
         obj.key("system_instructions"),
         &payload.system_instructions,

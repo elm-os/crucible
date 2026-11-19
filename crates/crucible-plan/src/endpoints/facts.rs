@@ -114,16 +114,16 @@ fn kind(columns: &Columns, kind: FactTargetKind) -> Pred {
 fn pred(c: &Columns, of: FactsOf<'_>) -> Pred {
     match of {
         FactsOf::Traces(ids) => Pred::And(vec![
-            kind(&c, FactTargetKind::Trace),
+            kind(c, FactTargetKind::Trace),
             Pred::is_in(c.trace_id, ids.iter().copied().map(Literal::from).collect()),
         ]),
         FactsOf::Span(trace_id, span_id) => Pred::And(vec![
-            kind(&c, FactTargetKind::Span),
+            kind(c, FactTargetKind::Span),
             Pred::eq(c.trace_id, trace_id),
             Pred::eq(c.span_id, span_id),
         ]),
         FactsOf::Session(session_id) => Pred::And(vec![
-            kind(&c, FactTargetKind::Session),
+            kind(c, FactTargetKind::Session),
             Pred::eq(c.session_id, session_id),
         ]),
         FactsOf::TraceTree(ids) => Pred::And(vec![

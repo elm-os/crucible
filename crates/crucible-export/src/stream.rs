@@ -104,7 +104,9 @@ impl ExportWriter {
                 write_jsonl(scope, record, &mut self.line);
                 Written::Line
             }
-            ExportFormat::OtlpJson => write_otlp(scope, record, self.keep_truncated, &mut self.line),
+            ExportFormat::OtlpJson => {
+                write_otlp(scope, record, self.keep_truncated, &mut self.line)
+            }
         };
         match written {
             Written::Skipped => self.progress.skipped += 1,

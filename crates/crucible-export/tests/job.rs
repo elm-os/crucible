@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::FutureExt as _;
 use crucible_chfmt::EncodedBlock;
 use crucible_control::{
     ControlStore, ExportFormat, ExportJob, JsonDoc, NewExport, Project, Repos as _,
@@ -19,15 +18,13 @@ use crucible_env::{
     QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores, TelemetryStore,
 };
 use crucible_export::{
-    CreateError, CreateExport, Created, EXPORT_LEASE, ExportRuntime, ExportState, Exports,
-    Options, Selector, job, purge, sweep, sweep_job,
+    CreateError, CreateExport, Created, EXPORT_LEASE, ExportRuntime, ExportState, Exports, Options,
+    Selector, job, purge, sweep, sweep_job,
 };
 use crucible_jobs::{Registry, Running};
 use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
 use crucible_query::QueryService;
-use crucible_recent::{
-    RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView,
-};
+use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
 use crucible_records::{
     ExportJobId, Lsn, PartitionId, ProjectId, TableId, TimeWindow, Timestamp, TraceId, Uuid,
     WalEpoch,
@@ -35,6 +32,7 @@ use crucible_records::{
 use crucible_schema::{MigrationStep, Ty, table};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 use crucible_sim::{Host, SimDisk};
+use futures::FutureExt as _;
 use sha2::{Digest, Sha256};
 
 const PROJECT: ProjectId = ProjectId::from_bytes([0x5a; 16]);
@@ -70,7 +68,8 @@ struct Spans {
 
 impl Spans {
     fn start(&self, i: u64) -> Timestamp {
-        self.base.saturating_add_micros(i64::try_from(i * 10).unwrap())
+        self.base
+            .saturating_add_micros(i64::try_from(i * 10).unwrap())
     }
 
     fn value(&self, i: u64, name: &str, ty: &Ty) -> Value {
@@ -82,7 +81,9 @@ impl Spans {
             "span_id" => Value::Bytes((i + 1).to_be_bytes().to_vec()),
             "trace_id" => Value::Bytes(TRACE.to_bytes().to_vec()),
             "name" => Value::String(format!("span {i} {}", "x".repeat(400))),
-            "received_at" => Value::Time(self.base.saturating_add_micros(i64::try_from(i).unwrap())),
+            "received_at" => {
+                Value::Time(self.base.saturating_add_micros(i64::try_from(i).unwrap()))
+            }
             "lsn" => Value::UInt(i + 1),
             "event_bytes" => Value::UInt(500),
             _ => zero(ty),
@@ -90,7 +91,9 @@ impl Spans {
     }
 
     fn page(&self, plan: &QueryPlan) -> Vec<Row> {
-        let Node::Scan(scan) = plan.root() else { return Vec::new() };
+        let Node::Scan(scan) = plan.root() else {
+            return Vec::new();
+        };
         if scan.table() != TableId::SpanCore || plan.scope().project_id() != PROJECT {
             return Vec::new();
         }
@@ -124,11 +127,17 @@ fn unsupported<T>() -> Result<T, StoreError> {
 #[async_trait]
 impl TelemetryStore for Spans {
     async fn insert_block(&self, _: EncodedBlock, _: InsertSettings) -> Result<(), InsertError> {
-        Err(InsertError::FatalConfig { code: 0, message: "the test store only reads".to_owned() })
+        Err(InsertError::FatalConfig {
+            code: 0,
+            message: "the test store only reads".to_owned(),
+        })
     }
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
         let blocks = RowBlock::split(self.page(&plan)).into_iter().map(Ok);
-        Ok(RowStream::new(Uuid::from_bytes([1; 16]), futures::stream::iter(blocks)))
+        Ok(RowStream::new(
+            Uuid::from_bytes([1; 16]),
+            futures::stream::iter(blocks),
+        ))
     }
     async fn probe(&self, _: BatchProbe) -> Result<bool, StoreError> {
         unsupported()
@@ -139,13 +148,21 @@ impl TelemetryStore for Spans {
     async fn drop_partition(&self, _: TableId, _: PartitionId) -> Result<(), StoreError> {
         unsupported()
     }
-    async fn apply_deleted_mask(&self, _: TableId, _: PartitionId) -> Result<MutationId, StoreError> {
+    async fn apply_deleted_mask(
+        &self,
+        _: TableId,
+        _: PartitionId,
+    ) -> Result<MutationId, StoreError> {
         unsupported()
     }
     async fn mutation_status(&self, _: &MutationId) -> Result<MutationStatus, StoreError> {
         unsupported()
     }
-    async fn partition_projects(&self, _: TableId, _: PartitionId) -> Result<Vec<ProjectId>, StoreError> {
+    async fn partition_projects(
+        &self,
+        _: TableId,
+        _: PartitionId,
+    ) -> Result<Vec<ProjectId>, StoreError> {
         unsupported()
     }
     async fn masked_parts(&self, _: TableId, _: PartitionId) -> Result<u64, StoreError> {
@@ -220,11 +237,20 @@ fn start(host: &Host, model: &PgModel, base: Timestamp) -> Running {
 /// Every file under the project's export directory: name and contents.
 async fn files(env: &Env) -> Vec<(String, Vec<u8>)> {
     let dir = DiskPath::new(Root::Exports, &PROJECT.to_string()).unwrap();
-    let Ok(entries) = env.disk.list(&dir).await else { return Vec::new() };
+    let Ok(entries) = env.disk.list(&dir).await else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for entry in entries {
-        let file = env.disk.open(&dir.join(&entry.name).unwrap(), OpenMode::Read).await.unwrap();
-        let bytes = file.read_at(0, usize::try_from(entry.len).unwrap()).await.unwrap();
+        let file = env
+            .disk
+            .open(&dir.join(&entry.name).unwrap(), OpenMode::Read)
+            .await
+            .unwrap();
+        let bytes = file
+            .read_at(0, usize::try_from(entry.len).unwrap())
+            .await
+            .unwrap();
         out.push((entry.name, bytes.to_vec()));
     }
     out
@@ -236,11 +262,16 @@ fn complete(bytes: &[u8]) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     text.ends_with('\n')
         && lines.len() as u64 == SPANS
-        && lines.iter().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+        && lines
+            .iter()
+            .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 async fn row(model: &PgModel, id: ExportJobId) -> ExportJob {
@@ -252,14 +283,22 @@ async fn row(model: &PgModel, id: ExportJobId) -> ExportJob {
 async fn check(env: &Env, job: &ExportJob, at: &str) {
     for (name, bytes) in files(env).await {
         if !name.ends_with(".part") {
-            assert!(complete(&bytes), "{at}: the committed file {name} is partial");
+            assert!(
+                complete(&bytes),
+                "{at}: the committed file {name} is partial"
+            );
         }
     }
     if let Some(file) = &job.file {
         let name = file.rsplit('/').next().unwrap();
         let held = files(env).await.into_iter().find(|(n, _)| n == name);
-        let (_, bytes) = held.unwrap_or_else(|| panic!("{at}: the recorded file {file} is not there"));
-        assert_eq!(job.checksum.as_deref(), Some(sha256(&bytes).as_str()), "{at}: checksum");
+        let (_, bytes) =
+            held.unwrap_or_else(|| panic!("{at}: the recorded file {file} is not there"));
+        assert_eq!(
+            job.checksum.as_deref(),
+            Some(sha256(&bytes).as_str()),
+            "{at}: checksum"
+        );
         assert_eq!(job.bytes, bytes.len() as u64, "{at}: length");
         assert_eq!(job.spans, SPANS, "{at}: spans");
     }
@@ -278,7 +317,11 @@ struct Left {
 fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
     crucible_sim::run(seed, |sim| async move {
         let database = sim.host("postgres", &sim.disk("postgres"), 0);
-        let model = PgModel::new(database.clock.clone(), sim.rng("pg").as_ref(), PgFaults::default());
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
         model.projects().insert(&project()).await.unwrap();
         let now = database.clock.wall_now();
         let base = now.saturating_add_micros(-600_000_000);
@@ -316,14 +359,23 @@ fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
                 () = give_up => false,
             }
         };
-        let mut left = Left { crashed, temporary: false, committed: false, recorded: false };
+        let mut left = Left {
+            crashed,
+            temporary: false,
+            committed: false,
+            recorded: false,
+        };
         if crashed {
             drop(running);
             host.crash().await;
             let after = sim.host("node/inspect", &disk, 0);
             let job = row(&model, id).await;
             check(&after.env, &job, &format!("crash after {crash_after} ops")).await;
-            let names: Vec<String> = files(&after.env).await.into_iter().map(|(n, _)| n).collect();
+            let names: Vec<String> = files(&after.env)
+                .await
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
             left.temporary = names.iter().any(|n| n.ends_with(".part"));
             left.committed = names.iter().any(|n| !n.ends_with(".part"));
             left.recorded = job.file.is_some();
@@ -346,25 +398,50 @@ fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
             }
             database.clock.sleep(Duration::from_secs(30)).await;
         }
-        let job = done.unwrap_or_else(|| panic!("crash after {crash_after} ops: the export never finished"));
+        let job = done
+            .unwrap_or_else(|| panic!("crash after {crash_after} ops: the export never finished"));
         assert_eq!(job.error, None);
-        assert_eq!(ExportState::of(&job, host.env.clock.wall_now()), ExportState::Ready);
-        check(&host.env, &job, &format!("resumed after a crash after {crash_after} ops")).await;
+        assert_eq!(
+            ExportState::of(&job, host.env.clock.wall_now()),
+            ExportState::Ready
+        );
+        check(
+            &host.env,
+            &job,
+            &format!("resumed after a crash after {crash_after} ops"),
+        )
+        .await;
 
         // The sweep leaves only the recorded file: it removes a file of an attempt the row does not name (what a
         // crash between the rename and the row leaves) and a temporary file whose attempt holds no claim.
         let dir = DiskPath::new(Root::Exports, &PROJECT.to_string()).unwrap();
         for stray in [format!("{id}.99.jsonl"), format!("{id}.98.part")] {
-            let file = host.env.disk.open(&dir.join(&stray).unwrap(), OpenMode::CreateNew).await.unwrap();
-            file.append(0, vec![bytes::Bytes::from_static(b"{}\n")]).await.unwrap();
+            let file = host
+                .env
+                .disk
+                .open(&dir.join(&stray).unwrap(), OpenMode::CreateNew)
+                .await
+                .unwrap();
+            file.append(0, vec![bytes::Bytes::from_static(b"{}\n")])
+                .await
+                .unwrap();
             file.sync_data().await.unwrap();
         }
         host.env.disk.sync_dir(&dir).await.unwrap();
-        let swept = sweep(&model, host.env.disk.as_ref(), host.env.clock.wall_now()).await.unwrap();
+        let swept = sweep(&model, host.env.disk.as_ref(), host.env.clock.wall_now())
+            .await
+            .unwrap();
         // The two strays, and the crashed attempt's temporary file when no sweep since its claim ran out took it.
         assert!(swept.files >= 2, "crash after {crash_after} ops: {swept:?}");
         let names: Vec<String> = files(&host.env).await.into_iter().map(|(n, _)| n).collect();
-        let recorded = job.file.as_deref().unwrap().rsplit('/').next().unwrap().to_owned();
+        let recorded = job
+            .file
+            .as_deref()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_owned();
         assert_eq!(names, vec![recorded], "crash after {crash_after} ops");
         left
     })
@@ -376,23 +453,38 @@ fn a_crash_at_any_disk_operation_leaves_no_partial_file_and_the_export_resumes()
     let left: Vec<Left> = (1..=16).map(|n| crash_and_resume(n, n)).collect();
     // The crash points fell before the file existed, while a temporary file was being written, and after the
     // file was committed and recorded (on the sweep that followed).
-    assert!(left.iter().any(|l| l.crashed && !l.temporary && !l.committed), "{left:?}");
-    assert!(left.iter().any(|l| l.crashed && l.temporary && !l.committed), "{left:?}");
-    assert!(left.iter().any(|l| l.crashed && l.committed && l.recorded), "{left:?}");
+    assert!(
+        left.iter()
+            .any(|l| l.crashed && !l.temporary && !l.committed),
+        "{left:?}"
+    );
+    assert!(
+        left.iter()
+            .any(|l| l.crashed && l.temporary && !l.committed),
+        "{left:?}"
+    );
+    assert!(
+        left.iter().any(|l| l.crashed && l.committed && l.recorded),
+        "{left:?}"
+    );
 }
 
 #[test]
 fn a_deletion_expires_the_exports_it_predates_and_removes_their_files() {
     crash_and_resume_then(|model, env, id, now| async move {
         // Five exports were created before the request, each with its file.
-        let purged = purge(&model, env.disk.as_ref(), PROJECT, now, now).await.unwrap();
+        let purged = purge(&model, env.disk.as_ref(), PROJECT, now, now)
+            .await
+            .unwrap();
         assert_eq!(purged.expired.len(), 5);
         assert_eq!(purged.files_removed, 5);
         let job = row(&model, id).await;
         assert_eq!(ExportState::of(&job, now), ExportState::Expired);
         assert!(files(&env).await.is_empty());
         // Again: nothing left to expire.
-        let again = purge(&model, env.disk.as_ref(), PROJECT, now, now).await.unwrap();
+        let again = purge(&model, env.disk.as_ref(), PROJECT, now, now)
+            .await
+            .unwrap();
         assert!(again.expired.is_empty());
     });
 }
@@ -405,7 +497,11 @@ where
 {
     crucible_sim::run(7, |sim| async move {
         let database = sim.host("postgres", &sim.disk("postgres"), 0);
-        let model = PgModel::new(database.clock.clone(), sim.rng("pg").as_ref(), PgFaults::default());
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
         model.projects().insert(&project()).await.unwrap();
         let disk = sim.disk("node");
         let host = sim.host("node/boot-1", &disk, 0);
@@ -429,16 +525,27 @@ where
             panic!("a new export")
         };
         // The same request under the same key is a replay; another request under it is refused.
-        assert!(matches!(exports.create(scope, request("k1")).await.unwrap(), Created::Replay(j) if j.new.id == job.new.id));
+        assert!(
+            matches!(exports.create(scope, request("k1")).await.unwrap(), Created::Replay(j) if j.new.id == job.new.id)
+        );
         let mut other = request("k1");
         other.options.gzip = true;
-        assert!(matches!(exports.create(scope, other).await, Err(CreateError::KeyReused)));
+        assert!(matches!(
+            exports.create(scope, other).await,
+            Err(CreateError::KeyReused)
+        ));
         // Five per hour per project; replays did not count.
         for n in 2..=5 {
-            assert!(matches!(exports.create(scope, request(&format!("k{n}"))).await, Ok(Created::New(_))));
+            assert!(matches!(
+                exports.create(scope, request(&format!("k{n}"))).await,
+                Ok(Created::New(_))
+            ));
         }
         let limited = exports.create(scope, request("k6")).await;
-        assert!(matches!(limited, Err(CreateError::RateLimited { retry_after_s }) if retry_after_s > 3_000), "{limited:?}");
+        assert!(
+            matches!(limited, Err(CreateError::RateLimited { retry_after_s }) if retry_after_s > 3_000),
+            "{limited:?}"
+        );
 
         let _running = start(&host, &model, base);
         let id = job.new.id;
@@ -453,7 +560,10 @@ where
         check(&host.env, &job, "a finished export").await;
         let download = exports.open(scope, id).await.unwrap();
         assert_eq!(download.len, job.bytes);
-        let bytes = download.read(0, usize::try_from(download.len).unwrap()).await.unwrap();
+        let bytes = download
+            .read(0, usize::try_from(download.len).unwrap())
+            .await
+            .unwrap();
         assert_eq!(sha256(&bytes), download.checksum);
         then(model, host.env.clone(), id, host.env.clock.wall_now()).await;
     });

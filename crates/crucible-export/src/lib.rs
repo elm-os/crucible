@@ -21,16 +21,18 @@ mod service;
 mod spec;
 mod stream;
 
-pub use jsonl::{SCHEMA, write_jsonl};
-pub use otlp::{Written, write_otlp};
-pub use spec::{MAX_TRACE_IDS, Options, Selector, Unreadable};
-pub use stream::{CHUNK_BYTES, ExportWriter, Pages, Progress, Summary, WriteError};
 pub use files::{FilesError, Purged, Swept, purge, sweep};
 pub use job::{
-    EXPORT_LEASE, EXPORT_TTL, ExportRuntime, ExportState, SHIPPING_WAIT, SWEEP_EVERY, codes, expiry, job,
-    sweep_job,
+    EXPORT_LEASE, EXPORT_TTL, ExportRuntime, ExportState, SHIPPING_WAIT, SWEEP_EVERY, codes,
+    expiry, job, sweep_job,
 };
-pub use service::{CreateError, CreateExport, Created, Download, DownloadError, EXPORTS_PER_HOUR, Exports};
+pub use jsonl::{SCHEMA, write_jsonl};
+pub use otlp::{Written, write_otlp};
+pub use service::{
+    CreateError, CreateExport, Created, Download, DownloadError, EXPORTS_PER_HOUR, Exports,
+};
+pub use spec::{MAX_TRACE_IDS, Options, Selector, Unreadable};
+pub use stream::{CHUNK_BYTES, ExportWriter, Pages, Progress, Summary, WriteError};
 
 /// The control plane's export types, for the crates that read exports through this one.
 pub use crucible_control::{ExportFormat, ExportJob, TxError};

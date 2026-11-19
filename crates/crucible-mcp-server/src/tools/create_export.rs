@@ -3,8 +3,8 @@
 
 use crucible_api_types::{self as wire, ProblemCode};
 use crucible_export::{
-    CreateError, CreateExport as Create, Created, EXPORTS_PER_HOUR, ExportFormat, ExportJob, Exports, Options,
-    Selector, TxError,
+    CreateError, CreateExport as Create, Created, EXPORTS_PER_HOUR, ExportFormat, ExportJob,
+    Exports, Options, Selector, TxError,
 };
 use crucible_records::TraceId;
 use schemars::JsonSchema;
@@ -125,10 +125,12 @@ pub(crate) fn service<'a>(call: &Call<'a>) -> Result<&'a Exports, ToolError> {
 
 pub(crate) fn store_error(error: &TxError) -> ToolError {
     match error {
-        TxError::Unavailable(_) | TxError::CommitUnknown | TxError::SerializationFailure => ToolError::new(
-            ProblemCode::ControlPlaneUnavailable,
-            "the control plane (Postgres) is unavailable; try again shortly",
-        ),
+        TxError::Unavailable(_) | TxError::CommitUnknown | TxError::SerializationFailure => {
+            ToolError::new(
+                ProblemCode::ControlPlaneUnavailable,
+                "the control plane (Postgres) is unavailable; try again shortly",
+            )
+        }
         _ => ToolError::new(ProblemCode::InternalError, "internal error"),
     }
 }
@@ -149,7 +151,11 @@ impl Tool for CreateExport {
         let mut check = Check::default();
         let window = check.window(&args.from, &args.to);
         if args.trace_ids.len() > crucible_export::MAX_TRACE_IDS {
-            check.error("trace_ids", "too_many", "at most 10,000 trace ids; export the window instead");
+            check.error(
+                "trace_ids",
+                "too_many",
+                "at most 10,000 trace ids; export the window instead",
+            );
         }
         let trace_ids: Vec<TraceId> = args
             .trace_ids
@@ -159,7 +165,10 @@ impl Tool for CreateExport {
             .collect();
         check.finish()?;
         let Some(window) = window else {
-            return Err(ToolError::new(ProblemCode::ValidationFailed, "the window is invalid"));
+            return Err(ToolError::new(
+                ProblemCode::ValidationFailed,
+                "the window is invalid",
+            ));
         };
         let exports = service(call)?;
         let request = Create {

@@ -17,9 +17,8 @@ use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, ExportCommit, ExportJob, Invitation,
     KeyChange, KeyChangeKind, KeySnapshot, Lease, LeaseName, LedgerEntry, NewExport, NewJob,
-    OauthAccount, OneTimeToken, Org,
-    OrgMembership, OrgRole, Project, ProjectMembership, Queue, Secret, Session, SigningKey,
-    SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
+    OauthAccount, OneTimeToken, Org, OrgMembership, OrgRole, Project, ProjectMembership, Queue,
+    Secret, Session, SigningKey, SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
 };
 
 /// The singleton organization row.
@@ -333,8 +332,11 @@ pub trait ExportJobRepo: Send + Sync {
     /// `UniqueViolation("export_jobs_dedup_key_key")`.
     async fn insert(&self, export: &NewExport) -> Result<(), TxError>;
     /// The export with this id, if it belongs to the project.
-    async fn get(&self, project_id: ProjectId, id: ExportJobId)
-    -> Result<Option<ExportJob>, TxError>;
+    async fn get(
+        &self,
+        project_id: ProjectId,
+        id: ExportJobId,
+    ) -> Result<Option<ExportJob>, TxError>;
     /// The export of the project with this deduplication key.
     async fn get_by_dedup_key(
         &self,

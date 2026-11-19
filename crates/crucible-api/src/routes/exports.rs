@@ -35,7 +35,10 @@ pub(super) fn routes() -> Router<ApiState> {
             "/projects/{project_id}/exports",
             get(list_exports).post(create_export),
         )
-        .route("/projects/{project_id}/exports/{export_id}", get(get_export))
+        .route(
+            "/projects/{project_id}/exports/{export_id}",
+            get(get_export),
+        )
         .route(
             "/projects/{project_id}/exports/{export_id}/download",
             get(download_export),
@@ -62,12 +65,14 @@ fn service(state: &ApiState, rid: RequestId) -> Result<&Exports, ApiError> {
 
 fn tx_problem(rid: RequestId, error: &TxError) -> ApiError {
     match error {
-        TxError::Unavailable(_) | TxError::CommitUnknown | TxError::SerializationFailure => ApiError::new(
-            rid,
-            ProblemCode::ControlPlaneUnavailable,
-            "the control plane (Postgres) is unavailable; try again shortly",
-        )
-        .with_retry_after(5),
+        TxError::Unavailable(_) | TxError::CommitUnknown | TxError::SerializationFailure => {
+            ApiError::new(
+                rid,
+                ProblemCode::ControlPlaneUnavailable,
+                "the control plane (Postgres) is unavailable; try again shortly",
+            )
+            .with_retry_after(5)
+        }
         other => {
             tracing::error!(request_id = %rid, error = %other, "an export call to the control plane failed");
             ApiError::new(rid, ProblemCode::InternalError, "internal error")
@@ -101,7 +106,11 @@ pub fn export_dto(job: &ExportJob, now: Timestamp) -> Export {
     let window = selector.as_ref().map(|s| s.window);
     let id = job.new.id;
     let error_code = match state {
-        ExportState::Failed => Some(job.error.clone().unwrap_or_else(|| "attempts_exhausted".to_owned())),
+        ExportState::Failed => Some(
+            job.error
+                .clone()
+                .unwrap_or_else(|| "attempts_exhausted".to_owned()),
+        ),
         _ => None,
     };
     Export {
@@ -161,7 +170,11 @@ pub(crate) fn checked(
     let (from, to) = (time("from", &request.from), time("to", &request.to));
     let window = match (from, to) {
         (Some(from), Some(to)) => TimeWindow::new(from, to).ok().or_else(|| {
-            errors.push(field_error("to", "invalid_window", "`to` must be after `from`"));
+            errors.push(field_error(
+                "to",
+                "invalid_window",
+                "`to` must be after `from`",
+            ));
             None
         }),
         _ => None,
@@ -171,7 +184,9 @@ pub(crate) fn checked(
         errors.push(field_error(
             "trace_ids",
             "too_many",
-            &format!("at most {MAX_TRACE_IDS} trace ids; export the window instead, or split the list"),
+            &format!(
+                "at most {MAX_TRACE_IDS} trace ids; export the window instead, or split the list"
+            ),
         ));
     }
     let mut trace_ids = Vec::with_capacity(ids.len().min(MAX_TRACE_IDS));
@@ -213,7 +228,9 @@ pub(crate) fn create_problem(rid: RequestId, error: &CreateError) -> ApiError {
         CreateError::RateLimited { retry_after_s } => ApiError::new(
             rid,
             ProblemCode::RateLimited,
-            format!("a project may create {EXPORTS_PER_HOUR} exports per hour; retry after the wait"),
+            format!(
+                "a project may create {EXPORTS_PER_HOUR} exports per hour; retry after the wait"
+            ),
         )
         .with_retry_after(*retry_after_s)
         .with_limit("exports_per_hour", EXPORTS_PER_HOUR as u32),
@@ -304,10 +321,16 @@ pub(crate) async fn create_export(
     let rid = project.request_id;
     let key = idempotency::key(&headers).map_err(|()| {
         let message = "`Idempotency-Key` must be 1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`";
-        ApiError::validation(rid, vec![field_error("", "invalid_idempotency_key", message)])
+        ApiError::validation(
+            rid,
+            vec![field_error("", "invalid_idempotency_key", message)],
+        )
     })?;
     let Json(request) = request.map_err(|rejection| {
-        ApiError::validation(rid, vec![field_error("", "invalid_body", &rejection.body_text())])
+        ApiError::validation(
+            rid,
+            vec![field_error("", "invalid_body", &rejection.body_text())],
+        )
     })?;
     let (format, selector, options) = checked(rid, &request)?;
     let exports = service(&state, rid)?;
@@ -395,29 +418,32 @@ pub(crate) async fn download_export(
     let rid = project.request_id;
     let id = path_export(&project)?;
     let exports = service(&state, rid)?;
-    let download = exports.open(project.scope, id).await.map_err(|error| match error {
-        DownloadError::NotFound => ApiError::not_found(rid),
-        DownloadError::NotReady(state) => ApiError::new(
-            rid,
-            ProblemCode::Conflict,
-            format!("the export is {state}; download it once it is ready"),
-        ),
-        DownloadError::Expired => ApiError::new(
-            rid,
-            ProblemCode::ExportExpired,
-            "the export file expired, or a deletion request removed it; create a new export",
-        ),
-        DownloadError::Missing => ApiError::new(
-            rid,
-            ProblemCode::NotFound,
-            "the export file is not on this node; download it from the node that wrote it",
-        ),
-        DownloadError::Store(error) => tx_problem(rid, &error),
-        DownloadError::Disk(error) => {
-            tracing::error!(request_id = %rid, %error, "opening an export file failed");
-            ApiError::new(rid, ProblemCode::InternalError, "internal error")
-        }
-    })?;
+    let download = exports
+        .open(project.scope, id)
+        .await
+        .map_err(|error| match error {
+            DownloadError::NotFound => ApiError::not_found(rid),
+            DownloadError::NotReady(state) => ApiError::new(
+                rid,
+                ProblemCode::Conflict,
+                format!("the export is {state}; download it once it is ready"),
+            ),
+            DownloadError::Expired => ApiError::new(
+                rid,
+                ProblemCode::ExportExpired,
+                "the export file expired, or a deletion request removed it; create a new export",
+            ),
+            DownloadError::Missing => ApiError::new(
+                rid,
+                ProblemCode::NotFound,
+                "the export file is not on this node; download it from the node that wrote it",
+            ),
+            DownloadError::Store(error) => tx_problem(rid, &error),
+            DownloadError::Disk(error) => {
+                tracing::error!(request_id = %rid, %error, "opening an export file failed");
+                ApiError::new(rid, ProblemCode::InternalError, "internal error")
+            }
+        })?;
     let (len, name, checksum, gzip) = (
         download.len,
         download.file_name.clone(),
@@ -435,14 +461,21 @@ pub(crate) async fn download_export(
                 let next = offset + bytes.len() as u64;
                 Some((Ok::<_, std::io::Error>(bytes), (download, next)))
             }
-            Err(error) => Some((Err(std::io::Error::other(error.to_string())), (download, len))),
+            Err(error) => Some((
+                Err(std::io::Error::other(error.to_string())),
+                (download, len),
+            )),
         }
     });
     let mut response = (StatusCode::OK, Body::from_stream(chunks)).into_response();
     let headers = response.headers_mut();
     headers.insert(
         CONTENT_TYPE,
-        HeaderValue::from_static(if gzip { "application/gzip" } else { "application/x-ndjson" }),
+        HeaderValue::from_static(if gzip {
+            "application/gzip"
+        } else {
+            "application/x-ndjson"
+        }),
     );
     headers.insert(CONTENT_LENGTH, HeaderValue::from(len));
     if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {

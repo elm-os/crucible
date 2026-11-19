@@ -20,8 +20,8 @@ use std::future::Future;
 
 use crucible_api::ProjectSettings;
 use crucible_api_types::{FieldError, ProblemCode};
-use crucible_query::{QueryService, ReadContext};
 use crucible_export::Exports;
+use crucible_query::{QueryService, ReadContext};
 use crucible_records::{ApiKeyId, RequestId, SpanId, TimeWindow, Timestamp, TraceId};
 use futures::future::BoxFuture;
 use rmcp::handler::server::tool::{schema_for_input, schema_for_output};
@@ -277,7 +277,10 @@ mod tests {
             assert_eq!(output["type"], "object", "{}", entry.name);
             let annotations = tool.annotations.unwrap();
             // Every tool reads; create_export alone starts work (an export job).
-            assert_eq!(annotations.read_only_hint, Some(entry.name != "create_export"));
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(entry.name != "create_export")
+            );
             assert!(find(entry.name).is_some());
         }
         assert!(find("drop_project").is_none());

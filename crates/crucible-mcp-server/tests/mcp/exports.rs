@@ -25,7 +25,11 @@ fn arguments() -> Value {
 fn an_export_is_created_and_followed() {
     run(|env| async move {
         let world = World::new(10);
-        let model = PgModel::new(env.clock.clone(), env.rng.fork("pg").as_ref(), PgFaults::default());
+        let model = PgModel::new(
+            env.clock.clone(),
+            env.rng.fork("pg").as_ref(),
+            PgFaults::default(),
+        );
         model
             .projects()
             .insert(&Project {
@@ -59,21 +63,36 @@ fn an_export_is_created_and_followed() {
         assert_eq!(created["format"], "otlp-json");
         assert_eq!(created["from"], "2026-11-17T09:00:00.000000Z");
         assert_eq!(created["spans"], 0);
-        let read = session.output("get_export", json!({"id": created["id"]})).await;
+        let read = session
+            .output("get_export", json!({"id": created["id"]}))
+            .await;
         assert_eq!(read["id"], created["id"]);
         assert_eq!(read["state"], "queued");
 
-        let missing = session.error("get_export", json!({"id": "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"})).await;
+        let missing = session
+            .error(
+                "get_export",
+                json!({"id": "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"}),
+            )
+            .await;
         assert_eq!(missing["code"], "not_found");
         let invalid = session.error("get_export", json!({"id": "export-1"})).await;
         assert_eq!(invalid["code"], "validation_failed");
         assert_eq!(invalid["errors"][0]["pointer"], "/id");
         let window = session
-            .error("create_export", json!({"format": "crucible-jsonl", "from": "today", "to": "2026-11-17T10:00:00Z"}))
+            .error(
+                "create_export",
+                json!({"format": "crucible-jsonl", "from": "today", "to": "2026-11-17T10:00:00Z"}),
+            )
             .await;
         assert_eq!(window["code"], "validation_failed");
         assert_eq!(window["errors"][0]["pointer"], "/from");
-        let unknown = session.error("create_export", json!({"format": "csv", "from": "a", "to": "b"})).await;
+        let unknown = session
+            .error(
+                "create_export",
+                json!({"format": "csv", "from": "a", "to": "b"}),
+            )
+            .await;
         assert_eq!(unknown["code"], "validation_failed");
     });
 }
@@ -86,11 +105,17 @@ fn without_a_control_plane_the_export_tools_name_the_setting() {
         let mut session = Client::modern(&router, &key(1));
         for (tool, args) in [
             ("create_export", arguments()),
-            ("get_export", json!({"id": "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"})),
+            (
+                "get_export",
+                json!({"id": "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"}),
+            ),
         ] {
             let problem = session.error(tool, args).await;
             assert_eq!(problem["code"], "feature_disabled", "{tool}");
-            assert!(problem["detail"].as_str().unwrap().contains("postgres.url"), "{tool}");
+            assert!(
+                problem["detail"].as_str().unwrap().contains("postgres.url"),
+                "{tool}"
+            );
         }
     });
 }

@@ -17,9 +17,7 @@ use crucible_export::{CHUNK_BYTES, ExportWriter, MAX_TRACE_IDS, Options, Pages, 
 use crucible_plan::Caller;
 use crucible_query::{ExportLimits, QueryService, ReadContext};
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
-use crucible_records::{
-    Lsn, ProjectId, ProjectScope, TimeWindow, Timestamp, TraceId, WalEpoch,
-};
+use crucible_records::{Lsn, ProjectId, ProjectScope, TimeWindow, Timestamp, TraceId, WalEpoch};
 use crucible_schema::RetentionSettings;
 
 use crate::ConfigArgs;
@@ -73,18 +71,24 @@ impl WalView for NoWal {
     }
 
     fn read_span(&self, _project_id: ProjectId, _locator: WalLocator) -> SpanRead {
-        Box::pin(async { Err(WalReadError::Failed("this process has no write-ahead log".to_owned())) })
+        Box::pin(async {
+            Err(WalReadError::Failed(
+                "this process has no write-ahead log".to_owned(),
+            ))
+        })
     }
 }
 
 fn format(text: &str) -> anyhow::Result<ExportFormat> {
-    ExportFormat::parse(text).with_context(|| format!("--format {text:?}: use crucible-jsonl or otlp-json"))
+    ExportFormat::parse(text)
+        .with_context(|| format!("--format {text:?}: use crucible-jsonl or otlp-json"))
 }
 
 fn selector(args: &ExportArgs) -> anyhow::Result<Selector> {
     let time = |flag: &str, text: &str| {
-        Timestamp::parse_rfc3339(text)
-            .with_context(|| format!("--{flag} {text:?} is not an RFC 3339 time, for example 2026-11-17T09:30:00Z"))
+        Timestamp::parse_rfc3339(text).with_context(|| {
+            format!("--{flag} {text:?} is not an RFC 3339 time, for example 2026-11-17T09:30:00Z")
+        })
     };
     let window = TimeWindow::new(time("from", &args.from)?, time("to", &args.to)?)
         .map_err(|_| anyhow::anyhow!("--from must be before --to"))?;
@@ -95,7 +99,10 @@ fn selector(args: &ExportArgs) -> anyhow::Result<Selector> {
     let trace_ids = args
         .trace_ids
         .iter()
-        .map(|id| TraceId::parse(id).with_context(|| format!("--trace-id {id:?} is not 32 hexadecimal characters")))
+        .map(|id| {
+            TraceId::parse(id)
+                .with_context(|| format!("--trace-id {id:?} is not 32 hexadecimal characters"))
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Selector {
         window,
@@ -124,7 +131,8 @@ async fn project(
                  lists the others"
             )
         })?;
-        let scope = crucible_auth::stored_project_scope(&project).context("the project id is nil")?;
+        let scope =
+            crucible_auth::stored_project_scope(&project).context("the project id is nil")?;
         let retention = RetentionSettings {
             retention_days: project.retention_days,
             payload_retention_days: project.payload_retention_days,
@@ -137,8 +145,9 @@ async fn project(
          with a key of the project",
     )?;
     let keys = crate::keys::load(path, env)?;
-    let id = ProjectId::parse(reference)
-        .with_context(|| format!("--project {reference:?}: without a control plane, give the project's id"))?;
+    let id = ProjectId::parse(reference).with_context(|| {
+        format!("--project {reference:?}: without a control plane, give the project's id")
+    })?;
     let scope = keys
         .project_scope(id)
         .with_context(|| format!("no key in {} belongs to project {id}", path.display()))?;
@@ -146,7 +155,7 @@ async fn project(
 }
 
 /// Runs `crucible export`.
-#[allow(clippy::disallowed_methods)] // The binary writes the operator's file or standard output.
+#[allow(clippy::disallowed_methods, clippy::disallowed_types)] // The binary writes the operator's file or standard output.
 pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> anyhow::Result<()> {
     let format = format(&args.format)?;
     let selector = selector(args)?;
@@ -162,10 +171,9 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
     let (scope, retention) = project(env, &config, &args.project).await?;
     let clickhouse = crate::store::ClickHouse::new(clickhouse, config.sql)?;
     let store = clickhouse.store(env);
-    let facts = store
-        .detect()
-        .await
-        .map_err(|error| anyhow::anyhow!("the telemetry store did not pass startup detection: {error}"))?;
+    let facts = store.detect().await.map_err(|error| {
+        anyhow::anyhow!("the telemetry store did not pass startup detection: {error}")
+    })?;
     let (index, _writer) = RecentIndex::new(
         RecentConfig::new(1 << 20, facts.flavour),
         Arc::clone(&env.clock),
@@ -191,12 +199,18 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
     };
     let mut writer = ExportWriter::new(format, options);
     let mut pages = Pages::new(&service, &ctx, &query, ExportLimits::default());
-    while pages.next(&mut writer).await.map_err(|error| anyhow::anyhow!("{error}"))? {
+    while pages
+        .next(&mut writer)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+    {
         if let Some(chunk) = writer.ready(CHUNK_BYTES) {
             out.write_all(&chunk).context("writing the export")?;
         }
     }
-    let (rest, summary) = writer.finish().map_err(|error| anyhow::anyhow!("{error}"))?;
+    let (rest, summary) = writer
+        .finish()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     out.write_all(&rest).context("writing the export")?;
     out.flush().context("writing the export")?;
     writeln!(

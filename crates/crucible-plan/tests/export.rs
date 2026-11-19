@@ -19,11 +19,18 @@ use crucible_schema::{
 use proptest::prelude::*;
 
 fn names<C: Column>() -> Vec<String> {
-    C::ALL.iter().map(|c| c.column_ref().name().to_owned()).collect()
+    C::ALL
+        .iter()
+        .map(|c| c.column_ref().name().to_owned())
+        .collect()
 }
 
 fn output(plan: &QueryPlan) -> Vec<String> {
-    plan.output().columns().iter().map(|c| c.name.clone()).collect()
+    plan.output()
+        .columns()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect()
 }
 
 fn scope_strategy() -> impl Strategy<Value = ProjectScope> {
@@ -55,7 +62,11 @@ fn keep() -> RetentionClamp {
 }
 
 /// What every export plan shares: scope, class, identity and no column named `project_id`.
-fn assert_export(plan: &QueryPlan, scope: ProjectScope, table_id: TableId) -> Result<(), TestCaseError> {
+fn assert_export(
+    plan: &QueryPlan,
+    scope: ProjectScope,
+    table_id: TableId,
+) -> Result<(), TestCaseError> {
     prop_assert_eq!(plan.scope(), scope);
     prop_assert_eq!(plan.class(), QueryClass::Export);
     prop_assert_eq!(plan.identity(), ServiceIdentity::ReadUi);
@@ -189,12 +200,26 @@ fn the_page_and_lookup_sizes_are_bounded() {
         let refused = export_spans(scope, window, &keep(), none, Timestamp::EPOCH, None, limit);
         assert!(matches!(refused, Err(PlanError::Limit)), "{limit}");
     }
-    assert!(matches!(export_payloads(scope, &keep(), &[]), Err(PlanError::Limit)));
-    let span = (Timestamp::EPOCH, TraceId::from_bytes([1; 16]), SpanId::from_bytes([1; 8]));
+    assert!(matches!(
+        export_payloads(scope, &keep(), &[]),
+        Err(PlanError::Limit)
+    ));
+    let span = (
+        Timestamp::EPOCH,
+        TraceId::from_bytes([1; 16]),
+        SpanId::from_bytes([1; 8]),
+    );
     let many = vec![span; MAX_LIST + 1];
-    assert!(matches!(export_payloads(scope, &keep(), &many), Err(PlanError::Limit)));
+    assert!(matches!(
+        export_payloads(scope, &keep(), &many),
+        Err(PlanError::Limit)
+    ));
     let traces = vec![TraceId::from_bytes([2; 16]); MAX_LIST + 1];
-    let selected = ExportSelection { trace_ids: &traces, user_id: None, session_id: None };
+    let selected = ExportSelection {
+        trace_ids: &traces,
+        user_id: None,
+        session_id: None,
+    };
     let refused = export_spans(scope, window, &keep(), selected, Timestamp::EPOCH, None, 1);
     assert!(matches!(refused, Err(PlanError::Limit)));
 }

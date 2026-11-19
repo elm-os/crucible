@@ -307,9 +307,18 @@ mod tests {
 
     #[test]
     fn a_body_is_embedded_when_it_is_json_and_a_string_otherwise() {
-        assert_eq!(written(|o| body(o, b"{ \"a\" : [1, 2] }", false)), r#"{"a":[1,2]}"#);
-        assert_eq!(written(|o| body(o, b"{\n \"a b\": \"c\\\" d\"\n}", false)), r#"{"a b":"c\" d"}"#);
-        assert_eq!(written(|o| body(o, b"plain text", false)), r#""plain text""#);
+        assert_eq!(
+            written(|o| body(o, b"{ \"a\" : [1, 2] }", false)),
+            r#"{"a":[1,2]}"#
+        );
+        assert_eq!(
+            written(|o| body(o, b"{\n \"a b\": \"c\\\" d\"\n}", false)),
+            r#"{"a b":"c\" d"}"#
+        );
+        assert_eq!(
+            written(|o| body(o, b"plain text", false)),
+            r#""plain text""#
+        );
         assert_eq!(written(|o| body(o, b"", false)), r#""""#);
         assert_eq!(written(|o| body(o, b"{\"a\":1}", true)), r#""{\"a\":1}""#);
         assert_eq!(written(|o| body(o, b"{\"cut", false)), r#""{\"cut""#);
@@ -317,9 +326,15 @@ mod tests {
 
     #[test]
     fn members_keep_their_order_and_duplicates() {
-        let parsed = Json::parse(br#"{"b":1,"a":2.0,"b":"x","n":null,"l":[true,{"z":1e+300}]}"#).unwrap();
-        assert_eq!(written(|o| parsed.write(o)), r#"{"b":1,"a":2.0,"b":"x","n":null,"l":[true,{"z":1e+300}]}"#);
-        let Json::Obj(members) = parsed else { panic!("an object") };
+        let parsed =
+            Json::parse(br#"{"b":1,"a":2.0,"b":"x","n":null,"l":[true,{"z":1e+300}]}"#).unwrap();
+        assert_eq!(
+            written(|o| parsed.write(o)),
+            r#"{"b":1,"a":2.0,"b":"x","n":null,"l":[true,{"z":1e+300}]}"#
+        );
+        let Json::Obj(members) = parsed else {
+            panic!("an object")
+        };
         assert_eq!(members[0].1, Json::Int(1));
         assert_eq!(members[1].1, Json::Float(2.0));
     }

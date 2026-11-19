@@ -116,7 +116,8 @@ mod tests {
 
     #[test]
     fn a_selector_and_options_read_back() {
-        let window = TimeWindow::new(Timestamp::from_micros(1), Timestamp::from_micros(2_000_000)).unwrap();
+        let window =
+            TimeWindow::new(Timestamp::from_micros(1), Timestamp::from_micros(2_000_000)).unwrap();
         let selector = Selector {
             window,
             trace_ids: vec![TraceId::from_bytes([0xab; 16])],

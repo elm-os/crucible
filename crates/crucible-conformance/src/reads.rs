@@ -1007,7 +1007,9 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let facts = crate::m2_facts::plans(ctx, &facts_fixture)
         .await
         .context("facts and metrics plans")?;
-    let export_fixture = crate::m2_export::load(ctx).await.context("export fixture")?;
+    let export_fixture = crate::m2_export::load(ctx)
+        .await
+        .context("export fixture")?;
     let exports = crate::m2_export::plans(ctx, &export_fixture)
         .await
         .context("export plans")?;

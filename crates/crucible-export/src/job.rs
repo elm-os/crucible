@@ -101,16 +101,30 @@ pub fn job(runtime: ExportRuntime) -> Job {
 /// The per-node sweep of the exports root: files no export needs, and files of expired exports. Without a
 /// control plane there are no exports and nothing to sweep.
 pub fn sweep_job() -> Job {
-    Job::per_node("exports-sweep", Cadence::every(SWEEP_EVERY), |ctx: NodeCtx| async move {
-        let Some(store) = ctx.control else { return Ok(()) };
-        let swept = sweep(store.as_ref(), ctx.env.disk.as_ref(), ctx.env.clock.wall_now())
+    Job::per_node(
+        "exports-sweep",
+        Cadence::every(SWEEP_EVERY),
+        |ctx: NodeCtx| async move {
+            let Some(store) = ctx.control else {
+                return Ok(());
+            };
+            let swept = sweep(
+                store.as_ref(),
+                ctx.env.disk.as_ref(),
+                ctx.env.clock.wall_now(),
+            )
             .await
             .map_err(|error| JobError::Failed(error.to_string()))?;
-        if swept.files > 0 {
-            tracing::info!(job = "exports-sweep", files = swept.files, "removed export files that no export needs");
-        }
-        Ok(())
-    })
+            if swept.files > 0 {
+                tracing::info!(
+                    job = "exports-sweep",
+                    files = swept.files,
+                    "removed export files that no export needs"
+                );
+            }
+            Ok(())
+        },
+    )
 }
 
 fn failed(error: impl std::fmt::Display) -> JobError {
@@ -120,11 +134,15 @@ fn failed(error: impl std::fmt::Display) -> JobError {
 /// The error code of a read failure that no retry fixes.
 fn guardrail(error: &WriteError) -> Option<&'static str> {
     match error {
-        WriteError::Read(QueryServiceError::Store(QueryError::Timeout)) => Some(codes::QUERY_TIMEOUT),
+        WriteError::Read(QueryServiceError::Store(QueryError::Timeout)) => {
+            Some(codes::QUERY_TIMEOUT)
+        }
         WriteError::Read(QueryServiceError::Store(QueryError::MemoryExceeded)) => {
             Some(codes::QUERY_MEMORY_EXCEEDED)
         }
-        WriteError::Read(QueryServiceError::Store(QueryError::TooBroad)) => Some(codes::QUERY_TOO_BROAD),
+        WriteError::Read(QueryServiceError::Store(QueryError::TooBroad)) => {
+            Some(codes::QUERY_TOO_BROAD)
+        }
         _ => None,
     }
 }
@@ -138,7 +156,14 @@ async fn give_up(store: Arc<dyn ControlStore>, claim: Claim, code: &'static str)
 
 async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
     let id = ExportJobId::from_uuid(ctx.claim.id);
-    let Some(job) = ctx.store.export_jobs().get_many(&[id]).await?.into_iter().next() else {
+    let Some(job) = ctx
+        .store
+        .export_jobs()
+        .get_many(&[id])
+        .await?
+        .into_iter()
+        .next()
+    else {
         return Ok(());
     };
     if job.file.is_some() || job.error.is_some() || job.expires_at.is_some() {
@@ -146,11 +171,23 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
     }
     let project = ctx.store.projects().get(job.new.project_id).await?;
     let Some(project) = project.filter(|p| p.deleted_at.is_none()) else {
-        return give_up(Arc::clone(&ctx.store), ctx.claim.clone(), codes::PROJECT_DELETED).await;
+        return give_up(
+            Arc::clone(&ctx.store),
+            ctx.claim.clone(),
+            codes::PROJECT_DELETED,
+        )
+        .await;
     };
-    let (Ok(selector), Ok(options)) = (Selector::from_text(&job.new.selector), Options::from_text(&job.new.options))
-    else {
-        return give_up(Arc::clone(&ctx.store), ctx.claim.clone(), codes::INTERNAL_ERROR).await;
+    let (Ok(selector), Ok(options)) = (
+        Selector::from_text(&job.new.selector),
+        Options::from_text(&job.new.options),
+    ) else {
+        return give_up(
+            Arc::clone(&ctx.store),
+            ctx.claim.clone(),
+            codes::INTERNAL_ERROR,
+        )
+        .await;
     };
     let Some(service) = runtime.service() else {
         return Err(failed("the telemetry store is not up yet"));
@@ -173,14 +210,22 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         ctx.env.clock.sleep(Duration::from_secs(1)).await;
     }
 
-    let mut draft = Draft::open(Arc::clone(&ctx.env.disk), &job, ctx.claim.attempt, options.gzip)
-        .await
-        .map_err(failed)?;
+    let mut draft = Draft::open(
+        Arc::clone(&ctx.env.disk),
+        &job,
+        ctx.claim.attempt,
+        options.gzip,
+    )
+    .await
+    .map_err(failed)?;
     let mut writer = ExportWriter::new(job.new.format, options);
     let written = ctx
         .env
         .clock
-        .timeout(RUN_BUDGET, write_file(&ctx, service, &read, &query, &mut writer, &mut draft))
+        .timeout(
+            RUN_BUDGET,
+            write_file(&ctx, service, &read, &query, &mut writer, &mut draft),
+        )
         .await;
     match written {
         Ok(Ok(())) => {}
@@ -193,7 +238,12 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         }
         Err(_) => {
             draft.abandon().await;
-            return give_up(Arc::clone(&ctx.store), ctx.claim.clone(), codes::EXPORT_TOO_LARGE).await;
+            return give_up(
+                Arc::clone(&ctx.store),
+                ctx.claim.clone(),
+                codes::EXPORT_TOO_LARGE,
+            )
+            .await;
         }
     }
     let (rest, summary) = writer.finish().map_err(failed)?;
@@ -236,10 +286,15 @@ async fn write_file(
     let mut pages = Pages::new(service, read, query, ExportLimits::default());
     let mut chunks = 0u32;
     while pages.next(writer).await? {
-        let Some(chunk) = writer.ready(CHUNK_BYTES) else { continue };
-        draft.append(chunk).await.map_err(|e| WriteError::Sink(e.to_string()))?;
+        let Some(chunk) = writer.ready(CHUNK_BYTES) else {
+            continue;
+        };
+        draft
+            .append(chunk)
+            .await
+            .map_err(|e| WriteError::Sink(e.to_string()))?;
         chunks += 1;
-        if chunks % PROGRESS_EVERY == 0 {
+        if chunks.is_multiple_of(PROGRESS_EVERY) {
             let Progress { spans, bytes, .. } = writer.progress();
             let held = ctx
                 .store
@@ -248,7 +303,9 @@ async fn write_file(
                 .await
                 .map_err(|e| WriteError::Sink(e.to_string()))?;
             if !held {
-                return Err(WriteError::Sink("the export was claimed again or closed".to_owned()));
+                return Err(WriteError::Sink(
+                    "the export was claimed again or closed".to_owned(),
+                ));
             }
         }
     }

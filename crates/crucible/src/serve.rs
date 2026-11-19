@@ -51,6 +51,7 @@ use crucible_env::{
     OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
+use crucible_export::{ExportRuntime, Exports};
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
@@ -62,7 +63,6 @@ use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
-use crucible_export::{ExportRuntime, Exports};
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;

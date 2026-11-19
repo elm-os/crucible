@@ -77,8 +77,11 @@ fn store(world: &World, copy: &Copy) {
 
 fn query(as_of: Timestamp) -> ExportQuery {
     ExportQuery {
-        window: TimeWindow::new(NOW.saturating_add_micros(-DAY), NOW.saturating_add_micros(DAY))
-            .unwrap(),
+        window: TimeWindow::new(
+            NOW.saturating_add_micros(-DAY),
+            NOW.saturating_add_micros(DAY),
+        )
+        .unwrap(),
         trace_ids: Vec::new(),
         user_id: None,
         session_id: None,
@@ -99,7 +102,12 @@ fn export_all(
         for record in page.records {
             let core = &record.span.core;
             let payload = String::from_utf8(record.span.payload.input.to_vec()).unwrap();
-            out.push((core.trace_id, core.span_id, core.ingestion.lsn.get(), payload));
+            out.push((
+                core.trace_id,
+                core.span_id,
+                core.ingestion.lsn.get(),
+                payload,
+            ));
         }
         match page.next {
             Some(next) => after = Some(next),
@@ -110,9 +118,17 @@ fn export_all(
 }
 
 /// A span's position in the key order of `span_core`.
-fn key_of(copy: &Copy) -> (Timestamp, u32, Timestamp, SpanId) {
+type Key = (Timestamp, u32, Timestamp, SpanId);
+
+/// A span's position in the key order of `span_core`.
+fn key_of(copy: &Copy) -> Key {
     let trace_id = trace(copy.trace);
-    (copy.start.floor_minute(), trace_id.trace_hash(), copy.start, span_id(copy.span))
+    (
+        copy.start.floor_minute(),
+        trace_id.trace_hash(),
+        copy.start,
+        span_id(copy.span),
+    )
 }
 
 proptest! {
@@ -156,8 +172,7 @@ proptest! {
         let as_of = received(by_lsn.get(cut.wrapping_sub(1)).map_or(0, |c| c.lsn));
         let visible = &by_lsn[..cut];
 
-        let mut expected: BTreeMap<(Timestamp, u32, Timestamp, SpanId), (TraceId, SpanId, u64)> =
-            BTreeMap::new();
+        let mut expected: BTreeMap<Key, (TraceId, SpanId, u64)> = BTreeMap::new();
         for copy in visible {
             let entry = expected.entry(key_of(copy)).or_insert((trace(copy.trace), span_id(copy.span), 0));
             entry.2 = entry.2.max(copy.lsn);
@@ -176,41 +191,81 @@ proptest! {
 fn a_page_whose_payload_read_loses_the_store_fails_instead_of_leaving_the_payload_out() {
     let world = World::new(16);
     for n in 1..=3 {
-        let copy = Copy { project: 1, trace: 1, span: n, start: NOW, lsn: n, event_bytes: 10 };
+        let copy = Copy {
+            project: 1,
+            trace: 1,
+            span: n,
+            start: NOW,
+            lsn: n,
+            event_bytes: 10,
+        };
         store(&world, &copy);
     }
-    world.store.during_next_read(|store| store.set_unavailable(true));
-    let result = run(world.service.export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()));
+    world
+        .store
+        .during_next_read(|store| store.set_unavailable(true));
+    let result =
+        run(world
+            .service
+            .export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()));
     assert!(
-        matches!(result, Err(QueryServiceError::Store(QueryError::Unavailable(_)))),
+        matches!(
+            result,
+            Err(QueryServiceError::Store(QueryError::Unavailable(_)))
+        ),
         "{result:?}"
     );
     world.store.set_unavailable(false);
-    let page = run(world.service.export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()))
+    let page =
+        run(world
+            .service
+            .export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()))
         .unwrap();
     assert_eq!(page.records.len(), 3);
-    assert!(page.records.iter().all(|r| r.payload_stored && !r.span.payload.input.is_empty()));
+    assert!(
+        page.records
+            .iter()
+            .all(|r| r.payload_stored && !r.span.payload.input.is_empty())
+    );
 }
 
 #[test]
 fn the_selection_narrows_to_traces_users_and_sessions() {
     let world = World::new(16);
     for n in 1..=4 {
-        let copy = Copy { project: 1, trace: n % 2, span: n, start: NOW, lsn: n, event_bytes: 1 };
+        let copy = Copy {
+            project: 1,
+            trace: n % 2,
+            span: n,
+            start: NOW,
+            lsn: n,
+            event_bytes: 1,
+        };
         store(&world, &copy);
     }
     let mut q = query(received(9));
     q.trace_ids = vec![trace(1)];
     let spans = export_all(&world, &q, ExportLimits::default()).unwrap();
-    let ids: BTreeSet<u64> = spans.iter().map(|(_, s, ..)| u64::from_be_bytes(s.to_bytes())).collect();
+    let ids: BTreeSet<u64> = spans
+        .iter()
+        .map(|(_, s, ..)| u64::from_be_bytes(s.to_bytes()))
+        .collect();
     assert_eq!(ids, BTreeSet::from([1, 3]));
     // No span of the fixture has a user or session.
     q.trace_ids.clear();
     q.user_id = Some("someone".to_owned());
-    assert!(export_all(&world, &q, ExportLimits::default()).unwrap().is_empty());
+    assert!(
+        export_all(&world, &q, ExportLimits::default())
+            .unwrap()
+            .is_empty()
+    );
     q.user_id = None;
     q.session_id = Some("a session".to_owned());
-    assert!(export_all(&world, &q, ExportLimits::default()).unwrap().is_empty());
+    assert!(
+        export_all(&world, &q, ExportLimits::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn fact_id(n: u8) -> Uuid {
@@ -223,8 +278,16 @@ fn fact_id(n: u8) -> Uuid {
 
 /// A tag edit about trace 1 (`span` zero) or about one of its spans.
 fn tag(world: &World, span: u64, key: &str, version: u64, id: u8, retracted: bool) {
-    let kind = if span == 0 { FactTargetKind::Trace } else { FactTargetKind::Span };
-    let target = if span == 0 { SpanId::ZERO } else { span_id(span) };
+    let kind = if span == 0 {
+        FactTargetKind::Trace
+    } else {
+        FactTargetKind::Span
+    };
+    let target = if span == 0 {
+        SpanId::ZERO
+    } else {
+        span_id(span)
+    };
     let set = vec![
         ("project_id", Value::Uuid(project(1).uuid())),
         ("key", Value::String(key.to_owned())),
@@ -240,16 +303,38 @@ fn tag(world: &World, span: u64, key: &str, version: u64, id: u8, retracted: boo
         ("created_at", Value::Time(NOW)),
         ("op", Value::Enum(1)),
     ];
-    world.store.insert(TableId::FactTags, stored_row(TableId::FactTags, &set));
+    world
+        .store
+        .insert(TableId::FactTags, stored_row(TableId::FactTags, &set));
 }
 
 #[test]
 fn each_span_carries_the_effective_facts_of_its_trace_and_its_own() {
     let world = World::new(16);
     for n in 1..=2 {
-        store(&world, &Copy { project: 1, trace: 1, span: n, start: NOW, lsn: n, event_bytes: 1 });
+        store(
+            &world,
+            &Copy {
+                project: 1,
+                trace: 1,
+                span: n,
+                start: NOW,
+                lsn: n,
+                event_bytes: 1,
+            },
+        );
     }
-    store(&world, &Copy { project: 1, trace: 2, span: 3, start: NOW, lsn: 3, event_bytes: 1 });
+    store(
+        &world,
+        &Copy {
+            project: 1,
+            trace: 2,
+            span: 3,
+            start: NOW,
+            lsn: 3,
+            event_bytes: 1,
+        },
+    );
     // The trace's tag, edited twice: the later version wins.
     tag(&world, 0, "reviewed", 1, 1, false);
     tag(&world, 0, "reviewed", 2, 2, false);
@@ -259,7 +344,10 @@ fn each_span_carries_the_effective_facts_of_its_trace_and_its_own() {
     // Another span's tag.
     tag(&world, 1, "first", 1, 5, false);
 
-    let page = run(world.service.export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()))
+    let page =
+        run(world
+            .service
+            .export_page(&ctx(1), &query(received(9)), None, ExportLimits::default()))
         .unwrap();
     let facts: BTreeMap<u64, Vec<(FactTable, String, u64)>> = page
         .records
@@ -270,9 +358,20 @@ fn each_span_carries_the_effective_facts_of_its_trace_and_its_own() {
                 .facts
                 .iter()
                 .map(|fact| {
-                    let column = |name: &str| fact.columns.iter().find(|c| c.name == name).unwrap().value.clone();
-                    let Value::String(key) = column("key") else { panic!("key") };
-                    let Value::UInt(version) = column("version") else { panic!("version") };
+                    let column = |name: &str| {
+                        fact.columns
+                            .iter()
+                            .find(|c| c.name == name)
+                            .unwrap()
+                            .value
+                            .clone()
+                    };
+                    let Value::String(key) = column("key") else {
+                        panic!("key")
+                    };
+                    let Value::UInt(version) = column("version") else {
+                        panic!("version")
+                    };
                     (fact.table, key, version)
                 })
                 .collect();
@@ -283,7 +382,13 @@ fn each_span_carries_the_effective_facts_of_its_trace_and_its_own() {
         facts,
         BTreeMap::from([
             // The trace's facts come before the span's own (they resolve by table, target kind, span and key).
-            (1, vec![(FactTable::Tags, "reviewed".to_owned(), 2), (FactTable::Tags, "first".to_owned(), 1)]),
+            (
+                1,
+                vec![
+                    (FactTable::Tags, "reviewed".to_owned(), 2),
+                    (FactTable::Tags, "first".to_owned(), 1)
+                ]
+            ),
             (2, vec![(FactTable::Tags, "reviewed".to_owned(), 2)]),
             (3, vec![]),
         ])
@@ -295,7 +400,10 @@ fn an_export_waits_while_acknowledged_spans_are_on_their_way_to_the_store() {
     let mut world = World::new(16);
     world.ack(vec![span(1, 1, 0, NOW)]);
     let q = query(NOW.saturating_add_micros(DAY));
-    assert_eq!(world.service.export_wait(&ctx(1), &q), Some(ExportWait::Shipping));
+    assert_eq!(
+        world.service.export_wait(&ctx(1), &q),
+        Some(ExportWait::Shipping)
+    );
     // Another project's export does not wait for this one's spans.
     assert_eq!(world.service.export_wait(&crate::world::ctx(2), &q), None);
     world.settle();

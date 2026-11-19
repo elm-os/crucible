@@ -175,7 +175,11 @@ pub enum FilesError {
 
 /// Removes the files of this node's exports root that no export needs (see [`stale`]). `now` is compared with
 /// expiry times and claim ends.
-pub async fn sweep(repos: &dyn Repos, disk: &dyn Disk, now: Timestamp) -> Result<Swept, FilesError> {
+pub async fn sweep(
+    repos: &dyn Repos,
+    disk: &dyn Disk,
+    now: Timestamp,
+) -> Result<Swept, FilesError> {
     let mut swept = Swept::default();
     let root = DiskPath::root_dir(Root::Exports);
     let projects = match disk.list(&root).await {
@@ -183,7 +187,9 @@ pub async fn sweep(repos: &dyn Repos, disk: &dyn Disk, now: Timestamp) -> Result
         listed => listed?,
     };
     for project in projects {
-        let Ok(project_id) = ProjectId::parse(&project.name) else { continue };
+        let Ok(project_id) = ProjectId::parse(&project.name) else {
+            continue;
+        };
         let dir = project_dir(project_id)?;
         let entries = disk.list(&dir).await?;
         let named: Vec<(String, Named)> = entries
@@ -197,7 +203,9 @@ pub async fn sweep(repos: &dyn Repos, disk: &dyn Disk, now: Timestamp) -> Result
         let mut removed = 0;
         for (name, n) in &named {
             let path = format!("{project_id}/{name}");
-            let row = rows.iter().find(|job| job.new.id == n.id && job.new.project_id == project_id);
+            let row = rows
+                .iter()
+                .find(|job| job.new.id == n.id && job.new.project_id == project_id);
             if stale(*n, &path, row, now) {
                 remove(disk, &path).await?;
                 removed += 1;
@@ -267,11 +275,19 @@ mod tests {
         let id = ExportJobId::from_bytes([7; 16]);
         assert_eq!(
             parse_name(&format!("{id}.3.part")),
-            Some(Named { id, attempt: 3, temporary: true })
+            Some(Named {
+                id,
+                attempt: 3,
+                temporary: true
+            })
         );
         assert_eq!(
             parse_name(&format!("{id}.12.otlp.jsonl.gz")),
-            Some(Named { id, attempt: 12, temporary: false })
+            Some(Named {
+                id,
+                attempt: 12,
+                temporary: false
+            })
         );
         assert_eq!(parse_name("notes.txt"), None);
         assert_eq!(parse_name(&format!("{id}.x.jsonl")), None);

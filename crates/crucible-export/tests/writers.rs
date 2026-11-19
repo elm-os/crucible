@@ -12,13 +12,13 @@ use crucible_plan::{FactTable, Value};
 use crucible_query::{ExportColumn, ExportFact, ExportMcp, ExportRecord};
 use crucible_records::{
     ApiKeyId, CostSource, Ingestion, IoShape, Level, Lsn, McpSide, NanoUsd, ObservationType,
-    PayloadField, PayloadFields, ProjectId, ProjectScope, SourceFormat, SpanCore, SpanId,
-    SpanKind, SpanPayload, SpanRecord, StatusCode, Timestamp, TraceId, TracePublic, Truncation,
-    UsageEntry, Uuid, WalEpoch,
+    PayloadField, PayloadFields, ProjectId, ProjectScope, SourceFormat, SpanCore, SpanId, SpanKind,
+    SpanPayload, SpanRecord, StatusCode, Timestamp, TraceId, TracePublic, Truncation, UsageEntry,
+    Uuid, WalEpoch,
 };
 use crucible_schema::{
-    Column, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,
-    McpOpsCol, Ty,
+    Column, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol, McpOpsCol,
+    Ty,
 };
 use proptest::prelude::*;
 use serde_json::{Value as J, json};
@@ -42,25 +42,48 @@ impl Seeded {
 /// A value for a column type, sometimes one that does not fit it (the writer must still answer).
 fn value_of(ty: &Ty, s: &mut Seeded) -> Value {
     let n = s.next();
-    if n % 23 == 0 {
+    if n.is_multiple_of(23) {
         return Value::String("misfit".to_owned());
     }
     match ty {
-        Ty::Uuid => Value::Uuid(if n % 3 == 0 { Uuid::NIL } else { Uuid::from_bytes(n.to_le_bytes().repeat(2).try_into().unwrap()) }),
+        Ty::Uuid => Value::Uuid(if n.is_multiple_of(3) {
+            Uuid::NIL
+        } else {
+            Uuid::from_bytes(n.to_le_bytes().repeat(2).try_into().unwrap())
+        }),
         Ty::UInt8 | Ty::UInt16 | Ty::UInt32 | Ty::UInt64 => Value::UInt(n % 1_000),
         Ty::Int32 | Ty::Int64 => Value::Int(n as i64),
-        Ty::Float32 | Ty::Float64 => Value::Float(if n % 5 == 0 { f64::NAN } else { n as f64 / 7.0 }),
+        Ty::Float32 | Ty::Float64 => Value::Float(if n.is_multiple_of(5) {
+            f64::NAN
+        } else {
+            n as f64 / 7.0
+        }),
         Ty::String | Ty::LowCardinalityString => match n % 4 {
             0 => Value::String(String::new()),
             1 => Value::String("{\"k\":[1,2]}".to_owned()),
             2 => Value::Bytes(vec![0xff, 0xfe, b'"']),
             _ => Value::String("text \"quoted\"\n".to_owned()),
         },
-        Ty::FixedString(len) => Value::Bytes(vec![if n % 2 == 0 { 0 } else { n as u8 }; usize::from(*len)]),
+        Ty::FixedString(len) => Value::Bytes(vec![
+            if n.is_multiple_of(2) { 0 } else { n as u8 };
+            usize::from(*len)
+        ]),
         Ty::Date => Value::Date(Timestamp::from_micros((n % 4_000_000_000_000_000) as i64).date()),
-        Ty::DateTime | Ty::DateTime64 => Value::Time(Timestamp::from_micros((n % 4_000_000_000_000_000) as i64)),
-        Ty::Enum8(kind) => Value::Enum(if n % 7 == 0 { 99 } else { kind.variants()[n as usize % kind.variants().len()].1 }),
-        Ty::Nullable(inner) => if n % 2 == 0 { Value::Null } else { value_of(inner, s) },
+        Ty::DateTime | Ty::DateTime64 => {
+            Value::Time(Timestamp::from_micros((n % 4_000_000_000_000_000) as i64))
+        }
+        Ty::Enum8(kind) => Value::Enum(if n.is_multiple_of(7) {
+            99
+        } else {
+            kind.variants()[n as usize % kind.variants().len()].1
+        }),
+        Ty::Nullable(inner) => {
+            if n.is_multiple_of(2) {
+                Value::Null
+            } else {
+                value_of(inner, s)
+            }
+        }
         Ty::Array(inner) => Value::Array((0..n % 3).map(|_| value_of(inner, s)).collect()),
         Ty::Tuple2(a, b) => Value::Tuple2(Box::new(value_of(a, s)), Box::new(value_of(b, s))),
         Ty::Saf(_, inner) => value_of(inner, s),
@@ -73,13 +96,21 @@ fn columns<C: Column>(seed: u64) -> Vec<ExportColumn> {
         .iter()
         .map(|c| {
             let column = c.column_ref();
-            ExportColumn { name: column.name(), ty: *column.ty(), value: value_of(column.ty(), &mut s) }
+            ExportColumn {
+                name: column.name(),
+                ty: *column.ty(),
+                value: value_of(column.ty(), &mut s),
+            }
         })
         .collect()
 }
 
 fn text() -> impl Strategy<Value = String> {
-    prop_oneof![Just(String::new()), "\\PC{0,10}", "[\\x00-\\x1f\"\\\\a]{0,4}"]
+    prop_oneof![
+        Just(String::new()),
+        "\\PC{0,10}",
+        "[\\x00-\\x1f\"\\\\a]{0,4}"
+    ]
 }
 
 fn body() -> impl Strategy<Value = Vec<u8>> {
@@ -119,43 +150,43 @@ prop_compose! {
             parent_span_id: SpanId::from_bytes(if flags[0] { [0; 8] } else { ids.2 }),
             is_root: flags[0],
             is_app_root: flags[1],
-            kind: pick(&SpanKind::ALL, enums[0]),
+            kind: pick(SpanKind::ALL, enums[0]),
             name: s(0),
             start_time: Timestamp::from_micros(times.0),
             end_time: Timestamp::from_micros(times.0.saturating_add(times.1)),
             completion_start_time: times.2.map(Timestamp::from_micros),
-            status_code: pick(&StatusCode::ALL, enums[1]),
+            status_code: pick(StatusCode::ALL, enums[1]),
             status_message: s(1),
             service_name: s(2), service_version: s(3), scope_name: s(4), scope_version: s(5),
             telemetry_sdk_name: s(6), telemetry_sdk_language: s(7), telemetry_sdk_version: s(8),
             sdk_name: s(9), sdk_version: s(10),
-            observation_type: pick(&ObservationType::ALL, enums[2]),
-            level: pick(&Level::ALL, enums[3]),
+            observation_type: pick(ObservationType::ALL, enums[2]),
+            level: pick(Level::ALL, enums[3]),
             environment: s(11), release: s(12), version: s(13), trace_name: s(14), user_id: s(15),
             session_id: s(16),
             trace_tags: l(0),
-            trace_public: pick(&TracePublic::ALL, enums[4]),
+            trace_public: pick(TracePublic::ALL, enums[4]),
             tags: l(1),
             model_requested: s(17), model_response: s(18), provider: s(19),
             finish_reasons: l(2),
             usage: usage.iter().map(|(k, u, c)| UsageEntry { key: k.as_str().into(), units: *u, cost: NanoUsd::from_nanos(*c) }).collect(),
             input_tokens: numbers[0], output_tokens: numbers[1], total_tokens: numbers[2],
             total_cost_nusd: NanoUsd::from_nanos(numbers[3] as i64),
-            cost_source: pick(&CostSource::ALL, enums[5]),
+            cost_source: pick(CostSource::ALL, enums[5]),
             price_model_id: flags[2].then(|| Uuid::from_bytes(ids.0)),
             price_tier_id: None,
             usage_aggregate: flags[3],
             prompt_name: s(20), prompt_version: s(21),
             tool_names: l(3),
             tool_call_count: numbers[4] as u32,
-            mcp_side: pick(&McpSide::ALL, enums[6]),
-            io_shape: pick(&IoShape::ALL, enums[7]),
+            mcp_side: pick(McpSide::ALL, enums[6]),
+            io_shape: pick(IoShape::ALL, enums[7]),
             input_preview: s(22), output_preview: s(23),
             input_bytes: numbers[5], output_bytes: numbers[6],
-            input_truncation: pick(&Truncation::ALL, enums[8]),
-            output_truncation: pick(&Truncation::ALL, enums[9]),
+            input_truncation: pick(Truncation::ALL, enums[8]),
+            output_truncation: pick(Truncation::ALL, enums[9]),
             input_sha256: digests.0, output_sha256: digests.1,
-            source_format: pick(&SourceFormat::ALL, enums[10]),
+            source_format: pick(SourceFormat::ALL, enums[10]),
             compat_dialect: enums[10] % 8,
             normalizer_version: 1,
             clock_skew: flags[4],
@@ -183,7 +214,7 @@ prop_compose! {
         let b = |i: usize| Bytes::from(bodies[i].clone());
         let mut truncated_fields = PayloadFields::EMPTY;
         for (i, field) in PayloadField::ALL.into_iter().enumerate() {
-            if truncated & (1 << i) != 0 && truncated % 3 == 0 {
+            if truncated & (1 << i) != 0 && truncated.is_multiple_of(3) {
                 truncated_fields.insert(field);
             }
         }
@@ -206,13 +237,19 @@ fn facts(seed: u64) -> Vec<ExportFact> {
     let skip = ["target_day", "wal_epoch", "batch_seq", "lsn", "received_at"];
     let of = |table: FactTable, mut cols: Vec<ExportColumn>| {
         cols.retain(|c| !skip.contains(&c.name));
-        ExportFact { table, columns: cols }
+        ExportFact {
+            table,
+            columns: cols,
+        }
     };
     vec![
         of(FactTable::Scores, columns::<FactScoresCol>(seed)),
         of(FactTable::Tags, columns::<FactTagsCol>(seed + 1)),
         of(FactTable::Flags, columns::<FactFlagsCol>(seed + 2)),
-        of(FactTable::Corrections, columns::<FactCorrectionsCol>(seed + 3)),
+        of(
+            FactTable::Corrections,
+            columns::<FactCorrectionsCol>(seed + 3),
+        ),
     ]
 }
 
@@ -228,14 +265,18 @@ prop_compose! {
             span: SpanRecord { core, payload },
             payload_stored: stored,
             mcp: mcp.then(|| ExportMcp { op: columns::<McpOpsCol>(seed), content: Some(columns::<McpContentCol>(seed ^ 5)) }),
-            facts: if seed % 2 == 0 { facts(seed) } else { Vec::new() },
+            facts: if seed.is_multiple_of(2) { facts(seed) } else { Vec::new() },
         }
     }
 }
 
 fn one_line(out: &[u8]) -> J {
     assert_eq!(out.last(), Some(&b'\n'), "a line ends with a newline");
-    assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 1, "exactly one line");
+    assert_eq!(
+        out.iter().filter(|b| **b == b'\n').count(),
+        1,
+        "exactly one line"
+    );
     serde_json::from_slice(out).expect("valid JSON")
 }
 
@@ -296,7 +337,9 @@ fn generation() -> ExportRecord {
         name: "chat acme/large-1".into(),
         start_time: Timestamp::parse_rfc3339("2026-11-17T09:30:00.050000Z").unwrap(),
         end_time: Timestamp::parse_rfc3339("2026-11-17T09:30:00.850000Z").unwrap(),
-        completion_start_time: Some(Timestamp::parse_rfc3339("2026-11-17T09:30:00.420000Z").unwrap()),
+        completion_start_time: Some(
+            Timestamp::parse_rfc3339("2026-11-17T09:30:00.420000Z").unwrap(),
+        ),
         status_code: StatusCode::Unset,
         status_message: "".into(),
         service_name: "support-app".into(),
@@ -324,9 +367,21 @@ fn generation() -> ExportRecord {
         provider: "acme".into(),
         finish_reasons: vec!["tool_call".into()],
         usage: vec![
-            UsageEntry { key: "input".into(), units: 27, cost: NanoUsd::from_nanos(67_500) },
-            UsageEntry { key: "output".into(), units: 11, cost: NanoUsd::from_nanos(110_000) },
-            UsageEntry { key: "total".into(), units: 38, cost: NanoUsd::from_nanos(0) },
+            UsageEntry {
+                key: "input".into(),
+                units: 27,
+                cost: NanoUsd::from_nanos(67_500),
+            },
+            UsageEntry {
+                key: "output".into(),
+                units: 11,
+                cost: NanoUsd::from_nanos(110_000),
+            },
+            UsageEntry {
+                key: "total".into(),
+                units: 38,
+                cost: NanoUsd::from_nanos(0),
+            },
         ],
         input_tokens: 27,
         output_tokens: 11,
@@ -374,7 +429,12 @@ fn generation() -> ExportRecord {
         usage_provided: vec![("input".into(), 27), ("output".into(), 11)],
         ..SpanPayload::default()
     };
-    ExportRecord { span: SpanRecord { core, payload }, payload_stored: true, mcp: None, facts: Vec::new() }
+    ExportRecord {
+        span: SpanRecord { core, payload },
+        payload_stored: true,
+        mcp: None,
+        facts: Vec::new(),
+    }
 }
 
 #[test]
@@ -436,24 +496,52 @@ fn attribute<'a>(attrs: &'a [(String, J)], key: &str) -> Option<&'a J> {
 #[test]
 fn a_generation_goes_out_under_the_genai_keys_with_its_residual_once() {
     let mut out = Vec::new();
-    assert_eq!(write_otlp(project(), &generation(), false, &mut out), Written::Line);
+    assert_eq!(
+        write_otlp(project(), &generation(), false, &mut out),
+        Written::Line
+    );
     let doc = one_line(&out);
     let attrs = attributes(&doc);
     let string = |key: &str| attribute(&attrs, key).map(|v| v["stringValue"].clone());
-    assert_eq!(string("gen_ai.request.model"), Some(J::from("acme/large-1")));
+    assert_eq!(
+        string("gen_ai.request.model"),
+        Some(J::from("acme/large-1"))
+    );
     assert_eq!(string("gen_ai.provider.name"), Some(J::from("acme")));
-    let input: J = serde_json::from_str(string("gen_ai.input.messages").unwrap().as_str().unwrap()).unwrap();
+    let input: J =
+        serde_json::from_str(string("gen_ai.input.messages").unwrap().as_str().unwrap()).unwrap();
     assert_eq!(input[0]["role"], "user");
-    assert_eq!(attribute(&attrs, "gen_ai.usage.input_tokens"), Some(&json!({"intValue": "27"})));
-    assert_eq!(attribute(&attrs, "gen_ai.request.temperature"), Some(&json!({"intValue": "0"})));
+    assert_eq!(
+        attribute(&attrs, "gen_ai.usage.input_tokens"),
+        Some(&json!({"intValue": "27"}))
+    );
+    assert_eq!(
+        attribute(&attrs, "gen_ai.request.temperature"),
+        Some(&json!({"intValue": "0"}))
+    );
     assert_eq!(string("crucible.session.id"), Some(J::from("cr-session-1")));
-    assert_eq!(string("crucible.completion_start_time"), Some(J::from("2026-11-17T09:30:00.420000Z")));
+    assert_eq!(
+        string("crucible.completion_start_time"),
+        Some(J::from("2026-11-17T09:30:00.420000Z"))
+    );
     // The residual already names the operation: it goes out once, as sent.
-    assert_eq!(attrs.iter().filter(|(k, _)| k == "gen_ai.operation.name").count(), 1);
+    assert_eq!(
+        attrs
+            .iter()
+            .filter(|(k, _)| k == "gen_ai.operation.name")
+            .count(),
+        1
+    );
     assert_eq!(string("rightmodeler.family"), Some(J::from("support")));
     assert!(attribute(&attrs, "crucible.io_shape").is_none());
     let resource = &doc["resourceSpans"][0]["resource"]["attributes"];
-    assert!(resource.as_array().unwrap().iter().any(|a| a["key"] == "host.name"));
+    assert!(
+        resource
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["key"] == "host.name")
+    );
     let span = &doc["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
     assert_eq!(span["startTimeUnixNano"], "1794907800050000000");
     assert_eq!(span["kind"], 3);
@@ -464,16 +552,31 @@ fn a_raw_value_is_wrapped_in_one_message_and_a_tool_keeps_its_arguments() {
     let mut record = generation();
     record.span.core.io_shape = IoShape::Raw;
     record.span.payload.input = Bytes::from_static(b"what is the time");
-    record.span.payload.output = Bytes::from_static(br#"{"messages":[{"role":"assistant","content":"noon"}]}"#);
+    record.span.payload.output =
+        Bytes::from_static(br#"{"messages":[{"role":"assistant","content":"noon"}]}"#);
     let mut out = Vec::new();
     write_otlp(project(), &record, false, &mut out);
     let attrs = attributes(&one_line(&out));
     let messages = |key: &str| -> J {
-        serde_json::from_str(attribute(&attrs, key).unwrap()["stringValue"].as_str().unwrap()).unwrap()
+        serde_json::from_str(
+            attribute(&attrs, key).unwrap()["stringValue"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap()
     };
-    assert_eq!(messages("gen_ai.input.messages"), json!([{"role": "user", "parts": [{"type": "text", "content": "what is the time"}]}]));
-    assert_eq!(messages("gen_ai.output.messages"), json!([{"role": "assistant", "content": "noon"}]));
-    assert_eq!(attribute(&attrs, "crucible.io_shape"), Some(&json!({"stringValue": "raw"})));
+    assert_eq!(
+        messages("gen_ai.input.messages"),
+        json!([{"role": "user", "parts": [{"type": "text", "content": "what is the time"}]}])
+    );
+    assert_eq!(
+        messages("gen_ai.output.messages"),
+        json!([{"role": "assistant", "content": "noon"}])
+    );
+    assert_eq!(
+        attribute(&attrs, "crucible.io_shape"),
+        Some(&json!({"stringValue": "raw"}))
+    );
 
     record.span.core.observation_type = ObservationType::Tool;
     record.span.payload.input = Bytes::from_static(br#"{"order_id":"ORD-104"}"#);
@@ -485,22 +588,42 @@ fn a_raw_value_is_wrapped_in_one_message_and_a_tool_keeps_its_arguments() {
         attribute(&attrs, "gen_ai.tool.call.arguments"),
         Some(&json!({"stringValue": "{\"order_id\":\"ORD-104\"}"}))
     );
-    assert_eq!(attribute(&attrs, "gen_ai.tool.name"), Some(&json!({"stringValue": "lookup_order"})));
+    assert_eq!(
+        attribute(&attrs, "gen_ai.tool.name"),
+        Some(&json!({"stringValue": "lookup_order"}))
+    );
     // The residual names the operation `chat`, which goes out as sent; the type goes out as `crucible.*`.
-    assert_eq!(attribute(&attrs, "crucible.observation.type"), Some(&json!({"stringValue": "tool"})));
+    assert_eq!(
+        attribute(&attrs, "crucible.observation.type"),
+        Some(&json!({"stringValue": "tool"}))
+    );
 }
 
 #[test]
 fn a_cut_span_is_skipped_unless_kept() {
     let mut record = generation();
     record.span.core.output_truncation = Truncation::CapExceeded;
-    record.span.payload.truncated_fields.insert(PayloadField::Output);
-    record.span.payload.truncated_fields.insert(PayloadField::Attributes);
+    record
+        .span
+        .payload
+        .truncated_fields
+        .insert(PayloadField::Output);
+    record
+        .span
+        .payload
+        .truncated_fields
+        .insert(PayloadField::Attributes);
     record.span.payload.attributes = Bytes::from_static(b"{\"cut");
     let mut out = Vec::new();
-    assert_eq!(write_otlp(project(), &record, false, &mut out), Written::Skipped);
+    assert_eq!(
+        write_otlp(project(), &record, false, &mut out),
+        Written::Skipped
+    );
     assert!(out.is_empty());
-    assert_eq!(write_otlp(project(), &record, true, &mut out), Written::Line);
+    assert_eq!(
+        write_otlp(project(), &record, true, &mut out),
+        Written::Line
+    );
     let attrs = attributes(&one_line(&out));
     assert_eq!(
         attribute(&attrs, "crucible.truncated_fields"),

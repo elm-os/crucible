@@ -31,18 +31,30 @@ impl Tool for GetExport {
         let mut check = Check::default();
         let id = ExportJobId::parse(&args.id).ok();
         if id.is_none() {
-            check.error("id", "invalid_id", "an export id is a UUID, as create_export answered it");
+            check.error(
+                "id",
+                "invalid_id",
+                "an export id is a UUID, as create_export answered it",
+            );
         }
         check.finish()?;
         let Some(id) = id else {
-            return Err(ToolError::new(ProblemCode::ValidationFailed, "the export id is invalid"));
+            return Err(ToolError::new(
+                ProblemCode::ValidationFailed,
+                "the export id is invalid",
+            ));
         };
         let exports = service(call)?;
         let job = exports
             .get(call.ctx.scope(), id)
             .await
             .map_err(|error| store_error(&error))?
-            .ok_or_else(|| ToolError::new(ProblemCode::NotFound, "no export of the project has this id"))?;
+            .ok_or_else(|| {
+                ToolError::new(
+                    ProblemCode::NotFound,
+                    "no export of the project has this id",
+                )
+            })?;
         Ok(view(exports, &job))
     }
 }

@@ -30,12 +30,12 @@ use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Claim, Claims,
     ControlStore, ControlTx, Credential, CredentialRepo, ExportJobRepo, Invitation, InvitationRepo,
-    KeyChange,
-    KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
-    Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken, OneTimeTokenRepo, Org,
-    OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership, ProjectRepo, Queue, Repos, Secret,
-    SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose,
-    TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, duration_micros,
+    KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
+    MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
+    OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
+    ProjectRepo, Queue, Repos, Secret, SecretRepo, Session, SessionRepo, SigningKey,
+    SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User,
+    UserRepo, duration_micros,
 };
 use crucible_env::{Clock, ClockExt, Instant, Rng};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
@@ -167,7 +167,10 @@ struct JobRow {
 /// The constraint names of a queue's table.
 const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
     match queue {
-        Queue::NotificationOutbox => ("notification_outbox_pkey", "notification_outbox_dedup_key_key"),
+        Queue::NotificationOutbox => (
+            "notification_outbox_pkey",
+            "notification_outbox_dedup_key_key",
+        ),
         Queue::ExportJobs => ("export_jobs_pkey", "export_jobs_dedup_key_key"),
     }
 }

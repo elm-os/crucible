@@ -38,9 +38,18 @@ pub enum Written {
 const USAGE_KEYS: [(&str, &str); 5] = [
     (UsageEntry::INPUT, "gen_ai.usage.input_tokens"),
     (UsageEntry::OUTPUT, "gen_ai.usage.output_tokens"),
-    (UsageEntry::CACHE_READ, "gen_ai.usage.cache_read.input_tokens"),
-    (UsageEntry::CACHE_WRITE, "gen_ai.usage.cache_creation.input_tokens"),
-    (UsageEntry::REASONING, "gen_ai.usage.reasoning.output_tokens"),
+    (
+        UsageEntry::CACHE_READ,
+        "gen_ai.usage.cache_read.input_tokens",
+    ),
+    (
+        UsageEntry::CACHE_WRITE,
+        "gen_ai.usage.cache_creation.input_tokens",
+    ),
+    (
+        UsageEntry::REASONING,
+        "gen_ai.usage.reasoning.output_tokens",
+    ),
 ];
 
 /// Appends an OTLP `AnyValue`.
@@ -228,12 +237,16 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
     let cut = |field| is_cut(core, payload, field);
     let mut attrs = Attrs::new();
     let residual_has = |key: &str| match Json::parse(&payload.attributes) {
-        Some(Json::Obj(members)) if !cut(PayloadField::Attributes) => members.iter().any(|(k, _)| k == key),
+        Some(Json::Obj(members)) if !cut(PayloadField::Attributes) => {
+            members.iter().any(|(k, _)| k == key)
+        }
         _ => false,
     };
 
     attrs.text("crucible.observation.type", core.observation_type.as_str());
-    if let Some(name) = operation(core.observation_type).filter(|_| !residual_has("gen_ai.operation.name")) {
+    if let Some(name) =
+        operation(core.observation_type).filter(|_| !residual_has("gen_ai.operation.name"))
+    {
         attrs.text("gen_ai.operation.name", name);
     }
     attrs.text("gen_ai.request.model", &core.model_requested);
@@ -250,8 +263,20 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
     let tool = core.observation_type == ObservationType::Tool && core.io_shape == IoShape::Raw;
     let mut io_wrapped = false;
     for (field, body, role, messages_key, tool_key) in [
-        (PayloadField::Input, &payload.input, "user", "gen_ai.input.messages", "gen_ai.tool.call.arguments"),
-        (PayloadField::Output, &payload.output, "assistant", "gen_ai.output.messages", "gen_ai.tool.call.result"),
+        (
+            PayloadField::Input,
+            &payload.input,
+            "user",
+            "gen_ai.input.messages",
+            "gen_ai.tool.call.arguments",
+        ),
+        (
+            PayloadField::Output,
+            &payload.output,
+            "assistant",
+            "gen_ai.output.messages",
+            "gen_ai.tool.call.result",
+        ),
     ] {
         if body.is_empty() {
             continue;
@@ -269,7 +294,10 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
         attrs.text("crucible.io_shape", core.io_shape.as_str());
     }
     for (field, key) in [
-        (PayloadField::SystemInstructions, "gen_ai.system_instructions"),
+        (
+            PayloadField::SystemInstructions,
+            "gen_ai.system_instructions",
+        ),
         (PayloadField::ToolDefinitions, "gen_ai.tool.definitions"),
     ] {
         let body = payload.field(field);
@@ -278,21 +306,21 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
         }
         attrs.text(key, &String::from_utf8_lossy(body));
     }
-    if core.observation_type == ObservationType::Tool {
-        if let Some(name) = core.tool_names.first() {
-            attrs.text("gen_ai.tool.name", name);
-        }
+    if core.observation_type == ObservationType::Tool
+        && let Some(name) = core.tool_names.first()
+    {
+        attrs.text("gen_ai.tool.name", name);
     }
-    if !cut(PayloadField::ModelParameters) {
-        if let Some(Json::Obj(members)) = Json::parse(&payload.model_parameters) {
-            for (key, value) in &members {
-                let name = if key == "model" {
-                    "crucible.model_parameters.model".to_owned()
-                } else {
-                    format!("gen_ai.request.{key}")
-                };
-                attrs.put(&name, value);
-            }
+    if !cut(PayloadField::ModelParameters)
+        && let Some(Json::Obj(members)) = Json::parse(&payload.model_parameters)
+    {
+        for (key, value) in &members {
+            let name = if key == "model" {
+                "crucible.model_parameters.model".to_owned()
+            } else {
+                format!("gen_ai.request.{key}")
+            };
+            attrs.put(&name, value);
         }
     }
 
@@ -309,7 +337,10 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
     attrs.texts("crucible.trace.tags", &core.trace_tags);
     match core.trace_public {
         TracePublic::Unset => {}
-        public => attrs.put("crucible.trace.public", &Json::Bool(public == TracePublic::Public)),
+        public => attrs.put(
+            "crucible.trace.public",
+            &Json::Bool(public == TracePublic::Public),
+        ),
     }
     if core.level != derived_level(core) {
         attrs.text("crucible.level", core.level.as_str());
@@ -331,11 +362,11 @@ fn span_attributes(record: &ExportRecord) -> Vec<u8> {
             attrs.put(&format!("crucible.metadata.{key}"), &value);
         }
     }
-    if !cut(PayloadField::TraceMetadata) {
-        if let Some(Json::Obj(members)) = Json::parse(&payload.trace_metadata) {
-            for (key, value) in &members {
-                attrs.put(&format!("crucible.trace.metadata.{key}"), value);
-            }
+    if !cut(PayloadField::TraceMetadata)
+        && let Some(Json::Obj(members)) = Json::parse(&payload.trace_metadata)
+    {
+        for (key, value) in &members {
+            attrs.put(&format!("crucible.trace.metadata.{key}"), value);
         }
     }
     let cut_maps: Vec<&str> = [
@@ -385,7 +416,10 @@ fn member_attributes(value: Option<&Json>) -> Vec<u8> {
 }
 
 fn member<'a>(members: &'a [(String, Json)], name: &str) -> Option<&'a Json> {
-    members.iter().find(|(key, _)| key == name).map(|(_, value)| value)
+    members
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value)
 }
 
 fn member_str<'a>(members: &'a [(String, Json)], name: &str) -> &'a str {
@@ -406,10 +440,14 @@ fn events(out: &mut Vec<u8>, stored: &[u8]) {
             }
             first = false;
             let mut event = Obj::new(out);
-            let time = Timestamp::parse_rfc3339(member_str(members, "time")).unwrap_or(Timestamp::EPOCH);
+            let time =
+                Timestamp::parse_rfc3339(member_str(members, "time")).unwrap_or(Timestamp::EPOCH);
             event.str("timeUnixNano", &nanos(time));
             event.str("name", member_str(members, "name"));
-            event.raw("attributes", &member_attributes(member(members, "attributes")));
+            event.raw(
+                "attributes",
+                &member_attributes(member(members, "attributes")),
+            );
             event.end();
         }
     }
@@ -429,7 +467,10 @@ fn links(out: &mut Vec<u8>, stored: &[u8]) {
             let mut link = Obj::new(out);
             link.str("traceId", member_str(members, "trace_id"));
             link.str("spanId", member_str(members, "span_id"));
-            link.raw("attributes", &member_attributes(member(members, "attributes")));
+            link.raw(
+                "attributes",
+                &member_attributes(member(members, "attributes")),
+            );
             link.end();
         }
     }

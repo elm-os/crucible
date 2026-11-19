@@ -15,8 +15,8 @@ use crucible_env::{
 };
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, Direction, FieldRange,
-    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, RowBlock, Scan, TextSearch,
-    TimeSeries, TokenMode, Value,
+    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, RowBlock, Scan,
+    TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
 use crucible_schema::{ColumnRef, MigrationStep, Ty, table};

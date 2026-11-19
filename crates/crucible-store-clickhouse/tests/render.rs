@@ -871,13 +871,32 @@ fn m2_export() {
         session_id: Some("session-1"),
     };
     let after = (T0, 42, T0.saturating_add_micros(5), span(3));
-    let first = export_spans(project(), window(), &clamp(), ExportSelection::default(), T0, None, 1_000);
+    let first = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        ExportSelection::default(),
+        T0,
+        None,
+        1_000,
+    );
     insta::assert_snapshot!("m2_export_spans_first_page", rendered(&live(first)));
-    let next = export_spans(project(), window(), &clamp(), narrowed, T0, Some(after), 1_000);
+    let next = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        narrowed,
+        T0,
+        Some(after),
+        1_000,
+    );
     insta::assert_snapshot!("m2_export_spans_after_position", rendered(&live(next)));
     let ties = export_ties(project(), window(), &clamp(), narrowed, T0, after);
     insta::assert_snapshot!("m2_export_ties", rendered(&live(ties)));
-    let spans = [(T0, trace(), span(1)), (T0.saturating_add_micros(90_000_000), traces[1], span(2))];
+    let spans = [
+        (T0, trace(), span(1)),
+        (T0.saturating_add_micros(90_000_000), traces[1], span(2)),
+    ];
     let payloads = export_payloads(project(), &clamp(), &spans);
     insta::assert_snapshot!("m2_export_payloads", rendered(&live(payloads)));
     let ops = export_mcp_ops(project(), &clamp(), &spans);

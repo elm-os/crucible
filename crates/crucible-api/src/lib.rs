@@ -43,8 +43,8 @@ use crucible_auth::KeyVerifier;
 use crucible_auth::service::Identity;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
-use crucible_query::QueryService;
 use crucible_export::Exports;
+use crucible_query::QueryService;
 use crucible_sqlws::SqlWorkspace;
 
 pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
@@ -109,7 +109,16 @@ pub fn platform_router(
     exports: Option<Exports>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, store, keys, settings, cursors, Some(identity), sql, exports)
+    build(
+        env,
+        store,
+        keys,
+        settings,
+        cursors,
+        Some(identity),
+        sql,
+        exports,
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // The parts of the shared state, as the public constructors pass them.
