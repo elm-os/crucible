@@ -107,7 +107,8 @@ pub enum IdentityCtx<'a> {
     /// tenant, the OAuth client id and the identity source.
     Suppressed,
     /// The salt of the frame's project. `None` when the frame carries no user subject, so that none was
-    /// fetched; an operation that carries one all the same loses the subject and its issuer.
+    /// fetched, or when the project is deleted and has no salt; an operation that carries a subject all the same
+    /// loses the subject and its issuer.
     Salted(Option<&'a ProjectSalt>),
 }
 

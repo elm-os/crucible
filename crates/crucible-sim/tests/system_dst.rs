@@ -30,21 +30,21 @@ const SMOKE_CONFIGS: u64 = 40;
 
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports.
 const MUTANTS: [(Mutant, u64, &str); 15] = [
-    (Mutant::SkipWalSync, 1, "I3"),
-    (Mutant::DropToken, 0, "I2"),
+    (Mutant::SkipWalSync, 0, "liveness"),
+    (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 1, "I12"),
     (Mutant::SilentEviction, 1, "I3"),
     (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
     (Mutant::AckBeforeAppend, 0, "I1"),
-    (Mutant::DoubleCountRollup, 0, "I7"),
+    (Mutant::DoubleCountRollup, 1, "I7"),
     (Mutant::DropFactOnRetry, 3001, "I1"),
     (Mutant::FrameQuarantineWithoutCopy, 0, "I1"),
-    (Mutant::CountAggregateUsage, 1002, "I7"),
-    (Mutant::CollectWhatFramesRelyOn, 0, "I2"),
+    (Mutant::CountAggregateUsage, 10_000, "I7"),
+    (Mutant::CollectWhatFramesRelyOn, 14_000, "I2"),
     (Mutant::MisclassifyCallerFault, 2001, "I8"),
-    (Mutant::SumCaptureSources, 0, "I7"),
+    (Mutant::SumCaptureSources, 1, "I7"),
     (Mutant::DropRollupMarker, 0, "I2"),
-    (Mutant::MarkAfterDuplicateDrop, 107_000, "I7"),
+    (Mutant::MarkAfterDuplicateDrop, 14_000, "I7"),
 ];
 
 fn replay(outcome: &Outcome) -> String {

@@ -146,7 +146,7 @@ describe("servers", () => {
     const result = await agent.act({ steps: [{ ref: "Show last 30 days", action: "press" }] });
     expect(result.ok, result.error?.message).toBe(true);
     expect(await screen.findByText("No MCP servers in the last 30 days.")).toBeTruthy();
-    expect(screen.getByText(/Wrap your MCP server with a Crucible SDK/)).toBeTruthy();
+    expect(screen.getByText(/once your MCP server runs with a Crucible SDK/)).toBeTruthy();
   });
 
   test("error: an unreachable API is an in-section error with a retry", async () => {

@@ -216,7 +216,7 @@ test.describe("mcp: servers", () => {
     await expectAccessible(page, "mcp servers empty");
     await page.getByRole("button", { name: "Show last 30 days" }).click();
     await expect(page.getByText("No MCP servers in the last 30 days.")).toBeVisible();
-    await expect(page.getByText(/Wrap your MCP server with a Crucible SDK/)).toBeVisible();
+    await expect(page.getByText(/once your MCP server runs with a Crucible SDK/)).toBeVisible();
   });
 });
 

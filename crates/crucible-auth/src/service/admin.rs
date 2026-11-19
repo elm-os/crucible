@@ -561,7 +561,8 @@ impl Identity {
         Ok(())
     }
 
-    /// Creates a project; the creator, an org admin or owner, is project admin through the org role.
+    /// Creates a project with its salt (contract 9.3) in one transaction; the creator, an org admin or owner, is
+    /// project admin through the org role.
     pub async fn create_project(&self, name: &str, slug_text: &str) -> Result<Project, AuthError> {
         let project = Project {
             id: ProjectId::from_uuid(self.env.new_id()),
@@ -575,7 +576,19 @@ impl Identity {
             version: 1,
             deleted_at: None,
         };
-        match self.store.projects().insert(&project).await {
+        let salt = self
+            .sealer
+            .new_project_salt(self.env.rng.as_ref(), project.id);
+        let row = project.clone();
+        let created = transaction(self.store.as_ref(), move |tx| {
+            Box::pin(async move {
+                tx.projects().insert(&row).await?;
+                tx.project_salts().insert_if_absent(&salt).await?;
+                Ok(())
+            })
+        })
+        .await;
+        match created {
             Err(crucible_control::TxError::UniqueViolation(_)) => {
                 return Err(AuthError::Conflict(format!(
                     "the slug {:?} is taken; choose another",

@@ -46,9 +46,8 @@ export function McpEmpty({
   if (range === "30d") {
     return (
       <EmptyState kind="first-use" title={`No MCP ${noun} in the last 30 days.`}>
-        Wrap your MCP server with a Crucible SDK, or run it behind the Crucible proxy, and its calls
-        will appear here. A server that already sends OpenTelemetry spans with the MCP attributes
-        appears too.
+        Calls show here once your MCP server runs with a Crucible SDK or behind the Crucible proxy.
+        A server that already sends OpenTelemetry spans with the MCP attributes shows here too.
       </EmptyState>
     );
   }

@@ -69,7 +69,9 @@ pub use stage_b::{
 ///   consumes leave the residual attributes, and the operation is part of the row digest), and a span that carries
 ///   `crucible.mcp.tools` yields tool inventory entries. Keys that must never be stored (a client address,
 ///   credential headers, the raw user subject and session id) leave the residual attributes of every span.
-pub const NORMALIZER_VERSION: u32 = 5;
+/// - 6: keys that must never be stored also leave the attributes of span events and links, and the raw user
+///   issuer is one of them: an MCP operation keeps it in `user_issuer` only.
+pub const NORMALIZER_VERSION: u32 = 6;
 
 /// One `IngestRequest` WAL frame as the normalizer reads it: the frame header values and the envelope (contracts
 /// 4.3 and 4.4), borrowing the payload. The shipper fills it from the decoded frame; this crate does not depend on

@@ -11,12 +11,14 @@
 //!   double (`1.0`, `0.1`, `1e+300`, `-0.0`); NaN and the infinities are the strings `"NaN"`, `"Infinity"` and
 //!   `"-Infinity"`, the OTLP/JSON spellings.
 //! - Bytes are a lowercase hex string. An unset value is `null`.
+//! - The attribute lists of events and links leave out the keys that must never be stored
+//!   ([`mcp_keys::never_stored`], contract 3.5), as the residual attributes of a span do.
 
 use core::fmt::{self, Write as _};
 
 use bytes::Bytes;
 use crucible_otlp::{AnyValueView, Attributes, EventView, LinkView};
-use crucible_records::caps;
+use crucible_records::{caps, mcp_keys};
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -121,7 +123,7 @@ pub(crate) fn push_value(out: &mut Vec<u8>, value: AnyValueView<'_>) {
 }
 
 /// Appends an attribute list as an object.
-fn push_object(out: &mut Vec<u8>, pairs: Attributes<'_>) {
+fn push_object<'a>(out: &mut Vec<u8>, pairs: impl Iterator<Item = (&'a str, AnyValueView<'a>)>) {
     out.push(b'{');
     for (i, (key, value)) in pairs.enumerate() {
         if i > 0 {
@@ -159,6 +161,11 @@ pub(crate) fn object_or_empty<'a>(
     Bytes::from(out)
 }
 
+/// The attribute list of an event or a link without the keys that must never be stored.
+fn stored<'a>(pairs: Attributes<'a>) -> impl Iterator<Item = (&'a str, AnyValueView<'a>)> {
+    pairs.filter(|(key, _)| !mcp_keys::never_stored(key))
+}
+
 /// Writes `Display` output into the vector.
 struct Text<'a>(&'a mut Vec<u8>);
 
@@ -181,7 +188,7 @@ pub(crate) fn events<'a>(events: impl Iterator<Item = EventView<'a>>) -> Bytes {
         out.extend_from_slice(b"\",\"name\":");
         push_str(&mut out, event.name());
         out.extend_from_slice(b",\"attributes\":");
-        push_object(&mut out, event.attributes());
+        push_object(&mut out, stored(event.attributes()));
         out.push(b'}');
     }
     if out.is_empty() {
@@ -202,7 +209,7 @@ pub(crate) fn links<'a>(links: impl Iterator<Item = LinkView<'a>>) -> Bytes {
         out.extend_from_slice(b"\",\"span_id\":\"");
         push_hex(&mut out, link.span_id().as_bytes());
         out.extend_from_slice(b"\",\"attributes\":");
-        push_object(&mut out, link.attributes());
+        push_object(&mut out, stored(link.attributes()));
         out.push(b'}');
     }
     if out.is_empty() {

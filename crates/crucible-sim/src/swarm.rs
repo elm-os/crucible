@@ -111,7 +111,7 @@ dimensions! {
     FrameFaults, "frame_faults", Fault, "Some durable frames do not normalize and are quarantined as frames.";
     ProjectRate, "project_rate", Config, "A per-project byte rate, so some requests and fact writes get 429.";
     SmallBudget, "small_budget", Config, "A `shipper.encoded_bytes` budget of a few KiB, so frames wait for batches in flight.";
-    NestedUsage, "nested_usage", Workload, "Spans form parent chains within a request, across requests (the child first) and under a span that a request sends again, so some have a descendant that carries usage.";
+    NestedUsage, "nested_usage", Workload, "Spans form parent chains within a request, across requests (the child first) and under a span that a request sends again, so some have a descendant that carries usage. A span sent again before its parent arrives gets a new child that carries usage.";
     Mcp, "mcp", Workload, "Requests carry MCP operations: server-side and client-side spans in the legacy and the modern era, over stdio and HTTP, as an SDK wrapper, the proxy or a plain server reports them.";
     McpDoubleCapture, "mcp_double_capture", Workload, "An SDK wrapper and the proxy both report one server call, so two server-side rows of two capture sources.";
     McpErrors, "mcp_errors", Workload, "MCP exchanges fail in every class of the error taxonomy, and SDKs annotate classes that the exchange does not warrant.";
