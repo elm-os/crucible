@@ -1058,6 +1058,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-export"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "crucible-auth",
+ "crucible-control",
+ "crucible-env",
+ "crucible-jobs",
+ "crucible-plan",
+ "crucible-query",
+ "crucible-records",
+ "crucible-schema",
+ "flate2",
+ "futures",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-fake-collector"
 version = "0.0.0"
 dependencies = [
