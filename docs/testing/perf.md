@@ -534,15 +534,22 @@ significant digits.
    schedule of 2 reads/s on average for 60 s with exponential think times, 8 connections, its traces and spans
    drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
    after the lane, so their change belongs to the lane's class.
-5. **The page cache.** The lanes measure the store answering from the page cache when the cache can hold it:
-   when its active parts fit within half of ClickHouse's memory limit (the container's page cache counts
-   against it), each lane attempt starts by reading every file of the store once, so that what an earlier lane
-   left in the cache does not decide its latency; a larger store, such as the 100-million-span dataset, is read
-   from the disk, as it would be. The Docker Desktop VM drops its whole page cache every few minutes (the
-   `drop_pagecache` count of `/proc/vmstat` rose by 5 in 15 minutes on 2026-11-19, under load), and the reads
-   after a drop go to the disk: in one 300 s lane, trace by id measured 143.6 ms p95 in the half after a drop
-   and 38.1 ms in the other. So an attempt during which the host dropped its page cache runs again, up to 3
-   attempts; a lane disturbed in all 3 is marked invalid.
+5. **The caches.** The lanes measure the store as a server that has served reads for a while holds it, so each
+   lane attempt starts by warming it:
+   - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
+     parts. In a 300 s trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and
+     the second 40.8 ms, with no page-cache drop: for about a minute each `span_core` read missed the mark
+     cache (91 misses per query at first, then fewer) and read 2.4 MB of compressed data, against no miss and
+     0.16 MB once the marks were cached, when its median fell from about 95 ms to 14 ms. Each attempt runs
+     `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
+   - **Page cache.** When the store's active parts fit within half of ClickHouse's memory limit (the
+     container's page cache counts against it), each attempt reads every file of the store once; a larger
+     store, such as the 100-million-span dataset, is read from the disk, as it would be. The Docker Desktop VM
+     drops its whole page cache every few minutes (the `drop_pagecache` count of `/proc/vmstat` rose by 5 in
+     15 minutes on 2026-11-19, under load), and the reads after a drop go to the disk: span children measured
+     69.2 and 64.2 ms p95 in two attempts that a drop disturbed and 36.6 ms in the one it did not, while the
+     lanes over a window measured the same either way. So an attempt during which the host dropped its page
+     cache runs again, up to 3 attempts; a lane disturbed in all 3 is marked invalid.
 
 | Lane | Request | Answers that count | Server class |
 |---|---|---|---|

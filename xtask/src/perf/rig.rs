@@ -1555,18 +1555,30 @@ impl<'r> Session<'r> {
         self.drained(key, rows, limit)
     }
 
-    /// Reads every file of ClickHouse's store once, in its container, so that the page cache holds the store when
-    /// the next measurement starts. The container's page cache counts against its memory limit. A part that a
-    /// merge removes meanwhile is skipped.
-    pub fn warm_store(&self) -> Result<(), String> {
-        docker([
-            "exec",
-            &self.name("clickhouse"),
-            "sh",
-            "-c",
-            "find /var/lib/clickhouse/store -type f -exec cat {} + > /dev/null 2>&1; true",
-        ])
-        .map(drop)
+    /// Prepares the store for a measurement as on a server that has served reads for a while: loads the marks of
+    /// every table of the `crucible` database into ClickHouse's mark cache, since a part's marks otherwise load
+    /// on its first read, and with `files` also reads every file of the store once, in its container, so that
+    /// the page cache holds the store. The container's page cache counts against its memory limit; a part that
+    /// a merge removes meanwhile is skipped.
+    pub fn warm_store(&self, files: bool) -> Result<(), String> {
+        let tables = self.clickhouse(
+            "SELECT name FROM system.tables WHERE database = 'crucible' AND engine LIKE '%MergeTree'",
+        )?;
+        for table in tables {
+            if let Some(name) = table["name"].as_str() {
+                self.clickhouse_text(&format!("SYSTEM PREWARM MARK CACHE crucible.`{name}`"))?;
+            }
+        }
+        if files {
+            docker([
+                "exec",
+                &self.name("clickhouse"),
+                "sh",
+                "-c",
+                "find /var/lib/clickhouse/store -type f -exec cat {} + > /dev/null 2>&1; true",
+            ])?;
+        }
+        Ok(())
     }
 
     /// The first row of a ClickHouse `SELECT` as JSON, for the record of a run.

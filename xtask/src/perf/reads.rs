@@ -578,8 +578,9 @@ fn bench(
             .as_ref()
             .is_none_or(|names| names.iter().any(|name| name == lane.name))
     };
-    // One attempt of a lane. When the store fits the cache, the attempt starts by reading the store's files once,
-    // so that what an earlier lane or a page-cache drop left in the cache does not decide its latency.
+    // One attempt of a lane. It starts by loading every table's marks into ClickHouse's mark cache and, when the
+    // store fits the page cache, by reading the store's files once, so that neither the load's new parts nor what
+    // an earlier lane or a page-cache drop left in the caches decides its latency.
     let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
@@ -591,9 +592,7 @@ fn bench(
             &dir.join(format!("metrics/{}-{attempt}-before.txt", lane.name)),
             &before,
         )?;
-        if warmed {
-            session.warm_store()?;
-        }
+        session.warm_store(warmed)?;
         let mut command = vec![
             "read".to_owned(),
             "--target".to_owned(),
@@ -839,9 +838,10 @@ pub fn summary(report: &ReadsReport) -> String {
                 thousands(dataset.bytes_on_disk as f64),
                 dataset.bytes_per_span,
                 if dataset.warmed {
-                    "read into the page cache before each lane attempt"
+                    "its marks and files loaded into the mark cache and the page cache before each lane attempt"
                 } else {
-                    "more than half of ClickHouse's memory, so the lanes read it from the disk"
+                    "its marks loaded before each lane attempt; more than half of ClickHouse's memory, so the \
+                     lanes read its files from the disk"
                 }
             ),
         ),
