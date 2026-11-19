@@ -352,6 +352,7 @@ async fn open_app(
     cursors: Arc<KeyRing>,
     config: WalConfig,
     identity: Option<Arc<Identity>>,
+    alerts: Option<crucible_api::AlertsApi>,
     closed: Option<&str>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
@@ -386,7 +387,7 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
-                crucible_api::platform_router(env, None, identity, settings, cursors, None)
+                crucible_api::platform_router(env, None, identity, settings, cursors, None, alerts)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -577,6 +578,8 @@ struct StoreTask {
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
+    /// Alerting, with a control plane: what the API serves, and the read that opens with the store.
+    alerts: Option<(crucible_api::AlertsApi, Arc<crate::alerts::LateSource>)>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -660,6 +663,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        alerts,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -771,6 +775,11 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     gate.mcp
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
     let settings = Arc::new(StaticProjectSettings::default());
+    // Alert evaluations and previews read through the query service from here on.
+    let alerts = alerts.map(|(api, source)| {
+        source.open(service.clone());
+        api
+    });
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
             &env,
@@ -779,6 +788,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             settings,
             cursors,
             sql,
+            alerts,
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
@@ -1032,7 +1042,15 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     };
     // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
     // for them.
-    let jobs = crate::jobs::start(env, control.as_ref());
+    let alerting = match &control {
+        Some(control) => Some(crate::alerts::build(env, &config, control)?),
+        None => None,
+    };
+    let (alerts, alert_jobs) = match alerting {
+        Some(alerting) => (Some((alerting.api, alerting.source)), alerting.jobs),
+        None => (None, Vec::new()),
+    };
+    let jobs = crate::jobs::start(env, control.as_ref(), alert_jobs);
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1047,6 +1065,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         Arc::clone(&cursors),
         WalConfig::default(),
         identity.clone(),
+        alerts.as_ref().map(|(api, _)| api.clone()),
         closed,
     )
     .await?;
@@ -1105,6 +1124,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                alerts,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1258,7 +1278,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None)
+        open_app(env, keys, cursors, config, None, None, None)
             .await
             .unwrap()
             .0
@@ -2477,7 +2497,7 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+        let (app, _) = open_app(env, keys, cursors, config, None, None, closed)
             .await
             .unwrap();
         let ui = Arc::new(Catalog::default());

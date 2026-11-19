@@ -7,7 +7,7 @@
 //!   row.
 //! - [`Transport`] sends one notification to one channel. [`NetTransport`] is the production one: Slack
 //!   incoming webhooks pinned to their host, webhooks signed with `X-Crucible-Signature`, both through the
-//!   egress policy of `crucible-egress`, and email through the [`Mailer`].
+//!   egress policy of `crucible-egress`, and email through the `Mailer` of `crucible-env`.
 //! - [`Channels`] is channel management for the API: saving a channel checks its target, the signing secret
 //!   is shown once, and a test-send reports an outcome and never the receiver's words.
 
@@ -26,5 +26,5 @@ pub use outbox::{DISABLE_AFTER, Notifier, OUTBOX_POLICY, POLL_EVERY, SecretError
 pub use render::{
     DELIVERY_HEADER, EVENT_HEADER, SIGNATURE_HEADER, signature, summary, verify_signature,
 };
-pub use service::{ChannelError, ChannelPatch, ChannelView, Channels, Saved};
-pub use transport::{Delivery, MailError, MailMessage, Mailer, NetTransport, Transport};
+pub use service::{ChannelError, ChannelPatch, ChannelView, Channels, Saved, TESTS_PER_MINUTE};
+pub use transport::{Delivery, NetTransport, Transport};

@@ -57,6 +57,15 @@ pub use writer::{AcceptedFact, FactAppend, FactAuthor, FactRefusal, FactWriter, 
 
 use crate::access::ApiState;
 
+/// Alert rules and channels, as the API serves them.
+#[derive(Clone, Debug)]
+pub struct AlertsApi {
+    /// Rule management.
+    pub alerts: crucible_alerts::Alerts,
+    /// Channel management and test-send.
+    pub channels: crucible_notify::Channels,
+}
+
 /// The base path of the API (contract 12.1).
 pub const BASE_PATH: &str = "/api/v1";
 
@@ -79,6 +88,7 @@ pub fn router(
         cursors,
         None,
         None,
+        None,
     )
 }
 
@@ -90,12 +100,12 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None, None)
+    build(env, None, keys, settings, cursors, None, None, None)
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
 /// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
-/// `None` until a telemetry store is up.
+/// `None` until a telemetry store is up. `alerts` serves the alert and channel routes.
 pub fn platform_router(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -103,9 +113,19 @@ pub fn platform_router(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     sql: Option<SqlWorkspace>,
+    alerts: Option<AlertsApi>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, store, keys, settings, cursors, Some(identity), sql)
+    build(
+        env,
+        store,
+        keys,
+        settings,
+        cursors,
+        Some(identity),
+        sql,
+        alerts,
+    )
 }
 
 fn build(
@@ -116,6 +136,7 @@ fn build(
     cursors: Arc<KeyRing>,
     identity: Option<Arc<Identity>>,
     sql: Option<SqlWorkspace>,
+    alerts: Option<AlertsApi>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -128,6 +149,7 @@ fn build(
         facts,
         idempotency: Arc::default(),
         sql,
+        alerts,
     };
     let api = routes::router()
         .fallback(unknown_path)

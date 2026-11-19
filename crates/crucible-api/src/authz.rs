@@ -130,6 +130,41 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "GET",
+        "/api/v1/projects/{project_id}/alerts",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/alerts",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/alerts/preview",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/alerts/{alert_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/alerts/{alert_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/alerts/{alert_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/alerts/{alert_id}/history",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
         "/api/v1/projects/{project_id}/api-keys",
         Project(ProjectPermission::Manage),
     ),
@@ -147,6 +182,36 @@ pub const ROUTES: &[RouteAccess] = &[
         "PATCH",
         "/api/v1/projects/{project_id}/api-keys/{key_id}",
         Project(ProjectPermission::Manage),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/channels",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/channels",
+        Project(ProjectPermission::Channels),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/channels/{channel_id}",
+        Project(ProjectPermission::Channels),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/channels/{channel_id}",
+        Project(ProjectPermission::Channels),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/channels/{channel_id}",
+        Project(ProjectPermission::Channels),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/channels/{channel_id}/test",
+        Project(ProjectPermission::Channels),
     ),
     route(
         "GET",

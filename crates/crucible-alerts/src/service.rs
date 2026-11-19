@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crucible_control::{AlertEvent, AlertRule, AlertSeriesState, ControlStore, Project, TxError};
+use crucible_control::{AlertEvent, AlertRule, AlertSeriesState, ControlStore, TxError};
 use crucible_env::Env;
 use crucible_records::{AlertRuleId, ProjectId, TimeWindow, Timestamp, Uuid};
 
@@ -278,12 +278,20 @@ impl Alerts {
 
     /// What `spec` would see if it were evaluated now: the series of the window that ends at the last whole
     /// minute at least 30 s ago, each with whether it breaches. Nothing is stored and nobody is notified.
-    pub async fn preview(&self, project: &Project, spec: &RuleSpec) -> Result<Preview, AlertError> {
+    pub async fn preview(
+        &self,
+        project_id: ProjectId,
+        spec: &RuleSpec,
+    ) -> Result<Preview, AlertError> {
         let issues = spec.issues();
         if !issues.is_empty() {
             return Err(AlertError::Invalid(issues));
         }
         let source = self.source.as_ref().ok_or(AlertError::NoTelemetry)?;
+        let project = match self.store.projects().get(project_id).await? {
+            Some(project) if project.deleted_at.is_none() => project,
+            _ => return Err(AlertError::NotFound),
+        };
         let lag = i64::try_from(EVALUATION_LAG.as_micros()).unwrap_or(i64::MAX);
         let end = self
             .env
@@ -296,7 +304,7 @@ impl Alerts {
         let window = TimeWindow::new(start, end)
             .map_err(|_| AlertError::Read("the window is empty".to_owned()))?;
         let observed = source
-            .read(project, spec, window)
+            .read(&project, spec, window)
             .await
             .map_err(|failure| AlertError::Read(failure.0))?;
         Ok(Preview {

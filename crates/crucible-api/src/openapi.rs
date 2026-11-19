@@ -40,7 +40,9 @@ impl Modify for ProjectKey {
     ),
     modifiers(&ProjectKey),
     tags(
+        (name = "alerts", description = "Alert rules over the project's metrics, their state, history and preview."),
         (name = "auth", description = "Sign-in, sessions and the signed-in user's account."),
+        (name = "channels", description = "Notification channels: Slack webhooks, email and signed webhooks, with test-send."),
         (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
         (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),

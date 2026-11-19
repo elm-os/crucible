@@ -1,11 +1,13 @@
 //! Channel management (contract 12.6): what the API's channel routes do.
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use crucible_auth::Sealer;
 use crucible_control::{Channel, ChannelKind, ControlStore, JsonDoc, TxError};
 use crucible_egress::EgressPolicy;
-use crucible_env::Env;
+use crucible_env::{Env, Instant};
 use crucible_records::{ChannelId, ProjectId, Uuid};
 use serde_json::json;
 
@@ -29,10 +31,22 @@ pub enum ChannelError {
     /// The channel's secret cannot be read.
     #[error(transparent)]
     Secret(SecretError),
+    /// The channel was tested [`TESTS_PER_MINUTE`] times in the last minute.
+    #[error("a channel can be tested 6 times a minute; try again in {retry_after_secs} s")]
+    RateLimited {
+        /// Seconds until a test is accepted again.
+        retry_after_secs: u32,
+    },
     /// The store failed.
     #[error(transparent)]
     Store(#[from] TxError),
 }
+
+/// Test-sends one channel accepts per minute on a node (contract 11.9).
+pub const TESTS_PER_MINUTE: usize = 6;
+
+/// When each channel was last tested on this node.
+type Tests = Arc<Mutex<BTreeMap<ChannelId, VecDeque<Instant>>>>;
 
 impl From<SecretError> for ChannelError {
     fn from(error: SecretError) -> Self {
@@ -95,6 +109,7 @@ pub struct Channels {
     sealer: Arc<Sealer>,
     transport: Arc<dyn Transport>,
     policy: EgressPolicy,
+    tests: Tests,
 }
 
 fn view(channel: Channel) -> Result<ChannelView, ChannelError> {
@@ -122,7 +137,36 @@ impl Channels {
             sealer,
             transport,
             policy,
+            tests: Tests::default(),
         }
+    }
+
+    /// Counts a test of `id` now, or says how long to wait.
+    fn admit_test(&self, id: ChannelId) -> Result<(), ChannelError> {
+        const MINUTE: Duration = Duration::from_secs(60);
+        let now = self.env.clock.now();
+        let mut tests = self.tests.lock().unwrap_or_else(PoisonError::into_inner);
+        tests.retain(|_, times| {
+            while times
+                .front()
+                .is_some_and(|at| now.saturating_duration_since(*at) >= MINUTE)
+            {
+                times.pop_front();
+            }
+            !times.is_empty()
+        });
+        let times = tests.entry(id).or_default();
+        if times.len() >= TESTS_PER_MINUTE {
+            let waited = times
+                .front()
+                .map_or(MINUTE, |at| now.saturating_duration_since(*at));
+            let left = MINUTE.saturating_sub(waited).as_secs().max(1);
+            return Err(ChannelError::RateLimited {
+                retry_after_secs: u32::try_from(left).unwrap_or(60),
+            });
+        }
+        times.push_back(now);
+        Ok(())
     }
 
     async fn find(&self, project_id: ProjectId, id: ChannelId) -> Result<Channel, ChannelError> {
@@ -323,6 +367,7 @@ impl Channels {
         id: ChannelId,
     ) -> Result<Delivery, ChannelError> {
         let channel = self.find(project_id, id).await?;
+        self.admit_test(id)?;
         let secret = open(&self.sealer, self.store.as_ref(), &channel).await?;
         let now = self.env.clock.wall_now();
         let notification = Notification {
