@@ -1,4 +1,4 @@
-//! The telemetry routes of milestone 1 (contract 12.6) and their OpenAPI operations, one module per route group.
+//! The telemetry routes (contract 12.6) and their OpenAPI operations, one module per route group.
 //! Each group exposes its routes and the OpenAPI document of its paths, and is registered here with its `mod`
 //! line, one line in [`router`] and one in [`document`]. Each handler checks its parameters before it asks for
 //! the query service, so a request without a store configured is still authenticated and validated before it
@@ -6,6 +6,7 @@
 
 mod auth;
 mod data_bounds;
+pub(crate) mod exports;
 mod facts;
 mod filter_values;
 mod metrics;
@@ -13,10 +14,13 @@ mod org;
 mod payload;
 mod projects;
 mod search;
+mod sessions;
+mod span_list;
 mod spans;
 pub(crate) mod sql;
 mod trace_detail;
 mod traces;
+mod users;
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -38,6 +42,7 @@ pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(auth::routes())
         .merge(data_bounds::routes())
+        .merge(exports::routes())
         .merge(facts::routes())
         .merge(filter_values::routes())
         .merge(metrics::routes())
@@ -45,10 +50,13 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(payload::routes())
         .merge(projects::routes())
         .merge(search::routes())
+        .merge(sessions::routes())
+        .merge(span_list::routes())
         .merge(spans::routes())
         .merge(sql::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
+        .merge(users::routes())
 }
 
 /// `doc` with the paths of every group, and the schemas they use. The document's maps are sorted by key, so the
@@ -56,6 +64,7 @@ pub(crate) fn router() -> Router<ApiState> {
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(auth::Paths::openapi());
     doc.merge(data_bounds::Paths::openapi());
+    doc.merge(exports::Paths::openapi());
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
     doc.merge(metrics::Paths::openapi());
@@ -63,10 +72,13 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(payload::Paths::openapi());
     doc.merge(projects::Paths::openapi());
     doc.merge(search::Paths::openapi());
+    doc.merge(sessions::Paths::openapi());
+    doc.merge(span_list::Paths::openapi());
     doc.merge(spans::Paths::openapi());
     doc.merge(sql::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
+    doc.merge(users::Paths::openapi());
     doc
 }
 

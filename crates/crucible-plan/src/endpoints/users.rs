@@ -1,5 +1,6 @@
-//! Users (contract 8.7 and 3.10): the user list and one user, from `user_rollup`, and the distinct session
-//! count of a page of users, which is computed at read time from `trace_heads`.
+//! Users (contract 8.7 and 3.10): the user list and one user, from `user_rollup`; and the sessions of users,
+//! which are computed at read time from `trace_heads`: the distinct session count of a page of users, and the
+//! sessions of one user.
 
 use crucible_records::{ProjectScope, TableId, TimeWindow, Timestamp};
 use crucible_schema::{Column, TraceHeadsCol, UserRollupCol};
@@ -14,6 +15,19 @@ use crate::pred::{CmpOp, Pred};
 
 /// The largest page of the user list.
 pub const USER_LIST_MAX_LIMIT: u32 = 200;
+/// The largest page of the sessions of one user.
+pub const USER_SESSIONS_MAX_LIMIT: u32 = 200;
+
+/// One page of the sessions of one user.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UserSessionsRequest {
+    /// The user.
+    pub user_id: String,
+    /// The page size, 1 to [`USER_SESSIONS_MAX_LIMIT`].
+    pub limit: u32,
+    /// The sort tuple `(latest head start, session_id)` of the last row of the previous page.
+    pub cursor: Option<(Timestamp, String)>,
+}
 
 /// One page of the user list.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -85,6 +99,51 @@ pub fn user_detail(
     user_id: &str,
 ) -> Result<Option<QueryPlan>, PlanError> {
     let aggregate = users(Pred::eq(UserRollupCol::UserId, user_id))?;
+    clamp.plan(
+        scope,
+        window,
+        caller.class(QueryClass::List),
+        Node::Aggregate(aggregate),
+    )
+}
+
+/// The sessions of one user (contract 3.10: a user's sessions are computed at read time): the non-empty
+/// `session_id` values of the user's trace heads in the window, one row per session, latest head first, with
+/// the keyset `(max(start_time), session_id)`. Heads carry the head span's values (contract 3.3), as the
+/// session count of [`user_session_counts`] does. The plan reads one row more than the page. The outputs are,
+/// in order: `session_id`, `max(start_time)`, `min(start_time)` and the distinct count of `trace_id`.
+pub fn user_sessions(
+    scope: ProjectScope,
+    window: TimeWindow,
+    clamp: &RetentionClamp,
+    caller: Caller,
+    request: UserSessionsRequest,
+) -> Result<Option<QueryPlan>, PlanError> {
+    if request.limit == 0 || request.limit > USER_SESSIONS_MAX_LIMIT {
+        return Err(PlanError::Limit);
+    }
+    let start = TraceHeadsCol::StartTime.column_ref();
+    let mut aggregate = Aggregate::new(
+        TableId::TraceHeads,
+        Pred::And(vec![
+            Pred::eq(TraceHeadsCol::UserId, request.user_id.as_str()),
+            Pred::cmp(TraceHeadsCol::SessionId, CmpOp::Ne, ""),
+        ]),
+        [TraceHeadsCol::SessionId],
+        vec![
+            Measure::Max(start),
+            Measure::Min(start),
+            Measure::Uniq(TraceHeadsCol::TraceId.column_ref()),
+        ],
+    )?
+    .ordered(vec![
+        (AggOutput::Measure(0), Direction::Desc),
+        (AggOutput::Group(0), Direction::Desc),
+    ])?
+    .limited(request.limit + 1)?;
+    if let Some((latest, session_id)) = request.cursor {
+        aggregate = aggregate.after(vec![latest.into(), Literal::String(session_id)])?;
+    }
     clamp.plan(
         scope,
         window,

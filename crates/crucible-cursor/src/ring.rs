@@ -23,8 +23,9 @@ const TEXT_VERSION: &str = "v1";
 /// The bytes of HMAC-SHA256 a cursor keeps (contract 12.4).
 pub const TAG_LEN: usize = 16;
 
-/// The longest text [`KeyRing::open`] reads; the longest cursor is under 200 characters.
-pub const MAX_TEXT_LEN: usize = 256;
+/// The longest text [`KeyRing::open`] reads; the longest cursor, a page of a list keyed by a text id of
+/// [`crate::MAX_ID_LEN`] bytes, is under 850 characters.
+pub const MAX_TEXT_LEN: usize = 1024;
 
 /// The longest key id.
 pub const MAX_KID_LEN: usize = 32;

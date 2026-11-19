@@ -5,7 +5,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crucible_plan::{Pred, TRACE_LIST_MAX_LIMIT, TraceListRequest, trace_list};
+use crucible_plan::{
+    Filter, FilterTarget, TRACE_LIST_MAX_LIMIT, TraceListRequest, filtered_trace_list,
+};
 use crucible_recent::{Consistency, ReadState, RecentSpan};
 use crucible_records::{HeadKind, TableId, TimeWindow, TraceId};
 
@@ -26,6 +28,21 @@ pub(crate) const LIST_TABLES: [TableId; 5] = [
     TableId::FactTags,
     TableId::FactFlags,
 ];
+
+/// The tables a trace list under `filter` depends on: [`LIST_TABLES`], and the span table its conditions on
+/// spans are evaluated on (`crucible_plan::filtered_trace_list`), whose quarantined pairs can hide traces too.
+pub(crate) fn list_tables(filter: &Filter) -> Vec<TableId> {
+    let mut tables = LIST_TABLES.to_vec();
+    let (_, on_spans) = filter.split(FilterTarget::TraceHeads);
+    if !on_spans.is_all() {
+        tables.push(if on_spans.unsupported(FilterTarget::SpanCore).is_none() {
+            TableId::SpanCore
+        } else {
+            TableId::SpanPayload
+        });
+    }
+    tables
+}
 
 /// One trace of the list.
 #[derive(Clone, PartialEq, Debug)]
@@ -114,7 +131,7 @@ impl Read<'_> {
         &self,
         entries: Vec<RecentSpan>,
         state: ReadState,
-        filter: &Pred,
+        filter: &Filter,
         keep: impl Fn(&RecentSpan) -> bool,
     ) -> Result<RecentHeads, QueryServiceError> {
         let entries: Vec<RecentSpan> = self
@@ -122,7 +139,7 @@ impl Read<'_> {
             .into_iter()
             .filter(|span| span.head.is_some() && keep(span))
             .collect();
-        if *filter != Pred::all() {
+        if !filter.is_all() {
             return Ok(RecentHeads {
                 heads: VecDeque::new(),
                 state,
@@ -180,13 +197,15 @@ impl Read<'_> {
         &mut self,
         window: TimeWindow,
         request: TraceListRequest,
+        filter: &Filter,
     ) -> Result<Vec<Candidate>, QueryServiceError> {
-        let plan = trace_list(
+        let plan = filtered_trace_list(
             self.ctx.scope,
             window,
             &self.clamp,
             self.ctx.caller,
             request,
+            filter,
         );
         let rows = self.rows(plan).await?;
         rows.iter()

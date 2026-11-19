@@ -99,7 +99,7 @@ fn cookie_of(reply: &Reply) -> String {
 pub(crate) struct Platform {
     pub(crate) router: Router,
     pub(crate) identity: Arc<Identity>,
-    model: PgModel,
+    pub(crate) model: PgModel,
     pub(crate) owner: As,
     pub(crate) key: As,
 }
@@ -199,6 +199,7 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
     } else {
         None
     };
+    let exports = crucible_export::Exports::new(env.clone(), Arc::new(model.clone()));
     let router = crucible_api::platform_router(
         env,
         Some((world.service.clone(), writer)),
@@ -206,6 +207,7 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
         workspace,
+        Some(exports),
     );
     Platform {
         router,

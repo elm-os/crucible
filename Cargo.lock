@@ -779,6 +779,7 @@ dependencies = [
  "crucible-cursor",
  "crucible-env",
  "crucible-env-prod",
+ "crucible-export",
  "crucible-ingest",
  "crucible-jobs",
  "crucible-loadgen",
@@ -844,6 +845,7 @@ dependencies = [
  "crucible-control",
  "crucible-cursor",
  "crucible-env",
+ "crucible-export",
  "crucible-plan",
  "crucible-query",
  "crucible-recent",
@@ -1058,6 +1060,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-export"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "crucible-auth",
+ "crucible-chfmt",
+ "crucible-control",
+ "crucible-env",
+ "crucible-jobs",
+ "crucible-normalize",
+ "crucible-otlp",
+ "crucible-plan",
+ "crucible-query",
+ "crucible-recent",
+ "crucible-records",
+ "crucible-schema",
+ "crucible-shipper",
+ "crucible-sim",
+ "flate2",
+ "futures",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-fake-collector"
 version = "0.0.0"
 dependencies = [
@@ -1172,8 +1204,10 @@ dependencies = [
  "crucible-api-types",
  "crucible-auth",
  "crucible-chfmt",
+ "crucible-control",
  "crucible-cursor",
  "crucible-env",
+ "crucible-export",
  "crucible-plan",
  "crucible-query",
  "crucible-recent",
@@ -1281,6 +1315,7 @@ name = "crucible-query"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "crucible-auth",
  "crucible-chfmt",
  "crucible-env",
