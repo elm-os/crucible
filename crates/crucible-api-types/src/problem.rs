@@ -160,7 +160,7 @@ pub struct Problem {
     #[schema(nullable = false)]
     #[ts(optional)]
     pub errors: Option<Vec<FieldError>>,
-    /// Seconds to wait before retrying, for `rate_limited`.
+    /// Seconds to wait before retrying, for `rate_limited` and `sql_quota_exceeded`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]
@@ -175,6 +175,22 @@ pub struct Problem {
     #[schema(nullable = false)]
     #[ts(optional)]
     pub suggested_granularity: Option<String>,
+    /// The line of the error in a query text, one-based, for `sql_invalid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub line: Option<u32>,
+    /// The column of the error in a query text, one-based, for `sql_invalid`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub column: Option<u32>,
+    /// Why a module is unavailable, for `sql_workspace_unavailable`: a stable word such as
+    /// `isolation_probe_failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub reason: Option<String>,
 }
 
 impl Problem {
@@ -222,6 +238,9 @@ mod tests {
             retry_after_s: None,
             limit: None,
             suggested_granularity: None,
+            line: None,
+            column: None,
+            reason: None,
         };
         let json = serde_json::to_value(&problem).unwrap();
         let mut keys: Vec<&str> = json

@@ -130,6 +130,9 @@ enum Tbl {
     Cursors,
     Jobs,
     Ledger,
+    SqlIdentities,
+    SavedQueries,
+    SqlRuns,
     AuthProviders,
     OauthAccounts,
     AuthFlows,
@@ -215,6 +218,9 @@ enum Row {
     Cursor(String),
     Job(JobRow),
     Ledger(LedgerEntry),
+    SqlIdentity(crucible_control::SqlIdentity),
+    SavedQuery(crucible_control::SavedQuery),
+    SqlRun(crucible_control::SqlRun),
     AuthProvider(AuthProvider),
     OauthAccount(OauthAccount),
     AuthFlow(AuthFlow),
@@ -268,6 +274,21 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             "api_keys_project_id_fkey",
             Tbl::Projects,
             project(k.project_id),
+        )],
+        Row::SqlIdentity(i) => vec![(
+            "ch_sql_identities_project_id_fkey",
+            Tbl::Projects,
+            project(i.project_id),
+        )],
+        Row::SavedQuery(q) => vec![(
+            "saved_queries_project_id_fkey",
+            Tbl::Projects,
+            project(q.project_id),
+        )],
+        Row::SqlRun(r) => vec![(
+            "sql_runs_project_id_fkey",
+            Tbl::Projects,
+            project(r.project_id),
         )],
         Row::OauthAccount(a) => vec![
             (
@@ -1191,6 +1212,15 @@ macro_rules! repos {
             fn migrations(&self) -> &dyn Migrations {
                 &self.runner
             }
+            fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
+                &self.runner
+            }
+            fn saved_queries(&self) -> &dyn crucible_control::SavedQueryRepo {
+                &self.runner
+            }
+            fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
+                &self.runner
+            }
         }
     };
 }
@@ -1255,6 +1285,15 @@ impl Repos for PgModel {
     fn migrations(&self) -> &dyn Migrations {
         &*self.runner
     }
+    fn sql_identities(&self) -> &dyn crucible_control::SqlIdentityRepo {
+        &*self.runner
+    }
+    fn saved_queries(&self) -> &dyn crucible_control::SavedQueryRepo {
+        &*self.runner
+    }
+    fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
+        &*self.runner
+    }
 }
 
 /// Reads one row of a known variant.
@@ -1281,6 +1320,8 @@ macro_rules! all {
 }
 
 mod identity;
+/// The SQL workspace's repositories. Declared after the macros above, which it uses.
+mod sqlws;
 
 fn uuid_key(bytes: [u8; 16]) -> Key {
     bytes.to_vec()

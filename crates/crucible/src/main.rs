@@ -295,7 +295,7 @@ async fn migrate(config: Config) -> anyhow::Result<()> {
     };
     match (&config.clickhouse, &control) {
         (Some(clickhouse), control) => {
-            let clickhouse = store::ClickHouse::new(clickhouse)?;
+            let clickhouse = store::ClickHouse::new(clickhouse, config.sql)?;
             let store = clickhouse.store(env);
             store::apply_migrations(env, &clickhouse, &store, control.as_ref()).await?;
         }

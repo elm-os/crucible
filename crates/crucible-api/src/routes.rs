@@ -14,6 +14,7 @@ mod payload;
 mod projects;
 mod search;
 mod spans;
+pub(crate) mod sql;
 mod trace_detail;
 mod traces;
 
@@ -45,6 +46,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(projects::routes())
         .merge(search::routes())
         .merge(spans::routes())
+        .merge(sql::routes())
         .merge(trace_detail::routes())
         .merge(traces::routes())
 }
@@ -62,6 +64,7 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(projects::Paths::openapi());
     doc.merge(search::Paths::openapi());
     doc.merge(spans::Paths::openapi());
+    doc.merge(sql::Paths::openapi());
     doc.merge(trace_detail::Paths::openapi());
     doc.merge(traces::Paths::openapi());
     doc
