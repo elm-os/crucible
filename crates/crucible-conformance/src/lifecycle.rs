@@ -50,6 +50,7 @@ fn spans(
     .all("user_id", Value::String(user.to_owned()))
     .all("session_id", Value::String(format!("s-{n}")))
     .all("received_at", Value::Time(received_at))
+    .all("lsn", Value::UInt(seq))
 }
 
 fn facts(project: ProjectId, epoch: WalEpoch, seq: u64, time: Timestamp, count: usize) -> Rows {
@@ -61,6 +62,7 @@ fn facts(project: ProjectId, epoch: WalEpoch, seq: u64, time: Timestamp, count: 
         .each("key", |row| Value::String(format!("k{seq}-{row}")))
         .all("wal_epoch", uuid(epoch.uuid()))
         .all("batch_seq", Value::UInt(seq))
+        .all("lsn", Value::UInt(seq))
         .all("received_at", Value::Time(time))
 }
 
@@ -80,6 +82,9 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     let both: [&dyn TelemetryStore; 2] = [&ctx.store, &ctx.model];
     let table = TableId::SpanCore;
     let partition = route(table, Granularity::Day, T0)?;
+    // The insert rows stop the merges of `span_core` to count parts, and a table whose merges are stopped
+    // runs no mutation either: a lightweight delete would wait until its deadline.
+    ctx.admin("SYSTEM START MERGES crucible.span_core").await?;
     let requested_at = T0.saturating_add_micros(100 * SECOND);
     let (before, after) = (
         T0.saturating_add_micros(10 * SECOND),

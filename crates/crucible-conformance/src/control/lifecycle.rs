@@ -53,12 +53,13 @@ fn request(n: u64, project_id: ProjectId, selector: DeletionSelector) -> Deletio
     }
 }
 
-/// A request without its sequence number, which differs between two stores that behave the same.
+/// A request without its sequence number, which differs between two stores that behave the same, and with
+/// its `places` document without spaces: Postgres stores it as `jsonb` and writes it back in its own layout.
 fn shape(request: &DeletionRequest) -> (String, DeletionState, String, u32, Option<String>) {
     (
         request.selector.to_text(),
         request.state,
-        request.places.clone(),
+        request.places.replace(' ', ""),
         request.attempts,
         request.error.clone(),
     )
