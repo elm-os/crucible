@@ -1555,30 +1555,39 @@ impl<'r> Session<'r> {
         self.drained(key, rows, limit)
     }
 
-    /// Waits until reads of the trace tables load no column statistics from the parts' files, or until `limit`
-    /// passes, and returns how long it waited and whether they settled. ClickHouse (26.8, automatic statistics
-    /// on every column) loads every part's statistics for each read until its statistics cache refreshes, every
-    /// `refresh_statistics_interval` (300 s by default), and a new part sends reads back to loading them all.
-    pub fn settle_statistics(&self, limit: Duration) -> Result<(Duration, bool), String> {
+    /// Waits until reads of `span_core` and `trace_heads` load no column statistics from the parts' files, or
+    /// until `limit` passes, and returns how long it waited and whether they settled. ClickHouse (26.8, automatic
+    /// statistics on every column) loads every part's statistics for each read with a condition outside the
+    /// primary key until its statistics cache refreshes, every `refresh_statistics_interval` (300 s by default),
+    /// and a new part sends reads back to loading them all. The probe has the shape of trace by id's span read.
+    pub fn settle_statistics(
+        &self,
+        key: &ArmKey,
+        limit: Duration,
+    ) -> Result<(Duration, bool), String> {
         let started = Instant::now();
         let mut probe = 0u64;
         loop {
             probe += 1;
             let comment = format!("crucible-perf-settle-{}-{probe}", self.id);
-            self.clickhouse_text(&format!(
-                "SELECT (SELECT count() FROM crucible.span_core WHERE trace_hash = 0) + (SELECT count() FROM \
-                 crucible.trace_heads WHERE trace_hash = 0) + (SELECT count() FROM crucible.trace_stats WHERE \
-                 trace_hash = 0) SETTINGS log_comment = '{comment}'"
-            ))?;
+            for table in ["span_core", "trace_heads"] {
+                self.clickhouse_text(&format!(
+                    "SELECT count() FROM crucible.{table} WHERE project_id = toUUID('{}') AND trace_hash = 0 AND \
+                     trace_id = toFixedString('', 16) SETTINGS log_comment = '{comment}'",
+                    key.project_id
+                ))?;
+            }
             self.clickhouse_text("SYSTEM FLUSH LOGS")?;
             let row = self.clickhouse_row(&format!(
-                "SELECT ProfileEvents['LoadedStatisticsMicroseconds'] AS us FROM system.query_log WHERE type = \
-                 'QueryFinish' AND log_comment = '{comment}'"
+                "SELECT count() AS reads, sum(ProfileEvents['LoadedStatisticsMicroseconds']) AS us FROM \
+                 system.query_log WHERE type = 'QueryFinish' AND log_comment = '{comment}'"
             ))?;
-            let loaded = row["us"]
-                .as_u64()
-                .or_else(|| row["us"].as_str().and_then(|s| s.parse().ok()));
-            let settled = loaded == Some(0);
+            let number = |field: &str| {
+                row[field]
+                    .as_u64()
+                    .or_else(|| row[field].as_str().and_then(|s| s.parse().ok()))
+            };
+            let settled = number("reads") == Some(2) && number("us") == Some(0);
             if settled || started.elapsed() >= limit {
                 return Ok((started.elapsed(), settled));
             }

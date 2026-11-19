@@ -591,7 +591,8 @@ fn bench(
     // that neither the load's new parts nor what an earlier lane or a page-cache drop left in the caches decides
     // its latency.
     let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
-        let (statistics_wait, statistics_settled) = session.settle_statistics(SETTLE_LIMIT)?;
+        let (statistics_wait, statistics_settled) =
+            session.settle_statistics(&key, SETTLE_LIMIT)?;
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()

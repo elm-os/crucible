@@ -545,20 +545,23 @@ significant digits.
      40.8 ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
      (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the first refresh, about
      300 s after the rig started in each of four runs, and nothing afterwards, when its median fell from about
-     92 ms to 15 ms. So each attempt first waits, up to 360 s, until a read of
-     `span_core`, `trace_heads` and `trace_stats` loads no statistics; a lane that never settles is marked
-     invalid. A store under live ingest stays in the loading state, so these lanes leave that cost out.
+     92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's bounds read on
+     `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s, until a read of
+     `span_core` and one of `trace_heads`, shaped as trace by id's span read, load no statistics; a lane that
+     never settles is marked invalid. A store under live ingest stays in the loading state, so these lanes leave
+     that cost out.
    - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
      parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
      first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
    - **Page cache.** When the store's active parts fit within half of ClickHouse's memory limit (the
      container's page cache counts against it), each attempt reads every file of the store once; a larger
      store, such as the 100-million-span dataset, is read from the disk, as it would be. The Docker Desktop VM
-     drops its whole page cache every few minutes (the `drop_pagecache` count of `/proc/vmstat` rose by 5 in
-     15 minutes on 2026-11-19, under load), and the reads after a drop go to the disk: span children measured
-     69.2 and 64.2 ms p95 in two attempts that a drop disturbed and 36.6 ms in the one it did not, while the
-     lanes over a window measured the same either way. So an attempt during which the host dropped its page
-     cache runs again, up to 3 attempts; a lane disturbed in all 3 is marked invalid.
+     (WSL 3.0.5) drops its whole page cache every few minutes: the `drop_pagecache` count of `/proc/vmstat`
+     rose by 31 in 124 minutes on 2026-11-19, at 1-minute loads of 2 to 16 and with 1.9 to 7.6 GB cached
+     before each drop, so neither idleness nor a cache size sets it off. The reads after a drop go to the disk:
+     span children measured 69.2 and 64.2 ms p95 in two attempts that a drop disturbed and 36.6 ms in the one
+     it did not, while the lanes over a window measured the same either way. So an attempt during which the
+     host dropped its page cache runs again, up to 3 attempts; a lane disturbed in all 3 is marked invalid.
 
 | Lane | Request | Answers that count | Server class |
 |---|---|---|---|
