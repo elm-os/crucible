@@ -7,6 +7,10 @@ import type { ApiKey } from "./generated/ApiKey";
 import type { ApiKeyCreate } from "./generated/ApiKeyCreate";
 import type { ApiKeyCreated } from "./generated/ApiKeyCreated";
 import type { ApiKeyList } from "./generated/ApiKeyList";
+import type { EntityParams } from "./generated/EntityParams";
+import type { Export } from "./generated/Export";
+import type { ExportList } from "./generated/ExportList";
+import type { ExportRequest } from "./generated/ExportRequest";
 import type { FactWritten } from "./generated/FactWritten";
 import type { FeedbackRequest } from "./generated/FeedbackRequest";
 import type { FlagRequest } from "./generated/FlagRequest";
@@ -28,20 +32,30 @@ import type { Project } from "./generated/Project";
 import type { ProjectCreate } from "./generated/ProjectCreate";
 import type { SearchPage } from "./generated/SearchPage";
 import type { SearchRequest } from "./generated/SearchRequest";
+import type { SessionDetail } from "./generated/SessionDetail";
 import type { SessionInfo } from "./generated/SessionInfo";
+import type { SessionListParams } from "./generated/SessionListParams";
+import type { SessionPage } from "./generated/SessionPage";
 import type { SetupRequest } from "./generated/SetupRequest";
 import type { SignInOptions } from "./generated/SignInOptions";
+import type { SpanListPage } from "./generated/SpanListPage";
+import type { SpanListParams } from "./generated/SpanListParams";
 import type { SpanPage } from "./generated/SpanPage";
 import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
 import type { TagRequest } from "./generated/TagRequest";
 import type { TraceListParams } from "./generated/TraceListParams";
-import type { ProblemBody, TimeWindow } from "./types";
+import type { UserDetail } from "./generated/UserDetail";
+import type { UserListParams } from "./generated/UserListParams";
+import type { UserPage } from "./generated/UserPage";
+import type { UserSessionPage } from "./generated/UserSessionPage";
+import type { ListFilters, ProblemBody, TimeWindow } from "./types";
 
 const BASE = "/api/v1";
 
-type Query = Record<string, string | number | undefined>;
+// A list value is sent as the parameter repeated once per value.
+type Query = Record<string, string | number | readonly string[] | undefined>;
 
 // Who a request comes from (contract 11.4). "telemetry" reads go with the session cookie, or without a
 // control plane with the Connect dialog's key; "session" calls send the session's CSRF token on writes;
@@ -108,7 +122,9 @@ async function call(path: string, sender: Sender, init: Init = {}): Promise<Resp
 function search(query: Query = {}): string {
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(query)) {
-    if (value !== undefined) params.set(name, String(value));
+    if (value === undefined) continue;
+    if (typeof value === "object") for (const item of value) params.append(name, item);
+    else params.set(name, String(value));
   }
   return params.size > 0 ? `?${params}` : "";
 }
@@ -156,10 +172,97 @@ function projectPath(project: string, rest: string): string {
 export function listTraces(
   project: string,
   timeWindow: TimeWindow,
+  filters: ListFilters = {},
+  signal?: AbortSignal,
+  cursor?: string,
+): Promise<TraceListPage> {
+  const query: TraceListParams = { ...filters, from: timeWindow.from, to: timeWindow.to, cursor };
+  return apiGet(projectPath(project, "/traces"), query, signal);
+}
+
+// Live tail: the traces whose head arrived after `since`, a head cursor of the same window and filters.
+export function listNewTraces(
+  project: string,
+  timeWindow: TimeWindow,
+  filters: ListFilters,
+  since: string,
   signal?: AbortSignal,
 ): Promise<TraceListPage> {
-  const query: TraceListParams = { from: timeWindow.from, to: timeWindow.to };
+  const query: TraceListParams = {
+    ...filters,
+    from: timeWindow.from,
+    to: timeWindow.to,
+    since,
+    limit: 1,
+  };
   return apiGet(projectPath(project, "/traces"), query, signal);
+}
+
+export function listSpans(
+  project: string,
+  timeWindow: TimeWindow,
+  filters: ListFilters,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<SpanListPage> {
+  const query: SpanListParams = {
+    ...filters,
+    from: timeWindow.from,
+    to: timeWindow.to,
+    cursor: cursor ?? undefined,
+  };
+  return apiGet(projectPath(project, "/spans"), query, signal);
+}
+
+export function listSessions(
+  project: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<SessionPage> {
+  const query: SessionListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, "/sessions"), query, signal);
+}
+
+export function getSessionDetail(
+  project: string,
+  session: string,
+  timeWindow: TimeWindow,
+  signal?: AbortSignal,
+): Promise<SessionDetail> {
+  const query: EntityParams = { ...timeWindow };
+  return apiGet(projectPath(project, `/sessions/${encodeURIComponent(session)}`), query, signal);
+}
+
+export function listUsers(
+  project: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<UserPage> {
+  const query: UserListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, "/users"), query, signal);
+}
+
+export function getUser(
+  project: string,
+  user: string,
+  timeWindow: TimeWindow,
+  signal?: AbortSignal,
+): Promise<UserDetail> {
+  const query: EntityParams = { ...timeWindow };
+  return apiGet(projectPath(project, `/users/${encodeURIComponent(user)}`), query, signal);
+}
+
+export function listUserSessions(
+  project: string,
+  user: string,
+  timeWindow: TimeWindow,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<UserSessionPage> {
+  const query: UserListParams = { ...timeWindow, cursor: cursor ?? undefined };
+  return apiGet(projectPath(project, `/users/${encodeURIComponent(user)}/sessions`), query, signal);
 }
 
 export function getTrace(
@@ -366,6 +469,21 @@ export async function listApiKeys(project: string, signal?: AbortSignal): Promis
 export async function createApiKey(project: string, body: ApiKeyCreate): Promise<ApiKeyCreated> {
   const path = projectPath(project, "/api-keys");
   return read<ApiKeyCreated>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function listExports(project: string, signal?: AbortSignal): Promise<ExportList> {
+  return read<ExportList>(await call(projectPath(project, "/exports"), "session", { signal }));
+}
+
+// The key makes a retry of a request whose answer was lost answer with the export it created.
+export async function createExport(
+  project: string,
+  body: ExportRequest,
+  idempotencyKey: string,
+): Promise<Export> {
+  const path = projectPath(project, "/exports");
+  const headers = { "Idempotency-Key": idempotencyKey };
+  return read<Export>(await call(path, "session", { method: "POST", body, headers }));
 }
 
 export async function createProject(body: ProjectCreate): Promise<Project> {

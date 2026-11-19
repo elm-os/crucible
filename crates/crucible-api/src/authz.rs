@@ -154,6 +154,26 @@ pub const ROUTES: &[RouteAccess] = &[
         Project(ProjectPermission::Read),
     ),
     route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/exports",
+        Project(ProjectPermission::Export),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports/{export_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports/{export_id}/download",
+        Project(ProjectPermission::Read),
+    ),
+    route(
         "POST",
         "/api/v1/projects/{project_id}/corrections",
         Project(ProjectPermission::WriteFacts),
@@ -211,6 +231,21 @@ pub const ROUTES: &[RouteAccess] = &[
     route(
         "POST",
         "/api/v1/projects/{project_id}/search",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sessions",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/sessions/{session_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/spans",
         Project(ProjectPermission::Read),
     ),
     route(
@@ -291,6 +326,21 @@ pub const ROUTES: &[RouteAccess] = &[
     route(
         "GET",
         "/api/v1/projects/{project_id}/traces/{trace_id}/spans",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/users",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/users/{user_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/users/{user_id}/sessions",
         Project(ProjectPermission::Read),
     ),
 ];

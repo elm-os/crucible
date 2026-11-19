@@ -11,6 +11,8 @@ use crucible_records::{RequestId, SpanId, TimeWindow, Timestamp, TraceId};
 use crate::problem::{ApiError, field_error};
 
 const MICROS_PER_DAY: i64 = 86_400_000_000;
+/// The longest session or user id a span carries (contract 3.1).
+const MAX_ID_BYTES: usize = 512;
 
 /// The parameters of one request and the problems found so far.
 #[derive(Debug)]
@@ -42,6 +44,19 @@ impl Params {
 
     pub(crate) fn error(&mut self, name: &str, code: &str, message: &str) {
         self.errors.push(field_error(name, code, message));
+    }
+
+    /// Takes every value of a parameter that may be repeated, in the order given.
+    pub(crate) fn all(&mut self, name: &str) -> Vec<String> {
+        let mut values = Vec::new();
+        self.query.retain(|(key, value)| {
+            let taken = key == name;
+            if taken {
+                values.push(value.clone());
+            }
+            !taken
+        });
+        values
     }
 
     /// Takes the value of an optional parameter.
@@ -122,6 +137,23 @@ impl Params {
         let id = SpanId::parse(&text).ok();
         if id.is_none() {
             self.error(name, "invalid_id", "expected 16 hex characters");
+        }
+        id
+    }
+
+    /// A text id path parameter (`session_id`, `user_id`): any non-empty text of at most 512 bytes, the cap of
+    /// the ids spans carry (contract 3.1).
+    pub(crate) fn text_id(
+        &mut self,
+        path: &BTreeMap<String, String>,
+        name: &str,
+    ) -> Option<String> {
+        let id = path
+            .get(name)
+            .filter(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)
+            .cloned();
+        if id.is_none() {
+            self.error(name, "invalid_id", "expected 1 to 512 bytes of text");
         }
         id
     }

@@ -19,13 +19,13 @@ endpoints share stays in the shared modules.
 | Data bounds | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` | `data_bounds.rs` |
 | Facts of a target, fact writes, and the decoration of trace detail and lists | `facts.rs` | `facts.rs` | `facts.rs` (writes through the binary's `FactWriter`) | `facts.rs` |
 | Filter values | `filter_values.rs` | `filter_values.rs` | `filter_values.rs` | `metrics.rs` |
-| Sessions (plan builders only so far) | `sessions.rs` | | | |
-| Users (plan builders only so far) | `users.rs` | | | |
-| Span list (plan builder only so far) | `span_list.rs` | | | |
+| Sessions | `sessions.rs` | `sessions.rs` | `sessions.rs` | `sessions.rs` |
+| Users and the sessions of a user | `users.rs` | `users.rs` | `users.rs` | `users.rs` |
+| Span list | `span_list.rs` | `span_list.rs` | `span_list.rs` | `span_list.rs` |
 | Search | `search.rs` | `search.rs` | `search.rs` | `search.rs` |
 | Payload byte range | `payload.rs` | `payload.rs` | `payload.rs` | `payload.rs` |
 | Metrics query and schema | `metrics.rs`, with the registry in `registry.rs` and the list filter in `filter.rs` | `metrics.rs` | `metrics.rs` | `metrics.rs` |
-| Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
+| Shared | `build.rs`: the retention clamp, the trace bounds window, the span predicates | `service.rs`, `spans.rs`, `heads.rs`, `context.rs`, `cursor.rs`, `decode.rs` | `routes.rs`, `convert.rs`, `params.rs`, `filters.rs` (the list filter parameters), `cursor.rs`, `access.rs`, `problem.rs` | `meta.rs`, `enums.rs`, `problem.rs`, `wire.rs` |
 
 Each registry is a sorted list with one entry per endpoint; insert a new entry at its sorted place. Two slices whose
 names sort next to each other insert at the same place, and git reports a conflict there that is resolved by keeping

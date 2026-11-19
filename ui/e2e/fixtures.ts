@@ -2,8 +2,10 @@ import { AxeBuilder } from "@axe-core/playwright";
 import { test as base, expect, type Page, type Request, type Route } from "@playwright/test";
 import type { SavedQuery } from "../src/api/generated/SavedQuery";
 import type { SessionInfo } from "../src/api/generated/SessionInfo";
+import type { SessionItem } from "../src/api/generated/SessionItem";
 import type { SignInOptions } from "../src/api/generated/SignInOptions";
 import type { Span } from "../src/api/generated/Span";
+import type { SpanListItem } from "../src/api/generated/SpanListItem";
 import type { SpanPage } from "../src/api/generated/SpanPage";
 import type { SqlRelation } from "../src/api/generated/SqlRelation";
 import type { SqlResult } from "../src/api/generated/SqlResult";
@@ -12,6 +14,8 @@ import type { SqlSchema } from "../src/api/generated/SqlSchema";
 import type { TraceDetail } from "../src/api/generated/TraceDetail";
 import type { TraceListItem } from "../src/api/generated/TraceListItem";
 import type { TraceListPage } from "../src/api/generated/TraceListPage";
+import type { UserItem } from "../src/api/generated/UserItem";
+import type { UserSessionItem } from "../src/api/generated/UserSessionItem";
 
 export const PROJECT = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b";
 export const TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -535,5 +539,89 @@ export function sqlProblem(
         ? {}
         : { errors: [{ pointer: "/sql", code: "clickhouse", message: clickhouse }] }),
     }),
+  };
+}
+
+export const SESSION = "chat-42";
+export const USER = "ada";
+export const SESSIONS_PATH = new RegExp(`/projects/${PROJECT}/sessions$`);
+export const SESSION_DETAIL_PATH = new RegExp(`/projects/${PROJECT}/sessions/${SESSION}$`);
+export const USERS_PATH = new RegExp(`/projects/${PROJECT}/users$`);
+export const USER_PATH = new RegExp(`/projects/${PROJECT}/users/${USER}$`);
+export const USER_SESSIONS_PATH = new RegExp(`/projects/${PROJECT}/users/${USER}/sessions$`);
+export const SPANS_PATH = new RegExp(`/projects/${PROJECT}/spans$`);
+
+const WHOLE = { as_of: AS_OF, partial: false, consistency: "strong" } as const;
+
+export function listPage<T>(data: T[], next: string | null = null) {
+  return { data, next_cursor: next, has_more: next !== null, meta: WHOLE };
+}
+
+export function sessionItem(fields: Partial<SessionItem> = {}): SessionItem {
+  return {
+    session_id: SESSION,
+    first_seen: at(0),
+    last_seen: at(4_200_000),
+    trace_count: 3,
+    span_count: 24,
+    error_count: 1,
+    total_cost_usd: 0.012,
+    input_tokens: 3_600,
+    output_tokens: 500,
+    total_tokens: 4_100,
+    user_ids: [USER],
+    saturated: false,
+    ...fields,
+  };
+}
+
+export function userItem(fields: Partial<UserItem> = {}): UserItem {
+  return {
+    user_id: USER,
+    first_seen: at(0),
+    last_seen: at(4_200_000),
+    trace_count: 5,
+    session_count: 2,
+    span_count: 40,
+    error_count: 0,
+    total_cost_usd: 0.03,
+    input_tokens: 2_000,
+    output_tokens: 500,
+    total_tokens: 2_500,
+    saturated: false,
+    ...fields,
+  };
+}
+
+export function spanListItem(fields: Partial<SpanListItem> = {}): SpanListItem {
+  return {
+    trace_id: TRACE,
+    span_id: "a000000000000008",
+    parent_span_id: "a000000000000001",
+    name: "send_reply",
+    observation_type: "tool",
+    start_time: at(3_560_000),
+    duration_us: 600_000,
+    status_code: "error",
+    level: "error",
+    model: "",
+    environment: "production",
+    user_id: USER,
+    session_id: SESSION,
+    total_cost_usd: 0,
+    total_tokens: 0,
+    saturated: false,
+    ...fields,
+  };
+}
+
+export function userSessionItem(fields: Partial<UserSessionItem> = {}): UserSessionItem {
+  return {
+    session_id: SESSION,
+    first_trace_at: at(0),
+    last_trace_at: at(4_200_000),
+    trace_count: 2,
+    saturated: false,
+    ...fields,
   };
 }

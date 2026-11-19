@@ -82,7 +82,9 @@ fn both_eras_list_the_same_tools_and_get_the_same_results() {
             }
             lists.push(sorted.join(","));
             for tool in tools.as_array().unwrap() {
-                assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool:#}");
+                // Every tool reads; create_export alone starts work (an export job).
+                let read_only = tool["name"] != "create_export";
+                assert_eq!(tool["annotations"]["readOnlyHint"], read_only, "{tool:#}");
                 assert_eq!(tool["inputSchema"]["type"], "object", "{tool:#}");
                 assert_eq!(tool["outputSchema"]["type"], "object", "{tool:#}");
             }

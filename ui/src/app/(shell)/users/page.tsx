@@ -1,13 +1,21 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/coming-soon";
+import { Suspense } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SectionFrame } from "@/components/section";
+import { UsersSection } from "@/features/users/users-section";
 
 export const metadata: Metadata = { title: "Users" };
 
-export default function Page() {
+export default function UsersPage() {
   return (
-    <ComingSoon
-      title="Users"
-      description="Users will list the people your agents served, with their traces, sessions, cost and errors."
-    />
+    <>
+      <PageHeader
+        title="Users"
+        description="The people or accounts your agents served, by the user id their spans carry."
+      />
+      <Suspense fallback={<SectionFrame title="Users">{null}</SectionFrame>}>
+        <UsersSection />
+      </Suspense>
+    </>
   );
 }

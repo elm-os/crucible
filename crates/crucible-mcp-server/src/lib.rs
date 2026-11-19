@@ -40,6 +40,7 @@ use crucible_api::ProjectSettingsSource;
 use crucible_auth::KeyVerifier;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
+use crucible_export::Exports;
 use crucible_query::QueryService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -81,8 +82,9 @@ pub fn router(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     config: McpConfig,
+    exports: Option<Exports>,
 ) -> Router {
-    let server = McpServer::new(env, service, settings, cursors, config);
+    let server = McpServer::new(env, service, settings, cursors, config, exports);
     let transport = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(true)
         .with_json_response(true)

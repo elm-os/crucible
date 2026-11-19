@@ -15,6 +15,7 @@
 
 mod data_bounds;
 mod enums;
+mod exports;
 mod facts;
 mod identity;
 mod meta;
@@ -22,10 +23,13 @@ mod metrics;
 mod payload;
 mod problem;
 mod search;
+mod sessions;
+mod span_list;
 mod spans;
 mod sql;
 mod trace_detail;
 mod traces;
+mod users;
 mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
@@ -33,6 +37,7 @@ pub use enums::{
     AuthorKind, Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason,
     ScoreDataType, ScoreSource, StatusCode, TagOp,
 };
+pub use exports::{Export, ExportFormat, ExportList, ExportRequest, ExportState};
 pub use facts::{
     Correction, CorrectionRequest, FactRef, FactWritten, Facts, FactsParams, FeedbackRequest,
     FlagName, FlagRequest, FlagValue, Score, ScoreValue, TagEdit, TagRequest, TraceFacts,
@@ -60,6 +65,8 @@ pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
 pub use search::{
     SearchField, SearchFragment, SearchHit, SearchMatch, SearchMode, SearchPage, SearchRequest,
 };
+pub use sessions::{EntityParams, SessionDetail, SessionItem, SessionListParams, SessionPage};
+pub use span_list::{SpanListItem, SpanListPage, SpanListParams};
 pub use spans::{SpanPage, SpanPageParams};
 pub use sql::{
     SavedQuery, SavedQueryInput, SavedQueryList, SavedQueryParameter, SavedQueryParameterType,
@@ -69,6 +76,7 @@ pub use sql::{
 };
 pub use trace_detail::{Span, TraceDetail, TraceDetailParams};
 pub use traces::{TraceListItem, TraceListPage, TraceListParams};
+pub use users::{UserDetail, UserItem, UserListParams, UserPage, UserSessionItem, UserSessionPage};
 pub use wire::{MAX_SAFE_INTEGER, SafeI64, SafeU64, Saturation, usd_from_nanos};
 
 /// Visits every type the TypeScript client is generated from; `cargo xtask gen-ts` exports each with the
@@ -86,6 +94,10 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<AuthProviderPatch>();
     visitor.visit::<CorrectionRequest>();
     visitor.visit::<DataBounds>();
+    visitor.visit::<EntityParams>();
+    visitor.visit::<Export>();
+    visitor.visit::<ExportList>();
+    visitor.visit::<ExportRequest>();
     visitor.visit::<FactWritten>();
     visitor.visit::<Facts>();
     visitor.visit::<FactsParams>();
@@ -122,9 +134,14 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<ProjectPatch>();
     visitor.visit::<SearchPage>();
     visitor.visit::<SearchRequest>();
+    visitor.visit::<SessionDetail>();
     visitor.visit::<SessionInfo>();
+    visitor.visit::<SessionListParams>();
+    visitor.visit::<SessionPage>();
     visitor.visit::<SetupRequest>();
     visitor.visit::<SignInOptions>();
+    visitor.visit::<SpanListPage>();
+    visitor.visit::<SpanListParams>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
     visitor.visit::<SqlExportRequest>();
@@ -138,6 +155,10 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<TraceListPage>();
     visitor.visit::<TraceListParams>();
     visitor.visit::<TransferOwnership>();
+    visitor.visit::<UserDetail>();
+    visitor.visit::<UserListParams>();
+    visitor.visit::<UserPage>();
+    visitor.visit::<UserSessionPage>();
 }
 
 #[cfg(test)]

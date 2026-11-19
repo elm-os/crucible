@@ -212,7 +212,7 @@ fn unknown_paths_and_methods_are_problems() {
         get(&api, "/api/v1/nope")
             .await
             .assert_problem(404, "not_found");
-        get(&api, &path(1, "/sessions"))
+        get(&api, &path(1, "/nope"))
             .await
             .assert_problem(404, "not_found");
         let post = send(&api, Method::POST, &path(1, "/data-bounds"), Some(&key())).await;
