@@ -169,19 +169,21 @@ function ChannelsTable({
           </li>
         ))}
       </ul>
-      <ConfirmDialog
-        controller={remove}
-        question={(channel) =>
-          channel ? `Delete the channel "${channel.name}"?` : "Delete this channel?"
-        }
-        description="Rules that notify it stop notifying it, and its secret is deleted. This can't be undone."
-        confirm="Delete channel"
-        pending="Deleting"
-        agentConfirm="Deletes the notification channel and its secret"
-        failed="Couldn't delete the channel."
-        copy={CHANGED}
-        run={removeOne}
-      />
+      {canManage ? (
+        <ConfirmDialog
+          controller={remove}
+          question={(channel) =>
+            channel ? `Delete the channel "${channel.name}"?` : "Delete this channel?"
+          }
+          description="Rules that notify it stop notifying it, and its secret is deleted. This can't be undone."
+          confirm="Delete channel"
+          pending="Deleting"
+          agentConfirm="Deletes the notification channel and its secret"
+          failed="Couldn't delete the channel."
+          copy={CHANGED}
+          run={removeOne}
+        />
+      ) : null}
     </>
   );
 }
