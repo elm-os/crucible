@@ -9,12 +9,12 @@ use crucible_auth::test_support::scope;
 use crucible_plan::{
     Aggregation, Caller, DimensionId, Fill, Filter, Granularity, Literal, McpContentField,
     McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId, MetricsQuery,
-    PlanError, QueryPlan, RetentionClamp, Source, SourceChoice, Step, mcp_client_versions,
-    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown, mcp_error_classes,
-    mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_operation,
-    mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_presence,
-    mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools,
-    mcp_user_errors, mcp_users,
+    PlanError, QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice, Step,
+    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
+    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
+    mcp_metrics_totals, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
+    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, McpSide, ProjectId, ProjectScope, SpanId, TimeWindow, Timestamp,
@@ -87,7 +87,7 @@ fn mcp_rollup_plans() {
             s,
             w,
             &c,
-            caller,
+            caller.class(QueryClass::Analytics),
             McpSide::Client,
             Some("files")
         )))
@@ -318,6 +318,24 @@ fn mcp_metrics_plans() {
         "mcp_metrics_series_rate",
         rendered(
             &mcp_metrics_series(s, w, &c, caller, &rate, (&read, Some(&keys)))
+                .unwrap()
+                .unwrap()
+        )
+    );
+    // An alert's totals: an error measure grouped by error class and read whole, a percentile ranked by calls.
+    insta::assert_snapshot!(
+        "mcp_metrics_totals_rate",
+        rendered(
+            &mcp_metrics_totals(s, w, &c, &rate, &read, (true, 51))
+                .unwrap()
+                .unwrap()
+        )
+    );
+    let p99 = query(MeasureId::McpDurationP99, Aggregation::P99);
+    insta::assert_snapshot!(
+        "mcp_metrics_totals_p99",
+        rendered(
+            &mcp_metrics_totals(s, w, &c, &p99, &read, (true, 51))
                 .unwrap()
                 .unwrap()
         )

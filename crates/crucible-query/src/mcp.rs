@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use crucible_plan::{
-    McpSelection, Row, ServerSources, SourceChoice, Value, mcp_presence, mcp_series_step,
+    McpSelection, QueryClass, Row, ServerSources, SourceChoice, Value, mcp_presence,
+    mcp_series_step,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, Histogram, McpSide, TableId, TimeWindow, Timestamp,
@@ -266,11 +267,21 @@ impl Read<'_> {
         &mut self,
         query: &McpQuery,
     ) -> Result<McpSelection, QueryServiceError> {
+        let class = self.ctx.caller.class(QueryClass::Analytics);
+        self.mcp_selection_in(query, class).await
+    }
+
+    /// [`Read::mcp_selection`] with the presence read in `class`: the class of the read it selects for.
+    pub(crate) async fn mcp_selection_in(
+        &mut self,
+        query: &McpQuery,
+        class: QueryClass,
+    ) -> Result<McpSelection, QueryServiceError> {
         let plan = mcp_presence(
             self.ctx.scope,
             query.window,
             &self.clamp,
-            self.ctx.caller,
+            class,
             query.side,
             query.server.as_deref(),
         );

@@ -7,7 +7,7 @@
 //! measure. Every plan reads one side under the capture-source selection of contract 9.5 ([`McpRead`]) and, by
 //! default, without the calls the caller caused (contract 9.2). `mcp.error_count` counts the classes other than
 //! `none`; `mcp.error_rate` is grouped by `error_class` as well, and the service folds its rows into errors over
-//! calls.
+//! calls. An alert reads one value per key over its whole window with [`mcp_metrics_totals`].
 
 use crucible_records::{ProjectScope, TimeWindow};
 use crucible_schema::{Column, McpToolRollupCol};
@@ -22,7 +22,7 @@ use crate::literal::Literal;
 use crate::node::{AggOutput, Aggregate, Direction, Node, TimeSeries};
 use crate::plan::QueryPlan;
 use crate::pred::Pred;
-use crate::registry::{MeasureId, Source};
+use crate::registry::{METRICS_MAX_DIMENSIONS, MeasureId, Source};
 
 type R = McpToolRollupCol;
 
@@ -168,4 +168,80 @@ pub fn mcp_metrics_other(
     let aggregate = Aggregate::new(R::TABLE, pred, [] as [R; 0], vec![id.measure()])?;
     let series = TimeSeries::new(aggregate, R::Minute, shape.step, query.fill)?;
     plan(scope, window, clamp, caller, Node::TimeSeries(series))
+}
+
+/// The value of the one measure per dimension key over the whole of `window`, for an alert (contract 9.9,
+/// class `alert`). `mcp.calls` and the percentiles are read as `crate::metrics_totals` reads the span rollup:
+/// the dimensions, the measure and the calls, at most `limit` keys, by the calls in `largest_first` order for
+/// `mcp.calls` and by descending calls for a percentile, ties in ascending key order. The two error measures
+/// are grouped by `error_class` as well and not limited, with every call of the key counted, so that the
+/// service folds each key's errors over its calls, and a key with calls and no error reads zero rather than
+/// no data: the dimensions, `error_class`, then the calls.
+pub fn mcp_metrics_totals(
+    scope: ProjectScope,
+    window: TimeWindow,
+    clamp: &RetentionClamp,
+    query: &MetricsQuery,
+    read: &McpRead<'_>,
+    (largest_first, limit): (bool, u32),
+) -> Result<Option<QueryPlan>, MetricsError> {
+    let id = measure(query)?;
+    if !query
+        .measures
+        .iter()
+        .all(|(_, a)| id.aggregations().contains(a))
+    {
+        return Err(invalid(
+            "measures",
+            "the measure does not allow the aggregation",
+        ));
+    }
+    if query.dimensions.len() > METRICS_MAX_DIMENSIONS {
+        return Err(invalid("dimensions", "at most two dimensions are allowed"));
+    }
+    if let [first, second] = query.dimensions.as_slice()
+        && first == second
+    {
+        return Err(invalid("dimensions", "a dimension is listed twice"));
+    }
+    if query
+        .dimensions
+        .iter()
+        .any(|d| d.source() != Source::McpOps)
+    {
+        return Err(invalid(
+            "dimensions",
+            "an MCP query is split by server_name or target_name",
+        ));
+    }
+    let errors = matches!(id, MeasureId::McpErrorCount | MeasureId::McpErrorRate);
+    let calls = MeasureId::McpCalls;
+    let Some(pred) = rows(query, read, if errors { calls } else { id }, None)? else {
+        return Ok(None);
+    };
+    let mut group = dimensions(query);
+    let aggregate = if errors {
+        group.push(R::ErrorClass.column_ref());
+        let order = (0..group.len())
+            .map(|i| (AggOutput::Group(i), Direction::Asc))
+            .collect();
+        Aggregate::new(R::TABLE, pred, group, vec![calls.measure()])?.ordered(order)?
+    } else {
+        let by = if id.additive() {
+            let direction = if largest_first {
+                Direction::Desc
+            } else {
+                Direction::Asc
+            };
+            (AggOutput::Measure(0), direction)
+        } else {
+            (AggOutput::Measure(1), Direction::Desc)
+        };
+        let mut order = vec![by];
+        order.extend((0..group.len()).map(|i| (AggOutput::Group(i), Direction::Asc)));
+        Aggregate::new(R::TABLE, pred, group, vec![id.measure(), calls.measure()])?
+            .ordered(order)?
+            .limited(limit)?
+    };
+    Ok(clamp.plan(scope, window, QueryClass::Alert, Node::Aggregate(aggregate))?)
 }

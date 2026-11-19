@@ -28,7 +28,7 @@ pub use scheduler::{KEEP_EVALUATIONS, KEEP_NOTIFICATIONS, SCAN_EVERY};
 pub use service::{AlertError, Alerts, Preview, PreviewSeries, RuleInput, RuleView};
 pub use source::{Observed, QuerySource, ReadFailure, SeriesSource, series_key, series_values};
 pub use spec::{
-    Comparison, FOR_MAX_SECS, INTERVAL_SECS, MAX_CHANNELS, MAX_SERIES, NAME_MAX_CHARS,
+    Comparison, FOR_MAX_SECS, INTERVAL_SECS, MAX_CHANNELS, MAX_SERIES, McpRuleRead, NAME_MAX_CHARS,
     NO_DATA_FOR_DEFAULT_SECS, NO_DATA_FOR_MAX_SECS, NoDataPolicy, RENOTIFY_DEFAULT_SECS,
     RENOTIFY_SECS, RuleSpec, SpecIssue, WINDOW_SECS, display_value,
 };

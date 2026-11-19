@@ -10,12 +10,12 @@ use crucible_auth::test_support::scope;
 use crucible_plan::{
     Aggregation, Caller, CaptureClass, DimensionId, Fill, Filter, Granularity, McpContentField,
     McpOperationsRequest, McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId, MetricsQuery,
-    QueryPlan, RetentionClamp, Row, Source, SourceChoice, Step, Value, mcp_client_versions,
-    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown, mcp_error_classes,
-    mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_operation,
-    mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_presence,
-    mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools,
-    mcp_user_errors, mcp_users,
+    QueryClass, QueryPlan, RetentionClamp, Row, Source, SourceChoice, Step, Value,
+    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
+    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
+    mcp_metrics_totals, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
+    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, GroupKeyKind, McpSide, ProjectScope, SpanId, TableId, TimeWindow,
@@ -390,7 +390,7 @@ pub(crate) async fn mcp_reads(ctx: &Ctx) -> Result<String> {
                 scope,
                 window,
                 &clamp,
-                caller,
+                caller.class(QueryClass::Analytics),
                 McpSide::Server,
                 None,
             ))?,
@@ -716,6 +716,27 @@ pub(crate) async fn mcp_reads(ctx: &Ctx) -> Result<String> {
             format!("the error rate series {when} the merge: {rate:?}")
         })?;
         plans += 4;
+
+        // The totals of an alert's read: the calls per server, the most first, and every call of the error
+        // rate per server and error class.
+        let totals = mcp_metrics_totals(scope, window, &clamp, &calls, &read, (true, 2));
+        let totals = rows(ctx, live_metrics(totals)?).await?;
+        expect(
+            totals.first().map(|r| r.values().to_vec())
+                == Some(vec![
+                    Value::String("files".to_owned()),
+                    Value::UInt(10),
+                    Value::UInt(10),
+                ]),
+            || format!("the alert totals {when} the merge: {totals:?}"),
+        )?;
+        let errors = metrics(MeasureId::McpErrorRate, Aggregation::Rate);
+        let errors = mcp_metrics_totals(scope, window, &clamp, &errors, &read, (true, 2));
+        let errors = rows(ctx, live_metrics(errors)?).await?;
+        expect(sum_of(&errors, 2) == 13, || {
+            format!("the alert error totals {when} the merge: {errors:?}")
+        })?;
+        plans += 2;
     }
     let violations = ctx.model.violations();
     expect(violations.is_empty(), || {
@@ -724,8 +745,8 @@ pub(crate) async fn mcp_reads(ctx: &Ctx) -> Result<String> {
     Ok(format!(
         "{plans} plans of the MCP analytics builders (presence, servers, tools, one tool, error classes and \
          breakdown, clients and versions, users, sessions, operations, one operation with its content, other \
-         side and chain, deploys, inventory, compare, and the mcp_ops metrics ranking, series, other series and \
-         error rate) returned the same rows on the server and on the store \
+         side and chain, deploys, inventory, compare, the mcp_ops metrics ranking, series, other series and \
+         error rate, and an alert's totals) returned the same rows on the server and on the store \
          model, before and after the model merged its parts, with the SDK's rows of a doubly captured server \
          read and the proxy's never added in"
     ))

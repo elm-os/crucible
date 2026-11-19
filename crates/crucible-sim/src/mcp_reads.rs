@@ -13,17 +13,28 @@
 //! - the calls, errors and caller-fault calls of a server and of a tool are those of the chosen class, never a
 //!   sum over classes; with `include_caller_faults` the caller-fault calls count;
 //! - the `mcp_ops` metrics source gives the same calls per server;
+//! - the totals an alert reads give each server's calls, errors and error rate of the chosen class, a server
+//!   with calls and no error at zero;
 //! - the operation list holds exactly the chosen class's operations of the side.
 //!
-//! A failure is a violation of I7 that names the read and the server.
+//! A failure is a violation of I7 that names the read and the server. [`run_mcp_alert`] then follows an
+//! `mcp.error_rate` alert rule through one evaluation by the production evaluator.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use crucible_alerts::schedule::{current_seq, window_of};
+use crucible_alerts::{
+    Alerts, Comparison, EVALUATION_POLICY, Evaluator, McpRuleRead, NO_DATA_FOR_DEFAULT_SECS,
+    NoDataPolicy, QuerySource, RENOTIFY_DEFAULT_SECS, RuleInput, RuleSpec, SeriesSource,
+    evaluation_job,
+};
 use crucible_chfmt::Compression;
+use crucible_control::{AlertStatus, ControlStore, JsonDoc, Project, Queue, Repos as _};
 use crucible_env::{InsertSettings, StoreFlavour, Stores, TelemetryStore};
+use crucible_jobs::ClaimCtx;
 use crucible_plan::{
     Aggregation, CaptureClass, DimensionId, Fill, Filter, Granularity, McpOpsFilter, MeasureId,
     MetricsQuery, Source, SourceChoice,
@@ -47,6 +58,8 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::{Rng, SeedableRng};
 
 use crate::ch_model::ChModel;
+use crate::pg_model::{PgFaults, PgModel};
+use crate::runtime::Sim;
 
 /// 2026-11-17T09:00:00Z: the start of every run's hour of traffic.
 const HOUR_START: i64 = 1_794_906_000_000_000;
@@ -482,6 +495,7 @@ async fn check(
                 servers(service, ctx, &query, &expected, &label, outcome).await;
                 if !include_caller_faults {
                     metrics(service, ctx, &query, &expected, &label, outcome).await;
+                    alert_totals(service, ctx, &query, &expected, &label, outcome).await;
                     operations(service, ctx, &query, ops, &label, outcome).await;
                 }
             }
@@ -639,6 +653,85 @@ async fn metrics(
     }
 }
 
+/// The totals an alert reads (contract 9.9): per server, the calls, errors and error rate of the class the
+/// selection names, caller faults out, and a server whose chosen class has calls and no error at zero.
+async fn alert_totals(
+    service: &QueryService,
+    ctx: &ReadContext,
+    query: &McpQuery,
+    expected: &BTreeMap<String, BTreeMap<CaptureClass, Expected>>,
+    label: &str,
+    outcome: &mut McpReadOutcome,
+) {
+    for (measure, aggregation) in [
+        (MeasureId::McpCalls, Aggregation::Sum),
+        (MeasureId::McpErrorCount, Aggregation::Sum),
+        (MeasureId::McpErrorRate, Aggregation::Rate),
+    ] {
+        outcome.reads += 1;
+        let request = McpMetricsRequest {
+            window: query.window,
+            query: MetricsQuery {
+                source: Source::McpOps,
+                measures: vec![(measure, aggregation)],
+                dimensions: vec![DimensionId::McpServer],
+                filter: Filter::all(),
+                granularity: Granularity::Auto,
+                fill: Fill::None,
+                top_n: None,
+            },
+            side: query.side,
+            source: query.source,
+            include_caller_faults: false,
+        };
+        let name = measure.as_str();
+        let found = match service.mcp_metrics_totals(ctx, request, true, 50).await {
+            Ok(found) => found,
+            Err(error) => {
+                return violate(
+                    outcome,
+                    format!("the alert read of {name} failed ({label}): {error}"),
+                );
+            }
+        };
+        let got: BTreeMap<String, Option<u64>> = found
+            .series
+            .iter()
+            .filter_map(|series| {
+                let value = match series.value {
+                    Some(MetricValue::UInt(v)) => Some(v),
+                    _ => None,
+                };
+                Some((series.key.first()?.to_string(), value))
+            })
+            .collect();
+        let want: BTreeMap<String, Option<u64>> = expected
+            .iter()
+            .filter_map(|(server, classes)| {
+                let read = classes[&chosen(query.source, classes)?];
+                let value = match measure {
+                    MeasureId::McpErrorCount => read.errors,
+                    MeasureId::McpErrorRate => {
+                        let ppm =
+                            u128::from(read.errors) * 1_000_000 / u128::from(read.calls.max(1));
+                        u64::try_from(ppm).unwrap_or(u64::MAX)
+                    }
+                    _ => read.calls,
+                };
+                (read.calls > 0).then(|| (server.clone(), Some(value)))
+            })
+            .collect();
+        if got != want || found.truncated {
+            violate(
+                outcome,
+                format!(
+                    "the alert read of {name} per server differs ({label}): got {got:?}, want {want:?}"
+                ),
+            );
+        }
+    }
+}
+
 async fn operations(
     service: &QueryService,
     ctx: &ReadContext,
@@ -724,4 +817,256 @@ fn double_captured(ops: &[McpOpRecord]) -> usize {
             .insert(CaptureClass::of(op.capture_source));
     }
     classes.values().filter(|c| c.len() > 1).count()
+}
+
+/// What one run of an MCP alert rule found.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct McpAlertOutcome {
+    /// The seed.
+    pub seed: u64,
+    /// The series that fire after the tick, by key.
+    pub firing: Vec<String>,
+    /// What differs from the scenario, empty when the run passed.
+    pub violations: Vec<String>,
+}
+
+/// An `mcp.error_rate` rule end to end (contracts 9.2, 9.5, 9.9 and 12.6): the rule is created through the
+/// alerts service, server-side calls are landed in the store model as the shipper writes them, and one tick is
+/// claimed and handled by the production evaluator through the production read. Over the tick's window, per
+/// server: `alpha` fails a share of its calls above the 5% threshold and fires; `beta`'s errors are caller
+/// faults and its client side's belong to the other side, so it stays OK; `gamma` is captured by its SDK and by
+/// the HTTP proxy, whose rows alone carry errors, and `auto` reads the SDK's, so it stays OK where a sum over
+/// the sources would fire.
+pub fn run_mcp_alert(seed: u64) -> McpAlertOutcome {
+    crate::run(seed, |sim| async move {
+        let mut outcome = McpAlertOutcome {
+            seed,
+            firing: Vec::new(),
+            violations: Vec::new(),
+        };
+        if let Err(error) = alert_run(&sim, seed, &mut outcome).await {
+            outcome.violations.push(error);
+        }
+        outcome
+    })
+}
+
+/// The share of `alpha`'s calls that fail in a run, out of 20.
+const fn alpha_failing(seed: u64) -> u64 {
+    2 + seed % 5
+}
+
+/// The calls of the alert scenario inside `window`, per server, side and capture source: the calls, how many
+/// of them fail, and how many more calls are caller faults.
+fn alert_traffic(seed: u64, project: ProjectId, window: TimeWindow) -> Vec<McpOpRecord> {
+    let plan = [
+        (
+            "alpha",
+            McpSide::Server,
+            CaptureSource::Sdk,
+            20,
+            alpha_failing(seed),
+            0,
+        ),
+        (
+            "beta",
+            McpSide::Server,
+            CaptureSource::Sdk,
+            20,
+            0,
+            3 + seed % 4,
+        ),
+        ("beta", McpSide::Client, CaptureSource::Sdk, 20, 20, 0),
+        ("gamma", McpSide::Server, CaptureSource::Sdk, 20, 0, 0),
+        (
+            "gamma",
+            McpSide::Server,
+            CaptureSource::ProxyHttp,
+            20,
+            5 + seed % 5,
+            0,
+        ),
+    ];
+    let mut out = Vec::new();
+    for (server, side, source, calls, errors, caller_faults) in plan {
+        for call in 0..calls + caller_faults {
+            let n = out.len() as u64 + 1;
+            let mut op = record(project, n, side, source);
+            op.server_name = server.into();
+            op.target_name = "read".into();
+            op.start_time = window.from().saturating_add_micros(MINUTE + n as i64);
+            op.ingestion.received_at = op.start_time;
+            op.duration_us = 1_000;
+            if call >= calls {
+                op.error_class = ErrorClass::Validation;
+                op.jsonrpc_code = Some(-32602);
+                op.status = McpStatus::ProtocolError;
+                op.caller_fault = true;
+            } else if call < errors {
+                op.error_class = ErrorClass::ToolExecution;
+                op.status = McpStatus::ToolError;
+            }
+            out.push(op);
+        }
+    }
+    out
+}
+
+async fn alert_run(sim: &Sim, seed: u64, outcome: &mut McpAlertOutcome) -> Result<(), String> {
+    let database = sim.host("postgres", &sim.disk("postgres"), 0);
+    let env = database.env.clone();
+    let model = PgModel::new(
+        Arc::clone(&env.clock),
+        sim.rng("mcp-alert/pg").as_ref(),
+        PgFaults::default(),
+    );
+    let fail = |what: &str, error: &dyn std::fmt::Display| format!("{what}: {error}");
+    let project = Project {
+        id: ProjectId::from_bytes([0x42; 16]),
+        name: "Tools".to_owned(),
+        slug: "tools".to_owned(),
+        settings: JsonDoc::empty(),
+        retention_days: None,
+        payload_retention_days: None,
+        mcp_content_retention_days: None,
+        config_version: 1,
+        version: 1,
+        deleted_at: None,
+    };
+    model
+        .projects()
+        .insert(&project)
+        .await
+        .map_err(|e| fail("inserting the project", &e))?;
+    let store = ChModel::new(
+        sim.rng("mcp-alert/ch").as_ref(),
+        StoreFlavour::SingleNode,
+        Partitioning::Day,
+        Duration::from_secs(60),
+    );
+    let (index, _writer) = RecentIndex::new(
+        RecentConfig::new(1 << 20, StoreFlavour::SingleNode),
+        Arc::clone(&env.clock),
+        Arc::new(NoWal),
+    );
+    let service = QueryService::new(
+        Stores::new(Arc::new(store.clone()) as Arc<dyn TelemetryStore>),
+        Arc::clone(&env.clock),
+        index,
+        WalEpoch::from_bytes([0xe1; 16]),
+    );
+    let source: Arc<dyn SeriesSource> = Arc::new(QuerySource::new(service));
+    let control: Arc<dyn ControlStore> = Arc::new(model.clone());
+
+    let spec = RuleSpec {
+        source: Source::McpOps,
+        mcp: Some(McpRuleRead {
+            side: McpSide::Server,
+            source: SourceChoice::Auto,
+        }),
+        measure: MeasureId::McpErrorRate,
+        aggregation: Aggregation::Rate,
+        dimensions: vec![DimensionId::McpServer],
+        comparison: Comparison::Gt,
+        threshold: 50_000,
+        window_secs: 300,
+        interval_secs: 60,
+        for_secs: 0,
+        no_data: NoDataPolicy::Keep,
+        no_data_for_secs: NO_DATA_FOR_DEFAULT_SECS,
+        renotify_secs: RENOTIFY_DEFAULT_SECS,
+        channels: Vec::new(),
+    };
+    let alerts = Alerts::new(&env, Arc::clone(&control), Some(Arc::clone(&source)));
+    let input = RuleInput {
+        name: "MCP errors".to_owned(),
+        enabled: true,
+        spec: spec.clone(),
+    };
+    let rule = alerts
+        .create(project.id, input)
+        .await
+        .map_err(|e| fail("creating the rule", &e))?
+        .rule;
+
+    // The tick that is due now, and the calls of its window.
+    let seq = current_seq(rule.id, rule.interval_secs, env.clock.wall_now())
+        .ok_or_else(|| "the clock is before the first tick of the rule".to_owned())?;
+    let window = window_of(rule.id, rule.interval_secs, seq, spec.window_secs)
+        .map_err(|_| "the tick has no window".to_owned())?;
+    land(
+        &store,
+        &alert_traffic(seed, project.id, window),
+        1 + (seed % 3) as usize,
+    )
+    .await?;
+    if seed.is_multiple_of(2) {
+        store.merge_all();
+    }
+    let job = evaluation_job(
+        crucible_records::Uuid::from_v7_parts(1_800_000_000_000, u128::from(seed)),
+        rule.id,
+        rule.interval_secs,
+        seq,
+    );
+    model
+        .claims()
+        .enqueue(Queue::AlertEvaluations, &job)
+        .await
+        .map_err(|e| fail("enqueueing the tick", &e))?;
+    let claim = model
+        .claims()
+        .claim(Queue::AlertEvaluations, 1, EVALUATION_POLICY.lease_for)
+        .await
+        .map_err(|e| fail("claiming the tick", &e))?
+        .pop()
+        .ok_or_else(|| "the tick was not due".to_owned())?;
+    Evaluator::new(source)
+        .handle(ClaimCtx {
+            env: env.clone(),
+            store: control,
+            claim,
+        })
+        .await
+        .map_err(|e| fail("evaluating the tick", &e))?;
+
+    let want = [
+        (
+            r#"["alpha"]"#,
+            AlertStatus::Firing,
+            alpha_failing(seed) * 50_000,
+        ),
+        (r#"["beta"]"#, AlertStatus::Ok, 0),
+        (r#"["gamma"]"#, AlertStatus::Ok, 0),
+    ];
+    let states = model
+        .alert_state()
+        .list(rule.id)
+        .await
+        .map_err(|e| fail("reading the series", &e))?;
+    let got: BTreeMap<&str, (AlertStatus, Option<i64>)> = states
+        .iter()
+        .map(|s| (s.series_key.as_str(), (s.status, s.value)))
+        .collect();
+    for (key, status, ppm) in want {
+        let value = i64::try_from(ppm).ok();
+        if got.get(key) != Some(&(status, value)) {
+            outcome.violations.push(format!(
+                "the series {key} is {:?}, the scenario says {status:?} at {ppm} ppm",
+                got.get(key)
+            ));
+        }
+    }
+    if got.len() != want.len() {
+        outcome.violations.push(format!(
+            "the rule tracks {got:?}, the scenario three servers"
+        ));
+    }
+    outcome.firing = states
+        .iter()
+        .filter(|s| s.status == AlertStatus::Firing)
+        .map(|s| s.series_key.clone())
+        .collect();
+    database.stop().await;
+    Ok(())
 }

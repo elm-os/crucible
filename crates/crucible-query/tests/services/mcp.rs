@@ -1,7 +1,7 @@
 //! The MCP analytics services (contract 9.9) over the in-memory store: the capture-source selection of
 //! contract 9.5 (one class per server, never summed), the caller-fault rule of contract 9.2, the unused tools,
 //! the operation list with its cursor, one operation with its content, other side and multi-round chain, the
-//! compare of two deploys, the `mcp_ops` metrics source, and a store outage.
+//! compare of two deploys, the `mcp_ops` metrics source and the totals an alert reads, and a store outage.
 
 use crucible_plan::{
     Aggregation, CaptureClass, DimensionId, Fill, Filter, Granularity, McpOpsFilter, MeasureId,
@@ -9,7 +9,7 @@ use crucible_plan::{
 };
 use crucible_query::{
     CompareSide, McpCompareQuery, McpMetricsRequest, McpOperationCursor, McpOperationsQuery,
-    McpQuery, MetricValue, QueryServiceError,
+    McpQuery, MetricValue, MetricsTotals, QueryServiceError,
 };
 use crucible_records::{
     CaptureSource, ErrorClass, GroupKeyKind, Histogram, McpSide, McpStatus, ResultType, SpanId,
@@ -864,6 +864,80 @@ fn the_mcp_ops_metrics_source_reads_one_capture_source_per_server() {
     ))
     .unwrap();
     assert!(total(&p99, "files").is_some_and(|v| v >= 8_700));
+}
+
+#[test]
+fn an_alert_reads_one_total_per_server_from_one_capture_source() {
+    let world = World::new(16);
+    double_capture(&world);
+    let request =
+        |measure: MeasureId, aggregation: Aggregation, source: SourceChoice| McpMetricsRequest {
+            window: hour(),
+            query: MetricsQuery {
+                source: Source::McpOps,
+                measures: vec![(measure, aggregation)],
+                dimensions: vec![DimensionId::McpServer],
+                filter: Filter::all(),
+                granularity: Granularity::Auto,
+                fill: Fill::None,
+                top_n: None,
+            },
+            side: McpSide::Server,
+            source,
+            include_caller_faults: false,
+        };
+    let totals =
+        |(measure, aggregation): (MeasureId, Aggregation), source, largest_first, limit| {
+            run(world.service.mcp_metrics_totals(
+                &ctx(1),
+                request(measure, aggregation, source),
+                largest_first,
+                limit,
+            ))
+            .unwrap()
+        };
+    let values = |totals: &MetricsTotals| -> Vec<(String, Option<u64>)> {
+        totals
+            .series
+            .iter()
+            .map(|s| {
+                let value = match s.value {
+                    Some(MetricValue::UInt(v)) => Some(v),
+                    _ => None,
+                };
+                (s.key.join(","), value)
+            })
+            .collect()
+    };
+    let owned = |rows: &[(&str, Option<u64>)]| -> Vec<(String, Option<u64>)> {
+        rows.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
+    };
+    let auto = SourceChoice::Auto;
+    // The calls of `files` come from its SDK alone, six without the caller faults; the most first.
+    let calls = totals((MeasureId::McpCalls, Aggregation::Sum), auto, true, 50);
+    assert_eq!(
+        values(&calls),
+        owned(&[("files", Some(6)), ("db", Some(3))])
+    );
+    assert!(!calls.truncated);
+    // A server with calls and no error reads zero rather than nothing, and the keys nearest to a breach are
+    // kept: the largest rate first, or with a downward comparison the smallest count.
+    let rate = totals((MeasureId::McpErrorRate, Aggregation::Rate), auto, true, 50);
+    assert_eq!(
+        values(&rate),
+        owned(&[("files", Some(166_666)), ("db", Some(0))])
+    );
+    let errors = totals((MeasureId::McpErrorCount, Aggregation::Sum), auto, false, 1);
+    assert_eq!(values(&errors), owned(&[("db", Some(0))]));
+    assert!(errors.truncated);
+    // Under the proxy, `files` is read from the proxy's rows only, and `db`, which has none, is not read.
+    let proxy = SourceChoice::Class(CaptureClass::Proxy);
+    let calls = totals((MeasureId::McpCalls, Aggregation::Sum), proxy, true, 50);
+    assert_eq!(values(&calls), owned(&[("files", Some(8))]));
+    // A percentile keeps the busiest keys.
+    let p99 = totals((MeasureId::McpDurationP99, Aggregation::P99), auto, true, 1);
+    assert_eq!(p99.series.len(), 1);
+    assert!(p99.series[0].key.join(",") == "files" && p99.truncated);
 }
 
 #[test]

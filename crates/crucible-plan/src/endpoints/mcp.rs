@@ -18,7 +18,7 @@ use crucible_records::{CaptureSource, McpSide, ProjectScope, TimeWindow};
 use crucible_schema::{Column, ColumnRef, McpToolRollupCol};
 
 use crate::build::RetentionClamp;
-use crate::class::{Caller, QueryClass};
+use crate::class::QueryClass;
 use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::{AggOutput, Aggregate, Direction, Measure, Node, Step};
@@ -278,12 +278,13 @@ pub fn mcp_series_step(window: TimeWindow) -> Step {
 
 /// The capture sources of each server on one side in the window (contract 9.5), the input of
 /// [`McpSelection::select`]: `server_name`, `capture_source`, `sum(count)` and `max(last_seen)` per pair, in
-/// that order, from `mcp_tool_rollup`. With `server`, that server only.
+/// that order, from `mcp_tool_rollup`. With `server`, that server only. It runs in `class`: the class of the
+/// read it selects for, `analytics` for an endpoint and `alert` for an alert's evaluation.
 pub fn mcp_presence(
     scope: ProjectScope,
     window: TimeWindow,
     clamp: &RetentionClamp,
-    caller: Caller,
+    class: QueryClass,
     side: McpSide,
     server: Option<&str>,
 ) -> Result<Option<QueryPlan>, PlanError> {
@@ -307,12 +308,7 @@ pub fn mcp_presence(
         (AggOutput::Group(0), Direction::Asc),
         (AggOutput::Group(1), Direction::Asc),
     ])?;
-    clamp.plan(
-        scope,
-        window,
-        caller.class(QueryClass::Analytics),
-        Node::Aggregate(aggregate),
-    )
+    clamp.plan(scope, window, class, Node::Aggregate(aggregate))
 }
 
 /// The conjunction of `parts`, without the wrapper for one.

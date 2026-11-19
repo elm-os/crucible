@@ -1,12 +1,13 @@
-//! The definition of an alert rule (contract 12.6): one measure of the span rollup, at most two dimensions, a
-//! comparison with a threshold, and the timing of its evaluation. It is stored as the JSON document of the
-//! rule row's `spec` column.
+//! The definition of an alert rule (contract 12.6): one measure of the span rollup or of the MCP rollup, at most
+//! two dimensions, a comparison with a threshold, and the timing of its evaluation; an MCP rule also names its
+//! side and capture source (contract 9.5). It is stored as the JSON document of the rule row's `spec` column.
 
 use crucible_control::{JsonDoc, TxError};
 use crucible_plan::{
     Aggregation, DimensionId, Fill, Filter, Granularity, MeasureId, MetricsQuery, Source,
+    SourceChoice,
 };
-use crucible_records::ChannelId;
+use crucible_records::{ChannelId, McpSide};
 use serde_json::{Value, json};
 
 use crate::machine::Params;
@@ -110,11 +111,23 @@ impl NoDataPolicy {
     }
 }
 
+/// What an `mcp_ops` rule reads (contract 9.5): one side, under a capture source. `auto` is resolved at each
+/// evaluation, for that evaluation's window, so the rule follows the sources each window has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct McpRuleRead {
+    /// The side: `client` or `server`.
+    pub side: McpSide,
+    /// `auto` or one capture-source class.
+    pub source: SourceChoice,
+}
+
 /// The definition of a rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RuleSpec {
-    /// The source. Rules read the span rollup, so only `spans` is accepted.
+    /// The source: `spans` (the span rollup) or `mcp_ops` (the MCP rollup).
     pub source: Source,
+    /// The side and capture source of an `mcp_ops` rule; `None` for a `spans` rule.
+    pub mcp: Option<McpRuleRead>,
     /// The measure.
     pub measure: MeasureId,
     /// How it is aggregated over the window.
@@ -161,10 +174,26 @@ impl RuleSpec {
     /// Everything about the definition that is not allowed; empty when it can be saved.
     pub fn issues(&self) -> Vec<SpecIssue> {
         let mut issues = Vec::new();
-        if self.source != Source::Spans {
-            issues.push(issue(
+        match (self.source, self.mcp) {
+            (Source::Spans, None) => {}
+            (Source::McpOps, Some(mcp)) if mcp.side != McpSide::None => {}
+            (Source::McpOps, _) => issues.push(issue(
+                "side",
+                "an mcp_ops rule reads one side: `client` or `server`",
+            )),
+            (Source::Spans, Some(_)) => issues.push(issue(
+                "side",
+                "only an mcp_ops rule takes a side and a capture source",
+            )),
+            _ => issues.push(issue(
                 "source",
-                "alert rules read the span rollup; use the source `spans`",
+                "alert rules read the span rollup or the MCP rollup; use the source `spans` or `mcp_ops`",
+            )),
+        }
+        if self.dimensions.iter().any(|d| d.source() != self.source) {
+            issues.push(issue(
+                "dimensions",
+                "a dimension belongs to another source; GET metrics/schema lists each source's dimensions",
             ));
         }
         if self.measure.source() != self.source {
@@ -251,9 +280,10 @@ impl RuleSpec {
         }
     }
 
-    /// The stored document.
+    /// The stored document. An `mcp_ops` rule's side and capture source are the members `side` and
+    /// `capture_source`, absent for a `spans` rule.
     pub fn to_doc(&self) -> JsonDoc {
-        let value = json!({
+        let mut value = json!({
             "source": self.source.as_str(),
             "measure": self.measure.as_str(),
             "aggregation": self.aggregation.as_str(),
@@ -268,6 +298,10 @@ impl RuleSpec {
             "renotify_secs": self.renotify_secs,
             "channels": self.channels.iter().map(ToString::to_string).collect::<Vec<_>>(),
         });
+        if let (Some(mcp), Some(members)) = (self.mcp, value.as_object_mut()) {
+            members.insert("side".to_owned(), json!(mcp.side.as_str()));
+            members.insert("capture_source".to_owned(), json!(mcp.source.as_str()));
+        }
         // A document built from a `json!` object always parses.
         JsonDoc::parse(&value.to_string()).unwrap_or_else(|_| JsonDoc::empty())
     }
@@ -299,8 +333,17 @@ impl RuleSpec {
                 .map(|item| item.as_str().ok_or_else(|| bad(member)))
                 .collect::<Result<Vec<&str>, TxError>>()
         };
+        let mcp = match value.get("side") {
+            None => None,
+            Some(_) => Some(McpRuleRead {
+                side: McpSide::parse(text("side")?).ok_or_else(|| bad("side"))?,
+                source: SourceChoice::parse(text("capture_source")?)
+                    .ok_or_else(|| bad("capture_source"))?,
+            }),
+        };
         Ok(Self {
             source: Source::parse(text("source")?).ok_or_else(|| bad("source"))?,
+            mcp,
             measure: MeasureId::parse(text("measure")?).ok_or_else(|| bad("measure"))?,
             aggregation: Aggregation::parse(text("aggregation")?)
                 .ok_or_else(|| bad("aggregation"))?,
@@ -328,9 +371,18 @@ impl RuleSpec {
 }
 
 /// A stored value of `measure` as people read it: a count as it is, microseconds as a duration, nano-USD as
-/// dollars.
+/// dollars, parts per million as a percentage.
 pub fn display_value(measure: MeasureId, value: i64) -> String {
     match measure.unit() {
+        "ppm" => {
+            let sign = if value < 0 { "-" } else { "" };
+            let ppm = value.unsigned_abs();
+            let fraction = format!("{:04}", ppm % 10_000);
+            match fraction.trim_end_matches('0') {
+                "" => format!("{sign}{}%", ppm / 10_000),
+                digits => format!("{sign}{}.{digits}%", ppm / 10_000),
+            }
+        }
         "nusd" => {
             let sign = if value < 0 { "-" } else { "" };
             let nanos = value.unsigned_abs();
@@ -362,6 +414,7 @@ pub(crate) mod tests {
     pub(crate) fn spec() -> RuleSpec {
         RuleSpec {
             source: Source::Spans,
+            mcp: None,
             measure: MeasureId::ErrorCount,
             aggregation: Aggregation::Sum,
             dimensions: vec![DimensionId::Environment, DimensionId::Model],
@@ -398,7 +451,15 @@ pub(crate) mod tests {
                 .map(|i| i.field)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(fields(|s| s.source = Source::Traces), ["source", "measure"]);
+        assert_eq!(
+            fields(|s| s.source = Source::Traces),
+            ["source", "dimensions", "measure"]
+        );
+        assert_eq!(
+            fields(|s| s.dimensions = vec![DimensionId::McpServer]),
+            ["dimensions"]
+        );
+        assert_eq!(fields(|s| s.mcp = mcp_spec().mcp), ["side"]);
         assert_eq!(
             fields(|s| s.aggregation = Aggregation::P95),
             ["aggregation"]
@@ -430,6 +491,72 @@ pub(crate) mod tests {
         );
     }
 
+    /// An `mcp_ops` rule: the server-side error rate per server, above 5%.
+    pub(crate) fn mcp_spec() -> RuleSpec {
+        RuleSpec {
+            source: Source::McpOps,
+            mcp: Some(McpRuleRead {
+                side: McpSide::Server,
+                source: SourceChoice::Auto,
+            }),
+            measure: MeasureId::McpErrorRate,
+            aggregation: Aggregation::Rate,
+            dimensions: vec![DimensionId::McpServer],
+            threshold: 50_000,
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn an_mcp_rule_names_its_side_and_reads_its_own_measures_and_dimensions() {
+        let rule = mcp_spec();
+        assert!(rule.issues().is_empty());
+        assert_eq!(RuleSpec::from_doc(&rule.to_doc()).unwrap(), rule);
+        let proxy = RuleSpec {
+            mcp: Some(McpRuleRead {
+                side: McpSide::Client,
+                source: SourceChoice::Class(crucible_plan::CaptureClass::Proxy),
+            }),
+            ..mcp_spec()
+        };
+        assert_eq!(RuleSpec::from_doc(&proxy.to_doc()).unwrap(), proxy);
+        // A spans rule's document has no side, and reads back without one.
+        assert!(!spec().to_doc().to_text().contains("side"));
+        let fields = |change: fn(&mut RuleSpec)| {
+            let mut rule = mcp_spec();
+            change(&mut rule);
+            rule.issues()
+                .into_iter()
+                .map(|i| i.field)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fields(|s| s.mcp = None), ["side"]);
+        assert_eq!(
+            fields(|s| s.mcp = Some(McpRuleRead {
+                side: McpSide::None,
+                source: SourceChoice::Auto,
+            })),
+            ["side"]
+        );
+        assert_eq!(
+            fields(|s| s.dimensions = vec![DimensionId::Environment]),
+            ["dimensions"]
+        );
+        assert_eq!(fields(|s| s.measure = MeasureId::ErrorCount), ["measure"]);
+        assert_eq!(
+            fields(|s| s.aggregation = Aggregation::Sum),
+            ["aggregation"]
+        );
+        assert!(
+            fields(|s| {
+                s.measure = MeasureId::McpDurationP99;
+                s.aggregation = Aggregation::P99;
+                s.dimensions = vec![DimensionId::McpServer, DimensionId::McpTarget];
+            })
+            .is_empty()
+        );
+    }
+
     #[test]
     fn comparisons_hold_as_named() {
         assert!(Comparison::Gt.holds(6, 5) && !Comparison::Gt.holds(5, 5));
@@ -447,5 +574,9 @@ pub(crate) mod tests {
         assert_eq!(display_value(MeasureId::Duration, 2_340_000), "2.34 s");
         assert_eq!(display_value(MeasureId::Duration, 340_500), "340.5 ms");
         assert_eq!(display_value(MeasureId::Duration, 950), "950 µs");
+        assert_eq!(display_value(MeasureId::McpErrorRate, 12_500), "1.25%");
+        assert_eq!(display_value(MeasureId::McpErrorRate, 50_000), "5%");
+        assert_eq!(display_value(MeasureId::McpErrorRate, 1_000_000), "100%");
+        assert_eq!(display_value(MeasureId::McpErrorRate, 5), "0.0005%");
     }
 }

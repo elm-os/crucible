@@ -9702,6 +9702,10 @@
             "type": "string",
             "description": "The aggregation."
           },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "The capture source an `mcp_ops` rule reads (contract 9.5); absent for `spans`."
+          },
           "channels": {
             "type": "array",
             "items": {
@@ -9791,13 +9795,17 @@
             },
             "description": "The series the rule tracks, at most 50, ordered by key."
           },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "The side an `mcp_ops` rule reads; absent for `spans`."
+          },
           "skipped_ticks": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Evaluations that never ran, for example while the server was down."
           },
           "source": {
             "type": "string",
-            "description": "The source of the measure."
+            "description": "The source of the measure: `spans` or `mcp_ops`."
           },
           "status": {
             "$ref": "#/components/schemas/AlertStatus",
@@ -9809,7 +9817,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`\n(nano-USD)."
+            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds), `nusd`\n(nano-USD) or `ppm` (parts per million)."
           },
           "updated_at": {
             "type": "string",
@@ -9845,6 +9853,10 @@
           "aggregation": {
             "type": "string",
             "description": "How the measure is aggregated over the window, one of the measure's aggregations."
+          },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "Source `mcp_ops` only: which capture source each server is read from (contract 9.5), `auto` by\ndefault; `auto` is resolved at each evaluation, for its window."
           },
           "channels": {
             "type": "array",
@@ -9904,13 +9916,17 @@
             "description": "How long after a notification a series that still fires is notified again, in seconds: 300 to 604800.\nDefault 14400 (four hours).",
             "minimum": 0
           },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "Source `mcp_ops` only, and required there: the side the rule reads, `client` or `server`."
+          },
           "source": {
             "type": "string",
-            "description": "The source of the measure. Rules read the span rollup: `spans` (the default)."
+            "description": "The source of the measure: `spans` (the default) or `mcp_ops`."
           },
           "threshold": {
             "$ref": "#/components/schemas/SafeI64",
-            "description": "The threshold in the measure's stored unit: a count, microseconds, or nano-USD."
+            "description": "The threshold in the measure's stored unit: a count, microseconds, nano-USD, or parts per million for\n`mcp.error_rate`."
           },
           "window_secs": {
             "type": "integer",
@@ -9944,6 +9960,10 @@
           "aggregation": {
             "type": "string",
             "description": "A new aggregation."
+          },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "A new capture source, for an `mcp_ops` rule."
           },
           "channels": {
             "type": "array",
@@ -10002,6 +10022,10 @@
             "format": "int32",
             "description": "A new time between repeated notifications.",
             "minimum": 0
+          },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "A new side, for an `mcp_ops` rule."
           },
           "threshold": {
             "$ref": "#/components/schemas/SafeI64",

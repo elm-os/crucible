@@ -14,9 +14,10 @@ use crucible_plan::{
     QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema, Step, effective_window,
     mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
     mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
-    mcp_operation, mcp_operation_chain, mcp_operation_content, mcp_operation_peers, mcp_operations,
-    mcp_presence, mcp_servers, mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series,
-    mcp_tools, mcp_user_errors, mcp_users, metrics_schema, metrics_series, subject_hash,
+    mcp_metrics_totals, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
+    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
+    metrics_schema, metrics_series, subject_hash,
 };
 use crucible_records::{
     CaptureSource, McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,
@@ -156,7 +157,14 @@ fn every_plan(
     };
     let analytics = QueryClass::Analytics;
     let raw = QueryClass::AnalyticsRaw;
-    let presence = mcp_presence(scope, window, &clamp, caller, read.side, read.server);
+    let presence = mcp_presence(
+        scope,
+        window,
+        &clamp,
+        caller.class(analytics),
+        read.side,
+        read.server,
+    );
     add("presence", presence, analytics, true, true);
     add(
         "servers",
@@ -330,7 +338,7 @@ proptest! {
         let caller = Caller::Session;
         let (trace, span) = (TraceId::from_bytes([1; 16]), SpanId::from_bytes([2; 8]));
         let plans = [
-            (mcp_presence(scope, window, &clamp, caller, McpSide::Server, None).unwrap(), TableId::McpToolRollup),
+            (mcp_presence(scope, window, &clamp, caller.class(QueryClass::Analytics), McpSide::Server, None).unwrap(), TableId::McpToolRollup),
             (mcp_servers(scope, window, &clamp, caller, &read).unwrap(), TableId::McpToolRollup),
             (mcp_deploys(scope, window, &clamp, caller, None).unwrap(), TableId::McpDeploys),
             (mcp_inventory(scope, window, &clamp, caller, None, &[]).unwrap(), TableId::McpToolInventory),
@@ -386,9 +394,16 @@ fn the_outputs_are_what_the_builders_document() {
     );
     let hist = "Tuple(Array(UInt16), Array(UInt64))";
     let dt64 = "DateTime64(6, 'UTC')";
-    let presence = mcp_presence(s, w, &k, c, McpSide::Client, None)
-        .unwrap()
-        .unwrap();
+    let presence = mcp_presence(
+        s,
+        w,
+        &k,
+        c.class(QueryClass::Analytics),
+        McpSide::Client,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     let found = shape(&presence);
     assert_eq!(found[0], "server_name String");
     assert!(found[1].starts_with("capture_source Enum8"), "{found:?}");
@@ -709,4 +724,83 @@ fn mcp_metrics_compile_one_measure_for_one_side() {
             ..
         })
     ));
+}
+
+#[test]
+fn an_alert_reads_mcp_totals_in_class_alert_with_every_call_counted() {
+    let (s, w, k) = (
+        scope(),
+        window(),
+        RetentionClamp::new(RetentionSettings::default(), Timestamp::EPOCH),
+    );
+    let selection = selection(SourceChoice::Auto);
+    let read = McpRead {
+        side: McpSide::Server,
+        selection: &selection,
+        include_caller_faults: false,
+        server: None,
+    };
+    let both = || vec![DimensionId::McpServer, DimensionId::McpTarget];
+    for measure in [
+        MeasureId::McpCalls,
+        MeasureId::McpErrorCount,
+        MeasureId::McpErrorRate,
+        MeasureId::McpDurationP50,
+        MeasureId::McpDurationP90,
+        MeasureId::McpDurationP99,
+    ] {
+        let query = mcp_query(measure, measure.aggregations()[0], both());
+        let plan = mcp_metrics_totals(s, w, &k, &query, &read, (true, 51))
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.class(), QueryClass::Alert, "{measure:?}");
+        assert_eq!(plan.root().tables(), [TableId::McpToolRollup]);
+        let Node::Aggregate(aggregate) = plan.root() else {
+            panic!("an aggregate")
+        };
+        let group: Vec<&str> = aggregate.group().iter().map(|c| c.name()).collect();
+        // The error measures are read whole, per error class, so that a key without errors reads zero.
+        let errors = matches!(measure, MeasureId::McpErrorCount | MeasureId::McpErrorRate);
+        let expected: &[&str] = if errors {
+            &["server_name", "target_name", "error_class"]
+        } else {
+            &["server_name", "target_name"]
+        };
+        assert_eq!(group, expected, "{measure:?}");
+        assert_eq!(aggregate.limit(), (!errors).then_some(51), "{measure:?}");
+        let found = conditions(plan.root());
+        assert!(
+            !found
+                .iter()
+                .any(|(c, op, _)| c.name() == "error_class" && *op == CmpOp::Ne),
+            "{measure:?} counts every call"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|(c, _, v)| c.name() == "caller_fault" && *v == Literal::UInt(0))
+        );
+        assert!(found.iter().any(|(c, _, v)| c.name() == "side" && *v == Literal::Enum(McpSide::Server.value())));
+    }
+    // A spans dimension, a dimension twice, an aggregation the measure lacks, or a spans measure are refused.
+    let refused = |query: MetricsQuery, field: &str| {
+        let error = mcp_metrics_totals(s, w, &k, &query, &read, (true, 51)).unwrap_err();
+        assert!(
+            matches!(&error, MetricsError::Invalid { field: f, .. } if *f == field),
+            "{error:?}"
+        );
+    };
+    let rate = MeasureId::McpErrorRate;
+    refused(
+        mcp_query(rate, Aggregation::Rate, vec![DimensionId::Level]),
+        "dimensions",
+    );
+    refused(
+        mcp_query(rate, Aggregation::Rate, vec![DimensionId::McpServer; 2]),
+        "dimensions",
+    );
+    refused(mcp_query(rate, Aggregation::Sum, Vec::new()), "measures");
+    let mut spans = mcp_query(MeasureId::Count, Aggregation::Sum, Vec::new());
+    spans.source = Source::Spans;
+    refused(spans, "measures");
 }
