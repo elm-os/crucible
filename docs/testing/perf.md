@@ -83,9 +83,11 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
 4. Runs the pairs. Each pair runs the throughput measurement for A and B back to back, then the latency
    measurement for both, with the same lane and offered load. The order alternates from pair to pair (AB, BA,
    AB, ...), so that slow drift in temperature or background load does not favour one arm. Every arm gets a fresh
-   rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume, then a
-   discarded warm-up at the latency rate, then the measurement, after which the rig is removed. The load
-   generator's container lasts the whole session.
+   rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume; then the
+   first owner and a key with the `ingest` and `read` scopes for the project `default` (`crucible admin init` and
+   `crucible admin create-key`, run with the image's own binary, because with Postgres the keys live there and a
+   keys file is refused), once the server accepts the key; then a discarded warm-up at the latency rate, then the
+   measurement, after which the rig is removed. The load generator's container lasts the whole session.
    - Throughput: offer more load than either build can take. The generator is open loop, so the excess is
      refused or queued, and the measurement is `outcome.acked_spans_per_s`. An overloaded schedule lasts until
      every request is sent, so the run takes about `requests / capacity`, longer than its schedule. Acknowledging
