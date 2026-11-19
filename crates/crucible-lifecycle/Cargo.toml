@@ -18,6 +18,8 @@ crucible-control = { workspace = true }
 crucible-env = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-jobs = { path = "../crucible-jobs" }
+# A path dependency, for the same reason: the export side of a deletion request.
+crucible-export = { path = "../crucible-export" }
 crucible-plan = { workspace = true }
 crucible-records = { workspace = true }
 crucible-schema = { workspace = true }

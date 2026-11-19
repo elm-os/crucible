@@ -8,30 +8,39 @@ use std::sync::Arc;
 
 use crucible_control::ControlStore;
 use crucible_env::Env;
+use crucible_export::ExportRuntime;
 use crucible_jobs::{Registry, Running, housekeeping};
 
 use crate::control::Control;
 use crate::lifecycle::Lifecycle;
 
-/// Every job of the binary. A track adds its job with one line here (docs/architecture/adding-a-job.md).
-fn registry(lifecycle: Option<&Lifecycle>) -> Registry {
+/// Every job of the binary. A track adds its job with one line here (docs/architecture/adding-a-job.md). The
+/// export jobs need a control plane, whose rows are the exports: without one, `exports` is `None`, and so
+/// is `lifecycle`, which also needs the WAL of the node.
+fn registry(exports: Option<&ExportRuntime>, lifecycle: Option<&Lifecycle>) -> Registry {
     let mut registry = Registry::new();
     registry.register(housekeeping::job());
+    if let Some(exports) = exports {
+        registry.register(crucible_export::job(exports.clone()));
+        registry.register(crucible_export::sweep_job());
+    }
     for job in lifecycle.into_iter().flat_map(Lifecycle::jobs) {
         registry.register(job);
     }
     registry
 }
 
-/// Starts the jobs. The holder name of this process in the lease rows is new at every start.
+/// Starts the jobs. The holder name of this process in the lease rows is new at every start. The export job
+/// reads through `exports`, which gets its query service once the telemetry store is up.
 pub(crate) fn start(
     env: &Env,
     control: Option<&Control>,
+    exports: &ExportRuntime,
     lifecycle: Option<&Lifecycle>,
 ) -> Running {
     let store = control.map(|control| Arc::new(control.store.clone()) as Arc<dyn ControlStore>);
     let holder = format!("node-{}", env.new_id());
-    registry(lifecycle).start(env, store, &holder)
+    registry(control.map(|_| exports), lifecycle).start(env, store, &holder)
 }
 
 #[cfg(test)]
@@ -40,7 +49,12 @@ mod tests {
 
     #[test]
     fn the_registry_holds_the_housekeeping_job() {
-        assert_eq!(registry(None).names(), ["housekeeping"]);
+        assert_eq!(registry(None, None).names(), ["housekeeping"]);
+        let exports = ExportRuntime::new();
+        assert_eq!(
+            registry(Some(&exports), None).names(),
+            ["housekeeping", "exports", "exports-sweep"]
+        );
     }
 
     #[test]
@@ -57,7 +71,7 @@ mod tests {
             ));
             let lifecycle = Lifecycle::new(&host.env, control, wal);
             assert_eq!(
-                registry(Some(&lifecycle)).names(),
+                registry(None, Some(&lifecycle)).names(),
                 [
                     "housekeeping",
                     "lifecycle-node",
@@ -73,7 +87,10 @@ mod tests {
     fn without_postgres_no_job_task_starts() {
         crucible_sim::run(1, |sim| async move {
             let host = sim.host("node", &sim.disk("node"), 0);
-            assert_eq!(start(&host.env, None, None).tasks(), 0);
+            assert_eq!(
+                start(&host.env, None, &ExportRuntime::new(), None).tasks(),
+                0
+            );
         });
     }
 }

@@ -10,6 +10,7 @@ const PAGES = [
   { label: "Project", href: "/settings/project" },
   { label: "Members", href: "/settings/members" },
   { label: "API keys", href: "/settings/api-keys" },
+  { label: "Exports", href: "/settings/exports" },
   { label: "Retention", href: "/settings/retention" },
 ] as const satisfies readonly { label: string; href: Route }[];
 

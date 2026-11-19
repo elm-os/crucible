@@ -51,6 +51,7 @@ use crucible_env::{
     OpenMode, Root, Stores, Stream,
 };
 use crucible_env_prod::ProdConfig;
+use crucible_export::{ExportRuntime, Exports};
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
@@ -324,8 +325,8 @@ struct App {
     lifecycle: Option<Arc<Lifecycle>>,
 }
 
-/// Where the API finds a project's retention: the node's snapshot of Postgres, or the defaults without a
-/// control plane.
+/// Where the API finds the retention of a project: the snapshot of Postgres that the node keeps, or the
+/// defaults without a control plane.
 fn settings_source(lifecycle: Option<&Arc<Lifecycle>>) -> Arc<dyn ProjectSettingsSource> {
     match lifecycle {
         Some(lifecycle) => Arc::clone(lifecycle) as Arc<dyn ProjectSettingsSource>,
@@ -360,14 +361,16 @@ fn ingest_config() -> IngestConfig {
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
 /// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
+#[allow(clippy::too_many_arguments)] // The parts of the node that exist before its WAL is open.
 async fn open_app(
     env: &Env,
     keys: StaticKeys,
     cursors: Arc<KeyRing>,
     config: WalConfig,
     identity: Option<Arc<Identity>>,
-    control: Option<&Control>,
     closed: Option<&str>,
+    exports: Option<Exports>,
+    control: Option<&Control>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -391,7 +394,7 @@ async fn open_app(
         Arc::clone(&keys),
         ingest_config(),
     );
-    // Retention and deletion need the control plane and this node's WAL.
+    // Retention and deletion need the control plane and the WAL of this node.
     let lifecycle = control.map(|control| {
         Arc::new(Lifecycle::new(
             env,
@@ -410,7 +413,9 @@ async fn open_app(
         api_without_store: match identity {
             Some(identity) => {
                 let service = lifecycle.as_ref().map(|l| l.service.clone());
-                crucible_api::platform_router(env, None, identity, settings, cursors, None, service)
+                crucible_api::platform_router(
+                    env, None, identity, settings, cursors, None, exports, service,
+                )
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -592,8 +597,6 @@ struct StoreTask {
     control: Option<Control>,
     wal: Wal,
     report: RecoveryReport,
-    /// Retention and deletion, when Postgres is configured.
-    lifecycle: Option<Arc<Lifecycle>>,
     keys: Arc<dyn KeyVerifier>,
     cursors: Arc<KeyRing>,
     gate: Arc<Gate>,
@@ -604,6 +607,12 @@ struct StoreTask {
     facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
+    /// What the export job reads with, given the query service once the store is up.
+    exports: ExportRuntime,
+    /// The API's exports, with a control plane.
+    export_service: Option<Exports>,
+    /// Retention and deletion, with a control plane.
+    lifecycle: Option<Arc<Lifecycle>>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -687,6 +696,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         identity,
         facts: fact_writer,
         mcp,
+        exports,
+        export_service,
         lifecycle,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
@@ -804,6 +815,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("starting the shipper")?;
     let telemetry = Arc::clone(&stores.telemetry);
     let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    // Every typed read, the export job's included, leaves out what a pending deletion selects.
     let service = match &lifecycle {
         Some(lifecycle) => {
             lifecycle.store_is_up(telemetry);
@@ -811,8 +823,9 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         }
         None => service,
     };
-    let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
+    exports.set_service(service.clone());
     let settings = settings_source(lifecycle.as_ref());
+    let (mcp_keys, mcp_cursors) = (mcp_keys(identity.as_ref(), &keys), Arc::clone(&cursors));
     gate.mcp.open(
         &env,
         service.clone(),
@@ -820,6 +833,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         mcp_cursors,
         Arc::clone(&settings),
         mcp,
+        export_service.clone(),
     );
     gate.open(match identity {
         Some(identity) => crucible_api::platform_router(
@@ -829,6 +843,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             settings,
             cursors,
             sql,
+            export_service,
             lifecycle.as_ref().map(|l| l.service.clone()),
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
@@ -1081,6 +1096,12 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     } else {
         "none"
     };
+    // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
+    // for them.
+    // The export job's reads come from the telemetry store task once it runs. Only that task and the job tasks
+    // hold the runtime: its reads hold the WAL through the recent index, so a holder that outlived them would
+    // keep the WAL committer from stopping.
+    let exports = ExportRuntime::new();
     let cursors = Arc::new(match &clickhouse {
         Some(config) => crate::cursor_keys::derived(&config.master_key)?,
         None => crate::cursor_keys::random(env)?,
@@ -1089,19 +1110,23 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
+    // Exports live in the control plane; their files on this node's exports root.
+    let export_service = control
+        .as_ref()
+        .map(|control| Exports::new(env.clone(), Arc::new(control.store.clone())));
     let (app, report) = open_app(
         env,
         keys,
         Arc::clone(&cursors),
         WalConfig::default(),
         identity.clone(),
-        control.as_ref(),
         closed,
+        export_service.clone(),
+        control.as_ref(),
     )
     .await?;
-    // The background jobs (contract 11.7). They need Postgres, not ClickHouse, and readiness does not wait
-    // for them. The lifecycle jobs act on ClickHouse once the telemetry store is up.
-    let jobs = crate::jobs::start(env, control.as_ref(), app.lifecycle.as_deref());
+    // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
+    let jobs = crate::jobs::start(env, control.as_ref(), &exports, app.lifecycle.as_deref());
     let mode = if clickhouse.is_some() {
         "clickhouse"
     } else {
@@ -1157,6 +1182,8 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 identity,
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
+                exports,
+                export_service,
                 lifecycle: app.lifecycle.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
@@ -1311,7 +1338,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None, None)
+        open_app(env, keys, cursors, config, None, None, None, None)
             .await
             .unwrap()
             .0
@@ -1813,6 +1840,7 @@ mod tests {
             cursors,
             Arc::new(StaticProjectSettings::default()),
             McpConfig::default(),
+            None,
         );
 
         let lifecycles = [
@@ -1886,6 +1914,7 @@ mod tests {
             cursors,
             Arc::new(StaticProjectSettings::default()),
             McpConfig::default(),
+            None,
         );
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
@@ -2536,7 +2565,7 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, None, closed)
+        let (app, _) = open_app(env, keys, cursors, config, None, closed, None, None)
             .await
             .unwrap();
         let ui = Arc::new(Catalog::default());

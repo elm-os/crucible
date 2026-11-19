@@ -3,6 +3,7 @@
 //! exports. What the builders share is in `build`.
 
 mod data_bounds;
+mod export;
 mod facts;
 mod filter_values;
 mod lifecycle;
@@ -18,6 +19,10 @@ mod trace_spans;
 mod users;
 
 pub use data_bounds::{DataBoundsPlans, data_bounds};
+pub use export::{
+    EXPORT_PAGE_MAX, ExportKey, ExportSelection, ExportSpanKey, export_facts, export_mcp_content,
+    export_mcp_ops, export_payloads, export_spans, export_ties,
+};
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
 pub use lifecycle::{

@@ -239,6 +239,15 @@ impl StaticKeys {
         self.keys.is_empty()
     }
 
+    /// The scope of a project that holds a configured key: in a deployment without a control plane the keys
+    /// file is the list of projects, so an operator command (`crucible export`) can name only one of them.
+    pub fn project_scope(&self, project_id: ProjectId) -> Option<ProjectScope> {
+        self.keys
+            .iter()
+            .find(|key| key.project_id == project_id)
+            .and_then(|key| scope::mint(key.project_id).ok())
+    }
+
     /// The key whose secret `secret` is. Hashes it with every key's salt and compares in constant time; every
     /// key is checked, so the time taken does not depend on which key matches. Allocates nothing.
     fn find(&self, secret: &str) -> Option<&Stored> {

@@ -1007,6 +1007,12 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let facts = crate::m2_facts::plans(ctx, &facts_fixture)
         .await
         .context("facts and metrics plans")?;
+    let export_fixture = crate::m2_export::load(ctx)
+        .await
+        .context("export fixture")?;
+    let exports = crate::m2_export::plans(ctx, &export_fixture)
+        .await
+        .context("export plans")?;
     ctx.model.merge_all();
     crate::m2::plans(ctx, &m2_fixture)
         .await
@@ -1014,6 +1020,9 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     crate::m2_facts::plans(ctx, &facts_fixture)
         .await
         .context("facts and metrics plans over merged model parts")?;
+    crate::m2_export::plans(ctx, &export_fixture)
+        .await
+        .context("export plans over merged model parts")?;
     endpoint_plans(ctx, &fixture)
         .await
         .context("endpoint plans over merged model parts")?;
@@ -1031,7 +1040,8 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
          list under conditions on its spans, search with snippets, the \
          payload range, the metrics ranking, series and other series) with zero-filled series, set merges, \
          nullable outputs and the row and byte guardrails and {facts} reads of the fact rows and fact page of \
-         every fact table, the filter values and the traces metrics series returned the expected rows, each \
+         every fact table, the filter values and the traces metrics series and {exports} reads of the export \
+         page, its tied rows, its lookups and the facts of its traces returned the expected rows, each \
          block valid under the plan's output schema"
     ))
 }

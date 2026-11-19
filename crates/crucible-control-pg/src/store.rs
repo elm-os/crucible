@@ -8,10 +8,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use crucible_control::{
     ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod, AuthProviderRepo, Claim, Claims, ControlStore,
-    ControlTx, Credential, CredentialRepo, Email, InvitationRepo, JsonDoc, KeyChange,
-    KeyChangeKind, KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
-    LifecycleRepo, MembershipRepo, MigrationKind, Migrations, NewJob, OauthAccountRepo,
-    OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, OrgSettings, Project,
+    ControlTx, Credential, CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc,
+    KeyChange, KeyChangeKind, KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases,
+    LedgerEntry, LifecycleRepo, MembershipRepo, MigrationKind, Migrations, NewJob,
+    OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, OrgSettings, Project,
     ProjectMembership, ProjectRepo, ProjectRole, ProjectSaltRepo, Queue, Repos, SealedProjectSalt,
     Secret, SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState,
     SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User, UserRepo, UserStatus,
@@ -279,7 +279,12 @@ impl PgControlStore {
              d15 AS (DELETE FROM schema_migrations WHERE kind <> 'postgres'), \
              d16 AS (DELETE FROM oauth_accounts), d17 AS (DELETE FROM auth_providers), \
              d18 AS (DELETE FROM auth_flows), d19 AS (DELETE FROM one_time_tokens), \
-             d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM project_salts),              d22 AS (DELETE FROM deletion_node_acks), d23 AS (DELETE FROM deletion_requests),              d24 AS (DELETE FROM lifecycle_actions), d25 AS (DELETE FROM retention_floors),              d26 AS (DELETE FROM nodes), s2 AS (SELECT setval('deletion_seq', 1, false))              SELECT * FROM s, s2";
+             d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM project_salts), \
+             d22 AS (DELETE FROM export_jobs), d23 AS (DELETE FROM deletion_node_acks), \
+             d24 AS (DELETE FROM deletion_requests), d25 AS (DELETE FROM lifecycle_actions), \
+             d26 AS (DELETE FROM retention_floors), d27 AS (DELETE FROM nodes), \
+             s2 AS (SELECT setval('deletion_seq', 1, false)) \
+             SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
     }
@@ -530,6 +535,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn claims(&self) -> &dyn Claims {
+                $($deref)* self.handle
+            }
+            fn export_jobs(&self) -> &dyn ExportJobRepo {
                 $($deref)* self.handle
             }
             fn migrations(&self) -> &dyn Migrations {
@@ -1496,6 +1504,7 @@ impl Leases for Handle {
 const fn table(queue: Queue) -> &'static str {
     match queue {
         Queue::NotificationOutbox => "notification_outbox",
+        Queue::ExportJobs => "export_jobs",
     }
 }
 

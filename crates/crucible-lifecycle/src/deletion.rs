@@ -19,7 +19,9 @@ use std::sync::Arc;
 use crucible_auth::stored_project_scope;
 use crucible_control::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, Node, NodeAck,
+    TxError,
 };
+use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
     DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_traces,
@@ -30,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::actions::{Place, Shared, advance, planned};
 use crate::detail::Detail;
 use crate::partitions::{days_spanned, partitions_of_days};
-use crate::reach::{OTHER_PLACES, Reach, final_reach, page_reach};
+use crate::reach::{EXPORT_FILES, OTHER_PLACES, Reach, final_reach, page_reach};
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
@@ -352,6 +354,30 @@ impl Executor<'_> {
         Ok(())
     }
 
+    /// Expires the exports of the project that were created before the request and removes their files from
+    /// this node (contract 13.4). The expiry is a fenced write; a file on another node goes at that node's
+    /// next sweep.
+    async fn purge_exports(&self, request: &DeletionRequest) -> JobResult {
+        let disk = Arc::clone(&self.ctx.env.disk);
+        let now = self.ctx.env.clock.wall_now();
+        let (project_id, requested_at) = (request.project_id, request.requested_at);
+        self.ctx
+            .fenced(move |tx| {
+                Box::pin(async move {
+                    crucible_export::purge(tx, disk.as_ref(), project_id, requested_at, now)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| match error {
+                            FilesError::Store(error) => error,
+                            FilesError::Disk(error) => TxError::Unavailable(format!(
+                                "the exports directory failed: {error}"
+                            )),
+                        })
+                })
+            })
+            .await
+    }
+
     async fn step(&self, mut request: DeletionRequest) -> JobResult {
         let repo = self.ctx.store().lifecycle();
         if request.state == DeletionState::Pending {
@@ -414,12 +440,17 @@ impl Executor<'_> {
             request.state = DeletionState::Verified;
         }
         if request.state == DeletionState::Verified {
-            // Step 8. Comments, media and export files have no store in this deployment yet: each is
-            // reported as not present, so that the request's status says what was and was not reached.
+            // Step 8. Export files made before the request are expired and removed. Comments and media have
+            // no store in this deployment yet: each is reported as not present, so that the request's status
+            // says what was and was not reached.
+            self.purge_exports(&request).await?;
             for place in OTHER_PLACES {
-                progress
-                    .other
-                    .insert(place.to_owned(), "not_present".to_owned());
+                let status = if place == EXPORT_FILES {
+                    "done"
+                } else {
+                    "not_present"
+                };
+                progress.other.insert(place.to_owned(), status.to_owned());
             }
             request.state = DeletionState::Completed;
         }

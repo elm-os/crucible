@@ -11,6 +11,9 @@ import type { DeletionRequest } from "./generated/DeletionRequest";
 import type { DeletionRequestCreate } from "./generated/DeletionRequestCreate";
 import type { DeletionRequestList } from "./generated/DeletionRequestList";
 import type { EntityParams } from "./generated/EntityParams";
+import type { Export } from "./generated/Export";
+import type { ExportList } from "./generated/ExportList";
+import type { ExportRequest } from "./generated/ExportRequest";
 import type { FactWritten } from "./generated/FactWritten";
 import type { FeedbackRequest } from "./generated/FeedbackRequest";
 import type { FlagRequest } from "./generated/FlagRequest";
@@ -471,6 +474,21 @@ export async function listApiKeys(project: string, signal?: AbortSignal): Promis
 export async function createApiKey(project: string, body: ApiKeyCreate): Promise<ApiKeyCreated> {
   const path = projectPath(project, "/api-keys");
   return read<ApiKeyCreated>(await call(path, "session", { method: "POST", body }));
+}
+
+export async function listExports(project: string, signal?: AbortSignal): Promise<ExportList> {
+  return read<ExportList>(await call(projectPath(project, "/exports"), "session", { signal }));
+}
+
+// The key makes a retry of a request whose answer was lost answer with the export it created.
+export async function createExport(
+  project: string,
+  body: ExportRequest,
+  idempotencyKey: string,
+): Promise<Export> {
+  const path = projectPath(project, "/exports");
+  const headers = { "Idempotency-Key": idempotencyKey };
+  return read<Export>(await call(path, "session", { method: "POST", body, headers }));
 }
 
 export async function createProject(body: ProjectCreate): Promise<Project> {

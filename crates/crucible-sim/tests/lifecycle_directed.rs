@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use crucible_auth::test_support::scope;
 use crucible_control::{
-    ControlStore, DeletionRequest, DeletionSelector, JsonDoc, Project, Repos as _,
+    ControlStore, DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, NewExport, Project,
+    Repos as _,
 };
 use crucible_env::{StoreFlavour, Stores, TelemetryStore};
 use crucible_jobs::Registry;
@@ -19,7 +20,7 @@ use crucible_lifecycle::{
     leader_jobs, node_job,
 };
 use crucible_plan::Value;
-use crucible_records::{DeletionState, Lsn, ProjectId, TableId, TraceId};
+use crucible_records::{DeletionState, ExportJobId, Lsn, ProjectId, TableId, TraceId};
 use crucible_schema::{Granularity, table};
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
 use crucible_sim::ch_model::ChModel;
@@ -227,6 +228,23 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         node.sleep(Duration::from_secs(2)).await;
         assert_eq!((node.held(1), node.held(2)), (3, 2));
 
+        // An export made before the request may hold the spans it deletes.
+        let export = |n: u8, created_at| NewExport {
+            id: ExportJobId::from_bytes([n; 16]),
+            project_id: ProjectId::from_bytes(PROJECT),
+            format: ExportFormat::CrucibleJsonl,
+            selector: "{}".to_owned(),
+            options: "{}".to_owned(),
+            dedup_key: format!("export-{n}"),
+            created_by: "user:test".to_owned(),
+            created_at,
+            as_of: created_at,
+        };
+        let exports = node.pg.export_jobs();
+        let before = node.host.env.clock.wall_now();
+        exports.insert(&export(1, before)).await.unwrap();
+        node.sleep(Duration::from_secs(1)).await;
+
         let new = NewDeletion {
             selector: DeletionSelector::Traces(vec![TraceId::from_bytes([1; 16])]),
             requested_by: "user:test".to_owned(),
@@ -245,9 +263,11 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         assert_eq!(again.request.id, id);
         assert_eq!(node.pg.lifecycle().acks(id).await.unwrap().len(), 1);
 
-        // Spans of the trace that arrive after the request are new data.
+        // Spans of the trace that arrive after the request are new data, and so is an export made after it.
         node.sleep(Duration::from_secs(1)).await;
         node.ingest(1, 3..4).await;
+        let after = node.host.env.clock.wall_now();
+        exports.insert(&export(2, after)).await.unwrap();
 
         // One period of the executor after the checkpoint: the deletes have run and hide the rows.
         node.sleep(Duration::from_secs(90)).await;
@@ -260,5 +280,23 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         assert_eq!((node.held(1), node.held(2)), (1, 2));
         let open = node.pg.lifecycle().open_actions().await.unwrap();
         assert!(open.is_empty(), "{open:?}");
+        // The export that predates the request is expired; the later one is not.
+        let ids = [
+            ExportJobId::from_bytes([1; 16]),
+            ExportJobId::from_bytes([2; 16]),
+        ];
+        let expired: Vec<bool> = exports
+            .get_many(&ids)
+            .await
+            .unwrap()
+            .iter()
+            .map(|job| job.expires_at.is_some())
+            .collect();
+        assert_eq!(expired, [true, false]);
+        assert!(
+            done.places.contains("\"export_files\":\"done\""),
+            "{}",
+            done.places
+        );
     });
 }

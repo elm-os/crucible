@@ -96,8 +96,9 @@ without it and must hold.
   runs on a real server. A read carries at most 128 trace ids and 32 user or session deletions of the pending
   set, oldest first; what does not fit is filtered from the recent index and stays readable from the store until
   its deletes have run.
-- Comments, media and export files, which this deployment does not hold; a completed request reports each as
-  `not_present`.
+- Comments and media, which this deployment does not hold; a completed request reports each as `not_present`.
+  Export files made before a request are expired and removed when the request completes; a directed scenario
+  checks the expiry.
 
 ## Running it
 

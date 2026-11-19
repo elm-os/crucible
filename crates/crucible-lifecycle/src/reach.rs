@@ -24,7 +24,9 @@ const FACT_TABLES: [TableId; 4] = [
 ];
 
 /// The reach-list places outside ClickHouse that a deletion request reports on (contract 13.4).
-pub const OTHER_PLACES: [&str; 3] = ["comments", "media", "export_files"];
+pub const OTHER_PLACES: [&str; 3] = ["comments", "media", EXPORT_FILES];
+/// The place of the export files, which a completed request has expired and removed.
+pub const EXPORT_FILES: &str = "export_files";
 
 /// The partitioned tables with a retention setting whose time column a predicate can name: every table of
 /// contract 6.3 except the two unpartitioned ones (their weekly purge by `last_seen` is contract 13.2 step 4)

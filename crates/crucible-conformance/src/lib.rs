@@ -21,6 +21,7 @@ mod inserts;
 mod keep_alive;
 mod lifecycle;
 mod m2;
+mod m2_export;
 mod m2_facts;
 mod maintenance;
 mod mcp;

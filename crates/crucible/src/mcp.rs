@@ -34,6 +34,7 @@ impl McpGate {
 
     /// Mounts the MCP server over the store's query service, with the keys and cursor keys of the API and the
     /// rate limit of `mcp.calls_per_second` and `mcp.burst`.
+    #[allow(clippy::too_many_arguments)] // What the MCP server is built from, as the store task has it.
     pub(crate) fn open(
         &self,
         env: &Env,
@@ -42,8 +43,10 @@ impl McpGate {
         cursors: Arc<KeyRing>,
         settings: Arc<dyn ProjectSettingsSource>,
         config: McpConfig,
+        exports: Option<crucible_export::Exports>,
     ) {
-        let router = crucible_mcp_server::router(env, service, keys, settings, cursors, config);
+        let router =
+            crucible_mcp_server::router(env, service, keys, settings, cursors, config, exports);
         // The store task is the only caller, once.
         let _ = self.over_store.set(router);
     }

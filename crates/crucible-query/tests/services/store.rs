@@ -15,8 +15,8 @@ use crucible_env::{
 };
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, Direction, FieldRange,
-    Fill, Literal, Measure, Node, Order, Pred, QueryPlan, Row, RowBlock, Scan, SemiJoin,
-    TextSearch, TimeSeries, TokenMode, Value,
+    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, RowBlock, Scan,
+    SemiJoin, TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
 use crucible_schema::{AggFn, ColumnRef, MigrationStep, Ty, table};
@@ -447,6 +447,25 @@ impl FakeStore {
             .collect()
     }
 
+    /// A point lookup: the rows whose key columns equal one of the keys, in no order.
+    fn point_lookup(&self, plan: &QueryPlan, lookup: &PointLookup) -> Vec<Row> {
+        let rows = self.visible(plan, lookup.table(), &Pred::And(Vec::new()));
+        rows.iter()
+            .filter(|row| {
+                lookup.keys().iter().any(|key| {
+                    let columns = lookup.key_columns().iter().zip(key);
+                    columns.into_iter().all(|(column, value)| {
+                        compare(cell(row, column), &literal(value)) == Ordering::Equal
+                    })
+                })
+            })
+            .map(|row| {
+                let values = lookup.columns().iter().map(|c| cell(row, c).clone());
+                Row::new(values.collect())
+            })
+            .collect()
+    }
+
     /// A text search: tokens as the payload indexes split and lower them, snippets around the first needle.
     fn text_search(&self, plan: &QueryPlan, search: &TextSearch) -> Vec<Row> {
         let table_id = search.table();
@@ -738,7 +757,7 @@ impl TelemetryStore for FakeStore {
             Node::TimeSeries(series) => self.time_series(&plan, series),
             Node::TextSearch(search) => self.text_search(&plan, search),
             Node::FieldRange(range) => self.field_range(&plan, range),
-            other => panic!("the fake store does not run {other:?}"),
+            Node::PointLookup(lookup) => self.point_lookup(&plan, lookup),
         };
         let hook = self.during_read.lock().unwrap().take();
         if let Some(hook) = hook {

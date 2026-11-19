@@ -8,6 +8,7 @@ use axum::http::request::Parts;
 use crucible_api::ProjectSettingsSource;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
+use crucible_export::Exports;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
 use rmcp::model::{
@@ -26,7 +27,8 @@ use crate::tools::{self, Call};
 
 /// What the server tells an agent at `initialize` and `server/discover`.
 const INSTRUCTIONS: &str = "Crucible holds the traces of AI agents and MCP servers. Every tool reads the project \
-    of the key you connected with, and never writes. Start with get_data_bounds to see where the data lies, list \
+    of the key you connected with; create_export is the one tool that starts work, an export of the project's \
+    spans to a file, which get_export follows. Start with get_data_bounds to see where the data lies, list \
     traces in a window with list_traces or find spans by their text with search_spans, then read one trace with \
     get_trace and, for large traces, get_span_children. Results carry previews of inputs and outputs and stay \
     under 64 KiB: when one is cut, pass its `next_cursor` back as `cursor`. get_span_payload reads a whole input, \
@@ -43,6 +45,7 @@ struct Shared {
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     limiter: Option<Limiter>,
+    exports: Option<Exports>,
 }
 
 impl McpServer {
@@ -52,6 +55,7 @@ impl McpServer {
         settings: Arc<dyn ProjectSettingsSource>,
         cursors: Arc<KeyRing>,
         config: McpConfig,
+        exports: Option<Exports>,
     ) -> Self {
         Self(Arc::new(Shared {
             env: env.clone(),
@@ -59,6 +63,7 @@ impl McpServer {
             settings,
             cursors,
             limiter: Limiter::new(config),
+            exports,
         }))
     }
 }
@@ -127,6 +132,8 @@ impl ServerHandler for McpServer {
                 project_id,
                 now: shared.env.clock.wall_now(),
             },
+            exports: shared.exports.as_ref(),
+            key: principal.api_key_id,
         };
         let result = match tool
             .call(&call, request.arguments.unwrap_or_default())

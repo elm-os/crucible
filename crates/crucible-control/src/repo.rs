@@ -9,17 +9,18 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
+use crucible_records::{ApiKeyId, ExportJobId, ProjectId, Timestamp, UserId, Uuid};
 use futures::future::BoxFuture;
 
 use crate::error::TxError;
 use crate::lifecycle::LifecycleRepo;
 use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
-    ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, Invitation, KeyChange, KeyChangeKind,
-    KeySnapshot, Lease, LeaseName, LedgerEntry, NewJob, OauthAccount, OneTimeToken, Org,
-    OrgMembership, OrgRole, Project, ProjectMembership, Queue, SealedProjectSalt, Secret, Session,
-    SigningKey, SigningKeyState, SigningPurpose, TokenHash, TokenKind, User,
+    ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, ExportCommit, ExportJob, Invitation,
+    KeyChange, KeyChangeKind, KeySnapshot, Lease, LeaseName, LedgerEntry, NewExport, NewJob,
+    OauthAccount, OneTimeToken, Org, OrgMembership, OrgRole, Project, ProjectMembership, Queue,
+    SealedProjectSalt, Secret, Session, SigningKey, SigningKeyState, SigningPurpose, TokenHash,
+    TokenKind, User,
 };
 
 /// The singleton organization row.
@@ -324,6 +325,50 @@ pub trait Claims: Send + Sync {
     async fn park(&self, claim: &Claim) -> Result<bool, TxError>;
 }
 
+/// Export jobs (contracts 11.1 and 12.8). The table is also the queue of the export job: its rows are claimed
+/// through [`Claims`] with [`Queue::ExportJobs`], and the writes of an attempt compare the claim's attempt
+/// counter, so an attempt whose claim ran out cannot record anything over a newer one.
+#[async_trait]
+pub trait ExportJobRepo: Send + Sync {
+    /// Creates a pending export, due at its `created_at`. A taken deduplication key is
+    /// `UniqueViolation("export_jobs_dedup_key_key")`.
+    async fn insert(&self, export: &NewExport) -> Result<(), TxError>;
+    /// The export with this id, if it belongs to the project.
+    async fn get(
+        &self,
+        project_id: ProjectId,
+        id: ExportJobId,
+    ) -> Result<Option<ExportJob>, TxError>;
+    /// The export of the project with this deduplication key.
+    async fn get_by_dedup_key(
+        &self,
+        project_id: ProjectId,
+        dedup_key: &str,
+    ) -> Result<Option<ExportJob>, TxError>;
+    /// The project's newest exports, newest first, at most `limit`.
+    async fn list(&self, project_id: ProjectId, limit: u32) -> Result<Vec<ExportJob>, TxError>;
+    /// How many exports were created for the project at or after `since`.
+    async fn count_since(&self, project_id: ProjectId, since: Timestamp) -> Result<u64, TxError>;
+    /// The exports with these ids, whatever their project, ordered by id: what a node's sweep looks up for the
+    /// files it holds.
+    async fn get_many(&self, ids: &[ExportJobId]) -> Result<Vec<ExportJob>, TxError>;
+    /// Records the progress of the claim's attempt. `false` when the row is no longer pending under that attempt.
+    async fn progress(&self, claim: &Claim, spans: u64, bytes: u64) -> Result<bool, TxError>;
+    /// Records the committed file. `false` when the row is no longer pending under the claim's attempt, already
+    /// has a file or an error, or was expired meanwhile.
+    async fn commit(&self, claim: &Claim, commit: &ExportCommit) -> Result<bool, TxError>;
+    /// Records why the export ended without a file, under the same conditions as [`ExportJobRepo::commit`].
+    async fn fail(&self, claim: &Claim, error: &str) -> Result<bool, TxError>;
+    /// Expires every export of the project created before `before` that is not expired at `now`, and returns
+    /// them as they are after the change: a deletion request expires the exports it predates (contract 13.4).
+    async fn expire_before(
+        &self,
+        project_id: ProjectId,
+        before: Timestamp,
+        now: Timestamp,
+    ) -> Result<Vec<ExportJob>, TxError>;
+}
+
 /// The project salts (contract 11.1). A salt is immutable for the life of its project, so there is no update
 /// and no delete.
 #[async_trait]
@@ -384,6 +429,8 @@ pub trait Repos: Send + Sync {
     fn leases(&self) -> &dyn Leases;
     /// Claimed rows.
     fn claims(&self) -> &dyn Claims;
+    /// Export jobs.
+    fn export_jobs(&self) -> &dyn ExportJobRepo;
     /// The migrations ledger.
     fn migrations(&self) -> &dyn Migrations;
     /// Retention and deletion.

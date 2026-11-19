@@ -23,6 +23,7 @@ crucible-config = { workspace = true }
 crucible-control = { workspace = true }
 crucible-control-pg = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
+crucible-export = { path = "../crucible-export" }
 crucible-jobs = { path = "../crucible-jobs" }
 crucible-lifecycle = { path = "../crucible-lifecycle" }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.

@@ -6,6 +6,7 @@
 
 mod auth;
 mod data_bounds;
+pub(crate) mod exports;
 mod facts;
 mod filter_values;
 mod lifecycle;
@@ -42,6 +43,7 @@ pub(crate) fn router() -> Router<ApiState> {
     Router::new()
         .merge(auth::routes())
         .merge(data_bounds::routes())
+        .merge(exports::routes())
         .merge(facts::routes())
         .merge(filter_values::routes())
         .merge(lifecycle::routes())
@@ -64,6 +66,7 @@ pub(crate) fn router() -> Router<ApiState> {
 pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(auth::Paths::openapi());
     doc.merge(data_bounds::Paths::openapi());
+    doc.merge(exports::Paths::openapi());
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
     doc.merge(lifecycle::Paths::openapi());
