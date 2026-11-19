@@ -3374,6 +3374,21 @@ impl Run<'_> {
                 .map(|manifest| (manifest.lsn, manifest.project_id, manifest.facts)),
         );
         let barriers = Arc::new(SimBarriers::new(&self.disk, self.sim.trace()));
+        // The frames above the last batch that an earlier incarnation sealed were admitted and never shipped:
+        // this incarnation admits them afresh, on the prefix the WAL holds now, and only that admission counts.
+        let sealed_through = report
+            .unchecked_seals
+            .iter()
+            .map(|seal| seal.last_lsn.get())
+            .max()
+            .unwrap_or(0)
+            .max(watermark.get());
+        {
+            let admitted = &mut self.shared.ledger().admitted;
+            admitted.admissions.retain(|(lsn, _)| *lsn <= sealed_through);
+            admitted.kept.retain(|lsn, _| *lsn <= sealed_through);
+            admitted.relying.retain(|lsn, _| *lsn <= sealed_through);
+        }
         let salts: Arc<dyn ProjectSalts> = match plan.salt_fail_ppm {
             Some(fail_ppm) => Arc::new(SimSalts {
                 fail_ppm,
@@ -3389,12 +3404,7 @@ impl Run<'_> {
                 wal: wal.clone(),
                 shared: Arc::clone(&self.shared),
                 watermark,
-                sealed_through: report
-                    .unchecked_seals
-                    .iter()
-                    .map(|seal| seal.last_lsn.get())
-                    .max()
-                    .unwrap_or(0),
+                sealed_through,
             }),
             salts,
         };
