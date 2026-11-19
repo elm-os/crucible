@@ -797,13 +797,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         None => None,
     };
     let stores = Stores::new(Arc::new(store));
-    // With a control plane the project salts are its `project_salts` rows; without one stage B drops the user
-    // identity of MCP operations (contract 9.3). A deletion by user hashes with the same salts.
+    // With a control plane the project salts are its `project_salts` rows, loaded at startup and on a timer;
+    // without one stage B drops the user identity of MCP operations (contract 9.3). A deletion by user hashes
+    // with the same salts.
     let (stores, salts, subjects): (_, Arc<dyn ProjectSalts>, _) = match control {
         Some(control) => {
             let control = Arc::new(control.store);
             let sealer = Sealer::new("master-0", config.master_key.seal_key());
             let salts = Arc::new(StoreSalts::new(&env, control.clone(), sealer));
+            // Dropping the handle detaches the task; it stops at the shutdown signal.
+            drop(env.spawn("project-salts", Arc::clone(&salts).run(env.clone())));
             let subjects: Arc<dyn Subjects> = salts.clone();
             (stores.with_control(control), salts, Some(subjects))
         }
