@@ -1,6 +1,6 @@
 //! Error responses: problem documents (contract 12.3) that carry the request id.
 
-use axum::http::header::{CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{Extensions, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use crucible_api_types::{FieldError, Problem, ProblemCode, ProblemLimit};
@@ -31,7 +31,16 @@ pub(crate) struct ApiError {
     code: ProblemCode,
     detail: String,
     errors: Vec<FieldError>,
+    /// The rarer members, boxed so that every `Result` of a handler stays small.
+    extra: Option<Box<Extra>>,
+}
+
+/// The members of a problem that only some codes carry.
+#[derive(Clone, PartialEq, Debug, Default)]
+struct Extra {
     limit: Option<ProblemLimit>,
+    retry_after_s: Option<u32>,
+    suggested_granularity: Option<String>,
 }
 
 impl ApiError {
@@ -41,8 +50,13 @@ impl ApiError {
             code,
             detail: detail.into(),
             errors: Vec::new(),
-            limit: None,
+            extra: None,
         }
+    }
+
+    fn extra(mut self, set: impl FnOnce(&mut Extra)) -> Self {
+        set(self.extra.get_or_insert_with(Box::default));
+        self
     }
 
     pub(crate) fn unauthenticated(request_id: RequestId) -> Self {
@@ -73,14 +87,33 @@ impl ApiError {
         }
     }
 
+    /// Sets `retry_after_s` and the `Retry-After` header.
+    pub(crate) fn with_retry_after(self, seconds: u32) -> Self {
+        self.extra(|extra| extra.retry_after_s = Some(seconds))
+    }
+
+    /// Sets `suggested_granularity`: the granularity under which a refused metrics query fits.
+    pub(crate) fn with_suggested_granularity(self, granularity: Option<String>) -> Self {
+        self.extra(|extra| extra.suggested_granularity = granularity)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> ProblemCode {
+        self.code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn errors(&self) -> &[FieldError] {
+        &self.errors
+    }
+
     pub(crate) fn with_limit(self, name: &str, value: u32) -> Self {
-        Self {
-            limit: Some(ProblemLimit {
+        self.extra(|extra| {
+            extra.limit = Some(ProblemLimit {
                 name: name.to_owned(),
                 value,
-            }),
-            ..self
-        }
+            });
+        })
     }
 
     /// A failed read. Store failures keep their details in the log: the detail of a problem is public.
@@ -147,6 +180,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let extra = self.extra.map(|extra| *extra).unwrap_or_default();
         let body = Problem {
             problem_type: Problem::type_uri(self.code),
             title: title(self.code),
@@ -155,13 +189,19 @@ impl IntoResponse for ApiError {
             code: self.code,
             request_id: self.request_id.to_string(),
             errors: (!self.errors.is_empty()).then_some(self.errors),
-            retry_after_s: None,
-            limit: self.limit,
-            suggested_granularity: None,
+            retry_after_s: extra.retry_after_s,
+            limit: extra.limit,
+            suggested_granularity: extra.suggested_granularity,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();
         let mut response = (status, [(CONTENT_TYPE, PROBLEM_JSON)], json).into_response();
+        if let Some(value) = extra
+            .retry_after_s
+            .and_then(|seconds| HeaderValue::from_str(&seconds.to_string()).ok())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
         if self.code == ProblemCode::Unauthenticated {
             response
                 .headers_mut()

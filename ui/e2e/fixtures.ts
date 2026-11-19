@@ -101,6 +101,7 @@ export function traceDetail(fields: Partial<TraceDetail> = {}): TraceDetail {
     span_count: spans.length,
     paged: false,
     spans,
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: AS_OF, partial: false, consistency: "strong" },
     saturated: false,
     ...fields,
@@ -118,6 +119,7 @@ export function spanPage(data: Span[], next: string | null = null): SpanPage {
 
 export function traceItem(fields: Partial<TraceListItem> = {}): TraceListItem {
   return {
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     trace_id: TRACE,
     name: "support agent",
     trace_name: "support agent",
@@ -228,6 +230,39 @@ export class Api {
 }
 
 export const TRACE_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}$`);
+export const METRICS_PATH = new RegExp(`/projects/${PROJECT}/metrics/query$`);
+
+// A metrics answer whose series hold these values, one bucket every five minutes.
+export function metrics(
+  series: { measure: string; aggregation?: string; values: (number | null)[] }[],
+) {
+  return {
+    series: series.map((s) => ({
+      measure: s.measure,
+      aggregation: s.aggregation ?? "sum",
+      unit: "count",
+      key: [],
+      other: false,
+      points: s.values.map((value, i) => ({
+        bucket: `2026-11-17T13:${String(i * 5).padStart(2, "0")}:00.000000Z`,
+        value,
+      })),
+    })),
+    granularity: "five_minutes",
+    truncated: false,
+    source_tier: "rollup",
+    as_of: AS_OF,
+    partial_last_bucket: false,
+    saturated: false,
+    meta: { as_of: AS_OF, partial: false, consistency: "strong" },
+  };
+}
+
+// The measures a metrics request asks for, by name.
+export function measuresOf(route: Route): string[] {
+  const body = route.request().postDataJSON() as { measures: { measure: string }[] };
+  return body.measures.map((m) => m.measure);
+}
 export const CHILDREN_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}/spans$`);
 export const LIST_PATH = new RegExp(`/projects/${PROJECT}/traces$`);
 

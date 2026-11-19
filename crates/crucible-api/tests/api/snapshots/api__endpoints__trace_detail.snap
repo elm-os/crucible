@@ -3,6 +3,13 @@ source: crates/crucible-api/tests/api/endpoints.rs
 expression: detail.pretty()
 ---
 {
+  "facts": {
+    "bookmarked": false,
+    "correction": null,
+    "public": null,
+    "scores": [],
+    "tags": []
+  },
   "meta": {
     "as_of": "2026-11-17T09:30:04.000000Z",
     "consistency": "strong",
