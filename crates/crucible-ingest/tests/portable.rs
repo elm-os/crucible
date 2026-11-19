@@ -215,8 +215,8 @@ fn now_nanos(prod: &Prod) -> u64 {
     u64::try_from(prod.env.clock.wall_now().micros()).unwrap() * 1_000
 }
 
-/// The CPU budget bounds ingest's blocking work: with the default of four permits, 16 requests at once run at
-/// most four `ingest-prepare` jobs at a time, and use all four.
+/// The CPU budget bounds ingest's blocking work: with the default of four permits, 16 requests at once are
+/// prepared on at most four `ingest-prepare` jobs at a time, which use all four, and each request is prepared once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ingest_prepare_jobs_never_exceed_their_permits() {
     let dir = tempfile::tempdir().unwrap();
@@ -232,13 +232,18 @@ async fn ingest_prepare_jobs_never_exceed_their_permits() {
         assert_eq!(reply.status, StatusCode::OK, "{reply:?}");
     }
     let counts = jobs.counts();
-    assert_eq!(counts.spawned, 16);
     assert!(
         counts.most <= 4,
         "{} ingest-prepare jobs ran at once, more than the 4 permits",
         counts.most
     );
     assert_eq!(counts.most, 4, "the jobs did not use every permit");
+    // A job that ends passes its permit to the next waiting preparation on the same thread, so the 16
+    // preparations run on as few as 4 spawned jobs.
+    assert!((4..=16).contains(&counts.spawned), "{counts:?}");
+    let line = "crucible_cpu_permit_hold_microseconds_count{stage=\"ingest_prepare\"} 16";
+    let text = prod.recorder.render_prometheus();
+    assert!(text.contains(line), "no `{line}` in the metrics:\n{text}");
     drop(router);
     close(prod, wal).await;
 }

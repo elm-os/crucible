@@ -15,4 +15,4 @@ pub use decide::{
     Decision, Signals, THROTTLED_MAX_S, THROTTLED_MIN_S, UNAVAILABLE_MAX_S, UNAVAILABLE_MIN_S,
     decide, retry_after_throttled, retry_after_unavailable,
 };
-pub use permits::{Acquire, CpuShares, Permit, PermitPool};
+pub use permits::{CpuShares, Job, Offer, Permit, PermitPool, Waiting};

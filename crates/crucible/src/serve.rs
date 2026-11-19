@@ -351,6 +351,7 @@ fn ingest_config(prepare_permits: u32) -> IngestConfig {
 
 /// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it with
 /// `ingest`. With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
+#[allow(clippy::too_many_arguments)] // The parts of the app, as `run` and the tests build them.
 async fn open_app(
     env: &Env,
     keys: StaticKeys,
@@ -2523,9 +2524,18 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed, None, test_ingest())
-            .await
-            .unwrap();
+        let (app, _) = open_app(
+            env,
+            keys,
+            cursors,
+            config,
+            None,
+            closed,
+            None,
+            test_ingest(),
+        )
+        .await
+        .unwrap();
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await

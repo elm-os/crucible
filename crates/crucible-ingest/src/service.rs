@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, USER_AGENT};
 use axum::response::Response;
 use axum::routing::post;
-use crucible_admission::{BucketConfig, PermitPool, UNAVAILABLE_MIN_S};
+use crucible_admission::{BucketConfig, Offer, PermitPool, UNAVAILABLE_MIN_S};
 use crucible_auth::{KeyPrincipal, KeyVerifier, Refusal};
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Histogram};
@@ -22,6 +22,7 @@ use crucible_wal_codec::{
     MAX_ENVELOPE_BYTES, MAX_SDK_NAME_BYTES, MAX_SDK_VERSION_BYTES, PreparedFrame, Record,
     RecordType,
 };
+use futures::channel::oneshot;
 
 use crate::admission::{Admission, Held};
 use crate::body::{self, Format, MAX_GZIP_BYTES, MAX_PLAIN_BYTES};
@@ -513,27 +514,44 @@ impl Inner {
         Ok(acked)
     }
 
-    /// Prepares the frame in a blocking job, which takes a permit of the CPU budget's ingest-prepare share before
-    /// it is spawned and gives it back when it ends. The wait for the permit and the time it is held are recorded.
+    /// Prepares the frame in a blocking job under a permit of the CPU budget's ingest-prepare share. With a permit
+    /// free the job is spawned; otherwise it waits, holding no thread, and runs on the thread of the job that passes
+    /// its permit on. Its wait (from the offer to its start) and its hold (its run) are recorded.
     async fn prepare_blocking(self: &Arc<Self>, job: Job, held: Held) -> Result<Prepared, Reject> {
-        let asked = self.env.clock.now();
-        let permit = self.permits.acquire().await;
-        let granted = self.env.clock.now();
-        self.metrics
-            .permit_wait
-            .record(micros(granted.saturating_duration_since(asked)));
+        let offered = self.env.clock.now();
+        let (sender, prepared) = oneshot::channel();
         let inner = Arc::clone(self);
-        let mut task = self.env.spawn_blocking("ingest-prepare", move || {
-            let prepared = inner.prepare(job, held);
-            let hold = inner.env.clock.now().saturating_duration_since(granted);
-            inner.metrics.permit_hold.record(micros(hold));
-            drop(permit);
-            prepared
+        let work: crucible_admission::Job = Box::new(move || {
+            let started = inner.env.clock.now();
+            let result = inner.prepare(job, held);
+            let ended = inner.env.clock.now();
+            let metrics = &inner.metrics;
+            metrics
+                .permit_wait
+                .record(micros(started.saturating_duration_since(offered)));
+            metrics
+                .permit_hold
+                .record(micros(ended.saturating_duration_since(started)));
+            // The request may have gone away meanwhile; its result is then dropped.
+            let _undelivered = sender.send(result);
         });
-        task.join().await.map_err(|_| Reject::Unavailable {
-            retry_after_s: UNAVAILABLE_MIN_S,
-            detail: "the server is shutting down",
-        })?
+        // While the job waits, dropping this handle (the request went away) takes it out of the queue.
+        let _waiting = match self.permits.offer(work) {
+            Offer::Run(permit) => {
+                // The job's result comes back on its own channel, so the task's handle is not needed.
+                let _task = self
+                    .env
+                    .spawn_blocking("ingest-prepare", move || permit.run());
+                None
+            }
+            Offer::Queued(waiting) => Some(waiting),
+        };
+        prepared
+            .await
+            .map_err(|oneshot::Canceled| Reject::Unavailable {
+                retry_after_s: UNAVAILABLE_MIN_S,
+                detail: "the server is shutting down",
+            })?
     }
 
     /// Inflates, transcodes and scans the body, then builds the `IngestRequest` payload and its frame. The
