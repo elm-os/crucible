@@ -28,6 +28,7 @@ mod child;
 mod clock;
 mod disk;
 mod id;
+mod mailer;
 pub mod metrics;
 mod net;
 mod rng;
@@ -50,6 +51,7 @@ pub use clock::{Clock, ClockExt, Elapsed, Instant, Interval, MissedTicks};
 pub use crucible_control::ControlStore;
 pub use disk::{Disk, DiskError, DiskPath, Entry, File, FileOps, OpenMode, Root};
 pub use id::{IdGen, new_id};
+pub use mailer::{MailError, MailMessage, Mailer};
 pub use metrics::{
     Counter, CounterDef, Gauge, GaugeDef, Histogram, HistogramDef, MemoryRecorder, Metrics,
 };

@@ -11,6 +11,7 @@ mod clock;
 mod disk;
 mod net;
 mod rng;
+mod smtp;
 mod spawner;
 
 use std::collections::BTreeMap;
@@ -29,6 +30,7 @@ pub use disk::{
 };
 pub use net::TokioNet;
 pub use rng::os_seeded_rng;
+pub use smtp::{SmtpMailer, SmtpSecurity, SmtpSettings};
 pub use spawner::TokioSpawner;
 
 /// What [`build`] needs to know.
