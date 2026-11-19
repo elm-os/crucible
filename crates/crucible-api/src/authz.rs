@@ -219,6 +219,26 @@ pub const ROUTES: &[RouteAccess] = &[
         Project(ProjectPermission::Read),
     ),
     route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/exports",
+        Project(ProjectPermission::Export),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports/{export_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/exports/{export_id}/download",
+        Project(ProjectPermission::Read),
+    ),
+    route(
         "POST",
         "/api/v1/projects/{project_id}/corrections",
         Project(ProjectPermission::WriteFacts),

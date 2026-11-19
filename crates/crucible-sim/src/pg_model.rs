@@ -30,9 +30,9 @@ use async_trait::async_trait;
 use crucible_control::{
     AlertEvent, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState, AlertStateRepo, ApiKey,
     ApiKeyRepo, AuthFlow, AuthFlowRepo, AuthProvider, AuthProviderRepo, Channel, ChannelRepo,
-    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, Invitation, InvitationRepo,
-    KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry,
-    MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
+    Claim, Claims, ControlStore, ControlTx, Credential, CredentialRepo, ExportJobRepo, Invitation,
+    InvitationRepo, KeyChange, KeyChangeKind, KeyFeed, KeySnapshot, Lease, LeaseName, Leases,
+    LedgerEntry, MembershipRepo, Migrations, NewJob, OauthAccount, OauthAccountRepo, OneTimeToken,
     OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, Project, ProjectMembership,
     ProjectRepo, ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session,
     SessionRepo, SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP,
@@ -166,6 +166,20 @@ struct JobRow {
     next_attempt_at: Timestamp,
     status: JobStatus,
     lease_until: Option<Timestamp>,
+    /// The export's own columns, on a row of [`Queue::ExportJobs`].
+    export: Option<Box<exports::ExportCols>>,
+}
+
+/// The constraint names of a queue's table.
+const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
+    match queue {
+        Queue::NotificationOutbox => (
+            "notification_outbox_pkey",
+            "notification_outbox_dedup_key_key",
+        ),
+        Queue::ExportJobs => ("export_jobs_pkey", "export_jobs_dedup_key_key"),
+        Queue::AlertEvaluations => ("alert_evaluations_pkey", "alert_evaluations_dedup_key_key"),
+    }
 }
 
 /// The `status` column of a claimed row.
@@ -309,6 +323,14 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             "alert_events_rule_id_fkey",
             Tbl::AlertRules,
             e.rule_id.to_bytes().to_vec(),
+        )],
+        Row::Job(JobRow {
+            export: Some(export),
+            ..
+        }) => vec![(
+            "export_jobs_project_id_fkey",
+            Tbl::Projects,
+            project(export.new.project_id),
         )],
         Row::SqlIdentity(i) => vec![(
             "ch_sql_identities_project_id_fkey",
@@ -1257,6 +1279,9 @@ macro_rules! repos {
             fn claims(&self) -> &dyn Claims {
                 &self.runner
             }
+            fn export_jobs(&self) -> &dyn ExportJobRepo {
+                &self.runner
+            }
             fn migrations(&self) -> &dyn Migrations {
                 &self.runner
             }
@@ -1342,6 +1367,9 @@ impl Repos for PgModel {
     fn claims(&self) -> &dyn Claims {
         &*self.runner
     }
+    fn export_jobs(&self) -> &dyn ExportJobRepo {
+        &*self.runner
+    }
     fn migrations(&self) -> &dyn Migrations {
         &*self.runner
     }
@@ -1380,20 +1408,10 @@ macro_rules! all {
 }
 
 mod alerts;
+mod exports;
 mod identity;
 /// The SQL workspace's repositories. Declared after the macros above, which it uses.
 mod sqlws;
-
-/// The primary-key and deduplication-key constraints of a queue's table.
-const fn queue_constraints(queue: Queue) -> (&'static str, &'static str) {
-    match queue {
-        Queue::NotificationOutbox => (
-            "notification_outbox_pkey",
-            "notification_outbox_dedup_key_key",
-        ),
-        Queue::AlertEvaluations => ("alert_evaluations_pkey", "alert_evaluations_dedup_key_key"),
-    }
-}
 
 fn uuid_key(bytes: [u8; 16]) -> Key {
     bytes.to_vec()
@@ -2191,6 +2209,7 @@ impl Claims for Runner {
                 next_attempt_at: job.run_at,
                 status: JobStatus::Pending,
                 lease_until: None,
+                export: None,
             };
             cx.insert(
                 Tbl::Jobs,

@@ -53,6 +53,8 @@ pub enum FactsOf<'a> {
     Span(TraceId, SpanId),
     /// The facts whose target is this session.
     Session(&'a str),
+    /// The facts whose target is one of these traces or a span of one of them.
+    TraceTree(&'a [TraceId]),
 }
 
 /// The columns of one fact table that a read selects or filters on.
@@ -109,23 +111,36 @@ fn kind(columns: &Columns, kind: FactTargetKind) -> Pred {
     Pred::eq(columns.target_kind, Literal::Enum(kind.value()))
 }
 
-fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanError> {
-    let c = columns(table);
-    let pred = match of {
+fn pred(c: &Columns, of: FactsOf<'_>) -> Pred {
+    match of {
         FactsOf::Traces(ids) => Pred::And(vec![
-            kind(&c, FactTargetKind::Trace),
+            kind(c, FactTargetKind::Trace),
             Pred::is_in(c.trace_id, ids.iter().copied().map(Literal::from).collect()),
         ]),
         FactsOf::Span(trace_id, span_id) => Pred::And(vec![
-            kind(&c, FactTargetKind::Span),
+            kind(c, FactTargetKind::Span),
             Pred::eq(c.trace_id, trace_id),
             Pred::eq(c.span_id, span_id),
         ]),
         FactsOf::Session(session_id) => Pred::And(vec![
-            kind(&c, FactTargetKind::Session),
+            kind(c, FactTargetKind::Session),
             Pred::eq(c.session_id, session_id),
         ]),
-    };
+        FactsOf::TraceTree(ids) => Pred::And(vec![
+            Pred::is_in(
+                c.target_kind,
+                [FactTargetKind::Trace, FactTargetKind::Span]
+                    .map(|k| Literal::Enum(k.value()))
+                    .to_vec(),
+            ),
+            Pred::is_in(c.trace_id, ids.iter().copied().map(Literal::from).collect()),
+        ]),
+    }
+}
+
+fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanError> {
+    let c = columns(table);
+    let pred = pred(&c, of);
     let mut selected = c.envelope.to_vec();
     match (table, brief) {
         // A list shows a score's name and value, not its comment or metadata.
@@ -134,6 +149,21 @@ fn scan(table: FactTable, of: FactsOf<'_>, brief: bool) -> Result<Scan, PlanErro
         _ => selected.extend(c.body),
     }
     Scan::new(table.table(), selected, pred)
+}
+
+/// Every column of one fact table, in the table's order, for the facts of `of`: what an export reads
+/// (contract 12.8).
+pub(super) fn scan_every_column(table: FactTable, of: FactsOf<'_>) -> Result<Scan, PlanError> {
+    fn all<C: Column>() -> Vec<ColumnRef> {
+        C::ALL.iter().map(|c| c.column_ref()).collect()
+    }
+    let selected = match table {
+        FactTable::Scores => all::<FactScoresCol>(),
+        FactTable::Tags => all::<FactTagsCol>(),
+        FactTable::Flags => all::<FactFlagsCol>(),
+        FactTable::Corrections => all::<FactCorrectionsCol>(),
+    };
+    Scan::new(table.table(), selected, pred(&columns(table), of))
 }
 
 /// The candidate facts of a target in one fact table, in no order, for a detail read (trace detail, the facts

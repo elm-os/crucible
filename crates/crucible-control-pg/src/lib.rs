@@ -15,6 +15,7 @@
 
 mod alerts;
 mod conn;
+mod exports;
 mod identity;
 mod migrate;
 mod sql;

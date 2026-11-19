@@ -3,6 +3,7 @@
 mod alerts;
 mod control;
 mod cursor_keys;
+mod export;
 mod facts;
 mod identity;
 mod jobs;
@@ -57,6 +58,9 @@ enum Command {
     },
     /// Run the MCP proxy in front of an MCP server. It starts no server subsystem.
     Proxy(proxy::ProxyArgs),
+    /// Export a project's spans in a window from the telemetry store, as crucible-jsonl or otlp-json, to a file
+    /// or standard output.
+    Export(Box<export::ExportArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -324,6 +328,10 @@ fn main() -> anyhow::Result<()> {
         Command::Migrate(args) => {
             let config = args.load_for_run()?;
             runtime()?.block_on(migrate(config))
+        }
+        Command::Export(args) => {
+            let config = args.config.load_for_run()?;
+            runtime()?.block_on(export::run(&args, config))
         }
         Command::Config { command } => {
             let (args, print) = match &command {

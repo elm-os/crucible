@@ -71,8 +71,11 @@ impl SeriesSource for QuerySource {
         spec: &RuleSpec,
         window: TimeWindow,
     ) -> Result<Observed, ReadFailure> {
-        let scope = crucible_auth::job_scope(project)
-            .ok_or_else(|| ReadFailure("the project is deleted".to_owned()))?;
+        if project.deleted_at.is_some() {
+            return Err(ReadFailure("the project is deleted".to_owned()));
+        }
+        let scope = crucible_auth::stored_project_scope(project)
+            .map_err(|_| ReadFailure("the project has no id".to_owned()))?;
         let retention = RetentionSettings {
             retention_days: project.retention_days,
             payload_retention_days: project.payload_retention_days,

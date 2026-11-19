@@ -26,6 +26,7 @@ use crucible_auth::service::{Identity, SessionPrincipal, SessionVerdict};
 use crucible_auth::{KeyGrant, KeyVerdict, KeyVerifier, Scopes, csrf};
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
+use crucible_export::Exports;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
 use crucible_records::{AuthorKind, ProjectId, ProjectScope, RequestId};
@@ -59,6 +60,8 @@ pub(crate) struct ApiState {
     pub(crate) sql: Option<SqlWorkspace>,
     /// Alert rules and channels; `None` without a control plane.
     pub(crate) alerts: Option<crate::AlertsApi>,
+    /// Exports; `None` without a control plane, which holds them.
+    pub(crate) exports: Option<Exports>,
 }
 
 impl ApiState {
@@ -279,6 +282,8 @@ permissions! {
     RunSavedQuery => RunSavedQuery,
     /// Manage channels and test-send. Keys never hold it.
     Channels => Channels,
+    /// Create exports.
+    CreateExports => Export,
 }
 
 /// A request authorized for permission `P` on the project of its path (contract 11.6).

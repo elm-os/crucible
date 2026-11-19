@@ -2893,6 +2893,372 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/exports": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "List exports",
+        "description": "The project's newest exports, newest first, at most 50, each with where it is in its life.",
+        "operationId": "list_exports",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The exports.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project; or `feature_disabled`: no control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Create an export",
+        "description": "Starts an export of the project's spans in a window, optionally narrowed to traces, a user or a session,\nin the `crucible-jsonl` or `otlp-json` format. It answers at once; read the export to follow it, and download\nthe file once it is ready. Spans received after this request are not included. A project may create 5\nexports per hour; an `Idempotency-Key` makes a retry answer with the export the first request created.",
+        "operationId": "create_export",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers with the export the first request created.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The export, queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: creating exports needs the `export` permission (project member, or a key with the `read` scope).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project; or `feature_disabled`: no control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: 5 exports per hour per project; `retry_after_s` says when.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/exports/{export_id}": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Get an export",
+        "description": "One export of the project: where it is in its life, how far it has come, and, once it is ready, its checksum,\nexpiry and download path.",
+        "operationId": "get_export",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "export_id",
+            "in": "path",
+            "description": "The export id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no export of the project has this id; or `feature_disabled`: no control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/exports/{export_id}/download": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Download an export",
+        "description": "The file of a ready export, streamed from the node that wrote it, with its SHA-256 as the `ETag`.",
+        "operationId": "download_export",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "export_id",
+            "in": "path",
+            "description": "The export id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: JSON lines, gzip-compressed when the export asked for it.",
+            "content": {
+              "application/x-ndjson": {}
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no export of the project has this id, or its file is not on this node (a deployment of several nodes keeps each file on the node that wrote it); or `feature_disabled`: no control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: the export is not ready yet, or failed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`export_expired`: the file expired, or a deletion request the export predates expired it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/facts": {
       "get": {
         "tags": [
@@ -8075,6 +8441,197 @@
           }
         }
       },
+      "Export": {
+        "type": "object",
+        "description": "An export.",
+        "required": [
+          "id",
+          "format",
+          "state",
+          "from",
+          "to",
+          "trace_count",
+          "gzip",
+          "keep_truncated",
+          "created_at",
+          "as_of",
+          "spans",
+          "skipped",
+          "bytes",
+          "saturated"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The arrival bound of its reads: only spans received at or before it are exported."
+          },
+          "bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Bytes written so far, or the file's length once it is ready."
+          },
+          "checksum": {
+            "type": "string",
+            "description": "SHA-256 of the file, lowercase hex, once it is ready."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was created."
+          },
+          "download_path": {
+            "type": "string",
+            "description": "The path of the download, under the same origin, once it is ready."
+          },
+          "error_code": {
+            "type": "string",
+            "description": "Why a failed export ended without a file: `query_timeout`, `query_memory_exceeded`, `query_too_broad`\nor `export_too_large` (narrow the window or the selection), `project_deleted`, `attempts_exhausted` or\n`internal_error`."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the file stops being downloadable."
+          },
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat",
+            "description": "The format."
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window over span start times."
+          },
+          "gzip": {
+            "type": "boolean",
+            "description": "Whether the file is gzip-compressed."
+          },
+          "id": {
+            "type": "string",
+            "description": "The export id."
+          },
+          "keep_truncated": {
+            "type": "boolean",
+            "description": "Whether spans with a field cut by a size cap are kept (`otlp-json`)."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count was cut to 2^53 - 1."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Only spans of this session."
+          },
+          "skipped": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans the format left out (`otlp-json` skips spans with a cut field unless asked to keep them)."
+          },
+          "spans": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Spans written so far, or in all once it is ready."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExportState",
+            "description": "Where it is in its life."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window."
+          },
+          "trace_count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How many traces it is narrowed to; 0 when it is not narrowed to traces."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Only spans of this user."
+          }
+        }
+      },
+      "ExportFormat": {
+        "type": "string",
+        "description": "An export format (contract 12.8).",
+        "enum": [
+          "crucible-jsonl",
+          "otlp-json"
+        ]
+      },
+      "ExportList": {
+        "type": "object",
+        "description": "The answer of `GET exports`: the project's newest exports, newest first, at most 50.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Export"
+            },
+            "description": "The exports."
+          }
+        }
+      },
+      "ExportRequest": {
+        "type": "object",
+        "description": "The body of `POST exports`: what to export and how.",
+        "required": [
+          "format",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ExportFormat",
+            "description": "The format."
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window over span start times (RFC 3339, inclusive)."
+          },
+          "gzip": {
+            "type": "boolean",
+            "description": "Compress the file with gzip."
+          },
+          "keep_truncated": {
+            "type": "boolean",
+            "description": "With `otlp-json`, write spans that have a field cut by a size cap, as opaque text, instead of skipping\nthem."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Only spans of this session."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window (RFC 3339, exclusive)."
+          },
+          "trace_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only spans of these traces (32 hexadecimal characters each), at most 10,000."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Only spans of this user."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExportState": {
+        "type": "string",
+        "description": "Where an export is in its life (contract 12.8).",
+        "enum": [
+          "queued",
+          "running",
+          "ready",
+          "failed",
+          "expired"
+        ]
+      },
       "FactRef": {
         "type": "object",
         "description": "The fact that holds a value: the latest write of its key.",
@@ -12102,6 +12659,10 @@
     {
       "name": "channels",
       "description": "Notification channels: Slack webhooks, email and signed webhooks, with test-send."
+    },
+    {
+      "name": "exports",
+      "description": "Export jobs: the project's spans in the crucible-jsonl or otlp-json format, as a file to download."
     },
     {
       "name": "facts",

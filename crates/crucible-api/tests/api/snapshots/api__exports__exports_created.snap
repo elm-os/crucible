@@ -1,0 +1,20 @@
+---
+source: crates/crucible-api/tests/api/exports.rs
+expression: "serde_json::to_string_pretty(&stable(created.body.clone())).unwrap()"
+---
+{
+  "as_of": "<now>",
+  "bytes": 0,
+  "created_at": "<now>",
+  "format": "crucible-jsonl",
+  "from": "2026-11-17T09:00:00.000000Z",
+  "gzip": false,
+  "id": "<id>",
+  "keep_truncated": false,
+  "saturated": false,
+  "skipped": 0,
+  "spans": 0,
+  "state": "queued",
+  "to": "2026-11-17T10:00:00.000000Z",
+  "trace_count": 0
+}

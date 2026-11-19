@@ -16,6 +16,7 @@ mod alerts;
 mod document;
 mod endpoints;
 mod errors;
+mod exports;
 mod facts;
 mod identity;
 mod lists;

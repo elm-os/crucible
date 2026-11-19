@@ -9,13 +9,13 @@ use async_trait::async_trait;
 use crucible_control::{
     AlertEventRepo, AlertRuleRepo, AlertStateRepo, ApiKey, ApiKeyRepo, AuthFlowRepo, AuthMethod,
     AuthProviderRepo, ChannelRepo, Claim, Claims, ControlStore, ControlTx, Credential,
-    CredentialRepo, Email, InvitationRepo, JsonDoc, KeyChange, KeyChangeKind, KeyFeed, KeyScope,
-    KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo, MigrationKind, Migrations,
-    NewJob, OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership, OrgRepo, OrgRole, OrgSettings,
-    Project, ProjectMembership, ProjectRepo, ProjectRole, ProjectSaltRepo, Queue, Repos,
-    SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo, SigningKey, SigningKeyRepo,
-    SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash, TxError, User, UserRepo,
-    UserStatus, duration_micros,
+    CredentialRepo, Email, ExportJobRepo, InvitationRepo, JsonDoc, KeyChange, KeyChangeKind,
+    KeyFeed, KeyScope, KeySnapshot, Lease, LeaseName, Leases, LedgerEntry, MembershipRepo,
+    MigrationKind, Migrations, NewJob, OauthAccountRepo, OneTimeTokenRepo, Org, OrgMembership,
+    OrgRepo, OrgRole, OrgSettings, Project, ProjectMembership, ProjectRepo, ProjectRole,
+    ProjectSaltRepo, Queue, Repos, SealedProjectSalt, Secret, SecretRepo, Session, SessionRepo,
+    SigningKey, SigningKeyRepo, SigningKeyState, SigningPurpose, TRANSACTION_CAP, TokenHash,
+    TxError, User, UserRepo, UserStatus, duration_micros,
 };
 use crucible_env::{Env, Instant};
 use crucible_records::{ApiKeyId, OrgId, ProjectId, Timestamp, UserId, Uuid};
@@ -282,7 +282,7 @@ impl PgControlStore {
              d20 AS (DELETE FROM invitations), d21 AS (DELETE FROM alert_evaluations), \
              d22 AS (DELETE FROM alert_events), d23 AS (DELETE FROM alert_state), \
              d24 AS (DELETE FROM alert_rules), d25 AS (DELETE FROM channels), \
-             d26 AS (DELETE FROM project_salts) \
+             d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs) \
              SELECT * FROM s";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -546,6 +546,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn claims(&self) -> &dyn Claims {
+                $($deref)* self.handle
+            }
+            fn export_jobs(&self) -> &dyn ExportJobRepo {
                 $($deref)* self.handle
             }
             fn migrations(&self) -> &dyn Migrations {
@@ -1510,6 +1513,7 @@ const fn table(queue: Queue) -> &'static str {
     match queue {
         Queue::NotificationOutbox => "notification_outbox",
         Queue::AlertEvaluations => "alert_evaluations",
+        Queue::ExportJobs => "export_jobs",
     }
 }
 

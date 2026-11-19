@@ -8,6 +8,7 @@
 
 mod alerts;
 mod claims;
+mod exports;
 mod feed;
 mod identity;
 mod jobs;
@@ -93,6 +94,7 @@ pub const SCRIPTS: &[(&str, Script)] = &[
     ("identity", |c, t| Box::pin(identity::run(c, t))),
     ("pools", |c, t| Box::pin(pools::run(c, t))),
     ("jobs", |c, t| Box::pin(jobs::run(c, t))),
+    ("exports", |c, t| Box::pin(exports::run(c, t))),
     ("alerts", |c, t| Box::pin(alerts::run(c, t))),
 ];
 

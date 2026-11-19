@@ -905,6 +905,58 @@ fn m2_metrics_traces() {
 }
 
 #[test]
+fn m2_export() {
+    use crucible_plan::{
+        ExportSelection, FactTable, export_facts, export_mcp_content, export_mcp_ops,
+        export_payloads, export_spans, export_ties,
+    };
+    let traces = [trace(), TraceId::from_bytes([7; 16])];
+    let narrowed = ExportSelection {
+        trace_ids: &traces,
+        user_id: Some("user-1"),
+        session_id: Some("session-1"),
+    };
+    let after = (T0, 42, T0.saturating_add_micros(5), span(3));
+    let first = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        ExportSelection::default(),
+        T0,
+        None,
+        1_000,
+    );
+    insta::assert_snapshot!("m2_export_spans_first_page", rendered(&live(first)));
+    let next = export_spans(
+        project(),
+        window(),
+        &clamp(),
+        narrowed,
+        T0,
+        Some(after),
+        1_000,
+    );
+    insta::assert_snapshot!("m2_export_spans_after_position", rendered(&live(next)));
+    let ties = export_ties(project(), window(), &clamp(), narrowed, T0, after);
+    insta::assert_snapshot!("m2_export_ties", rendered(&live(ties)));
+    let spans = [
+        (T0, trace(), span(1)),
+        (T0.saturating_add_micros(90_000_000), traces[1], span(2)),
+    ];
+    let payloads = export_payloads(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_payloads", rendered(&live(payloads)));
+    let ops = export_mcp_ops(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_mcp_ops", rendered(&live(ops)));
+    let content = export_mcp_content(project(), &clamp(), &spans);
+    insta::assert_snapshot!("m2_export_mcp_content", rendered(&live(content)));
+    for table in FactTable::ALL {
+        let name = table.table().name();
+        let facts = export_facts(project(), window(), &clamp(), table, &traces);
+        insta::assert_snapshot!(format!("m2_export_facts_{name}"), rendered(&live(facts)));
+    }
+}
+
+#[test]
 fn node_text_search_with_snippets() {
     let search = TextSearch::new(
         TableId::SpanPayload,
