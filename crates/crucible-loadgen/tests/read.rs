@@ -1,8 +1,10 @@
 //! The read generator and the ack-to-API probe against small servers on loopback, through the production `Env`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,6 +15,7 @@ use crucible_loadgen::stub::{StubConfig, serve};
 use crucible_loadgen::{
     Dataset, FreshConfig, ReadClass, ReadConfig, ReadError, Think, fresh, read,
 };
+use crucible_records::Timestamp;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -119,21 +122,31 @@ async fn unrunnable_reads_are_refused() {
     }
 }
 
-/// Acknowledges every OTLP request and remembers its trace ids; answers any other request with a JSON body
-/// that names every trace id seen so far, as the trace list would.
-async fn mini_crucible(env: &Env) -> (SocketAddr, JoinHandle<Result<(), NetError>>) {
+/// Acknowledges every OTLP request and remembers when each trace starts; answers any other request as the trace
+/// list would, with a JSON body that names the traces starting in its `from`/`to` window. Also returns the most
+/// traces one list named.
+async fn mini_crucible(
+    env: &Env,
+) -> (
+    SocketAddr,
+    Arc<AtomicUsize>,
+    JoinHandle<Result<(), NetError>>,
+) {
     let mut listener = env.net.listen(LOOPBACK).await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let starts = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
+    let most = Arc::new(AtomicUsize::new(0));
+    let most_named = Arc::clone(&most);
     let task_env = env.clone();
     let task = env.spawn("mini-crucible", async move {
         loop {
             let (stream, _) = listener.accept().await?;
-            let seen = Arc::clone(&seen);
+            let (starts, most) = (Arc::clone(&starts), Arc::clone(&most));
             let service = service_fn(move |request: Request<Incoming>| {
-                let seen = Arc::clone(&seen);
+                let (starts, most) = (Arc::clone(&starts), Arc::clone(&most));
                 async move {
                     let post = request.method() == http::Method::POST;
+                    let query = request.uri().query().unwrap_or_default().to_owned();
                     let body = request.into_body().collect().await.unwrap().to_bytes();
                     let answer = if post {
                         let decoded = ExportTraceServiceRequest::decode(body).unwrap();
@@ -145,11 +158,30 @@ async fn mini_crucible(env: &Env) -> (SocketAddr, JoinHandle<Result<(), NetError
                         {
                             let hex: String =
                                 span.trace_id.iter().map(|b| format!("{b:02x}")).collect();
-                            seen.lock().unwrap().push(hex);
+                            let start = i64::try_from(span.start_time_unix_nano / 1_000).unwrap();
+                            let mut starts = starts.lock().unwrap();
+                            let first = starts.entry(hex).or_insert(start);
+                            *first = (*first).min(start);
                         }
                         Bytes::new()
                     } else {
-                        let ids = seen.lock().unwrap().join("\",\"");
+                        let bound = |name: &str| {
+                            query
+                                .split('&')
+                                .find_map(|pair| pair.strip_prefix(name))
+                                .map(|value| value.parse::<Timestamp>().unwrap().micros())
+                                .unwrap()
+                        };
+                        let window = bound("from=")..bound("to=");
+                        let named: Vec<String> = starts
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|(_, start)| window.contains(*start))
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        most.fetch_max(named.len(), Ordering::Relaxed);
+                        let ids = named.join("\",\"");
                         Bytes::from(format!("{{\"data\":[\"{ids}\"]}}"))
                     };
                     let mut response = Response::new(Full::new(answer));
@@ -164,13 +196,13 @@ async fn mini_crucible(env: &Env) -> (SocketAddr, JoinHandle<Result<(), NetError
             }));
         }
     });
-    (addr, task)
+    (addr, most_named, task)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_probe_measures_ack_to_listed() {
     let env = env();
-    let (addr, server) = mini_crucible(&env).await;
+    let (addr, most_named, server) = mini_crucible(&env).await;
     let config = FreshConfig {
         ingest: addr,
         ingest_authority: addr.to_string(),
@@ -192,5 +224,9 @@ async fn the_probe_measures_ack_to_listed() {
     assert_eq!(report.ack_to_list_us.count, 5);
     assert_eq!(report.list_us.count, 5);
     assert!(report.list_us.max <= report.ack_to_list_us.max);
+    // Each list's window starts at its probe's trace, so a list names that trace at most, as milestone 1's list
+    // named only its test's own traces: the earlier probes' traces would make every later list longer, and its
+    // round trip slower, the more probes ran.
+    assert_eq!(most_named.load(Ordering::Relaxed), 1);
     server.abort();
 }
