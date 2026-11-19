@@ -14,6 +14,9 @@
 //! SHA-256: the first 22 characters of its URL-safe base64 form. So this endpoint answers with that id, and
 //! finds the object again by the hash prefix it encodes ([`hash_range`]); Crucible's own media id stays
 //! internal to it.
+//!
+//! The client half of the wire shapes ([`upload_request`], [`report_request`], [`UploadReply`], [`MediaReply`]) is
+//! what tests play the SDK with, so that no other crate spells the dialect's fields.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -54,11 +57,13 @@ fn field(pointer: &str, message: &str) -> FieldError {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadBody {
     trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     observation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     dataset_id: Option<String>,
     content_type: Option<String>,
     content_length: Option<i64>,
@@ -176,6 +181,20 @@ pub fn parse_upload(body: &[u8]) -> Result<UploadRequest, Vec<FieldError>> {
     }
 }
 
+/// The body a client sends to ask for an upload: what [`parse_upload`] reads back.
+pub fn upload_request(request: &UploadRequest) -> Vec<u8> {
+    serde_json::to_vec(&UploadBody {
+        trace_id: Some(request.trace_id.to_string()),
+        observation_id: request.span_id.map(|id| id.to_string()),
+        dataset_id: None,
+        content_type: Some(request.content_type.clone()),
+        content_length: i64::try_from(request.len).ok(),
+        sha256_hash: Some(STANDARD.encode(request.sha256)),
+        field: Some(request.field.clone()),
+    })
+    .unwrap_or_default()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadAnswer<'a> {
@@ -194,10 +213,28 @@ pub fn upload_answer(media_id: &str, upload_url: Option<&str>) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-#[derive(Deserialize)]
+/// An upload answer as a client reads it.
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadReply {
+    /// The compat media id.
+    pub media_id: String,
+    /// The presigned upload URL; absent when the bytes are already stored.
+    pub upload_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportBody {
     upload_http_status: Option<i64>,
+}
+
+/// The body a client sends to report the HTTP status its upload answered: what [`parse_report`] reads back.
+pub fn report_request(upload_http_status: u16) -> Vec<u8> {
+    serde_json::to_vec(&ReportBody {
+        upload_http_status: Some(i64::from(upload_http_status)),
+    })
+    .unwrap_or_default()
 }
 
 /// Reads an upload report: whether the upload succeeded, by the HTTP status the SDK saw.
@@ -243,6 +280,25 @@ struct MediaBody<'a> {
     uploaded_at: Option<&'a str>,
     url: &'a str,
     url_expiry: &'a str,
+}
+
+/// A `GET` answer as a client reads it.
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaReply {
+    /// The compat media id.
+    pub media_id: String,
+    /// The content type.
+    pub content_type: String,
+    /// The length in bytes.
+    #[serde(rename = "contentLength")]
+    pub len: u64,
+    /// When the upload was confirmed, RFC 3339.
+    pub uploaded_at: Option<String>,
+    /// The presigned download URL.
+    pub url: String,
+    /// When the URL expires, RFC 3339.
+    pub url_expiry: String,
 }
 
 /// The answer to a `GET`.
@@ -378,6 +434,41 @@ mod tests {
         assert_eq!(report("403"), Ok(false));
         assert!(report("0").is_err());
         assert!(parse_report(b"{}").is_err());
+        assert_eq!(parse_report(&report_request(200)), Ok(true));
+        assert_eq!(parse_report(&report_request(403)), Ok(false));
+    }
+
+    #[test]
+    fn a_client_reads_the_answers_back() {
+        let reply = |body: Vec<u8>| serde_json::from_slice::<UploadReply>(&body).unwrap();
+        assert_eq!(
+            reply(upload_answer("id", Some("http://s/u"))),
+            UploadReply {
+                media_id: "id".to_owned(),
+                upload_url: Some("http://s/u".to_owned()),
+            }
+        );
+        assert_eq!(reply(upload_answer("id", None)).upload_url, None);
+        let answer = MediaAnswer {
+            media_id: "id",
+            content_type: "image/png",
+            len: 3,
+            uploaded_at: None,
+            url: "http://s/g",
+            url_expiry: "2026-11-19T00:05:00.000000Z".to_owned(),
+        };
+        let read: MediaReply = serde_json::from_slice(&media_answer(&answer)).unwrap();
+        assert_eq!(
+            read,
+            MediaReply {
+                media_id: "id".to_owned(),
+                content_type: "image/png".to_owned(),
+                len: 3,
+                uploaded_at: None,
+                url: "http://s/g".to_owned(),
+                url_expiry: answer.url_expiry.clone(),
+            }
+        );
     }
 
     #[test]
@@ -402,6 +493,29 @@ mod tests {
             prop_assert!(low <= sha256 && sha256 <= high);
             let inside = low <= other && other <= high;
             prop_assert_eq!(inside, media_id(&other) == id);
+        }
+
+        /// What a client sends is read back as it was meant.
+        #[test]
+        fn an_upload_request_round_trips(
+            trace: [u8; 16],
+            span: Option<[u8; 8]>,
+            content_type in "[a-z]{1,12}/[a-z0-9.+-]{1,24}",
+            len in 1..=i64::MAX.unsigned_abs(),
+            sha256: [u8; 32],
+            at in 0..FIELDS.len(),
+        ) {
+            let trace_id = TraceId::from_bytes(trace);
+            prop_assume!(!trace_id.is_zero());
+            let request = UploadRequest {
+                trace_id,
+                span_id: span.map(SpanId::from_bytes).and_then(SpanId::non_zero),
+                content_type,
+                len,
+                sha256,
+                field: FIELDS[at].to_owned(),
+            };
+            prop_assert_eq!(parse_upload(&upload_request(&request)), Ok(request));
         }
     }
 }

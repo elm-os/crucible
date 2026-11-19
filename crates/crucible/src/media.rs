@@ -152,7 +152,7 @@ fn principal(
     keys: &dyn KeyVerifier,
     request: &Request,
     rid: RequestId,
-) -> Result<KeyPrincipal, Response> {
+) -> Result<KeyPrincipal, Box<Response>> {
     let header = request
         .headers()
         .get(AUTHORIZATION)
@@ -165,7 +165,7 @@ fn principal(
         },
     };
     let detail = refusal.to_string();
-    Err(match refusal {
+    Err(Box::new(match refusal {
         Refusal::Unavailable => {
             let mut response =
                 crucible_api::problem(rid, ProblemCode::ControlPlaneUnavailable, &detail);
@@ -175,7 +175,7 @@ fn principal(
             response
         }
         _ => crucible_api::problem(rid, ProblemCode::Unauthenticated, &detail),
-    })
+    }))
 }
 
 /// The request id, the key's principal, the media service and the body of a request, or the answer that
@@ -184,20 +184,20 @@ async fn begin(
     state: &Compat,
     keys: &dyn KeyVerifier,
     request: Request,
-) -> Result<(RequestId, KeyPrincipal, Media, axum::body::Bytes), Response> {
+) -> Result<(RequestId, KeyPrincipal, Media, axum::body::Bytes), Box<Response>> {
     let rid = crucible_api::request_id(request.extensions(), &state.env);
     let principal = principal(keys, &request, rid)?;
     let Some(media) = state.media.clone() else {
-        return Err(crucible_api::media_not_supported(rid));
+        return Err(Box::new(crucible_api::media_not_supported(rid)));
     };
     let body = to_bytes(request.into_body(), BODY_LIMIT)
         .await
         .map_err(|_| {
-            crucible_api::problem(
+            Box::new(crucible_api::problem(
                 rid,
                 ProblemCode::PayloadTooLarge,
                 "the request body is above 64 KiB; send only the media's fields, never its bytes",
-            )
+            ))
         })?;
     Ok((rid, principal, media, body))
 }
@@ -223,7 +223,7 @@ async fn upload(State(state): State<Compat>, request: Request) -> Response {
     let keys = Arc::clone(&state.ingest);
     let (rid, principal, media, body) = match begin(&state, keys.as_ref(), request).await {
         Ok(begun) => begun,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let request = match parse_upload(&body) {
         Ok(request) => request,
@@ -276,7 +276,7 @@ async fn read_media(
     let keys = Arc::clone(&state.read);
     let (rid, principal, media, _) = match begin(&state, keys.as_ref(), request).await {
         Ok(begun) => begun,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let object = match find(&media, &principal, &id).await {
         Ok(Some(object)) if object.state == MediaState::Uploaded => object,
@@ -304,7 +304,7 @@ async fn report(State(state): State<Compat>, Path(id): Path<String>, request: Re
     let keys = Arc::clone(&state.ingest);
     let (rid, principal, media, body) = match begin(&state, keys.as_ref(), request).await {
         Ok(begun) => begun,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let succeeded = match parse_report(&body) {
         Ok(succeeded) => succeeded,

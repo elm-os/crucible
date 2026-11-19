@@ -256,8 +256,8 @@ fn upload_of(rid: RequestId, request: &MediaCreate) -> Result<NewUpload, ApiErro
 }
 
 fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let bytes = text.as_bytes();
-    if bytes.len() != N * 2 {
+    let (pairs, rest) = text.as_bytes().as_chunks::<2>();
+    if pairs.len() != N || !rest.is_empty() {
         return None;
     }
     let digit = |b: u8| match b {
@@ -266,8 +266,8 @@ fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
         _ => None,
     };
     let mut out = [0u8; N];
-    for (at, pair) in bytes.chunks_exact(2).enumerate() {
-        out[at] = digit(pair[0])? << 4 | digit(pair[1])?;
+    for (byte, [high, low]) in out.iter_mut().zip(pairs) {
+        *byte = digit(*high)? << 4 | digit(*low)?;
     }
     Some(out)
 }

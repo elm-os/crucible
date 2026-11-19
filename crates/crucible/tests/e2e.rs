@@ -47,7 +47,7 @@ use crucible_env_prod::ProdConfig;
 use crucible_loadgen::{
     AckLedger, LossCheck, Pool, PoolConfig, RUN_ID_KEY, RunConfig, SEQ_KEY, SequenceReader, verify,
 };
-use crucible_records::{Timestamp, Uuid};
+use crucible_records::{SpanId, Timestamp, TraceId, Uuid};
 use crucible_schema::ServiceIdentity;
 use crucible_store_clickhouse::render::Statement;
 use crucible_store_clickhouse::{ClickHouseStore, Credentials, StoreConfig};
@@ -1619,12 +1619,16 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         assert_eq!(spans[0]["traceId"], trace.trace_id.as_str());
     }
 
-    // 8. Media through the compat media endpoint on the ingest listener, with the key pair. With an object store
-    //    (`CRUCIBLE_E2E_S3_ENDPOINT`), the upload is asked for, put to the presigned URL with its signed headers,
-    //    reported, read back with a presigned download, and listed with its use; without one, the endpoint
-    //    refuses with the settings that turn media on.
+    // 8. Media through the compat media endpoint on the ingest listener, with the key pair, as the dialect's SDK
+    //    sends them. With an object store (`CRUCIBLE_E2E_S3_ENDPOINT`), the upload is asked for, put to the
+    //    presigned URL with its signed headers, reported, read back with a presigned download, and listed with its
+    //    use; without one, the endpoint refuses with the setting that turns media on.
     {
         use base64::Engine as _;
+        use crucible_compat::media::{
+            MEDIA_ROUTES, MediaReply, UploadReply, UploadRequest, media_id, report_request,
+            upload_request,
+        };
         let standard = base64::engine::general_purpose::STANDARD;
         let pair = standard.encode(format!(
             "{}:{}",
@@ -1632,52 +1636,38 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
             created["secret_key"].as_str().unwrap()
         ));
         let pair = format!("Basic {pair}");
-        let collection = crucible_compat::media::MEDIA_ROUTES[0].collection;
+        let collection = MEDIA_ROUTES[0].collection;
         let bytes = format!("e2e media of {}", trace.trace_id).into_bytes();
         let sha256: [u8; 32] = Sha256::digest(&bytes).into();
-        let checksum = standard.encode(sha256);
-        let ask = json!({
-            "traceId": trace.trace_id,
-            "observationId": trace.root_id,
-            "contentType": "image/png",
-            "contentLength": bytes.len(),
-            "sha256Hash": checksum,
-            "field": "input",
-        })
-        .to_string();
+        let ask = upload_request(&UploadRequest {
+            trace_id: TraceId::parse(&trace.trace_id).unwrap(),
+            span_id: Some(SpanId::parse(&trace.root_id).unwrap()),
+            content_type: "image/png".to_owned(),
+            len: u64::try_from(bytes.len()).unwrap(),
+            sha256,
+            field: "input".to_owned(),
+        });
         let json_pair = [
             ("content-type", "application/json"),
             ("authorization", pair.as_str()),
         ];
-        let (status, answer) = http(
-            server.ingest,
-            "POST",
-            collection,
-            &json_pair,
-            ask.as_bytes(),
-        )
-        .unwrap();
-        let answer: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
+        let (status, answer) = http(server.ingest, "POST", collection, &json_pair, &ask).unwrap();
+        let text = String::from_utf8_lossy(&answer).into_owned();
         match &rig.media {
             None => {
-                assert_eq!(status, 501, "{answer}");
-                assert_eq!(answer["code"], "media_not_supported", "{answer}");
-                assert!(
-                    answer["detail"]
-                        .as_str()
-                        .unwrap()
-                        .contains("object_store.endpoint"),
-                    "{answer}"
-                );
+                let problem: Value = serde_json::from_slice(&answer).unwrap();
+                assert_eq!(status, 501, "{text}");
+                assert_eq!(problem["code"], "media_not_supported", "{text}");
+                assert!(text.contains("object_store.endpoint"), "{text}");
             }
             Some(_) => {
-                assert_eq!(status, 201, "{answer}");
-                let media_id = crucible_compat::media::media_id(&sha256);
-                assert_eq!(answer["mediaId"], media_id.as_str());
-                let upload = answer["uploadUrl"].as_str().unwrap();
+                assert_eq!(status, 201, "{text}");
+                let reply: UploadReply = serde_json::from_slice(&answer).unwrap();
+                assert_eq!(reply.media_id, media_id(&sha256));
+                let checksum = standard.encode(sha256);
                 let (status, body) = http_url(
                     "PUT",
-                    upload,
+                    reply.upload_url.as_deref().unwrap(),
                     &[
                         ("content-type", "image/png"),
                         ("x-amz-checksum-sha256", checksum.as_str()),
@@ -1685,31 +1675,32 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
                     &bytes,
                 );
                 assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
-                let report = json!({"uploadedAt": "2026-11-19T00:00:00Z", "uploadHttpStatus": 200})
-                    .to_string();
-                let one = format!("{collection}/{media_id}");
-                let (status, body) =
-                    http(server.ingest, "PATCH", &one, &json_pair, report.as_bytes()).unwrap();
-                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
-                let (status, read) = http(server.api, "GET", &one, &json_pair[1..], b"").unwrap();
-                let read: Value = serde_json::from_slice(&read).unwrap();
-                assert_eq!(status, 200, "{read}");
-                assert_eq!(read["contentType"], "image/png");
-                assert_eq!(read["contentLength"], bytes.len());
-                let (status, downloaded) = http_url("GET", read["url"].as_str().unwrap(), &[], b"");
-                assert_eq!((status, downloaded), (200, bytes.clone()));
-                // The same bytes again need no upload.
-                let (status, again) = http(
+                let one = format!("{collection}/{}", reply.media_id);
+                let (status, body) = http(
                     server.ingest,
-                    "POST",
-                    collection,
+                    "PATCH",
+                    &one,
                     &json_pair,
-                    ask.as_bytes(),
+                    &report_request(200),
                 )
                 .unwrap();
-                let again: Value = serde_json::from_slice(&again).unwrap();
-                assert_eq!(status, 201, "{again}");
-                assert!(again.get("uploadUrl").is_none(), "{again}");
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+                let (status, read) = http(server.api, "GET", &one, &json_pair[1..], b"").unwrap();
+                assert_eq!(status, 200, "{}", String::from_utf8_lossy(&read));
+                let read: MediaReply = serde_json::from_slice(&read).unwrap();
+                assert_eq!(
+                    (read.content_type.as_str(), read.len),
+                    ("image/png", u64::try_from(bytes.len()).unwrap())
+                );
+                assert!(read.uploaded_at.is_some(), "{read:?}");
+                let (status, downloaded) = http_url("GET", &read.url, &[], b"");
+                assert_eq!((status, downloaded), (200, bytes.clone()));
+                // The same bytes again need no upload.
+                let (status, again) =
+                    http(server.ingest, "POST", collection, &json_pair, &ask).unwrap();
+                assert_eq!(status, 201, "{}", String::from_utf8_lossy(&again));
+                let again: UploadReply = serde_json::from_slice(&again).unwrap();
+                assert_eq!((again.media_id, again.upload_url), (reply.media_id, None));
                 // The session reads where the media appear, and that media are on.
                 let uses = format!(
                     "/api/v1/projects/{project_id}/media?trace_id={}&span_id={}",

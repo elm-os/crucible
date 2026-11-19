@@ -1311,7 +1311,6 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "crucible-auth",
  "crucible-control",
  "crucible-env",
  "crucible-jobs",
@@ -1526,6 +1525,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "crucible-admission",
@@ -1568,6 +1568,7 @@ dependencies = [
  "tower",
  "tracing",
  "turmoil",
+ "url",
  "xxhash-rust",
 ]
 

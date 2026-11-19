@@ -42,7 +42,6 @@ jiff = { version = "=0.2.46", default-features = false, features = ["std"] }
 url = "=2.5.8"
 
 [dev-dependencies]
-crucible-auth = { workspace = true, features = ["test-support"] }
 proptest = { workspace = true }
 
 [lints]
