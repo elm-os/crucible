@@ -99,8 +99,8 @@ pub const SETTINGS: &[Setting] = &[
         "cpu.permits",
         None,
         "blocking jobs (inflate, scan, compression) that run at once, shared out between the stages that run \
-         them; the runtime keeps 8 threads more for disk reads and name lookups (default: the CPUs the process may \
-         use)",
+         them; the runtime keeps 8 threads more for disk reads, name lookups and password hashing (default: the \
+         CPUs the process may use)",
     ),
     plain(
         "mcp.calls_per_second",

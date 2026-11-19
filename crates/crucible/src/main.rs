@@ -267,8 +267,8 @@ fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBa
     }
 }
 
-/// Blocking threads the runtime keeps beyond the CPU budget, for the blocking work that takes no permit: disk reads
-/// and name lookups.
+/// Blocking threads the runtime keeps beyond the CPU budget, for the blocking work that takes no permit: disk reads,
+/// name lookups and password hashing.
 const BLOCKING_RESERVE: usize = 8;
 
 /// `cpu.permits`: the setting, or one permit per CPU this process may use (its affinity and its cgroup quota

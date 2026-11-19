@@ -109,7 +109,6 @@ ships them. The API answers 503 as described above.
 | `--master-key-file` | `CRUCIBLE_MASTER_KEY_FILE` | A file with the master key, 64 hexadecimal characters. Without it the key is read from `CRUCIBLE_MASTER_KEY` |
 | `--migrate` | | Apply the schema and create the service identities before the startup checks |
 | `--recent-max-bytes` | `CRUCIBLE_RECENT_MAX_BYTES` | Memory bound of the recent-span index; default 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), or of RAM without one, at most 1 GiB |
-| | `CRUCIBLE_CPU_PERMITS` | The CPU budget: blocking jobs (inflate, scan, compression) that run at once; default one per CPU the process may use, which counts its CPU affinity and cgroup quota. The runtime keeps 8 blocking threads more for disk reads and name lookups |
 
 Secrets have no flag that takes the value itself, so they never appear in a process list.
 
@@ -147,6 +146,11 @@ password_file = "/run/secrets/postgres"
   `_file` twin. Given both in one layer, the file is used and a warning says so.
 - `sql.statements_per_hour` (default 1,800) is the hourly allowance of each project's SQL workspace identity. A run
   through the API is three statements, two checks and the query. The value is applied to ClickHouse at every start.
+- `cpu.permits` (`CRUCIBLE_CPU_PERMITS`) is the CPU budget: how many blocking jobs (the inflate, transcode, scan
+  and frame compression of ingest requests) run at once. The default is one per CPU the process may use, which
+  counts its CPU affinity and cgroup quota. A request beyond it waits its turn without holding a thread, and the
+  runtime keeps 8 blocking threads more for the blocking work that takes no permit (disk reads, name lookups,
+  password hashing).
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `server.keys_file` is for a server without `[postgres]`; given both, the configuration is refused with what to do.
