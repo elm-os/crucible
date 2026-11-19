@@ -18,6 +18,7 @@ pub mod control;
 pub mod control_pg;
 mod differential;
 mod inserts;
+mod keep_alive;
 mod m2;
 mod maintenance;
 mod reads;
@@ -343,5 +344,9 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
             startup::visibility(&ctx)
         );
     }
+    row!(
+        "Idle connections: reads 3 s apart share one connection",
+        keep_alive::reuse(&ctx)
+    );
     outcomes
 }
