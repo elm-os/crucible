@@ -32,6 +32,7 @@ mod filter_values;
 mod heads;
 mod live_tail;
 mod mcp;
+mod mcp_metrics;
 mod mcp_ops;
 mod mcp_rollup;
 mod metrics;
@@ -58,6 +59,7 @@ pub use filter_values::{FilterValues, FilterValuesQuery};
 pub use heads::{TRACE_LIST_DEFAULT_LIMIT, TraceListItem};
 pub use live_tail::{NEW_COUNT_MAX, TraceTail, TraceTailQuery};
 pub use mcp::{CaptureSources, Latency, McpQuery, McpTotals};
+pub use mcp_metrics::McpMetricsRequest;
 pub use mcp_ops::{
     MCP_CONTENT_PREVIEW, McpChainLink, McpClientVersion, McpClientVersions, McpContent,
     McpErrorBreakdown, McpErrorGroup, McpOperationCursor, McpOperationDetail, McpOperationFull,

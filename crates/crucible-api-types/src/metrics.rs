@@ -108,6 +108,18 @@ pub struct MetricsQueryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fill: Option<FillMode>,
+    /// Source `mcp_ops` only, and required there: the side to read, `client` or `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub side: Option<crate::mcp::McpSideParam>,
+    /// Source `mcp_ops` only: which capture source each server is read from (contract 9.5); `auto` by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capture_source: Option<crate::mcp::SourceParam>,
+    /// Source `mcp_ops` only: whether calls the caller caused count; false by default (contract 9.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_caller_faults: Option<bool>,
 }
 
 /// One dimension value of a series key.

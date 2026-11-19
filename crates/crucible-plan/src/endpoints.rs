@@ -6,6 +6,7 @@ mod data_bounds;
 mod facts;
 mod filter_values;
 mod mcp;
+mod mcp_metrics;
 mod mcp_ops;
 mod mcp_rollup;
 mod metrics;
@@ -26,6 +27,7 @@ pub use mcp::{
     CaptureClass, McpRead, McpSelection, ServerSources, SourceChoice, TOOLS_CALL, mcp_presence,
     mcp_series_step,
 };
+pub use mcp_metrics::{mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series};
 pub use mcp_ops::{
     MCP_CHAIN_COLUMNS, MCP_CHAIN_LIMIT, MCP_LIST_MAX_LIMIT, MCP_OPERATION_COLUMNS, MCP_PEER_LIMIT,
     McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey, mcp_client_versions,

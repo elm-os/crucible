@@ -6,10 +6,15 @@
 //! [`Check`], keeps its result under the cap with `shape::fit`, and continues cut results with `cursor`. It is
 //! registered here with its `mod` line and one entry in [`TOOLS`]. Every tool is read-only.
 
+mod compare_mcp_deploys;
 mod get_data_bounds;
+mod get_mcp_tool;
 mod get_span_children;
 mod get_span_payload;
 mod get_trace;
+mod list_mcp_errors;
+mod list_mcp_servers;
+mod list_mcp_tools;
 mod list_traces;
 mod search_spans;
 
@@ -32,10 +37,15 @@ use crate::error::{ToolError, field_error};
 
 /// Every tool, sorted by name. A tool registers with one entry at its sorted place.
 pub(crate) const TOOLS: &[Entry] = &[
+    entry::<compare_mcp_deploys::CompareMcpDeploys>(),
     entry::<get_data_bounds::GetDataBounds>(),
+    entry::<get_mcp_tool::GetMcpTool>(),
     entry::<get_span_children::GetSpanChildren>(),
     entry::<get_span_payload::GetSpanPayload>(),
     entry::<get_trace::GetTrace>(),
+    entry::<list_mcp_errors::ListMcpErrors>(),
+    entry::<list_mcp_servers::ListMcpServers>(),
+    entry::<list_mcp_tools::ListMcpTools>(),
     entry::<list_traces::ListTraces>(),
     entry::<search_spans::SearchSpans>(),
 ];

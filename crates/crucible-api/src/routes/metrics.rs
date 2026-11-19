@@ -13,11 +13,12 @@ use crucible_api_types::{
     ProblemCode, Saturation, usd_from_nanos,
 };
 use crucible_plan::{
-    Aggregation, DimensionId, Fill, Filter, FilterField, Granularity, MeasureId, MetricsError,
+    Aggregation, CaptureClass, DimensionId, Fill, Filter, FilterField, Granularity, MeasureId,
+    MetricsError, SourceChoice,
     MetricsQuery, Source, SourceSchema, Step, metrics_schema, metrics_shape,
 };
-use crucible_query::{MetricValue, MetricsRequest};
-use crucible_records::{Level, ObservationType, TimeWindow, Timestamp};
+use crucible_query::{McpMetricsRequest, MetricValue, MetricsRequest};
+use crucible_records::{Level, McpSide, ObservationType, TimeWindow, Timestamp};
 use utoipa::OpenApi;
 
 use crate::access::{ApiState, Project};
@@ -181,7 +182,7 @@ fn parse(
         errors.push(field_error(
             "source",
             "invalid",
-            "the sources with metrics are spans and traces",
+            "the sources with metrics are spans, traces and mcp_ops",
         ));
     }
     let mut measures = Vec::new();
@@ -199,7 +200,7 @@ fn parse(
             (_, None) => errors.push(field_error(
                 &format!("measures/{i}/aggregation"),
                 "invalid",
-                "expected sum, p50, p90, p95 or p99",
+                "expected sum, p50, p90, p95, p99 or rate",
             )),
         }
     }
@@ -278,6 +279,50 @@ fn parse(
     Ok((window, query))
 }
 
+/// The side, capture source and caller-fault rule of an `mcp_ops` query (contract 9.5): the side is required
+/// there, and the three apply to no other source.
+fn mcp_options(
+    rid: crucible_records::RequestId,
+    request: &MetricsQueryRequest,
+    source: Source,
+) -> Result<Option<(McpSide, SourceChoice, bool)>, ApiError> {
+    let given = request.side.is_some()
+        || request.capture_source.is_some()
+        || request.include_caller_faults.is_some();
+    if source != Source::McpOps {
+        if given {
+            let message = "side, capture_source and include_caller_faults apply to the mcp_ops source only";
+            return Err(ApiError::validation(
+                rid,
+                vec![field_error("side", "invalid", message)],
+            ));
+        }
+        return Ok(None);
+    }
+    let side = match request.side {
+        Some(wire::McpSideParam::Client) => McpSide::Client,
+        Some(wire::McpSideParam::Server) => McpSide::Server,
+        None => {
+            let message = "the mcp_ops source reads one side: client or server";
+            return Err(ApiError::validation(
+                rid,
+                vec![field_error("side", "required", message)],
+            ));
+        }
+    };
+    let choice = match request.capture_source {
+        None | Some(wire::SourceParam::Auto) => SourceChoice::Auto,
+        Some(wire::SourceParam::Sdk) => SourceChoice::Class(CaptureClass::Sdk),
+        Some(wire::SourceParam::Proxy) => SourceChoice::Class(CaptureClass::Proxy),
+        Some(wire::SourceParam::Otlp) => SourceChoice::Class(CaptureClass::Otlp),
+    };
+    Ok(Some((
+        side,
+        choice,
+        request.include_caller_faults.unwrap_or(false),
+    )))
+}
+
 /// Query metrics
 ///
 /// The series of up to four measures of a source, bucketed in time and split by up to two dimensions, with
@@ -315,9 +360,22 @@ pub(crate) async fn query_metrics(
     })?;
     let request: MetricsQueryRequest = json(rid, &headers, &raw)?;
     let (window, query) = parse(&project, &request)?;
+    let mcp = mcp_options(rid, &request, query.source)?;
     let service = state.service(rid)?;
-    let request = MetricsRequest { window, query };
-    let result = service.metrics(&project.ctx, request.clone()).await;
+    let dimensions = query.dimensions.clone();
+    let result = match mcp {
+        Some((side, source, include_caller_faults)) => {
+            let request = McpMetricsRequest {
+                window,
+                query,
+                side,
+                source,
+                include_caller_faults,
+            };
+            service.mcp_metrics(&project.ctx, request).await
+        }
+        None => service.metrics(&project.ctx, MetricsRequest { window, query }).await,
+    };
     let result = result.map_err(|e| ApiError::query(rid, &e))?;
     let mut s = Saturation::default();
     let series = result
@@ -327,9 +385,7 @@ pub(crate) async fn query_metrics(
             measure: series.measure.as_str().to_owned(),
             aggregation: series.aggregation.as_str().to_owned(),
             unit: unit(series.measure).to_owned(),
-            key: request
-                .query
-                .dimensions
+            key: dimensions
                 .iter()
                 .zip(&series.key)
                 .map(|(dimension, value)| wire::SeriesKey {
