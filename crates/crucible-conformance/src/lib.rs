@@ -22,6 +22,7 @@ mod keep_alive;
 mod m2;
 mod m2_facts;
 mod maintenance;
+mod mcp;
 mod reads;
 pub mod sqliso;
 mod startup;
@@ -340,6 +341,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "ChModel differential: maintenance (2.6)",
         differential::maintenance(&ctx)
+    );
+    row!(
+        "ChModel differential: MCP tables (3.5 to 3.7, 3.10)",
+        mcp::mcp(&ctx)
     );
     if single {
         row!(

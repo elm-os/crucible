@@ -54,6 +54,21 @@ pub enum Mutant {
     /// Collect garbage without regard for what the admission of an unchecked frame relied on.
     #[cfg(feature = "test-mutants")]
     CollectWhatFramesRelyOn,
+    /// Report an invalid-params error on a server-side MCP row as the server's fault (a defect of the
+    /// normalizer's projector, contract 9.2).
+    #[cfg(feature = "test-mutants")]
+    MisclassifyCallerFault,
+    /// Give every `mcp_tool_rollup` partial one capture source, so that rows of different capture sources are
+    /// summed (contract 9.5).
+    #[cfg(feature = "test-mutants")]
+    SumCaptureSources,
+    /// Send the blocks of `mcp_tool_rollup` without their marker row (contract 5.5).
+    #[cfg(feature = "test-mutants")]
+    DropRollupMarker,
+    /// Flag the usage aggregates of a frame after its exact repeats were dropped (a defect of stage B, contract
+    /// 5.3).
+    #[cfg(feature = "test-mutants")]
+    MarkAfterDuplicateDrop,
 }
 
 /// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
@@ -207,4 +222,28 @@ mutant_flags! {
     quarantines_frames_without_copy => FrameQuarantineWithoutCopy,
     counts_aggregate_usage => CountAggregateUsage,
     collects_what_frames_rely_on => CollectWhatFramesRelyOn,
+    sums_capture_sources => SumCaptureSources,
+    drops_rollup_marker => DropRollupMarker,
+}
+
+impl ShipperConfig {
+    /// The seeded defect of the normalizer that this configuration switches on.
+    pub(crate) const fn normalizer_mutant(&self) -> Option<crucible_normalize::Mutant> {
+        #[cfg(feature = "test-mutants")]
+        {
+            match self.mutant {
+                Some(Mutant::MisclassifyCallerFault) => {
+                    Some(crucible_normalize::Mutant::MisclassifyCallerFault)
+                }
+                Some(Mutant::MarkAfterDuplicateDrop) => {
+                    Some(crucible_normalize::Mutant::MarkAfterDuplicateDrop)
+                }
+                _ => None,
+            }
+        }
+        #[cfg(not(feature = "test-mutants"))]
+        {
+            None
+        }
+    }
 }

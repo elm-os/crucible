@@ -277,6 +277,13 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Tool inventory entries beyond the per-frame cap of contract 5.1, which the normalizer did not keep.
+    pub static SHIPPER_INVENTORY_ROWS_DROPPED: CounterDef = CounterDef {
+        name: "crucible_shipper_inventory_rows_dropped_total",
+        help: "Tool inventory entries beyond the per-frame cap, which were not kept.",
+        labels: &[],
+    };
+
     /// Estimated bytes of the rows the shipper holds, tracked against the `shipper.encoded_bytes` budget.
     pub static SHIPPER_ENCODED_BYTES: GaugeDef = GaugeDef {
         name: "crucible_shipper_encoded_bytes",
@@ -368,6 +375,11 @@ pub mod registry {
             (
                 SHIPPER_MIXED_VERSION_BATCHES.name,
                 SHIPPER_MIXED_VERSION_BATCHES.labels,
+                &[],
+            ),
+            (
+                SHIPPER_INVENTORY_ROWS_DROPPED.name,
+                SHIPPER_INVENTORY_ROWS_DROPPED.labels,
                 &[],
             ),
             (

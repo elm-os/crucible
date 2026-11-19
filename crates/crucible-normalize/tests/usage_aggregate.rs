@@ -8,7 +8,7 @@
 mod common;
 
 use common::{ctx, frame, int, request, s, span_with};
-use crucible_normalize::{StageB, normalize, row_digest};
+use crucible_normalize::{IdentityCtx, StageB, normalize, row_digest};
 use crucible_records::Lsn;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use proptest::collection::vec;
@@ -34,7 +34,7 @@ fn admit(stage_b: &mut StageB, first_lsn: u64, frames: &[Vec<Span>]) -> Vec<Vec<
             let mut out = normalize(&f, &ctx()).unwrap();
             // Stage A leaves the flag unset, and the flag does not enter the digest.
             assert!(out.spans.iter().all(|r| !r.core.usage_aggregate));
-            stage_b.admit(&mut out).unwrap();
+            stage_b.admit(&mut out, &IdentityCtx::Suppressed).unwrap();
             for record in &out.spans {
                 assert_eq!(record.core.row_digest, row_digest(record));
             }

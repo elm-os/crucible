@@ -706,6 +706,7 @@ pub(crate) fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.quarantined += s.quarantined;
     total.quarantined_frames += s.quarantined_frames;
     total.mixed_version_batches += s.mixed_version_batches;
+    total.inventory_dropped += s.inventory_dropped;
     total.encoded_bytes_peak = total.encoded_bytes_peak.max(s.encoded_bytes_peak);
     total.largest_frame_bytes = total.largest_frame_bytes.max(s.largest_frame_bytes);
 }
@@ -1064,6 +1065,7 @@ impl Run<'_> {
         let hooks = Hooks {
             barriers: barriers.clone(),
             recent: recent.clone(),
+            ..Hooks::default()
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let config = self.plan().config.clone();

@@ -30,6 +30,11 @@
 //! keeps the support of the frame it started in, and an id with several marks keeps the highest. The set
 //! forgets an id whose support is below the first retained LSN, evicts the id with the lowest support first,
 //! and a span flagged on a support below its own frame relies on that LSN.
+//!
+//! **MCP operations.** The operation and the tool inventory entries of a span follow their span: stage B drops
+//! them with an exact repeat, so the window decides alike for every table (invariant I2). It then hashes the user
+//! subject of each remaining operation with the salt of the frame's project and discards the subject (contract
+//! 9.3). That needs no state: the hash is a function of the frame and the salt, which never changes.
 
 use core::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, VecDeque};
@@ -37,7 +42,7 @@ use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 use crucible_records::{DetMap, DetSet, Lsn, SpanCore, SpanId, det_map, det_set};
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::NormalizedFrame;
+use crate::{IdentityCtx, NormalizedFrame};
 
 /// Keys the duplicate window holds (contract 5.3).
 pub const DUPLICATE_WINDOW_KEYS: usize = 4_000_000;
@@ -283,6 +288,9 @@ pub struct StageB {
     first_seen: Sightings<()>,
     usage_parents: UsageParents,
     last: Option<Lsn>,
+    /// The seeded defect that flags usage aggregates after the duplicate drop; never set outside the
+    /// simulation suite.
+    marks_after_drop: bool,
 }
 
 impl Default for StageB {
@@ -300,7 +308,16 @@ impl StageB {
             first_seen: Sightings::new(first_seen_traces),
             usage_parents: UsageParents::new(USAGE_PARENT_SPANS),
             last: None,
+            marks_after_drop: false,
         }
+    }
+
+    /// The state with a seeded defect switched on.
+    #[cfg(feature = "test-mutants")]
+    #[must_use]
+    pub fn with_mutant(mut self, mutant: Option<crate::Mutant>) -> Self {
+        self.marks_after_drop = mutant == Some(crate::Mutant::MarkAfterDuplicateDrop);
+        self
     }
 
     /// The state with another bound on the usage descendant set.
@@ -402,9 +419,15 @@ impl StageB {
     }
 
     /// Admits the next frame of the LSN stream: records its usage parents and flags its usage aggregates, drops
-    /// its exact repeats in place and marks its provisional heads.
+    /// its exact repeats in place, with their MCP operations and inventory entries, marks its provisional heads,
+    /// and hashes the user subjects of its MCP operations with what `identity` knows of the project's salt
+    /// (contract 9.3).
     /// A frame whose LSN is not above the previous one is refused and leaves the state unchanged.
-    pub fn admit(&mut self, frame: &mut NormalizedFrame) -> Result<Admission, OutOfOrder> {
+    pub fn admit(
+        &mut self,
+        frame: &mut NormalizedFrame,
+        identity: &IdentityCtx<'_>,
+    ) -> Result<Admission, OutOfOrder> {
         if let Some(last) = self.last.filter(|&last| frame.lsn <= last) {
             return Err(OutOfOrder {
                 last,
@@ -418,7 +441,12 @@ impl StageB {
             .iter()
             .map(|span| span_key(&span.core))
             .collect();
-        let supports = self.mark_usage_aggregates(frame, &keys);
+        let late = self.marks_after_drop;
+        let supports = if late {
+            None
+        } else {
+            self.mark_usage_aggregates(frame, &keys)
+        };
         let mut relies_on: Option<Lsn> = None;
         let mut rely = |at: Lsn| {
             if at < lsn {
@@ -469,6 +497,45 @@ impl StageB {
             ordinal = ordinal.saturating_add(1);
             kept
         });
+        if late {
+            let kept: Vec<u64> = frame
+                .spans
+                .iter()
+                .map(|span| span_key(&span.core))
+                .collect();
+            drop(self.mark_usage_aggregates(frame, &kept));
+        }
+        if !frame.mcp_ops.is_empty() || !frame.inventory.is_empty() {
+            // Where each span of stage A stands among the spans that remain.
+            const DROPPED: u32 = u32::MAX;
+            let mut position = vec![DROPPED; ordinal as usize];
+            for (at, &before) in stage_a_ordinals.iter().enumerate() {
+                if let Some(slot) = position.get_mut(before as usize) {
+                    *slot = u32::try_from(at).unwrap_or(DROPPED);
+                }
+            }
+            let now = |span: u32| {
+                position
+                    .get(span as usize)
+                    .copied()
+                    .filter(|&at| at != DROPPED)
+            };
+            frame.mcp_ops.retain_mut(|op| {
+                let Some(at) = now(op.span) else {
+                    return false;
+                };
+                op.span = at;
+                op.seal_identity(identity);
+                true
+            });
+            frame.inventory.retain_mut(|entry| {
+                let Some(at) = now(entry.span) else {
+                    return false;
+                };
+                entry.span = at;
+                true
+            });
+        }
         let mut first: Vec<(u64, usize)> = Vec::new();
         let mut noted: DetSet<u64> = det_set();
         let mut rooted: DetSet<u64> = det_set();
@@ -531,6 +598,8 @@ mod tests {
         NormalizedFrame {
             lsn: Lsn::new(lsn),
             spans: spans.iter().map(span).collect(),
+            mcp_ops: Vec::new(),
+            inventory: Vec::new(),
             summary: FrameSummary::default(),
         }
     }
@@ -634,7 +703,7 @@ mod tests {
             for (n, (spans, floor)) in frames.iter().enumerate() {
                 let lsn = n as u64 + 1;
                 let mut f = frame(lsn, spans);
-                let admission = stage.admit(&mut f).unwrap();
+                let admission = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap();
                 let (kept, heads, relies_on) = oracle.admit(lsn, spans);
                 let expected: Vec<SpanRecord> = kept.iter().map(|&i| span(&spans[i])).collect();
                 prop_assert_eq!(&f.spans, &expected);
@@ -683,7 +752,7 @@ mod tests {
                     .zip(range)
                     .map(|(spans, n)| {
                         let mut f = frame(n as u64 + 1, spans);
-                        let a = stage.admit(&mut f).unwrap();
+                        let a = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap();
                         (f.spans, a)
                     })
                     .collect()
@@ -714,7 +783,7 @@ mod tests {
             let floor = floors.last().copied().unwrap_or(1);
             let mut live = StageB::new(window_cap, seen_cap);
             for (n, spans) in frames.iter().enumerate() {
-                live.admit(&mut frame(n as u64 + 1, spans)).unwrap();
+                live.admit(&mut frame(n as u64 + 1, spans), &IdentityCtx::Suppressed).unwrap();
                 for at in floors.iter().filter(|&&at| at == n + 1) {
                     live.forget_below(Lsn::new(*at as u64));
                 }
@@ -722,14 +791,14 @@ mod tests {
             live.forget_below(Lsn::new(floor as u64));
             let mut rebuilt = StageB::new(window_cap, seen_cap);
             for (n, spans) in frames.iter().enumerate().skip(floor - 1) {
-                rebuilt.admit(&mut frame(n as u64 + 1, spans)).unwrap();
+                rebuilt.admit(&mut frame(n as u64 + 1, spans), &IdentityCtx::Suppressed).unwrap();
             }
             prop_assert_eq!(live.window.snapshot(), rebuilt.window.snapshot());
             prop_assert_eq!(live.first_seen.snapshot(), rebuilt.first_seen.snapshot());
             for (n, spans) in rest.iter().enumerate() {
                 let lsn = (frames.len() + n) as u64 + 1;
                 let (mut a, mut b) = (frame(lsn, spans), frame(lsn, spans));
-                prop_assert_eq!(live.admit(&mut a).unwrap(), rebuilt.admit(&mut b).unwrap());
+                prop_assert_eq!(live.admit(&mut a, &IdentityCtx::Suppressed).unwrap(), rebuilt.admit(&mut b, &IdentityCtx::Suppressed).unwrap());
                 prop_assert_eq!(a.spans, b.spans);
             }
         }
@@ -753,7 +822,7 @@ mod tests {
                     .skip(from)
                     .map(|(n, spans)| {
                         let mut f = frame(n as u64 + 1, spans);
-                        let a = stage.admit(&mut f).unwrap();
+                        let a = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap();
                         (f.spans, a)
                     })
                     .collect()
@@ -841,7 +910,7 @@ mod tests {
             for (n, (spans, floor)) in frames.iter().enumerate() {
                 let lsn = n as u64 + 1;
                 let mut f = usage_frame(lsn, spans);
-                let ordinals = stage.admit(&mut f).unwrap().stage_a_ordinals;
+                let ordinals = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap().stage_a_ordinals;
                 usage_model(&mut supports, lsn, spans);
                 for (record, &at) in f.spans.iter().zip(&ordinals) {
                     let ((p, t, s, ..), ..) = spans[at as usize];
@@ -879,7 +948,7 @@ mod tests {
             let fresh = || StageB::new(window_cap, seen_cap).with_usage_parents(usage_cap);
             let mut live = fresh();
             for (n, spans) in frames.iter().enumerate() {
-                live.admit(&mut usage_frame(n as u64 + 1, spans)).unwrap();
+                live.admit(&mut usage_frame(n as u64 + 1, spans), &IdentityCtx::Suppressed).unwrap();
                 for at in floors.iter().filter(|&&at| at == n + 1) {
                     live.forget_below(Lsn::new(*at as u64));
                 }
@@ -887,7 +956,7 @@ mod tests {
             live.forget_below(Lsn::new(floor as u64));
             let mut rebuilt = fresh();
             for (n, spans) in frames.iter().enumerate().skip(floor - 1) {
-                rebuilt.admit(&mut usage_frame(n as u64 + 1, spans)).unwrap();
+                rebuilt.admit(&mut usage_frame(n as u64 + 1, spans), &IdentityCtx::Suppressed).unwrap();
             }
             prop_assert_eq!(live.usage_parents.snapshot(), rebuilt.usage_parents.snapshot());
             prop_assert_eq!(live.window.snapshot(), rebuilt.window.snapshot());
@@ -895,7 +964,7 @@ mod tests {
             for (n, spans) in rest.iter().enumerate() {
                 let lsn = (frames.len() + n) as u64 + 1;
                 let (mut a, mut b) = (usage_frame(lsn, spans), usage_frame(lsn, spans));
-                prop_assert_eq!(live.admit(&mut a).unwrap(), rebuilt.admit(&mut b).unwrap());
+                prop_assert_eq!(live.admit(&mut a, &IdentityCtx::Suppressed).unwrap(), rebuilt.admit(&mut b, &IdentityCtx::Suppressed).unwrap());
                 prop_assert_eq!(a.spans, b.spans);
             }
         }
@@ -921,7 +990,7 @@ mod tests {
                     .skip(from)
                     .map(|(n, spans)| {
                         let mut f = usage_frame(n as u64 + 1, spans);
-                        let a = stage.admit(&mut f).unwrap();
+                        let a = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap();
                         (f.spans, a)
                     })
                     .collect()
@@ -949,7 +1018,7 @@ mod tests {
         let g: UsageDesc = ((0, 0, 1, 0, false), None, false);
         let admit = |stage: &mut StageB, lsn: u64, desc: UsageDesc| {
             let mut f = usage_frame(lsn, &[desc]);
-            let admission = stage.admit(&mut f).unwrap();
+            let admission = stage.admit(&mut f, &IdentityCtx::Suppressed).unwrap();
             (f.spans[0].core.usage_aggregate, admission.relies_on)
         };
         let mut stage = StageB::default();
@@ -974,15 +1043,27 @@ mod tests {
         let mut stage = StageB::default();
         let a = (0, 0, 0, 1, true);
         let mut f1 = frame(1, &[a, a]);
-        assert_eq!(stage.admit(&mut f1).unwrap().duplicates, 1);
+        assert_eq!(
+            stage
+                .admit(&mut f1, &IdentityCtx::Suppressed)
+                .unwrap()
+                .duplicates,
+            1
+        );
         let mut f2 = frame(5, &[(0, 0, 0, 2, true), a]);
-        let admission = stage.admit(&mut f2).unwrap();
+        let admission = stage.admit(&mut f2, &IdentityCtx::Suppressed).unwrap();
         // The changed repeat is kept and becomes the remembered row, so the old digest is new again.
         assert_eq!(admission.duplicates, 0);
         assert_eq!(f2.spans.len(), 2);
         // The same span id in another project is another key.
         let mut f3 = frame(6, &[(1, 0, 0, 1, true)]);
-        assert_eq!(stage.admit(&mut f3).unwrap().duplicates, 0);
+        assert_eq!(
+            stage
+                .admit(&mut f3, &IdentityCtx::Suppressed)
+                .unwrap()
+                .duplicates,
+            0
+        );
     }
 
     #[test]
@@ -998,18 +1079,35 @@ mod tests {
                 (0, 1, 4, 0, false),
             ],
         );
-        assert_eq!(stage.admit(&mut f1).unwrap().provisional_heads, vec![1]);
+        assert_eq!(
+            stage
+                .admit(&mut f1, &IdentityCtx::Suppressed)
+                .unwrap()
+                .provisional_heads,
+            vec![1]
+        );
         // Trace 1 is no longer new, and its late root needs no provisional head.
         let mut f2 = frame(2, &[(0, 1, 5, 0, false), (0, 1, 6, 0, true)]);
-        assert!(stage.admit(&mut f2).unwrap().provisional_heads.is_empty());
+        assert!(
+            stage
+                .admit(&mut f2, &IdentityCtx::Suppressed)
+                .unwrap()
+                .provisional_heads
+                .is_empty()
+        );
     }
 
     #[test]
     fn frames_must_arrive_in_lsn_order() {
         let mut stage = StageB::default();
-        stage.admit(&mut frame(3, &[])).unwrap();
+        stage
+            .admit(&mut frame(3, &[]), &IdentityCtx::Suppressed)
+            .unwrap();
         let err = stage
-            .admit(&mut frame(3, &[(0, 0, 0, 0, true)]))
+            .admit(
+                &mut frame(3, &[(0, 0, 0, 0, true)]),
+                &IdentityCtx::Suppressed,
+            )
             .unwrap_err();
         assert_eq!(
             err,
@@ -1020,7 +1118,17 @@ mod tests {
         );
         // The refused frame left the state as it was.
         let mut f = frame(4, &[(0, 0, 0, 0, true)]);
-        assert_eq!(stage.admit(&mut f).unwrap().duplicates, 0);
-        assert!(stage.admit(&mut frame(2, &[])).is_err());
+        assert_eq!(
+            stage
+                .admit(&mut f, &IdentityCtx::Suppressed)
+                .unwrap()
+                .duplicates,
+            0
+        );
+        assert!(
+            stage
+                .admit(&mut frame(2, &[]), &IdentityCtx::Suppressed)
+                .is_err()
+        );
     }
 }

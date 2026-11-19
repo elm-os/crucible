@@ -9,7 +9,9 @@
 //! - **Consumption.** An attribute leaves the residual `attributes` or `resource_attributes` when at least one
 //!   winning source read its whole value. A source with a member path never consumes. A family decoder (indexed,
 //!   prefix) consumes the keys it used; keys it skipped stay. Losing candidates, values that do not decode and
-//!   keys no table knows stay, so no attribute is dropped. Events are never consumed.
+//!   keys no table knows stay. Two sets of keys leave the residual whatever read them: the keys that must never
+//!   be stored (contract 3.5), on every span, and on an MCP operation the keys its projector consumes (contract
+//!   9.1). No other attribute is dropped. Events are never consumed.
 //! - **Maps** (`metadata`, `trace_metadata`, `model_parameters`) merge every source that decodes: per member name
 //!   the lowest rank wins, then the first occurrence. Members are written in rank order, then wire order. Members
 //!   beyond a metadata map's key cap are not taken and stay in the residual attributes.
@@ -36,7 +38,7 @@ use crucible_compat::{
 use crucible_otlp::{AnyValueView, SpanView};
 use crucible_records::{
     IoShape, Level, NanoUsd, ObservationType, PayloadField, Timestamp, TracePublic, caps,
-    det_set_with_capacity, truncate_str,
+    det_set_with_capacity, mcp_keys, truncate_str,
 };
 use smallvec::SmallVec;
 
@@ -1078,14 +1080,28 @@ pub(crate) fn confidence(
         .max()
 }
 
-/// Maps one span with the layers of `index`, `chosen` being the table of the span's dialect.
+/// What the pass over a span's attributes saw of the MCP wire contract (contract 9.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Marks {
+    /// The span carries `mcp.method.name`: it is an MCP operation.
+    pub(crate) mcp: bool,
+    /// The span carries a tool list.
+    pub(crate) tools: bool,
+}
+
+/// Maps one span with the layers of `index`, `chosen` being the table of the span's dialect. Returns whether the
+/// span is an MCP operation or carries a tool list, which the same pass over its attributes sees.
+///
+/// The residual `attributes` hold what no source consumed, less the keys that must never be stored
+/// ([`mcp_keys::never_stored`]) and, on an MCP operation, the keys its projector consumes (contract 9.1).
 pub(crate) fn map_span<'a>(
     index: &Index,
     chosen: &'static DialectTable,
     ctx: &MapCtx<'_>,
     span: &SpanView<'a>,
     out: &mut SpanDraft,
-) {
+) -> Marks {
+    let mut marks = Marks::default();
     let mut mapping = Mapping {
         index,
         chosen,
@@ -1112,6 +1128,8 @@ pub(crate) fn map_span<'a>(
     }
     for (at, (key, value)) in span.attributes().enumerate() {
         let at = at as u32;
+        marks.mcp |= key == mcp_keys::METHOD;
+        marks.tools |= key == mcp_keys::TOOLS;
         index.span(key, |hit| match hit {
             Hit::Source(hit) => mapping.source(hit, Origin::Span(at), key, &value),
             Hit::Type { priority, rule } => mapping.type_rule(*priority, rule, at, &value),
@@ -1434,16 +1452,21 @@ pub(crate) fn map_span<'a>(
         span.attributes()
             .enumerate()
             .filter(|(i, _)| !span_used.get(*i))
-            .map(|(_, pair)| pair),
+            .map(|(_, pair)| pair)
+            .filter(|(key, _)| {
+                !mcp_keys::never_stored(key) && !(marks.mcp && mcp_keys::consumed(key))
+            }),
     );
     payload.resource_attributes = json::object_or_empty(
         span.resource()
             .attributes()
             .enumerate()
             .filter(|(i, _)| !resource_used.get(*i))
-            .map(|(_, pair)| pair),
+            .map(|(_, pair)| pair)
+            .filter(|(key, _)| !mcp_keys::never_stored(key)),
     );
     payload.events = json::events(span.events());
+    marks
 }
 
 #[cfg(test)]
