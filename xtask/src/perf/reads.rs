@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::gate::{Build, LABEL, Power, thousands};
-use super::rig::{self, ArmKey, Session};
+use super::rig::{self, ArmKey, Context, Session};
 use super::{RigName, create_dir, now, repository_root, shown, write};
 
 /// The `schema` value of `reads.json`.
@@ -218,6 +218,10 @@ pub struct Fresh {
     pub listed: u64,
     /// From the acknowledgement to the first list that names the trace.
     pub ack_to_list_us: Percentiles,
+    /// Lists per listed probe: the first list leaves at the acknowledgement.
+    pub lists_per_probe: Percentiles,
+    /// Each list's round trip, so that `ack_to_list_us` reads as lists times their cost.
+    pub list_us: Percentiles,
 }
 
 /// The loaded dataset.
@@ -254,6 +258,8 @@ pub struct LaneReport {
     pub ok: u64,
     /// Intended send time to complete answer, over `ok` answers.
     pub latency_us: Percentiles,
+    /// `latency_us` over the reads due in the lane's first half, and in its second.
+    pub latency_halves_us: [Percentiles; 2],
     /// The class's requests that Crucible counted during the lane.
     pub counted: u64,
     /// Store reads per request, from `crucible_api_store_reads`.
@@ -264,6 +270,8 @@ pub struct LaneReport {
     pub connections_opened: u64,
     /// ClickHouse merges running at the lane's start.
     pub merges_at_start: u64,
+    /// What else the Docker host did during the lane.
+    pub context: Option<Context>,
     /// Why the lane's latency does not stand, or `None`.
     pub invalid: Option<String>,
 }
@@ -446,12 +454,15 @@ fn bench(
         "fresh-empty",
     )?;
     println!(
-        "perf reads: ack to API on the empty store: p50 {} us, p95 {} us, p99 {} us ({} of {} listed)",
+        "perf reads: ack to API on the empty store: p50 {} us, p95 {} us, p99 {} us ({} of {} listed); {} lists \
+         per probe (p50), each {} us (p50)",
         thousands(fresh_empty.ack_to_list_us.p50 as f64),
         thousands(fresh_empty.ack_to_list_us.p95 as f64),
         thousands(fresh_empty.ack_to_list_us.p99 as f64),
         fresh_empty.listed,
-        fresh_empty.probes
+        fresh_empty.probes,
+        fresh_empty.lists_per_probe.p50,
+        thousands(fresh_empty.list_us.p50 as f64)
     );
 
     // The load: one chunk per day of the window, oldest first, each chunk's spans spread over its day in time
@@ -587,7 +598,10 @@ fn bench(
         for (_, path) in &reports {
             command.extend(["--dataset".to_owned(), path.clone()]);
         }
-        let text = session.loadgen_exec(&command, Duration::from_secs(120 + 3 * args.seconds))?;
+        let (text, context) = session.observed(|| {
+            session.loadgen_exec(&command, Duration::from_secs(120 + 3 * args.seconds))
+        })?;
+        let text = text?;
         let after = session.metrics()?;
         write(
             &dir.join(format!("metrics/{}-after.txt", lane.name)),
@@ -596,17 +610,22 @@ fn bench(
         let name = format!("runs/{}.json", lane.name);
         write(&dir.join(&name), &text)?;
         let lane_report = judge_lane(lane, &parse(&text, &name)?, &before, &after, name);
+        let [first, second] = lane_report.latency_halves_us;
         println!(
-            "perf reads: {}: p50 {} us, p95 {} us, p99 {} us, {} of {} ok, {} store reads per request{}",
+            "perf reads: {}: p50 {} us, p95 {} us, p99 {} us (p95 {} us in the first half, {} us in the second), \
+             {} of {} ok, {} store reads per request, {:.1} other CPUs busy{}",
             lane.name,
             thousands(lane_report.latency_us.p50 as f64),
             thousands(lane_report.latency_us.p95 as f64),
             thousands(lane_report.latency_us.p99 as f64),
+            thousands(first.p95 as f64),
+            thousands(second.p95 as f64),
             lane_report.ok,
             lane_report.sent,
             lane_report
                 .store_reads_per_request
                 .map_or_else(|| "n/a".to_owned(), |r| format!("{r:.2}")),
+            context.other_cpus_busy,
             lane_report
                 .invalid
                 .as_ref()
@@ -614,6 +633,7 @@ fn bench(
         );
         lanes.push(LaneReport {
             merges_at_start,
+            context: Some(context),
             ..lane_report
         });
     }
@@ -671,11 +691,16 @@ fn judge_lane(
         sent,
         ok,
         latency_us: percentiles(&class["latency_us"]),
+        latency_halves_us: [
+            percentiles(&class["latency_halves_us"][0]),
+            percentiles(&class["latency_halves_us"][1]),
+        ],
         counted,
         store_reads_per_request: (counted > 0).then(|| reads / counted as f64),
         barrier_wait_mean_us: (waits > 0.0).then(|| waited / waits),
         connections_opened: connections,
         merges_at_start: 0,
+        context: None,
         invalid: (!reasons.is_empty()).then(|| reasons.join("; ")),
     }
 }
@@ -714,6 +739,8 @@ fn fresh(
         probes: report["probes"].as_u64().unwrap_or(0),
         listed: report["listed"].as_u64().unwrap_or(0),
         ack_to_list_us: percentiles(&report["ack_to_list_us"]),
+        lists_per_probe: percentiles(&report["lists_per_probe"]),
+        list_us: percentiles(&report["list_us"]),
     })
 }
 
@@ -772,7 +799,8 @@ pub fn summary(report: &ReadsReport) -> String {
     let _ = writeln!(
         out,
         "\n## Ack to API\n\nFrom the acknowledgement of one small trace to the first list of traces that names it, \
-         polled every 2 ms.\n\n| Store | Listed | p50 ms | p95 ms | p99 ms |\n|---|---|---|---|---|"
+         polled every 2 ms; the first list leaves at the acknowledgement.\n\n| Store | Listed | p50 ms | p95 ms | \
+         p99 ms | Lists per probe p50, p99 | List round trip p50, p95 ms |\n|---|---|---|---|---|---|---|"
     );
     for (store, fresh) in [
         ("empty", &report.fresh_empty),
@@ -781,36 +809,48 @@ pub fn summary(report: &ReadsReport) -> String {
         let p = fresh.ack_to_list_us;
         let _ = writeln!(
             out,
-            "| {store} | {} of {} | {} | {} | {} |",
+            "| {store} | {} of {} | {} | {} | {} | {}, {} | {}, {} |",
             fresh.listed,
             fresh.probes,
             ms(p.p50),
             ms(p.p95),
-            ms(p.p99)
+            ms(p.p99),
+            fresh.lists_per_probe.p50,
+            fresh.lists_per_probe.p99,
+            ms(fresh.list_us.p50),
+            ms(fresh.list_us.p95)
         );
     }
     let _ = writeln!(
         out,
-        "\n## Reads\n\n| Lane | OK of sent | p50 ms | p95 ms | p99 ms | Store reads per request | Barrier wait mean \
-         ms | Connections opened | Merges at start | Valid |\n|---|---|---|---|---|---|---|---|---|---|"
+        "\n## Reads\n\nOther jobs' containers have no cpuset, so they can also run on the rig's CPUs.\n\n| Lane | OK of \
+         sent | p50 ms | p95 ms | p99 ms | p95 ms by half | Store reads per request | Barrier wait mean ms | \
+         Connections opened | Merges at start | Other CPUs busy | Valid |\n|---|---|---|---|---|---|---|---|---|---|\
+         ---|---|"
     );
     for lane in &report.lanes {
         let p = lane.latency_us;
+        let [first, second] = lane.latency_halves_us;
         let _ = writeln!(
             out,
-            "| {} | {} of {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} of {} | {} | {} | {} | {}, {} | {} | {} | {} | {} | {} | {} |",
             lane.name,
             lane.ok,
             lane.sent,
             ms(p.p50),
             ms(p.p95),
             ms(p.p99),
+            ms(first.p95),
+            ms(second.p95),
             lane.store_reads_per_request
                 .map_or_else(|| "n/a".to_owned(), |r| format!("{r:.2}")),
             lane.barrier_wait_mean_us
                 .map_or_else(|| "n/a".to_owned(), |us| format!("{:.2}", us / 1000.0)),
             lane.connections_opened,
             lane.merges_at_start,
+            lane.context
+                .as_ref()
+                .map_or_else(|| "n/a".to_owned(), |c| format!("{:.1}", c.other_cpus_busy)),
             lane.invalid.as_deref().unwrap_or("yes")
         );
     }

@@ -1244,7 +1244,6 @@ impl<'r> Session<'r> {
         tag: &str,
     ) -> Result<ArmOutput, String> {
         let key = self.up(image, dir, tag)?;
-        let client = self.client()?;
         let (clickhouse, postgres, crucible) = (
             self.name("clickhouse"),
             self.name("postgres"),
@@ -1270,28 +1269,7 @@ impl<'r> Session<'r> {
             0
         };
         let (rps, secs) = self.rig.schedule(kind);
-        let others = self.others();
-        let before = self.host_sample(client);
-        let started_at = super::now().0;
-        let report = self.loadgen(&target, &key, lane, rps, secs);
-        let finished_at = super::now().0;
-        let after = self.host_sample(client);
-        let (rig_cpus_busy, other_cpus_busy) =
-            busy_cores(&before.cpus, &after.cpus, &self.rig.cpus());
-        let context = Context {
-            started_at,
-            finished_at,
-            rig_cpus_busy,
-            other_cpus_busy,
-            load_before: before.load,
-            load_after: after.load,
-            disk_busy: disk_busy(
-                &before.disks,
-                &after.disks,
-                after.at.saturating_duration_since(before.at),
-            ),
-            others,
-        };
+        let (report, context) = self.observed(|| self.loadgen(&target, &key, lane, rps, secs))?;
         let stored = match &report {
             Ok(report) if kind.end_to_end() => Some(self.check_store(&key, report, warmed)),
             _ => None,
@@ -1462,6 +1440,34 @@ impl<'r> Session<'r> {
 
     /// The host's CPU ticks and 1-minute load average, read in the load generator's container: neither file
     /// is namespaced, so the container sees the Docker host's. Empty when the read fails.
+    /// Runs `measurement` and records what else the Docker host did meanwhile.
+    pub fn observed<T>(&self, measurement: impl FnOnce() -> T) -> Result<(T, Context), String> {
+        let client = self.client()?;
+        let others = self.others();
+        let before = self.host_sample(client);
+        let started_at = super::now().0;
+        let value = measurement();
+        let finished_at = super::now().0;
+        let after = self.host_sample(client);
+        let (rig_cpus_busy, other_cpus_busy) =
+            busy_cores(&before.cpus, &after.cpus, &self.rig.cpus());
+        let context = Context {
+            started_at,
+            finished_at,
+            rig_cpus_busy,
+            other_cpus_busy,
+            load_before: before.load,
+            load_after: after.load,
+            disk_busy: disk_busy(
+                &before.disks,
+                &after.disks,
+                after.at.saturating_duration_since(before.at),
+            ),
+            others,
+        };
+        Ok((value, context))
+    }
+
     fn host_sample(&self, client: &str) -> HostSample {
         let script = "cat /proc/stat; echo ---; cat /proc/loadavg; echo ---; cat /proc/diskstats";
         let text = docker(["exec", client, "sh", "-c", script]).unwrap_or_default();

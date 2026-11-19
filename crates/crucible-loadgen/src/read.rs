@@ -362,6 +362,9 @@ pub struct ClassReport {
     pub errors: ErrorCounts,
     /// Intended send time to complete answer, over `ok` answers.
     pub latency_us: Summary,
+    /// `latency_us` over the reads due in the schedule's first half, and over those due in its second: halves
+    /// that differ show a server that was still settling or a disturbance, not a steady state.
+    pub latency_halves_us: [Summary; 2],
     /// Actual send time to complete answer, over `ok` answers.
     pub service_time_us: Summary,
 }
@@ -413,6 +416,7 @@ pub struct ReadSchedule {
 #[derive(Debug)]
 struct ClassStats {
     latency: Histogram<u64>,
+    halves: [Histogram<u64>; 2],
     service: Histogram<u64>,
     statuses: BTreeMap<u16, u64>,
     errors: ErrorCounts,
@@ -426,6 +430,7 @@ impl ClassStats {
         let histogram = || Histogram::new_with_bounds(1, HISTOGRAM_MAX_US, 3);
         Ok(Self {
             latency: histogram()?,
+            halves: [histogram()?, histogram()?],
             service: histogram()?,
             statuses: BTreeMap::new(),
             errors: ErrorCounts::default(),
@@ -598,6 +603,7 @@ pub async fn read(
                 status_counts: stats.statuses.clone(),
                 errors: stats.errors,
                 latency_us: Summary::of(&stats.latency),
+                latency_halves_us: [Summary::of(&stats.halves[0]), Summary::of(&stats.halves[1])],
                 service_time_us: Summary::of(&stats.service),
             })
             .collect(),
@@ -697,9 +703,11 @@ async fn read_worker(
                 match ok {
                     Some(true) => {
                         class_stats.ok += 1;
-                        class_stats
-                            .latency
-                            .saturating_record(micros(done.saturating_duration_since(intended)));
+                        let latency = micros(done.saturating_duration_since(intended));
+                        class_stats.latency.saturating_record(latency);
+                        let half = config.duration.as_nanos() / 2;
+                        class_stats.halves[usize::from(u128::from(offset) >= half)]
+                            .saturating_record(latency);
                         class_stats
                             .service
                             .saturating_record(micros(done.saturating_duration_since(sent_at)));
@@ -911,6 +919,8 @@ pub struct FreshReport {
     pub ack_to_list_us: Summary,
     /// Lists of the traces per listed probe.
     pub lists_per_probe: Summary,
+    /// Each list's round trip, from sending it to its complete answer, over the lists answered 200.
+    pub list_us: Summary,
     /// Probes whose ingest request failed or was not answered 200.
     pub ingest_errors: u64,
     /// Lists that failed or were not answered 200.
@@ -947,7 +957,8 @@ pub async fn fresh(env: &Env, config: &FreshConfig) -> Result<FreshReport, ReadE
     );
     let histogram =
         || Histogram::<u64>::new_with_bounds(1, HISTOGRAM_MAX_US, 3).map_err(RunError::from);
-    let (mut ack, mut listed_after, mut lists) = (histogram()?, histogram()?, histogram()?);
+    let (mut ack, mut listed_after, mut lists, mut round_trips) =
+        (histogram()?, histogram()?, histogram()?, histogram()?);
     let (mut ingest_conn, mut api_conn) = (None, None);
     let (mut listed, mut ingest_errors, mut list_errors, mut missing) = (0, 0, 0, 0);
     let started_at = env.clock.wall_now();
@@ -998,11 +1009,15 @@ pub async fn fresh(env: &Env, config: &FreshConfig) -> Result<FreshReport, ReadE
             match send(env, config.api, config.timeout, &mut api_conn, get).await {
                 Delivery::Answered {
                     status: 200,
+                    sent_at,
                     done,
                     body,
-                    ..
-                } if contains(&body, trace.as_bytes()) => break Some(done),
-                Delivery::Answered { status: 200, .. } => {}
+                } => {
+                    round_trips.saturating_record(micros(done.saturating_duration_since(sent_at)));
+                    if contains(&body, trace.as_bytes()) {
+                        break Some(done);
+                    }
+                }
                 _ => list_errors += 1,
             }
             if env.clock.now().saturating_duration_since(acked) > config.timeout {
@@ -1029,6 +1044,7 @@ pub async fn fresh(env: &Env, config: &FreshConfig) -> Result<FreshReport, ReadE
         ack_us: Summary::of(&ack),
         ack_to_list_us: Summary::of(&listed_after),
         lists_per_probe: Summary::of(&lists),
+        list_us: Summary::of(&round_trips),
         ingest_errors,
         list_errors,
         missing,

@@ -575,10 +575,12 @@ tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-sp
 | `--lanes` | every lane | Only these lanes, comma-separated |
 
 The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
-`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span, both probes and every lane
-with its percentiles, store reads per request, mean barrier wait, connections opened, ClickHouse merges at its
-start and why it is invalid), `summary.md`, the generator's reports under `runs/` and `dataset/`, and Crucible's
-metrics before and after each lane under `metrics/`.
+`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span, both probes with their lists
+per probe and list round trips, and every lane with its percentiles and its halves' percentiles, store reads per
+request, mean barrier wait, connections opened, ClickHouse merges at its start, what else the Docker host did
+during it (busy cores on the rig's CPUs and on the others, the load average, the busiest disk's busy share and
+the other containers, as the gate records per arm) and why it is invalid), `summary.md`, the generator's reports
+under `runs/` and `dataset/`, and Crucible's metrics before and after each lane under `metrics/`.
 
 ### Per-request counters
 
@@ -611,12 +613,15 @@ of its traces and one of its spans, as a function of the seed and the request's 
 
 The report (`crucible-loadgen.read.v1`) has `schedule` (`rate`, `duration_s`, `think`, `requests`,
 `concurrency`, `timeout_ms`, `window_s`), `dataset_runs` and `dataset_requests`, and per class `sent`, `ok`,
-`empty`, `status_counts`, `errors`, `latency_us` and `service_time_us` over the `ok` answers; and `send_lag_us`
+`empty`, `status_counts`, `errors`, `latency_us` and `service_time_us` over the `ok` answers, and
+`latency_halves_us`: `latency_us` over the reads due in the schedule's first half and over those due in its
+second, so a server that was still settling, or a disturbance, shows as halves that differ; and `send_lag_us`
 and `elapsed_s`.
 
 `fresh`'s report (`crucible-loadgen.fresh.v1`) has `probes`, `listed`, `ack_us` (send to acknowledgement),
-`ack_to_list_us`, `lists_per_probe`, `ingest_errors`, `list_errors` and `missing` (acknowledged but not listed
-within `--timeout-ms`).
+`ack_to_list_us`, `lists_per_probe`, `list_us` (each list's round trip, over the lists answered 200, so that
+`ack_to_list_us` reads as lists times their cost), `ingest_errors`, `list_errors` and `missing` (acknowledged but
+not listed within `--timeout-ms`).
 
 ## Measurements
 

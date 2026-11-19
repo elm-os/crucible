@@ -85,6 +85,11 @@ async fn every_read_is_counted_per_class() {
     assert_eq!(plain.latency_us.count, 50);
     assert_eq!(listed.latency_us.count, 0);
     assert!(plain.latency_us.p50 >= plain.service_time_us.p50);
+    // The halves split the answers by due time: both halves of the schedule had reads, and none is counted twice.
+    let [first, second] = plain.latency_halves_us;
+    assert!(first.count > 0 && second.count > 0);
+    assert_eq!(first.count + second.count, plain.latency_us.count);
+    assert_eq!(listed.latency_halves_us[0].count + listed.latency_halves_us[1].count, 0);
     stub.abort();
 }
 
@@ -179,8 +184,10 @@ async fn the_probe_measures_ack_to_listed() {
     let report = fresh(&env, &config).await.unwrap();
     assert_eq!((report.probes, report.listed, report.missing), (5, 5, 0));
     assert_eq!((report.ingest_errors, report.list_errors), (0, 0));
-    // The trace is listed by the first list after the acknowledgement.
+    // The trace is listed by the first list after the acknowledgement, and that list's round trip is timed.
     assert_eq!(report.lists_per_probe.max, 1);
     assert_eq!(report.ack_to_list_us.count, 5);
+    assert_eq!(report.list_us.count, 5);
+    assert!(report.list_us.max <= report.ack_to_list_us.max);
     server.abort();
 }
