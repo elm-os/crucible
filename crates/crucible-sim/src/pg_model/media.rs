@@ -1,8 +1,8 @@
 //! The media repository of the model (migration V8): `media_objects` and `media_refs` (contract 14.3).
 //!
 //! A use refers to its object through `media_refs_media_id_fkey`, which has no cascade: deleting an object row
-//! that a visible use refers to is a foreign-key violation, and one that a use this transaction cannot see
-//! refers to is a serialization failure ([`super::restricts`]).
+//! that a committed use refers to is a foreign-key violation, also when this transaction's snapshot does not
+//! show the use ([`super::restricts`]).
 
 use async_trait::async_trait;
 use crucible_control::{MediaObject, MediaRef, MediaRepo, MediaState, MediaUse, TxError};

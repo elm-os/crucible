@@ -21,6 +21,7 @@ mod facts;
 mod identity;
 mod lifecycle;
 mod lists;
+mod media;
 mod metrics;
 mod payload;
 mod search;

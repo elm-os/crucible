@@ -1073,7 +1073,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp], [object_store], [media].",
             ]
         );
     }
@@ -1284,6 +1284,74 @@ directory_of_everything = "x"
     }
 
     #[test]
+    fn the_object_store_needs_postgres_and_its_credentials_and_says_what_is_missing() {
+        let defaults = load(None, &[], &[]).unwrap().config;
+        assert_eq!(defaults.object_store, None);
+        assert_eq!(defaults.media_max_bytes, 64 << 20);
+        let full = env(&[
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+            ("CRUCIBLE_OBJECT_STORE_ENDPOINT", "http://versitygw:7070"),
+            ("CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT", "http://localhost:7070"),
+            ("CRUCIBLE_OBJECT_STORE_BUCKET", "media"),
+            ("CRUCIBLE_OBJECT_STORE_ACCESS_KEY", "crucible"),
+            ("CRUCIBLE_OBJECT_STORE_SECRET_KEY", "hunter2"),
+            ("CRUCIBLE_OBJECT_STORE_PREFIX", "/media/"),
+            ("CRUCIBLE_MEDIA_MAX_BYTES", "1048576"),
+        ]);
+        let config = load(None, &full, &[]).unwrap().config;
+        let store = config.object_store.unwrap();
+        assert_eq!(
+            (
+                store.endpoint.as_str(),
+                store.public_endpoint.as_deref(),
+                store.region.as_str(),
+                store.bucket.as_str(),
+                store.prefix.as_str(),
+                store.virtual_host
+            ),
+            (
+                "http://versitygw:7070",
+                Some("http://localhost:7070"),
+                "us-east-1",
+                "media",
+                "media",
+                false
+            )
+        );
+        assert_eq!(store.secret_key.expose(), "hunter2");
+        assert!(!format!("{store:?}").contains("hunter2"));
+        assert_eq!(config.media_max_bytes, 1 << 20);
+        // Without Postgres, credentials or a valid URL style, the refusals say what to set.
+        let bare = env(&[
+            ("CRUCIBLE_OBJECT_STORE_ENDPOINT", "versitygw:7070"),
+            ("CRUCIBLE_OBJECT_STORE_URL_STYLE", "dns"),
+            ("CRUCIBLE_MEDIA_MAX_BYTES", "0"),
+        ]);
+        let ConfigErrors(errors) = load(None, &bare, &[]).unwrap_err();
+        let expected = [
+            "`media.max_bytes` must be between 1 and",
+            "`object_store.endpoint` = \"versitygw:7070\" must start with http:// or https://",
+            "`object_store.url_style` = \"dns\" is not one of path, virtual_host",
+            "`object_store.endpoint` needs the control plane, which records media: set `postgres.url`",
+            "`object_store.endpoint` needs `object_store.bucket`",
+            "`object_store.endpoint` needs `object_store.access_key`",
+            "`object_store.endpoint` needs `object_store.secret_key`",
+        ];
+        assert_eq!(errors.len(), expected.len(), "{errors:?}");
+        for (error, expected) in errors.iter().zip(expected) {
+            assert!(error.contains(expected), "{error}");
+        }
+        // A bucket without an endpoint is a mistake, not a silent no.
+        let orphan = env(&[("CRUCIBLE_OBJECT_STORE_BUCKET", "media")]);
+        let ConfigErrors(errors) = load(None, &orphan, &[]).unwrap_err();
+        assert!(
+            errors[0].contains("`object_store.bucket` is set but `object_store.endpoint` is not"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn print_shows_sources_and_never_a_secret() {
         let file = format!(
             "master_key = \"{KEY}\"\n[recent]\nmax_bytes = 4096\n[postgres]\nurl = \"postgres://crucible:pg-secret@postgres:5432/crucible?sslmode=require\"\n"
@@ -1343,6 +1411,14 @@ mode = "open"  # default
 
 [smtp]
 tls = "starttls"  # default
+
+[object_store]
+region = "us-east-1"  # default
+url_style = "path"  # default
+prefix = "media"  # default
+
+[media]
+max_bytes = 67108864  # default
 "#
         );
         // What is printed loads again, to the same settings apart from the redacted secrets.

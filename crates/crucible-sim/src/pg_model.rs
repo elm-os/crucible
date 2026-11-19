@@ -777,16 +777,21 @@ impl Cx<'_> {
                             .iter()
                             .any(|(_, parent, parent_key)| *parent == table && *parent_key == key)
                     };
-                    // A referencing row this transaction cannot see is a conflict with its writer; one it can
-                    // see keeps the row.
-                    let unseen = self
-                        .latest_rows(*child)
-                        .iter()
-                        .any(|(k, row)| refers(row) && self.changed_since_snapshot(*child, k));
-                    if unseen {
-                        return Err(TxError::SerializationFailure.into());
+                    // Postgres checks the latest committed rows with this transaction's own writes, so a
+                    // referencing row committed after the snapshot keeps the row too.
+                    let mut current = self.latest_rows(*child);
+                    for ((_, k), own) in self
+                        .tx
+                        .writes
+                        .range((*child, Vec::new())..)
+                        .take_while(|((t, _), _)| t == child)
+                    {
+                        match own {
+                            Some(row) => current.insert(k.clone(), row.clone()),
+                            None => current.remove(k),
+                        };
                     }
-                    if self.scan(*child).iter().any(|(_, row)| refers(row)) {
+                    if current.values().any(refers) {
                         return Err(TxError::ForeignKeyViolation((*name).to_owned()).into());
                     }
                 }
