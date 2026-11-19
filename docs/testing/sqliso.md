@@ -71,7 +71,9 @@ The real binary, started with `--migrate` against a real ClickHouse and Postgres
 projects. Every response to project A's key passes the canary oracle. The test also checks what the API adds:
 the validation messages (each refusal says how to fix the query), the mapping of ClickHouse's refusals to problem
 codes, a statement that outlives its limit ending as `query_timeout`, the result cap, the concurrency cap,
-cancellation, the audit rows, saved queries with declared parameters and versions, and the CSV formula guard.
+cancellation by `DELETE` and by closing the connection (the audit row says cancelled and ClickHouse holds no
+statement of the project's identity afterwards), the audit rows, saved queries with declared parameters and
+versions, the CSV formula guard, and that an export longer than it holds is refused instead of cut.
 
 ## Layer D: broken deployments
 
@@ -110,7 +112,8 @@ What the suite found on real servers, and what was done about each.
 - **A constant `SELECT 1` does not count against the quota; `EXPLAIN` does.** A run through the API is three
   statements (two validations and the run), so the quota's 600 statements an hour are about 200 runs.
 - **A probe is about twenty refused statements.** The probe identities are outside the hourly quota, so probing
-  from several nodes cannot use up an error allowance and read as a probe that cannot run.
+  from several nodes cannot use up an error allowance and read as a probe that cannot run. The suite runs 21
+  probes in a row at the real quota and checks that the probe identity has no quota usage.
 - **From 26.8 the server leaves 15 settings changeable for a read-only user**: the query-string forms (`select`,
   `filter`, `sort`, `order`, `limit`, `offset`, `page`), the formats, `compression`, `database` and
   `implicit_table_at_top_level`. They shape the answer of the caller's own statement. W9 pins the list and
@@ -129,7 +132,7 @@ What the suite found on real servers, and what was done about each.
 
 ## Results
 
-Head `2f2807e`, run with `crates/crucible-conformance/scripts/sqliso.sh` (seed 1, 5,000 statements of layer B under the
+Head `4781e2b`, run with `crates/crucible-conformance/scripts/sqliso.sh` (seed 1, 5,000 statements of layer B under the
 strict switch and 1,000 under the permissive one, 20 extra identities in W14) and with layer C against the same
 three versions. Server versions: 26.3 is 26.3.66.4, 26.8 is 26.8.39.19, latest is 26.10.4.207. Each cell is the result under the strict switch, then under the
 permissive one. W15 needs a ClickHouse Cloud service and was not run.
@@ -185,12 +188,12 @@ permissive one. W15 needs a ClickHouse Cloud service and was not run.
 |---|---|---|---|
 | W1 statements | 495 | 495 | 495 |
 | W2 table functions: listed, refused, benign | 88, 82, 6 | 94, 87, 7 | 99, 92, 7 |
-| W3 system tables: listed, refused, readable | 155, 134, 21 | 180, 157, 23 | 192, 169, 23 |
+| W3 system tables: listed, refused, readable | 164, 143, 21 | 180, 157, 23 | 192, 169, 23 |
 | W4 attempts | 41 | 41 | 41 |
 | W5 statements refused | 55 | 55 | 55 |
 | W6 functions, calls | 1789, 10734 | 1889, 11334 | 2008, 12048 |
 | W9 settings the server leaves changeable | 0 | 15 | 15 |
-| W14 provisioning per identity | 67 ms | 75 ms | 74 ms |
+| W14 provisioning per identity | 70 ms | 48 ms | 54 ms |
 | Layer B: answered, refused | 1555, 3445 | 1553, 3447 | 1607, 3393 |
 
 ### Which detectors caught each mutant
@@ -214,8 +217,9 @@ them; "leak" means the canary oracle reported another project's canary.
 | | 26.3 | 26.8 | latest |
 |---|---|---|---|
 | `the_sql_workspace_holds_through_the_api` | pass | pass | pass |
-| Audit rows of project A | 30 | 30 | 30 |
+| Audit rows of project A | 31 | 31 | 31 |
 | Cancellation observed before the statement ended | true | true | true |
+| A dropped connection cancelled its statement | true | true | true |
 
 Layer C ran against servers with the shipped (permissive) switch.
 
