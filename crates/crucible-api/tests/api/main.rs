@@ -20,6 +20,7 @@ mod identity;
 mod metrics;
 mod payload;
 mod search;
+mod sql;
 
 use std::future::Future;
 use std::sync::Arc;
