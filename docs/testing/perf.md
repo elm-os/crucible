@@ -535,6 +535,9 @@ significant digits.
 |---|---|---|---|
 | `trace_by_id` | `GET /traces/{trace_id}` | non-empty `spans` | `trace_by_id` |
 | `trace_list_30d` | `GET /traces?from=...&to=...&limit=50` over the window | non-empty `data` | `trace_list` |
+| `span_list_30d` | `GET /spans?from=...&to=...&limit=50` over the window | non-empty `data` | `span_list` |
+| `session_list_30d` | `GET /sessions?from=...&to=...&limit=50` over the window (the dataset has no sessions) | 2xx | `session_list` |
+| `user_list_30d` | `GET /users?from=...&to=...&limit=50` over the window (the dataset has no users) | 2xx | `user_list` |
 | `span_children` | `GET /traces/{trace_id}/spans?parent_span_id={root}&limit=100` | non-empty `data` | `span_children` |
 | `payload` | `GET /spans/{trace_id}/{span_id}/payload?field=attributes&start_time=...` | 2xx | `payload` |
 | `facts` | `GET /facts?trace_id=...` (the dataset has no facts) | 2xx | `facts` |
@@ -544,7 +547,8 @@ significant digits.
 | `metrics_30d` | `POST /metrics/query`: the span count over the window | non-empty `series` | `metrics` |
 
 Paths are relative to `/api/v1/projects/{project_id}`. A lane whose requests were not all answered 2xx and
-non-empty is marked invalid: its latency would not cover them.
+non-empty is marked invalid: its latency would not cover them. The session and user detail routes need ids that
+the dataset does not carry (its spans have no session or user), so they have no lane yet.
 
 **The MCP tool dashboard** gets its lane in `LANES` (`xtask/src/perf/reads.rs`) once the MCP analytics endpoints
 exist: one entry with the dashboard's request, the JSON pointer that must not be empty, and the request class its
@@ -574,8 +578,9 @@ metrics before and after each lane under `metrics/`.
 ### Per-request counters
 
 The read services record two histograms per request class (one class per read service: `trace_by_id`,
-`trace_list`, `trace_list_since`, `span_children`, `payload`, `facts`, `fact_target_bounds`, `filter_values`,
-`data_bounds`, `search`, `metrics`):
+`trace_list`, `trace_list_since`, `span_children`, `span_list`, `payload`, `facts`, `fact_target_bounds`,
+`filter_values`, `data_bounds`, `search`, `metrics`, `session_list`, `session`, `user_list`, `user`,
+`user_sessions`):
 
 - `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
   the reads.

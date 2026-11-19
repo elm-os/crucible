@@ -51,11 +51,12 @@ pub struct QueryService {
 }
 
 /// The request classes of the read services, which label the per-request counters: one per method.
-pub const READ_CLASSES: [&str; 11] = [
+pub const READ_CLASSES: [&str; 17] = [
     "trace_by_id",
     "trace_list",
     "trace_list_since",
     "span_children",
+    "span_list",
     "payload",
     "facts",
     "fact_target_bounds",
@@ -63,6 +64,11 @@ pub const READ_CLASSES: [&str; 11] = [
     "data_bounds",
     "search",
     "metrics",
+    "session_list",
+    "session",
+    "user_list",
+    "user",
+    "user_sessions",
 ];
 
 /// The handles of the per-request counters, fetched once per class.

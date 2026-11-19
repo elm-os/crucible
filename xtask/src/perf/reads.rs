@@ -48,7 +48,7 @@ struct Lane {
 /// The lanes: trace by id, the 30-day trace list, and the other list and detail endpoints. The search looks
 /// for a word no span holds over the window; the payload reads the attributes of one span. The MCP tool
 /// dashboard gets its lane here once its endpoints exist (`docs/testing/perf.md`).
-const LANES: [Lane; 9] = [
+const LANES: [Lane; 12] = [
     Lane {
         name: "trace_by_id",
         server_class: "trace_by_id",
@@ -58,6 +58,21 @@ const LANES: [Lane; 9] = [
         name: "trace_list_30d",
         server_class: "trace_list",
         class: r#"{"name":"trace_list_30d","method":"GET","path":"/api/v1/projects/{project}/traces?from={from}&to={to}&limit=50","nonempty":"/data"}"#,
+    },
+    Lane {
+        name: "span_list_30d",
+        server_class: "span_list",
+        class: r#"{"name":"span_list_30d","method":"GET","path":"/api/v1/projects/{project}/spans?from={from}&to={to}&limit=50","nonempty":"/data"}"#,
+    },
+    Lane {
+        name: "session_list_30d",
+        server_class: "session_list",
+        class: r#"{"name":"session_list_30d","method":"GET","path":"/api/v1/projects/{project}/sessions?from={from}&to={to}&limit=50"}"#,
+    },
+    Lane {
+        name: "user_list_30d",
+        server_class: "user_list",
+        class: r#"{"name":"user_list_30d","method":"GET","path":"/api/v1/projects/{project}/users?from={from}&to={to}&limit=50"}"#,
     },
     Lane {
         name: "span_children",
