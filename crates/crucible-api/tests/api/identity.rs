@@ -9,7 +9,6 @@ use axum::http::{Method, Request, StatusCode, header};
 use crucible_api::{Access, StaticProjectSettings};
 use crucible_auth::csrf::Origins;
 use crucible_auth::password::HashCost;
-use crucible_auth::roles::ProjectPermission;
 use crucible_auth::service::{Identity, IdentityConfig, SessionVerdict};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer};
 use crucible_control::{JsonDoc, OrgRole, Project, ProjectRole, Repos as _};
@@ -181,9 +180,10 @@ async fn platform(env: &Env, world: &World) -> Platform {
         .create_key(project(1), None, None, None, false)
         .await
         .unwrap();
+    let writer: Arc<dyn crucible_api::FactWriter> = crate::facts::FakeWriter::new(world);
     let router = crucible_api::platform_router(
         env,
-        Some(world.service.clone()),
+        Some((world.service.clone(), writer)),
         Arc::clone(&identity),
         Arc::new(StaticProjectSettings::default()),
         cursor_keys(),
@@ -267,7 +267,10 @@ fn every_route_refuses_callers_without_its_permission() {
                         "{label}: {:#}",
                         as_viewer.body
                     );
-                    let key_allowed = permission == ProjectPermission::Read;
+                    // The key has the scopes of a new key: ingest, read and write.
+                    let key_allowed = permission
+                        .key_scope()
+                        .is_some_and(|scope| crucible_auth::Scopes::DEFAULT.has(scope));
                     assert_eq!(
                         refused(&as_key, 403),
                         !key_allowed,

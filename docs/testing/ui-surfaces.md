@@ -32,7 +32,8 @@ pnpm --filter crucible-ui exec playwright test
 | Surface: section | Loading | Success | Error | Empty |
 |---|---|---|---|---|
 | Home: set up | Not applicable: static steps until data bounds land | Four steps, each marked to do | Not applicable: makes no request | Not applicable |
-| Home: tiles | Not applicable: static until the metrics API lands | Five tiles marked planned | Not applicable: makes no request | Not applicable |
+| Home: tiles (traces, error rate, latency, cost, tokens) | Each tile holds its size with a skeleton after 300 ms, busy and announced | The headline for the range with a sparkline: the trace count, errors over spans, p50 and p95 of the newest bucket with spans, cost, tokens | Per tile: the mapped copy, reference id and a retry that refetches only that tile; the other tiles stay | Whole and no data: "No data in the last 24 hours." with "Show last 30 days"; first use at 30 days; partial or lagging: "No data to show yet." with "Check again" |
+| Home: charts (traces over time, spans and errors, latency percentiles) | A chart-sized skeleton after 300 ms | SVG series with a dash and a marker each (percentiles in one ink family), a legend for two or more series, a crosshair driven by the pointer or the bucket slider's arrow keys, and "View as table" | As the tiles: the chart shares its tile's query and retry | As the tiles |
 | Traces: recent traces | Twelve skeleton rows after 300 ms, announced | One row per trace with started, name (a link to the trace), duration, spans, cost and status as icon and label | In-section card with the mapped copy, reference id and a retry that refetches only the list; a 401 asks to connect and offers the dialog | Filtered: "No traces in the last 24 hours." with "Show last 30 days"; first use at 30 days; incomplete (partial or lagging): "No traces to show yet." with "Check again" |
 | Trace: summary | Skeleton lines after 300 ms | Name, status as icon and label, start, duration, cost, tokens, span count; the partial or lagging notice from `meta`; on a paged trace, that totals cover the loaded spans | The page title and trace id stay; the spans section carries the one error card for the trace | Not applicable: a trace with no spans shows the spans section's empty state |
 | Trace: spans (timeline) | Eight skeleton rows after 300 ms, announced | The span tree as a virtualized UI SDK waterfall: type, name, error marker, bar on the shared axis and duration; unpaged traces open fully | In-pane card with a retry that refetches only the trace; a missing trace uses the not-found copy, without a retry | "This trace has no spans to show yet." with "Check again", distinct from not found |
@@ -51,12 +52,14 @@ pnpm --filter crucible-ui exec playwright test
 | Settings: invitations | Three skeleton rows after 300 ms, announced | Email, role, status and expiry; Revoke, which asks first, on pending ones. "Invite member" creates one and shows its link once, until the dialog closes | In-section card with a retry that refetches only the invitations | First use: "No invitations yet." |
 | Settings: API keys | Three skeleton rows after 300 ms, announced | Public key, note, scopes, last use and status; Revoke on active keys asks first and sends `If-Match`. "Create key" shows the secret and public keys once, until the dialog closes | In-section card with a retry that refetches only the keys; a stale version (`precondition_failed`) refreshes the list | First use: "No API keys yet." Without the `manage` permission, for a project outside the session, with no projects, or without a control plane, the page explains and requests no keys |
 | Settings: new project | Not applicable: requests nothing until submitted | For organization owners and admins, "New project" beside the settings tabs opens a dialog; the slug follows the name until edited. Creating refreshes the session, selects the project and opens its API keys page | Checked before sending (slug of lowercase letters, digits and hyphens). `conflict` marks the slug as taken; `validation_failed` marks the field it points at; `forbidden` says to ask an owner or admin | Not applicable: members and viewers, and servers without a control plane, get no control |
+| Trace: tags, flags and feedback | The frame holds its place, busy, while the trace loads | Bookmark and Public toggles; the effective tags with a remove button each and an add form; scores with value, comment and source, and an add form. Each write carries an `Idempotency-Key`, shows its pending state, and the acknowledged value stays until a read shows it | A refused write says so beside its control with the reference id, and nothing else changes; the trace's own failure shows in the spans section | "No tags yet." and "No scores or feedback yet.", with the forms still offered |
 
 ## Tests per row
 
 | Row | Playwright (`ui/e2e/`) | Vitest |
 |---|---|---|
-| Home | `home.spec.ts` (1); `phone.spec.ts`: home reads without sideways scrolling | `app-shell.test.tsx` |
+| Home: set up | `home.spec.ts` "static" (1); `phone.spec.ts`: home reads without sideways scrolling | `app-shell.test.tsx` |
+| Home: tiles and charts | `home.spec.ts`: loading, success with the table view and the bucket slider, error with retry, empty (4) | `home-overview.test.tsx`, `chart-model.test.ts` |
 | Traces: recent traces | `traces.spec.ts`: loading, success, error, unauthenticated, empty (filtered, first use), empty (incomplete), keyboard link (7) | `traces-section.test.tsx` |
 | Trace: summary | `trace.spec.ts` "summary": loading, success, partial and lagging, error (4) | `trace-detail.test.tsx` |
 | Trace: spans | `trace.spec.ts` "spans": loading, success, error with retry, not found, empty, keyboard (6) | `trace-detail.test.tsx`, `trace-tree.test.ts` |
@@ -66,6 +69,7 @@ pnpm --filter crucible-ui exec playwright test
 | Trace: links | `trace.spec.ts` "links" (2) | `trace-detail.test.tsx` |
 | Trace: payload | `trace.spec.ts` "payload": loading, success (tree), success (messages), large field by ranges, error with retry, empty and not stored (6) | `payload-viewer.test.tsx`, `payload-model.test.ts` |
 | Search: results | `search.spec.ts`: idle, loading, success with more pages and the link, error with retry, empty with a wider range (5) | `search-view.test.tsx` |
+| Trace: tags, flags and feedback | `trace.spec.ts` "facts": loading, success with a tag written, empty, error (4) | `trace-facts.test.tsx` |
 | Shell: Connect dialog | `traces.spec.ts` "shell" (1) | `connect-dialog.test.tsx` |
 | Shell: sign-in check | `sign-in.spec.ts` "sessions": loading then error with retry, no session, a session that ends while reading, signed-in header and sign-out (4) | `auth-gate.test.tsx`, `client.test.ts` |
 | Sign in | `sign-in.spec.ts` "sign in": loading then success, unsafe `next`, sign-in errors, options error, provider errors, setup and no control plane (6); `phone.spec.ts` | `login-form.test.tsx`, `next-path.test.ts`, `client.test.ts` |
@@ -110,8 +114,7 @@ wrapping, and a new key's secret wraps inside its dialog.
   selectors (contract 12.6), which it does not serve yet.
 - A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
   `ancestors_of` (contract 8.8); the panel says how to find it.
-- Home's sections will fetch once the data-bounds and metrics screens land; their four states will join this
-  table then.
 - The account page, password change, organization settings, ownership transfer, project members and the
   sign-in provider settings have API routes (contract 12.6) but no pages yet.
-
+- The set-up steps will read data bounds and API keys once those screens land.
+- Brush-to-zoom on charts is planned; the crosshair, the bucket slider and the table view cover reading values.

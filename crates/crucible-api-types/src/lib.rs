@@ -15,8 +15,10 @@
 
 mod data_bounds;
 mod enums;
+mod facts;
 mod identity;
 mod meta;
+mod metrics;
 mod payload;
 mod problem;
 mod search;
@@ -27,7 +29,12 @@ mod wire;
 
 pub use data_bounds::{DataBounds, McpBounds, TimeRange};
 pub use enums::{
-    Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason, StatusCode,
+    AuthorKind, Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason,
+    ScoreDataType, ScoreSource, StatusCode, TagOp,
+};
+pub use facts::{
+    Correction, CorrectionRequest, FactRef, FactWritten, Facts, FactsParams, FeedbackRequest,
+    FlagName, FlagRequest, FlagValue, Score, ScoreValue, TagEdit, TagRequest, TraceFacts,
 };
 pub use identity::{
     Account, AccountPatch, ApiKey, ApiKeyCreate, ApiKeyCreated, ApiKeyList, ApiKeyPatch,
@@ -41,6 +48,12 @@ pub use identity::{
     SessionTimes, SessionUser, SetupRequest, SignInOptions, TransferOwnership, UserStatus,
 };
 pub use meta::Meta;
+pub use metrics::{
+    FillMode, FilterValue, FilterValues, FilterValuesParams, Granularity, MeasureRequest,
+    MetricsFilter, MetricsPoint, MetricsQueryRequest, MetricsResponse, MetricsSchema,
+    MetricsSeries, SchemaDimension, SchemaFilterField, SchemaLimits, SchemaMeasure, SeriesKey,
+    SourceSchema,
+};
 pub use payload::{PayloadField, PayloadParams};
 pub use problem::{FieldError, Problem, ProblemCode, ProblemLimit};
 pub use search::{
@@ -64,12 +77,23 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<AuthProviderCreate>();
     visitor.visit::<AuthProviderList>();
     visitor.visit::<AuthProviderPatch>();
+    visitor.visit::<CorrectionRequest>();
     visitor.visit::<DataBounds>();
+    visitor.visit::<FactWritten>();
+    visitor.visit::<Facts>();
+    visitor.visit::<FactsParams>();
+    visitor.visit::<FeedbackRequest>();
+    visitor.visit::<FilterValues>();
+    visitor.visit::<FilterValuesParams>();
+    visitor.visit::<FlagRequest>();
     visitor.visit::<InvitationAccept>();
     visitor.visit::<InvitationCreate>();
     visitor.visit::<InvitationCreated>();
     visitor.visit::<InvitationList>();
     visitor.visit::<LoginRequest>();
+    visitor.visit::<MetricsQueryRequest>();
+    visitor.visit::<MetricsResponse>();
+    visitor.visit::<MetricsSchema>();
     visitor.visit::<Org>();
     visitor.visit::<OrgMemberList>();
     visitor.visit::<OrgMemberPatch>();
@@ -92,6 +116,7 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<SignInOptions>();
     visitor.visit::<SpanPage>();
     visitor.visit::<SpanPageParams>();
+    visitor.visit::<TagRequest>();
     visitor.visit::<TraceDetail>();
     visitor.visit::<TraceDetailParams>();
     visitor.visit::<TraceListPage>();

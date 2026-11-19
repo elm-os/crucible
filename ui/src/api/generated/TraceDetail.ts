@@ -2,6 +2,7 @@
 import type { Meta } from "./Meta";
 import type { SafeU64 } from "./SafeU64";
 import type { Span } from "./Span";
+import type { TraceFacts } from "./TraceFacts";
 
 /**
  * One trace. Up to 5,000 spans it holds every span; above that it holds the root spans and
@@ -25,6 +26,10 @@ paged: boolean,
  * The spans in start order. Empty only when `meta` says the response is partial or lagging.
  */
 spans: Array<Span>, 
+/**
+ * The trace's facts: effective tags, flags, scores and the correction of its output.
+ */
+facts: TraceFacts, 
 /**
  * How complete and how fresh the response is.
  */

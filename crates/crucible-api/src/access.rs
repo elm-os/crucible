@@ -28,11 +28,13 @@ use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
-use crucible_records::{ProjectId, ProjectScope, RequestId};
+use crucible_records::{AuthorKind, ProjectId, ProjectScope, RequestId};
 
 use crate::cursor::Cursors;
+use crate::idempotency::Keys;
 use crate::problem::{ApiError, request_id};
 use crate::settings::{ProjectSettings, ProjectSettingsSource};
+use crate::writer::{FactAuthor, FactWriter};
 
 /// What every handler shares.
 #[derive(Clone, Debug)]
@@ -48,6 +50,10 @@ pub(crate) struct ApiState {
     pub(crate) cursors: Arc<KeyRing>,
     /// The control plane's identity, when Postgres is configured.
     pub(crate) identity: Option<Arc<Identity>>,
+    /// Where fact writes go; `None` until a telemetry store is configured.
+    pub(crate) facts: Option<Arc<dyn FactWriter>>,
+    /// The `Idempotency-Key`s of fact writes.
+    pub(crate) idempotency: Arc<Keys>,
 }
 
 impl ApiState {
@@ -180,7 +186,9 @@ pub(crate) async fn resolve(
                         ProblemCode::ControlPlaneUnavailable,
                         "the server cannot check this key while Postgres is unreachable; try again",
                     )
-                    .with_retry_after(retry_after)),
+                    .with_retry_after(
+                        u32::try_from(retry_after.as_secs().max(1)).unwrap_or(u32::MAX),
+                    )),
                 }
             }
             None => {
@@ -243,6 +251,8 @@ macro_rules! permissions {
 permissions! {
     /// Read telemetry and analytics.
     Read => Read,
+    /// Write tags, flags, feedback and corrections.
+    WriteFacts => WriteFacts,
     /// API keys, project settings and project members.
     Manage => Manage,
 }
@@ -300,28 +310,66 @@ impl<P: Permission> FromRequestParts<ApiState> for Scoped<P> {
 #[derive(Debug)]
 pub(crate) struct Project {
     pub(crate) request_id: RequestId,
+    /// Who the request comes from: the author of the facts it writes, the key or the signed-in user.
+    pub(crate) author: FactAuthor,
     pub(crate) ctx: ReadContext,
     pub(crate) settings: ProjectSettings,
     /// The path parameters, `project_id` included.
     pub(crate) path: BTreeMap<String, String>,
 }
 
-impl FromRequestParts<ApiState> for Project {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
-        let scoped = Scoped::<Read>::from_request_parts(parts, state).await?;
+impl Project {
+    async fn authorized<P: Permission>(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, ApiError> {
+        let scoped = Scoped::<P>::from_request_parts(parts, state).await?;
         let settings = state.settings.settings(scoped.scope.project_id());
-        let caller = match scoped.principal {
-            Principal::Key(_) => Caller::Agent,
-            Principal::Session(_) => Caller::Session,
+        let (caller, author) = match &scoped.principal {
+            Principal::Key(grant) => (
+                Caller::Agent,
+                FactAuthor {
+                    kind: AuthorKind::ApiKey,
+                    id: grant.principal.api_key_id.uuid(),
+                },
+            ),
+            Principal::Session(session) => (
+                Caller::Session,
+                FactAuthor {
+                    kind: AuthorKind::User,
+                    id: session.user.id.uuid(),
+                },
+            ),
         };
         Ok(Self {
             request_id: scoped.request_id,
+            author,
             ctx: ReadContext::new(scoped.scope, settings.retention, caller),
             settings,
             path: scoped.path,
         })
+    }
+}
+
+impl FromRequestParts<ApiState> for Project {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
+        Self::authorized::<Read>(parts, state).await
+    }
+}
+
+/// A fact write to one project: [`Project`] with [`WriteFacts`] instead of [`Read`].
+#[derive(Debug)]
+pub(crate) struct ProjectWrite(pub(crate) Project);
+
+impl FromRequestParts<ApiState> for ProjectWrite {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
+        Project::authorized::<WriteFacts>(parts, state)
+            .await
+            .map(Self)
     }
 }
 

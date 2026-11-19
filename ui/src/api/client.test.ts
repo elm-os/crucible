@@ -12,11 +12,13 @@ import {
   listTraces,
   login,
   logout,
+  newIdempotencyKey,
   removeOrgMember,
   requestPasswordReset,
   revokeApiKey,
   searchSpans,
   setupOwner,
+  writeTag,
 } from "./client";
 import { UiError } from "./errors";
 
@@ -83,6 +85,18 @@ describe("who a request says it comes from", () => {
     expect(sent().headers.get("x-crucible-csrf")).toBe("csrf-1");
     expect(sent().headers.get("authorization")).toBeNull();
     expect(JSON.parse(String(sent().init.body))).toEqual({ query: "refund", ...WINDOW });
+  });
+
+  test("signed in, a fact write carries the CSRF token and its Idempotency-Key, never a key", async () => {
+    localStorage.setItem("crucible.connection.key", KEY);
+    signIn();
+    fetchMock.mockResolvedValue(json({ fact_id: "f1", key: "k1", version: 1 }, 201));
+    await writeTag("p1", { trace_id: "t1", tag: "reviewed", op: "add" }, "idem-1");
+    expect(sent().url).toBe("/api/v1/projects/p1/tags");
+    expect(sent().init.method).toBe("POST");
+    expect(sent().headers.get("x-crucible-csrf")).toBe("csrf-1");
+    expect(sent().headers.get("idempotency-key")).toBe("idem-1");
+    expect(sent().headers.get("authorization")).toBeNull();
   });
 
   test("without a control plane, a search sends the key and no CSRF token", async () => {
@@ -279,4 +293,13 @@ describe("whether the server has a control plane", () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(getSignInMode()).rejects.toMatchObject({ kind: "network" });
   });
+});
+
+test("an idempotency key needs no secure context and has the form the server accepts", () => {
+  // Over plain HTTP the browser's `crypto` has `getRandomValues` but no `randomUUID`.
+  const real = globalThis.crypto;
+  vi.stubGlobal("crypto", { getRandomValues: (array: Uint8Array) => real.getRandomValues(array) });
+  const first = newIdempotencyKey();
+  expect(first).toMatch(/^[0-9a-f]{32}$/);
+  expect(newIdempotencyKey()).not.toBe(first);
 });

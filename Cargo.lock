@@ -855,6 +855,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.11.1",
  "tower",
  "tracing",
  "utoipa",
@@ -5345,6 +5346,10 @@ dependencies = [
  "crucible-api-types",
  "crucible-sim",
  "flate2",
+ "getrandom 0.4.3",
+ "proptest",
+ "serde",
+ "serde_json",
  "ts-rs",
 ]
 

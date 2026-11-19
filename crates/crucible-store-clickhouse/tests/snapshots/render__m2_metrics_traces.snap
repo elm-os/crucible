@@ -1,0 +1,14 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&series.unwrap().unwrap())
+---
+SELECT toDateTime(toStartOfMinute(toDateTime(start_time, {p0:String})), {p0:String}) AS bucket, count() AS m0 FROM crucible.trace_heads WHERE project_id = {p4:UUID} AND start_time >= {p5:DateTime64(6, 'UTC')} AND start_time < {p6:DateTime64(6, 'UTC')} AND head_kind = {p7:String} GROUP BY bucket ORDER BY bucket ASC WITH FILL FROM {p1:DateTime('UTC')} TO {p2:DateTime('UTC')} STEP {p3:UInt64}
+p0: String = "UTC"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1794911460"
+p3: UInt64 = "60"
+p4: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p5: DateTime64(6, 'UTC') = "1794907800.000000"
+p6: DateTime64(6, 'UTC') = "1794911400.000001"
+p7: String = "root"
+setting use_with_fill_by_sorting_prefix = 1

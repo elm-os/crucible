@@ -14,7 +14,13 @@ crucible-api = { workspace = true }
 brotli = "=9.1.1"
 crucible-sim = { path = "../crates/crucible-sim" }
 flate2 = { workspace = true }
+getrandom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 ts-rs = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

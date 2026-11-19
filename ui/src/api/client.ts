@@ -7,11 +7,16 @@ import type { ApiKey } from "./generated/ApiKey";
 import type { ApiKeyCreate } from "./generated/ApiKeyCreate";
 import type { ApiKeyCreated } from "./generated/ApiKeyCreated";
 import type { ApiKeyList } from "./generated/ApiKeyList";
+import type { FactWritten } from "./generated/FactWritten";
+import type { FeedbackRequest } from "./generated/FeedbackRequest";
+import type { FlagRequest } from "./generated/FlagRequest";
 import type { InvitationAccept } from "./generated/InvitationAccept";
 import type { InvitationCreate } from "./generated/InvitationCreate";
 import type { InvitationCreated } from "./generated/InvitationCreated";
 import type { InvitationList } from "./generated/InvitationList";
 import type { LoginRequest } from "./generated/LoginRequest";
+import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
+import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { OrgMember } from "./generated/OrgMember";
 import type { OrgMemberList } from "./generated/OrgMemberList";
 import type { OrgMemberPatch } from "./generated/OrgMemberPatch";
@@ -30,6 +35,7 @@ import type { SpanPage } from "./generated/SpanPage";
 import type { SpanPageParams } from "./generated/SpanPageParams";
 import type { TraceDetail } from "./generated/TraceDetail";
 import type { TraceListPage } from "./generated/TraceListPage";
+import type { TagRequest } from "./generated/TagRequest";
 import type { TraceListParams } from "./generated/TraceListParams";
 import type { ProblemBody, TimeWindow } from "./types";
 
@@ -179,8 +185,49 @@ export function listSpanChildren(
   );
 }
 
-export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  return read<T>(await call(path, "telemetry", { method: "POST", body, signal }));
+// Writes carry an Idempotency-Key, so a retry of a request whose answer was lost writes nothing twice.
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  options: { signal?: AbortSignal; idempotencyKey?: string } = {},
+): Promise<T> {
+  const headers = options.idempotencyKey
+    ? { "Idempotency-Key": options.idempotencyKey }
+    : undefined;
+  return read<T>(
+    await call(path, "telemetry", { method: "POST", body, headers, signal: options.signal }),
+  );
+}
+
+// 32 hex characters from `crypto.getRandomValues`, which, unlike `crypto.randomUUID`, also works outside a secure
+// context: over plain HTTP on an internal network (contract 1.7).
+export function newIdempotencyKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function writeTag(project: string, body: TagRequest, key: string): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/tags"), body, { idempotencyKey: key });
+}
+
+export function writeFlag(project: string, body: FlagRequest, key: string): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/flags"), body, { idempotencyKey: key });
+}
+
+export function writeFeedback(
+  project: string,
+  body: FeedbackRequest,
+  key: string,
+): Promise<FactWritten> {
+  return apiPost(projectPath(project, "/feedback"), body, { idempotencyKey: key });
+}
+
+export function queryMetrics(
+  project: string,
+  body: MetricsQueryRequest,
+  signal?: AbortSignal,
+): Promise<MetricsResponse> {
+  return apiPost(projectPath(project, "/metrics/query"), body, { signal });
 }
 
 export function searchSpans(
@@ -188,7 +235,7 @@ export function searchSpans(
   request: SearchRequest,
   signal?: AbortSignal,
 ): Promise<SearchPage> {
-  return apiPost(projectPath(project, "/search"), request, signal);
+  return apiPost(projectPath(project, "/search"), request, { signal });
 }
 
 export interface PayloadSpan {

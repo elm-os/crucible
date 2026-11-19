@@ -566,6 +566,8 @@ struct StoreTask {
     recent_max_bytes: u64,
     /// Identity, with a control plane.
     identity: Option<Arc<Identity>>,
+    /// Where the API's fact writes go: this node's ingest.
+    facts: Arc<dyn crucible_api::FactWriter>,
     /// The MCP server's rate limit.
     mcp: McpConfig,
 }
@@ -649,6 +651,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         gate,
         recent_max_bytes,
         identity,
+        facts: fact_writer,
         mcp,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
@@ -726,10 +729,14 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .open(&env, service.clone(), mcp_keys, mcp_cursors, mcp);
     let settings = Arc::new(StaticProjectSettings::default());
     gate.open(match identity {
-        Some(identity) => {
-            crucible_api::platform_router(&env, Some(service), identity, settings, cursors)
-        }
-        None => crucible_api::router(&env, service, keys, settings, cursors),
+        Some(identity) => crucible_api::platform_router(
+            &env,
+            Some((service, fact_writer)),
+            identity,
+            settings,
+            cursors,
+        ),
+        None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
     tracing::info!(
         watermark = %watermark,
@@ -912,6 +919,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 gate: Arc::clone(&app.gate),
                 recent_max_bytes,
                 identity,
+                facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
@@ -1723,6 +1731,67 @@ mod tests {
             start = start_nanos,
             end = start_nanos + 2_000_000,
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_api_fact_writer_appends_durable_fact_batches_through_ingest() {
+        use crucible_api::{FactAuthor, FactRefusal, FactWriter as _, NewFact};
+        use crucible_records::{AuthorKind, FactBody, FactTargetKind, SpanId, TagBody, TagOp};
+
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let keys = crate::keys::parse(&keys_toml(), env).unwrap();
+        let principal = keys.verify(&secret()).unwrap();
+        let app = test_app(env, keys).await;
+        let writer = crate::facts::IngestFacts(app.ingest.clone());
+        let author = FactAuthor {
+            kind: AuthorKind::ApiKey,
+            id: principal.api_key_id.uuid(),
+        };
+        let fact = NewFact {
+            target_kind: FactTargetKind::Trace,
+            trace_id: TraceId::from_bytes([5; 16]),
+            span_id: SpanId::ZERO,
+            session_id: "".into(),
+            target_time: env.clock.wall_now(),
+            key: "urgent".into(),
+            retracted: false,
+            body: FactBody::Tag(TagBody { op: TagOp::Add }),
+        };
+        let accepted = writer
+            .append(principal.scope, author, vec![fact.clone()])
+            .await
+            .unwrap();
+        assert_eq!(accepted.len(), 1);
+
+        // The answer came after the fsync: the log already holds the fact's frame.
+        let mut replay = app.wal.replay(Lsn::new(1));
+        let frame = replay.next().await.unwrap().unwrap();
+        let payload = frame.payload().unwrap();
+        let Ok(Record::FactBatch(batch)) = Record::decode(RecordType::FactBatch, &payload) else {
+            panic!("frame {} is not a fact batch", frame.lsn());
+        };
+        assert_eq!(batch.project_id.to_string(), PROJECT);
+        assert_eq!(batch.author_id, principal.api_key_id.uuid());
+        let written = &batch.facts[0];
+        assert_eq!(written.fact_id, accepted[0].fact_id);
+        assert_eq!(
+            (written.key, written.version),
+            ("urgent", accepted[0].version)
+        );
+
+        // A refusal of ingest reaches the route as a refusal, and nothing is written.
+        let empty = NewFact {
+            key: "".into(),
+            ..fact
+        };
+        let refused = writer.append(principal.scope, author, vec![empty]).await;
+        assert!(
+            matches!(refused, Err(FactRefusal::Invalid(_))),
+            "{refused:?}"
+        );
+        assert!(replay.next().await.unwrap().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

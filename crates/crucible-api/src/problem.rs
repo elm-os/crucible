@@ -1,7 +1,5 @@
 //! Error responses: problem documents (contract 12.3) that carry the request id.
 
-use std::time::Duration;
-
 use axum::http::header::{CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{Extensions, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -33,8 +31,16 @@ pub(crate) struct ApiError {
     code: ProblemCode,
     detail: String,
     errors: Vec<FieldError>,
+    /// The rarer members, boxed so that every `Result` of a handler stays small.
+    extra: Option<Box<Extra>>,
+}
+
+/// The members of a problem that only some codes carry.
+#[derive(Clone, PartialEq, Debug, Default)]
+struct Extra {
     limit: Option<ProblemLimit>,
-    retry_after: Option<u32>,
+    retry_after_s: Option<u32>,
+    suggested_granularity: Option<String>,
 }
 
 impl ApiError {
@@ -44,43 +50,13 @@ impl ApiError {
             code,
             detail: detail.into(),
             errors: Vec::new(),
-            limit: None,
-            retry_after: None,
+            extra: None,
         }
     }
 
-    /// The same problem with `Retry-After` and `retry_after_s`.
-    pub(crate) fn with_retry_after(self, after: Duration) -> Self {
-        Self {
-            retry_after: Some(u32::try_from(after.as_secs().max(1)).unwrap_or(u32::MAX)),
-            ..self
-        }
-    }
-
-    /// The problem of an identity call.
-    pub(crate) fn auth(request_id: RequestId, error: crucible_auth::service::AuthError) -> Self {
-        use crucible_auth::service::AuthError as E;
-        let detail = error.to_string();
-        match error {
-            E::Unauthenticated => Self::new(request_id, ProblemCode::Unauthenticated, detail),
-            E::InvalidCredentials => Self::new(request_id, ProblemCode::InvalidCredentials, detail),
-            E::Forbidden(_) => Self::new(request_id, ProblemCode::Forbidden, detail),
-            E::NotFound => Self::not_found(request_id),
-            E::Conflict(_) => Self::new(request_id, ProblemCode::Conflict, detail),
-            E::Invalid { field, message } => {
-                Self::validation(request_id, vec![field_error(field, "invalid", &message)])
-            }
-            E::TokenInvalid => Self::new(request_id, ProblemCode::TokenInvalid, detail),
-            E::PreconditionFailed => Self::new(request_id, ProblemCode::PreconditionFailed, detail),
-            E::Busy => Self::new(request_id, ProblemCode::RateLimited, detail)
-                .with_retry_after(Duration::from_secs(1)),
-            E::Unavailable => Self::new(request_id, ProblemCode::ControlPlaneUnavailable, detail)
-                .with_retry_after(Duration::from_secs(5)),
-            E::Internal(cause) => {
-                tracing::error!(request_id = %request_id, %cause, "an identity call failed");
-                Self::new(request_id, ProblemCode::InternalError, "internal error")
-            }
-        }
+    fn extra(mut self, set: impl FnOnce(&mut Extra)) -> Self {
+        set(self.extra.get_or_insert_with(Box::default));
+        self
     }
 
     pub(crate) fn unauthenticated(request_id: RequestId) -> Self {
@@ -111,14 +87,58 @@ impl ApiError {
         }
     }
 
+    /// Sets `retry_after_s` and the `Retry-After` header.
+    pub(crate) fn with_retry_after(self, seconds: u32) -> Self {
+        self.extra(|extra| extra.retry_after_s = Some(seconds))
+    }
+
+    /// The problem of an identity call.
+    pub(crate) fn auth(request_id: RequestId, error: crucible_auth::service::AuthError) -> Self {
+        use crucible_auth::service::AuthError as E;
+        let detail = error.to_string();
+        match error {
+            E::Unauthenticated => Self::new(request_id, ProblemCode::Unauthenticated, detail),
+            E::InvalidCredentials => Self::new(request_id, ProblemCode::InvalidCredentials, detail),
+            E::Forbidden(_) => Self::new(request_id, ProblemCode::Forbidden, detail),
+            E::NotFound => Self::not_found(request_id),
+            E::Conflict(_) => Self::new(request_id, ProblemCode::Conflict, detail),
+            E::Invalid { field, message } => {
+                Self::validation(request_id, vec![field_error(field, "invalid", &message)])
+            }
+            E::TokenInvalid => Self::new(request_id, ProblemCode::TokenInvalid, detail),
+            E::PreconditionFailed => Self::new(request_id, ProblemCode::PreconditionFailed, detail),
+            E::Busy => Self::new(request_id, ProblemCode::RateLimited, detail).with_retry_after(1),
+            E::Unavailable => Self::new(request_id, ProblemCode::ControlPlaneUnavailable, detail)
+                .with_retry_after(5),
+            E::Internal(cause) => {
+                tracing::error!(request_id = %request_id, %cause, "an identity call failed");
+                Self::new(request_id, ProblemCode::InternalError, "internal error")
+            }
+        }
+    }
+
+    /// Sets `suggested_granularity`: the granularity under which a refused metrics query fits.
+    pub(crate) fn with_suggested_granularity(self, granularity: Option<String>) -> Self {
+        self.extra(|extra| extra.suggested_granularity = granularity)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> ProblemCode {
+        self.code
+    }
+
+    #[cfg(test)]
+    pub(crate) fn errors(&self) -> &[FieldError] {
+        &self.errors
+    }
+
     pub(crate) fn with_limit(self, name: &str, value: u32) -> Self {
-        Self {
-            limit: Some(ProblemLimit {
+        self.extra(|extra| {
+            extra.limit = Some(ProblemLimit {
                 name: name.to_owned(),
                 value,
-            }),
-            ..self
-        }
+            });
+        })
     }
 
     /// A failed read. Store failures keep their details in the log: the detail of a problem is public.
@@ -185,6 +205,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.code.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let extra = self.extra.map(|extra| *extra).unwrap_or_default();
         let body = Problem {
             problem_type: Problem::type_uri(self.code),
             title: title(self.code),
@@ -193,22 +214,23 @@ impl IntoResponse for ApiError {
             code: self.code,
             request_id: self.request_id.to_string(),
             errors: (!self.errors.is_empty()).then_some(self.errors),
-            retry_after_s: self.retry_after,
-            limit: self.limit,
-            suggested_granularity: None,
+            retry_after_s: extra.retry_after_s,
+            limit: extra.limit,
+            suggested_granularity: extra.suggested_granularity,
         };
         // Serializing these plain fields cannot fail; an empty body would still carry the status.
         let json = serde_json::to_vec(&body).unwrap_or_default();
         let mut response = (status, [(CONTENT_TYPE, PROBLEM_JSON)], json).into_response();
+        if let Some(value) = extra
+            .retry_after_s
+            .and_then(|seconds| HeaderValue::from_str(&seconds.to_string()).ok())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
         if self.code == ProblemCode::Unauthenticated {
             response
                 .headers_mut()
                 .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        }
-        if let Some(after) = self.retry_after {
-            response
-                .headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from(after));
         }
         response
     }

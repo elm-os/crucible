@@ -300,7 +300,10 @@ fn the_series_take_the_ranked_keys_and_the_other_series_takes_the_rest() {
 #[test]
 fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
     let schema = metrics_schema();
-    assert_eq!(schema.len(), 1);
+    assert_eq!(
+        schema.iter().map(|s| s.source).collect::<Vec<_>>(),
+        [Source::Spans, Source::Traces]
+    );
     let spans = &schema[0];
     assert_eq!(spans.source, Source::Spans);
     assert_eq!(spans.granularities, Step::ALL);
@@ -388,15 +391,21 @@ fn the_compiler_accepts_what_the_schema_lists_and_nothing_else() {
             "{field}"
         );
     };
-    for source in [Source::McpOps, Source::Traces] {
-        invalid(
-            MetricsQuery {
-                source,
-                ..base.clone()
-            },
-            "source",
-        );
-    }
+    invalid(
+        MetricsQuery {
+            source: Source::McpOps,
+            ..base.clone()
+        },
+        "source",
+    );
+    // A measure of another source.
+    invalid(
+        MetricsQuery {
+            source: Source::Traces,
+            ..base.clone()
+        },
+        "measures",
+    );
     invalid(
         MetricsQuery {
             measures: Vec::new(),
@@ -475,4 +484,82 @@ proptest! {
             Err(other) => prop_assert!(false, "{other:?}"),
         }
     }
+}
+
+#[test]
+fn the_traces_source_counts_root_heads_in_the_core_tier() {
+    let schema = metrics_schema();
+    let traces = schema.iter().find(|s| s.source == Source::Traces).unwrap();
+    assert_eq!(traces.measures, [MeasureId::Traces]);
+    assert!(traces.dimensions.is_empty() && traces.filter_fields.is_empty());
+    assert_eq!(traces.limits.max_dimensions, 0);
+    let measure = MeasureId::Traces;
+    assert_eq!(
+        (measure.as_str(), measure.unit(), measure.additive()),
+        ("traces", "count", true)
+    );
+    assert_eq!(measure.tier(), crucible_plan::Tier::Core);
+    assert_eq!(MeasureId::parse("traces"), Some(measure));
+
+    let query = MetricsQuery {
+        source: Source::Traces,
+        measures: vec![(MeasureId::Traces, Aggregation::Sum)],
+        dimensions: Vec::new(),
+        filter: Filter::all(),
+        granularity: Granularity::Auto,
+        fill: Fill::Zero,
+        top_n: None,
+    };
+    let plan = metrics_series(scope(), window(DAY), &keep(), Caller::Session, &query, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.class(), QueryClass::AnalyticsRaw);
+    let Node::TimeSeries(series) = plan.root() else {
+        panic!("a time series")
+    };
+    assert_eq!(series.time().name(), "start_time");
+    assert_eq!(series.step(), Step::FiveMinutes);
+    let aggregate = series.aggregate();
+    assert_eq!(aggregate.table(), crucible_records::TableId::TraceHeads);
+    assert_eq!(aggregate.measures(), [Measure::Count]);
+    assert!(aggregate.group().is_empty());
+    let root = Literal::Enum(crucible_records::HeadKind::Root.value());
+    assert_eq!(
+        aggregate.pred(),
+        &Pred::eq(crucible_schema::TraceHeadsCol::HeadKind, root)
+    );
+    // An agent's read runs in the agent class, as every other.
+    let agent = metrics_series(scope(), window(DAY), &keep(), Caller::Agent, &query, None);
+    assert_eq!(agent.unwrap().unwrap().class(), QueryClass::Agent);
+
+    // The source has no dimensions and no filter fields yet, and no ranking or `other` series.
+    let refused = |query: MetricsQuery, field: &str| {
+        let result = metrics_series(scope(), window(DAY), &keep(), Caller::Session, &query, None);
+        assert!(
+            matches!(result, Err(MetricsError::Invalid { field: named, .. }) if named == field),
+            "{field}: {result:?}"
+        );
+    };
+    refused(
+        MetricsQuery {
+            dimensions: vec![DimensionId::Level],
+            ..query.clone()
+        },
+        "dimensions",
+    );
+    refused(
+        MetricsQuery {
+            filter: Filter::Text(TextField::Environment, vec!["prod".to_owned()]),
+            ..query.clone()
+        },
+        "filter",
+    );
+    refused(
+        MetricsQuery {
+            measures: vec![(MeasureId::Count, Aggregation::Sum)],
+            ..query.clone()
+        },
+        "measures",
+    );
+    assert!(metrics_ranking(scope(), window(DAY), &keep(), Caller::Session, &query).is_err());
 }

@@ -2,6 +2,7 @@
 
 mod control;
 mod cursor_keys;
+mod facts;
 mod identity;
 mod keys;
 mod mcp;

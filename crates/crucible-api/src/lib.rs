@@ -19,15 +19,18 @@
 
 mod access;
 mod authz;
+mod body;
 mod control;
 mod convert;
 mod cursor;
+mod idempotency;
 mod layers;
 mod openapi;
 mod params;
 mod problem;
 mod routes;
 mod settings;
+mod writer;
 
 use std::sync::Arc;
 
@@ -49,22 +52,25 @@ pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use settings::{
     DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
 };
+pub use writer::{AcceptedFact, FactAppend, FactAuthor, FactRefusal, FactWriter, NewFact};
 
 use crate::access::ApiState;
 
 /// The base path of the API (contract 12.1).
 pub const BASE_PATH: &str = "/api/v1";
 
-/// The API over a query service, with its routes under [`BASE_PATH`], signing cursors with `cursors`. Merge it
-/// into the main listener's router, then wrap that router in [`common_layers`].
+/// The API over a query service, with its routes under [`BASE_PATH`], signing cursors with `cursors` and
+/// writing facts through `facts`. Merge it into the main listener's router, then wrap that router in
+/// [`common_layers`].
 pub fn router(
     env: &Env,
     service: QueryService,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
+    facts: Arc<dyn FactWriter>,
 ) -> Router {
-    build(env, Some(service), keys, settings, cursors, None)
+    build(env, Some((service, facts)), keys, settings, cursors, None)
 }
 
 /// The API before a telemetry store is configured: requests are authenticated and validated as usual, cursors
@@ -79,26 +85,28 @@ pub fn router_without_store(
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
-/// key snapshot verifies API keys with their scopes. `service` is `None` until a telemetry store is up.
+/// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
+/// `None` until a telemetry store is up.
 pub fn platform_router(
     env: &Env,
-    service: Option<QueryService>,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
     identity: Arc<Identity>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, service, keys, settings, cursors, Some(identity))
+    build(env, store, keys, settings, cursors, Some(identity))
 }
 
 fn build(
     env: &Env,
-    service: Option<QueryService>,
+    store: Option<(QueryService, Arc<dyn FactWriter>)>,
     keys: Arc<dyn KeyVerifier>,
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     identity: Option<Arc<Identity>>,
 ) -> Router {
+    let (service, facts) = store.unzip();
     let state = ApiState {
         env: env.clone(),
         service,
@@ -106,6 +114,8 @@ fn build(
         settings,
         cursors,
         identity,
+        facts,
+        idempotency: Arc::default(),
     };
     let api = routes::router()
         .fallback(unknown_path)

@@ -154,6 +154,31 @@ pub const ROUTES: &[RouteAccess] = &[
         Project(ProjectPermission::Read),
     ),
     route(
+        "POST",
+        "/api/v1/projects/{project_id}/corrections",
+        Project(ProjectPermission::WriteFacts),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/facts",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/feedback",
+        Project(ProjectPermission::WriteFacts),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/filter-values",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/flags",
+        Project(ProjectPermission::WriteFacts),
+    ),
+    route(
         "GET",
         "/api/v1/projects/{project_id}/members",
         Project(ProjectPermission::Manage),
@@ -175,6 +200,16 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "POST",
+        "/api/v1/projects/{project_id}/metrics/query",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/metrics/schema",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
         "/api/v1/projects/{project_id}/search",
         Project(ProjectPermission::Read),
     ),
@@ -182,6 +217,11 @@ pub const ROUTES: &[RouteAccess] = &[
         "GET",
         "/api/v1/projects/{project_id}/spans/{trace_id}/{span_id}/payload",
         Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/tags",
+        Project(ProjectPermission::WriteFacts),
     ),
     route(
         "GET",
