@@ -1,6 +1,6 @@
 //! The lifecycle simulation suite (contract 13, invariant I9): the retention executor, the mask scheduler, the
 //! deletion executor and the node timer of `crucible-lifecycle` over `ChModel` and `PgModel` under crashes,
-//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the three seeded
+//! shipper stalls, store faults and lease steals, with the oracle for L1 to L3 and I9 and the four seeded
 //! defects it must catch (docs/testing/lifecycle-simulation.md).
 //!
 //! Replay one seed:
@@ -63,6 +63,8 @@ fn assert_exercised(total: &Stats) {
         "{total:?}"
     );
     assert!(total.hidden_reads > 0 && total.stalls > 0, "{total:?}");
+    // MCP rows that carry their user where no span of the trace does, by `user_id` or by subject hash.
+    assert!(total.mcp_identity_frames > 0, "{total:?}");
 }
 
 #[test]
@@ -151,6 +153,23 @@ fn deleting_without_fencing_is_caught() {
     let caught = catching(5_000..5_005, options, "L1:");
     println!("delete without fencing: caught in seeds {caught:?}");
     assert_eq!(caught.len(), 5);
+}
+
+/// The mutant "MCP rows by trace only": a deletion by user reaches the MCP rows only through the traces that
+/// its spans resolve to, and leaves the rows that carry the user, or only the hash of the user's subject, in
+/// traces no span of which names the user.
+#[test]
+fn reaching_mcp_rows_only_by_trace_is_caught() {
+    let options = Options {
+        mutant: Some(Mutant::McpByTraceOnly),
+        ..Options::CALM
+    };
+    let caught = catching(6_000..6_006, options, "I9:");
+    println!("MCP rows by trace only: caught in seeds {caught:?}");
+    assert!(!caught.is_empty());
+    for seed in caught.into_iter().take(2) {
+        assert_holds(&run_lifecycle_sim(seed, Options::CALM));
+    }
 }
 
 #[test]

@@ -53,6 +53,7 @@ use crucible_env::{
 use crucible_env_prod::ProdConfig;
 use crucible_export::{ExportRuntime, Exports};
 use crucible_ingest::{CompatRoute, Ingest, IngestConfig, RoutingHeader};
+use crucible_lifecycle::Subjects;
 use crucible_mcp_server::McpConfig;
 use crucible_normalize::{NormCtx, PriceTable};
 use crucible_query::{HiddenSource, QueryService};
@@ -792,15 +793,16 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     };
     let stores = Stores::new(Arc::new(store));
     // With a control plane the project salts are its `project_salts` rows; without one stage B drops the user
-    // identity of MCP operations (contract 9.3).
-    let (stores, salts): (_, Arc<dyn ProjectSalts>) = match control {
+    // identity of MCP operations (contract 9.3). A deletion by user hashes with the same salts.
+    let (stores, salts, subjects): (_, Arc<dyn ProjectSalts>, _) = match control {
         Some(control) => {
             let control = Arc::new(control.store);
             let sealer = Sealer::new("master-0", config.master_key.seal_key());
-            let salts = StoreSalts::new(&env, control.clone(), sealer);
-            (stores.with_control(control), Arc::new(salts))
+            let salts = Arc::new(StoreSalts::new(&env, control.clone(), sealer));
+            let subjects: Arc<dyn Subjects> = salts.clone();
+            (stores.with_control(control), salts, Some(subjects))
         }
-        None => (stores, Arc::new(NoSalts)),
+        None => (stores, Arc::new(NoSalts), None),
     };
     let (sql, stores) = match sql {
         Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
@@ -818,7 +820,10 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     // Every typed read, the export job's included, leaves out what a pending deletion selects.
     let service = match &lifecycle {
         Some(lifecycle) => {
-            lifecycle.store_is_up(telemetry);
+            // Both come from the control plane, as the lifecycle does.
+            if let Some(subjects) = subjects {
+                lifecycle.store_is_up(telemetry, subjects);
+            }
             service.with_hidden(Arc::clone(lifecycle) as Arc<dyn HiddenSource>)
         }
         None => service,

@@ -123,11 +123,34 @@ pub enum TraceSelector<'a> {
     User(&'a str),
     /// The traces with a span of this `session_id`.
     Session(&'a str),
+    /// The traces with an MCP operation of this `user_id`, or of one of these `user_subject_hash` values (at
+    /// most [`TRACE_ID_LIST_CHUNK`]): the MCP rows that a deletion by user reaches by the user's own columns,
+    /// whether or not a span of the trace names the user.
+    McpUser(&'a str, &'a [[u8; 16]]),
+}
+
+/// `user_id = <user_id>`, or `user_subject_hash IN (<hashes>)` as well when there are hashes: the rows of an MCP
+/// table that a deletion by user selects by the user's own columns (contract 13.3).
+pub fn mcp_user(table_id: TableId, user_id: &str, hashes: &[[u8; 16]]) -> Result<Pred, PlanError> {
+    let column = |name: &str| lifecycle_column(table_id, name).ok_or(PlanError::Table(table_id));
+    let by_id = Pred::Cmp(column("user_id")?, CmpOp::Eq, Literal::from(user_id));
+    if hashes.is_empty() {
+        return Ok(by_id);
+    }
+    let hashes = hashes
+        .iter()
+        .map(|hash| Literal::Bytes(hash.to_vec()))
+        .collect();
+    Ok(Pred::Or(vec![
+        by_id,
+        Pred::In(column("user_subject_hash")?, hashes),
+    ]))
 }
 
 /// One page of the traces a deletion selects, with the span of time their spans start in: the outputs are
 /// `trace_id`, `min(start_time)` and `max(start_time)`, ordered by `trace_id`, at most `limit` rows after the
-/// trace `after`. Only spans received before `requested_at` count, because a deletion keeps later data.
+/// trace `after`. Only rows received before `requested_at` count, because a deletion keeps later data. The
+/// spans of `span_core` are read, or the operations of `mcp_ops` for [`TraceSelector::McpUser`].
 pub fn deletion_traces(
     scope: ProjectScope,
     selector: TraceSelector<'_>,
@@ -135,20 +158,34 @@ pub fn deletion_traces(
     after: Option<TraceId>,
     limit: u32,
 ) -> Result<QueryPlan, PlanError> {
-    let selected = match selector {
-        TraceSelector::Traces(ids) => trace_id_in(SpanCoreCol::TraceId.column_ref(), ids),
-        TraceSelector::User(user_id) => Pred::eq(SpanCoreCol::UserId, user_id),
-        TraceSelector::Session(session_id) => Pred::eq(SpanCoreCol::SessionId, session_id),
+    let (table_id, selected) = match selector {
+        TraceSelector::Traces(ids) => (
+            TableId::SpanCore,
+            trace_id_in(SpanCoreCol::TraceId.column_ref(), ids),
+        ),
+        TraceSelector::User(user_id) => (TableId::SpanCore, Pred::eq(SpanCoreCol::UserId, user_id)),
+        TraceSelector::Session(session_id) => (
+            TableId::SpanCore,
+            Pred::eq(SpanCoreCol::SessionId, session_id),
+        ),
+        TraceSelector::McpUser(user_id, hashes) => {
+            (TableId::McpOps, mcp_user(TableId::McpOps, user_id, hashes)?)
+        }
     };
+    let column = |name: &str| lifecycle_column(table_id, name).ok_or(PlanError::Table(table_id));
     let pred = Pred::And(vec![
         selected,
-        Pred::cmp(SpanCoreCol::ReceivedAt, CmpOp::Lt, requested_at),
+        Pred::Cmp(
+            column("received_at")?,
+            CmpOp::Lt,
+            Literal::Time(requested_at),
+        ),
     ]);
-    let start = SpanCoreCol::StartTime.column_ref();
+    let start = column("start_time")?;
     let mut aggregate = Aggregate::new(
-        TableId::SpanCore,
+        table_id,
         pred,
-        [SpanCoreCol::TraceId],
+        [column("trace_id")?],
         vec![Measure::Min(start), Measure::Max(start)],
     )?
     .ordered(vec![(AggOutput::Group(0), Direction::Asc)])?
@@ -156,11 +193,45 @@ pub fn deletion_traces(
     if let Some(after) = after {
         aggregate = aggregate.after(vec![Literal::from(after)])?;
     }
-    let window = TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE)
-        .map_err(|_| PlanError::Bounds)?;
     Ok(QueryPlan::new(
         scope,
-        window,
+        every_instant()?,
+        QueryClass::AnalyticsRaw,
+        Node::Aggregate(aggregate),
+    ))
+}
+
+fn every_instant() -> Result<TimeWindow, PlanError> {
+    TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE).map_err(|_| PlanError::Bounds)
+}
+
+/// One page of the issuers of the project's MCP operations received before `requested_at`: the outputs are
+/// `user_issuer` and the number of its operations, ordered by issuer, at most `limit` rows after the issuer
+/// `after`. A deletion by user that names no issuer hashes the user under every one of them (contract 13.3).
+pub fn deletion_issuers(
+    scope: ProjectScope,
+    requested_at: Timestamp,
+    after: Option<&str>,
+    limit: u32,
+) -> Result<QueryPlan, PlanError> {
+    let pred = Pred::And(vec![
+        Pred::cmp(McpOpsCol::UserIssuer, CmpOp::Ne, ""),
+        Pred::cmp(McpOpsCol::ReceivedAt, CmpOp::Lt, requested_at),
+    ]);
+    let mut aggregate = Aggregate::new(
+        TableId::McpOps,
+        pred,
+        [McpOpsCol::UserIssuer],
+        vec![Measure::Count],
+    )?
+    .ordered(vec![(AggOutput::Group(0), Direction::Asc)])?
+    .limited(limit)?;
+    if let Some(after) = after {
+        aggregate = aggregate.after(vec![Literal::from(after)])?;
+    }
+    Ok(QueryPlan::new(
+        scope,
+        every_instant()?,
         QueryClass::AnalyticsRaw,
         Node::Aggregate(aggregate),
     ))

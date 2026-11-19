@@ -7258,7 +7258,7 @@
         "properties": {
           "error": {
             "type": "string",
-            "description": "Why the request failed."
+            "description": "Why the request failed, or what a request that has not ended waits for and how to fix it (for a\ndeletion by user: a project salt that the server cannot read)."
           },
           "id": {
             "type": "string",

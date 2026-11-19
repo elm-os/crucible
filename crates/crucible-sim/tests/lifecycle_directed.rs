@@ -13,11 +13,11 @@ use crucible_control::{
     ControlStore, DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, NewExport, Project,
     Repos as _,
 };
-use crucible_env::{StoreFlavour, Stores, TelemetryStore};
+use crucible_env::{StoreFlavour, Stores};
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
-    LifecycleConfig, NewDeletion, NodeLog as _, NodeState, Service, TelemetrySource, WalLog,
-    leader_jobs, node_job,
+    LeaderSource, LeaderStores, LifecycleConfig, NewDeletion, NodeLog as _, NodeState, Service,
+    Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::Value;
 use crucible_records::{DeletionState, ExportJobId, Lsn, ProjectId, TableId, TraceId};
@@ -29,8 +29,24 @@ use crucible_sim::ship_sim::{SpanSpec, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, run};
 use crucible_wal::{Wal, WalConfig};
 use crucible_wal_codec::{Compression, PreparedFrame, Record, RecordType, TombstoneSelector};
+use futures::future::BoxFuture;
 
 const PROJECT: [u8; 16] = [1; 16];
+
+/// The project salts of a node whose shipper has none: no row carries a subject hash.
+#[derive(Debug)]
+struct NoSalt;
+
+impl Subjects for NoSalt {
+    fn hashes<'a>(
+        &'a self,
+        _: ProjectId,
+        _: &'a [String],
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Vec<[u8; 16]>>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+}
 
 struct Node {
     host: Host,
@@ -150,8 +166,11 @@ where
         let service = Service::new(&host.env, Arc::clone(&control), Arc::clone(&state));
         let mut config = LifecycleConfig::default();
         config.mask_cycle = Duration::from_secs(1_800);
-        let store: Arc<dyn TelemetryStore> = Arc::new(ch.clone());
-        let source: TelemetrySource = Arc::new(move || Some(Arc::clone(&store)));
+        let stores = LeaderStores {
+            telemetry: Arc::new(ch.clone()),
+            subjects: Arc::new(NoSalt),
+        };
+        let source: LeaderSource = Arc::new(move || Some(stores.clone()));
         let mut registry = Registry::new();
         registry.register(node_job(state, &config));
         for job in leader_jobs(&source, config) {

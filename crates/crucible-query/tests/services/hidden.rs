@@ -1,13 +1,15 @@
 //! Typed reads under the pending-deletion set (contract 13.4): from the moment a deletion request is accepted,
 //! no read returns what it selects, whether the span is still in the recent index or already in the store,
-//! while what arrived after the request stays readable.
+//! while what arrived after the request stays readable. The trace detail and list, the payload, the session,
+//! user and span lists, and the pages of an export in progress.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible_plan::{Filter, PayloadField};
 use crucible_query::{
-    Hidden, HiddenSelector, HiddenSource, PayloadQuery, QueryServiceError, TraceListQuery,
+    ExportLimits, ExportQuery, Hidden, HiddenSelector, HiddenSource, PayloadQuery,
+    QueryServiceError, SessionListQuery, SpanListQuery, TraceListQuery, UserListQuery,
 };
 use crucible_records::{ProjectId, SpanId, TableId, TraceId};
 
@@ -143,6 +145,112 @@ fn a_pending_deletion_by_user_or_session_hides_the_spans_that_carry_it() {
         )]);
         assert_eq!(listed(&world).len(), 3, "settled: {settled}");
     }
+}
+
+fn sessions(world: &World) -> Vec<String> {
+    let query = SessionListQuery {
+        window: window(),
+        limit: Some(10),
+        cursor: None,
+    };
+    let page = run(world.service.session_list(&ctx(1), query)).unwrap();
+    let mut ids: Vec<String> = page.data.iter().map(|s| s.session_id.to_string()).collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn users(world: &World) -> Vec<String> {
+    let query = UserListQuery {
+        window: window(),
+        limit: Some(10),
+        cursor: None,
+    };
+    let page = run(world.service.user_list(&ctx(1), query)).unwrap();
+    let mut ids: Vec<String> = page.data.iter().map(|u| u.user_id.to_string()).collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn span_list(world: &World) -> Vec<SpanId> {
+    let query = SpanListQuery {
+        window: window(),
+        filter: Filter::all(),
+        limit: Some(10),
+        cursor: None,
+    };
+    let page = run(world.service.span_list(&ctx(1), query)).unwrap();
+    let mut ids: Vec<SpanId> = page.data.iter().map(|span| span.span_id).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The spans of the first page of an export of the window.
+fn exported(world: &World) -> Vec<SpanId> {
+    let query = ExportQuery {
+        window: window(),
+        trace_ids: Vec::new(),
+        user_id: None,
+        session_id: None,
+        as_of: NOW.saturating_add_micros(60_000_000),
+    };
+    let page = run(world
+        .service
+        .export_page(&ctx(1), &query, None, ExportLimits::default()));
+    let mut ids: Vec<SpanId> = page
+        .unwrap()
+        .records
+        .iter()
+        .map(|record| record.span.core.span_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The session, user and span lists and an export in progress carry the set as every other read does: the
+/// lists of the rollups by their key, the span list and the export by the spans.
+#[test]
+fn the_lists_and_an_export_in_progress_leave_out_a_pending_deletion() {
+    let (mut world, pending) = node();
+    let mut ada = span(1, 10, 0, NOW);
+    ada.summary.user_id = Arc::from("ada");
+    ada.summary.session_id = Arc::from("s-1");
+    let mut bob = span(2, 20, 0, NOW);
+    bob.summary.user_id = Arc::from("bob");
+    bob.summary.session_id = Arc::from("s-2");
+    let lsn = world.ack(vec![ada.clone(), bob.clone()]);
+    for entry in [&ada, &bob] {
+        let row = span_payload_row(entry, lsn, NOW, "{}", &[]);
+        world.store.insert(TableId::SpanPayload, row);
+    }
+    world.settle();
+    let request = |selector| Hidden {
+        selector,
+        requested_at: NOW.saturating_add_micros(1_000_000),
+    };
+    assert_eq!(sessions(&world), ["s-1", "s-2"]);
+    assert_eq!(users(&world), ["ada", "bob"]);
+    assert_eq!(span_list(&world), [span_id(10), span_id(20)]);
+    assert_eq!(exported(&world), [span_id(10), span_id(20)]);
+
+    pending.set(vec![(
+        project(1),
+        request(HiddenSelector::Session("s-1".to_owned())),
+    )]);
+    assert_eq!(sessions(&world), ["s-2"]);
+    assert_eq!(span_list(&world), [span_id(20)]);
+    assert_eq!(exported(&world), [span_id(20)]);
+
+    pending.set(vec![(
+        project(1),
+        request(HiddenSelector::User("bob".to_owned())),
+    )]);
+    assert_eq!(users(&world), ["ada"]);
+    assert_eq!(span_list(&world), [span_id(10)]);
+    assert_eq!(exported(&world), [span_id(10)]);
+
+    pending.set(vec![(project(1), by_trace(1))]);
+    assert_eq!(span_list(&world), [span_id(20)]);
+    assert_eq!(exported(&world), [span_id(20)]);
 }
 
 #[test]

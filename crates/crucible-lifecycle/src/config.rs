@@ -20,6 +20,10 @@ pub enum Mutant {
     /// An action is sent to ClickHouse without being recorded under the fencing token first.
     #[cfg(feature = "test-mutants")]
     DeleteWithoutFencing,
+    /// A deletion by user reaches the MCP tables only through the traces its spans resolve to, never by the
+    /// operations' own `user_id` and `user_subject_hash`.
+    #[cfg(feature = "test-mutants")]
+    McpByTraceOnly,
 }
 
 /// The settings of the lifecycle jobs.
@@ -92,6 +96,14 @@ impl LifecycleConfig {
     pub(crate) fn issues_unfenced(&self) -> bool {
         #[cfg(feature = "test-mutants")]
         return self.mutant == Some(Mutant::DeleteWithoutFencing);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether a deletion by user skips the MCP rows of its own columns (a seeded defect).
+    pub(crate) fn skips_mcp_identity(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::McpByTraceOnly);
         #[cfg(not(feature = "test-mutants"))]
         false
     }

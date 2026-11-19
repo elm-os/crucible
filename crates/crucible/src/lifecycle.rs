@@ -13,7 +13,8 @@ use crucible_control::ControlStore;
 use crucible_env::{Env, TelemetryStore};
 use crucible_jobs::Job;
 use crucible_lifecycle::{
-    LifecycleConfig, NodeState, Service, TelemetrySource, WalLog, leader_jobs, node_job,
+    LeaderSource, LeaderStores, LifecycleConfig, NodeState, Service, Subjects, WalLog, leader_jobs,
+    node_job,
 };
 use crucible_query::{Hidden, HiddenSource};
 use crucible_records::ProjectId;
@@ -25,8 +26,9 @@ pub(crate) struct Lifecycle {
     node: Arc<NodeState>,
     /// What the API calls.
     pub(crate) service: Service,
-    /// The telemetry store, once it is up. The leader jobs do nothing before that.
-    telemetry: Arc<OnceLock<Arc<dyn TelemetryStore>>>,
+    /// The telemetry store and the project salts, once the store is up. The leader jobs do nothing before
+    /// that.
+    stores: Arc<OnceLock<LeaderStores>>,
 }
 
 impl Lifecycle {
@@ -40,23 +42,31 @@ impl Lifecycle {
         Self {
             service: Service::new(env, control, Arc::clone(&node)),
             node,
-            telemetry: Arc::default(),
+            stores: Arc::default(),
         }
     }
 
     /// The node timer and the three leader jobs of the `lifecycle` lease.
     pub(crate) fn jobs(&self) -> Vec<Job> {
         let config = LifecycleConfig::default();
-        let telemetry = Arc::clone(&self.telemetry);
-        let source: TelemetrySource = Arc::new(move || telemetry.get().cloned());
+        let stores = Arc::clone(&self.stores);
+        let source: LeaderSource = Arc::new(move || stores.get().cloned());
         let mut jobs = vec![node_job(Arc::clone(&self.node), &config)];
         jobs.extend(leader_jobs(&source, config));
         jobs
     }
 
-    /// Gives the leader jobs the telemetry store. The first store stays.
-    pub(crate) fn store_is_up(&self, telemetry: Arc<dyn TelemetryStore>) {
-        let _ = self.telemetry.set(telemetry);
+    /// Gives the leader jobs the telemetry store, and the project salts that a deletion by user hashes its
+    /// subject with. The first stores stay.
+    pub(crate) fn store_is_up(
+        &self,
+        telemetry: Arc<dyn TelemetryStore>,
+        subjects: Arc<dyn Subjects>,
+    ) {
+        let _ = self.stores.set(LeaderStores {
+            telemetry,
+            subjects,
+        });
     }
 }
 

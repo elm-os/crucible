@@ -26,8 +26,9 @@ pub use export::{
 pub use facts::{FactTable, FactsOf, fact_page, fact_rows};
 pub use filter_values::{FILTER_VALUES_MAX_LIMIT, FilterValuesRequest, filter_values};
 pub use lifecycle::{
-    DELETION_TRACES_PAGE, TRACE_ID_LIST_CHUNK, TraceSelector, deletion_traces, expired_before,
-    lifecycle_column, lifecycle_oldest, lifecycle_time_column, trace_id_in,
+    DELETION_TRACES_PAGE, TRACE_ID_LIST_CHUNK, TraceSelector, deletion_issuers, deletion_traces,
+    expired_before, lifecycle_column, lifecycle_oldest, lifecycle_time_column, mcp_user,
+    trace_id_in,
 };
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,

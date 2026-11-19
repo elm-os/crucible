@@ -64,6 +64,7 @@ traces_resolved: number,
  */
 places: Array<DeletionPlace>, 
 /**
- * Why the request failed.
+ * Why the request failed, or what a request that has not ended waits for and how to fix it (for a
+ * deletion by user: a project salt that the server cannot read).
  */
 error?: string, };

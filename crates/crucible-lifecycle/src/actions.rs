@@ -28,6 +28,7 @@ const MAX_STEPS_PER_RUN: usize = 500;
 #[derive(Debug)]
 pub(crate) struct Shared {
     pub(crate) telemetry: Arc<dyn TelemetryStore>,
+    pub(crate) subjects: Arc<dyn crate::Subjects>,
     pub(crate) config: LifecycleConfig,
 }
 

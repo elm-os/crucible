@@ -40,6 +40,10 @@ pub(crate) enum Detail {
         /// A `session_id`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// The `user_subject_hash` values of the `user_id`, as 32 hex characters: on the MCP tables a deletion
+        /// by user also selects the rows that carry one of them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        subjects: Vec<String>,
     },
     /// A mask application over the deletes that had finished when it was planned.
     Mask {
@@ -74,6 +78,25 @@ impl From<DetailError> for TxError {
     }
 }
 
+/// A subject hash as a detail document holds it: 32 lowercase hex characters.
+pub(crate) fn subject_hex(hash: &[u8; 16]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The subject hash that [`subject_hex`] wrote.
+pub(crate) fn subject_hash(hex: &str) -> Result<[u8; 16], DetailError> {
+    let bad = || DetailError::Shape("a subject hash is not 32 hex characters");
+    if hex.len() != 32 {
+        return Err(bad());
+    }
+    let mut hash = [0u8; 16];
+    for (at, byte) in hash.iter_mut().enumerate() {
+        let pair = hex.get(2 * at..2 * at + 2).ok_or_else(bad)?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| bad())?;
+    }
+    Ok(hash)
+}
+
 impl Detail {
     pub(crate) fn to_text(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -102,6 +125,7 @@ impl Detail {
                 traces,
                 user_id,
                 session_id,
+                subjects,
             } => {
                 let mut selected = Vec::new();
                 if !traces.is_empty() {
@@ -120,6 +144,15 @@ impl Detail {
                             .ok_or(DetailError::Shape("the table lacks the selector's column"))?;
                         selected.push(Pred::Cmp(column, CmpOp::Eq, Literal::from(value.as_str())));
                     }
+                }
+                if !subjects.is_empty() {
+                    let column = lifecycle_column(table_id, "user_subject_hash")
+                        .ok_or(DetailError::Shape("the table has no user_subject_hash"))?;
+                    let hashes = subjects
+                        .iter()
+                        .map(|hash| subject_hash(hash).map(|hash| Literal::Bytes(hash.to_vec())))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    selected.push(Pred::In(column, hashes));
                 }
                 let selected = match selected.len() {
                     0 => return Err(DetailError::Shape("the request selects nothing")),
@@ -230,7 +263,66 @@ mod tests {
                 .collect(),
             user_id: user_id.map(str::to_owned),
             session_id: session_id.map(str::to_owned),
+            subjects: Vec::new(),
         }
+    }
+
+    fn by_subject(hashes: &[[u8; 16]]) -> Detail {
+        Detail::Request {
+            requested_at: 1_000,
+            traces: Vec::new(),
+            user_id: Some("ada".to_owned()),
+            session_id: None,
+            subjects: hashes.iter().map(subject_hex).collect(),
+        }
+    }
+
+    #[test]
+    fn subject_hashes_round_trip_through_hex() {
+        let hash = [
+            0x00, 0x01, 0xab, 0xff, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0xfe,
+        ];
+        assert_eq!(subject_hex(&hash), "0001abff0708090a0b0c0d0e0f1011fe");
+        assert_eq!(subject_hash(&subject_hex(&hash)), Ok(hash));
+        for bad in [
+            "",
+            "0001",
+            "zz01abff0708090a0b0c0d0e0f1011fe",
+            "é001abff0708090a0b0c0d0e0f1011f",
+        ] {
+            assert!(subject_hash(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Contract 13.3: on the MCP tables a deletion by user selects `user_id` or one of the subject hashes;
+    /// a table without the hash column refuses the document rather than drop the term.
+    #[test]
+    fn a_user_predicate_carries_the_subject_hashes_where_the_table_has_them() {
+        let scope = scope(ProjectId::from_bytes([2; 16])).unwrap();
+        let detail = by_subject(&[[1; 16], [2; 16]]);
+        assert_eq!(Detail::parse(&detail.to_text()), Ok(detail.clone()));
+        for table in [TableId::McpOps, TableId::McpContent] {
+            let Pred::And(parts) = detail.pred(table).unwrap() else {
+                panic!("no arrival bound on {table:?}");
+            };
+            let Pred::Or(terms) = &parts[0] else {
+                panic!("{:?}", parts[0]);
+            };
+            assert!(matches!(&terms[0], Pred::Cmp(c, CmpOp::Eq, _) if c.name() == "user_id"));
+            assert!(
+                matches!(&terms[1], Pred::In(c, values) if c.name() == "user_subject_hash" && values.len() == 2)
+            );
+            let action = action(ActionKind::Delete, table, &detail);
+            assert!(matches!(call(&action, Some(scope)), Ok(Call::Delete(_))));
+            assert!(verification(&action, scope, Granularity::Day).is_ok());
+        }
+        assert!(detail.pred(TableId::SpanCore).is_err());
+        assert!(
+            Detail::parse(r#"{"what":"request","requested_at":1,"user_id":"a","subjects":["01"]}"#)
+                .unwrap()
+                .pred(TableId::McpOps)
+                .is_err()
+        );
     }
 
     #[test]

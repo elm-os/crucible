@@ -5,6 +5,10 @@
 //! only a trace id reaches. Once every page is planned, the tables that carry the selector's own column
 //! (`user_id` or `session_id`) get one delete per partition by that column. The span tables are among these,
 //! so the spans that the resolution reads are still there while it pages.
+//!
+//! A deletion by user also reaches the MCP tables by the user's own columns, `user_id` and
+//! `user_subject_hash` ([`identity_reach`]): an MCP operation can carry the user when no span of its trace
+//! does. Those deletes go to the partitions in which the MCP rows themselves were found.
 
 use crucible_control::DeletionSelector;
 use crucible_plan::lifecycle_time_column;
@@ -73,14 +77,26 @@ pub fn page_reach(selector: &DeletionSelector) -> Vec<Reach> {
     if matches!(selector, DeletionSelector::Traces(_)) {
         reach.extend(SPAN_TABLES.map(by_trace));
     }
-    let user = matches!(selector, DeletionSelector::User { .. });
-    reach.extend(MCP_TABLES.map(|table| Reach {
-        user,
-        ..by_trace(table)
-    }));
+    reach.extend(MCP_TABLES.map(by_trace));
     reach.extend(FACT_TABLES.map(by_trace));
     reach.push(by_trace(TableId::TraceStats));
     reach
+}
+
+/// The MCP tables a deletion by user reaches by `user_id` and `user_subject_hash`, in the partitions where
+/// its MCP rows were found; nothing for any other selector.
+pub fn identity_reach(selector: &DeletionSelector) -> Vec<Reach> {
+    if !matches!(selector, DeletionSelector::User { .. }) {
+        return Vec::new();
+    }
+    MCP_TABLES
+        .map(|table| Reach {
+            table,
+            traces: false,
+            user: true,
+            session: false,
+        })
+        .to_vec()
 }
 
 /// The tables a request reaches by its own column, once every page is planned.
@@ -164,6 +180,19 @@ mod tests {
             .collect();
         for selector in selectors() {
             let (page, last) = (page_reach(&selector), final_reach(&selector));
+            let identity = identity_reach(&selector);
+            // Only a user is reached by identity, and there only on the MCP tables, which hold the hashes.
+            match selector {
+                DeletionSelector::User { .. } => {
+                    let tables: Vec<TableId> = identity.iter().map(|r| r.table).collect();
+                    assert_eq!(tables, MCP_TABLES);
+                    for reach in &identity {
+                        assert!(reach.user && !reach.traces && !reach.session);
+                        assert!(lifecycle_column(reach.table, "user_subject_hash").is_some());
+                    }
+                }
+                _ => assert!(identity.is_empty()),
+            }
             let mut reached: BTreeSet<TableId> =
                 page.iter().chain(&last).map(|r| r.table).collect();
             match selector {
@@ -172,7 +201,7 @@ mod tests {
                 DeletionSelector::Session(_) => assert!(reached.remove(&TableId::SessionRollup)),
             }
             assert_eq!(reached, common, "{selector:?}");
-            for reach in page.iter().chain(&last) {
+            for reach in page.iter().chain(&last).chain(&identity) {
                 assert!(reach.traces || reach.user || reach.session);
                 for (wanted, name) in [
                     (reach.traces, "trace_id"),

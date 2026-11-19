@@ -27,6 +27,10 @@
 //! The model's stage B keeps the two rules that the deletion executor relies on: it applies a tombstone to the
 //! frames after it in the log, and a node that starts registers first and then consults the deletion requests
 //! before it ships.
+//!
+//! A trace shows its user on its spans, on its MCP operations or on both; an operation carries the user as
+//! `user_id` or only as the hash of the user's subject under one of two issuers. A deletion by user must reach
+//! the MCP rows by their own identity, also where no span of the trace names the user.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -47,9 +51,10 @@ use crucible_env::{
 };
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
-    LifecycleConfig, LogError, NewDeletion, NodeLog, NodeState, Service, TelemetrySource,
-    leader_jobs, node_job, retention_tables,
+    LeaderSource, LeaderStores, LifecycleConfig, LogError, NewDeletion, NodeLog, NodeState,
+    Service, Subjects, leader_jobs, node_job, retention_tables,
 };
+use crucible_normalize::ProjectSalt;
 use crucible_plan::{BatchProbe, DeletePlan, QueryPlan, TraceSelector, Value, deletion_traces};
 use crucible_records::{
     BatchToken, DeletionState, Lsn, PartitionId, ProjectId, TableId, Timestamp, TraceId, Uuid,
@@ -58,6 +63,7 @@ use crucible_records::{
 use crucible_schema::{
     Granularity, MigrationStep, RetentionSettings, TableKind, day_of, route, table,
 };
+use futures::future::BoxFuture;
 
 use crate::blocks::Rows;
 use crate::ch_model::{ChFaults, ChModel};
@@ -69,6 +75,8 @@ const DAY: i64 = 86_400_000_000;
 const RETENTION_DAYS: u32 = 3;
 /// The tables a frame of spans writes one row per span to.
 const SPAN_TABLES: [TableId; 3] = [TableId::SpanCore, TableId::SpanPayload, TableId::TraceHeads];
+/// The MCP tables, which a deletion by user also reaches by their own `user_id` and subject hash.
+const MCP_TABLES: [TableId; 2] = [TableId::McpOps, TableId::McpContent];
 /// The tables a deletion reaches through the traces it resolves.
 const TRACE_TABLES: [TableId; 7] = [
     TableId::McpOps,
@@ -90,6 +98,8 @@ pub enum Mutant {
     DropMaskCycle,
     /// An action is sent to the store without being recorded under the fencing token first.
     DeleteWithoutFencing,
+    /// A deletion by user reaches the MCP rows only through the traces its spans resolve to.
+    McpByTraceOnly,
 }
 
 /// What one run does.
@@ -177,6 +187,13 @@ pub struct Stats {
     pub hidden_reads: u64,
     /// Rows the oracle looked at in the store at the end.
     pub rows_checked: u64,
+    /// Frames shipped whose MCP rows carry their user where their spans do not: by `user_id`, or only by
+    /// the subject hash.
+    pub mcp_identity_frames: u64,
+    /// Frames whose MCP rows the model's stage B dropped for a deletion by user while it kept their spans.
+    pub mcp_drops: u64,
+    /// Reads of the project salts that failed.
+    pub salt_failures: u64,
 }
 
 impl Stats {
@@ -203,6 +220,9 @@ impl Stats {
         self.completed += other.completed;
         self.hidden_reads += other.hidden_reads;
         self.rows_checked += other.rows_checked;
+        self.mcp_identity_frames += other.mcp_identity_frames;
+        self.mcp_drops += other.mcp_drops;
+        self.salt_failures += other.salt_failures;
     }
 }
 
@@ -233,12 +253,28 @@ fn nanos(d: Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// Where a trace's user shows: on its spans, on its MCP operations, or both. An operation carries the user as
+/// `user_id`, or only as the hash of the user's subject under an issuer (contract 9.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Identity {
+    /// The span tables and the rollups carry `user_id`.
+    spans: bool,
+    /// The MCP rows carry `user_id`.
+    mcp_user: bool,
+    /// The MCP rows carry the hash of the user under this issuer.
+    issuer: Option<&'static str>,
+}
+
+/// The token issuers of the workload's MCP operations.
+const ISSUERS: [&str; 2] = ["https://a.example", "https://b.example"];
+
 /// The spans of one frame: one trace of one project, of one user and one session, starting on one day.
 #[derive(Clone, Debug)]
 struct Spans {
     project: ProjectId,
     trace: TraceId,
     user: String,
+    identity: Identity,
     session: String,
     start: Timestamp,
     received_at: Timestamp,
@@ -246,14 +282,68 @@ struct Spans {
 }
 
 impl Spans {
+    /// Whether the request selects the frame's spans, and with them every row of the frame.
     fn selected_by(&self, request: &DeletionRequest) -> bool {
         request.project_id == self.project
             && self.received_at < request.requested_at
             && match &request.selector {
                 DeletionSelector::Traces(ids) => ids.contains(&self.trace),
-                DeletionSelector::User { user_id, .. } => *user_id == self.user,
+                DeletionSelector::User { user_id, .. } => {
+                    self.identity.spans && *user_id == self.user
+                }
                 DeletionSelector::Session(session_id) => *session_id == self.session,
             }
+    }
+
+    /// Whether a deletion by user selects the frame's MCP rows by their own `user_id` or subject hash.
+    fn mcp_selected_by(&self, request: &DeletionRequest) -> bool {
+        request.project_id == self.project
+            && self.received_at < request.requested_at
+            && matches!(&request.selector, DeletionSelector::User { user_id, .. }
+                if *user_id == self.user && (self.identity.mcp_user || self.identity.issuer.is_some()))
+    }
+}
+
+/// The salt of a project in the simulation.
+fn salt(project: ProjectId) -> ProjectSalt {
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(&project.uuid().to_bytes());
+    ProjectSalt::new(bytes)
+}
+
+/// The project salts as the deletion executor reads them: they fail now and then while the stores do.
+struct SimSubjects {
+    rng: Arc<dyn Rng>,
+    faulty: Arc<AtomicBool>,
+    ledger: Arc<Mutex<Ledger>>,
+}
+
+impl fmt::Debug for SimSubjects {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SimSubjects")
+    }
+}
+
+impl Subjects for SimSubjects {
+    fn hashes<'a>(
+        &'a self,
+        project_id: ProjectId,
+        issuers: &'a [String],
+        subject: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Vec<[u8; 16]>>, String>> {
+        Box::pin(async move {
+            if self.faulty.load(Ordering::SeqCst) && below(self.rng.as_ref(), 4) == 0 {
+                lock(&self.ledger).stats.salt_failures += 1;
+                return Err("the control store did not answer; the salt is read again".to_owned());
+            }
+            let salt = salt(project_id);
+            Ok(Some(
+                issuers
+                    .iter()
+                    .map(|issuer| salt.subject_hash(issuer, subject))
+                    .collect(),
+            ))
+        })
     }
 }
 
@@ -473,6 +563,9 @@ struct World {
     config: LifecycleConfig,
     options: Options,
     ids: Arc<AtomicU64>,
+    /// Whether reads of the project salts fail now and then: while the stores fail.
+    salt_faults: Arc<AtomicBool>,
+    salt_rng: Arc<dyn Rng>,
 }
 
 fn uuid(id: Uuid) -> Value {
@@ -534,8 +627,26 @@ fn rows_of(
             Value::Bytes(ids[row.min(ids.len() - 1)].to_vec())
         });
     }
+    let mcp = MCP_TABLES.contains(&table_id);
     if has("user_id") {
-        rows = rows.all("user_id", Value::String(spans.user.clone()));
+        let shown = if mcp {
+            spans.identity.mcp_user
+        } else {
+            spans.identity.spans
+        };
+        let user = if shown {
+            spans.user.clone()
+        } else {
+            String::new()
+        };
+        rows = rows.all("user_id", Value::String(user));
+    }
+    if mcp && let Some(issuer) = spans.identity.issuer {
+        let hash = salt(spans.project).subject_hash(issuer, &spans.user);
+        rows = rows.all("user_subject_hash", Value::Bytes(hash.to_vec()));
+        if has("user_issuer") {
+            rows = rows.all("user_issuer", Value::String(issuer.to_owned()));
+        }
     }
     if has("session_id") {
         rows = rows.all("session_id", Value::String(spans.session.clone()));
@@ -609,9 +720,14 @@ impl World {
                 self.resolve(&log, lsn);
                 continue;
             }
+            // A deletion by user also selects MCP rows by their own identity: stage B drops those rows and
+            // ships the rest of the frame.
+            let mcp_dropped = known.values().any(|request| spans.mcp_selected_by(request));
             let mut whole = true;
             for table_id in frame_tables() {
-                if lock(&log.state).front_done.contains(&table_id) {
+                if lock(&log.state).front_done.contains(&table_id)
+                    || (mcp_dropped && MCP_TABLES.contains(&table_id))
+                {
                     continue;
                 }
                 let Some((rows, partition)) = rows_of(table_id, &spans, log.epoch, lsn) else {
@@ -655,6 +771,13 @@ impl World {
             if whole {
                 let mut ledger = lock(&self.ledger);
                 ledger.stats.shipped += spans.span_ids.len() as u64;
+                let apart = !spans.identity.spans
+                    && (spans.identity.mcp_user || spans.identity.issuer.is_some());
+                if mcp_dropped {
+                    ledger.stats.mcp_drops += 1;
+                } else if apart {
+                    ledger.stats.mcp_identity_frames += 1;
+                }
                 if let Some(index) = index {
                     ledger.spans[index].1 = Fate::Shipped;
                 }
@@ -679,13 +802,20 @@ impl World {
         state.watermark = lsn;
     }
 
-    fn source(&self) -> TelemetrySource {
-        let store: Arc<dyn TelemetryStore> = Arc::new(Audited {
-            ch: self.ch.clone(),
-            pg: self.pg.clone(),
-            ledger: Arc::clone(&self.ledger),
-        });
-        Arc::new(move || Some(Arc::clone(&store)))
+    fn source(&self) -> LeaderSource {
+        let stores = LeaderStores {
+            telemetry: Arc::new(Audited {
+                ch: self.ch.clone(),
+                pg: self.pg.clone(),
+                ledger: Arc::clone(&self.ledger),
+            }),
+            subjects: Arc::new(SimSubjects {
+                rng: Arc::clone(&self.salt_rng),
+                faulty: Arc::clone(&self.salt_faults),
+                ledger: Arc::clone(&self.ledger),
+            }),
+        };
+        Arc::new(move || Some(stores.clone()))
     }
 
     fn ready(&self) -> Vec<(usize, Up)> {
@@ -848,8 +978,26 @@ struct Made {
     project: ProjectId,
     trace: TraceId,
     user: String,
+    identity: Identity,
     session: String,
     start: Timestamp,
+}
+
+/// Where a new trace's user shows. Half the traces name the user everywhere; the others show it only on the
+/// MCP rows, by `user_id` or by subject hash, or on the spans with the MCP rows hashed.
+fn identity(rng: &dyn Rng) -> Identity {
+    let issuer = Some(ISSUERS[below(rng, ISSUERS.len() as u64) as usize]);
+    let (spans, mcp_user, issuer) = match below(rng, 10) {
+        0..=4 => (true, true, None),
+        5 | 6 => (false, false, issuer),
+        7 => (false, true, None),
+        _ => (true, false, issuer),
+    };
+    Identity {
+        spans,
+        mcp_user,
+        issuer,
+    }
 }
 
 /// Appends frames of spans to the nodes that are up until `until`.
@@ -894,6 +1042,7 @@ async fn ingest(world: World, rng: Arc<dyn Rng>, today: u32, until: u64) {
                 project,
                 trace: TraceId::from_bytes(u128::from(id + 1).to_be_bytes()),
                 user: format!("u{}", below(rng.as_ref(), 5)),
+                identity: identity(rng.as_ref()),
                 session: format!("s{}", below(rng.as_ref(), 7)),
                 start: day_start(back).saturating_add_micros(minute * 60_000_000),
             };
@@ -908,6 +1057,7 @@ async fn ingest(world: World, rng: Arc<dyn Rng>, today: u32, until: u64) {
             project: made.project,
             trace: made.trace,
             user: made.user,
+            identity: made.identity,
             session: made.session,
             start: made.start,
             received_at: up.clock.wall_now(),
@@ -1108,6 +1258,13 @@ impl Held<'_> {
         }
     }
 
+    fn bytes(&self, name: &str) -> Option<&[u8]> {
+        match self.cell(name)? {
+            Value::Bytes(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
     fn received_at(&self) -> Option<Timestamp> {
         match self.cell("received_at")? {
             Value::Time(at) => Some(*at),
@@ -1127,9 +1284,10 @@ impl Held<'_> {
 
 /// Whether a completed request must have removed the row (contract 13.4).
 fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) -> bool {
+    // The spans name a user only when the trace shows its user on its spans.
     let theirs = |spans: &Spans| match &request.selector {
         DeletionSelector::Traces(ids) => ids.contains(&spans.trace),
-        DeletionSelector::User { user_id, .. } => *user_id == spans.user,
+        DeletionSelector::User { user_id, .. } => spans.identity.spans && *user_id == spans.user,
         DeletionSelector::Session(session_id) => *session_id == spans.session,
     };
     let of_project =
@@ -1161,7 +1319,18 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
         }
         DeletionSelector::User { user_id, .. } => {
             let own = SPAN_TABLES.contains(&row.table_id) || row.table_id == TableId::UserRollup;
+            // An MCP row also goes by its own user: its `user_id`, or the hash of the user under any issuer
+            // (contract 13.3), whether or not a span of its trace names the user.
+            let salt = salt(request.project_id);
+            let by_identity = MCP_TABLES.contains(&row.table_id)
+                && (row.text("user_id") == Some(user_id.as_str())
+                    || row.bytes("user_subject_hash").is_some_and(|hash| {
+                        ISSUERS
+                            .iter()
+                            .any(|issuer| salt.subject_hash(issuer, user_id).as_slice() == hash)
+                    }));
             (own && row.text("user_id") == Some(user_id.as_str()))
+                || by_identity
                 || (TRACE_TABLES.contains(&row.table_id) && resolved())
         }
         DeletionSelector::Session(session_id) => {
@@ -1319,6 +1488,9 @@ fn config(mutant: Option<Mutant>) -> LifecycleConfig {
         Some(Mutant::DeleteWithoutFencing) => {
             config.with_mutant(crucible_lifecycle::Mutant::DeleteWithoutFencing)
         }
+        Some(Mutant::McpByTraceOnly) => {
+            config.with_mutant(crucible_lifecycle::Mutant::McpByTraceOnly)
+        }
     }
 }
 
@@ -1368,6 +1540,8 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         config: config(options.mutant),
         options,
         ids: Arc::default(),
+        salt_faults: Arc::new(AtomicBool::new(options.store_faults)),
+        salt_rng: sim.rng("lifecycle-sim/salts"),
     };
     pg.set_faults(pg_faults(options.store_faults));
     ch.set_faults(ch_faults(options.store_faults));
@@ -1382,6 +1556,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         pg.set_faults(pg_faults(false));
         ch.set_faults(ch_faults(false));
         ch.end_outage();
+        world.salt_faults.store(false, Ordering::SeqCst);
     };
     futures::join!(
         futures::future::join_all(nodes),

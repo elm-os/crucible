@@ -1,17 +1,19 @@
 //! Retention and deletion as `crucible-lifecycle` issues them (contract 13.2 to 13.4), on the server and on the
 //! store model with every answer compared: the resolution of a request's traces, a read that carries the
 //! pending-deletion set, the delete of a request in a partition, the retention delete in a partition that
-//! straddles the cut-off, the read that verifies a delete, the mask application and the partition drop.
+//! straddles the cut-off, the read that verifies a delete, the mask application, the partition drop, and a
+//! deletion by user on the MCP operations by `user_id` and subject hash with the issuers it hashes under.
 
 use anyhow::{Context as _, Result, anyhow};
 use crucible_auth::test_support::scope;
 use crucible_env::TelemetryStore;
 use crucible_plan::{
     CmpOp, DeletePlan, Hidden, HiddenSelector, Literal, Pred, QueryPlan, Row, TRACE_ID_LIST_CHUNK,
-    TraceSelector, Value, deletion_traces, expired_before, lifecycle_oldest,
+    TraceSelector, Value, deletion_issuers, deletion_traces, expired_before, lifecycle_oldest,
+    mcp_user,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
-use crucible_schema::{Column, Granularity, SpanPayloadCol, route};
+use crucible_schema::{Column, Granularity, McpOpsCol, SpanPayloadCol, route};
 
 use crate::blocks::Rows;
 use crate::differential::{finished, insert, rows, same};
@@ -403,10 +405,134 @@ pub(crate) async fn lifecycle(ctx: &Ctx) -> Result<String> {
     let gone = read(held(scope, Pred::all())?, "the payloads after the drop").await?;
     expect(gone.is_empty(), || format!("the drop left {gone:?}"))?;
 
+    // 13.3, a deletion by user on the MCP tables: by `user_id` and by the subject hash under every issuer the
+    // project's operations carry, whether or not a span names the user. Trace 5 carries ada only as a hash,
+    // trace 6 as `user_id`, trace 7 is bob's under the other issuer; trace 5 also has an operation that
+    // arrived after the request.
+    let ops = TableId::McpOps;
+    let ops_partition = route(ops, Granularity::Day, T0)?;
+    let (ada_a, ada_b, bob_b) = ([0xa1; 16], [0xa2; 16], [0xb2; 16]);
+    let operation = |seq: u64, n: u8, user: &str, hash: [u8; 16], issuer: &str, at: Timestamp| {
+        plain_rows(
+            ops,
+            project,
+            epoch,
+            seq,
+            T0,
+            2,
+            SALT + u32::try_from(seq).unwrap_or(0) * 100,
+        )
+        .all("trace_id", Value::Bytes(trace(n).to_bytes().to_vec()))
+        .all("trace_hash", Value::UInt(u64::from(trace(n).trace_hash())))
+        .all("user_id", Value::String(user.to_owned()))
+        .all("user_subject_hash", Value::Bytes(hash.to_vec()))
+        .all("user_issuer", Value::String(issuer.to_owned()))
+        .all("received_at", Value::Time(at))
+        .all("lsn", Value::UInt(seq))
+    };
+    for (seq, block) in [
+        (21, operation(21, 5, "", ada_a, "iss-a", before)),
+        (22, operation(22, 6, "ada", [0; 16], "", before)),
+        (23, operation(23, 7, "", bob_b, "iss-b", before)),
+        (24, operation(24, 5, "", ada_a, "iss-a", after)),
+    ] {
+        insert(ctx, block, ctx.token(epoch, seq, ops, T0)?).await?;
+    }
+    let issuers = |found: &[Row]| -> Vec<String> {
+        found
+            .iter()
+            .filter_map(|row| match row.values().first() {
+                Some(Value::String(issuer)) => Some(issuer.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let seen = read(
+        deletion_issuers(scope, requested_at, None, 10)?,
+        "the issuers of the operations",
+    )
+    .await?;
+    same(
+        "the issuers of the operations",
+        &issuers(&seen),
+        &vec!["iss-a".to_owned(), "iss-b".to_owned()],
+    )?;
+    let later = read(
+        deletion_issuers(scope, requested_at, Some("iss-a"), 1)?,
+        "the issuers after the first",
+    )
+    .await?;
+    same(
+        "the issuers after the first",
+        &issuers(&later),
+        &vec!["iss-b".to_owned()],
+    )?;
+    // A full chunk of hashes, as many as one delete carries.
+    let mut hashes = vec![ada_a, ada_b];
+    hashes.extend(
+        (0..TRACE_ID_LIST_CHUNK as u128 - 2).map(|n| ((0xcd_u128 << 120) | n).to_be_bytes()),
+    );
+    let of_ada = read(
+        deletion_traces(
+            scope,
+            TraceSelector::McpUser("ada", &hashes),
+            requested_at,
+            None,
+            1_000,
+        )?,
+        "the traces of a user's operations",
+    )
+    .await?;
+    same(
+        "the traces of a user's operations",
+        &ids(&of_ada),
+        &vec![trace(5).to_bytes().to_vec(), trace(6).to_bytes().to_vec()],
+    )?;
+    let by_identity = Pred::And(vec![
+        mcp_user(ops, "ada", &hashes)?,
+        Pred::cmp(McpOpsCol::ReceivedAt, CmpOp::Lt, requested_at),
+    ]);
+    let delete = DeletePlan::project(scope, ops, ops_partition, by_identity.clone())?;
+    for store in both {
+        let id = store
+            .delete(delete.clone())
+            .await
+            .context("the delete of a user's operations")?;
+        finished(ctx, store, &id).await?;
+    }
+    let left = read(
+        lifecycle_oldest(scope, ops, every, by_identity)?,
+        "the verification of the delete of a user's operations",
+    )
+    .await?;
+    expect(left.is_empty(), || {
+        format!("the delete of a user's operations left {left:?}")
+    })?;
+    for (n, what) in [
+        (5, "the operation of ada that arrived after the request"),
+        (7, "the operations of bob"),
+    ] {
+        let kept = read(
+            lifecycle_oldest(
+                scope,
+                ops,
+                every,
+                Pred::In(
+                    McpOpsCol::TraceId.column_ref(),
+                    vec![Literal::from(trace(n))],
+                ),
+            )?,
+            what,
+        )
+        .await?;
+        expect(!kept.is_empty(), || format!("the delete removed {what}"))?;
+    }
+
     Ok(format!(
         "{reads} reads agree between the model and the server through the resolution of a request's traces, \
          reads under the pending-deletion set, the delete of a request in a partition with its verification, \
-         the mask application, the retention delete in a partition that straddles the cut-off, and the \
-         partition drop"
+         the mask application, the retention delete in a partition that straddles the cut-off, the \
+         partition drop, and a deletion by user on the MCP operations by `user_id` and a full chunk of \
+         subject hashes, with the issuers it hashes under"
     ))
 }

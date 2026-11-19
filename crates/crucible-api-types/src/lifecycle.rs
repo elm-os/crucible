@@ -174,7 +174,8 @@ pub struct DeletionRequest {
     pub traces_resolved: u32,
     /// The places of the reach list, once the request has been planned.
     pub places: Vec<DeletionPlace>,
-    /// Why the request failed.
+    /// Why the request failed, or what a request that has not ended waits for and how to fix it (for a
+    /// deletion by user: a project salt that the server cannot read).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]

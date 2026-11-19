@@ -5,7 +5,10 @@
 //! - `pending` becomes `logged` once every live node has recorded its tombstone;
 //! - a `logged` request is planned once every live node's checkpoint has passed its tombstone: the traces it
 //!   selects are resolved in pages and each page, then the request's own column, becomes delete actions, one
-//!   per reach-list table and partition, with `received_at < requested_at`;
+//!   per reach-list table and partition, with `received_at < requested_at`. A deletion by user also reaches
+//!   the MCP tables by `user_id` and `user_subject_hash`, in the partitions where its MCP rows are found: an
+//!   operation can carry the user, or only the hash of the user's subject, when no span of its trace names
+//!   the user. While the project's salt cannot be read, such a request waits and says why;
 //! - it is `applied` when every delete has finished, `verified` when every delete is verified after the mask
 //!   cycle, and `completed` once the places outside ClickHouse are accounted for;
 //! - it is `failed` when one of its actions was given up.
@@ -24,15 +27,16 @@ use crucible_control::{
 use crucible_export::FilesError;
 use crucible_jobs::{JobError, JobResult, LeaderCtx};
 use crucible_plan::{
-    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_traces,
+    DELETION_TRACES_PAGE, Row, TRACE_ID_LIST_CHUNK, TraceSelector, Value, deletion_issuers,
+    deletion_traces, lifecycle_column,
 };
 use crucible_records::{DeletionState, ProjectScope, Timestamp, TraceId, WalEpoch};
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{Place, Shared, advance, planned};
-use crate::detail::Detail;
+use crate::detail::{Detail, subject_hash, subject_hex};
 use crate::partitions::{days_spanned, partitions_of_days};
-use crate::reach::{EXPORT_FILES, OTHER_PLACES, Reach, final_reach, page_reach};
+use crate::reach::{EXPORT_FILES, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach};
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
@@ -66,6 +70,19 @@ pub struct Progress {
     /// The UTC days in which the resolved traces have spans.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub days: Vec<u32>,
+    /// Whether every trace the request selects is resolved and its page planned.
+    #[serde(default)]
+    pub resolved: bool,
+    /// For a deletion by user: the subject hashes its MCP rows are matched with, as 32 hex characters, once
+    /// they are known; empty when the project has no salt or its operations carry no issuer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subjects: Option<Vec<String>>,
+    /// For a deletion by user: the last trace of the last page of MCP rows found by the user's own columns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_cursor: Option<String>,
+    /// The UTC days in which those MCP rows start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_days: Vec<u32>,
     /// Whether every action of the request is planned.
     #[serde(default)]
     pub planned: bool,
@@ -169,7 +186,8 @@ impl Executor<'_> {
         self.save(request).await
     }
 
-    /// The delete actions of one set of tables over the partitions of `days`.
+    /// The delete actions of one set of tables over the partitions of `days`. A table that carries
+    /// `user_subject_hash` and is reached by the user also matches `subjects`.
     fn deletes(
         &self,
         request: &DeletionRequest,
@@ -177,6 +195,7 @@ impl Executor<'_> {
         reach: &[Reach],
         days: &BTreeSet<u32>,
         traces: &[String],
+        subjects: &[String],
     ) -> Vec<LifecycleAction> {
         let (user_id, session_id) = match &request.selector {
             DeletionSelector::User { user_id, .. } => (Some(user_id.clone()), None),
@@ -186,6 +205,7 @@ impl Executor<'_> {
         let now = self.ctx.env.clock.wall_now();
         let mut actions = Vec::new();
         for place in reach {
+            let hashed = place.user && lifecycle_column(place.table, "user_subject_hash").is_some();
             let detail = Detail::Request {
                 requested_at: request.requested_at.micros(),
                 traces: if place.traces {
@@ -195,6 +215,11 @@ impl Executor<'_> {
                 },
                 user_id: user_id.clone().filter(|_| place.user),
                 session_id: session_id.clone().filter(|_| place.session),
+                subjects: if hashed {
+                    subjects.to_vec()
+                } else {
+                    Vec::new()
+                },
             };
             let granularity = self.shared.config.granularity;
             for partition in partitions_of_days(place.table, granularity, days.iter().copied()) {
@@ -245,12 +270,211 @@ impl Executor<'_> {
             .await
     }
 
-    /// Resolves the request's traces page by page and plans its deletes (contract 13.3, step 5).
+    /// Plans the request's deletes (contract 13.3, step 5): resolves its traces page by page, then for a
+    /// deletion by user its subject hashes and the days of its MCP rows, then the deletes by the request's own
+    /// columns. Each step is kept in the request's progress, so a later run or another leader goes on from it.
     async fn plan(
         &self,
         request: &mut DeletionRequest,
         scope: ProjectScope,
         progress: &mut Progress,
+    ) -> JobResult {
+        let mut pages = MAX_PAGES_PER_RUN;
+        if !progress.resolved {
+            self.resolve(request, scope, progress, &mut pages).await?;
+            if !progress.resolved {
+                return Ok(());
+            }
+        }
+        let mut identity = Vec::new();
+        if let DeletionSelector::User { user_id, issuer } = request.selector.clone()
+            && !self.shared.config.skips_mcp_identity()
+        {
+            let Some(subjects) = self
+                .subjects(request, scope, &user_id, issuer.as_deref(), progress)
+                .await?
+            else {
+                return Ok(());
+            };
+            if !self
+                .resolve_identity(request, scope, &user_id, &subjects, progress, &mut pages)
+                .await?
+            {
+                return Ok(());
+            }
+            let days: BTreeSet<u32> = progress.mcp_days.iter().copied().collect();
+            identity = self.deletes(
+                request,
+                "identity",
+                &identity_reach(&request.selector),
+                &days,
+                &[],
+                &subjects,
+            );
+        }
+        let days: BTreeSet<u32> = progress.days.iter().copied().collect();
+        let mut actions = self.deletes(
+            request,
+            "final",
+            &final_reach(&request.selector),
+            &days,
+            &[],
+            &[],
+        );
+        actions.extend(identity);
+        progress.planned = true;
+        request.error = None;
+        self.record(request, progress, actions).await
+    }
+
+    /// One page of the traces `selector` resolves, after the trace `after`.
+    async fn traces(
+        &self,
+        scope: ProjectScope,
+        selector: TraceSelector<'_>,
+        requested_at: Timestamp,
+        after: Option<TraceId>,
+    ) -> Result<Vec<(TraceId, Timestamp, Timestamp)>, JobError> {
+        let plan = deletion_traces(scope, selector, requested_at, after, DELETION_TRACES_PAGE)
+            .map_err(|error| {
+                JobError::Failed(format!("the trace resolution was refused: {error}"))
+            })?;
+        let rows = match self.shared.telemetry.execute(plan).await {
+            Ok(stream) => stream.rows().await,
+            Err(error) => Err(error),
+        }
+        .map_err(|error| JobError::Failed(format!("the trace resolution failed: {error}")))?;
+        Ok(resolved(&rows))
+    }
+
+    /// The subject hashes of a deletion by user, as 32 hex characters: the user hashed with the project's salt
+    /// under the request's issuer, or under every issuer of the project's MCP operations received before the
+    /// request (contract 13.3). They are read once, after the checkpoint wait, so the operations of every
+    /// frame received before the request are in the store. `None` while the salt cannot be read: the request
+    /// waits, and its error says why.
+    async fn subjects(
+        &self,
+        request: &mut DeletionRequest,
+        scope: ProjectScope,
+        user_id: &str,
+        issuer: Option<&str>,
+        progress: &mut Progress,
+    ) -> Result<Option<Vec<String>>, JobError> {
+        if let Some(subjects) = &progress.subjects {
+            return Ok(Some(subjects.clone()));
+        }
+        let issuers = match issuer {
+            Some(issuer) => vec![issuer.to_owned()],
+            None => {
+                // One more than a delete can carry tells a project with too many issuers apart.
+                let limit = u32::try_from(TRACE_ID_LIST_CHUNK + 1).unwrap_or(u32::MAX);
+                let plan = deletion_issuers(scope, request.requested_at, None, limit).map_err(
+                    |error| JobError::Failed(format!("the issuer read was refused: {error}")),
+                )?;
+                let rows = match self.shared.telemetry.execute(plan).await {
+                    Ok(stream) => stream.rows().await,
+                    Err(error) => Err(error),
+                }
+                .map_err(|error| JobError::Failed(format!("the issuer read failed: {error}")))?;
+                let issuers: Vec<String> = rows
+                    .iter()
+                    .filter_map(|row| match row.values().first() {
+                        Some(Value::String(issuer)) => Some(issuer.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if issuers.len() > TRACE_ID_LIST_CHUNK {
+                    let why = format!(
+                        "the project's MCP operations carry more than {TRACE_ID_LIST_CHUNK} token issuers, more than \
+                         one delete can match; ask again with the user's issuer"
+                    );
+                    self.fail(request, why).await?;
+                    return Ok(None);
+                }
+                issuers
+            }
+        };
+        let hashes = if issuers.is_empty() {
+            Vec::new()
+        } else {
+            match self
+                .shared
+                .subjects
+                .hashes(request.project_id, &issuers, user_id)
+                .await
+            {
+                Ok(hashes) => hashes.unwrap_or_default(),
+                Err(why) => {
+                    tracing::warn!(
+                        request = %request.id, project = %request.project_id, why,
+                        "a deletion by user waits for the project's salt"
+                    );
+                    if request.error.as_deref() != Some(why.as_str()) {
+                        request.error = Some(why);
+                        self.save(request).await?;
+                    }
+                    return Ok(None);
+                }
+            }
+        };
+        let subjects: Vec<String> = hashes.iter().map(subject_hex).collect();
+        progress.subjects = Some(subjects.clone());
+        request.error = None;
+        self.record(request, progress, Vec::new()).await?;
+        Ok(Some(subjects))
+    }
+
+    /// Finds the days of the MCP rows a deletion by user selects by the user's own columns, page by page.
+    /// `true` once every page is read.
+    async fn resolve_identity(
+        &self,
+        request: &mut DeletionRequest,
+        scope: ProjectScope,
+        user_id: &str,
+        subjects: &[String],
+        progress: &mut Progress,
+        pages: &mut usize,
+    ) -> Result<bool, JobError> {
+        let hashes = subjects
+            .iter()
+            .map(|hex| subject_hash(hex))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| JobError::Failed(error.to_string()))?;
+        while *pages > 0 {
+            *pages -= 1;
+            let after = progress
+                .mcp_cursor
+                .as_deref()
+                .and_then(|id| TraceId::parse(id).ok());
+            let selector = TraceSelector::McpUser(user_id, &hashes);
+            let page = self
+                .traces(scope, selector, request.requested_at, after)
+                .await?;
+            let finished = page.len() < DELETION_TRACES_PAGE as usize;
+            if let Some((last, _, _)) = page.last() {
+                let mut days: BTreeSet<u32> = progress.mcp_days.iter().copied().collect();
+                days.extend(
+                    page.iter()
+                        .flat_map(|(_, first, last)| days_spanned(*first, *last)),
+                );
+                progress.mcp_days = days.into_iter().collect();
+                progress.mcp_cursor = Some(last.to_string());
+                self.record(request, progress, Vec::new()).await?;
+            }
+            if finished {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Resolves the request's traces page by page and plans the deletes of each page.
+    async fn resolve(
+        &self,
+        request: &mut DeletionRequest,
+        scope: ProjectScope,
+        progress: &mut Progress,
+        pages: &mut usize,
     ) -> JobResult {
         // A list of traces is resolved a chunk of ids at a time: one statement cannot carry the whole list.
         let listed: Option<Vec<TraceId>> = match &request.selector {
@@ -261,7 +485,8 @@ impl Executor<'_> {
             }
             DeletionSelector::User { .. } | DeletionSelector::Session(_) => None,
         };
-        for _ in 0..MAX_PAGES_PER_RUN {
+        while *pages > 0 {
+            *pages -= 1;
             let after = progress
                 .cursor
                 .as_deref()
@@ -284,29 +509,17 @@ impl Executor<'_> {
             let page = if chunk.is_some_and(<[TraceId]>::is_empty) {
                 Vec::new()
             } else {
-                let plan = deletion_traces(
-                    scope,
-                    selector,
-                    request.requested_at,
-                    plan_after,
-                    DELETION_TRACES_PAGE,
-                )
-                .map_err(|error| {
-                    JobError::Failed(format!("the trace resolution was refused: {error}"))
-                })?;
-                let rows = match self.shared.telemetry.execute(plan).await {
-                    Ok(stream) => stream.rows().await,
-                    Err(error) => Err(error),
-                }
-                .map_err(|error| {
-                    JobError::Failed(format!("the trace resolution failed: {error}"))
-                })?;
-                resolved(&rows)
+                self.traces(scope, selector, request.requested_at, plan_after)
+                    .await?
             };
             // The next read starts after the chunk of ids, or after the last trace of the page.
             let next = match chunk {
                 Some(chunk) => chunk.last().copied(),
                 None => page.last().map(|(id, _, _)| *id),
+            };
+            let finished = match chunk {
+                Some(chunk) => chunk.len() < TRACE_ID_LIST_CHUNK,
+                None => page.len() < DELETION_TRACES_PAGE as usize,
             };
             if let Some(next) = next {
                 let days: BTreeSet<u32> = page
@@ -325,6 +538,7 @@ impl Executor<'_> {
                         &page_reach(&request.selector),
                         &days,
                         &traces,
+                        &[],
                     )
                 };
                 let mut all: BTreeSet<u32> = progress.days.iter().copied().collect();
@@ -332,23 +546,13 @@ impl Executor<'_> {
                 progress.days = all.into_iter().collect();
                 progress.cursor = Some(next.to_string());
                 progress.traces += page.len() as u64;
+                progress.resolved = finished;
                 self.record(request, progress, actions).await?;
             }
-            let finished = match chunk {
-                Some(chunk) => chunk.len() < TRACE_ID_LIST_CHUNK,
-                None => page.len() < DELETION_TRACES_PAGE as usize,
-            };
             if finished {
-                let days: BTreeSet<u32> = progress.days.iter().copied().collect();
-                let actions = self.deletes(
-                    request,
-                    "final",
-                    &final_reach(&request.selector),
-                    &days,
-                    &[],
-                );
-                progress.planned = true;
-                return self.record(request, progress, actions).await;
+                // Kept with the next write of the progress, when it was not with this page's.
+                progress.resolved = true;
+                return Ok(());
             }
         }
         Ok(())

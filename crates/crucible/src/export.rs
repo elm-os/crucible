@@ -14,8 +14,9 @@ use clap::Args;
 use crucible_control::{ExportFormat, Repos as _};
 use crucible_env::{Env, Stores, TelemetryStore as _};
 use crucible_export::{CHUNK_BYTES, ExportWriter, MAX_TRACE_IDS, Options, Pages, Selector};
-use crucible_plan::Caller;
-use crucible_query::{ExportLimits, QueryService, ReadContext};
+use crucible_lifecycle::{PendingDeletions, RetentionSnapshot};
+use crucible_plan::{Caller, RetentionFloors};
+use crucible_query::{ExportLimits, Hidden, HiddenSource, QueryService, ReadContext};
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
 use crucible_records::{Lsn, ProjectId, ProjectScope, TimeWindow, Timestamp, TraceId, WalEpoch};
 use crucible_schema::RetentionSettings;
@@ -113,11 +114,31 @@ fn selector(args: &ExportArgs) -> anyhow::Result<Selector> {
 }
 
 /// The scope and retention of the named project: from the control plane, else from the keys file.
+/// What the export reads of its project: the scope, the retention with the floors that earlier settings left
+/// (contract 13.1), and the deletions still pending when it starts, whose rows it leaves out (13.4).
+#[derive(Debug)]
+struct Target {
+    scope: ProjectScope,
+    retention: RetentionSettings,
+    floors: RetentionFloors,
+    pending: Option<Arc<PendingDeletions>>,
+}
+
+/// The pending deletions of the control plane, as the export's reads carry them.
+#[derive(Debug)]
+struct Pending(Arc<PendingDeletions>);
+
+impl HiddenSource for Pending {
+    fn hidden(&self, project_id: ProjectId) -> Vec<Hidden> {
+        self.0.hidden(project_id)
+    }
+}
+
 async fn project(
     env: &Env,
     config: &crucible_config::Config,
     reference: &str,
-) -> anyhow::Result<(ProjectScope, RetentionSettings)> {
+) -> anyhow::Result<Target> {
     if let Some(postgres) = &config.postgres {
         let control = Control::new(env, postgres)?;
         let projects = control.store.projects();
@@ -133,12 +154,26 @@ async fn project(
         })?;
         let scope =
             crucible_auth::stored_project_scope(&project).context("the project id is nil")?;
-        let retention = RetentionSettings {
-            retention_days: project.retention_days,
-            payload_retention_days: project.payload_retention_days,
-            mcp_content_retention_days: project.mcp_content_retention_days,
-        };
-        return Ok((scope, retention));
+        let snapshot = RetentionSnapshot::default();
+        snapshot
+            .refresh(&control.store)
+            .await
+            .context("reading the projects' retention")?;
+        let (retention, floors) = snapshot.get(project.id);
+        let pending = PendingDeletions::default();
+        let open = control
+            .store
+            .lifecycle()
+            .open_requests()
+            .await
+            .context("reading the pending deletion requests")?;
+        pending.replace(&open, env.clock.wall_now());
+        return Ok(Target {
+            scope,
+            retention,
+            floors,
+            pending: Some(Arc::new(pending)),
+        });
     }
     let path = config.server.keys_file.as_ref().context(
         "name the deployment's projects: set postgres.url (--postgres-url, CRUCIBLE_POSTGRES_URL), or --keys-file \
@@ -151,7 +186,12 @@ async fn project(
     let scope = keys
         .project_scope(id)
         .with_context(|| format!("no key in {} belongs to project {id}", path.display()))?;
-    Ok((scope, RetentionSettings::default()))
+    Ok(Target {
+        scope,
+        retention: RetentionSettings::default(),
+        floors: RetentionFloors::default(),
+        pending: None,
+    })
 }
 
 /// Runs `crucible export`.
@@ -168,7 +208,7 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
     )
     .context("building the production environment")?;
     let env = &prod.env;
-    let (scope, retention) = project(env, &config, &args.project).await?;
+    let target = project(env, &config, &args.project).await?;
     let clickhouse = crate::store::ClickHouse::new(clickhouse, config.sql)?;
     let store = clickhouse.store(env);
     let facts = store.detect().await.map_err(|error| {
@@ -185,7 +225,13 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
         index,
         WalEpoch::from_uuid(env.new_id()),
     );
-    let ctx = ReadContext::new(scope, retention, Caller::Session);
+    // As the server's reads do: what a pending deletion selects is left out.
+    let service = match target.pending {
+        Some(pending) => service.with_hidden(Arc::new(Pending(pending))),
+        None => service,
+    };
+    let ctx = ReadContext::new(target.scope, target.retention, Caller::Session)
+        .with_floors(target.floors);
     let query = selector.query(env.clock.wall_now());
     let options = Options {
         gzip: args.gzip,
@@ -217,7 +263,7 @@ pub(crate) async fn run(args: &ExportArgs, config: crucible_config::Config) -> a
         std::io::stderr().lock(),
         "exported {} spans of project {} ({} skipped for a cut field) as {}: {} bytes, sha256 {}",
         summary.spans,
-        scope.project_id(),
+        target.scope.project_id(),
         summary.skipped,
         format.as_str(),
         summary.bytes,
