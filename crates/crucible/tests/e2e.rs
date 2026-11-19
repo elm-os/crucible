@@ -4,7 +4,8 @@
 //! REST API and, when a Chrome binary is given, the UI's traces table. Four traces take the four ways in:
 //! OTLP/HTTP protobuf, OTLP/HTTP JSON, OTLP/gRPC with gzip, and a compat ingest route with gzip and the key pair
 //! as Basic auth. A load burst and a `kill -9` in the middle of three further runs must lose no acknowledged
-//! span and duplicate no row.
+//! span and duplicate no row. At startup the recent-span index is sized from the memory the server may use
+//! (about 200 MiB in a container limited to 2 GiB) and the memory budgets fit without a warning.
 //!
 //! The test needs a ClickHouse 26.3 or newer whose admin user may manage access, so it runs only when
 //! `CRUCIBLE_E2E_CLICKHOUSE_URL` is set and passes as skipped otherwise:
@@ -18,6 +19,7 @@
 //! | `CRUCIBLE_E2E_CHROME` | A Chrome or Chromium binary. When set, the UI check runs; it needs Node 24 and a binary built with `embed-ui` |
 //! | `CRUCIBLE_E2E_NODE` | The Node binary; `node` when unset |
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
+//! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key and reads the trace back with the session |
 //!
 //! `docs/development.md` ("The end-to-end test") has the commands.
 
@@ -148,6 +150,8 @@ struct Rig {
     dir: PathBuf,
     out: PathBuf,
     starts: u32,
+    /// The control plane, when the run has one.
+    postgres_url: Option<String>,
 }
 
 impl Rig {
@@ -165,8 +169,6 @@ impl Rig {
             .args(["--metrics-listen", &metrics.to_string()])
             .arg("--data-dir")
             .arg(self.dir.join("data"))
-            .arg("--keys-file")
-            .arg(self.dir.join("keys.toml"))
             .args(["--clickhouse-url", &self.clickhouse_url])
             .args(["--clickhouse-user", &self.admin.user])
             .arg("--clickhouse-password-file")
@@ -174,11 +176,17 @@ impl Rig {
             .arg("--master-key-file")
             .arg(self.dir.join("master-key"))
             .env_remove("CRUCIBLE_CLICKHOUSE_URL")
+            .env_remove("CRUCIBLE_POSTGRES_URL")
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap());
         if migrate {
             command.arg("--migrate");
         }
+        // With Postgres the keys live there; the keys file is the mode without it.
+        match &self.postgres_url {
+            Some(url) => command.args(["--postgres-url", url]),
+            None => command.arg("--keys-file").arg(self.dir.join("keys.toml")),
+        };
         let mut server = Server {
             child: command.spawn().unwrap(),
             api,
@@ -696,6 +704,12 @@ fn plain(log: &str) -> String {
     out
 }
 
+/// The number a log line gives for ` field=`, from its first occurrence.
+fn log_number(log: &str, field: &str) -> Option<u64> {
+    let rest = log.split(&format!(" {field}=")).nth(1)?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
 fn millis(d: Duration) -> f64 {
     (d.as_secs_f64() * 1e6).round() / 1e3
 }
@@ -844,6 +858,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
                 flavour: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: Duration::from_secs(10),
+                idle_timeout: None,
             },
         ),
         project: project.to_owned(),
@@ -860,6 +875,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
         dir,
         out,
         starts: 0,
+        postgres_url: None,
     };
     let load_bearer = format!("Bearer {}", secret('b'));
 
@@ -867,6 +883,25 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     let boot = Instant::now();
     let mut server = rig.start(true);
     let ready_after = boot.elapsed();
+    // The memory-derived defaults follow the memory the server may use: in a container limited to 2 GiB the
+    // recent-span index is bounded near 200 MiB, and the memory budgets fit without a warning.
+    let boot_log = plain(&std::fs::read_to_string(&server.log).unwrap());
+    let recent_max_bytes =
+        log_number(&boot_log, "recent_max_bytes").expect("the serving line gives the recent bound");
+    let memory_limit = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    const TWO_GIB: u64 = 2 << 30;
+    match memory_limit {
+        Some(TWO_GIB) => assert!(
+            (190 << 20..=210 << 20).contains(&recent_max_bytes),
+            "in a container limited to 2 GiB the recent bound is {recent_max_bytes} bytes"
+        ),
+        Some(limit) => assert!(recent_max_bytes <= limit / 10, "{recent_max_bytes}"),
+        None => assert!(recent_max_bytes <= 1 << 30, "{recent_max_bytes}"),
+    }
+    let budget_warning = boot_log.contains("the memory budgets add up to");
+    assert!(!budget_warning, "{boot_log}");
     let api = |server: &Server| Api {
         addr: server.api,
         project: traces_project.clone(),
@@ -1082,6 +1117,11 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
 
     let report = json!({
         "ready_after_ms": millis(ready_after),
+        "memory": {
+            "container_limit_bytes": memory_limit,
+            "recent_max_bytes": recent_max_bytes,
+            "budget_warning": budget_warning,
+        },
         "freshness_ms": freshness.into_iter().collect::<serde_json::Map<_, _>>(),
         "burst": {
             "acked_requests": burst.report.outcome.acked,
@@ -1102,4 +1142,340 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
     let pretty = serde_json::to_string_pretty(&report).unwrap();
     std::fs::write(rig.out.join("report.json"), &pretty).unwrap();
     eprintln!("{pretty}");
+}
+
+/// One HTTP/1.1 exchange that also answers the response's `Set-Cookie` values.
+fn http_with_cookies(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, Vec<String>, Value) {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: e2e\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&response[..end]).into_owned();
+    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+    let cookies = head
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("set-cookie")
+                .then(|| value.trim().to_owned())
+        })
+        .collect();
+    let body = serde_json::from_slice(&response[end + 4..]).unwrap_or(Value::Null);
+    (status, cookies, body)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
+    let (Ok(clickhouse_url), Ok(postgres_url)) = (
+        std::env::var("CRUCIBLE_E2E_CLICKHOUSE_URL"),
+        std::env::var("CRUCIBLE_E2E_POSTGRES_URL"),
+    ) else {
+        eprintln!(
+            "skipped: CRUCIBLE_E2E_CLICKHOUSE_URL and CRUCIBLE_E2E_POSTGRES_URL are not both set"
+        );
+        return;
+    };
+    let admin = Credentials {
+        user: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_USER")
+            .unwrap_or_else(|_| "crucible_admin".to_owned()),
+        password: std::env::var("CRUCIBLE_E2E_CLICKHOUSE_PASSWORD")
+            .expect("CRUCIBLE_E2E_CLICKHOUSE_PASSWORD is set"),
+    };
+    let prod = crucible_env_prod::build(tokio::runtime::Handle::current(), &ProdConfig::default())
+        .unwrap();
+    let env = &prod.env;
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    let out = std::env::var_os("CRUCIBLE_E2E_OUT")
+        .map_or_else(|| dir.clone(), |o| PathBuf::from(o).join("control-plane"));
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(dir.join("master-key"), format!("{MASTER_KEY}\n")).unwrap();
+    std::fs::write(dir.join("clickhouse-password"), &admin.password).unwrap();
+    let password = "e2e owner password 1";
+    std::fs::write(dir.join("owner-password"), format!("{password}\n")).unwrap();
+    let binary = std::env::var_os("CRUCIBLE_E2E_BIN")
+        .map(PathBuf::from)
+        .expect("CRUCIBLE_E2E_BIN is set");
+    let mut rig = Rig {
+        binary: binary.clone(),
+        clickhouse_url,
+        admin,
+        dir: dir.clone(),
+        out,
+        starts: 0,
+        postgres_url: Some(postgres_url.clone()),
+    };
+    // 1. Migrations run, the key snapshot loads, and the server becomes ready.
+    let server = rig.start(true);
+
+    // 2. The first owner, from the command line; a second one is refused.
+    let email = format!("owner-{}@e2e.test", env.new_id());
+    let init = |email: &str| {
+        Command::new(&binary)
+            .args(["admin", "init", "--org-name", "E2E", "--name", "Owner"])
+            .args(["--email", email])
+            .arg("--password-file")
+            .arg(dir.join("owner-password"))
+            .args(["--postgres-url", &postgres_url])
+            .arg("--master-key-file")
+            .arg(dir.join("master-key"))
+            .env_remove("CRUCIBLE_POSTGRES_URL")
+            .output()
+            .unwrap()
+    };
+    let first = init(&email);
+    assert!(
+        first.status.success(),
+        "crucible admin init failed (the control-plane path needs a fresh database): {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let second = init("other@e2e.test");
+    assert!(!second.status.success(), "a second owner was created");
+    let owner_email = email;
+
+    // 3. Sign in with the prelogin CSRF header from the server's own origin.
+    let login = json!({"email": owner_email, "password": password}).to_string();
+    let json_headers = [
+        ("content-type", "application/json"),
+        ("origin", "http://e2e"),
+    ];
+    let (status, cookies, session) = http_with_cookies(
+        server.api,
+        "POST",
+        "/api/v1/auth/login",
+        &[
+            json_headers[0],
+            json_headers[1],
+            ("x-crucible-csrf", "prelogin"),
+        ],
+        login.as_bytes(),
+    );
+    assert_eq!(status, 200, "{session}");
+    let cookie = cookies
+        .iter()
+        .find_map(|c| c.strip_prefix("crucible_session="))
+        .map(|rest| format!("crucible_session={}", rest.split(';').next().unwrap()))
+        .expect("the session cookie");
+    let csrf = session["csrf_token"].as_str().unwrap().to_owned();
+    let as_owner = |method: &str, path: &str, body: Value| {
+        let body = body.to_string();
+        let mut headers = vec![("cookie", cookie.as_str())];
+        if method != "GET" {
+            headers.extend([
+                json_headers[0],
+                json_headers[1],
+                ("x-crucible-csrf", csrf.as_str()),
+            ]);
+        }
+        http_with_cookies(server.api, method, path, &headers, body.as_bytes())
+    };
+
+    // 4. A project and a key for it; the secret is shown once.
+    let slug = format!("e2e-{}", &env.new_id().to_string()[24..]);
+    let (status, _, project) = as_owner(
+        "POST",
+        "/api/v1/projects",
+        json!({"name": "E2E", "slug": slug}),
+    );
+    assert_eq!(status, 201, "{project}");
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let keys = format!("/api/v1/projects/{project_id}/api-keys");
+    let (status, _, created) = as_owner("POST", &keys, json!({"note": "e2e"}));
+    assert_eq!(status, 201, "{created}");
+    let bearer = format!("Bearer {}", created["secret_key"].as_str().unwrap());
+
+    // 5. Ingest with the key, then read the trace back with the session.
+    let trace = Trace::new(env, "e2e control-plane trace");
+    let (status, body) = http(
+        server.ingest,
+        "POST",
+        "/v1/traces",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &bearer),
+        ],
+        trace.json().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let micros = i64::try_from(now.as_micros()).unwrap();
+    let (from, to) = (
+        Timestamp::from_micros(micros - 3_600_000_000),
+        Timestamp::from_micros(micros + 3_600_000_000),
+    );
+    let list = format!("/api/v1/projects/{project_id}/traces?from={from}&to={to}&limit=100");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, _, page) = as_owner("GET", &list, Value::Null);
+        assert_eq!(status, 200, "{page}");
+        let listed = page["data"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|t| t["trace_id"] == trace.trace_id.as_str()));
+        if listed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the trace was not listed: {page}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // 6. A key from the command line, as the Compose smoke test makes one, for the first project `default`.
+    let made = Command::new(&binary)
+        .args([
+            "admin",
+            "create-key",
+            "--project",
+            "default",
+            "--scopes",
+            "ingest,read",
+        ])
+        .args(["--postgres-url", &postgres_url])
+        .arg("--master-key-file")
+        .arg(dir.join("master-key"))
+        .env_remove("CRUCIBLE_POSTGRES_URL")
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let printed = String::from_utf8(made.stdout).unwrap();
+    let field = |name: &str| {
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} = \"")))
+            .map(|value| value.trim_end_matches('"').to_owned())
+            .unwrap_or_else(|| panic!("no {name} in {printed}"))
+    };
+    let cli_bearer = format!("Bearer {}", field("secret_key"));
+    let cli_trace = Trace::new(env, "e2e command-line key trace");
+    // A key made outside the server reaches it through the key feed, within 5 s.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, body) = http(
+            server.ingest,
+            "POST",
+            "/v1/traces",
+            &[
+                ("content-type", "application/json"),
+                ("authorization", &cli_bearer),
+            ],
+            cli_trace.json().as_bytes(),
+        )
+        .unwrap();
+        if status == 200 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ingest answered {status} for 20 s with the command-line key: {}",
+            String::from_utf8_lossy(&body)
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let cli_api = Api {
+        addr: server.api,
+        project: field("project_id"),
+        bearer: cli_bearer.clone(),
+        pair: String::new(),
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !cli_api.lists(&cli_trace) {
+        assert!(
+            Instant::now() < deadline,
+            "the command-line key's trace was not listed"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The MCP server's tools read: a read-only key reads the trace of step 5 through `/mcp`, and an
+    // ingest-only key is refused there.
+    let scoped = |scopes: Value| {
+        let (status, _, made) = as_owner("POST", &keys, json!({"note": "mcp", "scopes": scopes}));
+        assert_eq!(status, 201, "{made}");
+        format!("Bearer {}", made["secret_key"].as_str().unwrap())
+    };
+    let reader = Api {
+        addr: server.api,
+        project: project_id.clone(),
+        bearer: scoped(json!(["read"])),
+        pair: String::new(),
+    };
+    let result = reader.mcp("get_trace", json!({ "trace_id": trace.trace_id }));
+    assert_eq!(result["isError"], false, "{result}");
+    assert!(
+        result["structuredContent"]["spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()),
+        "{result}"
+    );
+    let ingest_only = scoped(json!(["ingest"]));
+    let (status, body) = http(
+        server.api,
+        "POST",
+        "/mcp",
+        &[
+            ("authorization", &ingest_only),
+            ("content-type", "application/json"),
+        ],
+        b"{}",
+    )
+    .unwrap();
+    assert_eq!(status, 401, "{}", String::from_utf8_lossy(&body));
+
+    // 7. Revoking the key stops it at once; signing out ends the session.
+    let key_id = created["key"]["id"].as_str().unwrap();
+    let etag = format!("\"{}\"", created["key"]["version"]);
+    let (status, _, body) = {
+        let mut headers = vec![
+            ("cookie", cookie.as_str()),
+            ("origin", "http://e2e"),
+            ("x-crucible-csrf", csrf.as_str()),
+        ];
+        headers.push(("if-match", etag.as_str()));
+        http_with_cookies(
+            server.api,
+            "DELETE",
+            &format!("{keys}/{key_id}"),
+            &headers,
+            b"",
+        )
+    };
+    assert_eq!(status, 204, "{body}");
+    let (status, _) = http(
+        server.ingest,
+        "POST",
+        "/v1/traces",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &bearer),
+        ],
+        trace.json().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(status, 401);
+    let (status, _, _) = as_owner("POST", "/api/v1/auth/logout", Value::Null);
+    assert_eq!(status, 204);
+    let (status, _, _) = as_owner("GET", "/api/v1/auth/session", Value::Null);
+    assert_eq!(status, 401);
+    drop(server);
 }

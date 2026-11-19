@@ -148,7 +148,7 @@ impl FilterTarget {
     }
 
     /// The column that carries a field, for the fields that are one column.
-    fn column(self, field: FilterField) -> Option<ColumnRef> {
+    pub(crate) fn column(self, field: FilterField) -> Option<ColumnRef> {
         use FilterField::{Level, ObservationType, Tags, Text};
         use TextField::{Environment, Release, SessionId, UserId, Version};
         Some(match (self, field) {

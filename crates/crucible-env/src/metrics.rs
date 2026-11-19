@@ -291,10 +291,30 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Seconds since the API key snapshot last loaded or polled successfully (contract 11.8); -1 before the
+    /// first load.
+    pub static AUTH_KEY_SNAPSHOT_AGE: GaugeDef = GaugeDef {
+        name: "crucible_auth_key_snapshot_age_seconds",
+        help: "Seconds since the API key snapshot last loaded or polled successfully; -1 before the first load.",
+        labels: &[],
+    };
+
+    /// Connections the telemetry store opened to ClickHouse, counted at `Net::connect`.
+    pub static CLICKHOUSE_CONNECTIONS_OPENED: CounterDef = CounterDef {
+        name: "crucible_clickhouse_connections_opened_total",
+        help: "Connections the telemetry store opened to ClickHouse.",
+        labels: &[],
+    };
+
     /// Every definition's name, label keys and bucket bounds, for the registry's consistency test.
     pub fn all() -> Vec<(&'static str, &'static [&'static str], &'static [u64])> {
         vec![
             (BUILD_INFO.name, BUILD_INFO.labels, &[]),
+            (
+                AUTH_KEY_SNAPSHOT_AGE.name,
+                AUTH_KEY_SNAPSHOT_AGE.labels,
+                &[],
+            ),
             (WAL_BACKEND_INFO.name, WAL_BACKEND_INFO.labels, &[]),
             (HTTP_REQUESTS.name, HTTP_REQUESTS.labels, &[]),
             (
@@ -358,6 +378,11 @@ pub mod registry {
             (
                 SHIPPER_DRAIN_BYTES_PER_SECOND.name,
                 SHIPPER_DRAIN_BYTES_PER_SECOND.labels,
+                &[],
+            ),
+            (
+                CLICKHOUSE_CONNECTIONS_OPENED.name,
+                CLICKHOUSE_CONNECTIONS_OPENED.labels,
                 &[],
             ),
         ]

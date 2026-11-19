@@ -1,5 +1,7 @@
 import { AxeBuilder } from "@axe-core/playwright";
-import { test as base, expect, type Page, type Route } from "@playwright/test";
+import { test as base, expect, type Page, type Request, type Route } from "@playwright/test";
+import type { SessionInfo } from "../src/api/generated/SessionInfo";
+import type { SignInOptions } from "../src/api/generated/SignInOptions";
 import type { Span } from "../src/api/generated/Span";
 import type { SpanPage } from "../src/api/generated/SpanPage";
 import type { TraceDetail } from "../src/api/generated/TraceDetail";
@@ -101,6 +103,7 @@ export function traceDetail(fields: Partial<TraceDetail> = {}): TraceDetail {
     span_count: spans.length,
     paged: false,
     spans,
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     meta: { as_of: AS_OF, partial: false, consistency: "strong" },
     saturated: false,
     ...fields,
@@ -118,6 +121,7 @@ export function spanPage(data: Span[], next: string | null = null): SpanPage {
 
 export function traceItem(fields: Partial<TraceListItem> = {}): TraceListItem {
   return {
+    facts: { tags: [], bookmarked: false, public: null, scores: [], correction: null },
     trace_id: TRACE,
     name: "support agent",
     trace_name: "support agent",
@@ -228,14 +232,122 @@ export class Api {
 }
 
 export const TRACE_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}$`);
+export const METRICS_PATH = new RegExp(`/projects/${PROJECT}/metrics/query$`);
+
+// A metrics answer whose series hold these values, one bucket every five minutes.
+export function metrics(
+  series: { measure: string; aggregation?: string; values: (number | null)[] }[],
+) {
+  return {
+    series: series.map((s) => ({
+      measure: s.measure,
+      aggregation: s.aggregation ?? "sum",
+      unit: "count",
+      key: [],
+      other: false,
+      points: s.values.map((value, i) => ({
+        bucket: `2026-11-17T13:${String(i * 5).padStart(2, "0")}:00.000000Z`,
+        value,
+      })),
+    })),
+    granularity: "five_minutes",
+    truncated: false,
+    source_tier: "rollup",
+    as_of: AS_OF,
+    partial_last_bucket: false,
+    saturated: false,
+    meta: { as_of: AS_OF, partial: false, consistency: "strong" },
+  };
+}
+
+// The measures a metrics request asks for, by name.
+export function measuresOf(route: Route): string[] {
+  const body = route.request().postDataJSON() as { measures: { measure: string }[] };
+  return body.measures.map((m) => m.measure);
+}
 export const CHILDREN_PATH = new RegExp(`/projects/${PROJECT}/traces/${TRACE}/spans$`);
 export const LIST_PATH = new RegExp(`/projects/${PROJECT}/traces$`);
+export const PROVIDERS_PATH = /\/api\/v1\/auth\/providers$/;
+export const SESSION_PATH = /\/api\/v1\/auth\/session$/;
+
+// The shell's sign-in check: the request a page makes before any of its own.
+export const SIGN_IN_CHECK = "/api/v1/auth/providers";
+
+export const PROJECT_B = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c";
+export const CSRF = "csrf-token-e2e";
+
+export function signInOptions(fields: Partial<SignInOptions> = {}): SignInOptions {
+  return { providers: [], password_login_enabled: true, setup_required: false, ...fields };
+}
+
+export function sessionInfo(fields: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    user: {
+      id: "0193a1b2-0000-7000-8000-000000000001",
+      email: "ada@example.com",
+      name: "Ada Lovelace",
+    },
+    org: { id: "0193a1b2-0000-7000-8000-0000000000aa", name: "Analytical Engines", role: "owner" },
+    projects: [
+      {
+        id: PROJECT,
+        name: "Checkout",
+        slug: "checkout",
+        role: "admin",
+        permissions: ["read", "write_facts", "edit_content", "manage"],
+      },
+      {
+        id: PROJECT_B,
+        name: "Search",
+        slug: "search",
+        role: "viewer",
+        permissions: ["read", "run_saved_query"],
+      },
+    ],
+    providers: [],
+    password_login_enabled: true,
+    csrf_token: CSRF,
+    session: {
+      expires_at: "2026-12-18T12:00:00.000000Z",
+      idle_expires_at: "2026-11-25T12:00:00.000000Z",
+      auth_method: "password",
+    },
+    features: {
+      sql_workspace: { enabled: false },
+      media: { enabled: false, max_bytes: 0 },
+      smtp: false,
+      signup_mode: "invite_only",
+    },
+    server: { version: "0.4.0" },
+    ...fields,
+  };
+}
+
+// The server has a control plane, and this browser holds a session. Signed in, Crucible opens on home, whose
+// tiles and charts read metrics: they get an empty answer unless a test sets its own.
+export function signedIn(api: Api, session: SessionInfo = sessionInfo()): void {
+  api.on(PROVIDERS_PATH, json(signInOptions()));
+  api.on(SESSION_PATH, json(session));
+  api.on(/\/projects\/[^/]+\/metrics\/query$/, json(metrics([])));
+}
+
+// Answers `path` with `reply` and keeps each request, to check what the page sent.
+export function capture(api: Api, path: RegExp, reply: Reply): Request[] {
+  const requests: Request[] = [];
+  api.on(path, (route) => {
+    requests.push(route.request());
+    return route.fulfill(reply);
+  });
+  return requests;
+}
 
 export const test = base.extend<{ api: Api }>({
   api: async ({ page }, use) => {
     const api = new Api();
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
+    // Unless a test signs in, the server has no control plane, so the Connect dialog applies.
+    api.on(PROVIDERS_PATH, problem(404, "feature_disabled"));
     await page.route("**/api/v1/**", (route) => api.handle(route));
     await use(api);
     expect(api.unexpected, "API requests no handler answered").toEqual([]);

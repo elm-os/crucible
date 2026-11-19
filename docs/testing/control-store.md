@@ -11,7 +11,7 @@ simulation model `crucible_sim::pg_model::PgModel`, and the lease protocol of co
 | Traits and types | `crates/crucible-control` | `ControlStore`, the repositories, `TxError`, `HeldLease` (the holder's local window) |
 | Adapter | `crates/crucible-control-pg` | tokio-postgres over `env.net`, two pools, forward-only migrations |
 | Model | `crucible_sim::pg_model` | The simulated Postgres and its seeded faults |
-| Scripts | `crates/crucible-conformance/src/control` | Repository, transaction, key-feed, lease, claim and pool scripts over any `ControlStore`; each writes a transcript |
+| Scripts | `crates/crucible-conformance/src/control` | Repository, transaction, key-feed, lease, claim, pool and job scripts over any `ControlStore`; each writes a transcript |
 | Model snapshots | `crates/crucible-conformance/tests/control_model.rs` | The transcripts of the scripts against `PgModel`, pinned |
 | Differential | `crucible-pg-conformance` (`crates/crucible-conformance/src/control_pg.rs`) | The same scripts against a real server; the transcript must equal the model's |
 | Lease simulation | `crucible_sim::lease_sim`, `crates/crucible-sim/tests/lease_dst.rs` | Leader election over `PgModel` under faults, with its oracle and its mutant |
@@ -27,7 +27,8 @@ simulation model `crucible_sim::pg_model::PgModel`, and the lease protocol of co
 - Two pools with their sizes; an exhausted pool fails the call as unavailable after the acquire timeout.
 - Failover: every open transaction is lost and every call fails for a while; afterwards every acknowledged commit
   is still there.
-- Lease rows with fencing tokens, job cursors, and claimed rows with `lease_until` and an attempt counter.
+- Lease rows with fencing tokens, job cursors, and claimed rows with `lease_until`, an attempt counter and the
+  statuses pending, done and parked.
 - Key-feed sequence numbers that are drawn at the write and survive a rollback, so they become visible out of
   order and leave gaps.
 - A database clock that a test steps against the node clocks.
@@ -52,7 +53,7 @@ touch the control crates, the model or the workflow, and nightly.
 |---|---|
 | PG1 | The migrations apply once, are recorded in the ledger, and a second run is a no-op |
 | PG2 | Both timeouts are 10 s on pooled connections and in transactions; transactions run at repeatable read |
-| PgModel differential (6 rows) | Each script's transcript against the server equals the model's |
+| PgModel differential (7 rows) | Each script's transcript against the server equals the model's. The `jobs` row covers the statements of the job runners: parking a claimed row and pruning the key feed |
 | PG3 | After every connection is terminated, both pools replace their connections and every later call succeeds |
 
 Transcripts hold no raw database time and no raw feed sequence number, because those differ between two stores
@@ -87,3 +88,6 @@ Replay one seed:
 ```sh
 CRUCIBLE_SIM_SEED=<n> cargo nextest run -p crucible-sim --test lease_dst replay_seed --run-ignored all --no-capture
 ```
+
+The runners that work over these leases and claims (`crucible-jobs`) have their own simulation:
+[`jobs-simulation.md`](jobs-simulation.md).

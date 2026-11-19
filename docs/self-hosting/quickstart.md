@@ -4,9 +4,9 @@ This page runs a development preview of Crucible with Docker Compose: the `cruci
 Postgres 18 on one machine. There is no release yet and no upgrade path, and the data format may change between commits. Do not put
 data you need to keep in it. [README.md](README.md) covers configuration, ports, upgrades and backups.
 
-What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the migrations
-ledger in Postgres, the REST API for traces, and the UI's traces table and trace page. Sign-in, projects and key management will arrive with the control
-plane; until then project keys come from a file and the UI connects with a key (see "Open the UI").
+What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the control plane in
+Postgres (sign-in, the organization, projects, members, API keys and the migrations ledger), the REST API for traces,
+and the UI's traces table and trace page.
 
 ## Requirements
 
@@ -25,13 +25,11 @@ docker build -f deploy/docker/Dockerfile -t crucible:dev .
 The build needs only Docker: it compiles the UI and the server inside the build and takes a few minutes. Once
 releases exist, skip this step; Compose pulls `ghcr.io/elm-os/crucible`.
 
-## 2. Make the two local files
+## 2. Make `.env`
 
-Both live in `deploy/compose/` and are ignored by git. Make them before the first start: Docker Desktop for Windows
-turns a missing `keys.toml` into an empty directory, which you would have to delete first.
-
-`.env` holds the ClickHouse admin password, the Postgres password and the master key, 32 random bytes as 64
-hexadecimal characters. Make it once, with one line, and name the image you built:
+`.env` lives in `deploy/compose/` and is ignored by git. It holds the ClickHouse admin password, the Postgres password
+and the master key, 32 random bytes as 64 hexadecimal characters. Make it once, with one line, and name the image you
+built:
 
 ```sh
 cd deploy/compose
@@ -40,22 +38,9 @@ echo 'CRUCIBLE_IMAGE=crucible:dev' >> .env
 ```
 
 Keep the master key. Crucible derives the passwords of its four ClickHouse service users from it, and the users are
-created once: a server started with a different master key cannot log in to the same ClickHouse data. To start over,
-remove the volumes with `docker compose down -v`.
-
-`keys.toml` lists the project keys that ingest and the API accept. A project id is any UUID; a key pair is a public
-key `cpk_` and a secret `csk_`, each followed by 43 characters from `0-9A-Za-z` that encode 32 bytes, which a
-leading `0` always keeps in range:
-
-```sh
-key() { printf '%s0%s' "$1" "$(openssl rand -base64 96 | tr -dc '0-9A-Za-z' | head -c 42)"; }
-printf '[[project_key]]\nproject_id = "%s"\npublic_key = "%s"\nsecret = "%s"\n' \
-  "$(openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')" \
-  "$(key cpk_)" "$(key csk_)" > keys.toml
-```
-
-The server reads the file as uid 65532, so keep it readable by others (the default mode 644) or give it to that user
-(`chown 65532 keys.toml`).
+created once: a server started with a different master key cannot log in to the same ClickHouse data. The API keys
+and the sign-in provider secrets in Postgres depend on it too. To start over, remove the volumes with
+`docker compose down -v`.
 
 ## 3. Start
 
@@ -66,25 +51,71 @@ curl -s http://127.0.0.1:8080/readyz     # "ready"
 
 `--wait` returns once the `ready` service reports Crucible's `/readyz` as healthy. On start Crucible applies the
 Postgres migrations and the ClickHouse schema (`--migrate`) and records each step in the ledger in Postgres, checks
-the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), and inserts one block twice
-to prove that deduplication works. Until that has passed, ingest answers 503 and
+the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), inserts one block twice
+to prove that deduplication works, and loads the API keys from Postgres. Until that has passed, ingest answers 503 and
 `/readyz` says what is missing; `docker compose logs crucible` shows the same reason.
 
-The ports are published on every interface, so other machines on your network can send traces. Add
+The ports are published on every interface, so other machines on your network can send traces and sign in. Add
 `CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
 
-## 4. Send a trace
+## 4. Create the organization and its owner
+
+A new server has no users. The first one, the owner, is created with a one-time setup link, which this page uses, or
+with `crucible admin init` from the command line. Either way the server also creates the organization and a first
+project, `Default`, whose slug is `default`.
+
+While no owner exists, the server logs the setup link a few seconds after it starts:
+
+```sh
+docker compose logs crucible | grep 'setup/?token='
+```
+
+The line reads `no owner exists yet: open <this server's address>/setup/?token=<token> ...`. Open
+`http://127.0.0.1:8080/setup/?token=<token>`, with the address you reach the server at in place of
+`127.0.0.1:8080`, and give the organization's name, your name, your email and a password of 12 to 128 characters.
+The page signs you in as the owner. The link works once and for 24 hours; a restart logs a new one.
+
+For scripts, `crucible admin init` does the same without a browser and reads the password from standard input, as
+`deploy/compose/smoke-test.sh` does:
+
+```sh
+printf '%s\n' "$OWNER_PASSWORD" | docker compose exec -T crucible \
+  crucible admin init --org-name Acme --email you@example.com --name 'Your Name'
+```
+
+Then sign in at <http://127.0.0.1:8080/login/>.
+
+Sign-in works over plain HTTP: the session cookie is sent without `Secure`, and the server accepts the address the
+page was opened at. On a network you do not trust, put a TLS proxy in front ([README.md](README.md#security)).
+
+## 5. Make an API key
+
+Open **Settings** and then **API keys** (<http://127.0.0.1:8080/settings/api-keys/>). The page shows the keys of the
+project chosen in the header, `Default` at first. To use another project, choose **New project** beside the Settings
+tabs (owners and admins have it), give it a name, and the page moves to that project's API keys.
+
+Choose **Create key** and copy the secret key, `csk_...`, from the dialog. It is shown once: Crucible keeps only a
+hash of it. A new key may ingest, read and write (the scopes `ingest`, `read` and `write`).
+
+From the command line, `crucible admin create-key` makes a key and prints `project_id`, `public_key` and `secret_key`:
+
+```sh
+docker compose exec crucible crucible admin create-key --project default
+```
+
+A key made there reaches the running server within 5 seconds; until then ingest answers 401 with it.
+
+## 6. Send a trace
 
 Any OpenTelemetry SDK or collector that exports OTLP over HTTP works. Point it at `http://127.0.0.1:4318/v1/traces`
-and send the secret from `keys.toml` as `Authorization: Bearer <secret>`. With the standard environment variables:
+and send the secret key as `Authorization: Bearer <secret>`. With the standard environment variables:
 
 ```sh
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
 ```
 
-Exporters that speak OTLP over gRPC use `http://127.0.0.1:4317` with the same header
-(`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc`).
+The Compose files publish OTLP over HTTP; OTLP/gRPC on port 4317 is not published.
 
 Or by hand:
 
@@ -99,23 +130,33 @@ curl -s -X POST http://127.0.0.1:4318/v1/traces \
 
 A request is acknowledged once it is durable in the write-ahead log.
 
-## 5. Open the UI
+## 7. See it
 
-Open <http://127.0.0.1:8080/traces/>. The page asks you to connect: choose **Connect** in the header and paste the
-project id and the secret from `keys.toml`.
+Open <http://127.0.0.1:8080/traces/>: the trace sent above is in the list, and choosing it opens the trace page. The
+project menu in the header switches between projects.
 
-The Connect dialog is temporary. This preview has no sign-in, so the UI sends the project key as
-`Authorization: Bearer` on its API requests and remembers it in this browser until you press Disconnect. Browser
-sessions will replace the dialog in milestone 4. Do not expose this preview to a network you do not trust.
-
-The same data is available from the API, for example the trace sent above:
+The same data is available from the API with the key, for example the trace sent above:
 
 ```sh
 curl -s -H "Authorization: Bearer <secret>" \
   "http://127.0.0.1:8080/api/v1/projects/<project id>/traces/5b8efff798038103d269b633813fc60c"
 ```
 
-The trace list takes a time window of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
+`crucible admin create-key` prints the project id as `project_id`; in the UI, choosing the project in the header's
+menu puts it in the address bar as `?project=<project id>`. The trace list takes a time window of at most 30 days:
+`.../traces?from=<RFC 3339>&to=<RFC 3339>`.
+
+## People and outages
+
+- Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. This version sends no
+  email, so a forgotten password is reset with `docker compose exec crucible crucible admin reset-password <email>`,
+  which prints a one-time link valid for 30 minutes. Without `server.public_url` it prints the path,
+  `/reset/?token=...`, to open at the address you reach the server at.
+- Sign-in through GitHub, Google or an OpenID Connect provider needs the address people use, which the provider
+  redirects back to, as `server.public_url` ([README.md](README.md#configuration)). An `https` public URL also makes
+  the session cookie `Secure`.
+- If Postgres becomes unreachable, open sessions keep working for `auth.session_outage_grace` (10 minutes by
+  default), and keys the server already knows keep working for ingest (`auth.pg_outage_mode = "fail_open"`).
 
 ## Stop
 
@@ -126,7 +167,10 @@ docker compose down -v     # removes it
 
 ## Other ways to run it
 
-- Against a ClickHouse you run elsewhere: `deploy/compose/compose.cloud.yaml`, described in [README.md](README.md).
+- Against a ClickHouse and a Postgres you run elsewhere: `deploy/compose/compose.cloud.yaml`, described in
+  [README.md](README.md).
+- Without Postgres, with project keys from a file and no sign-in:
+  [README.md](README.md#without-postgres-keys-from-a-file).
 - Without Compose: `crucible serve` runs the same way outside a container. The flags, their environment variables and
   the two modes (with ClickHouse, or ingest only) are in [development.md](../development.md#running-crucible-serve).
 - With a binary you built in the dev container: `deploy/compose/compose.dev.yaml`, described in

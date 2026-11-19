@@ -8,11 +8,22 @@ use crucible_plan::{
     trace_spans,
 };
 use crucible_recent::RecentSpan;
-use crucible_records::{SpanId, TraceId};
+use crucible_records::{SpanId, TableId, TraceId};
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
+use crate::facts::{TraceFacts, trace_extent};
 use crate::service::{QueryService, Read};
 use crate::spans::{SPAN_TABLES, StoredTrace, TraceSpan, ids, merge, recent, stored};
+
+/// The tables trace by id depends on, for the quarantine rule: its spans, its stats and its facts.
+const DETAIL_TABLES: [TableId; 6] = [
+    SPAN_TABLES[0],
+    SPAN_TABLES[1],
+    TableId::FactScores,
+    TableId::FactTags,
+    TableId::FactFlags,
+    TableId::FactCorrections,
+];
 
 /// A trace.
 #[derive(Clone, PartialEq, Debug)]
@@ -28,6 +39,8 @@ pub struct TraceDetail {
     pub paged: bool,
     /// The spans in `(start_time, span_id)` order, without duplicates.
     pub spans: Vec<TraceSpan>,
+    /// The trace's facts and its effective tags (contract 3.8).
+    pub facts: TraceFacts,
     /// The response metadata.
     pub meta: Meta,
 }
@@ -98,11 +111,13 @@ impl QueryService {
                 (spans, stored_count.saturating_add(unconfirmed), true)
             }
         };
+        let extent = trace_extent(bounds, &entries);
+        let facts = read.trace_facts(trace_id, extent, &spans).await?;
         let meta = read.finish(
             read.now,
             consistency,
             state,
-            &SPAN_TABLES,
+            &DETAIL_TABLES,
             !entries.is_empty(),
         )?;
         if spans.is_empty() && meta.is_whole() {
@@ -113,6 +128,7 @@ impl QueryService {
             span_count,
             paged,
             spans,
+            facts,
             meta,
         })
     }

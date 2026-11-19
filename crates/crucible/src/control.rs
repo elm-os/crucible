@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -41,6 +42,9 @@ pub(crate) trait ApplyStep: Sync {
 pub(crate) struct Control {
     config: PgConfig,
     pub(crate) store: PgControlStore,
+    /// One Postgres migration at a time on this node: `serve --migrate` starts them for the identity tasks and
+    /// again before the ClickHouse steps, and two at once would race on the same tables.
+    migrating: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Control {
@@ -55,7 +59,11 @@ impl Control {
             ..PgConfig::new(config.url.expose())
         };
         let store = PgControlStore::new(env, &config).context("the Postgres configuration")?;
-        Ok(Self { config, store })
+        Ok(Self {
+            config,
+            store,
+            migrating: Arc::default(),
+        })
     }
 
     /// Applies the Postgres migrations, then the steps of `steps` that the ledger does not hold.
@@ -72,6 +80,7 @@ impl Control {
 
     /// Applies the Postgres migrations and records them in the ledger.
     pub(crate) async fn migrate_postgres(&self, env: &Env) -> anyhow::Result<()> {
+        let _one_at_a_time = self.migrating.lock().await;
         let applied = crucible_control_pg::migrate(env, &self.config)
             .await
             .context("applying the Postgres migrations")?;

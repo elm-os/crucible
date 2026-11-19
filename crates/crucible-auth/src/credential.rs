@@ -63,6 +63,12 @@ pub enum Refusal {
         "this server does not accept the secret key; check that it was copied whole and that the server lists it"
     )]
     UnknownSecret,
+    /// The server cannot check the key now: Postgres is unreachable and the key is not in the server's snapshot
+    /// (contract 11.8). Answered with 503 and `Retry-After`.
+    #[error(
+        "the server cannot check this key right now because its control plane is unreachable; try again shortly"
+    )]
+    Unavailable,
     /// The secret key is valid and the public key is not its pair's.
     #[error(
         "the public key does not belong to the same project as the secret key; use the key pair shown together \
@@ -95,6 +101,15 @@ pub fn authenticate(keys: &dyn KeyVerifier, authorization: &str) -> Result<KeyPr
     }
 }
 
+/// The refusal of a secret that did not verify: [`Refusal::Unavailable`] when the verifier cannot decide now.
+fn undecided(keys: &dyn KeyVerifier, secret: &str) -> Refusal {
+    if keys.retry_after(secret).is_some() {
+        Refusal::Unavailable
+    } else {
+        Refusal::UnknownSecret
+    }
+}
+
 fn bearer(keys: &dyn KeyVerifier, token: &str) -> Result<KeyPrincipal, Refusal> {
     if token.starts_with(PUBLIC_PREFIX) {
         return Err(Refusal::PublicKeyOnly);
@@ -102,7 +117,7 @@ fn bearer(keys: &dyn KeyVerifier, token: &str) -> Result<KeyPrincipal, Refusal> 
     if !well_formed(token, SECRET_PREFIX) {
         return Err(Refusal::MalformedSecret);
     }
-    keys.verify(token).ok_or(Refusal::UnknownSecret)
+    keys.verify(token).ok_or_else(|| undecided(keys, token))
 }
 
 fn basic(keys: &dyn KeyVerifier, encoded: &str) -> Result<KeyPrincipal, Refusal> {
@@ -128,7 +143,7 @@ fn basic(keys: &dyn KeyVerifier, encoded: &str) -> Result<KeyPrincipal, Refusal>
         return Err(Refusal::MalformedSecret);
     }
     keys.verify_pair(public, secret).map_err(|e| match e {
-        PairError::Secret => Refusal::UnknownSecret,
+        PairError::Secret => undecided(keys, secret),
         PairError::Mismatch => Refusal::PairMismatch,
     })
 }

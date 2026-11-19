@@ -66,7 +66,18 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "server.keys_file",
         None,
-        "TOML file of the project keys that ingest accepts",
+        "TOML file of the project keys, for a server without Postgres (with Postgres the keys live there)",
+    ),
+    plain(
+        "server.public_url",
+        None,
+        "the URL people reach the server at, for example https://crucible.example.com; provider sign-in needs \
+         it for its callback URL, and an https URL makes the session cookie Secure",
+    ),
+    plain(
+        "server.allowed_origins",
+        None,
+        "comma-separated origins besides the server's own that may send cookie-authenticated writes",
     ),
     plain(
         "data.dir",
@@ -81,7 +92,8 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "recent.max_bytes",
         None,
-        "bound on the memory of the recent-span index, in bytes (default: 10% of RAM, at most 1 GiB)",
+        "bound on the memory of the recent-span index, in bytes (default: 10% of the container's memory limit, \
+         else of RAM, at most 1 GiB)",
     ),
     plain(
         "mcp.calls_per_second",
@@ -113,6 +125,12 @@ pub const SETTINGS: &[Setting] = &[
         "a file that holds the ClickHouse admin user's password",
     ),
     plain(
+        "clickhouse.idle_timeout",
+        None,
+        "seconds an idle connection to ClickHouse is kept for the next statement; set it below the idle timeout \
+         of a balancer in front of the store (default: a margin below the server's keep_alive_timeout)",
+    ),
+    plain(
         "postgres.url",
         None,
         "postgres://user@host:port/database of the control plane; add ?sslmode=require for TLS",
@@ -130,6 +148,27 @@ pub const SETTINGS: &[Setting] = &[
         "postgres.pool_size",
         Some("8"),
         "connections of the main Postgres pool (a reserved pool of 2 is added)",
+    ),
+    plain(
+        "security.require_https",
+        Some("false"),
+        "refuse sign-in unless server.public_url is an https URL (plain HTTP works by default)",
+    ),
+    plain(
+        "auth.pg_outage_mode",
+        Some("fail_open"),
+        "API keys during a Postgres outage: fail_open keeps known keys working for ingest, fail_closed refuses \
+         every secret key after 5 s without a successful key-feed poll",
+    ),
+    plain(
+        "auth.fail_open_max",
+        None,
+        "seconds after which a fail_open outage behaves as fail_closed (default: unlimited)",
+    ),
+    plain(
+        "auth.session_outage_grace",
+        Some("600"),
+        "seconds that cached sessions stay valid during a Postgres outage; 0 refuses them at once",
     ),
 ];
 

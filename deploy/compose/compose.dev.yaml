@@ -1,5 +1,6 @@
-# Development preview: ClickHouse 26.8 and a locally built Crucible. Not a release and not for production.
-# docs/development.md ("A local build in Compose") walks through the three files this needs beside it:
+# Development preview: ClickHouse 26.8 and a locally built Crucible, without Postgres. Not a release and not for
+# production. Without Postgres there is no sign-in: the project keys come from keys.toml (--keys-file) and the UI
+# connects with one. docs/development.md ("A local build in Compose") walks through the three files this needs:
 #   bin/crucible   the binary, built with the embedded UI
 #   keys.toml      the project keys
 #   .env           CLICKHOUSE_PASSWORD and CRUCIBLE_MASTER_KEY

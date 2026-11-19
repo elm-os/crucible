@@ -7,6 +7,7 @@
 )]
 
 mod gen_ts;
+mod perf;
 mod sim;
 mod ui;
 
@@ -19,18 +20,28 @@ commands:
   help                 show this message
   gen-ts               regenerate the TypeScript types of the REST API in ui/src/api/generated/ from the
                        DTOs of crucible-api-types; commit the result (CI fails on any difference)
+  authz-matrix         regenerate docs/architecture/authz-matrix.md from the route permissions of
+                       crucible-api; commit the result (a test fails on any difference)
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
                        (default ui/out); run it after every UI build that will be embedded or served";
 
-const PLANNED: &str = "Planned: perf (gate, fsync-probe), conformance, authz-matrix.";
+const PLANNED: &str = "Planned: conformance.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("help" | "--help" | "-h") => {
-            println!("{USAGE}\n{}\n\n{PLANNED}", sim::USAGE);
+            println!("{USAGE}\n{}\n{}\n\n{PLANNED}", sim::USAGE, perf::USAGE);
             ExitCode::SUCCESS
         }
+        Some("perf") => match perf::main(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("perf: {e}");
+                ExitCode::from(2)
+            }
+        },
         Some("sim") => match sim::main(args) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
@@ -39,6 +50,20 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("authz-matrix") => {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../docs/architecture/authz-matrix.md");
+            match std::fs::write(&path, crucible_api::authz_matrix()) {
+                Ok(()) => {
+                    println!("{}: {} routes", path.display(), crucible_api::ROUTES.len());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("authz-matrix: writing {}: {e}", path.display());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("gen-ts") => match gen_ts::generate() {
             Ok((dir, files)) => {
                 println!("{}: {files} files", dir.display());
@@ -74,7 +99,11 @@ fn main() -> ExitCode {
             }
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\n\n{USAGE}\n{}", sim::USAGE);
+            eprintln!(
+                "unknown command: {other}\n\n{USAGE}\n{}\n{}",
+                sim::USAGE,
+                perf::USAGE
+            );
             ExitCode::from(2)
         }
     }

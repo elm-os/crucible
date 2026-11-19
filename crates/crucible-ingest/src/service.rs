@@ -388,7 +388,14 @@ impl Inner {
         let value = value
             .to_str()
             .map_err(|_| Reject::Unauthenticated(Refusal::Malformed))?;
-        crucible_auth::authenticate(self.keys.as_ref(), value).map_err(Reject::Unauthenticated)
+        crucible_auth::authenticate(self.keys.as_ref(), value).map_err(|refusal| match refusal {
+            // Contract 11.8: a key the server cannot check while Postgres is unreachable is retried later.
+            Refusal::Unavailable => Reject::Unavailable {
+                retry_after_s: u32::try_from(crucible_auth::RETRY_AFTER.as_secs()).unwrap_or(5),
+                detail: "the server cannot check this key while its control plane is unreachable",
+            },
+            other => Reject::Unauthenticated(other),
+        })
     }
 
     /// The earliest start time a span of a request arriving now may have.

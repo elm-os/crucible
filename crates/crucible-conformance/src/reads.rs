@@ -1003,10 +1003,17 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let m2 = crate::m2::plans(ctx, &m2_fixture)
         .await
         .context("milestone 2 plans")?;
+    let facts_fixture = crate::m2_facts::load(ctx).await.context("facts fixture")?;
+    let facts = crate::m2_facts::plans(ctx, &facts_fixture)
+        .await
+        .context("facts and metrics plans")?;
     ctx.model.merge_all();
     crate::m2::plans(ctx, &m2_fixture)
         .await
         .context("milestone 2 plans over merged model parts")?;
+    crate::m2_facts::plans(ctx, &facts_fixture)
+        .await
+        .context("facts and metrics plans over merged model parts")?;
     endpoint_plans(ctx, &fixture)
         .await
         .context("endpoint plans over merged model parts")?;
@@ -1022,7 +1029,8 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
          rollup table and time-series step and {m2} reads of the milestone 2 builders (session and user lists and \
          details, user session counts, the span list under every filter field, search with snippets, the \
          payload range, the metrics ranking, series and other series) with zero-filled series, set merges, \
-         nullable outputs and the row and byte guardrails returned the expected rows, each block valid under \
-         the plan's output schema"
+         nullable outputs and the row and byte guardrails and {facts} reads of the fact rows and fact page of \
+         every fact table, the filter values and the traces metrics series returned the expected rows, each \
+         block valid under the plan's output schema"
     ))
 }

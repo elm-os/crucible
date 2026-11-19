@@ -65,7 +65,8 @@ test.describe("traces: recent traces", () => {
     const href = new URL((await link.getAttribute("href")) ?? "", "http://localhost");
     expect(href.pathname).toMatch(/^\/trace\/?$/);
     expect(Object.fromEntries(href.searchParams)).toEqual({ project: PROJECT, trace: TRACE });
-    const request = new URL(`http://localhost${api.calls[0]}`);
+    const listCall = api.calls.find((call) => LIST_PATH.test(call.split("?")[0] ?? ""));
+    const request = new URL(`http://localhost${listCall}`);
     expect([...request.searchParams.keys()]).toEqual(["from", "to"]);
     await expectAccessible(page, "recent traces success");
   });

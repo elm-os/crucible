@@ -125,3 +125,38 @@ fn without_a_store_the_server_authenticates_then_says_which_setting_provides_one
         assert!(detail.contains("--clickhouse-url"), "{detail}");
     });
 }
+
+/// A verifier that cannot decide any key now, as while Postgres is unreachable and the key is not in the
+/// snapshot (contract 11.8).
+#[derive(Debug)]
+struct Undecided;
+
+impl crucible_auth::KeyVerifier for Undecided {
+    fn verify(&self, _secret: &str) -> Option<crucible_auth::KeyPrincipal> {
+        None
+    }
+
+    fn verify_pair(
+        &self,
+        _public: &str,
+        _secret: &str,
+    ) -> Result<crucible_auth::KeyPrincipal, crucible_auth::PairError> {
+        Err(crucible_auth::PairError::Secret)
+    }
+
+    fn retry_after(&self, _secret: &str) -> Option<std::time::Duration> {
+        Some(crucible_auth::RETRY_AFTER)
+    }
+}
+
+#[test]
+fn a_key_the_control_plane_cannot_check_now_is_503_with_retry_after() {
+    run(|env| async move {
+        let mcp = crucible_mcp_server::router_without_store(&env, std::sync::Arc::new(Undecided));
+        let headers = [("authorization", format!("Bearer {}", key(1)))];
+        let reply = send(&mcp, Method::POST, &headers, Some(&initialize())).await;
+        reply.assert_problem(503, "control_plane_unavailable");
+        let seconds = crucible_auth::RETRY_AFTER.as_secs().to_string();
+        assert_eq!(reply.header("retry-after"), Some(seconds.as_str()));
+    });
+}

@@ -8,6 +8,13 @@ expression: list.pretty()
       "duration_us": 1001000,
       "environment": "default",
       "error_count": 0,
+      "facts": {
+        "bookmarked": false,
+        "correction": null,
+        "public": null,
+        "scores": [],
+        "tags": []
+      },
       "head_kind": "root",
       "input_tokens": 2,
       "level": "default",
@@ -30,6 +37,13 @@ expression: list.pretty()
       "duration_us": 3001000,
       "environment": "default",
       "error_count": 0,
+      "facts": {
+        "bookmarked": false,
+        "correction": null,
+        "public": null,
+        "scores": [],
+        "tags": []
+      },
       "head_kind": "root",
       "input_tokens": 4,
       "level": "default",

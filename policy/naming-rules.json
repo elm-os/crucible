@@ -19,7 +19,9 @@
     "logfire",
     "agentcat",
     "mcpcat",
-    "shinzo"
+    "shinzo",
+    "firecrawl",
+    "mendable"
   ],
   "vendor_allowed_paths": [
     "crates/crucible-compat/",

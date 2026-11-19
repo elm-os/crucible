@@ -9,6 +9,1836 @@
     "version": "0.0.0"
   },
   "paths": {
+    "/api/v1/account": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get the account",
+        "description": "The signed-in user's own profile.",
+        "operationId": "get_account",
+        "responses": {
+          "200": {
+            "description": "The account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Update the account",
+        "description": "Renames the signed-in user.",
+        "operationId": "patch_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/invitations/accept": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Accept an invitation",
+        "description": "Creates the invited account with a password, signs it in and sets the session cookie.",
+        "operationId": "accept_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationAccept"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: the account exists.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`token_invalid` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in",
+        "description": "Signs in with email and password and sets the session cookie. Send `X-Crucible-CSRF: prelogin`.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; the session cookie is set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_credentials`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`, `csrf_invalid` or `origin_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign out",
+        "description": "Revokes the session and clears its cookie.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/oauth/{provider_id}/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Finish a provider sign-in",
+        "description": "The provider's redirect target. Checks the state against the flow cookie, exchanges the code, signs the\nperson in and redirects (303) to where the sign-in began, or to `/login/?error=<code>`.",
+        "operationId": "oauth_callback",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "The provider id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The authorization code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "The state.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "The provider's error.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "To the page the sign-in began on, or to `/login/?error=<code>`."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/oauth/{provider_id}/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start a provider sign-in",
+        "description": "Redirects to the provider (303) and sets the flow cookie. On failure it redirects to `/login/?error=<code>`.",
+        "operationId": "oauth_start",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "The provider id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "next",
+            "in": "query",
+            "description": "Where to go after sign-in: a path on this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "To the provider, or to `/login/?error=<code>`."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/password/change": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change the password",
+        "description": "Changes the signed-in user's password and revokes their other sessions.",
+        "operationId": "password_change",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed."
+          },
+          "401": {
+            "description": "`invalid_credentials`: the current password is wrong.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/password/reset-confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Reset the password",
+        "description": "Sets a new password with the token of a reset link and revokes every session of the user.",
+        "operationId": "password_reset_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The password is set; sign in with it."
+          },
+          "422": {
+            "description": "`token_invalid` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/password/reset-request": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Ask for a password reset",
+        "description": "Always 202, so it does not reveal which emails have accounts. This version sends no email: an operator makes\na reset link with `crucible admin reset-password <email>`.",
+        "operationId": "password_reset_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/providers": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "List sign-in options",
+        "description": "The enabled sign-in providers, whether password sign-in is on and whether first-run setup is needed. Without\na control plane this answers `feature_disabled`, and clients use a project key instead.",
+        "operationId": "get_auth_providers",
+        "responses": {
+          "200": {
+            "description": "The sign-in options.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInOptions"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`feature_disabled`: no control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get the session",
+        "description": "The signed-in user, their organization role, the projects they can see with their permissions, and the\nCSRF token to send as `X-Crucible-CSRF`.",
+        "operationId": "get_session",
+        "responses": {
+          "200": {
+            "description": "The session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/setup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set up the first owner",
+        "description": "Creates the organization and its owner with the one-time token from the server log, and signs the owner in.",
+        "operationId": "setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in as the owner.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: an owner exists.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`token_invalid` or `validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/v1/org": {
+      "get": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Get the organization",
+        "operationId": "get_org",
+        "responses": {
+          "200": {
+            "description": "The organization; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Update the organization",
+        "description": "Changes the name and settings; send `If-Match` with the version you read.",
+        "operationId": "patch_org",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The organization.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Org"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/auth-providers": {
+      "get": {
+        "tags": [
+          "org"
+        ],
+        "summary": "List sign-in providers",
+        "operationId": "list_auth_providers",
+        "responses": {
+          "200": {
+            "description": "The providers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProviderList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Add a sign-in provider",
+        "description": "The client secret is stored sealed under the master key and never returned. Provider sign-in needs\n`server.public_url` for the callback URL.",
+        "operationId": "create_auth_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthProviderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProvider"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/auth-providers/{provider_id}": {
+      "delete": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Delete a sign-in provider",
+        "operationId": "delete_auth_provider",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "The provider id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted with its linked accounts."
+          },
+          "403": {
+            "description": "`forbidden`: from the configuration.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Change a sign-in provider",
+        "operationId": "patch_auth_provider",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "description": "The provider id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthProviderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProvider"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: from the configuration.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/invitations": {
+      "get": {
+        "tags": [
+          "org"
+        ],
+        "summary": "List invitations",
+        "operationId": "list_invitations",
+        "responses": {
+          "200": {
+            "description": "The invitations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Invite someone",
+        "description": "Creates an invitation and answers its link once. This version sends no email; pass the link on.",
+        "operationId": "create_invitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The invitation and its link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: already a member.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/invitations/{invitation_id}": {
+      "delete": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Revoke an invitation",
+        "operationId": "revoke_invitation",
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "description": "The invitation id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "404": {
+            "description": "`not_found`: no open invitation.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/members": {
+      "get": {
+        "tags": [
+          "org"
+        ],
+        "summary": "List members",
+        "operationId": "list_org_members",
+        "responses": {
+          "200": {
+            "description": "The members.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgMemberList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Remove a member",
+        "description": "Deletes the member's account with its sessions and memberships.",
+        "operationId": "delete_org_member",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Change a member's role",
+        "description": "An admin cannot change the owner or make one; the owner changes by transfer. Revokes the member's sessions.",
+        "operationId": "patch_org_member",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgMemberPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The member.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrgMember"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/org/transfer-ownership": {
+      "post": {
+        "tags": [
+          "org"
+        ],
+        "summary": "Transfer ownership",
+        "description": "Makes another member the owner; the caller becomes an admin.",
+        "operationId": "transfer_ownership",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferOwnership"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Transferred."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List projects",
+        "description": "The projects the signed-in user can see, with their role on each.",
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "description": "The projects.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Create a project",
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: the slug is taken.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get a project",
+        "description": "The project and the signed-in user's role on it.",
+        "operationId": "get_project",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The project; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete a project",
+        "description": "A soft delete: the project disappears from every list and its keys stop working.",
+        "operationId": "delete_project",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Rename a project",
+        "operationId": "patch_project",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/api-keys": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List API keys",
+        "operationId": "list_api_keys",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The keys, without their secrets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Create an API key",
+        "description": "Answers the secret key once; it cannot be shown again. New keys have `ingest`, `read` and `write` unless\n`scopes` says otherwise.",
+        "operationId": "create_api_key",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The key and its secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/api-keys/{key_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Revoke an API key",
+        "description": "The key stops working on this server at once and on every node within 5 s.",
+        "operationId": "revoke_api_key",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "The key id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Change an API key",
+        "operationId": "patch_api_key",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "The key id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKey"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/corrections": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Correct an output",
+        "description": "Records the corrected output of a trace, a span or a session; `retracted: true` removes the correction.\nThe body is at most 1 MiB.",
+        "operationId": "post_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/data-bounds": {
       "get": {
         "tags": [
@@ -81,6 +1911,940 @@
           },
           "504": {
             "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/facts": {
+      "get": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Get the facts of a target",
+        "description": "The effective facts of a trace, a span or a session: per key the latest write, without retracted keys.",
+        "operationId": "get_facts",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "description": "The target trace (32 hex characters); with `span_id`, its span.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "query",
+            "description": "The target span (16 hex characters), with `trace_id`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "The target session, instead of a trace.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The facts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Facts"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/feedback": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Record feedback",
+        "description": "Writes a score with `source = feedback` about a trace, a span or a session. A score with the same name\n(and `score_id`) replaces the earlier one; `retracted: true` removes it.",
+        "operationId": "post_feedback",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/filter-values": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Get filter values",
+        "description": "The values of a filter field of a metrics source in the window, most frequent first, with how many spans\ncarry each. The fields are those of the metrics schema.",
+        "operationId": "get_filter_values",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "The source whose field is looked up.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "field",
+            "in": "query",
+            "description": "A filter field of the source.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only values that start with this text.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many values: 1 to 100, default 20.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterValues"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/flags": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Set a flag",
+        "description": "Sets the `bookmarked` or `public` flag of a trace, a span or a session.",
+        "operationId": "post_flag",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/members": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List project members",
+        "description": "The explicit memberships of the project.",
+        "operationId": "list_project_members",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The members.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMemberList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add a project member",
+        "operationId": "add_project_member",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectMemberAdd"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The member.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMember"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`: not an org member.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Remove a project member",
+        "operationId": "delete_project_member",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Change a project member's role",
+        "operationId": "patch_project_member",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "The user id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectMemberPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The member.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMember"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/metrics/query": {
+      "post": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Query metrics",
+        "description": "The series of up to four measures of a source, bucketed in time and split by up to two dimensions, with\nat most 500 buckets per series, 20 keys and 10,000 points. Keys beyond `top_n` form an `other` series for\nadditive measures; for percentiles they are left out and `truncated` is set.",
+        "operationId": "query_metrics",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricsQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The series.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` (with `limit` and `suggested_granularity`) or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/metrics/schema": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Get the metrics schema",
+        "description": "Per source: the measures with their units and aggregations, the dimensions, the filter fields with\ntheir operators, the granularities and the caps of a query. Generated from the registry the query\ncompiler uses.",
+        "operationId": "get_metrics_schema",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The schema.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -391,6 +3155,146 @@
           },
           "504": {
             "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/tags": {
+      "post": {
+        "tags": [
+          "facts"
+        ],
+        "summary": "Edit a tag",
+        "description": "Adds a tag to a trace, a span or a session, or removes it. A trace's effective tags are the tags it was\nsent with, plus the added ones, minus the removed ones.",
+        "operationId": "post_tag",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The fact is durable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project, or the project has not sent the target.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`ingest_unavailable` or `telemetry_store_unavailable`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -802,6 +3706,397 @@
   },
   "components": {
     "schemas": {
+      "Account": {
+        "type": "object",
+        "description": "The signed-in user's own profile (`GET account`).",
+        "required": [
+          "id",
+          "email",
+          "name"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "id": {
+            "type": "string",
+            "description": "The user id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          }
+        }
+      },
+      "AccountPatch": {
+        "type": "object",
+        "description": "`PATCH account`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The new display name."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiKey": {
+        "type": "object",
+        "description": "An API key. The secret key is shown only once, by `POST`.",
+        "required": [
+          "id",
+          "public_key",
+          "scopes",
+          "note",
+          "expires_at",
+          "last_used_at",
+          "revoked_at",
+          "version"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the key stops working."
+          },
+          "id": {
+            "type": "string",
+            "description": "The key id."
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the key was last used, to the minute."
+          },
+          "note": {
+            "type": "string",
+            "description": "The note."
+          },
+          "public_key": {
+            "type": "string",
+            "description": "The public key, `cpk_...`."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the key was revoked."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyScope"
+            },
+            "description": "What the key may do."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, for `If-Match`.",
+            "minimum": 0
+          }
+        }
+      },
+      "ApiKeyCreate": {
+        "type": "object",
+        "description": "`POST projects/{project_id}/api-keys`.",
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the key stops working."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/KeyScope"
+            },
+            "description": "What the key may do; `ingest`, `read` and `write` when absent."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiKeyCreated": {
+        "type": "object",
+        "description": "A new key with its secret, which is never shown again.",
+        "required": [
+          "key",
+          "secret_key"
+        ],
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ApiKey",
+            "description": "The key."
+          },
+          "secret_key": {
+            "type": "string",
+            "description": "The secret key, `csk_...`."
+          }
+        }
+      },
+      "ApiKeyList": {
+        "type": "object",
+        "description": "The keys of a project.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKey"
+            },
+            "description": "The keys, ordered by id."
+          }
+        }
+      },
+      "ApiKeyPatch": {
+        "type": "object",
+        "description": "`PATCH projects/{project_id}/api-keys/{key_id}`: the fields to change.",
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the key stops working."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The note."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/KeyScope"
+            },
+            "description": "What the key may do."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthMethod": {
+        "type": "string",
+        "description": "How a session signed in.",
+        "enum": [
+          "password",
+          "github",
+          "google",
+          "oidc"
+        ]
+      },
+      "AuthProvider": {
+        "type": "object",
+        "description": "A sign-in provider as administrators see it. The client secret is never returned.",
+        "required": [
+          "id",
+          "kind",
+          "display_name",
+          "issuer",
+          "client_id",
+          "scopes",
+          "allowed_domains",
+          "enabled",
+          "seeded",
+          "redirect_uri"
+        ],
+        "properties": {
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "When not empty, only these email domains may sign in through the provider."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "The OAuth client id."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "The text on the button."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the provider is offered."
+          },
+          "id": {
+            "type": "string",
+            "description": "The provider id."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The OpenID Connect issuer; empty for GitHub."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "The kind."
+          },
+          "redirect_uri": {
+            "type": "string",
+            "description": "The callback URL to register with the provider."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes requested besides those the kind needs."
+          },
+          "seeded": {
+            "type": "boolean",
+            "description": "Whether the provider comes from the server configuration, which makes it read-only here."
+          }
+        }
+      },
+      "AuthProviderCreate": {
+        "type": "object",
+        "description": "`POST org/auth-providers`.",
+        "required": [
+          "kind",
+          "display_name",
+          "client_id",
+          "client_secret"
+        ],
+        "properties": {
+          "allowed_domains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "When not empty, only these email domains may sign in through the provider."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "The OAuth client id."
+          },
+          "client_secret": {
+            "type": "string",
+            "description": "The OAuth client secret; stored sealed under the master key."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "The text on the button."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OpenID Connect issuer; required for `oidc`, ignored otherwise."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "The kind."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes requested besides those the kind needs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthProviderList": {
+        "type": "object",
+        "description": "The sign-in providers.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuthProvider"
+            },
+            "description": "The providers, ordered by id."
+          }
+        }
+      },
+      "AuthProviderPatch": {
+        "type": "object",
+        "description": "`PATCH org/auth-providers/{provider_id}`: the fields to change.",
+        "properties": {
+          "allowed_domains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "When not empty, only these email domains may sign in through the provider."
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OAuth client secret."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text on the button."
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the provider is offered."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthorKind": {
+        "type": "string",
+        "description": "Who wrote a fact.",
+        "enum": [
+          "user",
+          "api_key",
+          "system"
+        ]
+      },
       "Consistency": {
         "type": "string",
         "description": "Whether a response reflects every span this node acknowledged before the request arrived.",
@@ -809,6 +4104,78 @@
           "strong",
           "lagging"
         ]
+      },
+      "Correction": {
+        "type": "object",
+        "description": "The latest correction of an output.",
+        "required": [
+          "corrected",
+          "note",
+          "fact"
+        ],
+        "properties": {
+          "corrected": {
+            "type": "object",
+            "description": "The corrected output."
+          },
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "note": {
+            "type": "string",
+            "description": "The note."
+          }
+        }
+      },
+      "CorrectionRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/corrections`: the corrected output of the target.",
+        "required": [
+          "corrected"
+        ],
+        "properties": {
+          "corrected": {
+            "type": "object",
+            "description": "The corrected output: any JSON value."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note, at most 4 KiB."
+          },
+          "retracted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Retracts the correction: the target has none afterwards."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          }
+        },
+        "additionalProperties": false
       },
       "DataBounds": {
         "type": "object",
@@ -855,6 +4222,267 @@
           }
         }
       },
+      "FactRef": {
+        "type": "object",
+        "description": "The fact that holds a value: the latest write of its key.",
+        "required": [
+          "fact_id",
+          "version",
+          "created_at",
+          "author_kind",
+          "author_id"
+        ],
+        "properties": {
+          "author_id": {
+            "type": "string",
+            "description": "The user or API key that wrote it."
+          },
+          "author_kind": {
+            "$ref": "#/components/schemas/AuthorKind",
+            "description": "Who wrote it."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was written."
+          },
+          "fact_id": {
+            "type": "string",
+            "description": "The fact's id."
+          },
+          "version": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The fact's version."
+          }
+        }
+      },
+      "FactWritten": {
+        "type": "object",
+        "description": "What the server assigned to a fact it made durable.",
+        "required": [
+          "fact_id",
+          "key",
+          "version",
+          "created_at",
+          "target_time"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the fact was accepted."
+          },
+          "fact_id": {
+            "type": "string",
+            "description": "The fact's id (a UUIDv7)."
+          },
+          "key": {
+            "type": "string",
+            "description": "The key latest-wins resolves over: the score name (with `#` and the score id), the tag, the flag or\n`output`."
+          },
+          "target_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The start of the target the fact is filed under: a trace's earliest known start, a session's first\nseen."
+          },
+          "version": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The server's microsecond clock at acceptance: of two facts of one key, the greater version wins."
+          }
+        }
+      },
+      "Facts": {
+        "type": "object",
+        "description": "The effective facts of one target: per key the latest write, without retracted keys.",
+        "required": [
+          "scores",
+          "tags",
+          "bookmarked",
+          "public",
+          "correction",
+          "meta"
+        ],
+        "properties": {
+          "bookmarked": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FlagValue",
+                "description": "The `bookmarked` flag; null when it was never set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "correction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Correction",
+                "description": "The correction of the output; null when there is none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the response is."
+          },
+          "public": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FlagValue",
+                "description": "The `public` flag; null when it was never set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Score"
+            },
+            "description": "The scores, by name."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TagEdit"
+            },
+            "description": "The latest edit of each tag. The target's effective tags are its ingest tags plus the added ones minus\nthe removed ones."
+          }
+        }
+      },
+      "FeatureState": {
+        "type": "object",
+        "description": "Whether an optional module is on.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether it is on."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it is off."
+          }
+        }
+      },
+      "Features": {
+        "type": "object",
+        "description": "The server's optional modules.",
+        "required": [
+          "sql_workspace",
+          "media",
+          "smtp",
+          "signup_mode"
+        ],
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/MediaFeature",
+            "description": "Media."
+          },
+          "signup_mode": {
+            "type": "string",
+            "description": "How people join (`invite_only`)."
+          },
+          "smtp": {
+            "type": "boolean",
+            "description": "Whether the server sends email."
+          },
+          "sql_workspace": {
+            "$ref": "#/components/schemas/FeatureState",
+            "description": "The SQL workspace."
+          }
+        }
+      },
+      "FeedbackRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/feedback`: one score with `source = feedback`.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A comment, at most 4 KiB."
+          },
+          "data_type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScoreDataType",
+                "description": "How to read the value; by default `numeric` for a number, `boolean` for a boolean and `categorical` for\na string."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A JSON object, at most 16 KiB."
+          },
+          "name": {
+            "type": "string",
+            "description": "The score name, without `#`."
+          },
+          "retracted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Retracts the score of this name (and id): the target has no value for it afterwards."
+          },
+          "score_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's id of this score: scores with the same name and different ids are kept apart."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          },
+          "value": {
+            "$ref": "#/components/schemas/ScoreValue",
+            "description": "The value."
+          }
+        },
+        "additionalProperties": false
+      },
       "FieldError": {
         "type": "object",
         "description": "One invalid part of a request.",
@@ -878,6 +4506,142 @@
           }
         }
       },
+      "FillMode": {
+        "type": "string",
+        "description": "What an empty bucket holds.",
+        "enum": [
+          "zero",
+          "none"
+        ]
+      },
+      "FilterValue": {
+        "type": "object",
+        "description": "One value of a filter field.",
+        "required": [
+          "value",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "How many spans carry it in the window."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
+      "FilterValues": {
+        "type": "object",
+        "description": "The answer of `GET projects/{project_id}/filter-values`: the most frequent values first.",
+        "required": [
+          "data",
+          "truncated",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FilterValue"
+            },
+            "description": "The values."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more values exist than `data` holds."
+          }
+        }
+      },
+      "FlagName": {
+        "type": "string",
+        "description": "A flag of a target.",
+        "enum": [
+          "bookmarked",
+          "public"
+        ]
+      },
+      "FlagRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/flags`: sets a flag of the target.",
+        "required": [
+          "flag",
+          "value"
+        ],
+        "properties": {
+          "flag": {
+            "$ref": "#/components/schemas/FlagName",
+            "description": "The flag."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          },
+          "value": {
+            "type": "boolean",
+            "description": "Its new value."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FlagValue": {
+        "type": "object",
+        "description": "The latest value of a flag.",
+        "required": [
+          "value",
+          "fact"
+        ],
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "value": {
+            "type": "boolean",
+            "description": "The value."
+          }
+        }
+      },
+      "Granularity": {
+        "type": "string",
+        "description": "The bucket width of a metrics query.",
+        "enum": [
+          "auto",
+          "minute",
+          "five_minutes",
+          "fifteen_minutes",
+          "hour",
+          "day",
+          "week"
+        ]
+      },
       "HeadKind": {
         "type": "string",
         "description": "Why a trace appears in the list: its root span, or its earliest span while no root has\narrived.",
@@ -886,6 +4650,148 @@
           "provisional"
         ]
       },
+      "Invitation": {
+        "type": "object",
+        "description": "An invitation.",
+        "required": [
+          "id",
+          "email",
+          "org_role",
+          "project_roles",
+          "expires_at",
+          "accepted_at",
+          "revoked_at"
+        ],
+        "properties": {
+          "accepted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was accepted."
+          },
+          "email": {
+            "type": "string",
+            "description": "The invited email."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the invitation stops working."
+          },
+          "id": {
+            "type": "string",
+            "description": "The invitation id."
+          },
+          "org_role": {
+            "$ref": "#/components/schemas/OrgRole",
+            "description": "The org role the invitee gets."
+          },
+          "project_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectGrant"
+            },
+            "description": "The project memberships the invitee gets."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was revoked."
+          }
+        }
+      },
+      "InvitationAccept": {
+        "type": "object",
+        "description": "`POST auth/invitations/accept`.",
+        "required": [
+          "token",
+          "name",
+          "password"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          },
+          "password": {
+            "type": "string",
+            "description": "The password, 12 to 128 characters."
+          },
+          "token": {
+            "type": "string",
+            "description": "The token of the invitation link."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InvitationCreate": {
+        "type": "object",
+        "description": "`POST org/invitations`.",
+        "required": [
+          "email",
+          "org_role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email to invite."
+          },
+          "org_role": {
+            "$ref": "#/components/schemas/OrgRole",
+            "description": "The org role the invitee gets; never `owner`."
+          },
+          "project_roles": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ProjectGrant"
+            },
+            "description": "The project memberships the invitee gets."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InvitationCreated": {
+        "type": "object",
+        "description": "A new invitation with its link, shown once. The server sends no email in this version, so the inviter passes\nthe link on.",
+        "required": [
+          "invitation",
+          "accept_path"
+        ],
+        "properties": {
+          "accept_path": {
+            "type": "string",
+            "description": "The path of the acceptance page with the token, for example `/invite/?token=...`."
+          },
+          "invitation": {
+            "$ref": "#/components/schemas/Invitation",
+            "description": "The invitation."
+          }
+        }
+      },
+      "InvitationList": {
+        "type": "object",
+        "description": "The organization's invitations.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Invitation"
+            },
+            "description": "The invitations, ordered by id."
+          }
+        }
+      },
       "IoShape": {
         "type": "string",
         "description": "How a span's input and output are structured, which tells a viewer how to show them.",
@@ -893,6 +4799,17 @@
           "raw",
           "genai_messages",
           "indexed_messages"
+        ]
+      },
+      "KeyScope": {
+        "type": "string",
+        "description": "An API key scope (contract 11.3).",
+        "enum": [
+          "ingest",
+          "read",
+          "write",
+          "delete",
+          "sql"
         ]
       },
       "Level": {
@@ -904,6 +4821,25 @@
           "warning",
           "error"
         ]
+      },
+      "LoginRequest": {
+        "type": "object",
+        "description": "`POST auth/login`.",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "password": {
+            "type": "string",
+            "description": "The password."
+          }
+        },
+        "additionalProperties": false
       },
       "McpBounds": {
         "type": "object",
@@ -920,6 +4856,45 @@
           "server": {
             "$ref": "#/components/schemas/TimeRange",
             "description": "Operations captured on the server side."
+          }
+        }
+      },
+      "MeasureRequest": {
+        "type": "object",
+        "description": "One measure of a query and how it is aggregated.",
+        "required": [
+          "measure",
+          "aggregation"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "An aggregation the measure allows: `sum`, or a percentile `p50`, `p90`, `p95`, `p99`."
+          },
+          "measure": {
+            "type": "string",
+            "description": "A measure id of the source in the metrics schema."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MediaFeature": {
+        "type": "object",
+        "description": "Media uploads.",
+        "required": [
+          "enabled",
+          "max_bytes"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether an object store is configured."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The largest upload, in bytes.",
+            "minimum": 0
           }
         }
       },
@@ -951,6 +4926,314 @@
           }
         }
       },
+      "MetricsFilter": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Every operand holds.",
+            "required": [
+              "and"
+            ],
+            "properties": {
+              "and": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MetricsFilter"
+                },
+                "description": "Every operand holds."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Any operand holds.",
+            "required": [
+              "or"
+            ],
+            "properties": {
+              "or": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MetricsFilter"
+                },
+                "description": "Any operand holds."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The operand does not hold.",
+            "required": [
+              "not"
+            ],
+            "properties": {
+              "not": {
+                "$ref": "#/components/schemas/MetricsFilter",
+                "description": "The operand does not hold."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The field is one of the values (operator `in`).",
+            "required": [
+              "in"
+            ],
+            "properties": {
+              "in": {
+                "type": "object",
+                "description": "The field is one of the values (operator `in`).",
+                "required": [
+                  "field",
+                  "values"
+                ],
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "description": "The field."
+                  },
+                  "values": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The values."
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "A filter over a source's filter fields: conditions combined with `and`, `or` and `not`. The fields and\nthe operator each takes are in the metrics schema."
+      },
+      "MetricsPoint": {
+        "type": "object",
+        "description": "One bucket of a series.",
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The first instant of the bucket."
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The value in the measure's unit; null for a percentile of a bucket without spans."
+          }
+        }
+      },
+      "MetricsQueryRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/metrics/query` (`MetricsQuery` v1).",
+        "required": [
+          "source",
+          "measures",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to two dimension ids of the source, to split the series by."
+          },
+          "fill": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FillMode",
+                "description": "What an empty bucket holds; `zero` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MetricsFilter",
+                "description": "A filter over the source's filter fields."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start of the window, inclusive (RFC 3339)."
+          },
+          "granularity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Granularity",
+                "description": "The bucket width; `auto` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MeasureRequest"
+            },
+            "description": "One to four measures."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source: `spans` or `traces`."
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The time zone of the buckets. Only `UTC` is supported yet."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End of the window, exclusive (RFC 3339). At most the project's maximum window."
+          },
+          "top_n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "With dimensions: how many keys to return, 1 to 20, default 20.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MetricsResponse": {
+        "type": "object",
+        "description": "The answer of `POST projects/{project_id}/metrics/query`.",
+        "required": [
+          "series",
+          "granularity",
+          "truncated",
+          "source_tier",
+          "as_of",
+          "partial_last_bucket",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant the answer describes."
+          },
+          "granularity": {
+            "$ref": "#/components/schemas/Granularity",
+            "description": "The granularity used."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "partial_last_bucket": {
+            "type": "boolean",
+            "description": "Whether the last bucket ends after `as_of` and may still grow."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a value above saturated at 2^53 - 1."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricsSeries"
+            },
+            "description": "The series."
+          },
+          "source_tier": {
+            "type": "string",
+            "description": "Where the measures were read: `rollup` or `core`."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether keys beyond `top_n` were left out of a percentile measure, which has no `other` series."
+          }
+        }
+      },
+      "MetricsSchema": {
+        "type": "object",
+        "description": "The answer of `GET projects/{project_id}/metrics/schema`.",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceSchema"
+            },
+            "description": "One entry per source with metrics."
+          }
+        }
+      },
+      "MetricsSeries": {
+        "type": "object",
+        "description": "One series: one measure of one dimension key, or of the `other` key.",
+        "required": [
+          "measure",
+          "aggregation",
+          "unit",
+          "key",
+          "other",
+          "points"
+        ],
+        "properties": {
+          "aggregation": {
+            "type": "string",
+            "description": "The aggregation."
+          },
+          "key": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesKey"
+            },
+            "description": "The dimension values of the key; empty without dimensions and for the `other` series."
+          },
+          "measure": {
+            "type": "string",
+            "description": "The measure id."
+          },
+          "other": {
+            "type": "boolean",
+            "description": "Whether this series sums every key beyond `top_n` (additive measures only)."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricsPoint"
+            },
+            "description": "The buckets in time order."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of the values: `count`, `tokens`, `usd` or `us`."
+          }
+        }
+      },
       "ObservationType": {
         "type": "string",
         "description": "What a span observes.",
@@ -967,6 +5250,182 @@
           "guardrail"
         ]
       },
+      "Org": {
+        "type": "object",
+        "description": "The organization (`GET org`). Its `version` is also the `ETag`.",
+        "required": [
+          "id",
+          "name",
+          "settings",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The org id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/OrgSettings",
+            "description": "The settings."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, for `If-Match`.",
+            "minimum": 0
+          }
+        }
+      },
+      "OrgMember": {
+        "type": "object",
+        "description": "A member of the organization.",
+        "required": [
+          "user_id",
+          "email",
+          "name",
+          "role",
+          "status"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole",
+            "description": "The org role."
+          },
+          "status": {
+            "$ref": "#/components/schemas/UserStatus",
+            "description": "Whether the user may sign in."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user id."
+          }
+        }
+      },
+      "OrgMemberList": {
+        "type": "object",
+        "description": "The organization's members.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgMember"
+            },
+            "description": "The members, ordered by user id."
+          }
+        }
+      },
+      "OrgMemberPatch": {
+        "type": "object",
+        "description": "`PATCH org/members/{user_id}`.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/OrgRole",
+            "description": "The new org role; `owner` only through `org/transfer-ownership`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrgPatch": {
+        "type": "object",
+        "description": "`PATCH org`: the fields to change.",
+        "properties": {
+          "allowed_email_domains": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Email domains whose verified members may join without an invitation."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name."
+          },
+          "password_login_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether email-and-password login is on."
+          },
+          "project_access": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectAccess",
+                "description": "How org members and viewers reach projects."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrgRole": {
+        "type": "string",
+        "description": "An organization role (contract 11.6).",
+        "enum": [
+          "owner",
+          "admin",
+          "member",
+          "viewer"
+        ]
+      },
+      "OrgSettings": {
+        "type": "object",
+        "description": "The organization's settings.",
+        "required": [
+          "signup_mode",
+          "allowed_email_domains",
+          "password_login_enabled",
+          "project_access"
+        ],
+        "properties": {
+          "allowed_email_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Email domains whose verified members may join without an invitation, as viewers."
+          },
+          "password_login_enabled": {
+            "type": "boolean",
+            "description": "Whether email-and-password login is on."
+          },
+          "project_access": {
+            "$ref": "#/components/schemas/ProjectAccess",
+            "description": "How org members and viewers reach projects."
+          },
+          "signup_mode": {
+            "type": "string",
+            "description": "How people join (`invite_only`)."
+          }
+        }
+      },
       "PartialReason": {
         "type": "string",
         "description": "Why a response may be missing rows.",
@@ -975,6 +5434,58 @@
           "deadline",
           "quarantined"
         ]
+      },
+      "PasswordChange": {
+        "type": "object",
+        "description": "`POST auth/password/change`.",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "description": "The current password."
+          },
+          "new_password": {
+            "type": "string",
+            "description": "The new password, 12 to 128 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordResetConfirm": {
+        "type": "object",
+        "description": "`POST auth/password/reset-confirm`.",
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "properties": {
+          "new_password": {
+            "type": "string",
+            "description": "The new password, 12 to 128 characters."
+          },
+          "token": {
+            "type": "string",
+            "description": "The token of the reset link."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordResetRequest": {
+        "type": "object",
+        "description": "`POST auth/password/reset-request`.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The account's email."
+          }
+        },
+        "additionalProperties": false
       },
       "Problem": {
         "type": "object",
@@ -1099,11 +5610,457 @@
           }
         }
       },
+      "Project": {
+        "type": "object",
+        "description": "A project.",
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "role",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The project id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The caller's effective role."
+          },
+          "slug": {
+            "type": "string",
+            "description": "The slug; unique."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, for `If-Match`.",
+            "minimum": 0
+          }
+        }
+      },
+      "ProjectAccess": {
+        "type": "string",
+        "description": "How org members and viewers reach projects.",
+        "enum": [
+          "all",
+          "explicit"
+        ]
+      },
+      "ProjectCreate": {
+        "type": "object",
+        "description": "`POST projects`.",
+        "required": [
+          "name",
+          "slug"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "slug": {
+            "type": "string",
+            "description": "The slug: 1 to 64 characters of `a-z`, `0-9` and `-`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectGrant": {
+        "type": "object",
+        "description": "A project membership an invitation grants.",
+        "required": [
+          "project_id",
+          "role"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "The project id."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The role."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectList": {
+        "type": "object",
+        "description": "The projects the caller can see.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            },
+            "description": "The projects, ordered by id."
+          }
+        }
+      },
+      "ProjectMember": {
+        "type": "object",
+        "description": "A member of a project.",
+        "required": [
+          "user_id",
+          "email",
+          "name",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The project role of the membership."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user id."
+          }
+        }
+      },
+      "ProjectMemberAdd": {
+        "type": "object",
+        "description": "`POST projects/{project_id}/members`.",
+        "required": [
+          "user_id",
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The role."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "An org member's user id."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectMemberList": {
+        "type": "object",
+        "description": "The members of a project (explicit memberships).",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectMember"
+            },
+            "description": "The members, ordered by user id."
+          }
+        }
+      },
+      "ProjectMemberPatch": {
+        "type": "object",
+        "description": "`PATCH projects/{project_id}/members/{user_id}`.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The new role."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectPatch": {
+        "type": "object",
+        "description": "`PATCH projects/{project_id}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The new name."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectRole": {
+        "type": "string",
+        "description": "A project role (contract 11.6).",
+        "enum": [
+          "admin",
+          "member",
+          "viewer"
+        ]
+      },
+      "ProviderButton": {
+        "type": "object",
+        "description": "A sign-in button.",
+        "required": [
+          "id",
+          "kind",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "The text on the button."
+          },
+          "id": {
+            "type": "string",
+            "description": "The provider id; it names the provider in `auth/oauth/{provider_id}/start`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderKind",
+            "description": "The kind."
+          }
+        }
+      },
+      "ProviderKind": {
+        "type": "string",
+        "description": "The kind of a sign-in provider.",
+        "enum": [
+          "github",
+          "google",
+          "oidc"
+        ]
+      },
       "SafeU64": {
         "type": "integer",
         "description": "An unsigned integer at most 2^53 - 1.",
         "maximum": 9007199254740991,
         "minimum": 0
+      },
+      "SchemaDimension": {
+        "type": "object",
+        "description": "A dimension of the metrics schema.",
+        "required": [
+          "id",
+          "type",
+          "high_cardinality"
+        ],
+        "properties": {
+          "high_cardinality": {
+            "type": "boolean",
+            "description": "Whether the dimension can take many values."
+          },
+          "id": {
+            "type": "string",
+            "description": "The dimension id."
+          },
+          "type": {
+            "type": "string",
+            "description": "`string`, or `enum` for a closed set of names."
+          }
+        }
+      },
+      "SchemaFilterField": {
+        "type": "object",
+        "description": "A filter field of the metrics schema.",
+        "required": [
+          "field",
+          "operator"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The field."
+          },
+          "operator": {
+            "type": "string",
+            "description": "The operator its condition takes."
+          }
+        }
+      },
+      "SchemaLimits": {
+        "type": "object",
+        "description": "The caps of a source's queries.",
+        "required": [
+          "max_buckets",
+          "max_series",
+          "max_points",
+          "max_measures",
+          "max_dimensions"
+        ],
+        "properties": {
+          "max_buckets": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most buckets per series.",
+            "minimum": 0
+          },
+          "max_dimensions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most dimensions of one query.",
+            "minimum": 0
+          },
+          "max_measures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most measures of one query.",
+            "minimum": 0
+          },
+          "max_points": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most points in one answer.",
+            "minimum": 0
+          },
+          "max_series": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The most dimension keys; the rest form the `other` series of additive measures.",
+            "minimum": 0
+          }
+        }
+      },
+      "SchemaMeasure": {
+        "type": "object",
+        "description": "A measure of the metrics schema.",
+        "required": [
+          "id",
+          "label",
+          "unit",
+          "aggregations",
+          "additive",
+          "tier"
+        ],
+        "properties": {
+          "additive": {
+            "type": "boolean",
+            "description": "Whether the values of two keys add up to the value of both: true for sums."
+          },
+          "aggregations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The aggregations it allows."
+          },
+          "id": {
+            "type": "string",
+            "description": "The measure id."
+          },
+          "label": {
+            "type": "string",
+            "description": "The label."
+          },
+          "tier": {
+            "type": "string",
+            "description": "Where it is read: `rollup` or `core`."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit of its values: `count`, `tokens`, `usd` or `us`."
+          }
+        }
+      },
+      "Score": {
+        "type": "object",
+        "description": "A score.",
+        "required": [
+          "name",
+          "score_id",
+          "data_type",
+          "value",
+          "source",
+          "comment",
+          "metadata",
+          "fact"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string",
+            "description": "The comment; empty in trace lists."
+          },
+          "data_type": {
+            "$ref": "#/components/schemas/ScoreDataType",
+            "description": "How to read the value."
+          },
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The metadata object; null when there is none, and in trace lists."
+          },
+          "name": {
+            "type": "string",
+            "description": "The score name."
+          },
+          "score_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's score id; null when the score was written without one."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ScoreSource",
+            "description": "Where it came from."
+          },
+          "value": {
+            "$ref": "#/components/schemas/ScoreValue",
+            "description": "The value."
+          }
+        }
+      },
+      "ScoreDataType": {
+        "type": "string",
+        "description": "How to read a score's value.",
+        "enum": [
+          "numeric",
+          "categorical",
+          "boolean",
+          "text"
+        ]
+      },
+      "ScoreSource": {
+        "type": "string",
+        "description": "Where a score came from.",
+        "enum": [
+          "feedback",
+          "api",
+          "annotation",
+          "eval"
+        ]
+      },
+      "ScoreValue": {
+        "oneOf": [
+          {
+            "type": "number",
+            "format": "double",
+            "description": "A number."
+          },
+          {
+            "type": "boolean",
+            "description": "A boolean."
+          },
+          {
+            "type": "string",
+            "description": "A string."
+          }
+        ],
+        "description": "A score's value: a number for `numeric`, a boolean for `boolean`, a string for `categorical` and `text`."
       },
       "SearchField": {
         "type": "string",
@@ -1296,6 +6253,313 @@
         },
         "additionalProperties": false
       },
+      "SeriesKey": {
+        "type": "object",
+        "description": "One dimension value of a series key.",
+        "required": [
+          "dimension",
+          "value"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "description": "The dimension id."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
+      "ServerInfo": {
+        "type": "object",
+        "description": "The server.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The server version."
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "description": "The session (`GET auth/session`, contract 12.7). The UI sends `csrf_token` as `X-Crucible-CSRF` on every\nrequest other than GET and HEAD.",
+        "required": [
+          "user",
+          "org",
+          "projects",
+          "providers",
+          "password_login_enabled",
+          "csrf_token",
+          "session",
+          "features",
+          "server"
+        ],
+        "properties": {
+          "csrf_token": {
+            "type": "string",
+            "description": "The CSRF token of the session."
+          },
+          "features": {
+            "$ref": "#/components/schemas/Features",
+            "description": "The server's optional modules."
+          },
+          "org": {
+            "$ref": "#/components/schemas/SessionOrg",
+            "description": "The organization."
+          },
+          "password_login_enabled": {
+            "type": "boolean",
+            "description": "Whether email-and-password login is on."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionProject"
+            },
+            "description": "The projects the user can see."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderButton"
+            },
+            "description": "The enabled sign-in providers."
+          },
+          "server": {
+            "$ref": "#/components/schemas/ServerInfo",
+            "description": "The server."
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionTimes",
+            "description": "The session's times."
+          },
+          "user": {
+            "$ref": "#/components/schemas/SessionUser",
+            "description": "The user."
+          }
+        }
+      },
+      "SessionOrg": {
+        "type": "object",
+        "description": "The organization and the user's role in it.",
+        "required": [
+          "id",
+          "name",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The org id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The org name."
+          },
+          "role": {
+            "$ref": "#/components/schemas/OrgRole",
+            "description": "The user's org role."
+          }
+        }
+      },
+      "SessionProject": {
+        "type": "object",
+        "description": "A project the user can see, with what they may do on it.",
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "role",
+          "permissions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The project id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The project permissions of that role, by name (see `docs/architecture/authz-matrix.md`)."
+          },
+          "role": {
+            "$ref": "#/components/schemas/ProjectRole",
+            "description": "The user's effective role on the project."
+          },
+          "slug": {
+            "type": "string",
+            "description": "The slug."
+          }
+        }
+      },
+      "SessionTimes": {
+        "type": "object",
+        "description": "The session's own times.",
+        "required": [
+          "expires_at",
+          "idle_expires_at",
+          "auth_method"
+        ],
+        "properties": {
+          "auth_method": {
+            "$ref": "#/components/schemas/AuthMethod",
+            "description": "How the session signed in."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The absolute expiry."
+          },
+          "idle_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The idle expiry, which each request slides."
+          }
+        }
+      },
+      "SessionUser": {
+        "type": "object",
+        "description": "The signed-in user.",
+        "required": [
+          "id",
+          "email",
+          "name"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "id": {
+            "type": "string",
+            "description": "The user id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name."
+          }
+        }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "description": "`POST auth/setup`: the first owner, with the one-time setup token from the server log.",
+        "required": [
+          "token",
+          "org_name",
+          "email",
+          "name",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The owner's email."
+          },
+          "name": {
+            "type": "string",
+            "description": "The owner's display name."
+          },
+          "org_name": {
+            "type": "string",
+            "description": "The organization's name."
+          },
+          "password": {
+            "type": "string",
+            "description": "The owner's password, 12 to 128 characters."
+          },
+          "token": {
+            "type": "string",
+            "description": "The setup token."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignInOptions": {
+        "type": "object",
+        "description": "What the sign-in page offers (`GET auth/providers`, public).",
+        "required": [
+          "providers",
+          "password_login_enabled",
+          "setup_required"
+        ],
+        "properties": {
+          "password_login_enabled": {
+            "type": "boolean",
+            "description": "Whether email-and-password login is on."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderButton"
+            },
+            "description": "The enabled providers."
+          },
+          "setup_required": {
+            "type": "boolean",
+            "description": "Whether the server has no owner yet, so the first-run setup page applies."
+          }
+        }
+      },
+      "SourceSchema": {
+        "type": "object",
+        "description": "What can be queried of one source.",
+        "required": [
+          "source",
+          "measures",
+          "dimensions",
+          "filter_fields",
+          "granularities",
+          "limits"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaDimension"
+            },
+            "description": "Its dimensions."
+          },
+          "filter_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaFilterField"
+            },
+            "description": "Its filter fields."
+          },
+          "granularities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Granularity"
+            },
+            "description": "The explicit granularities, finest first; `auto` picks among them."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SchemaLimits",
+            "description": "The caps."
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SchemaMeasure"
+            },
+            "description": "Its measures."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source."
+          }
+        }
+      },
       "Span": {
         "type": "object",
         "description": "One span of a trace.",
@@ -1452,6 +6716,77 @@
           "error"
         ]
       },
+      "TagEdit": {
+        "type": "object",
+        "description": "The latest edit of a tag.",
+        "required": [
+          "tag",
+          "op",
+          "fact"
+        ],
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/FactRef",
+            "description": "The fact."
+          },
+          "op": {
+            "$ref": "#/components/schemas/TagOp",
+            "description": "Whether it was added or removed."
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag."
+          }
+        }
+      },
+      "TagOp": {
+        "type": "string",
+        "description": "A tag edit.",
+        "enum": [
+          "add",
+          "remove"
+        ]
+      },
+      "TagRequest": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/tags`: adds a tag to the target or removes it.",
+        "required": [
+          "tag",
+          "op"
+        ],
+        "properties": {
+          "op": {
+            "$ref": "#/components/schemas/TagOp",
+            "description": "`add` or `remove`. Removing a tag the trace was sent with hides it."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target session, instead of a trace."
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target span (16 hex characters), with `trace_id`."
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag, 1 to 256 bytes."
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target trace (32 hex characters); with `span_id`, its span."
+          }
+        },
+        "additionalProperties": false
+      },
       "TimeRange": {
         "type": "object",
         "description": "The first and last minute with data; both null when there is none.",
@@ -1486,10 +6821,15 @@
           "span_count",
           "paged",
           "spans",
+          "facts",
           "meta",
           "saturated"
         ],
         "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/TraceFacts",
+            "description": "The trace's facts: effective tags, flags, scores and the correction of its output."
+          },
           "meta": {
             "$ref": "#/components/schemas/Meta",
             "description": "How complete and how fresh the response is."
@@ -1519,6 +6859,55 @@
           }
         }
       },
+      "TraceFacts": {
+        "type": "object",
+        "description": "The facts a trace view shows.",
+        "required": [
+          "tags",
+          "bookmarked",
+          "public",
+          "scores",
+          "correction"
+        ],
+        "properties": {
+          "bookmarked": {
+            "type": "boolean",
+            "description": "Whether the trace is bookmarked."
+          },
+          "correction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Correction",
+                "description": "The correction of the trace's output; null when there is none, and in trace lists."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "public": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The `public` flag; null when it was never set."
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Score"
+            },
+            "description": "The scores, by name. In trace lists they carry no comment or metadata."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The effective tags: the tags the trace was sent with, plus the added ones, minus the removed ones."
+          }
+        }
+      },
       "TraceListItem": {
         "type": "object",
         "description": "One trace of the list: its head (the root span, or the earliest span while the root has not arrived) and\nthe trace's merged aggregates.",
@@ -1542,6 +6931,7 @@
           "environment",
           "release",
           "tags",
+          "facts",
           "saturated"
         ],
         "properties": {
@@ -1556,6 +6946,10 @@
           "error_count": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Spans of level `error`."
+          },
+          "facts": {
+            "$ref": "#/components/schemas/TraceFacts",
+            "description": "The trace's facts. Scores carry no comment or metadata here, and there is no correction."
           },
           "head_kind": {
             "$ref": "#/components/schemas/HeadKind",
@@ -1607,7 +7001,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The trace tags; empty until the store serves the head."
+            "description": "The effective trace tags: the head's tags, which are empty until the store serves the head, plus the\ntags added by edits, minus the removed ones."
           },
           "total_cost_usd": {
             "type": "number",
@@ -1679,6 +7073,28 @@
             "description": "The cursor of the next page; null on the last page and on live-tail responses."
           }
         }
+      },
+      "TransferOwnership": {
+        "type": "object",
+        "description": "`POST org/transfer-ownership`.",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "The member who becomes the owner; the current owner becomes an admin."
+          }
+        },
+        "additionalProperties": false
+      },
+      "UserStatus": {
+        "type": "string",
+        "description": "Whether a user may sign in.",
+        "enum": [
+          "active",
+          "disabled"
+        ]
       }
     },
     "securitySchemes": {
@@ -1686,10 +7102,36 @@
         "type": "http",
         "scheme": "bearer",
         "description": "A project's secret key (`csk_...`) as `Authorization: Bearer <key>`."
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "crucible_session",
+        "description": "The session cookie set by sign-in (`__Host-crucible_session` over HTTPS). Requests other than                  GET and HEAD also send `X-Crucible-CSRF` with the session's CSRF token."
       }
     }
   },
   "tags": [
+    {
+      "name": "auth",
+      "description": "Sign-in, sessions and the signed-in user's account."
+    },
+    {
+      "name": "facts",
+      "description": "Scores, tags, flags and corrections written about traces, spans and sessions."
+    },
+    {
+      "name": "metrics",
+      "description": "Time series over the project's spans and traces, their schema and filter values."
+    },
+    {
+      "name": "org",
+      "description": "The organization, its members, invitations and sign-in providers."
+    },
+    {
+      "name": "projects",
+      "description": "Projects, project members and API keys."
+    },
     {
       "name": "search",
       "description": "Full-text search over the spans' inputs, outputs and metadata."

@@ -8,7 +8,7 @@ The rig has three parts:
 
 - the fsync-honesty probe, which must classify the WAL volume before durable-ack latency can gate anything;
 - the load generator, `crucible-loadgen`;
-- the A/B gate, `cargo xtask perf gate`, which will drive both. The gate is planned and not built yet.
+- the A/B gate, `cargo xtask perf gate`, which drives both.
 
 ## v0 targets
 
@@ -36,8 +36,8 @@ compete for a core:
 | `crucible-loadgen` | 6 | 1 GB | 17-22 |
 
 Together these take 23 of the VM's 24 CPUs and 14 of its 16 GB. The remaining CPU and memory belong to the VM and
-Docker. The gate will stamp every result with the machine's AC-power state and with the probe verdict for the
-WAL volume.
+Docker. The gate stamps every result with the machine's AC-power state and with the probe verdict for the WAL
+volume.
 
 ## Lanes
 
@@ -53,27 +53,160 @@ Results are reported per lane and never averaged across lanes:
   - sustained runs are long enough that the shipper must keep up. The sustained rate is the highest offered rate
     with no 429 or 503 responses and a bounded WAL backlog.
 
-## The A/B gate (planned)
+## The A/B gate
 
-`cargo xtask perf gate` will compare a base build (A) with a candidate (B) on the same rig:
+`cargo xtask perf gate` compares a base build (A) with a candidate (B) on the same rig:
 
-1. Run at least 5 interleaved pairs. Each pair runs A and B back to back with the same lane and offered load.
-   The order alternates from pair to pair (AB, BA, AB, ...), so that slow drift in temperature or background load
-   does not favour one arm.
-2. For throughput, offer more load than either build can take. The generator is open loop, so the excess is
-   refused or queued, and the measurement is acknowledged spans per second. For latency, offer a fixed rate below
-   both builds' capacity, and the measurement is `latency_us.p99`.
-3. A regression blocks the merge when B's median throughput is more than 5% below A's, or B's median p99 is more
-   than 10% above A's, in either case with a one-sided rank test on that metric's per-pair differences (exact
-   Wilcoxon signed-rank) giving p < 0.05. With exactly 5 pairs, that p-value is reachable only when all five
-   pairs move in the regression direction (p = 1/32). More pairs make the test more sensitive.
-4. Durable-ack p99 gates only when the probe classified the WAL volume `honest` in the same session. On a
-   `suspicious` volume the latency is reported, labelled, and not gated.
-5. `latency_us` covers 2xx responses only, so a stall longer than `--timeout-ms` shows up in `errors.timeout`
-   rather than in the latency. A latency comparison holds only when both arms show zero errors and no non-2xx
-   responses.
-6. The result will be posted as a `perf-gate` commit status through `gh`. The public repository has no
-   self-hosted runner, so the gate runs on the laptop.
+```sh
+cargo xtask perf gate --base main                          # the candidate is HEAD
+cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --post
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--base` | required | The base ref (A) |
+| `--candidate` | `HEAD` | The candidate ref (B) |
+| `--lane` | `1kb` | `1kb`: 1 KiB spans, 100 per request. `10kb`: 10 KiB spans, 10 per request, which keep the generator accurate ([`perf-baseline.md`](perf-baseline.md)) |
+| `--pairs` | 5 | Interleaved pairs: at least 5 on the full rig, at least 1 on the small rig, at most 100 |
+| `--rig` | `full` | `full`: the rig above. `small`: reduced limits for smoke runs (below) |
+| `--post` | off | Set the `perf-gate` commit status on the candidate commit through `gh`. Refused with `--rig small` |
+
+### What it does
+
+1. Resolves both refs to commits. The image of a commit is `crucible-gate:<commit>`: an existing image of that
+   tag is reused, otherwise it is built with `deploy/docker/Dockerfile` from a clean export of the commit
+   (`git archive`), so nothing uncommitted reaches a build and the git directory is only read. One commit gives
+   one image for both arms. `CARGO_BUILD_JOBS`, when set, is passed to the build.
+2. Builds `crucible-loadgen` in release from the checkout that runs the gate. That one binary measures both arms,
+   and the report records its SHA-256.
+3. Runs the fsync-honesty probe on a fresh WAL volume of the session, with Crucible's CPUs and memory.
+4. Runs the pairs. Each pair runs the throughput measurement for A and B back to back, then the latency
+   measurement for both, with the same lane and offered load. The order alternates from pair to pair (AB, BA,
+   AB, ...), so that slow drift in temperature or background load does not favour one arm. Every arm gets a fresh
+   rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume, then a
+   discarded warm-up at the latency rate, then the measurement, after which the rig is removed. The load
+   generator's container lasts the whole session.
+   - Throughput: offer more load than either build can take. The generator is open loop, so the excess is
+     refused or queued, and the measurement is `outcome.acked_spans_per_s`. An overloaded schedule lasts until
+     every request is sent, so the run takes about `requests / capacity`, longer than its schedule. Acknowledging
+     less than the offered load shows that something saturated, not that Crucible did: when the generator or the
+     Docker network is the limit, both arms measure that limit and no regression above it can show. The load
+     generator's report tells them apart. With Crucible as the limit its 128 connections stay busy (acknowledged
+     requests per second times `service_time_us.p50` comes near 128) while `generator_cpu` stays below the
+     generator's CPUs.
+   - Latency: offer a fixed rate below both builds' capacity, and the measurement is `latency_us.p99`.
+5. Compares the builds, writes the report and the summary, and with `--post` sets the commit status.
+
+| Rig | Throughput schedule | Latency schedule | Warm-up | `--recent-max-bytes` |
+|---|---|---|---|---|
+| `full` | 20,000 requests/s for 10 s | 1,000 requests/s for 30 s | 3 s | 256 MiB |
+| `small` | 10,000 requests/s for 3 s | 100 requests/s for 5 s | 2 s | 64 MiB |
+
+On the full rig the 1 KiB lane offers 2,000,000 spans/s for throughput and 100,000 for latency, and the 10 KiB
+lane 200,000 and 10,000. Both measurements use 128 connections and uncompressed protobuf. The recent-span index
+is bounded explicitly because its default is a share of the VM's memory, not the container's.
+
+### The decision
+
+For each metric the gate takes the median of each build's values, the per-pair differences B - A, and the exact
+one-sided Wilcoxon signed-rank p-value of those differences in the direction of a regression: lower for
+throughput, higher for p99. Zero differences are dropped, tied absolute values share their mean rank, and the null
+distribution is counted exactly over every assignment of signs.
+
+- A metric **blocks** the merge when B's median throughput is more than 5% below A's, or B's median p99 is more
+  than 10% above A's, in either case with p < 0.05. With exactly 5 pairs, that p-value is reachable only when all
+  five pairs move in the regression direction (p = 1/32). More pairs make the test more sensitive.
+- Durable-ack p99 gates only when the probe classified the WAL volume `honest` in the same session. On a
+  `suspicious` volume, or when the probe failed, the latency is reported, labelled `not gated`, and cannot block.
+- An arm cannot be compared, which makes its metric's comparison **invalid**, when:
+  - a throughput arm acknowledged 90% or more of the offered spans per second: the offered load did not exceed
+    the build's capacity, so the value measures the schedule;
+  - a latency arm had a failed request or a non-2xx response. `latency_us` covers 2xx responses only, so a stall
+    longer than `--timeout-ms` shows up in `errors.timeout` rather than in the latency;
+  - Crucible, ClickHouse or Postgres was not running after the measurement, for example after an OOM kill.
+
+The verdict is `regression` when a valid, gated metric blocks, otherwise `invalid` when a comparison did not hold,
+otherwise `pass`. The command exits with 0 for `pass`, 1 for `regression` or `invalid`, and 2 when it could not
+run: a bad argument, a failed build, a rig that did not start.
+
+### Output
+
+The run writes `perf/results/local/gate/<time>-<base>-<candidate>[-smoke]/` (ignored by git): `gate.json`
+(schema `crucible-perf.gate.v1`, below), `summary.md`, `probe.json`, the load generator's reports under `runs/`
+(warm-ups as `*-warmup.json`) and Crucible's logs under `logs/`. The summary is labelled **measured on a laptop,
+not reference hardware** and stamped with the AC-power state, the probe verdict, the rig, both commits and the
+load generator's hash.
+
+`--post` sets the `perf-gate` status on the candidate commit: `success` for `pass`, `failure` for `regression` and
+`error` for `invalid`, with each metric's change and p-value in the description. When `gh` is missing or refuses,
+the gate prints the `gh api` command to run where `gh` works. The public repository has no self-hosted runner, so
+the gate runs on the laptop.
+
+### The small rig
+
+`--rig small` gives Crucible 1 GB (CPUs 0-1), ClickHouse 1.5 GB (CPUs 2-3), Postgres 512 MB (CPU 4) and the load
+generator 512 MB (CPUs 5-6), 3.5 GB in all, with the short schedules above. It is for smoke runs on a busy
+machine. Its results are labelled smoke and never posted, and it alone accepts fewer than 5 pairs. With N pairs
+the smallest possible p-value is 1/2^N, so a smoke run with fewer than 5 pairs cannot block: it checks the
+plumbing, not the builds.
+
+### AC power
+
+The gate reads the AC-power state before the run: from `CRUCIBLE_PERF_AC_POWER` (`online` or `battery`) when it is
+set, otherwise from the AC adapters in `/sys/class/power_supply` on Linux, and otherwise it stamps `unknown` with
+the reason. A container cannot see its host's power supply, so `tools/perf/xtask.sh` reads it on a Windows host
+and passes it in.
+
+### Running it on the laptop
+
+The gate needs `cargo`, `git` and the Docker CLI with buildx, and `gh` for `--post`. It reaches Docker only through
+the CLI, `docker cp` and stdout, never through bind mounts, so it runs on a Linux host or in a container that has
+the host's Docker socket. On the laptop, `tools/perf/xtask.sh` runs `cargo xtask perf` in the perf dev container
+(`deploy/dev/perf.Dockerfile`: the dev image with the Docker and GitHub CLIs), which it builds on first use:
+
+```sh
+tools/perf/xtask.sh gate --base main --rig small --pairs 2     # a smoke run beside other work
+tools/perf/xtask.sh gate --base main --post                    # the gate: the full rig, alone on the machine
+tools/perf/xtask.sh fsync-probe
+```
+
+The full rig takes 23 of the VM's 24 CPUs and 14 of its 16 GB, so it runs with nothing else on the machine. The
+script mounts the checkout and its git directory (read-only, so a linked worktree works), the Docker socket, the
+cargo registry volume and the target volume `$TARGET_VOLUME` (default `crucible-target`). It passes on
+`CARGO_BUILD_JOBS` when that is set, and with `--post` the host's `gh auth token`, so the status is posted as the
+account the host's `gh` is signed in to.
+
+The gate removes its rig on every exit it sees, errors included. A run that is interrupted, with Ctrl-C or by
+stopping its container, leaves the rig running. Everything the gate starts carries the label `crucible.perf-gate`,
+and so does the container `tools/perf/xtask.sh` runs it in, so this stops a running gate and removes its rig, for
+example to pause the machine's heavy work:
+
+```sh
+docker ps --all --quiet --filter label=crucible.perf-gate | xargs -r docker rm --force --volumes
+docker volume ls --quiet --filter label=crucible.perf-gate | xargs -r docker volume rm
+docker network ls --quiet --filter label=crucible.perf-gate | xargs -r docker network rm
+```
+
+### Report schema `crucible-perf.gate.v1`
+
+Paths are relative to the results directory.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | string | `crucible-perf.gate.v1` |
+| `label` | string | `measured on a laptop, not reference hardware` |
+| `smoke` | boolean | A small-rig run: never posted |
+| `started_at`, `finished_at` | string | UTC, RFC 3339 |
+| `ac_power` | object | `state` (`online`, `battery` or `unknown`) and `source` |
+| `rig` | object | `name`, `containers[]` (`role`, `image`, `cpuset`, `memory`) and `docker` (server version, CPUs, memory, kernel, operating system) |
+| `lane` | object | `name`, `span_size`, `spans_per_request`, `concurrency`, `warmup_s`, `throughput_requests_per_s`, `throughput_s`, `latency_requests_per_s`, `latency_s` |
+| `base`, `candidate` | object | `reference` as given, `sha`, `image`, `image_id` |
+| `loadgen_sha256` | string | The load generator binary that measured both arms |
+| `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
+| `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
+| `comparisons[]` | array | `throughput`, then `latency`, each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `gated`, `valid`, `notes[]` and `blocks` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx` and `invalid` (null, or why the arm cannot be compared) |
+| `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe
 
@@ -119,7 +252,17 @@ Known limits:
 
 ### Running it
 
-On the WAL volume of the rig (a named Docker volume here), from the dev container with a release build:
+`cargo xtask perf fsync-probe` runs the probe the way the gate does: on a fresh named Docker volume, the kind the
+rig's WAL uses, in a container with Crucible's CPUs and memory. It prints the verdict and each check and writes the
+report. On the laptop, run it through `tools/perf/xtask.sh fsync-probe` (see the gate's section above).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--rig` | `full` | Whose Crucible limits the probe's container gets: `full` or `small` |
+| `--out` | `perf/results/local/fsync-probe/<time>.json` | Where to write the JSON report |
+
+The probe itself is `crucible-loadgen fsync-probe`, which can also run on any directory, for example from the dev
+container with a release build:
 
 ```sh
 docker run --rm -v crucible-target:/target -v <wal-volume>:/probe crucible-dev:1 \
