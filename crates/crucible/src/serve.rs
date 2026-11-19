@@ -62,7 +62,7 @@ use crucible_shipper::{
     FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
-use crucible_export::ExportRuntime;
+use crucible_export::{ExportRuntime, Exports};
 use crucible_ui_assets::{Catalog, Outcome};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use tower::ServiceExt as _;
@@ -354,6 +354,7 @@ async fn open_app(
     config: WalConfig,
     identity: Option<Arc<Identity>>,
     closed: Option<&str>,
+    exports: Option<Exports>,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -387,7 +388,7 @@ async fn open_app(
         mcp: Arc::new(McpGate::new(env, mcp_keys(identity.as_ref(), &keys))),
         api_without_store: match identity {
             Some(identity) => {
-                crucible_api::platform_router(env, None, identity, settings, cursors, None)
+                crucible_api::platform_router(env, None, identity, settings, cursors, None, exports)
             }
             None => crucible_api::router_without_store(env, Arc::clone(&keys), settings, cursors),
         },
@@ -580,6 +581,8 @@ struct StoreTask {
     mcp: McpConfig,
     /// What the export job reads with, given the query service once the store is up.
     exports: ExportRuntime,
+    /// The API's exports, with a control plane.
+    export_service: Option<Exports>,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -664,6 +667,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         facts: fact_writer,
         mcp,
         exports,
+        export_service,
     } = task;
     let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
@@ -784,6 +788,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
             settings,
             cursors,
             sql,
+            export_service,
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
     });
@@ -1047,6 +1052,10 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
+    // Exports live in the control plane; their files on this node's exports root.
+    let export_service = control
+        .as_ref()
+        .map(|control| Exports::new(env.clone(), Arc::new(control.store.clone())));
     let (app, report) = open_app(
         env,
         keys,
@@ -1054,6 +1063,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         WalConfig::default(),
         identity.clone(),
         closed,
+        export_service.clone(),
     )
     .await?;
     let mode = if clickhouse.is_some() {
@@ -1112,6 +1122,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
                 facts: Arc::new(crate::facts::IngestFacts(app.ingest.clone())),
                 mcp,
                 exports: exports.clone(),
+                export_service,
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }
@@ -1265,7 +1276,7 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None, None)
+        open_app(env, keys, cursors, config, None, None, None)
             .await
             .unwrap()
             .0
@@ -2484,7 +2495,7 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, None, closed)
+        let (app, _) = open_app(env, keys, cursors, config, None, closed, None)
             .await
             .unwrap();
         let ui = Arc::new(Catalog::default());

@@ -44,6 +44,7 @@ use crucible_auth::service::Identity;
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
 use crucible_query::QueryService;
+use crucible_export::Exports;
 use crucible_sqlws::SqlWorkspace;
 
 pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
@@ -79,6 +80,7 @@ pub fn router(
         cursors,
         None,
         None,
+        None,
     )
 }
 
@@ -90,12 +92,12 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(env, None, keys, settings, cursors, None, None)
+    build(env, None, keys, settings, cursors, None, None, None)
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
 /// key snapshot verifies API keys with their scopes. `store`, the query service and where facts are written, is
-/// `None` until a telemetry store is up.
+/// `None` until a telemetry store is up. `exports` creates, reads and serves the control plane's exports.
 pub fn platform_router(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -103,11 +105,13 @@ pub fn platform_router(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     sql: Option<SqlWorkspace>,
+    exports: Option<Exports>,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(env, store, keys, settings, cursors, Some(identity), sql)
+    build(env, store, keys, settings, cursors, Some(identity), sql, exports)
 }
 
+#[allow(clippy::too_many_arguments)] // The parts of the shared state, as the public constructors pass them.
 fn build(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -116,6 +120,7 @@ fn build(
     cursors: Arc<KeyRing>,
     identity: Option<Arc<Identity>>,
     sql: Option<SqlWorkspace>,
+    exports: Option<Exports>,
 ) -> Router {
     let (service, facts) = store.unzip();
     let state = ApiState {
@@ -128,6 +133,7 @@ fn build(
         facts,
         idempotency: Arc::default(),
         sql,
+        exports,
     };
     let api = routes::router()
         .fallback(unknown_path)

@@ -1,0 +1,23 @@
+---
+source: crates/crucible-api/tests/api/exports.rs
+expression: "serde_json::to_string_pretty(&stable(read.body.clone())).unwrap()"
+---
+{
+  "as_of": "<now>",
+  "bytes": 150,
+  "checksum": "97a13af250db951f6a5ee7011130753b5c0e13eaad9d7723df00947fbab6d159",
+  "created_at": "<now>",
+  "download_path": "<download path>",
+  "expires_at": "2027-01-15T09:00:00.000000Z",
+  "format": "crucible-jsonl",
+  "from": "2026-11-17T09:00:00.000000Z",
+  "gzip": false,
+  "id": "<id>",
+  "keep_truncated": false,
+  "saturated": false,
+  "skipped": 0,
+  "spans": 3,
+  "state": "ready",
+  "to": "2026-11-17T10:00:00.000000Z",
+  "trace_count": 0
+}

@@ -845,6 +845,7 @@ dependencies = [
  "crucible-control",
  "crucible-cursor",
  "crucible-env",
+ "crucible-export",
  "crucible-plan",
  "crucible-query",
  "crucible-recent",
