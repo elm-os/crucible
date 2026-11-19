@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { captured, decide, glob, setCaptureWorkHook } from "../src/mcp/capture.ts";
+import { captured, decide, glob, jsonPrefix, setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
 import { patternFacts } from "../src/pattern.ts";
 import packaged from "../src/scrub-rules.json" with { type: "json" };
@@ -151,6 +151,73 @@ function generated(random: () => number): string {
           );
   }
   return text;
+}
+
+/** Code units JSON escapes, and characters it keeps, surrogate pairs and lone surrogates among them. */
+const CHARS = [
+  "a",
+  "é",
+  '"',
+  "\\",
+  "/",
+  "\n",
+  "\t",
+  "\u0000",
+  "\u001f",
+  "\u007f",
+  " ",
+  "😀",
+  "\ud800",
+  "\udc00",
+];
+
+function generatedText(random: () => number, longest: number): string {
+  let text = "";
+  const length = Math.floor(random() * longest);
+  for (let i = 0; i < length; i += 1) {
+    text += CHARS[Math.floor(random() * CHARS.length)] ?? "";
+  }
+  return text;
+}
+
+/** A value of every kind `JSON.stringify` treats differently, nested a few levels. */
+function generatedValue(random: () => number, depth: number): unknown {
+  const kind = Math.floor(random() * (depth > 3 ? 10 : 13));
+  switch (kind) {
+    case 0:
+      return null;
+    case 1:
+      return random() < 0.5;
+    case 2:
+      return [0, -0, 1.5, -2e21, 1e-7, Number.NaN, Number.POSITIVE_INFINITY, 42][
+        Math.floor(random() * 8)
+      ];
+    case 3:
+      return generatedText(random, 12);
+    case 4:
+      return generatedText(random, 300);
+    case 5:
+      return undefined;
+    case 6:
+      return random() < 0.5 ? () => 1 : Symbol("s");
+    case 7:
+      return new Date(Date.UTC(2026, 10, 18, 9, 30));
+    case 8:
+      return { toJSON: (key: string) => `key:${key}` };
+    case 9:
+      return [new String('bo"x'), new Number(3), new Boolean(false)][Math.floor(random() * 3)];
+    case 10:
+      return Array.from({ length: Math.floor(random() * 6) }, () =>
+        generatedValue(random, depth + 1),
+      );
+    default:
+      return Object.fromEntries(
+        Array.from({ length: Math.floor(random() * 6) }, () => [
+          random() < 0.2 ? String(Math.floor(random() * 3)) : generatedText(random, 6),
+          generatedValue(random, depth + 1),
+        ]),
+      );
+  }
 }
 
 /** Matcher steps of scrubbing `text` with the whole rule list. */
@@ -303,6 +370,38 @@ describe("capture", () => {
       setCaptureWorkHook(undefined);
     }
     expect(serialized).toBeLessThanOrEqual(16_384 + 1_024);
+  });
+
+  test("the bounded writer equals full serialization followed by the cut", () => {
+    const random = seeded(18_112_026);
+    const mismatches: string[] = [];
+    for (let i = 0; i < 3_000; i += 1) {
+      const value = generatedValue(random, 0);
+      let full: string | undefined;
+      let threw = false;
+      try {
+        full = JSON.stringify(value);
+      } catch {
+        threw = true;
+      }
+      const limits = [0, 1, Math.floor(random() * 64), Math.floor(random() * 600), 1_000_000];
+      for (const limit of threw ? [1_000_000] : limits) {
+        const got = jsonPrefix(value, limit);
+        const want =
+          full === undefined
+            ? undefined
+            : { text: full.slice(0, limit), more: full.length > limit };
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          mismatches.push(`${limit}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
+        }
+      }
+    }
+    expect(mismatches.slice(0, 3)).toEqual([]);
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    expect(jsonPrefix(cyclic, 1_000)).toBeUndefined();
+    expect(jsonPrefix({ big: 1n }, 1_000)).toBeUndefined();
+    expect(jsonPrefix(undefined, 1_000)).toBeUndefined();
   });
 
   test("a value that does not serialize is not captured", () => {
