@@ -1127,7 +1127,7 @@ dependencies = [
  "crucible-records",
  "futures",
  "proptest",
- "thiserror",
+ "thiserror 2.0.21",
  "tracing",
 ]
 
