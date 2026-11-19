@@ -527,13 +527,14 @@ significant digits.
 3. **Ack to API on the loaded store**, the same probe again.
 4. **One lane per read class**, more than the visibility grace after the load, so that the store rather than the
    recent index answers for the dataset. A lane is `crucible-loadgen read` with that class alone: an open-loop
-   schedule of 20 reads/s on average for 30 s with exponential think times, 8 connections, its traces and spans
+   schedule of 2 reads/s on average for 60 s with exponential think times, 8 connections, its traces and spans
    drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
    after the lane, so their change belongs to the lane's class.
 
 | Lane | Request | Answers that count | Server class |
 |---|---|---|---|
 | `trace_by_id` | `GET /traces/{trace_id}` | non-empty `spans` | `trace_by_id` |
+| `trace_by_id_hinted` | the same with `?hint_time=` the trace's start, as the UI sends it from a list | non-empty `spans` | `trace_by_id` |
 | `trace_list_30d` | `GET /traces?from=...&to=...&limit=50` over the window | non-empty `data` | `trace_list` |
 | `span_list_30d` | `GET /spans?from=...&to=...&limit=50` over the window | non-empty `data` | `span_list` |
 | `session_list_30d` | `GET /sessions?from=...&to=...&limit=50` over the window (the dataset has no sessions) | 2xx | `session_list` |
@@ -547,7 +548,9 @@ significant digits.
 | `metrics_30d` | `POST /metrics/query`: the span count over the window | non-empty `series` | `metrics` |
 
 Paths are relative to `/api/v1/projects/{project_id}`. A lane whose requests were not all answered 2xx and
-non-empty is marked invalid: its latency would not cover them. The session and user detail routes need ids that
+non-empty is marked invalid: its latency would not cover them. So is a saturated lane, whose requests waited more
+than 25 ms (send lag p95) for a free connection: the schedule outran the server, and the latency grew with the
+queue rather than with the read. The session and user detail routes need ids that
 the dataset does not carry (its spans have no session or user), so they have no lane yet.
 
 **The MCP tool dashboard** gets its lane in `LANES` (`xtask/src/perf/reads.rs`) once the MCP analytics endpoints
@@ -565,8 +568,8 @@ tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-sp
 | `--rig` | `small` | `small` or `full`, as for the gate |
 | `--spans` | 2,000,000 on the small rig, 10,000,000 on the full one | Spans to load |
 | `--spread-days` | 30 | Days the spans' start times spread over, ending at the load, from 1 to 400 (ingest's maximum event age) |
-| `--rate` | 20 | Reads per second of each lane, on average |
-| `--seconds` | 30 | Seconds of each lane |
+| `--rate` | 2 | Reads per second of each lane, on average. On the small rig, trace by id takes about 0.5 s and a 30-day span list about 1 s of its two ClickHouse CPUs, so a higher rate saturates those lanes |
+| `--seconds` | 60 | Seconds of each lane |
 | `--probes` | 100 | Traces of each ack-to-API probe |
 
 The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
@@ -674,14 +677,21 @@ load average 6 to 11). The image is `39360ec` in both arms unless stated.
 |---|---|---|---|---|---|---|
 | Smoke | 1 | 57,888; 58,957 | +1.8% | 575 ms; 574 ms | -0.3% | pass |
 | A/A | 5 | 61,053; 58,828 | -3.6%, p = 0.22 | 579 ms; 587 ms | +1.4%, p = 0.69 | pass |
-SEEDED_ROW
+| Seeded: B inserts with zstd level 1 instead of LZ4 | 5 | 60,288; 59,614 | -1.1%, p = 0.50 | 571 ms; 580 ms | +1.5%, p = 0.031 | pass |
+| Seeded: B inserts with zstd level 9 instead of LZ4 | 5 | 47,854; 35,243 | -26.4%, p = 0.031 | 611 ms; 738 ms | +20.9%, p = 0.031 | **regression** |
 
-- Every arm acknowledged every request with 200 and drained in time, and the zero-loss check found no lost or
-  duplicated span: each sustained arm stored all 1,000,000 acknowledged spans and each freshness arm all 100,000,
-  and the freshness covered every one of them.
+- Every arm of the four runs acknowledged every request with 200 and drained in time, and the zero-loss check
+  found no lost or duplicated span: each sustained arm stored all 1,000,000 acknowledged spans and each freshness
+  arm all 100,000, and the freshness covered every one of them.
+- **The seeded slowdown is flagged.** Zstd at level 1 costs the store path little on this rig: the arms that
+  inserted with it measured 1.5% worse freshness in all 5 pairs (p = 0.031), below the 10% threshold, and no
+  sustained change. At level 9 every pair measured both metrics worse, the medians by 26.4% (sustained) and
+  20.9% (freshness), and the gate answered `regression` with exit code 1. The seeded builds were local commits on
+  top of `39360ec`, never pushed. The level 9 run's base arms measured lower than the A/A's (47,854 against
+  61,053) because image builds ran on the machine at the same time.
 - A sustained arm offers 100,000 spans/s for 10 s; the ack path takes them at that rate while the store falls
-  behind and drains for 5.9 to 8.5 s after the last response. On this rig the store path ships 54,000 to 63,000
-  spans/s, about what the full rig's single shipper task moved in the baseline (69,000).
+  behind. In the A/A it drained for 5.9 to 8.5 s after the last response, and the store path shipped 54,000 to
+  63,000 spans/s, about what the full rig's single shipper task moved in the baseline (69,000).
 - The A/A's order effect was -0.7% (sustained) and -3.0% (freshness), and its arms spread by up to 15% from
   pair to pair: throughput again followed the other jobs' load (correlation -0.50 with the other CPUs' busy
   cores).

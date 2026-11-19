@@ -48,11 +48,16 @@ struct Lane {
 /// The lanes: trace by id, the 30-day trace list, and the other list and detail endpoints. The search looks
 /// for a word no span holds over the window; the payload reads the attributes of one span. The MCP tool
 /// dashboard gets its lane here once its endpoints exist (`docs/testing/perf.md`).
-const LANES: [Lane; 12] = [
+const LANES: [Lane; 13] = [
     Lane {
         name: "trace_by_id",
         server_class: "trace_by_id",
         class: r#"{"name":"trace_by_id","method":"GET","path":"/api/v1/projects/{project}/traces/{trace_id}","nonempty":"/spans"}"#,
+    },
+    Lane {
+        name: "trace_by_id_hinted",
+        server_class: "trace_by_id",
+        class: r#"{"name":"trace_by_id_hinted","method":"GET","path":"/api/v1/projects/{project}/traces/{trace_id}?hint_time={trace_start}","nonempty":"/spans"}"#,
     },
     Lane {
         name: "trace_list_30d",
@@ -123,6 +128,8 @@ fn load_plan(rig: RigName) -> (u64, u64) {
 
 const SPANS_PER_REQUEST: u64 = 100;
 const CONCURRENCY: u32 = 8;
+/// Above this send lag p95, a lane's requests queued for a connection: the schedule outran the server.
+const SATURATED_LAG_US: u64 = 25_000;
 
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     args.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -139,8 +146,8 @@ pub fn parse_reads(args: impl IntoIterator<Item = String>) -> Result<ReadsArgs, 
         rig: RigName::Small,
         spans: None,
         spread_days: 30,
-        rate: 20.0,
-        seconds: 30,
+        rate: 2.0,
+        seconds: 60,
         probes: 100,
     };
     let mut args = args.into_iter();
@@ -622,6 +629,16 @@ fn judge_lane(
         reasons.push(format!(
             "Crucible counted {counted} {} requests for {ok} answers",
             lane.server_class
+        ));
+    }
+    // A request waits for a free connection only when the schedule outruns the server: its latency then grows
+    // with the queue, not with the read.
+    let lag_p95 = report["send_lag_us"]["p95"].as_u64().unwrap_or(0);
+    if lag_p95 > SATURATED_LAG_US {
+        reasons.push(format!(
+            "saturated: requests waited {} ms (send lag p95) for a free connection, so the schedule outran the \
+             server; lower --rate",
+            lag_p95 / 1000
         ));
     }
     LaneReport {
