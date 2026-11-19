@@ -192,9 +192,9 @@ mod tests {
             prop_assert!(partitions.windows(2).all(|pair| pair[0] < pair[1]));
             let inside = Timestamp::from_micros(from.micros() + (len as f64 * at) as i64);
             prop_assert!(partitions.contains(&route(table, granularity, inside).unwrap()));
-            prop_assert_eq!(partitions.first(), route(table, granularity, from).ok().as_ref());
+            prop_assert_eq!(partitions.first().copied(), route(table, granularity, from).ok());
             let last = to.saturating_add_micros(-1);
-            prop_assert_eq!(partitions.last(), route(table, granularity, last).ok().as_ref());
+            prop_assert_eq!(partitions.last().copied(), route(table, granularity, last).ok());
             // A cut list is a prefix.
             let (some, cut) = partitions_between(table, granularity, from, to, 2);
             prop_assert_eq!(cut, partitions.len() > 2);
