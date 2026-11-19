@@ -211,15 +211,6 @@ impl Op {
 
     /// Records the captured result of a tool call.
     pub(super) fn tool_result(&mut self, result: &CallToolResult) {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct View<'a> {
-            content: &'a [ContentBlock],
-            #[serde(skip_serializing_if = "Option::is_none")]
-            structured_content: Option<&'a serde_json::Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            is_error: Option<bool>,
-        }
         let Some(capture) = &self.capture else {
             return;
         };
@@ -227,14 +218,10 @@ impl Op {
             return;
         }
         let max = capture.rule.max_bytes;
-        // Content and structured content only: never the request state or input requests of a multi-round
-        // exchange.
-        let view = View {
-            content: &result.content,
-            structured_content: result.structured_content.as_ref(),
-            is_error: result.is_error,
-        };
-        let (text, cut) = self.captured(Field::Result, &view, max);
+        let (json, cut, produced) = result_json(result, scrub::window(max));
+        note_work(produced, json.len());
+        let (text, cut_after) = self.scrubbed(Field::Result, &json, max);
+        let cut = cut || cut_after;
         if let Some(capture) = &mut self.capture {
             capture.truncated |= cut;
         }
@@ -495,6 +482,26 @@ fn glob(pattern: &str, name: &str) -> bool {
     pattern[p..].iter().all(|&c| c == '*')
 }
 
+/// The first `limit` bytes of a tool result's captured JSON (content and structured content only: never the
+/// request state or input requests of a multi-round exchange), as [`json_prefix`] gives them.
+fn result_json(result: &CallToolResult, limit: usize) -> (String, bool, usize) {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct View<'a> {
+        content: &'a [ContentBlock],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_content: Option<&'a serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    }
+    let view = View {
+        content: &result.content,
+        structured_content: result.structured_content.as_ref(),
+        is_error: result.is_error,
+    };
+    json_prefix(&view, limit)
+}
+
 /// Reports one captured field's work to the test hook (feature `test-support`).
 fn note_work(serialized: usize, scrubbed: usize) {
     #[cfg(feature = "test-support")]
@@ -566,6 +573,26 @@ mod tests {
         assert!(glob("*_order*", "lookup_order_v2"));
         assert!(glob("**x", "abx"));
         assert!(!glob("", "x"));
+    }
+
+    #[test]
+    fn a_large_result_is_serialized_no_further_than_the_cap_needs() {
+        let results = [
+            CallToolResult::success(vec![ContentBlock::text("x".repeat(5 << 20))]),
+            CallToolResult::success(vec![ContentBlock::image("A".repeat(1 << 20), "image/png")]),
+            CallToolResult::success(vec![ContentBlock::embedded_text(
+                "file:///a",
+                "é".repeat(1 << 19),
+            )]),
+            CallToolResult::structured(serde_json::json!({ "note": "y".repeat(70_000) })),
+        ];
+        for result in &results {
+            let (_, _, produced) = result_json(result, scrub::window(16384));
+            assert!(
+                produced <= 16384 + 8192,
+                "serialized {produced} bytes for one result"
+            );
+        }
     }
 
     #[test]
