@@ -517,8 +517,10 @@ significant digits.
 
 1. **Ack to API on the empty store.** `crucible-loadgen fresh` sends one small trace (two 1 KiB spans) at a time
    to ingest and, from its acknowledgement on, lists the project's traces every 2 ms until the list names it:
-   the method of milestone 1's end-to-end figure (13 to 28 ms from ack to the API). 100 probes by default, 200 ms
-   apart.
+   the method of milestone 1's end-to-end figure (13 to 28 ms from ack to the API). Each list's window starts at
+   the probe's own trace, so a list names that trace at most, as milestone 1's list named only its test's own
+   traces; a wider window would also list the earlier probes' traces, and each list would cost more the more
+   probes ran. 100 probes by default, 200 ms apart.
 2. **The dataset.** `crucible-loadgen run` loads 1 KiB spans in traces of 100 through ingest, one chunk per day of
    the read window (30 days by default), oldest first: `--backdate-secs` places the chunk on its day and
    `--spread-secs` spreads its spans over the day in time order, as live traffic arrives, so an insert touches

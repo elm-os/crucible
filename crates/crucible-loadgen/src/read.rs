@@ -20,7 +20,8 @@
 //!
 //! `fresh` measures how soon an acknowledged trace shows in the API. It sends one small trace at a time to
 //! ingest and, from the acknowledgement on, lists the project's traces every `poll` until the list names it:
-//! the method of milestone 1's end-to-end measurement.
+//! the method of milestone 1's end-to-end measurement. Each list's window starts at the probe's own trace, so
+//! the list holds that trace at most, as milestone 1's held only its test's traces.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -994,11 +995,12 @@ pub async fn fresh(env: &Env, config: &FreshConfig) -> Result<FreshReport, ReadE
             }
         };
         ack.saturating_record(micros(acked.saturating_duration_since(sent)));
-        let margin = 600_000_000;
-        let from = Timestamp::from_micros(wall.micros().saturating_sub(margin));
-        let to = Timestamp::from_micros(wall.micros().saturating_add(margin));
+        // The window starts at the probe's trace, whose spans start at `wall` or later, so a list names that
+        // trace at most, as milestone 1's list named only its test's own traces. The earlier probes started an
+        // interval or more before it.
+        let to = Timestamp::from_micros(wall.micros().saturating_add(600_000_000));
         let path = format!(
-            "/api/v1/projects/{}/traces?from={from}&to={to}&limit=200",
+            "/api/v1/projects/{}/traces?from={wall}&to={to}&limit=200",
             config.project
         );
         let mut polls = 0;
