@@ -23,6 +23,7 @@ mod lifecycle;
 mod m2;
 mod m2_facts;
 mod maintenance;
+mod mcp;
 mod reads;
 pub mod sqliso;
 mod startup;
@@ -345,6 +346,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "ChModel differential: retention and deletion (13.2 to 13.4)",
         lifecycle::lifecycle(&ctx)
+    );
+    row!(
+        "ChModel differential: MCP tables (3.5 to 3.7, 3.10)",
+        mcp::mcp(&ctx)
     );
     if single {
         row!(

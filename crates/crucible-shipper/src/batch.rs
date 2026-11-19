@@ -163,12 +163,25 @@ pub struct BatchId {
 pub fn pair_block(
     batch: &BatchId,
     pair: Pair,
-    mut rows: Vec<Row>,
+    rows: Vec<Row>,
     marker_at: Timestamp,
     compression: Compression,
 ) -> Result<EncodedBlock, BuildError> {
+    block(batch, pair, rows, marker_at, compression, true)
+}
+
+/// [`pair_block`]; without `marker`, the block of an aggregating table lacks its marker row, which is the defect
+/// of a mutant.
+pub(crate) fn block(
+    batch: &BatchId,
+    pair: Pair,
+    mut rows: Vec<Row>,
+    marker_at: Timestamp,
+    compression: Compression,
+    marker: bool,
+) -> Result<EncodedBlock, BuildError> {
     let def = table(pair.0);
-    if def.kind == TableKind::Aggregating {
+    if def.kind == TableKind::Aggregating && marker {
         rows.push(marker_row(
             def,
             pair.1,

@@ -9,24 +9,25 @@ use std::time::Duration;
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
 use crucible_normalize::{
-    Admission, NORMALIZER_VERSION, NormCtx, NormalizedFrame, PriceTable, StageB,
+    Admission, IdentityCtx, NORMALIZER_VERSION, NormCtx, NormalizedFrame, PriceTable, ProjectSalt,
+    StageB,
 };
-use crucible_records::{Fact, Lsn, PartitionId, TableId, Timestamp};
+use crucible_records::{DetMap, Fact, Lsn, PartitionId, ProjectId, TableId, Timestamp, det_map};
 use crucible_wal::{AppendError, RecoveryReport, Replay, ReplayError, Wal, WalFrame};
 use crucible_wal_codec::{BatchSeal, Checkpoint, Compression, PreparedFrame, Record, RecordType};
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, select_biased};
 use tokio::sync::mpsc;
 
-use crate::batch::{BatchId, OpenBatch, pair_block, pair_token};
+use crate::batch::{BatchId, OpenBatch, block, pair_token};
 use crate::config::ShipperConfig;
 use crate::error::ShipError;
 use crate::frames::{Content, read_frame};
-use crate::hooks::{Barrier, Barriers, NoBarriers, NoRecent, RecentIndex};
+use crate::hooks::{Barrier, Barriers, NoBarriers, NoRecent, NoSalts, ProjectSalts, RecentIndex};
 use crate::limits::{DrainRate, Gate, SealLimits, backoff};
 use crate::pair::{PairEnd, PairJob, ship_pair};
 use crate::quarantine::quarantine_frame;
-use crate::tables::{RoutedRow, derive_facts, derive_rows};
+use crate::tables::{Defects, RoutedRow, derive_facts, derive_rows};
 
 /// What the shipper takes besides `Env`, `Stores` and the WAL.
 #[derive(Clone, Debug)]
@@ -35,6 +36,8 @@ pub struct Hooks {
     pub barriers: Arc<dyn Barriers>,
     /// The recent-span index: fed by stage B, and its floor pins WAL segments.
     pub recent: Arc<dyn RecentIndex>,
+    /// The project salts, for the user subjects of MCP operations; [`NoSalts`] without a control store.
+    pub salts: Arc<dyn ProjectSalts>,
 }
 
 impl Default for Hooks {
@@ -42,6 +45,7 @@ impl Default for Hooks {
         Self {
             barriers: Arc::new(NoBarriers),
             recent: Arc::new(NoRecent),
+            salts: Arc::new(NoSalts),
         }
     }
 }
@@ -86,6 +90,7 @@ pub struct ShipperStats {
     pub(crate) quarantined: Tally,
     pub(crate) quarantined_frames: Tally,
     pub(crate) mixed_version_batches: Tally,
+    pub(crate) inventory_dropped: Tally,
     /// The rows held now, in estimated bytes (the `shipper.encoded_bytes` budget), with its gauge.
     encoded_bytes: AtomicU64,
     encoded_gauge: Gauge,
@@ -119,6 +124,8 @@ pub struct StatsSnapshot {
     pub quarantined_frames: u64,
     /// Recovered batches shipped again with another normalizer or price table version than their seal records.
     pub mixed_version_batches: u64,
+    /// Tool inventory entries beyond the per-frame cap, which were not kept (contract 5.1).
+    pub inventory_dropped: u64,
     /// The most estimated row bytes held at once (the `shipper.encoded_bytes` budget).
     pub encoded_bytes_peak: u64,
     /// The estimated row bytes of the largest frame placed.
@@ -148,6 +155,9 @@ impl ShipperStats {
             mixed_version_batches: Tally::new(
                 m.counter(&registry::SHIPPER_MIXED_VERSION_BATCHES, &[]),
             ),
+            inventory_dropped: Tally::new(
+                m.counter(&registry::SHIPPER_INVENTORY_ROWS_DROPPED, &[]),
+            ),
             encoded_bytes: AtomicU64::new(0),
             encoded_gauge,
             encoded_peak: AtomicU64::new(0),
@@ -170,6 +180,7 @@ impl ShipperStats {
             quarantined: self.quarantined.get(),
             quarantined_frames: self.quarantined_frames.get(),
             mixed_version_batches: self.mixed_version_batches.get(),
+            inventory_dropped: self.inventory_dropped.get(),
             encoded_bytes_peak: self.encoded_peak.load(Ordering::Relaxed),
             largest_frame_bytes: self.largest_frame.load(Ordering::Relaxed),
         }
@@ -210,6 +221,7 @@ pub(crate) struct Ctx {
     pub(crate) prices: &'static PriceTable,
     pub(crate) barriers: Arc<dyn Barriers>,
     pub(crate) recent: Arc<dyn RecentIndex>,
+    salts: Arc<dyn ProjectSalts>,
     pub(crate) gate: Gate,
     pub(crate) rng: Arc<dyn Rng>,
     pub(crate) stats: Arc<ShipperStats>,
@@ -357,7 +369,30 @@ pub struct Shipper {
     gc_in_doubt: bool,
     gc_failures: GcFailures,
     read_failures: u32,
+    /// The salts fetched so far. A salt never changes, so it is fetched once per project and process.
+    salts: DetMap<ProjectId, ProjectSalt>,
+    /// Consecutive failures to fetch a salt, for the backoff of the frame that waits for it.
+    salt_failures: u32,
+    /// Whether the drop of identity keys without a control store was logged.
+    identity_drop_logged: bool,
     drain: DrainRate,
+}
+
+/// What stage B is told about the identity of one frame's project: no control store, or the project's salt
+/// when the frame needs one.
+#[derive(Clone, Copy, Debug)]
+enum Identity {
+    Suppressed,
+    Salted(Option<ProjectSalt>),
+}
+
+impl Identity {
+    fn ctx(&self) -> IdentityCtx<'_> {
+        match self {
+            Self::Suppressed => IdentityCtx::Suppressed,
+            Self::Salted(salt) => IdentityCtx::Salted(salt.as_ref()),
+        }
+    }
 }
 
 impl Drop for Shipper {
@@ -427,15 +462,19 @@ impl Shipper {
             stats: Arc::new(ShipperStats::new(env.metrics.as_ref())),
             barriers: hooks.barriers,
             recent: hooks.recent,
+            salts: hooks.salts,
             wal,
             config,
         });
+        let stage_b = StageB::new(
+            ctx.config.duplicate_window_keys,
+            ctx.config.first_seen_traces,
+        );
+        #[cfg(feature = "test-mutants")]
+        let stage_b = stage_b.with_mutant(ctx.config.normalizer_mutant());
         Ok(Self {
             replay: ctx.wal.replay(report.first_retained_lsn()),
-            stage_b: StageB::new(
-                ctx.config.duplicate_window_keys,
-                ctx.config.first_seen_traces,
-            ),
+            stage_b,
             relied_on: BTreeMap::new(),
             watermark,
             seals,
@@ -449,6 +488,9 @@ impl Shipper {
             gc_in_doubt: false,
             gc_failures: GcFailures::default(),
             read_failures: 0,
+            salts: det_map(),
+            salt_failures: 0,
+            identity_drop_logged: false,
             drain: DrainRate::new(ctx.env.clock.now()),
             ctx,
         })
@@ -463,7 +505,49 @@ impl Shipper {
     /// version is priced with this build's table, as it is normalized by this build's normalizer (contract 5.3):
     /// its pairs land wholesale.
     fn norm_ctx(&self) -> NormCtx<'static> {
-        NormCtx::new(self.ctx.prices, self.ctx.config.caps)
+        let mut ctx = NormCtx::new(self.ctx.prices, self.ctx.config.caps);
+        ctx.mutant = self.ctx.config.normalizer_mutant();
+        ctx
+    }
+
+    /// What stage B is told about the identity of a frame's project (contract 9.3), or `None` when the frame
+    /// needs a salt that the control store did not give: the frame then waits.
+    ///
+    /// Without a control store every MCP operation loses its identity keys, which is logged once. With one,
+    /// only a frame that carries a user subject needs the salt of its project, so that a control store that
+    /// does not answer holds no other frame; the salt is fetched once and kept, because it never changes.
+    async fn identity_of(&mut self, frame: &NormalizedFrame) -> Option<Identity> {
+        if !self.ctx.salts.configured() {
+            if !frame.mcp_ops.is_empty() && !std::mem::replace(&mut self.identity_drop_logged, true)
+            {
+                tracing::warn!(
+                    "this node has no project salts, which the control store holds, so the user identity                      of MCP operations is dropped (user id, subject, issuer, tenant, OAuth client id)"
+                );
+            }
+            return Some(Identity::Suppressed);
+        }
+        let Some(project) = frame
+            .mcp_ops
+            .iter()
+            .find(|op| op.has_subject())
+            .map(|op| op.record.project_id)
+        else {
+            return Some(Identity::Salted(None));
+        };
+        if let Some(salt) = self.salts.get(&project) {
+            return Some(Identity::Salted(Some(*salt)));
+        }
+        match self.ctx.salts.salt(project).await {
+            Ok(salt) => {
+                self.salts.insert(project, salt);
+                self.salt_failures = 0;
+                Some(Identity::Salted(Some(salt)))
+            }
+            Err(e) => {
+                tracing::warn!(lsn = %frame.lsn, error = %e, "a frame waits for the salt of its project");
+                None
+            }
+        }
     }
 
     /// The next durable frame, or `None` when there is none yet or the read failed. A failed read is tried
@@ -503,9 +587,10 @@ impl Shipper {
             }
             match read_frame(&self.ctx.wal, &frame, &self.norm_ctx(), &self.ctx.config) {
                 Ok(Content::Spans(mut normalized)) => {
+                    // The rows are not shipped again, and no salt changes what stage B remembers.
                     let admission = self
                         .stage_b
-                        .admit(&mut normalized)
+                        .admit(&mut normalized, &IdentityCtx::Salted(None))
                         .map_err(|e| frame_error(frame.lsn(), e))?;
                     self.ctx.recent.applied(&frame, &normalized, &admission);
                 }
@@ -535,10 +620,11 @@ impl Shipper {
         match &mut held.rows {
             Unplaced::Spans(frame, admission) => {
                 frame.stamp_batch_seq(batch_seq);
-                {
-                    let count_aggregates = self.ctx.config.counts_aggregate_usage();
-                    derive_rows(frame, admission, granularity, count_aggregates)
-                }
+                let defects = Defects {
+                    count_aggregates: self.ctx.config.counts_aggregate_usage(),
+                    sum_capture_sources: self.ctx.config.sums_capture_sources(),
+                };
+                derive_rows(frame, admission, granularity, defects)
             }
             Unplaced::Facts(facts) => {
                 for fact in facts.iter_mut() {
@@ -605,10 +691,24 @@ impl Shipper {
         }
         let rows = match read_frame(&self.ctx.wal, frame, &self.norm_ctx(), &self.ctx.config) {
             Ok(Content::Spans(mut normalized)) => {
+                let Some(identity) = self.identity_of(&normalized).await else {
+                    // Stage B has not seen the frame: it is read again once the backoff has passed.
+                    self.replay = self.ctx.wal.replay(lsn);
+                    self.ctx.pause(self.salt_failures).await;
+                    self.salt_failures = self.salt_failures.saturating_add(1);
+                    return Ok(());
+                };
+                let ctx = self.norm_ctx().with_identity(identity.ctx());
                 let admission = self
                     .stage_b
-                    .admit(&mut normalized)
+                    .admit(&mut normalized, &ctx.identity)
                     .map_err(|e| frame_error(lsn, e))?;
+                if normalized.summary.inventory_dropped > 0 {
+                    self.ctx
+                        .stats
+                        .inventory_dropped
+                        .add(u64::from(normalized.summary.inventory_dropped));
+                }
                 self.ctx.recent.applied(frame, &normalized, &admission);
                 if let Some(at) = admission.relies_on {
                     self.relied_on.insert(lsn, at);
@@ -733,9 +833,10 @@ impl Shipper {
             if rollup && ctx.config.double_counts_rollups() {
                 rows.extend(rows.first().cloned());
             }
+            let marker = !(pair.0 == TableId::McpToolRollup && ctx.config.drops_rollup_marker());
             jobs.push(PairJob {
                 token: pair_token(&id, pair)?,
-                block: pair_block(&id, pair, rows, marker_at, ctx.config.compression)?,
+                block: block(&id, pair, rows, marker_at, ctx.config.compression, marker)?,
                 in_doubt: recovered.is_some(),
             });
         }

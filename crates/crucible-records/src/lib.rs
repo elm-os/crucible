@@ -6,7 +6,7 @@
 //! [`TraceHead`], [`TraceStatsRow`] and the rollup rows. The kernels are the latency histogram ([`Bucket`],
 //! [`Histogram`]), the MCP error classifier ([`classify_mcp_error`]), the payload truncation rule
 //! ([`SpanRecord::enforce_payload_caps`]) and rank-prefixed picks ([`Pick`]). The caps the contract names are in
-//! [`caps`]. The `span` module documentation explains how the records are represented for throughput.
+//! [`caps`], and the keys of the MCP wire attribute contract in [`mcp_keys`]. The `span` module documentation explains how the records are represented for throughput.
 //!
 //! This crate is pure: no `Env`, no IO.
 
@@ -22,6 +22,7 @@ mod id;
 mod ingestion;
 mod lsn;
 mod mcp;
+pub mod mcp_keys;
 mod merge;
 mod rollup;
 mod scope;

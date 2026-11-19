@@ -4,18 +4,19 @@
 //! so frames may be normalized in parallel and a replay gives byte-identical records. It re-scans the canonical
 //! OTLP body, skips the spans the envelope marks as rejected, detects the dialect of each span and maps it with
 //! every dialect table as a layer (contract 10.2), forward-fills trace-level attributes within the request, and
-//! applies the time rules, defaults, cost, payload caps and the row digest.
+//! applies the time rules, defaults, cost, payload caps and the row digest. A span that carries `mcp.method.name`
+//! also yields an MCP operation, and a span that carries a tool list yields tool inventory entries (contract 9.1).
 //!
 //! **Stage B** ([`StageB`]) is sequential in LSN order: the duplicate window drops exact repeats, the first-seen
 //! set marks provisional trace heads, and the usage-parent set flags the spans that have a descendant carrying
-//! usage or cost (`usage_aggregate`), which token and cost sums leave out.
+//! usage or cost (`usage_aggregate`), which token and cost sums leave out. Stage B also hashes the user subject of
+//! an MCP operation with the project's salt and discards it (contract 9.3).
 //!
 //! The shipper stamps `batch_seq` when it seals a batch ([`NormalizedFrame::stamp_batch_seq`]); until then it is
 //! [`Lsn::ZERO`]. The ingestion group is outside the row digest, so stamping never changes a digest.
 //!
 //! Provided usage and cost are used as sent; without a provided cost, usage is priced from the price tables that
-//! the [`NormCtx`] pins ([`PriceTable`]). The MCP projector is a stub until milestone 3, so `mcp_side` is always
-//! `none`.
+//! the [`NormCtx`] pins ([`PriceTable`]).
 //!
 //! This crate is pure: no `Env`, no IO.
 
@@ -27,6 +28,7 @@ mod index;
 mod indexed;
 mod json;
 mod mapper;
+mod mcp;
 mod node;
 mod price;
 mod stage_a;
@@ -38,9 +40,9 @@ use crucible_records::{ApiKeyId, Lsn, PayloadCaps, ProjectId, SpanRecord, Timest
 
 pub use digest::{DIGEST_ENCODING, row_digest};
 pub use mapper::{
-    Hints, InventoryDraft, MAPPERS, MapCtx, McpOpDraft, McpProjector, NATIVE, SpanDraft,
-    SpanMapper, TableMapper,
+    Hints, MAPPERS, MapCtx, McpProjector, NATIVE, SpanDraft, SpanMapper, TableMapper,
 };
+pub use mcp::{IdentityCtx, InventoryDraft, McpInventory, McpOp, McpOpDraft, Mutant, ProjectSalt};
 pub use price::{
     BUNDLED_PRICE_TABLE_VERSION, Compare, Condition, ModelPrice, PriceSnapshot, PriceTable,
     PriceTableError, PriceTier,
@@ -63,7 +65,11 @@ pub use stage_b::{
 ///   hint is a detection at confidence 60); maps merge every source in rank order; tool calls, tool names and
 ///   finish reasons are derived from message bodies; previews replace media tokens. Stage B sets
 ///   `usage_aggregate` on a span that has a descendant carrying usage or cost; the flag is outside the row digest.
-pub const NORMALIZER_VERSION: u32 = 4;
+/// - 5: a span that carries `mcp.method.name` yields an MCP operation (`mcp_side` is set, the keys the projector
+///   consumes leave the residual attributes, and the operation is part of the row digest), and a span that carries
+///   `crucible.mcp.tools` yields tool inventory entries. Keys that must never be stored (a client address,
+///   credential headers, the raw user subject and session id) leave the residual attributes of every span.
+pub const NORMALIZER_VERSION: u32 = 5;
 
 /// One `IngestRequest` WAL frame as the normalizer reads it: the frame header values and the envelope (contracts
 /// 4.3 and 4.4), borrowing the payload. The shipper fills it from the decoded frame; this crate does not depend on
@@ -105,8 +111,8 @@ impl IngestFrame<'_> {
 /// What stage A's output is pinned to (contract 3.2). Equal frames normalized with equal contexts give
 /// byte-identical records.
 ///
-/// The project snapshot contributes the caps and, from milestone 4, the project's price overrides; the salt,
-/// capture settings and tombstones join with the stages that use them.
+/// The project snapshot contributes the caps, the salt that stage B hashes user subjects with and, from milestone
+/// 4, the project's price overrides; capture settings and tombstones join with the stages that use them.
 #[derive(Clone, Copy, Debug)]
 pub struct NormCtx<'a> {
     /// The normalizer version recorded in every record.
@@ -118,11 +124,16 @@ pub struct NormCtx<'a> {
     pub prices: PriceSnapshot<'a>,
     /// The project's payload caps.
     pub caps: PayloadCaps,
+    /// The salt of the frame's project, for stage B (contract 9.3).
+    pub identity: IdentityCtx<'a>,
+    /// A seeded defect; `None` outside the simulation suite.
+    pub mutant: Option<Mutant>,
 }
 
 impl<'a> NormCtx<'a> {
     /// A context for this normalizer ([`NORMALIZER_VERSION`]) that prices with `bundled` alone and records its
-    /// version.
+    /// version. It knows no project salt ([`IdentityCtx::Suppressed`]); [`NormCtx::with_identity`] gives it
+    /// one.
     pub const fn new(bundled: &'a PriceTable, caps: PayloadCaps) -> Self {
         Self {
             normalizer_version: NORMALIZER_VERSION,
@@ -132,7 +143,16 @@ impl<'a> NormCtx<'a> {
                 bundled,
             },
             caps,
+            identity: IdentityCtx::Suppressed,
+            mutant: None,
         }
+    }
+
+    /// The context with what stage B knows about the identity of the frame's project.
+    #[must_use]
+    pub const fn with_identity(mut self, identity: IdentityCtx<'a>) -> Self {
+        self.identity = identity;
+        self
     }
 }
 
@@ -146,15 +166,24 @@ pub struct FrameSummary {
     /// Spans with a missing or all-zero trace or span id that the bitmap does not mark. Ingest marks every such
     /// span, so this is 0 for frames that ingest wrote.
     pub missing_ids: u32,
+    /// Tool inventory entries beyond the first [`crucible_records::caps::MCP_INVENTORY_MAX_ROWS_PER_FRAME`] in
+    /// wire order, which the frame does not keep (contract 5.1).
+    pub inventory_dropped: u32,
 }
 
 /// The records of one frame (contract 3.2).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct NormalizedFrame {
     /// LSN of the frame.
     pub lsn: Lsn,
     /// One record per accepted span, in wire order.
     pub spans: Vec<SpanRecord>,
+    /// The MCP operations of the spans that carry `mcp.method.name`, in span order (contract 3.5). Each names
+    /// its span by position, and stage B drops the operation of a span it drops.
+    pub mcp_ops: Vec<McpOp>,
+    /// The tool inventory entries the spans report, in wire order (contract 3.6), at most
+    /// [`crucible_records::caps::MCP_INVENTORY_MAX_ROWS_PER_FRAME`].
+    pub inventory: Vec<McpInventory>,
     /// The skipped spans.
     pub summary: FrameSummary,
 }
@@ -165,6 +194,15 @@ impl NormalizedFrame {
         for span in &mut self.spans {
             span.core.ingestion.batch_seq = batch_seq;
         }
+        for op in &mut self.mcp_ops {
+            op.record.ingestion.batch_seq = batch_seq;
+        }
+    }
+
+    /// Whether an MCP operation of the frame carries a user subject, so that stage B needs the salt of the
+    /// frame's project (contract 9.3).
+    pub fn needs_salt(&self) -> bool {
+        self.mcp_ops.iter().any(McpOp::has_subject)
     }
 }
 
