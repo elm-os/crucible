@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crucible_plan::{PayloadField, Pred};
+use crucible_plan::{Filter, PayloadField};
 use crucible_query::{
     Hidden, HiddenSelector, HiddenSource, PayloadQuery, QueryServiceError, TraceListQuery,
 };
@@ -52,7 +52,7 @@ fn spans_of(world: &World, trace_n: u64) -> Result<Vec<SpanId>, QueryServiceErro
 fn listed(world: &World) -> Vec<TraceId> {
     let query = TraceListQuery {
         window: window(),
-        filter: Pred::all(),
+        filter: Filter::all(),
         limit: Some(10),
         cursor: None,
     };

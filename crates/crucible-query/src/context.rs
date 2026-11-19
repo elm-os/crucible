@@ -151,6 +151,8 @@ impl From<PlanError> for QueryServiceError {
     fn from(error: PlanError) -> Self {
         match error {
             PlanError::Limit => Self::Validation("limit"),
+            // A filter condition the read cannot evaluate is the request's to change, not a defect.
+            PlanError::UnsupportedFilter { field, .. } => Self::Validation(field),
             other => Self::Internal(other.to_string()),
         }
     }
