@@ -85,17 +85,41 @@ fn an_upload_is_asked_for_uploaded_confirmed_and_read_back() {
         assert_eq!(replay.body, created.body);
 
         // Pending: no download, and nothing to confirm yet.
-        let pending = call(&p.router, Method::GET, &media_path(&format!("/{id}")), &p.key, None, &[]).await;
+        let pending = call(
+            &p.router,
+            Method::GET,
+            &media_path(&format!("/{id}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(pending.body["state"], "pending", "{}", pending.pretty());
         assert!(pending.body.get("url").is_none());
-        let early = call(&p.router, Method::PATCH, &media_path(&format!("/{id}")), &p.key, None, &[]).await;
+        let early = call(
+            &p.router,
+            Method::PATCH,
+            &media_path(&format!("/{id}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
         early.assert_problem(409, "conflict");
 
         // The client uploads with the signed headers, then confirms.
         p.objects
             .upload(&url, "image/png", Bytes::from_static(PNG))
             .unwrap();
-        let confirmed = call(&p.router, Method::PATCH, &media_path(&format!("/{id}")), &p.key, None, &[]).await;
+        let confirmed = call(
+            &p.router,
+            Method::PATCH,
+            &media_path(&format!("/{id}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(confirmed.status.as_u16(), 200, "{}", confirmed.pretty());
         assert_eq!(confirmed.body["state"], "uploaded");
         assert_eq!(confirmed.body["disposition"], "inline");
@@ -103,7 +127,15 @@ fn an_upload_is_asked_for_uploaded_confirmed_and_read_back() {
 
         // A reader gets a presigned download that serves the bytes inline.
         let viewer = session(&p.identity.login("vic@example.com", PASSWORD).await.unwrap());
-        let read = call(&p.router, Method::GET, &media_path(&format!("/{id}")), &viewer, None, &[]).await;
+        let read = call(
+            &p.router,
+            Method::GET,
+            &media_path(&format!("/{id}")),
+            &viewer,
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(read.status.as_u16(), 200, "{}", read.pretty());
         let download = read.body["url"].as_str().unwrap();
         let (stored, disposition) = p.objects.download(download).unwrap();
@@ -210,15 +242,36 @@ fn every_refusal_names_what_to_change() {
 
         // Ids that name nothing.
         let missing = MediaObjectId::from_bytes([7; 16]);
-        call(&p.router, Method::GET, &media_path(&format!("/{missing}")), &p.key, None, &[])
-            .await
-            .assert_problem(404, "not_found");
-        call(&p.router, Method::GET, &media_path("/not-an-id"), &p.key, None, &[])
-            .await
-            .assert_problem(404, "not_found");
-        call(&p.router, Method::GET, &media_path("?trace_id=xyz"), &p.key, None, &[])
-            .await
-            .assert_problem(422, "validation_failed");
+        call(
+            &p.router,
+            Method::GET,
+            &media_path(&format!("/{missing}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await
+        .assert_problem(404, "not_found");
+        call(
+            &p.router,
+            Method::GET,
+            &media_path("/not-an-id"),
+            &p.key,
+            None,
+            &[],
+        )
+        .await
+        .assert_problem(404, "not_found");
+        call(
+            &p.router,
+            Method::GET,
+            &media_path("?trace_id=xyz"),
+            &p.key,
+            None,
+            &[],
+        )
+        .await
+        .assert_problem(422, "validation_failed");
     });
 }
 
@@ -241,10 +294,26 @@ fn an_upload_that_differs_from_its_declaration_is_refused_and_deleted() {
         let key = object_key("media", project(1), MediaObjectId::parse(&id).unwrap());
         p.objects
             .plant(&key, Bytes::from_static(b"short"), env.clock.wall_now());
-        let refused = call(&p.router, Method::PATCH, &media_path(&format!("/{id}")), &p.key, None, &[]).await;
+        let refused = call(
+            &p.router,
+            Method::PATCH,
+            &media_path(&format!("/{id}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
         refused.assert_problem(422, "media_hash_mismatch");
         assert!(!p.objects.objects().contains_key(&key));
-        let pending = call(&p.router, Method::GET, &media_path(&format!("/{id}")), &p.key, None, &[]).await;
+        let pending = call(
+            &p.router,
+            Method::GET,
+            &media_path(&format!("/{id}")),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(pending.body["state"], "pending");
     });
 }
@@ -266,8 +335,13 @@ fn without_an_object_store_every_media_route_answers_media_not_supported() {
         get(&router, &media_path(&format!("?trace_id={TRACE}")))
             .await
             .assert_problem(501, "media_not_supported");
-        send(&router, Method::PATCH, &media_path(&format!("/{id}")), Some(&crate::key()))
-            .await
-            .assert_problem(501, "media_not_supported");
+        send(
+            &router,
+            Method::PATCH,
+            &media_path(&format!("/{id}")),
+            Some(&crate::key()),
+        )
+        .await
+        .assert_problem(501, "media_not_supported");
     });
 }

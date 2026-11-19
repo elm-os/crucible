@@ -35,6 +35,8 @@ crucible-egress = { path = "../crucible-egress" }
 crucible-notify = { path = "../crucible-notify" }
 # The lifecycle simulation runs the real executors and switches their seeded defects on.
 crucible-lifecycle = { path = "../crucible-lifecycle", features = ["test-mutants"] }
+# The media simulation runs the real upload flow and collector and switches the collector's defects on.
+crucible-media = { path = "../crucible-media", features = ["test-mutants"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

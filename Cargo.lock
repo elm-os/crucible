@@ -1540,6 +1540,7 @@ dependencies = [
  "crucible-ingest",
  "crucible-jobs",
  "crucible-lifecycle",
+ "crucible-media",
  "crucible-normalize",
  "crucible-notify",
  "crucible-otlp",

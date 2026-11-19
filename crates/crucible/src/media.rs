@@ -87,6 +87,7 @@ impl NodeMedia {
         crucible_media::gc::job(
             Arc::clone(&self.store) as Arc<dyn ObjectStore>,
             self.prefix.clone(),
+            crucible_media::gc::GcConfig::default(),
         )
     }
 

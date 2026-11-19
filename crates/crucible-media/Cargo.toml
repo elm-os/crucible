@@ -11,6 +11,8 @@ publish.workspace = true
 [features]
 # `fetch`, with which tests play a client of presigned URLs. Never enabled by the binary.
 test-support = []
+# Seeded defects for the simulation suite, which must catch each of them. Never enabled by the binary.
+test-mutants = []
 
 [dependencies]
 crucible-env = { workspace = true }

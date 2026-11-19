@@ -101,12 +101,12 @@ pub struct Refused(pub u16);
 pub struct SimObjectStore {
     clock: Arc<dyn Clock>,
     rng: Arc<dyn Rng>,
-    faults: ObjectFaults,
+    faults: Mutex<ObjectFaults>,
     state: Mutex<State>,
 }
 
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn micros(d: Duration) -> i64 {
@@ -123,9 +123,18 @@ impl SimObjectStore {
         Arc::new(Self {
             clock,
             rng,
-            faults,
+            faults: Mutex::new(faults),
             state: Mutex::default(),
         })
+    }
+
+    /// Replaces the faults, for example to end a faulty phase.
+    pub fn set_faults(&self, faults: ObjectFaults) {
+        *lock(&self.faults) = faults;
+    }
+
+    fn faults(&self) -> ObjectFaults {
+        *lock(&self.faults)
     }
 
     fn now(&self) -> Timestamp {
@@ -135,7 +144,7 @@ impl SimObjectStore {
     /// Fails the call as throttled at the seeded rate.
     fn gate(&self, state: &mut State) -> Result<(), ObjectError> {
         state.calls += 1;
-        let rate = u64::from(self.faults.throttle_ppm);
+        let rate = u64::from(self.faults().throttle_ppm);
         if rate > 0 && self.rng.next_u64() % 1_000_000 < rate {
             return Err(ObjectError::Unavailable("SlowDown".to_owned()));
         }
@@ -144,7 +153,7 @@ impl SimObjectStore {
 
     /// Records a write or a delete for the listing.
     fn change(&self, state: &mut State, key: &str, object: Option<ObjectMeta>) {
-        let lag = micros(self.faults.list_lag);
+        let lag = micros(self.faults().list_lag);
         let drawn = if lag > 0 {
             i64::try_from(self.rng.next_u64() % (lag.unsigned_abs() + 1)).unwrap_or(lag)
         } else {
@@ -206,7 +215,8 @@ impl SimObjectStore {
         if self.now() >= expires_at || content_type != signed_type {
             return Err(Refused(403));
         }
-        if !self.faults.lax_uploads {
+        let lax = self.faults().lax_uploads;
+        if !lax {
             if body.len() as u64 != len {
                 return Err(Refused(403));
             }
@@ -218,7 +228,7 @@ impl SimObjectStore {
             bytes: body,
             content_type: signed_type,
             created_at: self.now(),
-            sha256: (!self.faults.lax_uploads).then_some(signed),
+            sha256: (!lax).then_some(signed),
         };
         self.store(&mut state, &key, object);
         Ok(())

@@ -1292,7 +1292,10 @@ directory_of_everything = "x"
             ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
             ("CRUCIBLE_MASTER_KEY", KEY),
             ("CRUCIBLE_OBJECT_STORE_ENDPOINT", "http://versitygw:7070"),
-            ("CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT", "http://localhost:7070"),
+            (
+                "CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT",
+                "http://localhost:7070",
+            ),
             ("CRUCIBLE_OBJECT_STORE_BUCKET", "media"),
             ("CRUCIBLE_OBJECT_STORE_ACCESS_KEY", "crucible"),
             ("CRUCIBLE_OBJECT_STORE_SECRET_KEY", "hunter2"),

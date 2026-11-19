@@ -34,6 +34,83 @@ use crate::rules::{ORPHAN_AGE, PENDING_TTL, key_root, media_id_of, object_key};
 pub const GC_EVERY: Duration = Duration::from_secs(3_600);
 /// How often the orphan scan starts.
 pub const ORPHAN_SCAN_EVERY: Duration = Duration::from_secs(7 * 24 * 3_600);
+
+/// A seeded defect. The simulation suite switches each one on and must catch it.
+///
+/// Without the cargo feature `test-mutants` this type has no value, so no defect can be switched on. Only
+/// `crucible-sim` enables the feature.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mutant {
+    /// Each stored object is deleted before its row's transaction, whatever that transaction's outcome.
+    #[cfg(feature = "test-mutants")]
+    ObjectBeforeRow,
+    /// Uploaded objects that no use refers to are kept.
+    #[cfg(feature = "test-mutants")]
+    KeepUnused,
+    /// Uses are kept past their project's payload cut-off.
+    #[cfg(feature = "test-mutants")]
+    SkipRetention,
+}
+
+/// The collector's horizons (contract 14.4). Production uses the default; the simulation shortens them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GcConfig {
+    /// How often the job runs: hourly.
+    pub every: Duration,
+    /// How long an upload may stay pending: 24 h.
+    pub pending_ttl: Duration,
+    /// How often the orphan scan starts: weekly.
+    pub scan_every: Duration,
+    /// How old a stored object without a row must be before the scan deletes it: 48 h.
+    pub orphan_age: Duration,
+    mutant: Option<Mutant>,
+}
+
+impl Default for GcConfig {
+    fn default() -> Self {
+        Self {
+            every: GC_EVERY,
+            pending_ttl: PENDING_TTL,
+            scan_every: ORPHAN_SCAN_EVERY,
+            orphan_age: ORPHAN_AGE,
+            mutant: None,
+        }
+    }
+}
+
+impl GcConfig {
+    /// The same settings with a seeded defect.
+    #[cfg(feature = "test-mutants")]
+    #[must_use]
+    pub const fn with_mutant(mut self, mutant: Mutant) -> Self {
+        self.mutant = Some(mutant);
+        self
+    }
+
+    /// Whether each stored object goes before its row (a seeded defect).
+    fn deletes_objects_first(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::ObjectBeforeRow);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether unused objects are kept (a seeded defect).
+    fn keeps_unused(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::KeepUnused);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+
+    /// Whether retention is skipped (a seeded defect).
+    fn skips_retention(&self) -> bool {
+        #[cfg(feature = "test-mutants")]
+        return self.mutant == Some(Mutant::SkipRetention);
+        #[cfg(not(feature = "test-mutants"))]
+        false
+    }
+}
 /// Rows one batch of steps 2 and 3 looks at.
 const BATCH: u32 = 500;
 /// Batches one run takes per step, and listing pages per run: a large backlog is worked off over several runs.
@@ -82,15 +159,20 @@ pub struct Collected {
 pub struct Gc {
     objects: Arc<dyn ObjectStore>,
     prefix: String,
+    config: GcConfig,
 }
 
 /// The `media-gc` leader job over `objects`, whose keys start with `prefix`.
-pub fn job(objects: Arc<dyn ObjectStore>, prefix: String) -> Job {
-    let gc = Gc { objects, prefix };
+pub fn job(objects: Arc<dyn ObjectStore>, prefix: String, config: GcConfig) -> Job {
+    let gc = Gc {
+        objects,
+        prefix,
+        config,
+    };
     Job::leader(
         "media-gc",
         LeaseName::MediaGc,
-        Cadence::every(GC_EVERY),
+        Cadence::every(config.every),
         move |ctx: LeaderCtx| {
             let gc = gc.clone();
             async move {
@@ -124,11 +206,6 @@ fn conflict(error: &JobError) -> bool {
 }
 
 impl Gc {
-    /// A collector over `objects`, whose keys start with `prefix`.
-    pub fn new(objects: Arc<dyn ObjectStore>, prefix: String) -> Self {
-        Self { objects, prefix }
-    }
-
     /// One run: the four steps of the module documentation.
     pub async fn run(&self, ctx: &LeaderCtx) -> Result<Collected, JobError> {
         let mut collected = Collected {
@@ -143,6 +220,9 @@ impl Gc {
 
     /// Step 1: the uses past their project's payload cut-off.
     async fn expire(&self, ctx: &LeaderCtx) -> Result<u64, JobError> {
+        if self.config.skips_retention() {
+            return Ok(0);
+        }
         let now = ctx.env.clock.wall_now();
         let mut deleted = 0;
         for project in ctx.store().projects().list().await? {
@@ -174,7 +254,10 @@ impl Gc {
             .env
             .clock
             .wall_now()
-            .saturating_add_micros(-micros(PENDING_TTL));
+            .saturating_add_micros(-micros(self.config.pending_ttl));
+        if sweep == Sweep::Unused && self.config.keeps_unused() {
+            return Ok(0);
+        }
         let mut removed = 0;
         for _ in 0..MAX_BATCHES {
             let media = ctx.store().media();
@@ -185,6 +268,10 @@ impl Gc {
             let mut keys = Vec::new();
             for object in &found {
                 let id = object.id;
+                if self.config.deletes_objects_first() {
+                    let key = object_key(&self.prefix, object.project_id, id);
+                    let _ = self.objects.delete(&key).await;
+                }
                 let deleted = ctx
                     .fenced(move |tx| {
                         Box::pin(async move {
@@ -238,16 +325,16 @@ impl Gc {
         let started = match cursor.scan_started_at {
             Some(started) => started,
             None => {
-                let due = cursor
-                    .scanned_at
-                    .is_none_or(|at| now.micros().saturating_sub(at) >= micros(ORPHAN_SCAN_EVERY));
+                let due = cursor.scanned_at.is_none_or(|at| {
+                    now.micros().saturating_sub(at) >= micros(self.config.scan_every)
+                });
                 if !due {
                     return Ok(0);
                 }
                 now.micros()
             }
         };
-        let old = now.saturating_add_micros(-micros(ORPHAN_AGE));
+        let old = now.saturating_add_micros(-micros(self.config.orphan_age));
         let root = key_root(&self.prefix);
         let mut deleted = 0;
         for _ in 0..MAX_BATCHES {
