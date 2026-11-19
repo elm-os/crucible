@@ -91,7 +91,8 @@ impl ApiState {
             ApiError::new(
                 request_id,
                 ProblemCode::FeatureDisabled,
-                "alerts and channels need a control plane and a master key; set postgres.url                  (CRUCIBLE_POSTGRES_URL) and CRUCIBLE_MASTER_KEY",
+                "alerts and channels need a control plane and a master key; set postgres.url \
+                 (CRUCIBLE_POSTGRES_URL) and CRUCIBLE_MASTER_KEY",
             )
         })
     }
