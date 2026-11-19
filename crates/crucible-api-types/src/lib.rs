@@ -15,6 +15,7 @@
 
 mod data_bounds;
 mod enums;
+mod exports;
 mod facts;
 mod identity;
 mod meta;
@@ -36,6 +37,7 @@ pub use enums::{
     AuthorKind, Consistency, HeadKind, IoShape, Level, ObservationType, PartialReason,
     ScoreDataType, ScoreSource, StatusCode, TagOp,
 };
+pub use exports::{Export, ExportFormat, ExportList, ExportRequest, ExportState};
 pub use facts::{
     Correction, CorrectionRequest, FactRef, FactWritten, Facts, FactsParams, FeedbackRequest,
     FlagName, FlagRequest, FlagValue, Score, ScoreValue, TagEdit, TagRequest, TraceFacts,
@@ -93,6 +95,9 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<CorrectionRequest>();
     visitor.visit::<DataBounds>();
     visitor.visit::<EntityParams>();
+    visitor.visit::<Export>();
+    visitor.visit::<ExportList>();
+    visitor.visit::<ExportRequest>();
     visitor.visit::<FactWritten>();
     visitor.visit::<Facts>();
     visitor.visit::<FactsParams>();

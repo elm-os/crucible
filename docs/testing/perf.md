@@ -585,7 +585,7 @@ metrics before and after each lane under `metrics/`.
 The read services record two histograms per request class (one class per read service: `trace_by_id`,
 `trace_list`, `trace_list_since`, `span_children`, `span_list`, `payload`, `facts`, `fact_target_bounds`,
 `filter_values`, `data_bounds`, `search`, `metrics`, `session_list`, `session`, `user_list`, `user`,
-`user_sessions`):
+`user_sessions`, `export_page`):
 
 - `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
   the reads.
@@ -732,7 +732,10 @@ Two runs, each lane 120 reads at 2 per second; latency in ms, p50 / p95 / p99:
   larger dataset.
 - **Two runs agree within 10% at p95 in 3 of 13 lanes**, not all of them. 120 reads put p95 on the 6th slowest
   read, so a stall of a second or two on the shared machine moves it; the medians agree better (within 10% in 11 of
-  13 lanes), and run 2 was faster in most lanes, which points at the machine's load rather than the build.
+  13 lanes), and run 2 was faster in most lanes, which points at the machine's load rather than the build. A pair of
+  longer runs of the three gate lanes (360 reads each) was stopped when another track's gate started on the same
+  CPUs (the empty-store probe rose to 514 ms p95): two sessions on one rig measure each other. The stability
+  check belongs in the exclusive window: `tools/perf/xtask.sh reads --rig full`, twice, alone on the machine.
 - An earlier run at 20 reads/s saturated trace by id (about 470 ms per read under that load, with
   requests queued up to 4 s for a connection) and the 30-day span list (about 1.1 s per read): the saturation rule
   and the default rate of 2 per second come from it.

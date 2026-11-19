@@ -41,9 +41,11 @@ impl McpGate {
         keys: Arc<dyn KeyVerifier>,
         cursors: Arc<KeyRing>,
         config: McpConfig,
+        exports: Option<crucible_export::Exports>,
     ) {
         let settings = Arc::new(StaticProjectSettings::default());
-        let router = crucible_mcp_server::router(env, service, keys, settings, cursors, config);
+        let router =
+            crucible_mcp_server::router(env, service, keys, settings, cursors, config, exports);
         // The store task is the only caller, once.
         let _ = self.over_store.set(router);
     }

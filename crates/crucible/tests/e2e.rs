@@ -54,6 +54,7 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient;
 use prost::Message as _;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tonic::codec::CompressionEncoding;
 
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
@@ -1447,7 +1448,115 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     .unwrap();
     assert_eq!(status, 401, "{}", String::from_utf8_lossy(&body));
 
-    // 7. Revoking the key stops it at once; signing out ends the session.
+    // 7. An export of the trace of step 5: created once under its Idempotency-Key, written by the export job,
+    //    downloaded whole with its checksum, followed through the MCP server, and written again by
+    //    `crucible export` straight from the stores.
+    let exports = format!("/api/v1/projects/{project_id}/exports");
+    let request = json!({
+        "format": "crucible-jsonl",
+        "from": from.to_string(),
+        "to": to.to_string(),
+        "trace_ids": [trace.trace_id],
+    })
+    .to_string();
+    let create = || {
+        http_with_cookies(
+            server.api,
+            "POST",
+            &exports,
+            &[
+                ("cookie", cookie.as_str()),
+                json_headers[0],
+                json_headers[1],
+                ("x-crucible-csrf", csrf.as_str()),
+                ("idempotency-key", "e2e-export-1"),
+            ],
+            request.as_bytes(),
+        )
+    };
+    let (status, _, created_export) = create();
+    assert_eq!(status, 202, "{created_export}");
+    let export_id = created_export["id"].as_str().unwrap().to_owned();
+    let (status, _, replayed) = create();
+    assert_eq!((status, &replayed["id"]), (202, &created_export["id"]));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let ready = loop {
+        let (status, _, read) = as_owner("GET", &format!("{exports}/{export_id}"), Value::Null);
+        assert_eq!(status, 200, "{read}");
+        if read["state"] == "ready" {
+            break read;
+        }
+        assert_ne!(read["state"], "failed", "{read}");
+        assert!(
+            Instant::now() < deadline,
+            "the export did not finish: {read}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    let (status, file) = http(
+        server.api,
+        "GET",
+        ready["download_path"].as_str().unwrap(),
+        &[("cookie", cookie.as_str())],
+        b"",
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&file));
+    let checksum: String = Sha256::digest(&file)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(ready["checksum"], checksum.as_str());
+    assert_eq!(ready["bytes"], file.len());
+    let lines: Vec<Value> = String::from_utf8(file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "the root and its child");
+    assert_eq!(ready["spans"], 2);
+    for line in &lines {
+        assert_eq!(line["schema"], "crucible.span/1");
+        assert_eq!(line["span"]["trace_id"], trace.trace_id.as_str());
+        assert_eq!(line["span"]["project_id"], project_id.as_str());
+    }
+    let followed = reader.mcp("get_export", json!({ "id": export_id }));
+    assert_eq!(
+        followed["structuredContent"]["state"], "ready",
+        "{followed}"
+    );
+    let written = Command::new(&binary)
+        .args(["export", "--format", "otlp-json", "--project", &project_id])
+        .args(["--from", &from.to_string(), "--to", &to.to_string()])
+        .args(["--trace-id", &trace.trace_id])
+        .args(["--postgres-url", &postgres_url])
+        .args(["--clickhouse-url", &rig.clickhouse_url])
+        .args(["--clickhouse-user", &rig.admin.user])
+        .arg("--clickhouse-password-file")
+        .arg(dir.join("clickhouse-password"))
+        .arg("--master-key-file")
+        .arg(dir.join("master-key"))
+        .env_remove("CRUCIBLE_POSTGRES_URL")
+        .output()
+        .unwrap();
+    assert!(
+        written.status.success(),
+        "{}",
+        String::from_utf8_lossy(&written.stderr)
+    );
+    let documents: Vec<Value> = String::from_utf8(written.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(documents.len(), 2);
+    for document in &documents {
+        let spans = &document["resourceSpans"][0]["scopeSpans"][0]["spans"];
+        assert_eq!(spans.as_array().map(Vec::len), Some(1));
+        assert_eq!(spans[0]["traceId"], trace.trace_id.as_str());
+    }
+
+    // 8. Revoking the key stops it at once; signing out ends the session.
     let key_id = created["key"]["id"].as_str().unwrap();
     let etag = format!("\"{}\"", created["key"]["version"]);
     let (status, _, body) = {

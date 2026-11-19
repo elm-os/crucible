@@ -4,9 +4,12 @@
 //! arguments and its output (both deriving `JsonSchema`, which become the tool's input and output schemas), and
 //! the call. It reads through the query services with the call's [`Call::ctx`], checks its arguments with
 //! [`Check`], keeps its result under the cap with `shape::fit`, and continues cut results with `cursor`. It is
-//! registered here with its `mod` line and one entry in [`TOOLS`]. Every tool is read-only.
+//! registered here with its `mod` line and one entry in [`TOOLS`]. Every tool is read-only except
+//! `create_export`, which starts an export job.
 
+mod create_export;
 mod get_data_bounds;
+mod get_export;
 mod get_span_children;
 mod get_span_payload;
 mod get_trace;
@@ -17,8 +20,9 @@ use std::future::Future;
 
 use crucible_api::ProjectSettings;
 use crucible_api_types::{FieldError, ProblemCode};
+use crucible_export::Exports;
 use crucible_query::{QueryService, ReadContext};
-use crucible_records::{RequestId, SpanId, TimeWindow, Timestamp, TraceId};
+use crucible_records::{ApiKeyId, RequestId, SpanId, TimeWindow, Timestamp, TraceId};
 use futures::future::BoxFuture;
 use rmcp::handler::server::tool::{schema_for_input, schema_for_output};
 use rmcp::model::{JsonObject, ToolAnnotations};
@@ -32,7 +36,9 @@ use crate::error::{ToolError, field_error};
 
 /// Every tool, sorted by name. A tool registers with one entry at its sorted place.
 pub(crate) const TOOLS: &[Entry] = &[
+    entry::<create_export::CreateExport>(),
     entry::<get_data_bounds::GetDataBounds>(),
+    entry::<get_export::GetExport>(),
     entry::<get_span_children::GetSpanChildren>(),
     entry::<get_span_payload::GetSpanPayload>(),
     entry::<get_trace::GetTrace>(),
@@ -40,10 +46,12 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<search_spans::SearchSpans>(),
 ];
 
-/// One read-only tool.
+/// One tool.
 pub(crate) trait Tool {
     /// The tool's name.
     const NAME: &'static str;
+    /// Whether the tool only reads. A tool that starts work says so in its annotations.
+    const READ_ONLY: bool = true;
     /// What the tool does, for the agent: what it returns, its caps, and how to continue a cut result.
     const DESCRIPTION: &'static str;
     /// The arguments. Unknown arguments are refused, so the type denies unknown fields.
@@ -67,6 +75,10 @@ pub(crate) struct Call<'a> {
     pub(crate) settings: ProjectSettings,
     pub(crate) service: &'a QueryService,
     pub(crate) cursors: Cursors<'a>,
+    /// Exports, with a control plane.
+    pub(crate) exports: Option<&'a Exports>,
+    /// The key the call comes from.
+    pub(crate) key: ApiKeyId,
 }
 
 /// A registered tool, its types erased.
@@ -114,9 +126,9 @@ fn definition<T: Tool>() -> rmcp::model::Tool {
         .with_raw_output_schema(schema_for_output::<T::Output>())
         .with_annotations(
             ToolAnnotations::new()
-                .read_only(true)
+                .read_only(T::READ_ONLY)
                 .destructive(false)
-                .idempotent(true)
+                .idempotent(T::READ_ONLY)
                 .open_world(false),
         )
 }
@@ -264,7 +276,11 @@ mod tests {
             let output = tool.output_schema.unwrap();
             assert_eq!(output["type"], "object", "{}", entry.name);
             let annotations = tool.annotations.unwrap();
-            assert_eq!(annotations.read_only_hint, Some(true));
+            // Every tool reads; create_export alone starts work (an export job).
+            assert_eq!(
+                annotations.read_only_hint,
+                Some(entry.name != "create_export")
+            );
             assert!(find(entry.name).is_some());
         }
         assert!(find("drop_project").is_none());

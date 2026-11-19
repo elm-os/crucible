@@ -26,6 +26,7 @@ use crucible_auth::service::{Identity, SessionPrincipal, SessionVerdict};
 use crucible_auth::{KeyGrant, KeyVerdict, KeyVerifier, Scopes, csrf};
 use crucible_cursor::KeyRing;
 use crucible_env::Env;
+use crucible_export::Exports;
 use crucible_plan::Caller;
 use crucible_query::{QueryService, ReadContext};
 use crucible_records::{AuthorKind, ProjectId, ProjectScope, RequestId};
@@ -57,6 +58,8 @@ pub(crate) struct ApiState {
     pub(crate) idempotency: Arc<Keys>,
     /// The SQL workspace; `None` when it is not configured.
     pub(crate) sql: Option<SqlWorkspace>,
+    /// Exports; `None` without a control plane, which holds them.
+    pub(crate) exports: Option<Exports>,
 }
 
 impl ApiState {
@@ -264,6 +267,8 @@ permissions! {
     RunSql => RunSql,
     /// Run a project-visible saved query with its declared parameters.
     RunSavedQuery => RunSavedQuery,
+    /// Create exports.
+    CreateExports => Export,
 }
 
 /// A request authorized for permission `P` on the project of its path (contract 11.6).
