@@ -199,11 +199,60 @@ A failing run prints its replay command and the line to append to the corpus; `-
 
 ## Continuous integration
 
-`.github/workflows/sim.yml`:
+`.github/workflows/sim.yml` has three lanes. Each runs the corpus first (the realistic lanes its realistic lines,
+the stress lane every line, each line in the tier it records), then fresh configurations that start at the
+workflow run id, so each run explores configurations no earlier run has seen.
 
-- every pull request runs the corpus and 200 fresh configurations with 3 seeds each in the realistic tier, split
-  over 4 shards. The fresh configurations start at the workflow run id;
-- a nightly job runs 5,000 fresh configurations in the stress tier, split the same way.
+| Lane | When | Fresh runs | Shards | A failed run |
+|---|---|---|---|---|
+| `swarm` | Every pull request | 200 configurations with 3 seeds each, realistic tier | 4 | Fails the check |
+| `nightly realistic` | Every night (02:41 UTC) | 3,400 configurations with 3 seeds each (10,200 runs), realistic tier | 16 | Is filed and fails the workflow |
+| `nightly stress` | Every night (02:41 UTC) | 5,000 configurations with 1 seed each, stress tier | 4 | Is filed and does not fail the workflow |
+
+With 3,400 configurations, any 9 chosen dimensions are all on in at least one of them with probability 99.87%,
+and any 10 with 96.4%.
+
+Each nightly shard writes its run log with `--out` and uploads it as the artifact `sim-log-<lane>-<shard>`. A
+stress shard passes when the runner exits with 1 (some runs failed); any other exit code fails it. Then the job
+`nightly report` (`tools/sim-nightly/report.py`):
+
+- writes its job summary: for each lane the shard logs, the runs, the fresh runs, the passes, the failures and
+  the expected losses, then every failed run with its invariant, tier, replay command and corpus line, under one
+  heading per tier. A run keeps its own tier, so a realistic corpus line that fails in the stress lane is a
+  realistic-tier failure. A shard without a log is listed too: one of its runs did not finish before the job
+  timeout, or the job failed before its runs;
+- uploads every failure as the artifact `sim-failures` (the summary and the issue list as many as their size
+  limits hold);
+- when a run failed, opens the issue `nightly simulation: <date>` (the UTC date, label `sim-nightly`) or, when
+  that issue is open already, comments with the failures it does not list yet;
+- fails when a realistic-tier run failed, when a shard wrote no log, or when a lane ran fewer fresh runs than its
+  budget. Stress-tier failures never fail it.
+
+By hand, any lane runs on any ref: `gh workflow run sim.yml --ref <branch> -f lane=<lane>`, with `pull-request`
+(the default), `nightly` (both nightly lanes and the report, as the schedule runs them), `nightly-realistic` or
+`nightly-stress`. A nightly lane run by hand files to the same issue, which names the ref and commit of each run.
 
 Measured in the dev container on 3 CPUs with a debug build: the 600 runs of the pull-request budget take about
 70 s, so one shard of 150 runs and the corpus stays far inside the 10 minute target, most of which is the build.
+Measured on GitHub-hosted runners with a debug build (run 44408176506, both nightly lanes): a realistic shard of
+638 or 639 runs took 2.6 to 4.7 minutes (the runs 117 to 226 s, the build 14 to 122 s), inside its 30 minute
+timeout, and a stress shard of 1,255 or 1,256 runs took 6.5 to 10.6 minutes (the runs 242 to 548 s), inside its
+150 minutes.
+
+## Triaging a nightly failure
+
+The issue, or the summary of the run, gives each failure's invariant, tier, replay command and corpus line, and
+the commit the run used. A replay is bit-exact on the same commit with the same lockfile.
+
+1. Replay it in the dev container, on that commit and then on `origin/main`. The replay command prints the
+   violations, the dimensions and the statistics of the run. On the same commit it must give the same outcome and
+   trace hash; if it does not, the defect is nondeterminism (I14).
+2. If it fails on `origin/main`, fix it in a pull request that also appends the corpus line to
+   `sim/corpus/seeds.jsonl`, with the note changed to `failed: <what it found>`, so that every later pull request
+   runs it. Close the issue when that pull request merges.
+3. If it passes on `origin/main`, a later commit fixed it or moved it: a change to the workload, the fault model or
+   the product changes what a seed does. Replaying on the commits in between tells which.
+4. For a shard without a log, rerun its failed job. The run id fixes the runs of the shard, so another timeout
+   means a run that does not finish; a pass means the runner failed.
+5. A stress-tier failure takes the same steps. The stress tier is outside the realism envelope, so its failures
+   are filed and go into the corpus, but they block nothing.
