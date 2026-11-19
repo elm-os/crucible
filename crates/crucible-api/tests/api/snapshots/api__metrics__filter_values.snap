@@ -1,0 +1,23 @@
+---
+source: crates/crucible-api/tests/api/metrics.rs
+expression: reply.pretty()
+---
+{
+  "data": [
+    {
+      "count": 8,
+      "value": "prod"
+    },
+    {
+      "count": 2,
+      "value": "dev"
+    }
+  ],
+  "meta": {
+    "as_of": "2026-11-17T09:30:00.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "saturated": false,
+  "truncated": true
+}

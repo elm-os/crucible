@@ -3,6 +3,7 @@ import type { HeadKind } from "./HeadKind";
 import type { Level } from "./Level";
 import type { SafeU64 } from "./SafeU64";
 import type { StatusCode } from "./StatusCode";
+import type { TraceFacts } from "./TraceFacts";
 
 /**
  * One trace of the list: its head (the root span, or the earliest span while the root has not arrived) and
@@ -82,9 +83,14 @@ environment: string,
  */
 release: string, 
 /**
- * The trace tags; empty until the store serves the head.
+ * The effective trace tags: the head's tags, which are empty until the store serves the head, plus the
+ * tags added by edits, minus the removed ones.
  */
 tags: Array<string>, 
+/**
+ * The trace's facts. Scores carry no comment or metadata here, and there is no correction.
+ */
+facts: TraceFacts, 
 /**
  * Whether a count above saturated at 2^53 - 1.
  */

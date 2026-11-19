@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render.rs
+expression: rendered(&live(plan))
+---
+SELECT level, sum(count) AS m0 FROM crucible.span_metrics WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} GROUP BY level ORDER BY m0 DESC, level ASC LIMIT {p3:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1794911400"
+p3: UInt64 = "21"

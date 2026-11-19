@@ -699,6 +699,7 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-ingest",
+ "crucible-jobs",
  "crucible-loadgen",
  "crucible-mcp-server",
  "crucible-normalize",
@@ -769,8 +770,10 @@ dependencies = [
  "http-body-util",
  "insta",
  "proptest",
+ "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2",
  "tower",
  "tracing",
  "utoipa",
@@ -1015,6 +1018,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-jobs"
+version = "0.0.0"
+dependencies = [
+ "crucible-control",
+ "crucible-env",
+ "crucible-records",
+ "futures",
+ "proptest",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "crucible-loadgen"
 version = "0.0.0"
 dependencies = [
@@ -1246,6 +1262,7 @@ dependencies = [
  "crucible-env",
  "crucible-env-prod",
  "crucible-ingest",
+ "crucible-jobs",
  "crucible-normalize",
  "crucible-otlp",
  "crucible-plan",
@@ -4739,6 +4756,10 @@ dependencies = [
  "crucible-api-types",
  "crucible-sim",
  "flate2",
+ "getrandom 0.4.3",
+ "proptest",
+ "serde",
+ "serde_json",
  "ts-rs",
 ]
 
