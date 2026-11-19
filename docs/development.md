@@ -107,6 +107,7 @@ ships them. The API answers 503 as described above.
 | `--master-key-file` | `CRUCIBLE_MASTER_KEY_FILE` | A file with the master key, 64 hexadecimal characters. Without it the key is read from `CRUCIBLE_MASTER_KEY` |
 | `--migrate` | | Apply the schema and create the service identities before the startup checks |
 | `--recent-max-bytes` | `CRUCIBLE_RECENT_MAX_BYTES` | Memory bound of the recent-span index; default 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), or of RAM without one, at most 1 GiB |
+| | `CRUCIBLE_CPU_PERMITS` | The CPU budget: blocking jobs (inflate, scan, compression) that run at once; default one per CPU the process may use, which counts its CPU affinity and cgroup quota. The runtime keeps 8 blocking threads more for disk reads and name lookups |
 
 Secrets have no flag that takes the value itself, so they never appear in a process list.
 

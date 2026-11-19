@@ -227,8 +227,7 @@ async fn ingest_prepare_jobs_never_exceed_their_permits() {
 
     // A gzip body always takes the blocking path.
     let request = Req::protobuf(&spans(20, 1_024, now_nanos(&prod))).gzip();
-    let replies =
-        futures::future::join_all((0..16).map(|_| send(&router, request.clone()))).await;
+    let replies = futures::future::join_all((0..16).map(|_| send(&router, request.clone()))).await;
     for reply in &replies {
         assert_eq!(reply.status, StatusCode::OK, "{reply:?}");
     }

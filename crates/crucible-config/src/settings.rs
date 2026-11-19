@@ -85,6 +85,13 @@ pub const SETTINGS: &[Setting] = &[
          else of RAM, at most 1 GiB)",
     ),
     plain(
+        "cpu.permits",
+        None,
+        "blocking jobs (inflate, scan, compression) that run at once, shared out between the stages that run \
+         them; the runtime keeps 8 threads more for disk reads and name lookups (default: the CPUs the process may \
+         use)",
+    ),
+    plain(
         "mcp.calls_per_second",
         Some("50"),
         "MCP tool calls one key may make per second, sustained; 0 turns the limit off",

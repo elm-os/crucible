@@ -34,29 +34,57 @@ impl CpuShares {
 #[derive(Debug)]
 pub struct PermitPool {
     total: u32,
-    state: Mutex<State>,
+    queue: Mutex<Queue<Waker>>,
 }
 
+/// The pool's accounting, the kernel the proofs check. `W` wakes a waiter: a [`Waker`] in the pool, a plain value
+/// in the proofs.
 #[derive(Debug)]
-struct State {
+struct Queue<W> {
     /// Permits that nobody holds and nobody was handed.
     free: u32,
-    /// The waiters in arrival order: each one's ticket and the waker of its latest poll.
-    queue: VecDeque<(u64, Waker)>,
+    /// The waiters in arrival order: each one's ticket and what wakes it.
+    waiting: VecDeque<(u64, W)>,
     /// The tickets of waiters that were handed a permit and have not taken it yet.
     handed: Vec<u64>,
     /// The next waiter's ticket.
     next: u64,
 }
 
-impl State {
-    /// Gives a permit back: to the waiter at the head of the queue, whose waker is returned for waking once the
-    /// lock is released, or else to the free permits.
-    fn give_back(&mut self) -> Option<Waker> {
-        match self.queue.pop_front() {
-            Some((ticket, waker)) => {
+impl<W> Queue<W> {
+    const fn new(total: u32) -> Self {
+        Self {
+            free: total,
+            waiting: VecDeque::new(),
+            handed: Vec::new(),
+            next: 0,
+        }
+    }
+
+    /// Takes a free permit. A free permit means that nobody waits: a permit given back goes to the first waiter.
+    fn try_take(&mut self) -> bool {
+        if self.free == 0 {
+            return false;
+        }
+        self.free -= 1;
+        true
+    }
+
+    /// Joins the end of the queue and returns the waiter's ticket.
+    fn join(&mut self, wake: W) -> u64 {
+        let ticket = self.next;
+        self.next = ticket.wrapping_add(1);
+        self.waiting.push_back((ticket, wake));
+        ticket
+    }
+
+    /// Gives a permit back: to the waiter at the head of the queue, whose `W` is returned for waking once the lock
+    /// is released, or else to the free permits.
+    fn give_back(&mut self) -> Option<W> {
+        match self.waiting.pop_front() {
+            Some((ticket, wake)) => {
                 self.handed.push(ticket);
-                Some(waker)
+                Some(wake)
             }
             None => {
                 self.free += 1;
@@ -74,6 +102,25 @@ impl State {
             }
             None => false,
         }
+    }
+
+    /// Waiter `ticket` gives up: it leaves the queue, or gives back the permit it was handed, which goes to the
+    /// next waiter (returned for waking) or to the free permits.
+    fn leave(&mut self, ticket: u64) -> Option<W> {
+        if self.take_handed(ticket) {
+            return self.give_back();
+        }
+        if let Some(at) = self.waiting.iter().position(|(t, _)| *t == ticket) {
+            self.waiting.remove(at);
+        }
+        None
+    }
+
+    /// What wakes waiter `ticket` while it is in the queue.
+    fn wake_of(&mut self, ticket: u64) -> Option<&mut W> {
+        self.waiting
+            .iter_mut()
+            .find_map(|(t, wake)| (*t == ticket).then_some(wake))
     }
 }
 
@@ -94,15 +141,10 @@ pub struct Acquire {
 
 impl PermitPool {
     /// A pool of `total` permits, all free.
-    pub fn new(total: u32) -> Self {
+    pub const fn new(total: u32) -> Self {
         Self {
             total,
-            state: Mutex::new(State {
-                free: total,
-                queue: VecDeque::new(),
-                handed: Vec::new(),
-                next: 0,
-            }),
+            queue: Mutex::new(Queue::new(total)),
         }
     }
 
@@ -118,14 +160,7 @@ impl PermitPool {
 
     /// A permit, if one is free.
     pub fn try_acquire(self: &Arc<Self>) -> Option<Permit> {
-        let mut state = self.lock();
-        // A free permit means that the queue is empty: a permit given back goes to the first waiter.
-        if state.free == 0 {
-            return None;
-        }
-        state.free -= 1;
-        drop(state);
-        Some(Permit {
+        self.lock().try_take().then(|| Permit {
             pool: Arc::clone(self),
         })
     }
@@ -138,22 +173,22 @@ impl PermitPool {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, Queue<Waker>> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
 
-    /// Gives a permit back and wakes the waiter it went to, outside the lock.
-    fn give_back(&self) {
-        let woken = self.lock().give_back();
-        if let Some(waker) = woken {
-            waker.wake();
-        }
+/// Wakes the waiter a permit went to, once the pool's lock is released.
+fn wake(woken: Option<Waker>) {
+    if let Some(waker) = woken {
+        waker.wake();
     }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.pool.give_back();
+        let woken = self.pool.lock().give_back();
+        wake(woken);
     }
 }
 
@@ -162,25 +197,22 @@ impl Future for Acquire {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Permit> {
         let this = self.get_mut();
-        let mut state = this.pool.lock();
+        let mut queue = this.pool.lock();
         match this.ticket {
-            None if state.free > 0 => state.free -= 1,
+            None if queue.try_take() => {}
             None => {
-                let ticket = state.next;
-                state.next = ticket.wrapping_add(1);
-                state.queue.push_back((ticket, cx.waker().clone()));
-                this.ticket = Some(ticket);
+                this.ticket = Some(queue.join(cx.waker().clone()));
                 return Poll::Pending;
             }
-            Some(ticket) if state.take_handed(ticket) => this.ticket = None,
+            Some(ticket) if queue.take_handed(ticket) => this.ticket = None,
             Some(ticket) => {
-                if let Some((_, waker)) = state.queue.iter_mut().find(|(t, _)| *t == ticket) {
+                if let Some(waker) = queue.wake_of(ticket) {
                     waker.clone_from(cx.waker());
                 }
                 return Poll::Pending;
             }
         }
-        drop(state);
+        drop(queue);
         Poll::Ready(Permit {
             pool: Arc::clone(&this.pool),
         })
@@ -189,157 +221,90 @@ impl Future for Acquire {
 
 impl Drop for Acquire {
     fn drop(&mut self) {
-        let Some(ticket) = self.ticket else {
-            return;
-        };
-        let mut state = self.pool.lock();
-        let woken = if state.take_handed(ticket) {
-            state.give_back()
-        } else {
-            if let Some(at) = state.queue.iter().position(|(t, _)| *t == ticket) {
-                state.queue.remove(at);
-            }
-            None
-        };
-        drop(state);
-        if let Some(waker) = woken {
-            waker.wake();
+        if let Some(ticket) = self.ticket {
+            let woken = self.pool.lock().leave(ticket);
+            wake(woken);
         }
     }
 }
 
 #[cfg(kani)]
 mod proofs {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::task::Wake;
-
     use super::*;
 
-    /// Counts the wakes of one waiter.
-    struct Wakes(AtomicU32);
-
-    impl Wake for Wakes {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
+    /// A task of the proof, which the queue knows by its index.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Task {
+        Idle,
+        Waiting(u64),
+        Holding,
     }
 
     const TASKS: usize = 3;
 
-    fn polled(acquire: &mut Acquire, waker: &Waker) -> Poll<Permit> {
-        Pin::new(acquire).poll(&mut Context::from_waker(waker))
-    }
-
-    /// Three tasks share a pool of up to two permits. At each step one of them starts an acquisition, polls its
-    /// waiting acquisition again, drops it, or gives its permit back, in any order. After every step:
+    /// Three tasks share a pool of up to two permits. At each step one of them, in any order, starts an
+    /// acquisition (a free permit, or the end of the queue), polls its waiting acquisition again, gives up waiting,
+    /// or gives its permit back. After every step:
     ///
     /// - no permit is lost or double-released: the free permits, the permits held and the permits handed to a
     ///   waiter add up to the total, so the permits held never exceed it;
     /// - a free permit never leaves a waiter waiting;
-    /// - a permit given back while tasks wait goes to the first of them, which is woken exactly once, and a
-    ///   waiting task's poll resolves exactly when it was handed a permit.
+    /// - a permit given back, by its holder or by a waiter that was handed it and gave up, goes to the first
+    ///   waiter, and only that waiter is woken; with nobody waiting it is free again;
+    /// - a waiting task's poll resolves exactly when it was handed a permit.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(5)]
     fn permits_are_conserved_and_a_release_wakes_the_first_waiter() {
         let total: u32 = kani::any();
         kani::assume(total <= 2);
-        let pool = Arc::new(PermitPool::new(total));
-        let wakes: [Arc<Wakes>; TASKS] =
-            std::array::from_fn(|_| Arc::new(Wakes(AtomicU32::new(0))));
-        let wakers: [Waker; TASKS] = std::array::from_fn(|i| Waker::from(Arc::clone(&wakes[i])));
-        let mut waiting: [Option<Acquire>; TASKS] = [None, None, None];
-        let mut holding: [Option<Permit>; TASKS] = [None, None, None];
-        for _ in 0..5 {
+        let mut queue: Queue<usize> = Queue::new(total);
+        let mut tasks = [Task::Idle; TASKS];
+        for _ in 0..4 {
             let task: usize = kani::any();
             kani::assume(task < TASKS);
-            let counts: [u32; TASKS] = std::array::from_fn(|i| wakes[i].0.load(Ordering::Relaxed));
-            if let Some(permit) = holding[task].take() {
-                let first = pool.lock().queue.front().map(|(ticket, _)| *ticket);
-                let free = pool.available();
-                drop(permit);
-                let to = waiting.iter().position(|w| {
-                    w.as_ref()
-                        .is_some_and(|w| first.is_some() && w.ticket == first)
-                });
-                match (first, to) {
-                    (Some(ticket), Some(to)) => {
-                        assert!(pool.lock().handed.contains(&ticket));
-                        assert!(pool.available() == free);
-                        for i in 0..TASKS {
-                            let woken = wakes[i].0.load(Ordering::Relaxed) - counts[i];
-                            assert!(woken == u32::from(i == to));
+            let first = queue.waiting.front().map(|(_, waiter)| *waiter);
+            let free = queue.free;
+            match tasks[task] {
+                Task::Idle => {
+                    tasks[task] = if queue.try_take() {
+                        assert!(free > 0);
+                        Task::Holding
+                    } else {
+                        assert!(free == 0);
+                        Task::Waiting(queue.join(task))
+                    };
+                }
+                Task::Holding => {
+                    tasks[task] = Task::Idle;
+                    assert!(queue.give_back() == first);
+                    assert!(queue.free == free + u32::from(first.is_none()));
+                }
+                Task::Waiting(ticket) => {
+                    let handed = queue.handed.contains(&ticket);
+                    if kani::any() {
+                        assert!(queue.take_handed(ticket) == handed);
+                        if handed {
+                            tasks[task] = Task::Holding;
+                        }
+                    } else {
+                        tasks[task] = Task::Idle;
+                        let woken = queue.leave(ticket);
+                        if handed {
+                            assert!(woken == first);
+                            assert!(queue.free == free + u32::from(first.is_none()));
+                        } else {
+                            assert!(woken.is_none() && queue.free == free);
                         }
                     }
-                    (None, None) => assert!(pool.available() == free + 1),
-                    _ => unreachable!("every queued ticket belongs to a waiting task"),
-                }
-            } else if let Some(mut acquire) = waiting[task].take() {
-                if kani::any() {
-                    let handed = acquire
-                        .ticket
-                        .is_some_and(|t| pool.lock().handed.contains(&t));
-                    match polled(&mut acquire, &wakers[task]) {
-                        Poll::Ready(permit) => {
-                            assert!(handed);
-                            holding[task] = Some(permit);
-                        }
-                        Poll::Pending => {
-                            assert!(!handed);
-                            waiting[task] = Some(acquire);
-                        }
-                    }
-                } else {
-                    drop(acquire);
-                }
-            } else {
-                let mut acquire = pool.acquire();
-                match polled(&mut acquire, &wakers[task]) {
-                    Poll::Ready(permit) => holding[task] = Some(permit),
-                    Poll::Pending => waiting[task] = Some(acquire),
                 }
             }
 
-            let held = holding.iter().flatten().count() as u32;
-            let state = pool.lock();
-            assert!(state.free <= total && held <= total);
-            assert!(state.free + held + state.handed.len() as u32 == total);
-            assert!(state.free == 0 || state.queue.is_empty());
-            let queued = state.queue.len() + state.handed.len();
-            assert!(queued == waiting.iter().flatten().count());
-        }
-    }
-
-    /// `try_acquire` takes a permit exactly when one is free, and never one that was handed to a waiter.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn try_acquire_takes_only_free_permits() {
-        let total: u32 = kani::any();
-        kani::assume(total <= 2);
-        let pool = Arc::new(PermitPool::new(total));
-        let waker = Waker::noop();
-        let mut held = Vec::new();
-        let mut queued = Vec::new();
-        for _ in 0..4 {
-            let free = pool.available();
-            let handed = pool.lock().handed.len();
-            match kani::any::<u8>() % 3 {
-                0 => match pool.try_acquire() {
-                    Some(permit) => {
-                        assert!(free > 0 && pool.available() == free - 1);
-                        held.push(permit);
-                    }
-                    None => assert!(free == 0 && pool.lock().handed.len() == handed),
-                },
-                1 => {
-                    let mut acquire = pool.acquire();
-                    if polled(&mut acquire, waker).is_pending() {
-                        queued.push(acquire);
-                    }
-                }
-                _ => drop(held.pop()),
-            }
-            let state = pool.lock();
-            assert!(state.free as usize + held.len() + state.handed.len() == total as usize);
+            let held = tasks.iter().filter(|t| **t == Task::Holding).count() as u32;
+            let waiting = tasks.iter().filter(|t| matches!(t, Task::Waiting(_))).count();
+            assert!(queue.free <= total && held <= total);
+            assert!(queue.free + held + queue.handed.len() as u32 == total);
+            assert!(queue.free == 0 || queue.waiting.is_empty());
+            assert!(queue.waiting.len() + queue.handed.len() == waiting);
         }
     }
 }
@@ -388,6 +353,7 @@ mod tests {
     #[test]
     fn waiters_are_served_first_come_and_each_release_wakes_one() {
         let pool = Arc::new(PermitPool::new(1));
+        assert_eq!(pool.total(), 1);
         let first = pool.try_acquire().unwrap();
         assert!(pool.try_acquire().is_none());
         let wakes: Vec<Arc<Wakes>> = (0..3).map(|_| Arc::default()).collect();

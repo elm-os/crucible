@@ -10,10 +10,10 @@ use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, USER_AGENT};
 use axum::response::Response;
 use axum::routing::post;
-use crucible_admission::{BucketConfig, UNAVAILABLE_MIN_S};
+use crucible_admission::{BucketConfig, PermitPool, UNAVAILABLE_MIN_S};
 use crucible_auth::{KeyPrincipal, KeyVerifier, Refusal};
 use crucible_env::metrics::registry;
-use crucible_env::{Counter, Env};
+use crucible_env::{Counter, Env, Histogram};
 use crucible_otlp::{JsonError, PartialSuccess, ScanError, TraceRequest, transcode_json};
 use crucible_records::{ProjectId, Timestamp, truncate_str};
 use crucible_wal::{AppendError, Wal, WalConfig};
@@ -33,6 +33,16 @@ pub const DEFAULT_INFLIGHT_BYTES: u64 = 512 << 20;
 
 /// Default `ingest.max_event_age` (contract 1.2).
 pub const DEFAULT_MAX_EVENT_AGE: Duration = Duration::from_secs(400 * 24 * 60 * 60);
+
+/// Default ingest-prepare share of the CPU budget (default; revisit). The binary sets the share from `cpu.permits`,
+/// whose default it computes from the CPUs the process may use: product code never reads the core count.
+pub const DEFAULT_PREPARE_PERMITS: u32 = 4;
+
+/// The largest uncompressed body that is prepared on the async worker instead of in a blocking job. Up to this
+/// size preparing costs about as much as the hop to a blocking thread and its way back, so the hop would only add
+/// latency and a thread wake-up, and the worker stays responsive (`benches/prepare.rs` measures both). A gzip body
+/// always takes the hop: its inflated size is unknown until it is inflated.
+const INLINE_PREPARE_MAX_BYTES: usize = 16 << 10;
 
 /// Settings of the ingest path.
 /// A seeded defect for the simulation suite, which must catch it.
@@ -79,6 +89,10 @@ pub struct IngestConfig {
     pub max_event_age: Duration,
     /// `wal.compression` for the frames that ingest prepares.
     pub compression: Compression,
+    /// The ingest-prepare share of the CPU budget (`cpu.permits`): the most blocking jobs that inflate, transcode,
+    /// scan and compress request bodies at once. A request beyond it waits for a permit, first come, first
+    /// served, on its async task, so it holds no thread while it waits.
+    pub prepare_permits: u32,
     /// `ingest.project_bytes_per_s` and its burst: the per-project token bucket of contract 4.8, in request
     /// bytes as received (and fact payload bytes). The default is `None`: ingest is not rate-limited and
     /// backpressure governs (contract 11.9). An operator who sets a rate should keep the burst at or above the
@@ -107,6 +121,7 @@ impl Default for IngestConfig {
             inflight_bytes: DEFAULT_INFLIGHT_BYTES,
             max_event_age: DEFAULT_MAX_EVENT_AGE,
             compression: Compression::Lz4,
+            prepare_permits: DEFAULT_PREPARE_PERMITS,
             project_rate: None,
             compat_routes: Vec::new(),
             routing_headers: Vec::new(),
@@ -126,6 +141,8 @@ pub(crate) struct Inner {
     pub(crate) env: Env,
     keys: Arc<dyn KeyVerifier>,
     pub(crate) admission: Arc<Admission>,
+    /// The CPU budget's ingest-prepare share.
+    permits: Arc<PermitPool>,
     max_event_age_micros: i64,
     pub(crate) compression: Compression,
     acks_before_append: bool,
@@ -139,12 +156,18 @@ pub(crate) struct Inner {
 /// [`PartialSuccess::by_reason`] after `accepted`.
 const SPAN_OUTCOMES: [&str; 4] = ["accepted", "missing_trace_id", "missing_span_id", "too_old"];
 
+/// The stage label of ingest's blocking preparations in the CPU budget's metrics.
+const PREPARE_STAGE: &str = "ingest_prepare";
+
 #[derive(Debug)]
 pub(crate) struct Metrics {
     accepted: Counter,
     partial: Counter,
     refused: [Counter; Reject::OUTCOMES.len()],
     spans: [Counter; SPAN_OUTCOMES.len()],
+    /// How long a blocking preparation waited for its permit, and how long it held it.
+    permit_wait: Histogram,
+    permit_hold: Histogram,
 }
 
 impl Metrics {
@@ -156,6 +179,8 @@ impl Metrics {
             partial: requests("partial"),
             refused: Reject::OUTCOMES.map(requests),
             spans: SPAN_OUTCOMES.map(|outcome| m.counter(&registry::INGEST_SPANS, &[outcome])),
+            permit_wait: m.histogram(&registry::CPU_PERMIT_WAIT, &[PREPARE_STAGE]),
+            permit_hold: m.histogram(&registry::CPU_PERMIT_HOLD, &[PREPARE_STAGE]),
         }
     }
 
@@ -278,6 +303,11 @@ fn rejected_bitmap(request: &TraceRequest<'_>) -> Vec<u8> {
     bitmap
 }
 
+/// Whole microseconds, saturating.
+fn micros(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
 fn json_reject(e: JsonError) -> Reject {
     match e {
         JsonError::BodyTooLarge { .. } => Reject::TooLarge(e.to_string()),
@@ -318,6 +348,7 @@ impl Ingest {
                 env: env.clone(),
                 keys,
                 admission: Arc::new(admission),
+                permits: Arc::new(PermitPool::new(config.prepare_permits.max(1))),
                 max_event_age_micros: max_age,
                 compression: config.compression,
                 acks_before_append,
@@ -455,17 +486,14 @@ impl Inner {
         self.commit(job, held).await
     }
 
-    /// Decodes, scans and prepares the frame off the async threads; then appends it, and returns only once the
-    /// frame is durable.
+    /// Decodes, scans and prepares the frame, on the async worker for a small uncompressed body and otherwise in a
+    /// blocking job; then appends it, and returns only once the frame is durable.
     pub(crate) async fn commit(self: &Arc<Self>, job: Job, held: Held) -> Result<Acked, Reject> {
-        let inner = Arc::clone(self);
-        let mut task = self
-            .env
-            .spawn_blocking("ingest-prepare", move || inner.prepare(job, held));
-        let prepared = task.join().await.map_err(|_| Reject::Unavailable {
-            retry_after_s: UNAVAILABLE_MIN_S,
-            detail: "the server is shutting down",
-        })??;
+        let prepared = if !job.gzip && job.wire.len() <= INLINE_PREPARE_MAX_BYTES {
+            self.prepare(job, held)?
+        } else {
+            self.prepare_blocking(job, held).await?
+        };
 
         let Prepared { frame, acked, held } = prepared;
         let appended = self.admission.wal.append(frame);
@@ -476,6 +504,29 @@ impl Inner {
         }
         drop(held);
         Ok(acked)
+    }
+
+    /// Prepares the frame in a blocking job, which takes a permit of the CPU budget's ingest-prepare share before
+    /// it is spawned and gives it back when it ends. The wait for the permit and the time it is held are recorded.
+    async fn prepare_blocking(self: &Arc<Self>, job: Job, held: Held) -> Result<Prepared, Reject> {
+        let asked = self.env.clock.now();
+        let permit = self.permits.acquire().await;
+        let granted = self.env.clock.now();
+        self.metrics
+            .permit_wait
+            .record(micros(granted.saturating_duration_since(asked)));
+        let inner = Arc::clone(self);
+        let mut task = self.env.spawn_blocking("ingest-prepare", move || {
+            let prepared = inner.prepare(job, held);
+            let hold = inner.env.clock.now().saturating_duration_since(granted);
+            inner.metrics.permit_hold.record(micros(hold));
+            drop(permit);
+            prepared
+        });
+        task.join().await.map_err(|_| Reject::Unavailable {
+            retry_after_s: UNAVAILABLE_MIN_S,
+            detail: "the server is shutting down",
+        })?
     }
 
     /// Inflates, transcodes and scans the body, then builds the `IngestRequest` payload and its frame. The

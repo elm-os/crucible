@@ -186,10 +186,26 @@ fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBa
     }
 }
 
-fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+/// Blocking threads the runtime keeps beyond the CPU budget, for the blocking work that takes no permit: disk reads
+/// and name lookups.
+const BLOCKING_RESERVE: usize = 8;
+
+/// `cpu.permits`: the setting, or one permit per CPU this process may use (its affinity and its cgroup quota
+/// count). The binary is the one place that reads the core count.
+fn cpu_permits(config: &Config) -> u32 {
+    config.cpu_permits.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map_or(1, |cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX))
+    })
+}
+
+/// The runtime, whose blocking threads are the CPU budget's `cpu_permits` plus [`BLOCKING_RESERVE`].
+fn runtime(cpu_permits: u32) -> anyhow::Result<tokio::runtime::Runtime> {
+    let permits = usize::try_from(cpu_permits).unwrap_or(usize::MAX);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("crucible-worker")
+        .max_blocking_threads(permits.saturating_add(BLOCKING_RESERVE))
         .build()
         .context("starting the runtime")
 }
@@ -236,11 +252,12 @@ fn main() -> anyhow::Result<()> {
         Command::Proxy(args) => proxy::run(args),
         Command::Serve(args) => {
             let config = args.config.load_for_run()?;
-            runtime()?.block_on(serve::run(config, args.migrate))
+            let permits = cpu_permits(&config);
+            runtime(permits)?.block_on(serve::run(config, args.migrate, permits))
         }
         Command::Migrate(args) => {
             let config = args.load_for_run()?;
-            runtime()?.block_on(migrate(config))
+            runtime(cpu_permits(&config))?.block_on(migrate(config))
         }
         Command::Config { command } => {
             let (args, print) = match &command {
@@ -542,17 +559,26 @@ mod tests {
                 handle.await.unwrap();
             }
         });
-        let most = state.0.lock().unwrap().1;
-        most
+        state.0.lock().unwrap().1
     }
 
     #[test]
     fn the_server_runtime_caps_its_blocking_threads() {
         // Two permits and a reserve of eight threads: at most ten blocking jobs at once, out of 64 that could run.
-        let at_once = blocking_at_once(&runtime().unwrap(), 64);
+        let at_once = blocking_at_once(&runtime(2).unwrap(), 64);
         assert!(
             at_once <= 10,
             "{at_once} blocking jobs ran at once, above the ceiling of 10"
         );
+        assert_eq!(at_once, 2 + BLOCKING_RESERVE);
+    }
+
+    #[test]
+    fn the_cpu_budget_defaults_to_the_cpus_of_the_process() {
+        let unset = config(&["crucible", "serve"], &[]).unwrap();
+        let cpus = std::thread::available_parallelism().unwrap().get();
+        assert_eq!(cpu_permits(&unset), u32::try_from(cpus).unwrap());
+        let set = config(&["crucible", "serve"], &[("CRUCIBLE_CPU_PERMITS", "3")]).unwrap();
+        assert_eq!(cpu_permits(&set), 3);
     }
 }

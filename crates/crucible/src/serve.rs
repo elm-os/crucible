@@ -38,6 +38,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
+use crucible_admission::CpuShares;
 use crucible_api::StaticProjectSettings;
 use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyVerifier, StaticKeys};
@@ -292,9 +293,9 @@ struct App {
     gate: Arc<Gate>,
 }
 
-/// The ingest settings: the defaults, with the compat ingest routes and routing headers of the compat registry
-/// (contract 12.1).
-fn ingest_config() -> IngestConfig {
+/// The ingest settings: the defaults, with the CPU budget's ingest-prepare share and the compat ingest routes and
+/// routing headers of the compat registry (contract 12.1).
+fn ingest_config(prepare_permits: u32) -> IngestConfig {
     let compat_routes = crucible_compat::routes::INGEST_ROUTES
         .iter()
         .map(|route| CompatRoute {
@@ -311,20 +312,22 @@ fn ingest_config() -> IngestConfig {
         })
         .collect();
     IngestConfig {
+        prepare_permits,
         compat_routes,
         routing_headers,
         ..IngestConfig::default()
     }
 }
 
-/// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
-/// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
+/// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it with
+/// `ingest`. With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors.
 async fn open_app(
     env: &Env,
     keys: StaticKeys,
     cursors: Arc<KeyRing>,
     config: WalConfig,
     closed: Option<&str>,
+    ingest: IngestConfig,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -337,13 +340,7 @@ async fn open_app(
         "wal opened"
     );
     let keys: Arc<dyn KeyVerifier> = Arc::new(keys);
-    let ingest = Ingest::new(
-        env,
-        wal.clone(),
-        &config,
-        Arc::clone(&keys),
-        ingest_config(),
-    );
+    let ingest = Ingest::new(env, wal.clone(), &config, Arc::clone(&keys), ingest);
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),
         api: OnceLock::new(),
@@ -878,7 +875,9 @@ fn server_result(
     }
 }
 
-pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
+/// Serves until a termination signal. `cpu_permits` is the CPU budget, whose blocking threads `main` gave the
+/// runtime.
+pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyhow::Result<()> {
     let roots = [Root::Wal, Root::Quarantine, Root::Exports];
     let mut roots: BTreeMap<_, _> = roots
         .into_iter()
@@ -955,12 +954,15 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let closed = clickhouse
         .as_ref()
         .map(|_| "the telemetry store is starting");
+    let ingest = ingest_config(CpuShares::of(cpu_permits).ingest_prepare);
+    let inflight_bytes = ingest.inflight_bytes;
     let (app, report) = open_app(
         env,
         keys,
         Arc::clone(&cursors),
         WalConfig::default(),
         closed,
+        ingest,
     )
     .await?;
     let mode = if clickhouse.is_some() {
@@ -975,7 +977,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     // The budgets in use: the recent-span index and the shipper run only with a telemetry store.
     let ingest_budget = Budget {
         setting: "ingest.inflight_bytes",
-        bytes: ingest_config().inflight_bytes,
+        bytes: inflight_bytes,
         changed_by: None,
     };
     let budgets = if clickhouse.is_some() {
@@ -1045,6 +1047,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         job_tasks = jobs.tasks(),
         memory = ?memory,
         recent_max_bytes,
+        cpu_permits,
         "crucible is serving"
     );
 
@@ -1170,7 +1173,15 @@ mod tests {
             segment_bytes: 1 << 20,
             ..WalConfig::default()
         };
-        open_app(env, keys, cursors, config, None).await.unwrap().0
+        open_app(env, keys, cursors, config, None, test_ingest())
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// The ingest settings of a test server: the binary's, with the default ingest-prepare share.
+    fn test_ingest() -> IngestConfig {
+        ingest_config(crucible_ingest::DEFAULT_PREPARE_PERMITS)
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -2385,7 +2396,9 @@ mod tests {
             ..WalConfig::default()
         };
         let closed = Some("the telemetry store is starting");
-        let (app, _) = open_app(env, keys, cursors, config, closed).await.unwrap();
+        let (app, _) = open_app(env, keys, cursors, config, closed, test_ingest())
+            .await
+            .unwrap();
         let ui = Arc::new(Catalog::default());
         let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
             .await
