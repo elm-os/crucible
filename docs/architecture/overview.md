@@ -4,6 +4,38 @@ This page is the map. The binding details (records, WAL frames, the insert proto
 control plane) live in [`contracts.md`](contracts.md), and the reasons for the load-bearing choices in
 [`decisions.md`](decisions.md).
 
+## In brief
+
+Crucible is one program. It receives traces, saves each request to a log on its own disk before it answers, turns
+the spans into its own records, keeps the newest in memory so they can be read at once, and copies them to
+ClickHouse in batches that are never stored twice. The web UI, the REST API, the MCP server and exports read through
+one set of query services. Postgres holds everything that is not telemetry: the organization, users, keys, alert
+rules, dashboards and the state of background jobs.
+
+```mermaid
+flowchart TB
+    clients["SDKs, OpenTelemetry exporters and crucible proxy"]
+    ingest["Ingest: OTLP over HTTP and gRPC, within byte and CPU budgets"]
+    wal[("Write-ahead log on local disk: synced, then acknowledged")]
+    normalize["Normalizer: each span becomes a span record, and an MCP operation record when it is one"]
+    recent["Recent-span index, in memory"]
+    shipper["Shipper: one batch per table, each with a deduplication token"]
+    clickhouse[("ClickHouse: spans, payloads, MCP tables and rollups")]
+    query["Query services: bounded queries over ClickHouse and the index"]
+    postgres[("Postgres: organization, users, keys, alerts, dashboards, jobs")]
+    surfaces["Web UI, REST API, MCP server and exports"]
+
+    clients --> ingest --> wal --> normalize
+    normalize --> recent
+    normalize --> shipper --> clickhouse
+    clickhouse --> query
+    recent --> query
+    query --> surfaces
+    postgres <--> surfaces
+```
+
+The sections below follow that path, then the pieces around it.
+
 ## Shape
 
 Crucible is one Rust binary, `crucible`, with these roles:
@@ -22,6 +54,9 @@ server, 26.3 or newer. Without Postgres the server takes its project keys from a
 features.
 
 ## Write path
+
+From a request arriving to its spans being stored: the request is checked, saved and acknowledged, then its
+spans are turned into records, made readable from memory, and copied to ClickHouse.
 
 1. **Decode and admit.** A zero-copy scanner validates the OTLP payload (64 MiB per request including a 64 KiB
    envelope reserve, 50,000 spans per request). JSON is transcoded to protobuf. Byte budgets answer 429 or 503 with
@@ -45,6 +80,9 @@ the portable backend otherwise.
 
 ## Storage
 
+What ClickHouse holds and how: rows are written once, lists read narrow tables, and a point read opens the full
+payload.
+
 - **Immutable rows.** Spans are written once. Facts are separate append-only tables, resolved latest-wins in the Rust
   tier. No query uses `FINAL`.
 - **Two tiers.** `span_core` holds narrow columns and previews for lists and aggregates; `span_payload` holds full
@@ -57,6 +95,9 @@ the portable backend otherwise.
   forward-only steps recorded in a ledger in Postgres.
 
 ## Read path
+
+How the UI, the API, the MCP server and exports read telemetry: every read has a time and a memory limit, and the
+trace lists and trace pages also read the newest spans from memory.
 
 Every telemetry read is a typed query plan: a scope (project), a time window, a query class with resource limits,
 and a tree of nodes. The renderer turns plans into parameterized SQL, and the same plans run against an in-memory
