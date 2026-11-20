@@ -1,11 +1,12 @@
-//! `list_traces`: one page of the trace list (contract 8.7), newest first, with previews of each head span.
+//! `list_traces`: one page of the trace list (contract 8.7), newest first, with previews of each head span,
+//! under the filter of the REST trace list (contract 12.5).
 
-use crucible_plan::Filter;
 use crucible_query::{HeadKey, PageCursor, TraceListQuery};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ToolError;
+use crate::filters::ListFilter;
 use crate::shape::{Meta, TraceRow, fit, meta};
 use crate::tools::{Call, Check, Tool, check_window};
 
@@ -22,10 +23,15 @@ pub(crate) struct Args {
     from: String,
     /// The end of the window, RFC 3339 (exclusive). Required; at most the project's maximum window after `from`.
     to: String,
+    /// Keeps only the traces that match: the trace's head span is tested for its own fields, and
+    /// `observation_type` keeps the traces with a span of one of those types. `metadata` cannot be combined
+    /// with `observation_type` here.
+    #[serde(default)]
+    filter: Option<ListFilter>,
     /// Traces per page, from 1 to 50; 50 when absent.
     #[serde(default)]
     limit: Option<u32>,
-    /// The `next_cursor` of the previous page, with the same `from` and `to`.
+    /// The `next_cursor` of the previous page, with the same `from`, `to` and `filter`.
     #[serde(default)]
     cursor: Option<String>,
 }
@@ -35,7 +41,7 @@ pub(crate) struct Args {
 pub(crate) struct Output {
     /// The traces whose head span started in the window.
     data: Vec<TraceRow>,
-    /// Pass it as `cursor`, with the same `from` and `to`, for the next page; null on the last page.
+    /// Pass it as `cursor`, with the same `from`, `to` and `filter`, for the next page; null on the last page.
     next_cursor: Option<String>,
     /// Whether another page exists.
     has_more: bool,
@@ -49,9 +55,11 @@ impl Tool for ListTraces {
     const NAME: &'static str = "list_traces";
     const DESCRIPTION: &'static str = "List the project's traces whose head span (the root, or the earliest \
         span while the root has not arrived) started in the window [from, to), newest first: name, status, \
-        duration, span and error counts, cost, tokens, user, session, environment, release and tags. At most 50 \
-        traces and 64 KiB per call; pass `next_cursor` back as `cursor`, with the same window, for more. Read one \
-        trace, with previews of its spans' inputs and outputs, with get_trace.";
+        duration, span and error counts, cost, tokens, user, session, environment, release and tags. `filter` \
+        narrows the list by environment, release, version, user, session, level, observation type, tags, \
+        metadata or name. At most 50 traces and 64 KiB per call; pass `next_cursor` back as `cursor`, with the \
+        same window and filter, for more. Read one trace, with previews of its spans' inputs and outputs, with \
+        get_trace.";
     type Args = Args;
     type Output = Output;
 
@@ -59,6 +67,7 @@ impl Tool for ListTraces {
         let mut check = Check::default();
         let window = check.window(&args.from, &args.to);
         let limit = check.limit(args.limit, MAX_ROWS, MAX_ROWS);
+        let filter = ListFilter::parse(args.filter, &mut check);
         check.finish()?;
         let Some(window) = window else {
             return Err(ToolError::validation(Vec::new()));
@@ -66,12 +75,12 @@ impl Tool for ListTraces {
         check_window(window, call.settings.max_window_days)?;
         let cursor = args
             .cursor
-            .map(|text| call.cursors.open_traces(&text, window))
+            .map(|text| call.cursors.open_traces(&text, window, &filter))
             .transpose()
             .map_err(ToolError::cursor)?;
         let query = TraceListQuery {
             window,
-            filter: Filter::all(),
+            filter: filter.clone(),
             limit: Some(limit),
             cursor,
         };
@@ -86,7 +95,7 @@ impl Tool for ListTraces {
         let as_of = page.meta.as_of;
         let next = |cursor: &PageCursor| {
             let (_, window, as_of, last) = cursor.parts();
-            call.cursors.seal_traces(window, as_of, last)
+            call.cursors.seal_traces(window, as_of, last, &filter)
         };
         Ok(fit(
             rows,
@@ -94,7 +103,9 @@ impl Tool for ListTraces {
             |prefix, cut| Output {
                 data: prefix.iter().map(|(_, row)| row.clone()).collect(),
                 next_cursor: match prefix.last() {
-                    Some((last, _)) if cut => Some(call.cursors.seal_traces(window, as_of, *last)),
+                    Some((last, _)) if cut => {
+                        Some(call.cursors.seal_traces(window, as_of, *last, &filter))
+                    }
                     _ => page.next_cursor.as_ref().map(next),
                 },
                 has_more: cut || page.has_more,

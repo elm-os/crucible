@@ -1,0 +1,64 @@
+---
+source: crates/crucible-mcp-server/tests/mcp/lists.rs
+expression: pretty(&sessions)
+---
+{
+  "data": [
+    {
+      "error_count": 0,
+      "first_seen": "2026-11-17T09:29:59.970000Z",
+      "input_tokens": 1,
+      "last_seen": "2026-11-17T09:29:59.971000Z",
+      "output_tokens": 2,
+      "saturated": false,
+      "session_id": "s3",
+      "span_count": 1,
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_count": 1,
+      "user_ids": [
+        "ada"
+      ]
+    },
+    {
+      "error_count": 0,
+      "first_seen": "2026-11-17T09:29:59.960000Z",
+      "input_tokens": 1,
+      "last_seen": "2026-11-17T09:29:59.961000Z",
+      "output_tokens": 2,
+      "saturated": false,
+      "session_id": "s2",
+      "span_count": 1,
+      "total_cost_usd": 7e-9,
+      "total_tokens": 3,
+      "trace_count": 1,
+      "user_ids": [
+        "bob"
+      ]
+    },
+    {
+      "error_count": 1,
+      "first_seen": "2026-11-17T09:29:59.940000Z",
+      "input_tokens": 4,
+      "last_seen": "2026-11-17T09:29:59.951000Z",
+      "output_tokens": 8,
+      "saturated": false,
+      "session_id": "s1",
+      "span_count": 4,
+      "total_cost_usd": 2.8e-8,
+      "total_tokens": 12,
+      "trace_count": 2,
+      "user_ids": [
+        "ada"
+      ]
+    }
+  ],
+  "has_more": false,
+  "meta": {
+    "as_of": "2026-11-17T09:30:02.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "next_cursor": null,
+  "truncated": false
+}
