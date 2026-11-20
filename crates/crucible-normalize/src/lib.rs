@@ -10,7 +10,8 @@
 //! **Stage B** ([`StageB`]) is sequential in LSN order: the duplicate window drops exact repeats, the first-seen
 //! set marks provisional trace heads, and the usage-parent set flags the spans that have a descendant carrying
 //! usage or cost (`usage_aggregate`), which token and cost sums leave out. Stage B also hashes the user subject of
-//! an MCP operation with the project's salt and discards it (contract 9.3).
+//! an MCP operation with the project's salt and discards it (contract 9.3), and drops the rows that the deletions
+//! it knows select (contract 13.3, step 3; [`Tombstones`]).
 //!
 //! The shipper stamps `batch_seq` when it seals a batch ([`NormalizedFrame::stamp_batch_seq`]); until then it is
 //! [`Lsn::ZERO`]. The ingestion group is outside the row digest, so stamping never changes a digest.
@@ -33,6 +34,7 @@ mod node;
 mod price;
 mod stage_a;
 mod stage_b;
+mod tombstone;
 mod usage;
 
 use crucible_otlp::ScanError;
@@ -51,6 +53,7 @@ pub use stage_a::{normalize, normalize_with};
 pub use stage_b::{
     Admission, DUPLICATE_WINDOW_KEYS, FIRST_SEEN_TRACES, OutOfOrder, StageB, USAGE_PARENT_SPANS,
 };
+pub use tombstone::{Tombstone, TombstoneSelector, Tombstones};
 
 /// The version of this normalizer. Every record carries it, and a `BatchSeal` pins it (contract 4.4). Any change
 /// to the records stage A produces for some input ships with a new version.
@@ -113,8 +116,9 @@ impl IngestFrame<'_> {
 /// What stage A's output is pinned to (contract 3.2). Equal frames normalized with equal contexts give
 /// byte-identical records.
 ///
-/// The project snapshot contributes the caps, the salt that stage B hashes user subjects with and, from milestone
-/// 4, the project's price overrides; capture settings and tombstones join with the stages that use them.
+/// The project snapshot contributes the caps, the salt that stage B hashes user subjects with, the deletions that
+/// stage B applies and, from milestone 4, the project's price overrides; capture settings join with the stage that
+/// uses them.
 #[derive(Clone, Copy, Debug)]
 pub struct NormCtx<'a> {
     /// The normalizer version recorded in every record.
@@ -128,6 +132,8 @@ pub struct NormCtx<'a> {
     pub caps: PayloadCaps,
     /// The salt of the frame's project, for stage B (contract 9.3).
     pub identity: IdentityCtx<'a>,
+    /// The deletions stage B knows (contract 13.3, step 3); `None` for none.
+    pub tombstones: Option<&'a Tombstones>,
     /// A seeded defect; `None` outside the simulation suite.
     pub mutant: Option<Mutant>,
 }
@@ -146,6 +152,7 @@ impl<'a> NormCtx<'a> {
             },
             caps,
             identity: IdentityCtx::Suppressed,
+            tombstones: None,
             mutant: None,
         }
     }
@@ -154,6 +161,13 @@ impl<'a> NormCtx<'a> {
     #[must_use]
     pub const fn with_identity(mut self, identity: IdentityCtx<'a>) -> Self {
         self.identity = identity;
+        self
+    }
+
+    /// The context with the deletions stage B drops the rows of ([`StageB::admit_with`]).
+    #[must_use]
+    pub const fn with_tombstones(mut self, tombstones: &'a Tombstones) -> Self {
+        self.tombstones = Some(tombstones);
         self
     }
 }
@@ -303,6 +317,84 @@ mod test_support {
                 event_bytes: 0,
             },
             payload: SpanPayload::default(),
+        }
+    }
+
+    /// An MCP operation of the span `core` with plain values and no identity.
+    pub(crate) fn op_record(core: &SpanCore) -> crucible_records::McpOpRecord {
+        use crucible_records::{
+            CancelSource, CaptureSource, Direction, Era, ErrorClass, ErrorSubclass, GroupKeyKind,
+            IdentitySource, McpOpRecord, McpStatus, McpTargetKind, ResultType, Transport,
+        };
+        McpOpRecord {
+            project_id: core.project_id,
+            trace_id: core.trace_id,
+            span_id: core.span_id,
+            parent_span_id: core.parent_span_id,
+            transport_link_trace_id: TraceId::ZERO,
+            transport_link_span_id: SpanId::ZERO,
+            server_name: "server".into(),
+            server_version: "".into(),
+            deploy_id: "".into(),
+            instance_id: "".into(),
+            side: McpSide::Server,
+            capture_source: CaptureSource::Sdk,
+            era: Era::Modern,
+            protocol_version: "".into(),
+            transport: Transport::Stdio,
+            method: "tools/call".into(),
+            target_kind: McpTargetKind::Tool,
+            target_name: "tool".into(),
+            jsonrpc_id: "".into(),
+            direction: Direction::ClientToServer,
+            is_notification: false,
+            is_batch: false,
+            result_type: ResultType::Complete,
+            mrtr_round: 0,
+            mrtr_state_in: None,
+            mrtr_state_out: None,
+            task_id: "".into(),
+            subscription_id: "".into(),
+            start_time: core.start_time,
+            duration_us: 0,
+            progress_count: None,
+            cancel_source: CancelSource::None,
+            timed_out: false,
+            status: McpStatus::Ok,
+            error_class: ErrorClass::None,
+            error_subclass: ErrorSubclass::None,
+            jsonrpc_code: None,
+            http_status: None,
+            caller_fault: false,
+            error_type: "".into(),
+            error_message: "".into(),
+            client_name: "".into(),
+            client_version: "".into(),
+            client_capabilities_hash: 0,
+            oauth_client_id: "".into(),
+            user_subject_hash: None,
+            user_issuer: "".into(),
+            user_id: "".into(),
+            tenant: "".into(),
+            identity_source: IdentitySource::None,
+            session_key: None,
+            handle_id: "".into(),
+            group_key: "".into(),
+            group_key_kind: GroupKeyKind::Process,
+            ip_prefix: "".into(),
+            user_agent: "".into(),
+            request_bytes: 0,
+            response_bytes: 0,
+            content_blocks: Vec::new(),
+            content_captured: false,
+            content_sample_rate: 0.0,
+            content_truncation: Truncation::None,
+            args: bytes::Bytes::new(),
+            result: bytes::Bytes::new(),
+            args_bytes: 0,
+            result_bytes: 0,
+            ingestion: core.ingestion,
+            normalizer_version: core.normalizer_version,
         }
     }
 }

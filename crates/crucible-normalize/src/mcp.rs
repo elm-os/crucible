@@ -60,6 +60,10 @@ pub enum Mutant {
     /// Flag the usage aggregates of a frame after its exact repeats were dropped (contract 5.3).
     #[cfg(feature = "test-mutants")]
     MarkAfterDuplicateDrop,
+    /// Match the subject hash of an MCP operation under its own issuer for a deletion by user that names another
+    /// issuer (contract 13.3).
+    #[cfg(feature = "test-mutants")]
+    IgnoreTombstoneIssuer,
 }
 
 /// The salt of a project (contract 9.3): the key of the keyed hash of a user subject. It is random, immutable for

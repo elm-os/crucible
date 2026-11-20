@@ -143,6 +143,21 @@ impl LifecycleRepo for Runner {
         .await
     }
 
+    async fn requests_after(
+        &self,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<DeletionRequest>, TxError> {
+        self.run(Pool::Main, false, |cx| {
+            let mut requests = all!(cx, Tbl::DeletionRequests, Row::DeletionRequest);
+            requests.retain(|request| request.deletion_seq > after);
+            requests.sort_by_key(|request| request.deletion_seq);
+            requests.truncate(limit as usize);
+            Ok(requests)
+        })
+        .await
+    }
+
     async fn update_request(&self, request: &DeletionRequest) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             let key = uuid_key(request.id.to_bytes());

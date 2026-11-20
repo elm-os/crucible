@@ -3527,6 +3527,7 @@ impl Run<'_> {
                 sealed_through,
             }),
             salts,
+            ..Hooks::default()
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let shipper = match Shipper::new(

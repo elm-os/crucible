@@ -62,8 +62,8 @@ use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
 use crucible_shipper::{
-    FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, NoSalts, ProjectSalts, RecentHook, Shipper,
-    ShipperConfig,
+    DeletionRequests, FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, NoDeletions, NoSalts,
+    ProjectSalts, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
@@ -813,10 +813,17 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         Some((workspace, sql_store)) => (Some(workspace), stores.with_sql(sql_store)),
         None => (None, stores),
     };
+    // With a control plane, stage B applies every deletion request it holds before anything ships (contract
+    // 13.3).
+    let deletions: Arc<dyn DeletionRequests> = match &lifecycle {
+        Some(lifecycle) => lifecycle.deletions(),
+        None => Arc::new(NoDeletions),
+    };
     let hooks = Hooks {
         barriers: Arc::new(NoBarriers),
         recent: hook,
         salts,
+        deletions,
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;

@@ -24,6 +24,12 @@
 //! An `IngestRequest` frame whose spans carry `mcp.method.name` also yields the rows of the five MCP tables
 //! (contract 3.5 to 3.7). Stage B hashes a user subject with the salt of the frame's project, which the shipper
 //! takes from the [`ProjectSalts`] hook before it admits the frame; a frame whose salt cannot be had waits.
+//!
+//! Stage B drops the spans, MCP operations and facts that a deletion request selects (contract 13.3, step 3):
+//! those of every `Tombstone` frame it has passed, and those of every request in every state that the
+//! [`DeletionRequests`] hook gives before the shipper ships anything, so that a replay after a restart never inserts
+//! what a request completed while the node was down deleted. A `Tombstone` frame also evicts what its deletion
+//! selects from the recent-span index.
 
 mod batch;
 mod config;
@@ -45,7 +51,8 @@ pub use config::{
 };
 pub use error::ShipError;
 pub use hooks::{
-    Barrier, Barriers, NoBarriers, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
+    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, KnownDeletion, NoBarriers,
+    NoDeletions, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
 };
 pub use limits::SealLimits;
 pub use quarantine::{
