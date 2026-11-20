@@ -48,9 +48,12 @@ export BRAINTRUST_APP_URL=http://127.0.0.1:4318
 export BRAINTRUST_API_KEY=csk_...
 ```
 
-`braintrust.New` logs in to the app URL when it starts, sending the API key, and the app URL defaults to
-`https://www.braintrust.dev`. With only `BRAINTRUST_API_URL` changed, the SDK sends your Crucible secret key there.
-With both set, the login answers 404, the SDK logs `login failed` as a warning, and its spans export to Crucible.
+`braintrust.New` logs in to the app URL when it starts: in braintrust-sdk-go 0.20.0, its `internal/auth` package
+posts to `/api/apikey/login` on the app URL with a client that carries the API key, and the app URL
+(`BRAINTRUST_APP_URL`) defaults to `https://www.braintrust.dev`. In the verification run, with only
+`BRAINTRUST_API_URL` changed, the SDK opened connections to `www.braintrust.dev`, so your Crucible secret key would
+go there. With both set, the login answers 404, the SDK logs `login failed` as a warning, and its spans export to
+Crucible.
 
 ## What maps
 
@@ -80,5 +83,6 @@ and metadata is in `crucible_sql.span_payloads`.
 - The metrics' `estimated_cost` is not read, so cost comes from the price table.
 - `braintrust.tags` are tags of a span: they are in the span's `tags` column, and the trace list's tags stay empty.
 - The REST `model` shows only when a span carries `gen_ai.response.model`.
-- No Braintrust attribute names a user or a session.
+- Apart from `adk.agent.session_id`, read as the session on spans decided as Braintrust, no Braintrust attribute
+  names a user or a session.
 - OTLP logs are not ingested: `/otel/v1/logs` answers 404.

@@ -87,7 +87,7 @@ For spans with the `ai.*` attributes:
 | Completion start | `ai.response.msToFirstChunk`, `ai.stream.msToFirstChunk` |
 
 Spans from `new OpenTelemetry()` follow the OpenTelemetry GenAI conventions and map as native spans: the agent span
-(`invoke_agent`), the model call (`chat`) with its model, provider, messages and token counts, and tool executions.
+(`invoke_agent`) and the model call (`chat`) with its model, provider, messages and token counts.
 
 ## Known limits
 
