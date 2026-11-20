@@ -1,12 +1,15 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import {
+  type Api,
   CSRF,
-  capture,
   expect,
   expectAccessible,
   json,
   PROJECT,
+  PROJECTS_PATH,
+  projectList,
   problem,
+  type Reply,
   SERVER_TEXT,
   SESSION_PATH,
   sessionInfo,
@@ -15,9 +18,18 @@ import {
 } from "./fixtures";
 
 const NEW_ID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a3d";
-const PROJECTS_PATH = /\/api\/v1\/projects$/;
-// The project settings page fetches nothing, so these tests answer only what New project asks.
 const START = `/settings/project/?project=${PROJECT}`;
+
+// New project posts to the path the project page reads its list from, so `reply` answers POST only.
+function onCreate(api: Api, reply: Reply): Request[] {
+  const posts: Request[] = [];
+  api.on(PROJECTS_PATH, (route) => {
+    if (route.request().method() !== "POST") return route.fulfill(json(projectList()));
+    posts.push(route.request());
+    return route.fulfill(reply);
+  });
+  return posts;
+}
 
 async function openDialog(page: Page) {
   await page.getByRole("button", { name: "New project" }).click();
@@ -38,9 +50,8 @@ test.describe("settings: new project", () => {
     await expect(dialog.getByLabel("Slug")).toHaveValue("payments-api");
     await expectAccessible(page, "new project dialog");
 
-    const posts = capture(
+    const posts = onCreate(
       api,
-      PROJECTS_PATH,
       json(
         { id: NEW_ID, name: "Payments API", slug: "payments-api", role: "admin", version: 1 },
         201,
@@ -84,7 +95,7 @@ test.describe("settings: new project", () => {
     await page.goto(START);
     const dialog = await openDialog(page);
     await dialog.getByLabel("Name", { exact: true }).fill("Checkout");
-    api.on(PROJECTS_PATH, problem(409, "conflict", "req-taken"));
+    onCreate(api, problem(409, "conflict", "req-taken"));
     await dialog.getByRole("button", { name: "Create project" }).click();
 
     const alert = dialog.getByRole("alert");

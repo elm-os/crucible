@@ -1,5 +1,6 @@
 //! The compat dialect registry (contract 10): the dialect ids, the data-table shape that the mapping engine in
-//! `crucible-normalize` consumes, one table per dialect, the compat ingest routes and the fixtures.
+//! `crucible-normalize` consumes, one table per dialect, the compat ingest routes, the compat media endpoint and
+//! the fixtures.
 //!
 //! A table lists, for each record field it fills, an ordered list of sources (where to read, which key, how to
 //! decode). It also lists the observation-type rules (contract 10.4) and the rules that detect the dialect. Tables
@@ -21,6 +22,7 @@ mod d5;
 mod d6;
 mod d7;
 mod fixtures;
+pub mod media;
 mod native;
 pub mod routes;
 

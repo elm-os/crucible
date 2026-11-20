@@ -180,6 +180,8 @@ pub struct Constants {
     pub schema: String,
     /// The project keys the SDK exports with.
     pub keys: Keys,
+    /// The keys' project, which an SDK's feedback names in the route's path.
+    pub project_id: String,
     /// The MCP client identity.
     pub client: Client,
     /// The protocol version of each era.
@@ -366,6 +368,58 @@ pub struct Step {
     /// Call `shutdown()` (agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown: Option<Empty>,
+    /// Call the SDK's feedback function with one score (agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<FeedbackStep>,
+}
+
+/// One score for the SDK's feedback function: the fields of the feedback route's body (contract 12.6) plus the
+/// `Idempotency-Key` to send, if the caller names one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackStep {
+    /// The target trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// The target span, with `trace_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+    /// The target session, instead of a trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The score name.
+    pub name: String,
+    /// The client's id of the score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_id: Option<String>,
+    /// A number, a boolean or a string.
+    pub value: Json,
+    /// `numeric`, `boolean`, `categorical` or `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_type: Option<String>,
+    /// A comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// A JSON object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Json>,
+    /// Retracts the score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retracted: Option<bool>,
+    /// The `Idempotency-Key` the caller passes; without one the SDK makes its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl FeedbackStep {
+    /// The request body an SDK sends for this score: every field but `idempotency_key`.
+    pub fn body(&self) -> Json {
+        let mut body = serde_json::to_value(self).unwrap_or(Json::Null);
+        if let Some(object) = body.as_object_mut() {
+            object.remove("idempotency_key");
+        }
+        body
+    }
 }
 
 /// An empty JSON object.
@@ -394,6 +448,8 @@ pub enum Action<'a> {
     Checkpoint(&'a str),
     /// `shutdown`.
     Shutdown,
+    /// `feedback`.
+    Feedback(&'a FeedbackStep),
 }
 
 impl Step {
@@ -426,6 +482,9 @@ impl Step {
         }
         if self.shutdown.is_some() {
             actions.push(Action::Shutdown);
+        }
+        if let Some(score) = &self.feedback {
+            actions.push(Action::Feedback(score));
         }
         match actions.as_slice() {
             [one] => Ok(*one),

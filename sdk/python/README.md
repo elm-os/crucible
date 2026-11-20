@@ -8,6 +8,7 @@
   to the span the `mcp` library already opens for every message. It never opens a second span.
 - MCP clients: a wrapper that sends the caller's trace context in `params._meta`, so a trace shows the agent's call and
   the server's handling of it together.
+- Feedback: scores on a trace, a span or a session, sent to the project's feedback route off the caller's path.
 
 ## Install
 
@@ -38,7 +39,9 @@ crucible_sdk.init(
 | Option | Default | Meaning |
 |---|---|---|
 | `endpoint` | `CRUCIBLE_ENDPOINT`, then `http://localhost:4318` | Crucible's OTLP HTTP listener; spans go to `<endpoint>/v1/traces` as protobuf |
-| `secret_key` | `CRUCIBLE_SECRET_KEY` | Sent as `Authorization: Bearer <key>`. Without one, `init` logs how to set it |
+| `secret_key` | `CRUCIBLE_SECRET_KEY` | Sent as `Authorization: Bearer <key>`. Without one, `init` logs how to set it. Spans need the `ingest` scope and feedback the `write` scope; new keys have both |
+| `project_id` | `CRUCIBLE_PROJECT_ID` | The key's project id (a UUID), which `feedback` needs |
+| `api_url` | `CRUCIBLE_API_URL`, then `endpoint` | Crucible's API listener, where `feedback` posts |
 | `service_name` | from the OpenTelemetry resource | Resource `service.name`; MCP spans fall back to it as the server name |
 | `environment` | none | Resource `deployment.environment.name` |
 | `release` | none | Resource `service.version` |
@@ -51,7 +54,7 @@ crucible_sdk.init(
 `crucible_sdk.flush(timeout=5.0)` waits until every span that ended before the call has been sent and returns `False`
 when the timeout passes first. `crucible_sdk.shutdown(timeout=5.0)` sends what is queued and stops; it also runs at
 interpreter exit. `crucible_sdk.export_stats()` returns the queue counters: `queued`, `dropped`, `exported`,
-`failed` and `queued_bytes`.
+`failed` and `queued_bytes`, and the feedback counters `feedback_sent`, `feedback_dropped` and `feedback_failed`.
 
 Export runs on one background thread. A collector that is down, refuses connections or never answers can delay only
 that thread: ending a span takes the same time either way, and `flush` and `shutdown` return when their timeout
@@ -96,6 +99,48 @@ with crucible_sdk.session("conversation-17"), crucible_sdk.user("user-42"), cruc
 | `session(id)`, `user(id)`, `tags(*values)`, `metadata(**values)` | `crucible.session.id`, `crucible.user.id`, `crucible.tags` and `crucible.metadata.<key>` on every span started inside, including spans of other libraries. Context managers or decorators; nested `tags` and `metadata` add to the enclosing ones |
 
 The setters act on the current span, so they also work inside spans that another instrumentation opened.
+
+## Send feedback
+
+```python
+import crucible_sdk
+
+crucible_sdk.init(
+    endpoint="http://crucible.internal:8080",  # the API listener, which also takes spans
+    project_id="0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b",  # default: CRUCIBLE_PROJECT_ID; the key's project
+    service_name="support-agent",
+)
+
+with crucible_sdk.observe("answer", type="agent") as span:
+    trace_id = format(span.get_span_context().trace_id, "032x")
+
+crucible_sdk.feedback("helpful", 1, trace_id=trace_id, comment="solved it")
+crucible_sdk.feedback("tone", "friendly", trace_id=trace_id, idempotency_key=f"tone-{trace_id}")
+```
+
+`feedback(name, value, ...)` records a score with source `feedback` on a trace (`trace_id`), a span (`trace_id` and
+`span_id`) or a session (`session_id`), and returns at once; it never raises. It posts to
+`<api_url>/api/v1/projects/<project_id>/feedback` with the secret key, which needs the `write` scope.
+
+- The other fields are the route's: `score_id`, `data_type` (`numeric`, `boolean`, `categorical` or `text`),
+  `comment` (4 KiB), `metadata` (a JSON object, 16 KiB) and `retracted`. The latest score of a name (and `score_id`)
+  on a target wins.
+- One background thread posts the scores in call order, each after the spans that ended before the call, so a score
+  on a trace that just ended finds the trace.
+- Each score carries an `Idempotency-Key`, `idempotency_key` or else a random one. A failed connection, a timeout,
+  408, 429, a 5xx answer and a `conflict` 409 are retried with the same key and body, three attempts in all, after
+  `Retry-After` (at most 10 s) or else 1 s and 2 s, so Crucible writes the score once.
+- `api_url` defaults to `endpoint`. The API listener (port 8080) serves both `/v1/traces` and the API; the OTLP
+  listener (port 4318) does not serve the API, so with `endpoint` on port 4318, set `api_url`.
+- The project id is the key's project: `crucible admin create-key` prints it as `project_id`, and the UI shows it as
+  `project=` in the address bar. Without it, scores are dropped.
+- Up to 1,024 scores wait to be sent; beyond that a score is dropped. `export_stats()` counts sent, dropped and
+  failed scores, and the first drop and the first failure each log one warning that says what to change. `flush` and
+  `shutdown` send the queued scores too.
+- Crucible answers 404 for a target it does not know yet, which counts as failed: a trace none of whose spans has
+  ended and been sent (a score sent from inside the trace's only open span, for example), and a session, which
+  Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended, and a session
+  once its spans are stored.
 
 ## Instrument an MCP server
 

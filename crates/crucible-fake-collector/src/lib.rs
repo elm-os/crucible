@@ -30,7 +30,7 @@ pub mod spec;
 pub mod suite;
 pub mod value;
 
-pub use collector::{Collector, Event, Export, RecordedSpan};
+pub use collector::{Collector, Event, Export, FeedbackPost, RecordedSpan};
 pub use driver::{
     CaseResult, DriverError, Options, Report, RunOutcome, Runner, RunnerSummary, Status, run_suite,
 };

@@ -56,7 +56,16 @@ describe("init", () => {
       "telemetry.sdk.name": "opentelemetry",
       "telemetry.sdk.version": "2.12.1",
     });
-    expect(stats()).toEqual({ queued: 0, queuedBytes: 0, dropped: 0, exported: 1, failed: 0 });
+    expect(stats()).toEqual({
+      queued: 0,
+      queuedBytes: 0,
+      dropped: 0,
+      exported: 1,
+      failed: 0,
+      feedbackSent: 0,
+      feedbackDropped: 0,
+      feedbackFailed: 0,
+    });
     await collector.close();
   });
 
@@ -129,7 +138,16 @@ describe("init", () => {
   test("before init, helpers run and nothing is exported", async () => {
     expect(observe("work", () => 7)).toBe(7);
     expect(await observe("work", async () => 8)).toBe(8);
-    expect(stats()).toEqual({ queued: 0, queuedBytes: 0, dropped: 0, exported: 0, failed: 0 });
+    expect(stats()).toEqual({
+      queued: 0,
+      queuedBytes: 0,
+      dropped: 0,
+      exported: 0,
+      failed: 0,
+      feedbackSent: 0,
+      feedbackDropped: 0,
+      feedbackFailed: 0,
+    });
     await flush();
     await shutdown();
   });

@@ -108,9 +108,11 @@ without it and must hold.
   its deletes have run.
 - Reads hide the MCP rows of a pending deletion by user by `user_id` only. A row that carries only the hash of
   the user's subject stays readable until the executor's delete runs; the oracle checks that the delete reaches it.
-- Comments and media, which this deployment does not hold; a completed request reports each as `not_present`.
-  Export files made before a request are expired and removed when the request completes; a directed scenario
-  checks the expiry.
+- Comments, which this deployment does not hold; a completed request reports them `not_present`. Media are
+  reached through their uses: a deletion by trace deletes the uses of those traces in its own fenced transaction,
+  and the media collector removes an object once nothing uses it; a directed scenario checks the uses and the
+  media place's `done`, and [media-simulation.md](media-simulation.md) covers the collector. Export files made
+  before a request are expired and removed when the request completes; a directed scenario checks the expiry.
 
 ## Running it
 

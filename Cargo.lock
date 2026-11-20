@@ -789,6 +789,7 @@ dependencies = [
  "crucible-lifecycle",
  "crucible-loadgen",
  "crucible-mcp-server",
+ "crucible-media",
  "crucible-normalize",
  "crucible-notify",
  "crucible-otlp",
@@ -875,6 +876,7 @@ dependencies = [
  "crucible-env",
  "crucible-export",
  "crucible-lifecycle",
+ "crucible-media",
  "crucible-notify",
  "crucible-plan",
  "crucible-query",
@@ -957,7 +959,11 @@ dependencies = [
 name = "crucible-compat"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "crucible-records",
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -982,12 +988,14 @@ dependencies = [
  "crucible-control-pg",
  "crucible-env",
  "crucible-env-prod",
+ "crucible-media",
  "crucible-plan",
  "crucible-records",
  "crucible-schema",
  "crucible-sim",
  "crucible-store-clickhouse",
  "futures",
+ "http",
  "insta",
  "proptest",
  "sha2 0.11.1",
@@ -1298,6 +1306,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-media"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "crucible-control",
+ "crucible-env",
+ "crucible-jobs",
+ "crucible-records",
+ "crucible-schema",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "proptest",
+ "rusty-s3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "crucible-normalize"
 version = "0.1.0"
 dependencies = [
@@ -1490,6 +1526,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "crucible-admission",
@@ -1504,6 +1541,7 @@ dependencies = [
  "crucible-ingest",
  "crucible-jobs",
  "crucible-lifecycle",
+ "crucible-media",
  "crucible-normalize",
  "crucible-notify",
  "crucible-otlp",
@@ -1531,6 +1569,7 @@ dependencies = [
  "tower",
  "tracing",
  "turmoil",
+ "url",
  "xxhash-rust",
 ]
 
@@ -2577,6 +2616,27 @@ dependencies = [
  "once_cell",
  "similar",
  "tempfile",
+]
+
+[[package]]
+name = "instant-xml"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0201956651e8e4b5a78978dd2840bbb3797227a262a74f47b3576ef053b53bb"
+dependencies = [
+ "instant-xml-macros",
+ "xmlparser",
+]
+
+[[package]]
+name = "instant-xml-macros"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f38f6d268cc5e23813c7b2b5bae70317626bf4a95c6de1136b96a221c45148f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -4023,6 +4083,25 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "rusty-s3"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af5b74b316ee483ae486bd3cb206c8caa5dbb3cf0eab7269a868ae43aeece03"
+dependencies = [
+ "base64 0.23.1",
+ "hmac 0.13.0",
+ "instant-xml",
+ "jiff",
+ "md-5",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -5565,6 +5644,12 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
 ]
+
+[[package]]
+name = "xmlparser"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"

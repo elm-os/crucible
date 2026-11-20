@@ -4,6 +4,7 @@
     "public_key": "cpk_conformance00000000000000000000000000000000",
     "secret_key": "csk_conformance00000000000000000000000000000000"
   },
+  "project_id": "01938a2e-7c3d-7e4f-8a5b-6c7d8e9f0a1b",
   "client": {
     "name": "crucible-conformance-client",
     "version": "1.0.0",

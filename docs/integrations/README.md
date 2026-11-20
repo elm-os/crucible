@@ -16,7 +16,8 @@ models, tokens, cost, inputs and outputs.
 | Braintrust OTel attributes | [Braintrust](braintrust.md) | `/otel/v1/traces` | braintrust 0.52.0 (Python), braintrust-sdk-go 0.20.0 |
 
 Each library's own setup in the "Verified with" column was run against a Crucible server built from main, and the
-traces were read back through the REST API and the SQL workspace.
+traces were read back through the REST API and the SQL workspace. Moving from Langfuse or Braintrust, including what
+the calls to their REST APIs do against Crucible, is covered in [migration](../migration/README.md).
 
 ## Endpoints and keys
 

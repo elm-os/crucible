@@ -55,3 +55,10 @@ this page does not guess. It holds no performance figures for any product.
 | LangSmith | A remote MCP server at `/api/mcp` from v0.16 ([remote MCP](https://docs.langchain.com/langsmith/langsmith-remote-mcp)) | A Tool Gateway (beta) that traces tool calls, documented for LangSmith Cloud ([Tool Gateway](https://docs.langchain.com/langsmith/tool-gateway)) |
 | Braintrust | A hosted MCP server ([MCP](https://docs.braintrust.dev/integrations/developer-tools/mcp)) | Traces MCP servers through its SDKs ([MCP servers](https://docs.braintrust.dev/observe/mcp-servers)) |
 | Helicone | An MCP server run with `npx` ([MCP](https://docs.helicone.ai/integrations/tools/mcp)) | Not described in its documentation |
+
+## Moving to Crucible
+
+- From the Langfuse SDKs: [moving from Langfuse](../migration/langfuse.md).
+- From Braintrust's OpenTelemetry attributes: [moving from Braintrust](../migration/braintrust.md).
+- From OpenInference, OpenLLMetry, the Vercel AI SDK, MLflow or Pydantic AI instrumentation: the spans keep their
+  attributes, and [integrations](../integrations/README.md) shows how to point each library at Crucible and what maps.

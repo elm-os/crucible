@@ -1,5 +1,6 @@
 // An in-process fake OTLP/HTTP collector. It accepts only `POST /v1/traces` with a protobuf body and the expected
-// Bearer key, decodes the spans, and can be switched to stall (never answer) or fail (503).
+// Bearer key, decodes the spans, and can be switched to stall (never answer) or fail (503). It also answers
+// `POST /api/v1/projects/{id}/feedback`, from `feedbackAnswers` while that list holds any, else with 201.
 
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -15,6 +16,13 @@ export interface CollectedRequest {
 
 export type CollectorMode = "accept" | "stall" | "fail";
 
+/** One answer to a feedback post. Status 0 closes the connection without answering. */
+export interface FeedbackAnswer {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
 export interface Collector {
   /** Base URL, without a path. */
   readonly url: string;
@@ -24,6 +32,8 @@ export interface Collector {
   /** Spans of accepted requests, in arrival order. */
   readonly spans: DecodedSpan[];
   mode: CollectorMode;
+  /** Answers to the next feedback posts, taken in order. */
+  readonly feedbackAnswers: FeedbackAnswer[];
   /** Resolves with the spans once `predicate` holds; rejects after `timeoutMs`. */
   waitFor(predicate: (spans: DecodedSpan[]) => boolean, timeoutMs?: number): Promise<DecodedSpan[]>;
   close(): Promise<void>;
@@ -41,6 +51,7 @@ export async function startCollector(key: string = TEST_KEY): Promise<Collector>
     requests,
     spans,
     mode: "accept",
+    feedbackAnswers: [],
     async waitFor(predicate, timeoutMs = 10_000) {
       const deadline = Date.now() + timeoutMs;
       while (!predicate(spans)) {
@@ -73,6 +84,19 @@ export async function startCollector(key: string = TEST_KEY): Promise<Collector>
     }
     if (collector.mode === "fail") {
       res.writeHead(503).end();
+      return;
+    }
+    if (req.method === "POST" && /^\/api\/v1\/projects\/[^/]+\/feedback$/.test(req.url ?? "")) {
+      const answer = collector.feedbackAnswers.shift() ?? {
+        status: 201,
+        headers: { "content-type": "application/json" },
+        body: '{"fact_id":"01a1f65b-b4a4-70eb-83eb-6dc856127f2d","key":"k","version":1}',
+      };
+      if (answer.status === 0) {
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(answer.status, answer.headers).end(answer.body);
       return;
     }
     if (req.method !== "POST" || req.url !== "/v1/traces") {

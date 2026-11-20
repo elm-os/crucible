@@ -169,7 +169,7 @@ export function tracePage(
   };
 }
 
-type Reply = Parameters<Route["fulfill"]>[0];
+export type Reply = Parameters<Route["fulfill"]>[0];
 
 export function json(body: unknown, status = 200): Reply {
   return { status, contentType: "application/json", body: JSON.stringify(body) };
@@ -332,12 +332,29 @@ export function sessionInfo(fields: Partial<SessionInfo> = {}): SessionInfo {
   };
 }
 
+export const PROJECTS_PATH = /\/api\/v1\/projects$/;
+
+// `GET projects` as the server answers it for this session.
+export function projectList(session: SessionInfo = sessionInfo()) {
+  return {
+    data: session.projects.map(({ id, name, slug, role }) => ({
+      id,
+      name,
+      slug,
+      role,
+      version: 1,
+    })),
+  };
+}
+
 // The server has a control plane, and this browser holds a session. Signed in, Crucible opens on home, whose
-// tiles and charts read metrics: they get an empty answer unless a test sets its own.
+// tiles and charts read metrics: they get an empty answer unless a test sets its own. Settings opens on the
+// project page, which reads the project list.
 export function signedIn(api: Api, session: SessionInfo = sessionInfo()): void {
   api.on(PROVIDERS_PATH, json(signInOptions()));
   api.on(SESSION_PATH, json(session));
   api.on(/\/projects\/[^/]+\/metrics\/query$/, json(metrics([])));
+  api.on(PROJECTS_PATH, json(projectList(session)));
 }
 
 // Answers `path` with `reply` and keeps each request, to check what the page sent.

@@ -1,7 +1,7 @@
 //! The self-test runner: it emits, with `opentelemetry-proto`, the spans an SDK that follows the runner contract
-//! would emit for a run spec, without any MCP server or SDK. It reads the run spec and the scrub rules every SDK
-//! ships, and never the goldens, so a passing self-test means the collector, the driver and the goldens agree
-//! with an independent encoding of the contract.
+//! would emit for a run spec, without any MCP server or SDK, and posts each feedback step to the feedback route
+//! as an SDK would. It reads the run spec and the scrub rules every SDK ships, and never the goldens, so a passing
+//! self-test means the collector, the driver and the goldens agree with an independent encoding of the contract.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -13,7 +13,7 @@ use bytes::Bytes;
 use crucible_env::Env;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE};
+use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::{Request, Uri};
 use http_body_util::{BodyExt as _, Full};
 use hyper::client::conn::http1;
@@ -673,6 +673,7 @@ impl SelfTestRunner {
         let mut cursor = base;
         let mut buffer: Vec<Span> = Vec::new();
         let mut shut_down = false;
+        let mut feedback = 0;
         for step in &spec.steps {
             match step.action()? {
                 Action::Observe(node) => {
@@ -716,6 +717,39 @@ impl SelfTestRunner {
                     shut_down = true;
                 }
                 Action::Sleep(ms) => cursor = cursor.saturating_add(ms.saturating_mul(1_000_000)),
+                Action::Feedback(score) => {
+                    if shut_down {
+                        continue;
+                    }
+                    // A score follows the spans that ended before it.
+                    let spans = std::mem::take(&mut buffer);
+                    if !spans.is_empty() {
+                        self.export(spec, spans, false).await?;
+                    }
+                    feedback += 1;
+                    let key = score
+                        .idempotency_key
+                        .clone()
+                        .unwrap_or_else(|| format!("selftest-{feedback}"));
+                    let url = format!(
+                        "{}/api/v1/projects/{}/feedback",
+                        spec.api_url.trim_end_matches('/'),
+                        spec.project_id
+                    );
+                    let auth = format!("Bearer {}", spec.keys.secret_key);
+                    let status = self
+                        .send(
+                            &url,
+                            "application/json",
+                            &[("authorization", &auth), ("idempotency-key", &key)],
+                            score.body().to_string().into_bytes(),
+                            false,
+                        )
+                        .await?;
+                    if status != 201 {
+                        return Err(format!("the feedback route answered {status}"));
+                    }
+                }
                 _ => return Err(format!("step {:?} is not an agent step", step.step)),
             }
         }
@@ -763,6 +797,18 @@ impl SelfTestRunner {
         body: Vec<u8>,
         gzip: bool,
     ) -> Result<u16, String> {
+        let headers: Vec<(&str, &str)> = auth.map(|a| ("authorization", a)).into_iter().collect();
+        self.send(url, content_type, &headers, body, gzip).await
+    }
+
+    async fn send(
+        &self,
+        url: &str,
+        content_type: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+        gzip: bool,
+    ) -> Result<u16, String> {
         let uri: Uri = url.parse().map_err(|e| format!("{url}: {e}"))?;
         let host: IpAddr = uri
             .host()
@@ -796,8 +842,8 @@ impl SelfTestRunner {
         if gzip {
             request = request.header(CONTENT_ENCODING, "gzip");
         }
-        if let Some(auth) = auth {
-            request = request.header(AUTHORIZATION, auth);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
         let request = request
             .body(Full::new(Bytes::from(body)))

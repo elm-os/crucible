@@ -1,8 +1,13 @@
-"""A fake OTLP HTTP collector: `http.server` on a loopback port, in a thread, recording every request."""
+"""A fake OTLP HTTP collector: `http.server` on a loopback port, in a thread, recording every request.
+
+It also answers the feedback route, `POST /api/v1/projects/<id>/feedback`: from `feedback_answers` while that list
+holds any, else with 201.
+"""
 
 from __future__ import annotations
 
 import gzip
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -46,6 +51,18 @@ class Received:
     body: bytes
 
 
+FEEDBACK_PATH = re.compile(r"^/api/v1/projects/[^/]+/feedback$")
+
+
+@dataclass
+class Answer:
+    """One answer to a feedback post. Status 0 closes the connection without answering."""
+
+    status: int
+    headers: dict[str, str] = field(default_factory=dict)
+    body: bytes = b""
+
+
 @dataclass
 class Collector:
     """Records requests; `status` sets the reply, `hang` makes it accept and never answer."""
@@ -54,13 +71,19 @@ class Collector:
     status: int = 200
     hang: bool = False
     requests: list[Received] = field(default_factory=list)
+    feedback_answers: list[Answer] = field(default_factory=list)
     release: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def feedback(self) -> list[Received]:
+        """The feedback posts, in arrival order."""
+        with self.lock:
+            return [r for r in self.requests if FEEDBACK_PATH.match(r.path)]
 
     def spans(self) -> list[ExportedSpan]:
         out: list[ExportedSpan] = []
         with self.lock:
-            bodies = [r.body for r in self.requests]
+            bodies = [r.body for r in self.requests if r.path == "/v1/traces"]
         for body in bodies:
             request = ExportTraceServiceRequest()
             request.ParseFromString(body)
@@ -89,7 +112,7 @@ class Collector:
 
     def raw(self) -> bytes:
         with self.lock:
-            return b"".join(r.body for r in self.requests)
+            return b"".join(r.body for r in self.requests if r.path == "/v1/traces")
 
     def wait_for(self, count: int, timeout: float = 5.0) -> list[ExportedSpan]:
         deadline = time.monotonic() + timeout
@@ -111,6 +134,11 @@ def running(collector: Collector | None = None) -> Iterator[Collector]:
                 body = gzip.decompress(body)
             with state.lock:
                 state.requests.append(Received(self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+                is_feedback = FEEDBACK_PATH.match(self.path) is not None
+                answer = state.feedback_answers.pop(0) if is_feedback and state.feedback_answers else None
+            if is_feedback and not state.hang:
+                self.answer_feedback(answer or Answer(201, {"content-type": "application/json"}, b'{"key":"k"}'))
+                return
             if state.hang:
                 state.release.wait(30)
                 return
@@ -118,6 +146,18 @@ def running(collector: Collector | None = None) -> Iterator[Collector]:
             self.send_header("content-type", "application/x-protobuf")
             self.send_header("content-length", "0")
             self.end_headers()
+
+        def answer_feedback(self, answer: Answer) -> None:
+            if answer.status == 0:
+                self.close_connection = True
+                self.connection.close()
+                return
+            self.send_response(answer.status)
+            for name, value in answer.headers.items():
+                self.send_header(name, value)
+            self.send_header("content-length", str(len(answer.body)))
+            self.end_headers()
+            self.wfile.write(answer.body)
 
         def log_message(self, format: str, *args: Any) -> None:
             pass

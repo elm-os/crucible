@@ -24,6 +24,8 @@ type runSpec struct {
 		Endpoint string `json:"endpoint"`
 	} `json:"otlp"`
 	CheckpointURL string `json:"checkpoint_url"`
+	APIURL        string `json:"api_url"`
+	ProjectID     string `json:"project_id"`
 	Keys          struct {
 		SecretKey string `json:"secret_key"`
 	} `json:"keys"`
@@ -65,6 +67,22 @@ type step struct {
 	Flush      json.RawMessage   `json:"flush"`
 	Checkpoint string            `json:"checkpoint"`
 	Shutdown   json.RawMessage   `json:"shutdown"`
+	Feedback   *feedbackStep     `json:"feedback"`
+}
+
+// feedbackStep is one score: the route's body fields and the caller's Idempotency-Key.
+type feedbackStep struct {
+	TraceID        string         `json:"trace_id"`
+	SpanID         string         `json:"span_id"`
+	SessionID      string         `json:"session_id"`
+	Name           string         `json:"name"`
+	ScoreID        string         `json:"score_id"`
+	Value          any            `json:"value"`
+	DataType       string         `json:"data_type"`
+	Comment        string         `json:"comment"`
+	Metadata       map[string]any `json:"metadata"`
+	Retracted      bool           `json:"retracted"`
+	IdempotencyKey string         `json:"idempotency_key"`
 }
 
 func main() {
@@ -98,6 +116,8 @@ func run() error {
 func initSDK(spec runSpec) error {
 	return crucible.Init(crucible.Options{
 		Endpoint:      spec.OTLP.Endpoint,
+		APIURL:        spec.APIURL,
+		ProjectID:     spec.ProjectID,
 		SecretKey:     spec.Keys.SecretKey,
 		ServiceName:   spec.SDK.ServiceName,
 		Environment:   spec.SDK.Environment,

@@ -52,7 +52,8 @@ print(crucible_sdk.export_stats())
 crucible_sdk.shutdown()
 ```
 
-It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=0, queued_bytes=0)`.
+It prints `hello` and then
+`ExportStats(queued=0, dropped=0, exported=1, failed=0, queued_bytes=0, feedback_sent=0, feedback_dropped=0, feedback_failed=0)`.
 
 `init` starts the exporter. Spans go to `<endpoint>/v1/traces` as OTLP/HTTP protobuf with
 `Authorization: Bearer <secret_key>`; give the endpoint without the path.
@@ -60,7 +61,9 @@ It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=
 | Option | Default | Meaning |
 |---|---|---|
 | `endpoint` | `CRUCIBLE_ENDPOINT`, then `http://localhost:4318` | Base URL of an OTLP listener |
-| `secret_key` | `CRUCIBLE_SECRET_KEY` | The project's secret key, sent as a Bearer token |
+| `secret_key` | `CRUCIBLE_SECRET_KEY` | The project's secret key, sent as a Bearer token. Spans need the `ingest` scope and feedback the `write` scope; new keys have both |
+| `project_id` | `CRUCIBLE_PROJECT_ID` | The key's project id (a UUID), which `feedback` needs; see [Send feedback](#send-feedback) |
+| `api_url` | `CRUCIBLE_API_URL`, then `endpoint` | Base URL of the API listener, where `feedback` posts |
 | `service_name` | The OpenTelemetry resource's | Resource `service.name` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | Resource `service.version` |
@@ -71,8 +74,9 @@ It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=
 | `flush_interval` | `1.0` | Seconds between exports of a partial batch |
 
 Without a secret key, `init` logs a warning that says how to set one and runs anyway; Crucible then refuses the
-spans, and they count as failed. A `sample_rate` outside 0 to 1, a `queue_size` or `queue_bytes` below 1 or a
-`flush_interval` that is not positive raises `ValueError`. Calling `init` again replaces the previous settings.
+spans, and they count as failed. A `sample_rate` outside 0 to 1, a `queue_size` or `queue_bytes` below 1, a
+`flush_interval` that is not positive, an `api_url` that is not an `http` or `https` URL or a `project_id` that is not
+a UUID raises `ValueError`. Calling `init` again replaces the previous settings.
 
 **With an existing OpenTelemetry setup.** When the global tracer provider is an OpenTelemetry SDK
 `TracerProvider`, `init` adds one span processor to it and leaves its other processors and exporters alone.
@@ -80,10 +84,10 @@ Otherwise `init` creates a provider and sets it as the global one. Call `init` a
 configured. The `init` options and a per-process `service.instance.id` are added to the resource of the spans sent to
 Crucible only. Because the SDK joins the global provider, spans that other instrumentation opens reach Crucible too.
 
-- `flush(timeout=5.0)` waits until every span that ended before the call has been sent. It returns `False` when the
-  timeout passes first.
-- `shutdown(timeout=5.0)` sends what is queued, waiting at most `timeout` seconds, and stops. Later spans are not
-  sent. It also runs at interpreter exit, with the default timeout, so a script that ends normally does not need to
+- `flush(timeout=5.0)` waits until every span that ended and every score queued before the call has been sent. It
+  returns `False` when the timeout passes first.
+- `shutdown(timeout=5.0)` sends the queued spans and scores, waiting at most `timeout` seconds in all, and stops.
+  Later spans and scores are not sent. It also runs at interpreter exit, with the default timeout, so a script that ends normally does not need to
   call it.
 - A process forked after `init` starts its own export thread.
 
@@ -149,6 +153,69 @@ The setters act on the current span, so they also work inside spans that another
 Two notes for agents: the views show the model from `gen_ai.response.model`, which no helper sets, so set it on the
 span as the example does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that
 `tags` sets.
+
+## Send feedback
+
+`crucible_sdk.feedback(name, value, ...)` records a score with source `feedback` on a trace, a span or a session: the
+scores of [facts](facts.md), sent by the SDK.
+
+```python
+# feedback.py
+import os
+
+import crucible_sdk
+
+crucible_sdk.init(
+    endpoint="http://localhost:8080",  # the API listener, which also takes spans
+    secret_key=os.environ["CRUCIBLE_SECRET_KEY"],  # new keys have the ingest and write scopes
+    project_id=os.environ["CRUCIBLE_PROJECT_ID"],  # the key's project
+    service_name="support-agent",
+)
+
+with crucible_sdk.observe("answer", type="agent") as span:
+    crucible_sdk.set_output("Your refund is on its way.")
+    trace_id = format(span.get_span_context().trace_id, "032x")
+
+# Straight after the trace ends: its spans are sent first.
+crucible_sdk.feedback("helpful", 1, trace_id=trace_id, comment="solved it", idempotency_key=f"thumbs-{trace_id}")
+crucible_sdk.feedback("tone", "friendly", trace_id=trace_id, score_id="reviewer-2")
+
+crucible_sdk.flush()
+stats = crucible_sdk.export_stats()
+print(stats.exported, stats.feedback_sent, stats.feedback_dropped, stats.feedback_failed)
+crucible_sdk.shutdown()
+```
+
+Run against a Crucible server, it prints `1 2 0 0`, and the trace list shows both scores on the trace.
+
+Each score goes to `POST <api_url>/api/v1/projects/<project_id>/feedback` as JSON with
+`Authorization: Bearer <secret_key>`; the key needs the `write` scope.
+
+- **Where it goes.** `api_url` defaults to `endpoint`. The API listener (port 8080 by default) serves both
+  `/v1/traces` and the API, so pointing `endpoint` at it, as above, is enough. The OTLP listener (port 4318) serves
+  only ingest and answers 404 for the feedback route: with `endpoint` on port 4318, set `api_url` to the API
+  listener.
+- **The project id** is the key's project: `crucible admin create-key` prints it as `project_id`, a keys file names
+  it with each key, and the UI shows it as `project=` in the address bar. Without it, every score is dropped.
+- **The score.** The target is `trace_id`, `trace_id` with `span_id`, or `session_id`. `name` (without `#`) and
+  `value` (a number, a bool or a string) are required; `score_id`, `data_type` (`numeric`, `boolean`,
+  `categorical` or `text`), `comment` (4 KiB), `metadata` (a JSON object, 16 KiB) and `retracted` are optional. The
+  latest score of a name (and `score_id`) on a target wins; `retracted=True` removes it.
+- **Never in the way.** `feedback` queues the score and returns at once; it never raises. One background thread posts
+  the scores in call order, one at a time, each after the spans that ended before the call, so a score on a trace
+  that just ended finds the trace.
+- **Sent once.** Each score carries an `Idempotency-Key`: `idempotency_key` when you give one, else a random key. A
+  failed connection, a timeout, 408, 429, a 5xx answer and a `conflict` 409 are retried with the same key and body,
+  three attempts in all, after the answer's `Retry-After` (at most 10 s) or else after 1 s and 2 s, so Crucible
+  writes the score once. Any other refusal is final.
+- **Counted.** Up to 1,024 scores wait to be sent; beyond that a score is dropped. `export_stats()` counts
+  `feedback_sent`, `feedback_dropped` (queue full, no project id, or `shutdown` out of time) and `feedback_failed`
+  (refused, or failed on every attempt). The first drop and the first failure each log one warning on the
+  `crucible_sdk` logger that names the URL, Crucible's answer and the settings to check.
+- **Not found yet.** Crucible answers 404 for a target it does not know yet, which counts as a failure: a trace
+  none of whose spans has ended and been sent (a score sent from inside the trace's only open span, for example), and
+  a session, which Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended,
+  and a session once its spans are stored.
 
 ## Instrument an MCP server
 
@@ -327,6 +394,9 @@ failed and is not sent again.
 | `queued_bytes` | Estimated bytes of the queued spans and of the batch being exported |
 | `exported` | Spans the collector accepted |
 | `failed` | Spans in export requests that failed |
+| `feedback_sent` | Scores Crucible accepted |
+| `feedback_dropped` | Scores never sent: the feedback queue was full, no project id is set, or `shutdown` ran out of time |
+| `feedback_failed` | Scores Crucible refused, or that failed on every attempt |
 
 ## Configuration
 
@@ -334,10 +404,12 @@ failed and is not sent again.
 |---|---|
 | `CRUCIBLE_ENDPOINT` | `endpoint` when the option is not given |
 | `CRUCIBLE_SECRET_KEY` | `secret_key` when the option is not given |
+| `CRUCIBLE_PROJECT_ID` | `project_id` when the option is not given |
+| `CRUCIBLE_API_URL` | `api_url` when the option is not given |
 
 Every other setting is an option of `init` or `instrument`. The OpenTelemetry exporter the SDK builds is configured
-in code, so `OTEL_EXPORTER_OTLP_*` endpoint settings do not redirect it. Each export carries
-`User-Agent: crucible-sdk-python/<version>`.
+in code, so `OTEL_EXPORTER_OTLP_*` endpoint settings do not redirect it. Each export and each feedback request
+carries `User-Agent: crucible-sdk-python/<version>`.
 
 ## Limits
 

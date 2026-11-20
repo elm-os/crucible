@@ -5,6 +5,7 @@ import type { PayloadField } from "@/api/generated/PayloadField";
 import { EmptyState } from "@/components/empty-state";
 import { useLoadingPhase } from "@/components/section";
 import { StatusLabel } from "@/components/status";
+import { MediaUses } from "@/features/payload/media-uses";
 import { PayloadViewer } from "@/features/payload/payload-viewer";
 import { formatCost, formatCount, formatDuration, formatOffset, formatTime } from "@/lib/format";
 import { useUrlParam } from "@/lib/url-state";
@@ -111,7 +112,7 @@ function SpanDetails({
           <SpanOverview node={node} tree={tree} />
         </TabsPanel>
         {PAYLOAD_TABS.map((t) => (
-          <TabsPanel key={t.field} value={t.field}>
+          <TabsPanel key={t.field} value={t.field} className="flex flex-col gap-4">
             <PayloadViewer
               key={`${span.span_id}/${t.field}`}
               project={project}
@@ -119,6 +120,14 @@ function SpanDetails({
               field={t.field}
               noun={t.noun}
               ioShape={span.io_shape}
+            />
+            <MediaUses
+              key={`${span.span_id}/${t.field}/media`}
+              project={project}
+              traceId={trace}
+              spanId={span.span_id}
+              field={t.field}
+              noun={t.noun}
             />
           </TabsPanel>
         ))}

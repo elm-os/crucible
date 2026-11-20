@@ -1,5 +1,6 @@
 // Package collectortest is an OTLP/HTTP trace collector for tests. It keeps every request it receives, raw
-// and decoded.
+// and decoded. It also answers the feedback route, POST /api/v1/projects/{id}/feedback: with the scripted answers
+// while any are left, else with 201.
 package collectortest
 
 import (
@@ -7,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sync"
 	"testing"
 
@@ -16,11 +18,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Request is one export request as received.
+// Request is one request as received.
 type Request struct {
-	Method, Path, ContentType, Authorization, UserAgent string
-	Body                                                []byte
+	Method, Path, ContentType, Authorization, UserAgent, IdempotencyKey string
+	Body                                                                []byte
 }
+
+// FeedbackAnswer is one scripted answer to a feedback post. Status 0 closes the connection without answering.
+type FeedbackAnswer struct {
+	Status int
+	Header map[string]string
+	Body   string
+}
+
+var feedbackPath = regexp.MustCompile(`^/api/v1/projects/[^/]+/feedback$`)
 
 // Span is one received span with its attributes decoded to Go values: string, bool, int64, float64,
 // []string or []any.
@@ -43,6 +54,7 @@ type Collector struct {
 	mu       sync.Mutex
 	requests []Request
 	spans    []Span
+	answers  []FeedbackAnswer
 	stall    chan struct{}
 }
 
@@ -79,12 +91,17 @@ func (c *Collector) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := Request{
-		Method:        r.Method,
-		Path:          r.URL.Path,
-		ContentType:   r.Header.Get("Content-Type"),
-		Authorization: r.Header.Get("Authorization"),
-		UserAgent:     r.Header.Get("User-Agent"),
-		Body:          body,
+		Method:         r.Method,
+		Path:           r.URL.Path,
+		ContentType:    r.Header.Get("Content-Type"),
+		Authorization:  r.Header.Get("Authorization"),
+		UserAgent:      r.Header.Get("User-Agent"),
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		Body:           body,
+	}
+	if r.Method == http.MethodPost && feedbackPath.MatchString(r.URL.Path) {
+		c.answerFeedback(w, req)
+		return
 	}
 	var export coltracepb.ExportTraceServiceRequest
 	if err := proto.Unmarshal(body, &export); err != nil {
@@ -118,7 +135,46 @@ func (c *Collector) handle(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
-// Requests returns the export requests received so far.
+func (c *Collector) answerFeedback(w http.ResponseWriter, req Request) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req)
+	answer := FeedbackAnswer{Status: http.StatusCreated, Header: map[string]string{"Content-Type": "application/json"}, Body: `{"key":"k"}`}
+	if len(c.answers) > 0 {
+		answer, c.answers = c.answers[0], c.answers[1:]
+	}
+	c.mu.Unlock()
+	if answer.Status == 0 {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
+	for k, v := range answer.Header {
+		w.Header().Set(k, v)
+	}
+	w.WriteHeader(answer.Status)
+	_, _ = io.WriteString(w, answer.Body)
+}
+
+// AnswerFeedback scripts the answers to the next feedback posts, in order.
+func (c *Collector) AnswerFeedback(answers ...FeedbackAnswer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.answers = append(c.answers, answers...)
+}
+
+// Feedback returns the feedback posts received so far, in arrival order.
+func (c *Collector) Feedback() []Request {
+	var out []Request
+	for _, r := range c.Requests() {
+		if feedbackPath.MatchString(r.Path) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Requests returns the requests received so far, export and feedback, in arrival order.
 func (c *Collector) Requests() []Request {
 	c.mu.Lock()
 	defer c.mu.Unlock()

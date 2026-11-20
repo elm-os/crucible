@@ -23,11 +23,12 @@ const READY_POLL: Duration = Duration::from_millis(250);
 /// export jobs need a control plane, whose rows are the exports: without one, `exports` is `None`, and so
 /// is `lifecycle`, which also needs the WAL of the node. `alerts` are the jobs of alerting, which need what
 /// `crate::alerts::build` wires: the scheduler of evaluations, their consumer and the consumer of the
-/// notification outbox.
+/// notification outbox. `media` is the media collector, when an object store is configured.
 fn registry(
     exports: Option<&ExportRuntime>,
     alerts: Vec<Job>,
     lifecycle: Option<&Lifecycle>,
+    media: Option<Job>,
 ) -> Registry {
     let mut registry = Registry::new();
     registry.register(housekeeping::job());
@@ -39,6 +40,9 @@ fn registry(
         registry.register(job);
     }
     for job in lifecycle.into_iter().flat_map(Lifecycle::jobs) {
+        registry.register(job);
+    }
+    if let Some(job) = media {
         registry.register(job);
     }
     registry
@@ -56,8 +60,9 @@ pub(crate) fn start(
     exports: &ExportRuntime,
     alerts: Vec<Job>,
     lifecycle: Option<&Lifecycle>,
+    media: Option<Job>,
 ) -> JoinHandle<()> {
-    let registry = registry(control.as_ref().map(|_| exports), alerts, lifecycle);
+    let registry = registry(control.as_ref().map(|_| exports), alerts, lifecycle, media);
     let holder = format!("node-{}", env.new_id());
     let task_env = env.clone();
     env.spawn("jobs", async move {
@@ -90,10 +95,13 @@ mod tests {
 
     #[test]
     fn the_registry_holds_the_housekeeping_job() {
-        assert_eq!(registry(None, Vec::new(), None).names(), ["housekeeping"]);
+        assert_eq!(
+            registry(None, Vec::new(), None, None).names(),
+            ["housekeeping"]
+        );
         let exports = ExportRuntime::new();
         assert_eq!(
-            registry(Some(&exports), Vec::new(), None).names(),
+            registry(Some(&exports), Vec::new(), None, None).names(),
             ["housekeeping", "exports", "exports-sweep"]
         );
     }
@@ -118,7 +126,7 @@ mod tests {
         let evaluator = crucible_alerts::Evaluator::new(Arc::new(NoSeries));
         let jobs = Vec::from(crucible_alerts::jobs(evaluator));
         assert_eq!(
-            registry(None, jobs, None).names(),
+            registry(None, jobs, None, None).names(),
             ["housekeeping", "alert-scheduler", "alert-evaluations"]
         );
     }
@@ -135,9 +143,9 @@ mod tests {
                 sim.rng("pg").as_ref(),
                 crucible_sim::pg_model::PgFaults::default(),
             ));
-            let lifecycle = Lifecycle::new(&host.env, control, wal);
+            let lifecycle = Lifecycle::new(&host.env, control, wal, false);
             assert_eq!(
-                registry(None, Vec::new(), Some(&lifecycle)).names(),
+                registry(None, Vec::new(), Some(&lifecycle), None).names(),
                 [
                     "housekeeping",
                     "lifecycle-node",
@@ -178,6 +186,7 @@ mod tests {
                 &ExportRuntime::new(),
                 Vec::new(),
                 None,
+                None,
             );
             // The housekeeping job takes its lease as soon as it runs.
             let housekeeping = async || {
@@ -206,7 +215,14 @@ mod tests {
     fn without_postgres_no_job_task_starts() {
         crucible_sim::run(1, |sim| async move {
             let host = sim.host("node", &sim.disk("node"), 0);
-            let mut jobs = start(&host.env, None, &ExportRuntime::new(), Vec::new(), None);
+            let mut jobs = start(
+                &host.env,
+                None,
+                &ExportRuntime::new(),
+                Vec::new(),
+                None,
+                None,
+            );
             // A job task runs until shutdown; with none started, the task that holds them ends at once.
             assert_eq!(
                 host.env
