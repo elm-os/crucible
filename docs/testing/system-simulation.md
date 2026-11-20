@@ -150,12 +150,19 @@ exactly that flag, and two admissions of one frame above the watermark, before a
 every span that both kept the same flag. So a mark taken after the duplicate drop, or a prefix that lost a frame
 that a kept span's flag relied on, is a violation.
 
+The oracle also checks the rule where it is broken, at the admission itself. The rule gives each mark the support
+that contract 5.3 names (the LSN of the frame whose span carries the usage, the highest when several marks reach a
+span), and a kept span flagged on an earlier frame's support must have the admission rely on that frame
+(`Admission::relies_on` at or below it), which the WAL then keeps until the frame is checkpointed. Without this
+check a stage B that forgot the reliance was caught only when garbage collection removed that frame while the
+frame was unchecked and a restart followed.
+
 A span that an admission dropped, an exact repeat or a span that a deletion selects, has no row from it, so its
 flag relies on nothing (contract 5.3): garbage collection may remove the frame that marked it, and a restart then
 flags it otherwise. The corpus line of seed 44676373797002 (invariant I7) is a run where the oracle compared such
 flags too: one request went into the log three times (frames 25, 27 and 36), and another, with a span that
 carries usage under a span of the first, three times as well (frames 9, 13 and 26). Frame 36 relied on frame 27
-for its repeats, so the collection after its batch was sealed removed every segment up to frame 26, and after the
+for its repeats, so a collection while frame 36 was unchecked removed every segment below frame 27, and after the
 restart the rule no longer flagged the dropped repeat in frame 36 that frame 26 had marked. No admission of frame
 36 kept a span.
 
@@ -211,6 +218,7 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `skip-tombstone-filter` | `crucible-shipper` | Stage B applies no deletion: neither a `Tombstone` frame of the log nor a request read before shipping drops anything | I9: a row that a completed deletion request selects landed after the request completed | 2 | `0xb04e3dca437a47` |
 | `ignore-tombstone-issuer` | `crucible-normalize` | A deletion by user that names an issuer matches the subject hash of an MCP operation under the operation's own issuer | I9: an MCP operation that no deletion selects (its subject is the user's under another issuer than the request names) is in no row of `mcp_ops` | 6000 | `0xec5be8fac317f1` |
 | `seed-only-open-requests` | `crucible-shipper` | Before shipping, the shipper applies only the deletion requests that are still open, not those that completed while the node was down | I9: a row that a request completed while the node was down selects landed after the request completed | 2 | `0xb04e3dca437a47` |
+| `skip-flag-reliance` | `crucible-normalize` | A kept span flagged a usage aggregate on an earlier frame's support does not lower `relies_on` | I2: a kept span is flagged on the usage of an earlier frame that the admission does not rely on | 15000 | `0xc1f46c2a19a297` |
 
 Of the 600 runs of the budget, the mutants are caught by 594, 140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48,
 219, 292, 41, 127, 11 and 96 runs, in the order of the table. The dimension `deletions` moved the first catching
@@ -240,6 +248,13 @@ usage one time in four. When such a span carries none and its request was acknow
 project that may repeat a span (with `client_retries`) sends the latest of them again, with a new child that carries
 usage and the awaited parent beside it. The directed and property tests of `crucible-normalize`
 (`usage_aggregate.rs`) cover the same defect on every run.
+
+`skip-flag-reliance` shows only where a kept span's flag is the one decision that reaches back to an earlier
+frame: a span carries usage below a parent that a later request sends, and another frame of the trace comes
+between them, so the admission's sightings rely on nothing that early. While the oracle compared only the flags
+of two admissions, no run of the budget caught it, because the frame had to be collected while the parent's frame
+was unchecked and a restart had to follow. The check at admission (see "Usage aggregates, exactly") catches it
+without either.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.
@@ -283,7 +298,7 @@ Mutant names: `skip-wal-sync`, `drop-token`, `gc-above-checkpoint`, `silent-evic
 `skip-probe-after-unknown`, `ack-before-append`, `double-count-rollup`, `drop-fact-on-retry`,
 `frame-quarantine-without-copy`, `count-aggregate-usage`, `collect-what-frames-rely-on`,
 `misclassify-caller-fault`, `sum-capture-sources`, `drop-rollup-marker`, `mark-after-duplicate-drop`,
-`skip-tombstone-filter`, `ignore-tombstone-issuer`, `seed-only-open-requests`.
+`skip-tombstone-filter`, `ignore-tombstone-issuer`, `seed-only-open-requests`, `skip-flag-reliance`.
 
 A failing run prints its replay command and the line to append to the corpus; `--record` appends it.
 

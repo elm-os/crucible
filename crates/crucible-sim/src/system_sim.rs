@@ -2855,10 +2855,16 @@ impl StageBHook for Observed {
                 if let Some(support) = support
                     && admission.relies_on.is_none_or(|at| at.get() > support)
                 {
+                    let relied = admission
+                        .relies_on
+                        .map_or_else(
+                            || "no earlier frame".to_owned(),
+                            |at| format!("frame {}", at.get()),
+                        );
                     ledger.violate(Violation::DerivedMismatch(format!(
                         "frame {lsn} keeps a span that the usage in frame {support} flags, and its admission \
-                         relies on no frame that early, so garbage collection may remove frame {support} \
-                         before frame {lsn} is checkpointed"
+                         relies on {relied}, so garbage collection may remove frame {support} before frame \
+                         {lsn} is checkpointed"
                     )));
                 }
                 // I2: the pairs of a sealed batch hold the same spans whether they land before or after a
