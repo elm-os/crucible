@@ -28,6 +28,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 | [Exploring traces](exploring-traces.md) | Home, traces and the trace page, spans, sessions, users, filters and the time range |
 | [Search](search.md) | Finding spans by the words of their input and output or their metadata, and reading payloads |
 | [Tags, flags, scores and corrections](facts.md) | Adding facts in the UI and the API, and how they resolve |
+| [Dashboards](dashboards.md) | The starter dashboards, your own dashboards, the editor, the widget kinds and who can edit |
 | [Alerts](alerts.md) | Alert rules, notification channels and verifying a webhook |
 | [Exports](exports.md) | Exporting spans from the UI, the API, the MCP server and `crucible export`, and validating models with rightmodeler |
 | [SQL workspace](sql-workspace.md) | Read-only SQL over the project's telemetry, saved queries and limits |
