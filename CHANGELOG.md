@@ -37,9 +37,9 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - A read-only SQL workspace, isolated per project by ClickHouse users, row policies and quotas, with saved queries
   and CSV, JSON lines and Parquet downloads.
 - A metrics query API over spans and traces.
-- Dashboards over the metrics query: built-in starters for an agent overview, cost and tokens, latency, errors
-  and MCP servers, and your own, edited on a 12-column grid by pointer or keyboard, with stat, time series, bar, table and Markdown
-  widgets.
+- Dashboards over the metrics query: built-in starters for an agent overview, cost and tokens, latency, errors and
+  MCP servers, and your own, edited on a 12-column grid by pointer or keyboard, with stat, time series, bar, table
+  and Markdown widgets.
 
 ### MCP
 
