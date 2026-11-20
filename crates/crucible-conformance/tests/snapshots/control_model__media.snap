@@ -1,0 +1,57 @@
+---
+source: crates/crucible-conformance/tests/control_model.rs
+expression: "transcript(\"media\")"
+---
+insert a pending object: ()
+insert an uploaded object: ()
+insert the same bytes again in the project: error UniqueViolation("media_objects_project_id_sha256_key")
+insert the same bytes in another project: ()
+insert a taken id: error UniqueViolation("media_objects_pkey")
+insert for a missing project: error ForeignKeyViolation("media_objects_project_id_fkey")
+object: Some("01a3185c-5001-7000-8000-000000000001 16 image/png 101 pending created 2027-01-15T08:00:16.000000Z uploaded None")
+object under another project: false
+object by hash: Some("01a3185c-5002-7000-8000-000000000002 32 image/png 102 uploaded created 2027-01-15T08:00:32.000000Z uploaded Some(\"2027-01-15T08:16:40.000000Z\")")
+objects by a hash range that holds one: ["01a3185c-5001-7000-8000-000000000001 16 image/png 101 pending created 2027-01-15T08:00:16.000000Z uploaded None"]
+objects by a hash range that holds both, at most one: ["01a3185c-5001-7000-8000-000000000001 16 image/png 101 pending created 2027-01-15T08:00:16.000000Z uploaded None"]
+rearm a pending object: true
+rearm an uploaded object: false
+the rearmed object: Some("01a3185c-5001-7000-8000-000000000001 16 image/jpeg 7 pending created 2027-01-15T08:08:20.000000Z uploaded None")
+add a use: true
+add the same use again: false
+add a use without a span: true
+add a use of another object in the trace: true
+add a use in another trace: true
+add a use of an object that has no row: error ForeignKeyViolation("media_refs_media_id_fkey")
+the uses of a span: ["01a3185c-5001-7000-8000-000000000001 trace 1 span Some(\"0101010101010101\") field \"input\" at 2027-01-15T08:01:40.000000Z"]
+the uses of a trace: ["01a3185c-5001-7000-8000-000000000001 trace 1 span None field \"\" at 2027-01-15T08:01:40.000000Z", "01a3185c-5001-7000-8000-000000000001 trace 1 span Some(\"0101010101010101\") field \"input\" at 2027-01-15T08:01:40.000000Z", "01a3185c-5002-7000-8000-000000000002 trace 1 span Some(\"0202020202020202\") field \"output\" at 2027-01-15T08:05:00.000000Z"]
+the uses of a trace under another project: 0
+mark uploaded under another project: false
+mark uploaded: true
+mark uploaded again: false
+unreferenced while every object is used: []
+delete an uploaded object that is used: false
+delete the uses of a trace before a time: 2
+the uses of the trace left: ["01a3185c-5002-7000-8000-000000000002 trace 1 span Some(\"0202020202020202\") field \"output\" at 2027-01-15T08:05:00.000000Z"]
+delete the uses of no trace: 0
+delete the uses before a cut-off: 2
+unreferenced once the uses are gone: ["01a3185c-5002-7000-8000-000000000002 32 image/png 102 uploaded created 2027-01-15T08:00:32.000000Z uploaded Some(\"2027-01-15T08:16:40.000000Z\")", "01a3185c-5001-7000-8000-000000000001 16 image/jpeg 7 uploaded created 2027-01-15T08:08:20.000000Z uploaded Some(\"2027-01-15T08:15:00.000000Z\")"]
+delete an unused uploaded object: true
+delete it again: false
+existing: ["01a3185c-5002-7000-8000-000000000002"]
+stale pending before a time: ["01a3185c-5004-7000-8000-000000000004 16 image/png 104 pending created 2027-01-15T08:00:16.000000Z uploaded None", "01a3185c-5007-7000-8000-000000000007 112 image/png 107 pending created 2027-01-15T08:01:52.000000Z uploaded None"]
+stale pending before an earlier time: ["01a3185c-5004-7000-8000-000000000004 16 image/png 104 pending created 2027-01-15T08:00:16.000000Z uploaded None"]
+delete a pending object that is not stale yet: false
+delete a stale pending object with its use: true
+its uses: 0
+delete an uploaded object as pending: false
+a transaction reads the object: true
+the unused object is deleted outside: true
+the transaction then adds a use: error SerializationFailure
+a transaction reads the object: true
+a use is recorded outside: true
+the transaction then deletes it as unused: error ForeignKeyViolation("media_refs_media_id_fkey")
+the used object stays: true
+a transaction reads the pending object: true
+a use is recorded outside: true
+the transaction then deletes it as stale: error ForeignKeyViolation("media_refs_media_id_fkey")
+the pending object stays with its use: 1

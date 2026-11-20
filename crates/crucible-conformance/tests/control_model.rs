@@ -92,7 +92,12 @@ fn dashboards() {
 
 #[test]
 fn every_script_has_a_test() {
-    assert_eq!(SCRIPTS.len(), 12);
+    assert_eq!(SCRIPTS.len(), 13);
+}
+
+#[test]
+fn media() {
+    insta::assert_snapshot!(transcript("media"));
 }
 
 #[test]

@@ -29,11 +29,14 @@ pub(crate) struct Lifecycle {
     /// The telemetry store and the project salts, once the store is up. The leader jobs do nothing before
     /// that.
     stores: Arc<OnceLock<LeaderStores>>,
+    /// Whether the deployment stores media, which a completed deletion request then reports on.
+    media: bool,
 }
 
 impl Lifecycle {
-    /// The lifecycle of the node whose WAL is `wal`, over the control store.
-    pub(crate) fn new(env: &Env, control: Arc<dyn ControlStore>, wal: Wal) -> Self {
+    /// The lifecycle of the node whose WAL is `wal`, over the control store. `media` says whether the deployment
+    /// stores media.
+    pub(crate) fn new(env: &Env, control: Arc<dyn ControlStore>, wal: Wal, media: bool) -> Self {
         let node = Arc::new(NodeState::new(
             Arc::new(WalLog(wal)),
             env!("CARGO_PKG_VERSION"),
@@ -43,12 +46,14 @@ impl Lifecycle {
             service: Service::new(env, control, Arc::clone(&node)),
             node,
             stores: Arc::default(),
+            media,
         }
     }
 
     /// The node timer and the three leader jobs of the `lifecycle` lease.
     pub(crate) fn jobs(&self) -> Vec<Job> {
-        let config = LifecycleConfig::default();
+        let mut config = LifecycleConfig::default();
+        config.media = self.media;
         let stores = Arc::clone(&self.stores);
         let source: LeaderSource = Arc::new(move || stores.get().cloned());
         let mut jobs = vec![node_job(Arc::clone(&self.node), &config)];
