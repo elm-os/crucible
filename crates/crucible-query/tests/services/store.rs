@@ -31,6 +31,8 @@ struct State {
     tables: BTreeMap<TableId, Vec<StoredRow>>,
     unavailable: bool,
     executed: Vec<QueryPlan>,
+    /// A table whose reads find the store unavailable while the others answer.
+    unavailable_table: Option<TableId>,
     /// Whether each read yields once before it answers, as a read that takes time does.
     slow: bool,
     /// Reads in flight now, and the most that were in flight at once.
@@ -368,9 +370,20 @@ impl FakeStore {
         self.state().most_in_flight
     }
 
+    /// Makes the reads of `table` find the store unavailable, while reads of the other tables answer.
+    pub fn set_unavailable_table(&self, table: TableId) {
+        self.state().unavailable_table = Some(table);
+    }
+
     /// The answer to one read, once it has been in flight.
     fn answer(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
-        if self.state().unavailable {
+        let state = self.state();
+        let down = state.unavailable
+            || state
+                .unavailable_table
+                .is_some_and(|table| plan.root().tables().contains(&table));
+        drop(state);
+        if down {
             return Err(QueryError::Unavailable("the store is down".to_owned()));
         }
         let rows = match plan.root() {
