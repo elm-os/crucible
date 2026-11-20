@@ -65,6 +65,21 @@ Every write answers 201 with the fact's id, its key, a `version` and the target'
 the write-ahead log; reads show it once it reaches ClickHouse, within a few seconds. All four take an
 `Idempotency-Key` header (1 to 128 characters of `[A-Za-z0-9_-]`), honoured for 24 hours.
 
+### Feedback from a browser
+
+A web page can send feedback without holding a secret: `POST feedback` also takes the project's public key alone, as
+`Authorization: Bearer <public key>`, and answers cross-origin requests without credentials. The public key acts as
+its key pair, so the pair needs the `write` scope; the body may hold at most 16 KiB. The public key writes feedback
+and nothing else: every other route refuses it.
+
+```js
+await fetch(`${crucibleUrl}/api/v1/projects/${projectId}/feedback`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${publicKey}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ trace_id: traceId, name: "helpful", value: 1 }),
+});
+```
+
 ## How facts resolve
 
 Facts are append-only. The latest write of a key on a target wins:
@@ -114,7 +129,9 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
 ```
 
 The trace list and the trace page show the resolved values: the row of that trace has `tags: ["reviewed"]` and a
-`facts` object with the tags, `bookmarked: true`, the scores (without comment and metadata) and the correction.
+`facts` object with the tags, `bookmarked: true`, the scores (without comment and metadata) and the correction. The
+trace list's `tags` filter matches the same resolved tags: `tags=reviewed` finds the trace, and `tags=beta` no
+longer does.
 `author_kind` is `user` for a signed-in person and `api_key` for a key, with the user's or the key's id.
 
 The SQL workspace reads every edit, retracted ones included, in `crucible_sql.scores`, `crucible_sql.tags`,
