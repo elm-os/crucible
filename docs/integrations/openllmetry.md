@@ -1,9 +1,8 @@
 # OpenLLMetry
 
 The Traceloop SDK and the OpenLLMetry instrumentations export OTLP to `/v1/traces`. Crucible reads their span kinds,
-workflow names, association properties, prompts and token counts. Current instrumentations of the major model
-providers also write OpenTelemetry GenAI keys (`gen_ai.input.messages`, `gen_ai.usage.*`), which map as native
-fields on the same spans.
+workflow names, association properties, prompts and token counts. OpenTelemetry GenAI keys (`gen_ai.*`) on the same
+spans map as native fields.
 
 Verified with traceloop-sdk 0.63.1 (Python).
 
@@ -64,8 +63,8 @@ nightly(7)
 | Model parameters | `llm.frequency_penalty`, `llm.presence_penalty`, `llm.top_k`, `llm.chat.stop_sequences`, `llm.request.repetition_penalty`, `llm.request.reasoning_effort`, and `llm.is_streaming` as `stream` |
 | Completion start | The first `gen_ai.content.completion.chunk` or `llm.content.completion.chunk` event |
 
-Models, providers and input and output token counts come from the OpenTelemetry GenAI keys the instrumentations
-write (`gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system`, `gen_ai.usage.input_tokens`). The trace list
+Models, providers and input and output token counts are read from the OpenTelemetry GenAI keys
+(`gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system`, `gen_ai.usage.input_tokens`). The trace list
 shows the workflow name, user, session, tokens and cost; metadata is in `crucible_sql.span_payloads`.
 
 ## Known limits
@@ -73,4 +72,4 @@ shows the workflow name, user, session, tokens and cost; metadata is in `crucibl
 - Association properties become metadata of each span, not trace metadata.
 - `traceloop.entity.name`, `traceloop.entity.path` and `traceloop.entity.version` are not mapped and stay among the
   span's `attributes`, as do prompt templates (`traceloop.prompt.template`, `traceloop.prompt.template_variables`)
-  and the agent name an `@agent` decorator sets (`gen_ai.agent.name`).
+  and the agent name (`gen_ai.agent.name`).

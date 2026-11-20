@@ -72,5 +72,6 @@ gives a span without a log level the default for its type, and Crucible shows it
   is read, its JSON quotes removed.
 - `mlflow.traceRequestId`, `mlflow.spanFunctionName` and `mlflow.message.format` are not mapped and stay among the
   span's `attributes`. Tool calls inside raw input or output bodies are not extracted.
-- With MLflow 3.18.0 exporting over OTLP, `mlflow.update_current_trace(...)` inside a traced function logs `No active
-  trace found`, and the root span of that trace is not exported.
+- With MLflow 3.18.0 exporting over OTLP, after `mlflow.update_current_trace(...)` inside a traced function the root
+  span of that trace is not exported: MLflow logs `Failed to end span <id>: Cannot mutate immutable
+  BoundedAttributes`.
