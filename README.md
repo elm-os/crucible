@@ -66,6 +66,7 @@ Crucible export to validate cheaper or newer models against the outputs you acce
 ClickHouse and Postgres, with no clone and no build:
 
 ```sh
+mkdir crucible && cd crucible
 curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
 docker compose up -d --wait
