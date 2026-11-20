@@ -33,6 +33,7 @@
 | [SQL workspace](guides/sql-workspace.md) | Read-only SQL over a project's telemetry |
 | [REST API](api/README.md) | Every route, authentication, errors, windows, cursors and idempotency |
 | [Integrations](integrations/README.md) | Pointing other instrumentation libraries and tracing SDKs at Crucible, and what each maps |
+| [Migration](migration/README.md) | Moving an application's tracing from another platform to Crucible |
 | [Authorization matrix](architecture/authz-matrix.md) | The permission of every route, and the roles and scopes that grant it |
 
 ## Comparisons
