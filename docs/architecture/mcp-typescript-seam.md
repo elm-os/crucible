@@ -1,11 +1,13 @@
 # MCP TypeScript seam: decision record
 
 Status: decided by a spike on 2026-11-17. The spike lives in `sdk/typescript/spikes/mcp-seam/` and is not part of
-any published package. The production SDK described under "API sketch" is planned, not shipped.
+any published package. The SDK's `@elm-os/crucible/mcp` entry point implements the decision; the API sketch below is
+the design it started from, and the [TypeScript SDK guide](../guides/sdk-typescript.md#instrument-an-mcp-server)
+describes the API as it is.
 
 ## Question
 
-The Crucible TypeScript SDK will instrument MCP servers built on the official TypeScript MCP SDK
+The Crucible TypeScript SDK instruments MCP servers built on the official TypeScript MCP SDK
 (`@modelcontextprotocol/server`, 2.x line). That SDK has no public request middleware. This record decides where
 Crucible attaches, so that every request and notification becomes one operation with method, target, JSON-RPC id,
 timing, outcome class, era and client info, without reading private members of the SDK.
@@ -171,7 +173,7 @@ stream response, at the cost of losing handler context for `annotateError` and `
 
 ## API sketch for the production SDK
 
-Planned for the `./mcp` subpath of `@elm-os/crucible`, with `@modelcontextprotocol/server` as an optional peer.
+The design for the `./mcp` subpath of `@elm-os/crucible`, with `@modelcontextprotocol/server` as an optional peer.
 The peer range can be `>=2.0.0 <3` on this evidence; the design asked for `>=2.4`.
 
 ```ts
