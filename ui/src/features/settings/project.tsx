@@ -226,15 +226,16 @@ function RenameForm({ project }: { project: Project }) {
           maxLength={200}
           pattern={NAME_PATTERN}
           autoComplete="off"
+          readOnly={rename.isPending}
           value={value}
           onValueChange={(next) => {
             setDraft(next);
-            if (!rename.isPending) rename.reset();
+            rename.reset();
           }}
           className="max-w-sm"
         />
         <FieldDescription>
-          The name in the project menu and on these pages. The slug and the id stay the same.
+          Shown in the project menu and on these settings pages. The slug and the id stay the same.
         </FieldDescription>
         <FieldError match="valueMissing">Enter a name for the project.</FieldError>
         <FieldError match="patternMismatch">Enter a name for the project.</FieldError>

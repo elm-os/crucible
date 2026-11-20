@@ -81,6 +81,7 @@ pnpm --filter crucible-ui exec playwright test
 | Setup | Not applicable: requests nothing until submitted | Opens Crucible signed in as the owner | Checked before sending (password 12 to 128 characters, checked off live). `token_invalid` marks the token field; `conflict` links to sign in | Not applicable |
 | Invitation | Not applicable: requests nothing until submitted | Opens Crucible signed in | `token_invalid` says to ask for a new link; `conflict` links to sign in | A link without its token says it is incomplete and requests nothing |
 | Password reset | Not applicable: requests nothing until submitted | Requesting a link focuses "Request received" with the administrator's command (this version sends no email); a new password with the link's token focuses "Password changed" with a sign-in link | `token_invalid` says how to get a new link | Not applicable: the page always names `crucible admin reset-password <email>` |
+| Settings: project | Name, slug and id skeletons after 300 ms, announced; the related settings show at once | The project's name, slug and id from `GET projects`, with "Copy id" (where the browser has no clipboard, it says to select the id by hand). Project admins rename it: the name is checked before sending (not only spaces), Rename sends `If-Match` and says "Renamed. The project menu shows the new name.", and the project menu shows it. Without `manage` the name is read-only, with who renames it. Pointers to the Retention tab and to `DELETE projects/{project_id}` for deleting a whole project | In-section card with the mapped copy, reference id and a retry that refetches only the list. A stale version (`precondition_failed`) reloads the project, shows its current name and says someone renamed it; `validation_failed` marks the name; `forbidden` says only project admins rename | An organization without projects points owners and admins to New project and tells others to ask; a project the list no longer has says so. Without a control plane, or for a project outside the session, the page explains and requests nothing |
 | Settings: members | Three skeleton rows after 300 ms, announced; the invitations section loads on its own | Name, email, role and status. Owners and admins get a role menu (never owner) and Remove, which asks first, on other non-owner rows; nobody edits their own row | In-section card with the mapped copy, reference id and a retry that refetches only the members | "No members yet." Without a control plane, says which setting turns members on and requests nothing |
 | Settings: invitations | Three skeleton rows after 300 ms, announced | Email, role, status and expiry; Revoke, which asks first, on pending ones. "Invite member" creates one and shows its link once, until the dialog closes | In-section card with a retry that refetches only the invitations | First use: "No invitations yet." |
 | Settings: API keys | Three skeleton rows after 300 ms, announced | Public key, note, scopes, last use and status; Revoke on active keys asks first and sends `If-Match`. "Create key" shows the secret and public keys once, until the dialog closes | In-section card with a retry that refetches only the keys; a stale version (`precondition_failed`) refreshes the list | First use: "No API keys yet." Without the `manage` permission, for a project outside the session, with no projects, or without a control plane, the page explains and requests no keys |
@@ -125,6 +126,7 @@ pnpm --filter crucible-ui exec playwright test
 | Setup | `onboarding.spec.ts` "first-run setup": success, checked before sending, token and owner errors (3); `phone.spec.ts` | `onboarding-forms.test.tsx`, `client.test.ts` |
 | Invitation | `onboarding.spec.ts` "invitations": success, error, no token (3); `phone.spec.ts` | `onboarding-forms.test.tsx`, `client.test.ts` |
 | Password reset | `onboarding.spec.ts` "password reset": request, confirm, error (3) | `onboarding-forms.test.tsx`, `client.test.ts` |
+| Settings: project | `project-settings.spec.ts`: loading then success with the id copied, rename by Enter with `If-Match` and CSRF, someone else's rename reloaded, a blank and a refused name, read-only for a viewer, error with retry, empty without projects, no control plane (8), and "at 390 px" (1); `projects.spec.ts` and `phone.spec.ts` open on it | `project.test.tsx` |
 | Settings: members and invitations | `settings.spec.ts` "members": loading then success, role change, remove, invite link once, revoke, error with retry, read-only roles, no control plane (8); `phone.spec.ts` | `settings.test.tsx` |
 | Settings: API keys | `settings.spec.ts` "API keys": loading then success, secret once, revoke with `If-Match`, error with retry, no permission (5); `phone.spec.ts` | `settings.test.tsx`, `client.test.ts` |
 | Settings: exports | `exports.spec.ts`: loading then success with download, start with one key and CSRF then progress to ready, a refused start, error with retry, empty for a viewer (5) | `exports.test.tsx` |
@@ -137,7 +139,7 @@ pnpm --filter crucible-ui exec playwright test
 | Dashboard: editor | `dashboards.spec.ts` "dashboard: editor": add from the schema's pickers with the one-axis rule and the preview, saved with `If-Match` and CSRF; keyboard move and resize with a refused move announced; pointer move and resize with a refused drop that snaps back; the sheet while the measures load or fail, with a retry; a conflict loaded or saved over; delete a widget; a viewer; a built-in dashboard (8) | `dashboard-grid.test.ts` (keys, pointer, agent actions, server rendering and both directions), `dashboards.test.tsx` (the agent test of the list and the editor), `rules.test.ts` |
 | Settings: retention | `retention.spec.ts` "retention": loading then success with `If-Match`, shortening asks first, error with retry, read-only and nothing set, no control plane (5); `phone.spec.ts` | `retention.test.tsx` |
 | Settings: deletion requests | `retention.spec.ts` "deletion requests": loading then success, a running request is followed, delete by trace with an idempotency key, delete by user and session, a member and a failed request, error with retry (6); `phone.spec.ts` | `retention.test.tsx` |
-| Phone | `phone.spec.ts` (13), including the list pages, one session and one user, a long filter chip and a dashboard; `sql.spec.ts` "phone at 390 px" (1); `alerts.spec.ts` "phone at 390 px" (1) | |
+| Phone | `phone.spec.ts` (13), including the list pages, one session and one user, a long filter chip and a dashboard; `sql.spec.ts` "phone at 390 px" (1); `alerts.spec.ts` "phone at 390 px" (1); `project-settings.spec.ts` "at 390 px" (1) | |
 
 ## Keyboard paths
 
@@ -174,7 +176,7 @@ pnpm --filter crucible-ui exec playwright test
 At 390 px each page reads without the page scrolling sideways: the traces table scrolls inside its frame, the
 waterfall drops to name, bar and duration, the span panel becomes a bottom sheet, and search snippets wrap. The
 sign-in, setup and invitation pages fit, the settings tables scroll inside their frames with the signed-in header
-wrapping, and a new key's secret wraps inside its dialog.
+wrapping, a new key's secret wraps inside its dialog, and the project page wraps the longest slug and the id.
 
 On the SQL page the schema, query, result, saved queries and history stack in that order; the result grid and the
 history table scroll inside their frames.
@@ -189,7 +191,7 @@ and requests nothing.
   editor reads them from `metrics/schema`. The alert preview shows the current window.
 - The span panel has no metadata or MCP tabs.
 - A deep link to a span below the loaded levels of a paged trace is not revealed; the panel says how to find it.
-- The account page, password change, organization settings, ownership transfer, project members and the sign-in
-  provider settings have API routes and no pages.
+- The account page, password change, organization settings, ownership transfer, project members, project deletion
+  and the sign-in provider settings have API routes and no pages.
 - The set-up steps on Home do not read data bounds or API keys.
 - Charts have no brush-to-zoom; the crosshair, the bucket slider and the table view cover reading values.
