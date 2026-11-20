@@ -9,7 +9,8 @@
 # - The checkout is mounted at /work, and its git directory read-only, so a linked worktree works too.
 # - A container cannot see its host's power supply, so on Windows the host's AC-power state is read here and
 #   passed in as CRUCIBLE_PERF_AC_POWER. On a Linux host the gate reads it from /sys/class/power_supply.
-# - CARGO_BUILD_JOBS, when set, reaches the load generator's build and the image builds.
+# - CARGO_BUILD_JOBS, when set, reaches the load generator's build and the image builds; CARGO_INCREMENTAL and
+#   CARGO_PROFILE_DEV_DEBUG, when set, reach the cargo builds in the container (they keep the target volume small).
 # - With --post, the host's gh token (gh auth token) signs the commit status in.
 # Variables: IMAGE (default crucible-dev-perf:1), TARGET_VOLUME (default crucible-target).
 set -euo pipefail
@@ -42,9 +43,11 @@ case "$(uname -s)" in
     esac
     ;;
 esac
-if [ -n "${CARGO_BUILD_JOBS:-}" ]; then
-  extra+=(--env "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS")
-fi
+for var in CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG; do
+  if [ -n "${!var:-}" ]; then
+    extra+=(--env "$var=${!var}")
+  fi
+done
 # --post sets a commit status with gh in the container, signed in with the host's gh token. Passing the variable
 # by name keeps the token off the command line.
 case " $* " in

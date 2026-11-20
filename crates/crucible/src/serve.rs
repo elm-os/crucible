@@ -827,7 +827,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let telemetry = Arc::clone(&stores.telemetry);
-    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch)
+        .with_metrics(env.metrics.as_ref());
     // Every typed read, the export job's included, leaves out what a pending deletion selects.
     let service = match &lifecycle {
         Some(lifecycle) => {
