@@ -14,8 +14,12 @@ A report is most useful with:
 
 ## Supported versions
 
-Fixes are made on the `main` branch. A deployment takes a fix by building its image or binary from a commit that has
-it and upgrading ([operations](docs/self-hosting/operations.md#upgrades)).
+| Version | Supported |
+|---|---|
+| 0.1.x | Yes |
+
+Security fixes are released for the 0.1 line and made on the `main` branch. A deployment takes a fix by upgrading to
+the release that has it ([operations](docs/self-hosting/operations.md#upgrades)).
 
 ## Security model
 

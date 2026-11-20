@@ -35,13 +35,22 @@ To get a server running, follow the [quickstart](quickstart.md).
 
 ## The image
 
-Build the image from a checkout of this repository. It needs only Docker:
+Each release is published as `ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64, with SBOM and provenance
+attestations. A version such as `v0.1.0` is tagged `0.1.0`, `0.1` and `latest`; the Compose files run `latest`
+unless `CRUCIBLE_IMAGE` in `.env` names another tag.
+
+```sh
+docker pull ghcr.io/elm-os/crucible:0.1.0
+```
+
+To build the image yourself from a checkout of this repository, which needs only Docker:
 
 ```sh
 docker build -f deploy/docker/Dockerfile -t crucible:dev .
 ```
 
-The build compiles the UI and the server inside Docker and takes several minutes.
+The build compiles the UI and the server inside Docker and takes several minutes. Set `CRUCIBLE_IMAGE=crucible:dev`
+in `.env` to run it with Compose.
 
 The image (`deploy/docker/Dockerfile`) holds the `crucible` binary with the UI embedded, on a distroless base
 (`gcr.io/distroless/cc-debian12`). It has no shell. It runs as uid 65532, keeps its data in the volume
@@ -80,10 +89,10 @@ CRUCIBLE_CLICKHOUSE_USER=crucible_admin
 CRUCIBLE_CLICKHOUSE_PASSWORD=<that user's password>
 CRUCIBLE_POSTGRES_URL=postgres://crucible:<password>@postgres.internal:5432/crucible
 CRUCIBLE_MASTER_KEY=<openssl rand -hex 32>
-CRUCIBLE_IMAGE=crucible:dev
 ```
 
 ```sh
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.cloud.yaml
 docker compose -f compose.cloud.yaml up -d --wait
 ```
 
@@ -92,7 +101,7 @@ docker compose -f compose.cloud.yaml up -d --wait
   image creates, as `compose.yaml` does.
 - `https://<host>:8443` connects to ClickHouse over TLS, and `?sslmode=require` at the end of the Postgres URL
   connects to Postgres over TLS. `crucible config print` shows the URL with the password redacted.
-- Create the owner the same way as with `compose.yaml` ([quickstart](quickstart.md#4-create-the-organization-and-its-owner)),
+- Create the owner the same way as with `compose.yaml` ([quickstart](quickstart.md#3-create-the-organization-and-its-owner)),
   with `docker compose -f compose.cloud.yaml exec crucible crucible admin init ...`.
 
 ### Without Postgres: keys from a file
@@ -128,17 +137,25 @@ ran, so `--migrate` applies every step, each of which is idempotent, on every st
 
 ## The binary
 
-The server runs the same way outside a container. The image holds the binary, with the UI embedded, at
-`/usr/local/bin/crucible`; copy it out:
+The server runs the same way outside a container. Each release carries the `crucible` binary, with the UI embedded,
+for Linux (x86_64 and aarch64, glibc and musl), macOS (x86_64 and Apple silicon) and Windows (x86_64), as archives
+with checksums, and installers for a shell and for PowerShell:
 
 ```sh
-docker create --name crucible-binary crucible:dev
-docker cp crucible-binary:/usr/local/bin/crucible ./crucible
-docker rm crucible-binary
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/releases/download/v0.1.0/crucible-installer.sh | sh
 ```
 
-It is a Linux binary for the image's architecture that needs glibc 2.34 or newer, as on Debian 12 or Ubuntu 22.04
-and later. To build it with cargo instead, see [development.md](../development.md#a-local-build-in-compose).
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.0/crucible-installer.ps1 | iex"
+```
+
+The write-ahead log's durability, that an acknowledged request survives a crash or a power loss, holds on Linux and
+macOS, where a sync reaches the disk (`fdatasync`, and `F_FULLFSYNC` on macOS). On Windows a directory sync is not a
+durability barrier, so the Windows binary is for development.
+
+The glibc builds need glibc 2.34 or newer, as on Debian 12 or Ubuntu 22.04 and later; the musl builds have no such
+requirement. The image holds the same binary at `/usr/local/bin/crucible`, and `docker cp` copies it out of a
+created container. To build it with cargo instead, see [development.md](../development.md#a-local-build-in-compose).
 `crucible serve --help` lists its flags; [configuration](configuration.md) lists every setting.
 
 ## Ports

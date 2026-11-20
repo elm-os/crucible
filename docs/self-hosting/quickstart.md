@@ -7,43 +7,31 @@ backups, health and metrics) and the rest of running Crucible are in [self-hosti
 ## Requirements
 
 - Docker Engine 25 or newer with Docker Compose v2 or newer.
-- `openssl` and a POSIX shell for the first-run commands: Linux, macOS, or WSL or Git Bash on Windows.
-- A checkout of this repository, to build the image.
+- `curl`, `openssl` and a POSIX shell for the first-run commands: Linux, macOS, or WSL or Git Bash on Windows.
 
-## 1. Build the image
+## 1. Get the Compose file and make `.env`
 
-From the repository root:
-
-```sh
-docker build -f deploy/docker/Dockerfile -t crucible:dev .
-```
-
-The build needs only Docker: it compiles the UI and the server inside the build and takes several minutes.
-
-## 2. Make `.env`
-
-`.env` lives in `deploy/compose/` and is ignored by git. It holds the ClickHouse admin password, the Postgres password
-and the master key, 32 random bytes as 64 hexadecimal characters. Make it once, with one line, and name the image you
-built:
+In an empty folder, download the Compose file of the release and write `.env` beside it:
 
 ```sh
-cd deploy/compose
-printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-echo 'CRUCIBLE_IMAGE=crucible:dev' >> .env
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.yaml
+printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
 ```
 
-Keep the master key. Crucible derives the passwords of its four ClickHouse service users from it, and the users are
-created once: a server started with a different master key cannot log in to the same ClickHouse data. The API keys
-and the sign-in provider secrets in Postgres depend on it too. To start over, remove the volumes with
-`docker compose down -v`.
+`.env` holds the ClickHouse admin password, the Postgres password and the master key, 32 random bytes as 64
+hexadecimal characters. Keep the master key. Crucible derives the passwords of its four ClickHouse service users from
+it, and the users are created once: a server started with a different master key cannot log in to the same
+ClickHouse data. The API keys and the sign-in provider secrets in Postgres depend on it too. To start over, remove
+the volumes with `docker compose down -v`.
 
-## 3. Start
+## 2. Start
 
 ```sh
 docker compose up -d --wait
 curl -s http://127.0.0.1:8080/readyz     # "ready"
 ```
 
+Compose pulls the image `ghcr.io/elm-os/crucible:latest`, ClickHouse 26.8 and Postgres 18 on the first start.
 `--wait` returns once the `ready` service reports Crucible's `/readyz` as healthy. On start Crucible applies the
 Postgres migrations and the ClickHouse schema (`--migrate`) and records each step in the ledger in Postgres, checks
 the ClickHouse server (version 26.3 or newer, the settings and functions it relies on), inserts one block twice
@@ -53,7 +41,7 @@ to prove that deduplication works, and loads the API keys from Postgres. Until t
 The ports are published on every interface, so other machines on your network can send traces and sign in. Add
 `CRUCIBLE_BIND_ADDRESS=127.0.0.1` to `.env` to keep them on this machine.
 
-## 4. Create the organization and its owner
+## 3. Create the organization and its owner
 
 A new server has no users. The first one, the owner, is created with a one-time setup link, which this page uses, or
 with `crucible admin init` from the command line. Either way the server also creates the organization and a first
@@ -83,7 +71,7 @@ Then sign in at <http://127.0.0.1:8080/login/>.
 Sign-in works over plain HTTP: the session cookie is sent without `Secure`, and the server accepts the address the
 page was opened at. On a network you do not trust, put a TLS proxy in front ([security](security.md#plain-http-and-tls)).
 
-## 5. Make an API key
+## 4. Make an API key
 
 Open **Settings** and then **API keys** (<http://127.0.0.1:8080/settings/api-keys/>). The page shows the keys of the
 project chosen in the header, `Default` at first. To use another project, choose **New project** beside the Settings
@@ -100,7 +88,7 @@ docker compose exec crucible crucible admin create-key --project default
 
 A key made there reaches the running server within 5 seconds; until then ingest answers 401 with it.
 
-## 6. Send a trace
+## 5. Send a trace
 
 Any OpenTelemetry SDK or collector that exports OTLP over HTTP works. Point it at `http://127.0.0.1:4318/v1/traces`
 and send the secret key as `Authorization: Bearer <secret>`. With the standard environment variables:
@@ -126,7 +114,7 @@ curl -s -X POST http://127.0.0.1:4318/v1/traces \
 
 A request is acknowledged once it is durable in the write-ahead log.
 
-## 7. See it
+## 6. See it
 
 Open <http://127.0.0.1:8080/traces/>: the trace sent above is in the list, and choosing it opens the trace page. The
 project menu in the header switches between projects.
@@ -167,13 +155,34 @@ docker compose down        # keeps the data
 docker compose down -v     # removes it
 ```
 
+## Building the image from source
+
+To run an image you build yourself, for example from a commit on `main`, clone the repository and build it. The
+build needs only Docker: it compiles the UI and the server inside the build and takes several minutes.
+
+```sh
+git clone https://github.com/elm-os/crucible.git && cd crucible
+docker build -f deploy/docker/Dockerfile -t crucible:dev .
+```
+
+Then make `.env` in `deploy/compose/` as in step 1, name the image in it, and start:
+
+```sh
+cd deploy/compose
+printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
+echo 'CRUCIBLE_IMAGE=crucible:dev' >> .env
+docker compose up -d --wait
+```
+
+The rest of this page applies unchanged.
+
 ## Other ways to run it
 
 - Against a ClickHouse and a Postgres you run elsewhere: `deploy/compose/compose.cloud.yaml`
   ([self-hosting](README.md#your-own-clickhouse-and-postgres)).
 - Without Postgres, with project keys from a file and no sign-in:
   [without Postgres](README.md#without-postgres-keys-from-a-file).
-- Without Compose: `crucible serve` runs the same way outside a container ([the binary](README.md#the-binary),
-  [configuration](configuration.md)).
+- Without Compose: the release binaries install with a shell or PowerShell one-liner, and `crucible serve` runs the
+  same way outside a container ([the binary](README.md#the-binary), [configuration](configuration.md)).
 - With a binary you built in the dev container: `deploy/compose/compose.dev.yaml`
   ([development.md](../development.md#a-local-build-in-compose)).
