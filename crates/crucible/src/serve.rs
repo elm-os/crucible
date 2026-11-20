@@ -1167,8 +1167,9 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         Some(control) => crate::media::build(env, &config, control)?,
         None => None,
     };
-    if let Some(media) = &media {
-        media.check(env);
+    match &media {
+        Some(media) => media.check(env),
+        None => tracing::info!("{}", crucible_compat::media::NO_OBJECT_STORAGE),
     }
     let control_mode = if control.is_some() {
         "postgres"

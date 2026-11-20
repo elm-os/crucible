@@ -31,12 +31,15 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use common::{ANY_PORT, exit_error, serving};
 use crucible_control::{JsonDoc, Project, Repos as _};
 use crucible_control_pg::{PgConfig, PgControlStore};
 use crucible_env::TlsRoots;
@@ -51,13 +54,6 @@ const OWNER_EMAIL: &str = "owner@sqliso.test";
 const OWNER_PASSWORD: &str = "correct horse battery staple";
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
 const WINDOW: &str = "start_time >= {from:DateTime64(6)} AND start_time < {to:DateTime64(6)}";
-
-fn free_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// One HTTP/1.1 exchange on a fresh connection: the status, the head and the body.
 fn http(
@@ -262,13 +258,12 @@ async fn the_sql_workspace_holds_through_the_api() {
 
     // 1. The server, with migrations: Postgres, the ClickHouse schema and access steps A1 and A2.
     let log = dir.join("serve.log");
-    let (api, ingest, grpc, metrics) = (free_addr(), free_addr(), free_addr(), free_addr());
     let child = Command::new(&binary)
         .arg("serve")
-        .args(["--listen", &api.to_string()])
-        .args(["--ingest-listen", &ingest.to_string()])
-        .args(["--grpc-listen", &grpc.to_string()])
-        .args(["--metrics-listen", &metrics.to_string()])
+        .args(["--listen", ANY_PORT])
+        .args(["--ingest-listen", ANY_PORT])
+        .args(["--grpc-listen", ANY_PORT])
+        .args(["--metrics-listen", ANY_PORT])
         .arg("--data-dir")
         .arg(dir.join("data"))
         .args(["--clickhouse-url", &clickhouse_url])
@@ -285,15 +280,19 @@ async fn the_sql_workspace_holds_through_the_api() {
         .spawn()
         .unwrap();
     let mut server = Server { child, log };
+    let api = serving(&mut server.child, &server.log, Duration::from_secs(60)).addr("listen");
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if matches!(http(api, "GET", "/readyz", &[], b""), Ok((200, _, _))) {
             break;
         }
-        assert!(
-            server.child.try_wait().unwrap().is_none(),
-            "crucible serve exited during startup"
-        );
+        if let Some(status) = server.child.try_wait().unwrap() {
+            let log = std::fs::read_to_string(&server.log).unwrap_or_default();
+            panic!(
+                "crucible serve exited ({status}) during startup: {}",
+                exit_error(&log)
+            );
+        }
         assert!(
             Instant::now() < deadline,
             "crucible serve was not ready in time"

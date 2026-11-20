@@ -29,6 +29,7 @@ pub static DIALECT_7: DialectTable = DialectTable {
         detect_scope(KeyMatch::Prefix("braintrust.eval"), 70),
         detect_scope(KeyMatch::Exact("braintrust-eval"), 70),
         detect_scope(KeyMatch::Exact("braintrust.functions"), 70),
+        detect_scope(KeyMatch::Exact("braintrust-functions"), 70),
         detect_scope(KeyMatch::Exact("braintrust"), 70),
     ],
     observation_types: &[
