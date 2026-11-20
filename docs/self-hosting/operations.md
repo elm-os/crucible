@@ -91,8 +91,8 @@ Once ready, a server stays ready through outages of its databases:
 
 - **ClickHouse unreachable.** Ingest keeps acknowledging into the write-ahead log, and the shipper sends the backlog
   when ClickHouse is back. Trace lists answer from the recent-span index with `meta.partial: true` and
-  `partial_reason: store_unavailable`; search and the other reads that need ClickHouse answer 503
-  `telemetry_store_unavailable` or 504 `query_timeout`.
+  `partial_reason: store_unavailable`; search, which reads ClickHouse only, answers 503
+  `telemetry_store_unavailable`.
 - **Postgres unreachable.** Keys the server already knows keep working for ingest and reads
   (`auth.pg_outage_mode = fail_open`), and signed-in sessions keep working for `auth.session_outage_grace`
   (10 minutes). Sign-in and changes to the control plane answer 503 `control_plane_unavailable` until Postgres is
