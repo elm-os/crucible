@@ -22,6 +22,7 @@ mod facts;
 mod identity;
 mod lifecycle;
 mod lists;
+mod mcp;
 mod metrics;
 mod payload;
 mod search;

@@ -69,6 +69,18 @@ pub struct WidgetQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fill: Option<FillMode>,
+    /// Source `mcp_ops` only, and required there: the side to read, `client` or `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub side: Option<crate::mcp::McpSideParam>,
+    /// Source `mcp_ops` only: which capture source each server is read from (contract 9.5); `auto` by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capture_source: Option<crate::mcp::SourceParam>,
+    /// Source `mcp_ops` only: whether calls the caller caused count; false by default (contract 9.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_caller_faults: Option<bool>,
 }
 
 impl WidgetQuery {
@@ -83,6 +95,9 @@ impl WidgetQuery {
             timezone,
             top_n,
             fill,
+            side,
+            capture_source,
+            include_caller_faults,
         } = self.clone();
         MetricsQueryRequest {
             source,
@@ -95,6 +110,9 @@ impl WidgetQuery {
             timezone,
             top_n,
             fill,
+            side,
+            capture_source,
+            include_caller_faults,
         }
     }
 }
@@ -329,6 +347,9 @@ mod tests {
             timezone: Some("UTC".to_owned()),
             top_n: Some(3),
             fill: Some(FillMode::None),
+            side: Some(crate::mcp::McpSideParam::Server),
+            capture_source: Some(crate::mcp::SourceParam::Proxy),
+            include_caller_faults: Some(true),
         };
         let request = widget.with_window("a".to_owned(), "b".to_owned());
         let mut json = serde_json::to_value(&request).expect("serializes");

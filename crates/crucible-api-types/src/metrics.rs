@@ -108,6 +108,18 @@ pub struct MetricsQueryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fill: Option<FillMode>,
+    /// Source `mcp_ops` only, and required there: the side to read, `client` or `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub side: Option<crate::mcp::McpSideParam>,
+    /// Source `mcp_ops` only: which capture source each server is read from (contract 9.5); `auto` by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capture_source: Option<crate::mcp::SourceParam>,
+    /// Source `mcp_ops` only: whether calls the caller caused count; false by default (contract 9.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_caller_faults: Option<bool>,
 }
 
 /// One dimension value of a series key.
@@ -137,7 +149,7 @@ pub struct MetricsSeries {
     pub measure: String,
     /// The aggregation.
     pub aggregation: String,
-    /// The unit of the values: `count`, `tokens`, `usd` or `us`.
+    /// The unit of the values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
     pub unit: String,
     /// The dimension values of the key; empty without dimensions and for the `other` series.
     pub key: Vec<SeriesKey>,
@@ -176,7 +188,7 @@ pub struct SchemaMeasure {
     pub id: String,
     /// The label.
     pub label: String,
-    /// The unit of its values: `count`, `tokens`, `usd` or `us`.
+    /// The unit of its values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
     pub unit: String,
     /// The aggregations it allows.
     pub aggregations: Vec<String>,

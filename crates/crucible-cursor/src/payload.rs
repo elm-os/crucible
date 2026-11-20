@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | payload version, 1 |
 //! | 1 | kind: 1 `page`, 2 `head` |
-//! | 2 | route: 1 trace list, 2 span children, 3 search, 4 span list, 5 session list, 6 user list, 7 a user's sessions |
+//! | 2 | route: 1 trace list, 2 span children, 3 search, 4 span list, 5 session list, 6 user list, 7 a user's sessions, 8 MCP operations |
 //! | 3 | sort: 1 newest first, 2 oldest first |
 //! | 4..20 | project id |
 //! | 20..36 | filter hash |
@@ -19,7 +19,7 @@
 //! | head, trace list | window `from` and `to`, `as_of`, `wal_epoch`, LSN (`u64`) | 100 |
 //! | page, span children | `trace_id`, parent `span_id`, then the last child's `start_time` and `span_id` | 92 |
 //! | page, search | window `from` and `to`, `as_of`, then the last hit's `start_minute`, `trace_hash` (`u32`) and `span_id` | 96 |
-//! | page, span list | window `from` and `to`, `as_of`, then the last row's `start_time` and `span_id` | 92 |
+//! | page, span list or MCP operations | window `from` and `to`, `as_of`, then the last row's `start_time` and `span_id` | 92 |
 //! | page, session list, user list or a user's sessions | window `from` and `to`, the last row's `last_seen`, then its id: length (`u16`) and bytes | 78 to 590 |
 //!
 //! Decoding accepts exactly what encoding produces: another version, an unknown code, a head of any list but
@@ -98,6 +98,8 @@ pub enum Route {
     UserList,
     /// `GET projects/{id}/users/{user_id}/sessions`.
     UserSessions,
+    /// `GET projects/{id}/mcp/operations`.
+    McpOperations,
 }
 
 impl Route {
@@ -110,6 +112,7 @@ impl Route {
             Self::SessionList => 5,
             Self::UserList => 6,
             Self::UserSessions => 7,
+            Self::McpOperations => 8,
         }
     }
 
@@ -122,6 +125,7 @@ impl Route {
             5 => Some(Self::SessionList),
             6 => Some(Self::UserList),
             7 => Some(Self::UserSessions),
+            8 => Some(Self::McpOperations),
             _ => None,
         }
     }
@@ -294,6 +298,15 @@ pub enum Position {
         /// The sort tuple `(start_time, span_id)` of the last row.
         last: (Timestamp, SpanId),
     },
+    /// The next page of the MCP operation list.
+    McpOperationPage {
+        /// The window of the list.
+        window: TimeWindow,
+        /// Fixed by the first page; later pages read only rows that arrived by then.
+        as_of: Timestamp,
+        /// The sort tuple `(start_time, span_id)` of the last row.
+        last: (Timestamp, SpanId),
+    },
     /// The next page of a list keyed by a text id.
     IdPage {
         /// The list.
@@ -313,6 +326,7 @@ impl Position {
             | Self::ChildPage { .. }
             | Self::SearchPage { .. }
             | Self::SpanPage { .. }
+            | Self::McpOperationPage { .. }
             | Self::IdPage { .. } => Kind::Page,
             Self::TraceHead { .. } => Kind::Head,
         }
@@ -325,6 +339,7 @@ impl Position {
             Self::ChildPage { .. } => Route::SpanChildren,
             Self::SearchPage { .. } => Route::Search,
             Self::SpanPage { .. } => Route::SpanList,
+            Self::McpOperationPage { .. } => Route::McpOperations,
             Self::IdPage { list, .. } => list.route(),
         }
     }
@@ -336,6 +351,7 @@ impl Position {
             | Self::TraceHead { window, .. }
             | Self::SearchPage { window, .. }
             | Self::SpanPage { window, .. }
+            | Self::McpOperationPage { window, .. }
             | Self::IdPage { window, .. } => Some(*window),
             Self::ChildPage { .. } => None,
         }
@@ -468,6 +484,11 @@ impl Cursor {
                 window,
                 as_of,
                 last: (start, span),
+            }
+            | Position::McpOperationPage {
+                window,
+                as_of,
+                last: (start, span),
             } => {
                 w.window(window);
                 w.time(as_of);
@@ -543,6 +564,11 @@ impl Cursor {
             (Kind::Page, Route::SessionList) => r.id_page(IdList::Sessions)?,
             (Kind::Page, Route::UserList) => r.id_page(IdList::Users)?,
             (Kind::Page, Route::UserSessions) => r.id_page(IdList::UserSessions)?,
+            (Kind::Page, Route::McpOperations) => Position::McpOperationPage {
+                window: r.window()?,
+                as_of: r.time()?,
+                last: (r.time()?, SpanId::from_bytes(r.array()?)),
+            },
             (
                 Kind::Head,
                 Route::SpanChildren
@@ -550,7 +576,8 @@ impl Cursor {
                 | Route::SpanList
                 | Route::SessionList
                 | Route::UserList
-                | Route::UserSessions,
+                | Route::UserSessions
+                | Route::McpOperations,
             ) => return Err(DecodeError::Value),
         };
         if !r.0.is_empty() {

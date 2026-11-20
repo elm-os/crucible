@@ -20,7 +20,7 @@ for agents and MCP servers. Crucible ingests traces only; it does not take logs 
 - The server speaks plain HTTP only. On a network you do not trust, put a TLS-terminating proxy in front of it.
 - Every other path on the OTLP/HTTP listener, `/v1/logs` and `/v1/metrics` included, answers a problem 404.
 - Both HTTP listeners also serve compatibility routes that take other tracing SDKs' OTLP exports, with the same
-  bodies, keys, caps and acknowledgement. They are listed in `crates/crucible-compat/src/routes.rs`.
+  bodies, keys, caps and acknowledgement ([integrations](../integrations/README.md)).
 - `deploy/compose/compose.yaml` publishes ports 8080 and 4318, not 4317. To send gRPC from outside the Compose
   network, add `- "4317:4317"` to the `ports` of the `crucible` service.
 
@@ -243,5 +243,6 @@ such span is also recorded as an MCP operation, on the client or the server side
 error class, client, session and sizes; the SQL workspace's `crucible_sql.mcp_operations` and
 `crucible_sql.mcp_contents` views read them.
 
-Spans written with other instrumentation libraries' conventions are mapped too, by the dialect tables in
-`crates/crucible-compat`; this page covers the native keys.
+Spans written with other instrumentation libraries' conventions are mapped too; this page covers the native keys,
+and [integrations](../integrations/README.md) covers each library: how to point it at Crucible, what maps and the
+known limits.

@@ -4948,6 +4948,1815 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/mcp/clients": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Get MCP clients",
+        "description": "With `view=summary` (the default), the clients of one side by name from the tool rollup. With\n`view=breakdown`, the calls per client name and version from the operations. Client names and versions are\nwhat the clients reported about themselves.",
+        "operationId": "get_mcp_clients",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "description": "`summary` (default) or `breakdown`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/McpView"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows of the breakdown: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The clients.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpClientList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/compare": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Compare MCP deploys",
+        "description": "One server's tools on two sides: two deploys inside the window (`baseline_deploy` and `candidate_deploy`),\nor a baseline window against the window (`baseline_from` and `baseline_to`). Per tool, the calls, errors\nand latency percentiles of each side, and the tools added, removed or listed with a changed schema.",
+        "operationId": "get_mcp_compare",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseline_deploy",
+            "in": "query",
+            "description": "The deploy compared against; with `candidate_deploy`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "candidate_deploy",
+            "in": "query",
+            "description": "The deploy compared; with `baseline_deploy`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baseline_from",
+            "in": "query",
+            "description": "Start of the window compared against (RFC 3339); with `baseline_to`, instead of two deploys.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "baseline_to",
+            "in": "query",
+            "description": "End of the window compared against (RFC 3339).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The compare.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCompare"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/deploys": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP deploys",
+        "description": "The deploys seen in the window (contract 9.7), newest first. Deploys are recorded from server-side\noperations, so each server's capture source is chosen among its deploys' own.",
+        "operationId": "list_mcp_deploys",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deploys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpDeployList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/errors": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Get MCP errors",
+        "description": "With `view=summary` (the default), the error classes of one side from the tool rollup: calls per class and\nper method, target and class. With `view=breakdown`, failed calls grouped by server, method, target, class,\nsubclass, JSON-RPC code and message, from the operations.",
+        "operationId": "get_mcp_errors",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "description": "`summary` (default) or `breakdown`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/McpView"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows of the breakdown: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The errors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpErrors"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/operations": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP operations",
+        "description": "The operations of one side, newest first, narrowed by target, method, client, error class, session or\nuser. Later pages follow `next_cursor` with the same parameters.",
+        "operationId": "list_mcp_operations",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page, with the same parameters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "description": "A tool or prompt name, or a resource template.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "description": "A method, such as `tools/call`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "A self-reported client name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error_class",
+            "in": "query",
+            "description": "One error class.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ErrorClass"
+            }
+          },
+          {
+            "name": "errors_only",
+            "in": "query",
+            "description": "Failed operations only.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "One MCP session, by group key.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "One user: a user id, or a subject hash in 32 hex characters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of operations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpOperationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor_invalid`: restart from the first page.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/operations/{trace_id}/{span_id}": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Get an MCP operation",
+        "description": "One operation: every field of its row, the first 16 KiB of its captured arguments and result, the other\nside's row of the call in the same trace, and the multi-round exchange it belongs to.",
+        "operationId": "get_mcp_operation",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "description": "The trace id: 32 hex characters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "path",
+            "description": "The span id: 16 hex characters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpOperationDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such operation in the window, or the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/servers": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP servers",
+        "description": "The servers of one side: calls, errors, caller-fault calls, latency percentiles, distinct clients and last\nseen from the tool rollup, and the version of each server's latest deploy.",
+        "operationId": "list_mcp_servers",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The servers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/sessions": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP sessions",
+        "description": "The MCP sessions of one side, last seen first: calls, failed calls and first and last seen per group key,\nwith what the group key is (contract 9.4), from the operations.",
+        "operationId": "list_mcp_sessions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpSessionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/tools": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP tools",
+        "description": "The tools of one side: the calls of `tools/call` per server and tool from the tool rollup, each tool's\nlatest schema hash, and the tools listed in the inventory without a call in the window (`unused`).",
+        "operationId": "list_mcp_tools",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tools.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/tools/{name}": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "Get an MCP tool",
+        "description": "One tool of one side: its calls, errors and latency percentiles over the window and per bucket, its error\nclasses and top clients, and the deploys of its servers as markers for the series.",
+        "operationId": "get_mcp_tool",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The tool's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tool.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp/users": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "summary": "List MCP users",
+        "description": "The users of one side, last seen first: calls, failed calls, distinct sessions and first and last seen per\nuser id (from the SDK's identify hook) or hashed token subject, from the operations.",
+        "operationId": "list_mcp_users",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The side to read: `client` or `server`. The two sides are never summed.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/McpSideParam"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, inclusive (RFC 3339).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End of the window, exclusive (RFC 3339). The window may span at most the project's maximum (default\n30 days).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Which capture source each server is read from; default `auto`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SourceParam"
+            }
+          },
+          {
+            "name": "include_caller_faults",
+            "in": "query",
+            "description": "Whether calls the caller caused (contract 9.2) count in calls, errors and latency; default false. They\nare always reported apart as `caller_faults`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "description": "Only this server.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows: 1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpUserList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`, `query_too_broad` or `query_memory_exceeded`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`telemetry_store_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`query_timeout`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/members": {
       "get": {
         "tags": [
@@ -8746,6 +10555,10 @@
             "type": "string",
             "description": "The aggregation."
           },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "The capture source an `mcp_ops` rule reads (contract 9.5); absent for `spans`."
+          },
           "channels": {
             "type": "array",
             "items": {
@@ -8835,13 +10648,17 @@
             },
             "description": "The series the rule tracks, at most 50, ordered by key."
           },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "The side an `mcp_ops` rule reads; absent for `spans`."
+          },
           "skipped_ticks": {
             "$ref": "#/components/schemas/SafeU64",
             "description": "Evaluations that never ran, for example while the server was down."
           },
           "source": {
             "type": "string",
-            "description": "The source of the measure."
+            "description": "The source of the measure: `spans` or `mcp_ops`."
           },
           "status": {
             "$ref": "#/components/schemas/AlertStatus",
@@ -8853,7 +10670,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`\n(nano-USD)."
+            "description": "The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds), `nusd`\n(nano-USD) or `ppm` (parts per million)."
           },
           "updated_at": {
             "type": "string",
@@ -8889,6 +10706,10 @@
           "aggregation": {
             "type": "string",
             "description": "How the measure is aggregated over the window, one of the measure's aggregations."
+          },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "Source `mcp_ops` only: which capture source each server is read from (contract 9.5), `auto` by\ndefault; `auto` is resolved at each evaluation, for its window."
           },
           "channels": {
             "type": "array",
@@ -8948,13 +10769,17 @@
             "description": "How long after a notification a series that still fires is notified again, in seconds: 300 to 604800.\nDefault 14400 (four hours).",
             "minimum": 0
           },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "Source `mcp_ops` only, and required there: the side the rule reads, `client` or `server`."
+          },
           "source": {
             "type": "string",
-            "description": "The source of the measure. Rules read the span rollup: `spans` (the default)."
+            "description": "The source of the measure: `spans` (the default) or `mcp_ops`."
           },
           "threshold": {
             "$ref": "#/components/schemas/SafeI64",
-            "description": "The threshold in the measure's stored unit: a count, microseconds, or nano-USD."
+            "description": "The threshold in the measure's stored unit: a count, microseconds, nano-USD, or parts per million for\n`mcp.error_rate`."
           },
           "window_secs": {
             "type": "integer",
@@ -8988,6 +10813,10 @@
           "aggregation": {
             "type": "string",
             "description": "A new aggregation."
+          },
+          "capture_source": {
+            "$ref": "#/components/schemas/SourceParam",
+            "description": "A new capture source, for an `mcp_ops` rule."
           },
           "channels": {
             "type": "array",
@@ -9046,6 +10875,10 @@
             "format": "int32",
             "description": "A new time between repeated notifications.",
             "minimum": 0
+          },
+          "side": {
+            "$ref": "#/components/schemas/McpSideParam",
+            "description": "A new side, for an `mcp_ops` rule."
           },
           "threshold": {
             "$ref": "#/components/schemas/SafeI64",
@@ -9459,6 +11292,25 @@
           "user",
           "api_key",
           "system"
+        ]
+      },
+      "CaptureClass": {
+        "type": "string",
+        "description": "A class of capture sources (contract 9.5).",
+        "enum": [
+          "sdk",
+          "proxy",
+          "otlp"
+        ]
+      },
+      "CaptureSource": {
+        "type": "string",
+        "description": "Who observed an MCP operation.",
+        "enum": [
+          "sdk",
+          "proxy_stdio",
+          "proxy_http",
+          "otlp"
         ]
       },
       "Channel": {
@@ -10191,6 +12043,42 @@
           "failed"
         ]
       },
+      "Era": {
+        "type": "string",
+        "description": "The protocol era of an operation.",
+        "enum": [
+          "legacy",
+          "modern"
+        ]
+      },
+      "ErrorClass": {
+        "type": "string",
+        "description": "The error class of an operation (contract 9.2).",
+        "enum": [
+          "none",
+          "protocol",
+          "validation",
+          "not_found",
+          "tool_execution",
+          "auth",
+          "rate_limit",
+          "timeout",
+          "transport",
+          "cancelled",
+          "internal"
+        ]
+      },
+      "ErrorSubclass": {
+        "type": "string",
+        "description": "The subclass of a tool error that an SDK annotated.",
+        "enum": [
+          "none",
+          "auth",
+          "rate_limit",
+          "upstream",
+          "business"
+        ]
+      },
       "Export": {
         "type": "object",
         "description": "An export.",
@@ -10802,12 +12690,32 @@
           "week"
         ]
       },
+      "GroupKeyKind": {
+        "type": "string",
+        "description": "What an MCP session's group key is (contract 9.4).",
+        "enum": [
+          "legacy_session",
+          "handle",
+          "trace",
+          "process"
+        ]
+      },
       "HeadKind": {
         "type": "string",
         "description": "Why a trace appears in the list: its root span, or its earliest span while no root has\narrived.",
         "enum": [
           "root",
           "provisional"
+        ]
+      },
+      "IdentitySource": {
+        "type": "string",
+        "description": "How a user identity was established (contract 9.3).",
+        "enum": [
+          "none",
+          "identify_hook",
+          "token_claims",
+          "token_verified"
         ]
       },
       "Invitation": {
@@ -11019,6 +12927,1460 @@
           }
         }
       },
+      "McpChainLink": {
+        "type": "object",
+        "description": "One link of a multi-round exchange (contract 9.6).",
+        "required": [
+          "span_id",
+          "start_time",
+          "round",
+          "method",
+          "target_name",
+          "result_type"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "The method."
+          },
+          "result_type": {
+            "$ref": "#/components/schemas/ResultType",
+            "description": "What the result was."
+          },
+          "round": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The round: the sender's count when it sent one, else the position in the chain from 1.",
+            "minimum": 0
+          },
+          "span_id": {
+            "type": "string",
+            "description": "16 lowercase hex characters."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start."
+          },
+          "target_name": {
+            "type": "string",
+            "description": "The target."
+          }
+        }
+      },
+      "McpClassCount": {
+        "type": "object",
+        "description": "Calls of one error class.",
+        "required": [
+          "error_class",
+          "calls"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The calls."
+          },
+          "error_class": {
+            "$ref": "#/components/schemas/ErrorClass",
+            "description": "The error class."
+          }
+        }
+      },
+      "McpClientList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/clients`: clients by name (from the rollup) or by version (from the\noperations), as `view` asks.",
+        "required": [
+          "view",
+          "self_reported",
+          "data",
+          "versions",
+          "truncated",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpClientRow"
+            },
+            "description": "Summary: clients by name, most calls first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "self_reported": {
+            "type": "boolean",
+            "description": "Always true: client names and versions are what the clients reported about themselves."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Breakdown: whether more versions exist than `versions` holds."
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpClientVersionRow"
+            },
+            "description": "Breakdown: client versions, most calls first."
+          },
+          "view": {
+            "$ref": "#/components/schemas/McpView",
+            "description": "The section this answer holds."
+          }
+        }
+      },
+      "McpClientRow": {
+        "type": "object",
+        "description": "The calls of one client, by self-reported name.",
+        "required": [
+          "client_name",
+          "stats"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "The client's name as it reported it; empty when it sent none."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls."
+          }
+        }
+      },
+      "McpClientVersionRow": {
+        "type": "object",
+        "description": "The calls of one self-reported client version.",
+        "required": [
+          "client_name",
+          "client_version",
+          "calls",
+          "last_seen"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its calls."
+          },
+          "client_name": {
+            "type": "string",
+            "description": "The client's name as it reported it."
+          },
+          "client_version": {
+            "type": "string",
+            "description": "The client's version as it reported it."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When its last call started."
+          }
+        }
+      },
+      "McpCompare": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/compare`.",
+        "required": [
+          "server_name",
+          "tools",
+          "added",
+          "removed",
+          "changed",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools listed on the candidate side only."
+          },
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of the server."
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools listed on both sides whose latest schema hash differs."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools listed on the baseline side only."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server compared."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpToolDeltaRow"
+            },
+            "description": "Each tool called on either side, by name."
+          }
+        }
+      },
+      "McpContentPreview": {
+        "type": "object",
+        "description": "The first bytes of captured content. The whole field is read through the span payload route.",
+        "required": [
+          "preview",
+          "bytes",
+          "truncated"
+        ],
+        "properties": {
+          "bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The stored length in bytes."
+          },
+          "preview": {
+            "type": "string",
+            "description": "The first 16 KiB as text; a character cut at the end is replaced."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the field is longer than the preview."
+          }
+        }
+      },
+      "McpDeployList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/deploys`.",
+        "required": [
+          "data",
+          "capture_sources",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server, chosen among its deploys' own."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpDeployRow"
+            },
+            "description": "The deploys seen in the window, newest first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          }
+        }
+      },
+      "McpDeployRow": {
+        "type": "object",
+        "description": "One deploy (contract 9.7).",
+        "required": [
+          "server_name",
+          "deploy_id",
+          "server_version",
+          "capture_source",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "capture_source": {
+            "$ref": "#/components/schemas/CaptureSource",
+            "description": "Who observed it."
+          },
+          "deploy_id": {
+            "type": "string",
+            "description": "The deploy id; empty (shown as unknown) when the server reported neither a deploy id nor a version."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First seen."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last seen."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          },
+          "server_version": {
+            "type": "string",
+            "description": "The server version."
+          }
+        }
+      },
+      "McpErrorGroupRow": {
+        "type": "object",
+        "description": "Failed calls that share a server, method, target, class, subclass, code and message.",
+        "required": [
+          "server_name",
+          "method",
+          "target_name",
+          "error_class",
+          "error_subclass",
+          "jsonrpc_code",
+          "error_message",
+          "calls",
+          "last_seen"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The calls."
+          },
+          "error_class": {
+            "$ref": "#/components/schemas/ErrorClass",
+            "description": "The error class."
+          },
+          "error_message": {
+            "type": "string",
+            "description": "The scrubbed error message."
+          },
+          "error_subclass": {
+            "$ref": "#/components/schemas/ErrorSubclass",
+            "description": "The subclass an SDK annotated."
+          },
+          "jsonrpc_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The JSON-RPC error code; null when the error had none."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the last of them started."
+          },
+          "method": {
+            "type": "string",
+            "description": "The method."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          },
+          "target_name": {
+            "type": "string",
+            "description": "The tool or prompt name, or the resource template."
+          }
+        }
+      },
+      "McpErrors": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/errors`: the summary (error classes, from the rollup) or the breakdown\n(failed calls by message and code, from the operations), as `view` asks.",
+        "required": [
+          "view",
+          "stats",
+          "classes",
+          "targets",
+          "breakdown",
+          "truncated",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "breakdown": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpErrorGroupRow"
+            },
+            "description": "Breakdown: the groups, most calls first."
+          },
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "classes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpClassCount"
+            },
+            "description": "Summary: calls per error class, most first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "stats": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpStats",
+                "description": "Summary: every call of the read. Null in the breakdown."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpTargetErrorRow"
+            },
+            "description": "Summary: failed calls per method, target and class, most first."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Breakdown: whether more groups exist than `breakdown` holds."
+          },
+          "view": {
+            "$ref": "#/components/schemas/McpView",
+            "description": "The section this answer holds."
+          }
+        }
+      },
+      "McpLatency": {
+        "type": "object",
+        "description": "Latency percentiles in microseconds, from the deterministic histogram (contract 6.5); null without calls.",
+        "required": [
+          "p50_us",
+          "p90_us",
+          "p99_us"
+        ],
+        "properties": {
+          "p50_us": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SafeU64",
+                "description": "The median."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "p90_us": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SafeU64",
+                "description": "The 90th percentile."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "p99_us": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SafeU64",
+                "description": "The 99th percentile."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "McpOperation": {
+        "type": "object",
+        "description": "Everything known about one operation.",
+        "required": [
+          "operation",
+          "side",
+          "instance_id",
+          "protocol_version",
+          "jsonrpc_id",
+          "http_status",
+          "oauth_client_id",
+          "tenant",
+          "args",
+          "result",
+          "other_side",
+          "chain"
+        ],
+        "properties": {
+          "args": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpContentPreview",
+                "description": "Captured arguments; null when nothing was captured or the content expired."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpChainLink"
+            },
+            "description": "The multi-round exchange the operation belongs to, oldest first; empty when it is not part of one."
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The HTTP status; null when the transport is not HTTP.",
+            "minimum": 0
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "The server instance."
+          },
+          "jsonrpc_id": {
+            "type": "string",
+            "description": "The JSON-RPC id."
+          },
+          "oauth_client_id": {
+            "type": "string",
+            "description": "The OAuth client id."
+          },
+          "operation": {
+            "$ref": "#/components/schemas/McpOperationRow",
+            "description": "The columns the list shows."
+          },
+          "other_side": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpOperationRow",
+                "description": "The other side's row of the call in the same trace; under double capture the best-ranked capture\nsource's; null when it was not captured."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "type": "string",
+            "description": "The protocol version."
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpContentPreview",
+                "description": "The captured result; null when nothing was captured or the content expired."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "side": {
+            "$ref": "#/components/schemas/McpSide",
+            "description": "The side."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "The tenant."
+          }
+        }
+      },
+      "McpOperationDetail": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/operations/{trace_id}/{span_id}`.",
+        "required": [
+          "operation",
+          "meta"
+        ],
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "operation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpOperation",
+                "description": "The operation; null only when the answer is not whole (`meta` says why), so it may yet appear."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "McpOperationPage": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/operations`: one page, newest first.",
+        "required": [
+          "data",
+          "next_cursor",
+          "has_more",
+          "capture_sources",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpOperationRow"
+            },
+            "description": "The operations."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether another page exists."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the page is; `as_of` is the one the first page fixed."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor of the next page; null on the last page."
+          }
+        }
+      },
+      "McpOperationRow": {
+        "type": "object",
+        "description": "One MCP operation.",
+        "required": [
+          "trace_id",
+          "span_id",
+          "parent_span_id",
+          "start_time",
+          "duration_us",
+          "server_name",
+          "server_version",
+          "deploy_id",
+          "capture_source",
+          "era",
+          "transport",
+          "method",
+          "target_kind",
+          "target_name",
+          "status",
+          "error_class",
+          "error_subclass",
+          "caller_fault",
+          "jsonrpc_code",
+          "error_type",
+          "error_message",
+          "client_name",
+          "client_version",
+          "user_id",
+          "user_subject_hash",
+          "identity_source",
+          "group_key",
+          "group_key_kind",
+          "request_bytes",
+          "response_bytes",
+          "content_captured",
+          "result_type",
+          "saturated"
+        ],
+        "properties": {
+          "caller_fault": {
+            "type": "boolean",
+            "description": "Whether the caller caused the error (contract 9.2)."
+          },
+          "capture_source": {
+            "$ref": "#/components/schemas/CaptureSource",
+            "description": "Who observed it."
+          },
+          "client_name": {
+            "type": "string",
+            "description": "The client's name as it reported it."
+          },
+          "client_version": {
+            "type": "string",
+            "description": "The client's version as it reported it."
+          },
+          "content_captured": {
+            "type": "boolean",
+            "description": "Whether arguments and results were captured."
+          },
+          "deploy_id": {
+            "type": "string",
+            "description": "The deploy."
+          },
+          "duration_us": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Duration in microseconds."
+          },
+          "era": {
+            "$ref": "#/components/schemas/Era",
+            "description": "The protocol era."
+          },
+          "error_class": {
+            "$ref": "#/components/schemas/ErrorClass",
+            "description": "The error class."
+          },
+          "error_message": {
+            "type": "string",
+            "description": "The scrubbed error message."
+          },
+          "error_subclass": {
+            "$ref": "#/components/schemas/ErrorSubclass",
+            "description": "The subclass an SDK annotated."
+          },
+          "error_type": {
+            "type": "string",
+            "description": "The semantic-convention error type."
+          },
+          "group_key": {
+            "type": "string",
+            "description": "The MCP session's group key."
+          },
+          "group_key_kind": {
+            "$ref": "#/components/schemas/GroupKeyKind",
+            "description": "What the group key is."
+          },
+          "identity_source": {
+            "$ref": "#/components/schemas/IdentitySource",
+            "description": "How the identity was established."
+          },
+          "jsonrpc_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The JSON-RPC error code; null when there was none."
+          },
+          "method": {
+            "type": "string",
+            "description": "The method."
+          },
+          "parent_span_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The parent span; null when the operation has none."
+          },
+          "request_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Request bytes; 0 when unknown."
+          },
+          "response_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Response bytes; 0 when unknown."
+          },
+          "result_type": {
+            "$ref": "#/components/schemas/ResultType",
+            "description": "What the result was."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          },
+          "server_version": {
+            "type": "string",
+            "description": "The server's version."
+          },
+          "span_id": {
+            "type": "string",
+            "description": "16 lowercase hex characters."
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start."
+          },
+          "status": {
+            "$ref": "#/components/schemas/McpStatus",
+            "description": "The outcome."
+          },
+          "target_kind": {
+            "$ref": "#/components/schemas/McpTargetKind",
+            "description": "What the method targets."
+          },
+          "target_name": {
+            "type": "string",
+            "description": "The tool or prompt name, or the resource template."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "32 lowercase hex characters."
+          },
+          "transport": {
+            "$ref": "#/components/schemas/Transport",
+            "description": "The transport."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user id from the SDK's identify hook."
+          },
+          "user_subject_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hashed token subject, 32 lowercase hex characters; null when absent."
+          }
+        }
+      },
+      "McpSeriesPoint": {
+        "type": "object",
+        "description": "One bucket of a tool's calls.",
+        "required": [
+          "bucket",
+          "calls",
+          "errors",
+          "latency"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The bucket's first instant."
+          },
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Calls in the bucket."
+          },
+          "errors": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Failed calls in the bucket."
+          },
+          "latency": {
+            "$ref": "#/components/schemas/McpLatency",
+            "description": "Latency in the bucket."
+          }
+        }
+      },
+      "McpServerList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/servers`.",
+        "required": [
+          "data",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerRow"
+            },
+            "description": "The servers, most calls first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          }
+        }
+      },
+      "McpServerRow": {
+        "type": "object",
+        "description": "One server.",
+        "required": [
+          "server_name",
+          "stats",
+          "clients",
+          "version",
+          "deploys"
+        ],
+        "properties": {
+          "clients": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Distinct self-reported client names that called it."
+          },
+          "deploys": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Deploys seen in the window."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version of its most recently seen deploy; null when no deploy was seen in the window."
+          }
+        }
+      },
+      "McpServerSource": {
+        "type": "object",
+        "description": "The capture source of one server (contract 9.5).",
+        "required": [
+          "server_name",
+          "available",
+          "chosen"
+        ],
+        "properties": {
+          "available": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaptureClass"
+            },
+            "description": "The classes the server has rows of on the side in the window, best first."
+          },
+          "chosen": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureClass",
+                "description": "The class read: the request's, or under `auto` the best available. Null when the request names a class\nthe server has no rows of."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          }
+        }
+      },
+      "McpSessionList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/sessions`.",
+        "required": [
+          "data",
+          "truncated",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpSessionRow"
+            },
+            "description": "The sessions, last seen first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more sessions exist than `data` holds."
+          }
+        }
+      },
+      "McpSessionRow": {
+        "type": "object",
+        "description": "One MCP session: the operations of one group key (contract 9.4).",
+        "required": [
+          "group_key",
+          "group_key_kind",
+          "calls",
+          "errors",
+          "client_name",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its calls."
+          },
+          "client_name": {
+            "type": "string",
+            "description": "A self-reported client name of the session."
+          },
+          "errors": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its failed calls."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First seen."
+          },
+          "group_key": {
+            "type": "string",
+            "description": "The group key."
+          },
+          "group_key_kind": {
+            "$ref": "#/components/schemas/GroupKeyKind",
+            "description": "What the group key is."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last seen."
+          }
+        }
+      },
+      "McpSide": {
+        "type": "string",
+        "description": "The side of an MCP operation.",
+        "enum": [
+          "none",
+          "client",
+          "server"
+        ]
+      },
+      "McpSideParam": {
+        "type": "string",
+        "description": "The side an MCP analytics request reads.",
+        "enum": [
+          "client",
+          "server"
+        ]
+      },
+      "McpStats": {
+        "type": "object",
+        "description": "The measures of a set of calls.",
+        "required": [
+          "calls",
+          "errors",
+          "error_rate",
+          "caller_faults",
+          "latency",
+          "last_seen"
+        ],
+        "properties": {
+          "caller_faults": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Calls the caller caused (contract 9.2), counted whether or not they are included."
+          },
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Calls, without the caller-fault calls unless the request includes them."
+          },
+          "error_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`errors / calls`; null without calls."
+          },
+          "errors": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Calls with an error class other than `none`, under the same rule."
+          },
+          "last_seen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last call was seen."
+          },
+          "latency": {
+            "$ref": "#/components/schemas/McpLatency",
+            "description": "Latency of the calls counted."
+          }
+        }
+      },
+      "McpStatus": {
+        "type": "string",
+        "description": "The outcome of an operation (contract 9.2).",
+        "enum": [
+          "ok",
+          "tool_error",
+          "protocol_error",
+          "transport_error",
+          "cancelled"
+        ]
+      },
+      "McpTargetErrorRow": {
+        "type": "object",
+        "description": "Failed calls of one method and target in one class.",
+        "required": [
+          "method",
+          "target_name",
+          "error_class",
+          "calls"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The calls."
+          },
+          "error_class": {
+            "$ref": "#/components/schemas/ErrorClass",
+            "description": "The error class."
+          },
+          "method": {
+            "type": "string",
+            "description": "The method."
+          },
+          "target_name": {
+            "type": "string",
+            "description": "The tool or prompt name, or the resource template."
+          }
+        }
+      },
+      "McpTargetKind": {
+        "type": "string",
+        "description": "What a method targets.",
+        "enum": [
+          "none",
+          "tool",
+          "prompt",
+          "resource"
+        ]
+      },
+      "McpToolDeltaRow": {
+        "type": "object",
+        "description": "One tool on both sides of a compare.",
+        "required": [
+          "tool_name",
+          "baseline",
+          "candidate"
+        ],
+        "properties": {
+          "baseline": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls on the baseline side."
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls on the candidate side."
+          },
+          "tool_name": {
+            "type": "string",
+            "description": "The tool."
+          }
+        }
+      },
+      "McpToolDetail": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/tools/{name}`.",
+        "required": [
+          "tool_name",
+          "stats",
+          "request_bytes",
+          "response_bytes",
+          "granularity",
+          "series",
+          "error_classes",
+          "clients",
+          "deploys",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "clients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpClientRow"
+            },
+            "description": "The clients with the most calls, at most 10."
+          },
+          "deploys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpDeployRow"
+            },
+            "description": "The deploys of the tool's servers seen in the window, oldest first: the series' markers."
+          },
+          "error_classes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpClassCount"
+            },
+            "description": "Calls per error class, most first."
+          },
+          "granularity": {
+            "$ref": "#/components/schemas/Granularity",
+            "description": "The bucket width of `series`: the finest that keeps the window under 500 buckets."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "request_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Request bytes of the calls counted."
+          },
+          "response_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Response bytes of the calls counted."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpSeriesPoint"
+            },
+            "description": "Every bucket of the window, oldest first."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls in the window."
+          },
+          "tool_name": {
+            "type": "string",
+            "description": "The tool."
+          }
+        }
+      },
+      "McpToolList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/tools`.",
+        "required": [
+          "data",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpToolRow"
+            },
+            "description": "The called tools, most calls first, then the unused ones."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          }
+        }
+      },
+      "McpToolRow": {
+        "type": "object",
+        "description": "One tool of a server.",
+        "required": [
+          "server_name",
+          "tool_name",
+          "stats",
+          "request_bytes",
+          "response_bytes",
+          "schema_hash",
+          "unused"
+        ],
+        "properties": {
+          "request_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Request bytes of the calls counted."
+          },
+          "response_bytes": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Response bytes of the calls counted."
+          },
+          "schema_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The xxh3-64 of its latest listed schema, 16 lowercase hex characters; null when the inventory has no\ndefinition in the window."
+          },
+          "server_name": {
+            "type": "string",
+            "description": "The server."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/McpStats",
+            "description": "Its calls."
+          },
+          "tool_name": {
+            "type": "string",
+            "description": "The tool."
+          },
+          "unused": {
+            "type": "boolean",
+            "description": "Listed in the inventory with no call in the window."
+          }
+        }
+      },
+      "McpUserList": {
+        "type": "object",
+        "description": "`GET projects/{project_id}/mcp/users`.",
+        "required": [
+          "data",
+          "truncated",
+          "capture_sources",
+          "saturated",
+          "meta"
+        ],
+        "properties": {
+          "capture_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerSource"
+            },
+            "description": "The capture source of each server."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpUserRow"
+            },
+            "description": "The users, last seen first."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "How complete and how fresh the answer is."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether a count saturated at 2^53 - 1."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more users exist than `data` holds."
+          }
+        }
+      },
+      "McpUserRow": {
+        "type": "object",
+        "description": "One user of the MCP servers.",
+        "required": [
+          "user_id",
+          "subject_hash",
+          "identity_source",
+          "calls",
+          "errors",
+          "sessions",
+          "first_seen",
+          "last_seen"
+        ],
+        "properties": {
+          "calls": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its calls."
+          },
+          "errors": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its failed calls."
+          },
+          "first_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "First seen."
+          },
+          "identity_source": {
+            "$ref": "#/components/schemas/IdentitySource",
+            "description": "How the identity was established, at its strongest."
+          },
+          "last_seen": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last seen."
+          },
+          "sessions": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "Its distinct MCP sessions."
+          },
+          "subject_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hashed token subject, 32 lowercase hex characters; null when absent."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "The user id from the SDK's identify hook; empty when absent."
+          }
+        }
+      },
+      "McpView": {
+        "type": "string",
+        "description": "Which section of `errors` or `clients` a request reads.",
+        "enum": [
+          "summary",
+          "breakdown"
+        ]
+      },
       "MeasureRequest": {
         "type": "object",
         "description": "One measure of a query and how it is aggregated.",
@@ -11199,6 +14561,17 @@
           "to"
         ],
         "properties": {
+          "capture_source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceParam",
+                "description": "Source `mcp_ops` only: which capture source each server is read from (contract 9.5); `auto` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "dimensions": {
             "type": [
               "array",
@@ -11247,12 +14620,30 @@
               }
             ]
           },
+          "include_caller_faults": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Source `mcp_ops` only: whether calls the caller caused count; false by default (contract 9.2)."
+          },
           "measures": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/MeasureRequest"
             },
             "description": "One to four measures."
+          },
+          "side": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpSideParam",
+                "description": "Source `mcp_ops` only, and required there: the side to read, `client` or `server`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "type": "string",
@@ -11390,7 +14781,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of the values: `count`, `tokens`, `usd` or `us`."
+            "description": "The unit of the values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate)."
           }
         }
       },
@@ -12015,6 +15406,16 @@
           "oidc"
         ]
       },
+      "ResultType": {
+        "type": "string",
+        "description": "What an operation's result was.",
+        "enum": [
+          "none",
+          "complete",
+          "input_required",
+          "task"
+        ]
+      },
       "Retention": {
         "type": "object",
         "description": "A project's retention settings.",
@@ -12460,7 +15861,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of its values: `count`, `tokens`, `usd` or `us`."
+            "description": "The unit of its values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate)."
           }
         }
       },
@@ -13136,6 +16537,16 @@
             "description": "Whether the server has no owner yet, so the first-run setup page applies."
           }
         }
+      },
+      "SourceParam": {
+        "type": "string",
+        "description": "The `source` parameter (contract 9.5).",
+        "enum": [
+          "auto",
+          "sdk",
+          "proxy",
+          "otlp"
+        ]
       },
       "SourceSchema": {
         "type": "object",
@@ -14289,6 +17700,16 @@
         },
         "additionalProperties": false
       },
+      "Transport": {
+        "type": "string",
+        "description": "The transport of an operation.",
+        "enum": [
+          "unknown",
+          "stdio",
+          "streamable_http",
+          "sse"
+        ]
+      },
       "UserDetail": {
         "type": "object",
         "description": "One user. A user without spans in the window is `not_found`, unless the answer may be incomplete: then\n`user` is null and `meta` says why.",
@@ -14700,6 +18121,17 @@
           "measures"
         ],
         "properties": {
+          "capture_source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceParam",
+                "description": "Source `mcp_ops` only: which capture source each server is read from (contract 9.5); `auto` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "dimensions": {
             "type": [
               "array",
@@ -14743,12 +18175,30 @@
               }
             ]
           },
+          "include_caller_faults": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Source `mcp_ops` only: whether calls the caller caused count; false by default (contract 9.2)."
+          },
           "measures": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/MeasureRequest"
             },
             "description": "One to four measures."
+          },
+          "side": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpSideParam",
+                "description": "Source `mcp_ops` only, and required there: the side to read, `client` or `server`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "type": "string",
@@ -14812,6 +18262,10 @@
     {
       "name": "lifecycle",
       "description": "Retention settings and deletion requests."
+    },
+    {
+      "name": "mcp",
+      "description": "MCP analytics: servers, tools, errors, clients, users, sessions, operations, deploys and compare, per side."
     },
     {
       "name": "metrics",

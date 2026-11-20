@@ -41,8 +41,8 @@ pub use node::{
 pub use plan::{BatchProbe, DeletePlan, DeleteTarget, ProbeKind, QueryPlan};
 pub use pred::{CmpOp, MAX_LIST, Pred};
 pub use registry::{
-    Aggregation, DimensionId, DimensionType, METRICS_MAX_BUCKETS, METRICS_MAX_DIMENSIONS,
-    METRICS_MAX_MEASURES, METRICS_MAX_POINTS, METRICS_MAX_SERIES, MeasureId, MetricsLimits, Rollup,
-    Source, SourceSchema, Tier, metrics_schema,
+    Aggregation, DimensionId, DimensionType, MCP_METRICS_MAX_MEASURES, METRICS_MAX_BUCKETS,
+    METRICS_MAX_DIMENSIONS, METRICS_MAX_MEASURES, METRICS_MAX_POINTS, METRICS_MAX_SERIES,
+    MeasureId, MetricsLimits, Rollup, Source, SourceSchema, Tier, metrics_schema,
 };
 pub use value::{MAX_ROWS_PER_BLOCK, OutputColumn, OutputSchema, Row, RowBlock, ShapeError, Value};

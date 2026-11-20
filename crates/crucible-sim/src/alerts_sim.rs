@@ -604,6 +604,7 @@ fn spec(
 ) -> RuleSpec {
     RuleSpec {
         source: Source::Spans,
+        mcp: None,
         measure,
         aggregation: Aggregation::Sum,
         dimensions,

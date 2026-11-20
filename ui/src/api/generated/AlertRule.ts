@@ -3,8 +3,10 @@ import type { AlertComparison } from "./AlertComparison";
 import type { AlertNoDataPolicy } from "./AlertNoDataPolicy";
 import type { AlertSeries } from "./AlertSeries";
 import type { AlertStatus } from "./AlertStatus";
+import type { McpSideParam } from "./McpSideParam";
 import type { SafeI64 } from "./SafeI64";
 import type { SafeU64 } from "./SafeU64";
+import type { SourceParam } from "./SourceParam";
 
 /**
  * An alert rule with the state of its series.
@@ -23,9 +25,17 @@ name: string,
  */
 enabled: boolean, 
 /**
- * The source of the measure.
+ * The source of the measure: `spans` or `mcp_ops`.
  */
 source: string, 
+/**
+ * The side an `mcp_ops` rule reads; absent for `spans`.
+ */
+side?: McpSideParam, 
+/**
+ * The capture source an `mcp_ops` rule reads (contract 9.5); absent for `spans`.
+ */
+capture_source?: SourceParam, 
 /**
  * The measure.
  */
@@ -35,8 +45,8 @@ measure: string,
  */
 aggregation: string, 
 /**
- * The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`
- * (nano-USD).
+ * The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds), `nusd`
+ * (nano-USD) or `ppm` (parts per million).
  */
 unit: string, 
 /**

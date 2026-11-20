@@ -11,6 +11,8 @@
 //! - [`system_sim`]: the whole node of milestone 1 (ingest router, WAL, shipper, recent-span index, query
 //!   service) over the disk and the store model, and the oracle for invariants I1, I2, I3, I6, I12 and I13.
 //! - [`swarm`]: the coin-flip dimensions of the system simulation, its run records and the swarm report.
+//! - [`mcp_reads`]: the read path of the MCP analytics over the store model, against a reference per capture
+//!   source (invariant I7).
 //!
 //! - [`pg_model`]: the simulated Postgres behind `ControlStore`: snapshot transactions, constraints, leases,
 //!   claims, the key feed and its fault model.
@@ -37,6 +39,7 @@ mod disk;
 pub mod jobs_sim;
 pub mod lease_sim;
 pub mod lifecycle_sim;
+pub mod mcp_reads;
 pub mod pg_model;
 mod runtime;
 pub mod ship_sim;

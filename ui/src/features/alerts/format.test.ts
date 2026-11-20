@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   conditionText,
+  dimensionsOf,
   formatSpan,
   formatValue,
   MEASURES,
+  mcpReadText,
+  measuresOf,
   seriesLabel,
   testFailure,
   thresholdFromStored,
@@ -19,6 +22,9 @@ describe("thresholds", () => {
     expect(thresholdToStored("us", "0.5")).toBe(500);
     expect(thresholdToStored("nusd", "$0.25")).toBe(250_000_000);
     expect(thresholdToStored("tokens", "-3")).toBe(-3);
+    // An error rate is typed in percent and stored in parts per million.
+    expect(thresholdToStored("ppm", "5")).toBe(50_000);
+    expect(thresholdToStored("ppm", "0.25%")).toBe(2_500);
   });
 
   test("that are not numbers are refused, never guessed", () => {
@@ -33,6 +39,7 @@ describe("thresholds", () => {
       ["us", "250"],
       ["us", "0.5"],
       ["nusd", "0.25"],
+      ["ppm", "1.5"],
     ] as const) {
       const stored = thresholdToStored(unit, text);
       expect(stored).not.toBeNull();
@@ -46,6 +53,8 @@ describe("what a rule says", () => {
     expect(formatValue("count", 1200)).toBe("1,200");
     expect(formatValue("us", 250_000)).toBe("250 ms");
     expect(formatValue("nusd", 250_000_000)).toBe("$0.25");
+    expect(formatValue("ppm", 12_500)).toBe("1.25%");
+    expect(formatValue("ppm", 50_000)).toBe("5%");
   });
 
   test("spans of time read in their largest whole unit", () => {
@@ -76,10 +85,50 @@ describe("what a rule says", () => {
         window_secs: 3_600,
       }),
     ).toBe("Duration p95 at or above 2.0 s over 1 h");
+    // An MCP measure names its own percentile, and its rate reads in percent.
+    expect(
+      conditionText({
+        measure: "mcp.duration_p99",
+        aggregation: "p99",
+        comparison: "gt",
+        threshold: 500_000,
+        unit: "us",
+        window_secs: 300,
+      }),
+    ).toBe("MCP duration p99 above 500 ms over 5 min");
+    expect(
+      conditionText({
+        measure: "mcp.error_rate",
+        aggregation: "rate",
+        comparison: "gt",
+        threshold: 50_000,
+        unit: "ppm",
+        window_secs: 300,
+      }),
+    ).toBe("MCP error rate above 5% over 5 min");
+    expect(mcpReadText({ side: "client", capture_source: "proxy" })).toBe(
+      "Client side, capture source Proxy",
+    );
+    expect(mcpReadText({})).toBe("Server side, capture source Automatic");
+  });
+
+  test("each source has its own measures and dimensions", () => {
+    expect(measuresOf("mcp_ops").map((m) => m.value)).toEqual([
+      "mcp.error_rate",
+      "mcp.error_count",
+      "mcp.calls",
+      "mcp.duration_p50",
+      "mcp.duration_p90",
+      "mcp.duration_p99",
+    ]);
+    expect(measuresOf("spans").every((m) => !m.value.startsWith("mcp."))).toBe(true);
+    expect(dimensionsOf("mcp_ops").map((d) => d.label)).toEqual(["None", "Server", "Tool"]);
+    expect(dimensionsOf("spans").map((d) => d.value)).not.toContain("server_name");
   });
 
   test("a series is named by its dimension values", () => {
     expect(seriesLabel([])).toBe("All spans");
+    expect(seriesLabel([], "mcp_ops")).toBe("All calls");
     expect(
       seriesLabel([
         { dimension: "environment", value: "prod" },
