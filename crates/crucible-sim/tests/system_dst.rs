@@ -45,9 +45,9 @@ const MUTANTS: [(Mutant, u64, &str); 18] = [
     (Mutant::SumCaptureSources, 1, "I7"),
     (Mutant::DropRollupMarker, 0, "I2"),
     (Mutant::MarkAfterDuplicateDrop, 14_000, "I7"),
-    (Mutant::SkipTombstoneFilter, 1, "I9"),
+    (Mutant::SkipTombstoneFilter, 2, "I9"),
     (Mutant::IgnoreTombstoneIssuer, 6000, "I9"),
-    (Mutant::SeedOnlyOpenRequests, 4000, "I9"),
+    (Mutant::SeedOnlyOpenRequests, 2, "I9"),
 ];
 
 fn replay(outcome: &Outcome) -> String {

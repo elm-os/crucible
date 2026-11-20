@@ -198,12 +198,12 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `sum-capture-sources` | `crucible-shipper` | Every `mcp_tool_rollup` partial gets one capture source | I7: the rollup differs from the reference over `mcp_ops`, and its counts per capture source are not those of `mcp_ops` | 1 | `0xb04e3dca437a47` |
 | `drop-rollup-marker` | `crucible-shipper` | The blocks of `mcp_tool_rollup` are sent without their marker row | I2: the store model refuses the block | 0 | `0xb04e3dca437a47` |
 | `mark-after-duplicate-drop` | `crucible-normalize` | Stage B flags the usage aggregates of a frame after its exact repeats were dropped | I7: a span is not a usage aggregate although a dropped repeat of its frame passes the mark on to it | 14000 | `0x9aad7dced818fe` |
-| `skip-tombstone-filter` | `crucible-shipper` | Stage B applies no deletion: neither a `Tombstone` frame of the log nor a request read before shipping drops anything | I9: a row that a completed deletion request selects landed after the request completed | 1 | `0xb04e3dca437a47` |
+| `skip-tombstone-filter` | `crucible-shipper` | Stage B applies no deletion: neither a `Tombstone` frame of the log nor a request read before shipping drops anything | I9: a row that a completed deletion request selects landed after the request completed | 2 | `0xb04e3dca437a47` |
 | `ignore-tombstone-issuer` | `crucible-normalize` | A deletion by user that names an issuer matches the subject hash of an MCP operation under the operation's own issuer | I9: an MCP operation that no deletion selects (its subject is the user's under another issuer than the request names) is in no row of `mcp_ops` | 6000 | `0xec5be8fac317f1` |
-| `seed-only-open-requests` | `crucible-shipper` | Before shipping, the shipper applies only the deletion requests that are still open, not those that completed while the node was down | I9: a row that a request completed while the node was down selects landed after the request completed | 4000 | `0x93894e47b41966` |
+| `seed-only-open-requests` | `crucible-shipper` | Before shipping, the shipper applies only the deletion requests that are still open, not those that completed while the node was down | I9: a row that a request completed while the node was down selects landed after the request completed | 2 | `0xb04e3dca437a47` |
 
-Of the 600 runs of the budget, the mutants are caught by 594, 136, 63, 43, 101, 499, 466, 75, 145, 153, 21, 50,
-222, 294, 42, 127, 10 and 99 runs, in the order of the table. The dimension `deletions` moved the first catching
+Of the 600 runs of the budget, the mutants are caught by 594, 140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48,
+219, 292, 41, 127, 11 and 96 runs, in the order of the table. The dimension `deletions` moved the first catching
 runs of several mutants: before it, the first fifteen were caught by 593, 137, 62, 46, 105, 499, 480, 76, 149, 162,
 20, 48, 229, 292 and 43 runs. Before the planted event keys and the weighting of `nested_usage` below, they were
 caught by 587, 147, 59, 43, 102, 498, 479, 71, 157, 161, 22, 49, 233, 292 and 2 runs. Before the
