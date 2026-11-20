@@ -20,6 +20,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 | [MCP](mcp.md) | The ways Crucible covers MCP, the SDK wrappers per language, and what it records about MCP operations |
 | [MCP proxy](mcp-proxy.md) | `crucible proxy`, which records an MCP server's operations without changing the server |
 | [Crucible's MCP server](mcp-server.md) | Connecting a coding agent to `/mcp` with a project key, and its tools |
+| [MCP analytics](mcp-analytics.md) | The MCP pages: servers, tools, errors, clients, users, sessions, operations, deploys and compare, their scope, and the API behind them |
 
 ## Using the data
 

@@ -30,6 +30,9 @@ is MIT licensed and runs on infrastructure you control.
 - `crucible proxy` records the same for stdio and Streamable HTTP servers without changing them. It forwards every
   byte unchanged and keeps forwarding when Crucible cannot be reached.
 - Both MCP protocol eras: the session-based revisions and the stateless 2026-07-28 revision.
+- MCP analytics pages for the server or the client side: servers, tools, errors, clients, users, sessions,
+  operations, deploys and a compare of two deploys, with p50, p90 and p99 latency and calls the caller caused
+  counted apart. Each server is read from one capture source, never a sum of two.
 - MCP operations are stored in tables of their own, which the SQL workspace can query.
 
 **Analytics**
@@ -38,7 +41,7 @@ is MIT licensed and runs on infrastructure you control.
   split by up to two dimensions.
 - Dashboards of charts, numbers, tables and notes over those metrics, laid out on a grid and edited by pointer or
   keyboard, with built-in starter dashboards to duplicate and change.
-- Threshold alerts on those measures, delivered to webhooks, Slack and email.
+- Threshold alerts on those measures and on MCP calls, delivered to webhooks, Slack and email.
 - A read-only SQL workspace for each project, with saved queries. ClickHouse access control keeps each project's
   SQL inside that project's data.
 
