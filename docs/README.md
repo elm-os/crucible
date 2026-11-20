@@ -65,3 +65,4 @@
 | [Methodology](testing/methodology.md) | Deterministic simulation, swarm testing, formal methods and conformance |
 | [Development](development.md) | The dev container, running the server from source, the UI against a server and the end-to-end test |
 | [Contributing](../CONTRIBUTING.md) | The checks a change passes and the pull request process |
+| [Releasing](releasing.md) | The version bump, the tag, what the tag publishes, and the links to update |
