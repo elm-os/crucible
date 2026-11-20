@@ -146,7 +146,9 @@ lists every option.
 The in-memory ClickHouse and Postgres models that the simulation uses may be stricter than the real servers, never
 more permissive. The conformance suites run the same operations against the models and against real servers, and
 CI runs them when the store, schema, plan or control-plane crates change: ClickHouse 26.3, 26.8 and the latest
-release, and Postgres 15 and 18.
+release, and Postgres 15 and 18. The media store adapter has its own suite against an S3-compatible gateway,
+`crucible-s3-conformance`, which the `s3-conformance` workflow runs
+([docs/testing/media-simulation.md](docs/testing/media-simulation.md)).
 
 ```sh
 docker network create crucible-conformance
