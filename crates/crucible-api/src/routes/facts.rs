@@ -9,8 +9,12 @@
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::rejection::BytesRejection;
-use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::header::{
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
+    ACCESS_CONTROL_MAX_AGE, CONTENT_TYPE,
+};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -26,7 +30,7 @@ use crucible_records::{
 };
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, Project, ProjectWrite};
+use crate::access::{ApiState, FeedbackWrite, PUBLIC_FEEDBACK_BODY, Project, ProjectWrite};
 use crate::body::json;
 use crate::convert;
 use crate::idempotency::{self, Begin};
@@ -44,7 +48,10 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/projects/{project_id}/facts", get(get_facts))
         .route(
             "/projects/{project_id}/feedback",
-            post(post_feedback).fallback(super::post_only),
+            post(post_feedback)
+                .options(feedback_preflight)
+                .fallback(super::post_only)
+                .layer(middleware::map_response(cross_origin)),
         )
         .route(
             "/projects/{project_id}/flags",
@@ -60,6 +67,28 @@ pub(super) fn routes() -> Router<ApiState> {
 #[derive(OpenApi)]
 #[openapi(paths(get_facts, post_correction, post_feedback, post_flag, post_tag))]
 pub(super) struct Paths;
+
+/// The feedback route answers cross-origin requests, without credentials (contract 11.3): a web page sends
+/// feedback with the project's public key.
+async fn cross_origin(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    response
+}
+
+/// The answer to a browser's preflight of a cross-origin feedback request.
+async fn feedback_preflight() -> Response {
+    let allowed = [
+        (ACCESS_CONTROL_ALLOW_METHODS, "POST"),
+        (
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            "authorization, content-type, idempotency-key",
+        ),
+        (ACCESS_CONTROL_MAX_AGE, "600"),
+    ];
+    (StatusCode::NO_CONTENT, allowed).into_response()
+}
 
 /// One fact before the target's start is looked up.
 struct Draft {
@@ -338,7 +367,9 @@ fn target_of(
 /// Record feedback
 ///
 /// Writes a score with `source = feedback` about a trace, a span or a session. A score with the same name
-/// (and `score_id`) replaces the earlier one; `retracted: true` removes it.
+/// (and `score_id`) replaces the earlier one; `retracted: true` removes it. This route alone also accepts the
+/// project's public key as Bearer, with a body of at most 16 KiB, and answers cross-origin requests without
+/// credentials, so a web page can send feedback.
 #[utoipa::path(
     post,
     path = "/api/v1/projects/{project_id}/feedback",
@@ -364,12 +395,22 @@ fn target_of(
 )]
 pub(crate) async fn post_feedback(
     State(state): State<ApiState>,
-    ProjectWrite(project): ProjectWrite,
+    FeedbackWrite {
+        project,
+        by_public_key,
+    }: FeedbackWrite,
     headers: HeaderMap,
     raw: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let rid = project.request_id;
     let raw = body(&project, raw)?;
+    if by_public_key && raw.len() > PUBLIC_FEEDBACK_BODY {
+        let detail = format!(
+            "feedback sent with a public key carries at most {PUBLIC_FEEDBACK_BODY} bytes; send larger \
+             feedback with the secret key"
+        );
+        return Err(ApiError::new(rid, ProblemCode::PayloadTooLarge, detail));
+    }
     let request: FeedbackRequest = json(rid, &headers, &raw)?;
     let mut errors = Vec::new();
     let target = target_of(

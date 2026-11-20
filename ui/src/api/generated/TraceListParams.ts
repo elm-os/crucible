@@ -59,7 +59,8 @@ user_id?: Array<string>,
  */
 session_id?: Array<string>, 
 /**
- * Keep traces whose head span carries at least one of these tags.
+ * Keep traces whose effective tags hold at least one of these: the head span's tags, plus the tags added and
+ * minus the tags removed with `POST tags`. At most 20.
  */
 tags?: Array<string>, 
 /**

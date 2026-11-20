@@ -326,6 +326,8 @@ pub(crate) struct Reading {
     /// The statement and its output format until the first poll, to send it once more if its request could not
     /// be sent.
     resend: Option<(clickhouse::query::Query, String)>,
+    /// Whether the server has sent a byte of its answer.
+    answered: bool,
     deadline: Instant,
     kill: Option<KillOnDrop>,
     inner: Arc<Inner>,
@@ -367,7 +369,10 @@ impl Reading {
             self.cursor = None;
         }
         match outcome {
-            Ok(Ok(Some(chunk))) => Some(Ok(chunk)),
+            Ok(Ok(Some(chunk))) => {
+                self.answered = true;
+                Some(Ok(chunk))
+            }
             Ok(Ok(None)) => {
                 self.disarm();
                 None
@@ -378,7 +383,13 @@ impl Reading {
             }
             Err(_elapsed) => {
                 self.abandon();
-                Some(Err(Failure::Timeout))
+                // A server that runs the statement ends it at the class limit, before the deadline, with its
+                // own exception; one that sent nothing by then is not answering at all.
+                Some(Err(if self.answered {
+                    Failure::Timeout
+                } else {
+                    Failure::NoAnswer
+                }))
             }
         }
     }
@@ -566,6 +577,7 @@ impl ClickHouseStore {
         Ok(Reading {
             cursor: Some(cursor),
             resend: Some(resend),
+            answered: false,
             deadline: self.inner.env.clock.now().saturating_add(deadline),
             kill: kill_on_drop.then(|| KillOnDrop {
                 inner: Arc::clone(&self.inner),

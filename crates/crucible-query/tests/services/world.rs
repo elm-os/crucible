@@ -171,6 +171,23 @@ pub fn trace_head_row(
     )
 }
 
+/// The `trace_heads` row of a root span sent with the ingest `tags`.
+pub fn tagged_head_row(
+    entry: &SpanEntry,
+    tags: &[&str],
+    lsn: Lsn,
+    received_at: Timestamp,
+) -> Vec<Value> {
+    let mut row = trace_head_row(entry, HeadKind::Root, lsn, received_at);
+    let at = crucible_schema::table(TableId::TraceHeads)
+        .columns
+        .iter()
+        .position(|column| column.name == "tags")
+        .unwrap();
+    row[at] = Value::Array(tags.iter().map(|tag| text(tag)).collect());
+    row
+}
+
 /// The `trace_stats` partials of one frame: one row per (trace, day), as the shipper writes them.
 pub fn trace_stats_rows(spans: &[SpanEntry], lsn: Lsn) -> Vec<Vec<Value>> {
     let mut groups: BTreeMap<(ProjectId, TraceId, i64), Vec<&SpanEntry>> = BTreeMap::new();
