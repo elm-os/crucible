@@ -306,6 +306,7 @@ pub(crate) async fn session_info(
     principal: &SessionPrincipal,
     state: &ApiState,
 ) -> Result<wire::SessionInfo, AuthError> {
+    let media = state.media.as_ref();
     // The reasons are those of `GET sql/schema`: `not_configured`, or what the self-probe said.
     let sql_workspace = match state.sql.as_ref().map(SqlWorkspace::status) {
         Some(status) => wire::FeatureState {
@@ -357,8 +358,10 @@ pub(crate) async fn session_info(
         features: wire::Features {
             sql_workspace,
             media: wire::MediaFeature {
-                enabled: false,
-                max_bytes: 0,
+                enabled: media.is_some(),
+                max_bytes: media.map_or(0, |media| {
+                    u32::try_from(media.config().max_bytes).unwrap_or(u32::MAX)
+                }),
             },
             // Email channels deliver through the mail server of `smtp.*`, which alerting holds.
             smtp: state

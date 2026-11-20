@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
-    Auth, ClickHouse, Config, ConfigErrors, Data, Egress, Mcp, PgOutageMode, Postgres, Secret,
-    Server, Smtp, SmtpTls, Source, Sql, WalBackend,
+    Auth, ClickHouse, Config, ConfigErrors, Data, Egress, Mcp, ObjectStore, PgOutageMode, Postgres,
+    Secret, Server, Smtp, SmtpTls, Source, Sql, WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -51,6 +51,7 @@ const NUMBERS: &[&str] = &[
     "auth.fail_open_max",
     "auth.session_outage_grace",
     "smtp.port",
+    "media.max_bytes",
 ];
 
 impl Loaded {
@@ -593,6 +594,16 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         _ => {}
     }
 
+    let media_max_bytes = t.parsed::<u64>("media.max_bytes", "a whole number of bytes");
+    if media_max_bytes.is_some_and(|max| max == 0 || max > MAX_MEDIA_BYTES) {
+        t.errors.push(format!(
+            "`media.max_bytes` must be between 1 and {MAX_MEDIA_BYTES} bytes (5 GiB, the most one upload to an \
+             object store may hold)"
+        ));
+    }
+    let media_max_bytes = media_max_bytes.filter(|max| (1..=MAX_MEDIA_BYTES).contains(max));
+    let (object_store, object_store_ok) = object_store(&mut t);
+
     if !(recent_ok
         && cpu_ok
         && idle_ok
@@ -600,7 +611,8 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         && clickhouse_ok
         && postgres_ok
         && fail_open_ok
-        && smtp_ok)
+        && smtp_ok
+        && object_store_ok)
     {
         return None;
     }
@@ -666,7 +678,121 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             allow_cidrs,
         },
         smtp,
+        object_store,
+        media_max_bytes: media_max_bytes?,
     })
+}
+
+/// The most `media.max_bytes` may be: 5 GiB, the largest single upload an object store takes.
+const MAX_MEDIA_BYTES: u64 = 5 << 30;
+
+/// The `[object_store]` section, and whether it is free of problems. Media need the control plane too, which
+/// records the objects and their uses.
+fn object_store(t: &mut Typed<'_>) -> (Option<ObjectStore>, bool) {
+    let Some(endpoint) = t.text("object_store.endpoint").map(str::to_owned) else {
+        let mut ok = true;
+        for key in [
+            "object_store.public_endpoint",
+            "object_store.bucket",
+            "object_store.access_key",
+            "object_store.secret_key",
+        ] {
+            if t.text(key).is_some() {
+                ok = false;
+                t.errors.push(format!(
+                    "`{key}` is set but `object_store.endpoint` is not, so media stay off; set \
+                     `object_store.endpoint` (CRUCIBLE_OBJECT_STORE_ENDPOINT) or remove `{key}`"
+                ));
+            }
+        }
+        return (None, ok);
+    };
+    let mut ok = true;
+    for (key, value) in [
+        ("object_store.endpoint", Some(endpoint.as_str())),
+        (
+            "object_store.public_endpoint",
+            t.text("object_store.public_endpoint"),
+        ),
+    ] {
+        if let Some(value) = value
+            && !(value.starts_with("http://") || value.starts_with("https://"))
+        {
+            ok = false;
+            t.errors.push(format!(
+                "`{key}` = {} must start with http:// or https://",
+                quoted(value)
+            ));
+        }
+    }
+    let virtual_host = match t.text("object_store.url_style") {
+        Some("path") | None => false,
+        Some("virtual_host") => true,
+        Some(other) => {
+            ok = false;
+            let other = quoted(other);
+            t.errors.push(format!(
+                "`object_store.url_style` = {other} is not one of path, virtual_host"
+            ));
+            false
+        }
+    };
+    if t.text("postgres.url").is_none() {
+        ok = false;
+        t.errors.push(
+            "`object_store.endpoint` needs the control plane, which records media: set `postgres.url` \
+             (CRUCIBLE_POSTGRES_URL), or remove the [object_store] settings"
+                .to_owned(),
+        );
+    }
+    let bucket = t.text("object_store.bucket").map(str::to_owned);
+    let access_key = t.text("object_store.access_key").map(str::to_owned);
+    let secret_key = t.secret("object_store.secret_key");
+    for (key, missing, variable) in [
+        (
+            "object_store.bucket",
+            bucket.is_none(),
+            "CRUCIBLE_OBJECT_STORE_BUCKET",
+        ),
+        (
+            "object_store.access_key",
+            access_key.is_none(),
+            "CRUCIBLE_OBJECT_STORE_ACCESS_KEY",
+        ),
+        (
+            "object_store.secret_key",
+            secret_key.is_none(),
+            "CRUCIBLE_OBJECT_STORE_SECRET_KEY_FILE or CRUCIBLE_OBJECT_STORE_SECRET_KEY",
+        ),
+    ] {
+        if missing {
+            ok = false;
+            t.errors.push(format!(
+                "`object_store.endpoint` needs `{key}`: set it ({variable})"
+            ));
+        }
+    }
+    let store = match (bucket, access_key, secret_key, ok) {
+        (Some(bucket), Some(access_key), Some(secret_key), true) => Some(ObjectStore {
+            endpoint,
+            public_endpoint: t.text("object_store.public_endpoint").map(str::to_owned),
+            region: t
+                .text("object_store.region")
+                .unwrap_or("us-east-1")
+                .to_owned(),
+            bucket,
+            access_key,
+            secret_key,
+            virtual_host,
+            prefix: t
+                .text("object_store.prefix")
+                .unwrap_or_default()
+                .trim_matches('/')
+                .to_owned(),
+        }),
+        _ => None,
+    };
+    (store, ok)
 }
 
 /// Whether `text` is `address/prefix` with a prefix that fits the address family.
@@ -958,7 +1084,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp], [object_store], [media].",
             ]
         );
     }
@@ -1169,6 +1295,77 @@ directory_of_everything = "x"
     }
 
     #[test]
+    fn the_object_store_needs_postgres_and_its_credentials_and_says_what_is_missing() {
+        let defaults = load(None, &[], &[]).unwrap().config;
+        assert_eq!(defaults.object_store, None);
+        assert_eq!(defaults.media_max_bytes, 64 << 20);
+        let full = env(&[
+            ("CRUCIBLE_POSTGRES_URL", "postgres://u@h/d"),
+            ("CRUCIBLE_MASTER_KEY", KEY),
+            ("CRUCIBLE_OBJECT_STORE_ENDPOINT", "http://versitygw:7070"),
+            (
+                "CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT",
+                "http://localhost:7070",
+            ),
+            ("CRUCIBLE_OBJECT_STORE_BUCKET", "media"),
+            ("CRUCIBLE_OBJECT_STORE_ACCESS_KEY", "crucible"),
+            ("CRUCIBLE_OBJECT_STORE_SECRET_KEY", "hunter2"),
+            ("CRUCIBLE_OBJECT_STORE_PREFIX", "/media/"),
+            ("CRUCIBLE_MEDIA_MAX_BYTES", "1048576"),
+        ]);
+        let config = load(None, &full, &[]).unwrap().config;
+        let store = config.object_store.unwrap();
+        assert_eq!(
+            (
+                store.endpoint.as_str(),
+                store.public_endpoint.as_deref(),
+                store.region.as_str(),
+                store.bucket.as_str(),
+                store.prefix.as_str(),
+                store.virtual_host
+            ),
+            (
+                "http://versitygw:7070",
+                Some("http://localhost:7070"),
+                "us-east-1",
+                "media",
+                "media",
+                false
+            )
+        );
+        assert_eq!(store.secret_key.expose(), "hunter2");
+        assert!(!format!("{store:?}").contains("hunter2"));
+        assert_eq!(config.media_max_bytes, 1 << 20);
+        // Without Postgres, credentials or a valid URL style, the refusals say what to set.
+        let bare = env(&[
+            ("CRUCIBLE_OBJECT_STORE_ENDPOINT", "versitygw:7070"),
+            ("CRUCIBLE_OBJECT_STORE_URL_STYLE", "dns"),
+            ("CRUCIBLE_MEDIA_MAX_BYTES", "0"),
+        ]);
+        let ConfigErrors(errors) = load(None, &bare, &[]).unwrap_err();
+        let expected = [
+            "`media.max_bytes` must be between 1 and",
+            "`object_store.endpoint` = \"versitygw:7070\" must start with http:// or https://",
+            "`object_store.url_style` = \"dns\" is not one of path, virtual_host",
+            "`object_store.endpoint` needs the control plane, which records media: set `postgres.url`",
+            "`object_store.endpoint` needs `object_store.bucket`",
+            "`object_store.endpoint` needs `object_store.access_key`",
+            "`object_store.endpoint` needs `object_store.secret_key`",
+        ];
+        assert_eq!(errors.len(), expected.len(), "{errors:?}");
+        for (error, expected) in errors.iter().zip(expected) {
+            assert!(error.contains(expected), "{error}");
+        }
+        // A bucket without an endpoint is a mistake, not a silent no.
+        let orphan = env(&[("CRUCIBLE_OBJECT_STORE_BUCKET", "media")]);
+        let ConfigErrors(errors) = load(None, &orphan, &[]).unwrap_err();
+        assert!(
+            errors[0].contains("`object_store.bucket` is set but `object_store.endpoint` is not"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn print_shows_sources_and_never_a_secret() {
         let file = format!(
             "master_key = \"{KEY}\"\n[recent]\nmax_bytes = 4096\n[postgres]\nurl = \"postgres://crucible:pg-secret@postgres:5432/crucible?sslmode=require\"\n"
@@ -1228,6 +1425,14 @@ mode = "open"  # default
 
 [smtp]
 tls = "starttls"  # default
+
+[object_store]
+region = "us-east-1"  # default
+url_style = "path"  # default
+prefix = "media"  # default
+
+[media]
+max_bytes = 67108864  # default
 "#
         );
         // What is printed loads again, to the same settings apart from the redacted secrets.

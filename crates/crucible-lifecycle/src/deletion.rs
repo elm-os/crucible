@@ -36,7 +36,9 @@ use serde::{Deserialize, Serialize};
 use crate::actions::{Place, Shared, advance, planned};
 use crate::detail::{Detail, subject_hash, subject_hex};
 use crate::partitions::{days_spanned, partitions_of_days};
-use crate::reach::{EXPORT_FILES, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach};
+use crate::reach::{
+    EXPORT_FILES, MEDIA, OTHER_PLACES, Reach, final_reach, identity_reach, page_reach,
+};
 
 /// The most pages of traces one run resolves for one request.
 const MAX_PAGES_PER_RUN: usize = 20;
@@ -245,23 +247,32 @@ impl Executor<'_> {
         actions
     }
 
-    /// One fenced transaction: the actions and the request's progress together.
+    /// One fenced transaction: the actions, the request's progress and the deletion of the media uses in
+    /// `traces` together, so that a page whose progress is recorded has its uses deleted (contract 13.4: the
+    /// stored objects go once their last use is gone, at the next run of the media collector).
     async fn record(
         &self,
         request: &mut DeletionRequest,
         progress: &Progress,
         actions: Vec<LifecycleAction>,
+        traces: &[TraceId],
     ) -> JobResult {
         request.places = progress.to_text();
         let row = DeletionRequest {
             updated_at: self.ctx.env.clock.wall_now(),
             ..request.clone()
         };
+        let traces = traces.to_vec();
         self.ctx
             .fenced(move |tx| {
                 Box::pin(async move {
                     for action in &actions {
                         tx.lifecycle().plan_action(action).await?;
+                    }
+                    if !traces.is_empty() {
+                        tx.media()
+                            .delete_trace_refs(row.project_id, &traces, row.requested_at)
+                            .await?;
                     }
                     tx.lifecycle().update_request(&row).await?;
                     Ok(())
@@ -324,7 +335,7 @@ impl Executor<'_> {
         actions.extend(identity);
         progress.planned = true;
         request.error = None;
-        self.record(request, progress, actions).await
+        self.record(request, progress, actions, &[]).await
     }
 
     /// One page of the traces `selector` resolves, after the trace `after`.
@@ -420,7 +431,7 @@ impl Executor<'_> {
         let subjects: Vec<String> = hashes.iter().map(subject_hex).collect();
         progress.subjects = Some(subjects.clone());
         request.error = None;
-        self.record(request, progress, Vec::new()).await?;
+        self.record(request, progress, Vec::new(), &[]).await?;
         Ok(Some(subjects))
     }
 
@@ -459,7 +470,7 @@ impl Executor<'_> {
                 );
                 progress.mcp_days = days.into_iter().collect();
                 progress.mcp_cursor = Some(last.to_string());
-                self.record(request, progress, Vec::new()).await?;
+                self.record(request, progress, Vec::new(), &[]).await?;
             }
             if finished {
                 return Ok(true);
@@ -547,7 +558,12 @@ impl Executor<'_> {
                 progress.cursor = Some(next.to_string());
                 progress.traces += page.len() as u64;
                 progress.resolved = finished;
-                self.record(request, progress, actions).await?;
+                // A listed trace's media uses go even when none of its spans was stored.
+                let media: Vec<TraceId> = match chunk {
+                    Some(chunk) => chunk.to_vec(),
+                    None => page.iter().map(|(id, _, _)| *id).collect(),
+                };
+                self.record(request, progress, actions, &media).await?;
             }
             if finished {
                 // Kept with the next write of the progress, when it was not with this page's.
@@ -644,16 +660,14 @@ impl Executor<'_> {
             request.state = DeletionState::Verified;
         }
         if request.state == DeletionState::Verified {
-            // Step 8. Export files made before the request are expired and removed. Comments and media have
-            // no store in this deployment yet: each is reported as not present, so that the request's status
-            // says what was and was not reached.
+            // Step 8. Export files made before the request are expired and removed. The media uses of the
+            // request's traces went with each page, and their objects go with the media collector's next run;
+            // without an object store there is no media. Comments have no store yet. A place that is not there
+            // is reported as not present, so that the request's status says what was and was not reached.
             self.purge_exports(&request).await?;
             for place in OTHER_PLACES {
-                let status = if place == EXPORT_FILES {
-                    "done"
-                } else {
-                    "not_present"
-                };
+                let reached = place == EXPORT_FILES || (place == MEDIA && self.shared.config.media);
+                let status = if reached { "done" } else { "not_present" };
                 progress.other.insert(place.to_owned(), status.to_owned());
             }
             request.state = DeletionState::Completed;

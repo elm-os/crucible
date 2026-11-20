@@ -13,6 +13,7 @@ use crucible_auth::service::{Identity, IdentityConfig, SessionVerdict};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer};
 use crucible_control::{JsonDoc, OrgRole, Project, ProjectRole, Repos as _};
 use crucible_env::Env;
+use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
@@ -104,6 +105,8 @@ pub(crate) struct Platform {
     pub(crate) key: As,
     /// The public key of `key`'s pair, as a Bearer token.
     pub(crate) public: As,
+    /// The object store behind the media routes.
+    pub(crate) objects: Arc<SimObjectStore>,
 }
 
 impl Platform {
@@ -243,6 +246,20 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
         None
     };
     let exports = crucible_export::Exports::new(env.clone(), Arc::new(model.clone()));
+    let objects = SimObjectStore::new(
+        Arc::clone(&env.clock),
+        env.rng.fork("objects"),
+        ObjectFaults::default(),
+    );
+    let media = crucible_media::Media::new(
+        env,
+        Arc::new(model.clone()),
+        Arc::clone(&objects) as Arc<dyn crucible_env::ObjectStore>,
+        crucible_media::MediaConfig {
+            prefix: "media".to_owned(),
+            max_bytes: 1 << 20,
+        },
+    );
     let router = crucible_api::platform_router(
         env,
         Some((world.service.clone(), writer)),
@@ -255,6 +272,7 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
             alerts: Some(crate::alerts::api(env, &model, mail)),
             lifecycle: Some(lifecycle(env, &model)),
             dashboards: Some(Arc::new(model.clone())),
+            media: Some(media),
         },
     );
     Platform {
@@ -264,6 +282,7 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
         key: As::Key(created.secret),
         identity,
         model,
+        objects,
     }
 }
 

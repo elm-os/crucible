@@ -69,6 +69,8 @@ pub(crate) struct ApiState {
     pub(crate) exports: Option<Exports>,
     /// Where dashboards are stored; `None` without a control plane, when only the built-in ones are served.
     pub(crate) dashboards: Option<Arc<dyn crucible_control::ControlStore>>,
+    /// Media; `None` without an object store and a control plane.
+    pub(crate) media: Option<crucible_media::Media>,
 }
 
 impl ApiState {
@@ -318,6 +320,8 @@ permissions! {
     Channels => Channels,
     /// Create exports.
     CreateExports => Export,
+    /// Upload and confirm media (API keys with the `ingest` scope).
+    IngestMedia => Ingest,
 }
 
 /// A request authorized for permission `P` on the project of its path (contract 11.6).

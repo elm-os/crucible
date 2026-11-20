@@ -26,6 +26,7 @@ crucible-records = { workspace = true }
 crucible-lifecycle = { path = "../crucible-lifecycle" }
 crucible-sqlws = { path = "../crucible-sqlws" }
 crucible-export = { path = "../crucible-export" }
+crucible-media = { path = "../crucible-media" }
 axum = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }
 bytes = { workspace = true }

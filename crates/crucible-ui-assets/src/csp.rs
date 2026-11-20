@@ -29,17 +29,26 @@ pub(crate) fn script_hashes(html: &[u8]) -> Vec<String> {
 /// - `style-src-attr 'unsafe-inline'`: the UI SDK writes `style` attributes (custom properties such as
 ///   `--tree-level`); its style sheets are constructed in script, which CSP does not govern;
 /// - `img-src data:`: the UI SDK style sheet draws its icons from `data:image/svg+xml` URLs;
+/// - `img-src` and `media-src` also name `media`, the object store's public origin, when media are on: the
+///   payload viewer shows images, audio and video from presigned URLs there;
 /// - everything else same-origin, with no plugins, no `<base>` and no framing.
-pub(crate) fn policy(hashes: &[String]) -> String {
+pub(crate) fn policy(hashes: &[String], media: Option<&str>) -> String {
     let mut script_src = String::from("'self'");
     for hash in hashes {
         script_src.push_str(" '");
         script_src.push_str(hash);
         script_src.push('\'');
     }
+    let (img_src, media_src) = match media {
+        Some(origin) => (
+            format!("'self' data: {origin}"),
+            format!("; media-src 'self' {origin}"),
+        ),
+        None => ("'self' data:".to_owned(), String::new()),
+    };
     format!(
         "default-src 'self'; script-src {script_src}; style-src-attr 'unsafe-inline'; \
-         img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+         img-src {img_src}{media_src}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     )
 }
 
@@ -250,14 +259,25 @@ mod tests {
     fn the_policy_lists_the_page_hashes() {
         let hashes = vec![sha(b"a"), sha(b"b")];
         assert_eq!(
-            policy(&hashes),
+            policy(&hashes, None),
             format!(
                 "default-src 'self'; script-src 'self' '{}' '{}'; style-src-attr 'unsafe-inline'; \
                  img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
                 hashes[0], hashes[1]
             )
         );
-        assert!(policy(&[]).contains("script-src 'self';"));
+        assert!(policy(&[], None).contains("script-src 'self';"));
+    }
+
+    #[test]
+    fn with_media_the_policy_lets_pages_load_media_from_the_object_store() {
+        let policy = policy(&[], Some("http://localhost:7070"));
+        assert!(policy.contains(
+            "img-src 'self' data: http://localhost:7070; media-src 'self' http://localhost:7070;"
+        ));
+        assert!(
+            policy.contains("default-src 'self';") && policy.contains("frame-ancestors 'none'")
+        );
     }
 
     #[derive(Clone, Debug)]

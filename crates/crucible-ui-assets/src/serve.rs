@@ -42,7 +42,16 @@ const NO_UI: &str = "This build of Crucible has no web UI. Build the UI and comp
 ///    writes for a segment payload the client asks for by its flat name (`R/__next.a.b.__PAGE__.txt` is
 ///    `R/__next.a/b/__PAGE__.txt`), and `R/index.txt` for `/R.txt`;
 /// 4. the 404 page, with status 404, except under the reserved prefixes ([`Outcome::Reserved`]).
-pub fn serve(source: &dyn AssetSource, method: &Method, uri: &Uri, headers: &HeaderMap) -> Outcome {
+///
+/// `media` is the object store's public origin when media are on: pages may load images, audio and video from
+/// it.
+pub fn serve(
+    source: &dyn AssetSource,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    media: Option<&str>,
+) -> Outcome {
     let path = decode(uri.path());
     let reserved = is_reserved(path.as_deref().unwrap_or(uri.path()));
     let head = method == Method::HEAD;
@@ -61,9 +70,10 @@ pub fn serve(source: &dyn AssetSource, method: &Method, uri: &Uri, headers: &Hea
             StatusCode::OK,
             headers,
             head,
+            media,
         )),
         None if reserved => Outcome::Reserved,
-        None => Outcome::Response(not_found(source, headers, head)),
+        None => Outcome::Response(not_found(source, headers, head, media)),
     }
 }
 
@@ -246,6 +256,7 @@ fn respond(
     status: StatusCode,
     request: &HeaderMap,
     head: bool,
+    media: Option<&str>,
 ) -> Response<Bytes> {
     let (bytes, etag, coding) = match (negotiate(asset, request), &asset.encodings) {
         (Coding::Br, Encodings { br: Some(br), .. }) => {
@@ -289,7 +300,7 @@ fn respond(
     }
     if asset.content_type.starts_with("text/html") {
         let hashes = source.manifest().csp_hashes.get(name);
-        let policy = csp::policy(hashes.map_or(&[], Vec::as_slice));
+        let policy = csp::policy(hashes.map_or(&[], Vec::as_slice), media);
         insert(headers, CONTENT_SECURITY_POLICY, &policy);
     }
     headers.insert(CONTENT_LENGTH, HeaderValue::from(bytes.len()));
@@ -301,7 +312,12 @@ fn respond(
 }
 
 /// The 404 page with status 404, or a short text when the source has no 404 page.
-fn not_found(source: &dyn AssetSource, request: &HeaderMap, head: bool) -> Response<Bytes> {
+fn not_found(
+    source: &dyn AssetSource,
+    request: &HeaderMap,
+    head: bool,
+    media: Option<&str>,
+) -> Response<Bytes> {
     if let Some(page) = source.get(NOT_FOUND_PAGE) {
         return respond(
             source,
@@ -310,6 +326,7 @@ fn not_found(source: &dyn AssetSource, request: &HeaderMap, head: bool) -> Respo
             StatusCode::NOT_FOUND,
             request,
             head,
+            media,
         );
     }
     let text = if source.get("index.html").is_none() {

@@ -23,6 +23,7 @@ To get a server running, follow the [quickstart](quickstart.md).
 | [Alerts and egress](alerts-and-egress.md) | The outbound calls of webhook, Slack and email channels, and how to limit them |
 | [SQL workspace](sql-workspace.md) | The per-project ClickHouse users behind the SQL workspace, and its quota |
 | [Troubleshooting](troubleshooting.md) | Each common refusal, what it means and how to fix it |
+| [Media](media.md) | Images, audio and files on S3-compatible object storage, with the bundled gateway or a bucket of your own |
 
 ## Ways to run it
 
@@ -68,6 +69,11 @@ only to its data volume; the container's root filesystem is read-only.
 
 `.env` beside the Compose file holds the passwords, the master key and the optional settings
 ([configuration](configuration.md#docker-compose-variables)).
+
+`deploy/compose/compose.media.yaml` adds media to `compose.yaml`: an S3-compatible gateway with its own volume, which
+holds the images, audio and files that SDKs upload beside their traces
+(`docker compose -f compose.yaml -f compose.media.yaml up -d --wait`). Without it media stay inline in payloads. See
+[media](media.md).
 
 ### Your own ClickHouse and Postgres
 
