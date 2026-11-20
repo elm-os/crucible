@@ -307,6 +307,15 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Spans, MCP operations and facts that stage B dropped from the frames it shipped because a deletion request
+    /// selects them (contract 13.3, step 3), by kind (`span`, `mcp_operation`, `fact`). An MCP operation counts
+    /// whether it went with its span or a deletion by user named it by its own identity.
+    pub static SHIPPER_DELETION_DROPS: CounterDef = CounterDef {
+        name: "crucible_shipper_deletion_drops_total",
+        help: "Spans, MCP operations and facts that stage B dropped before shipping because a deletion request selects them, by kind.",
+        labels: &["kind"],
+    };
+
     /// Estimated bytes of the rows the shipper holds, tracked against the `shipper.encoded_bytes` budget.
     pub static SHIPPER_ENCODED_BYTES: GaugeDef = GaugeDef {
         name: "crucible_shipper_encoded_bytes",
@@ -433,6 +442,11 @@ pub mod registry {
             (
                 SHIPPER_INVENTORY_ROWS_DROPPED.name,
                 SHIPPER_INVENTORY_ROWS_DROPPED.labels,
+                &[],
+            ),
+            (
+                SHIPPER_DELETION_DROPS.name,
+                SHIPPER_DELETION_DROPS.labels,
                 &[],
             ),
             (

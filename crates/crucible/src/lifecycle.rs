@@ -6,8 +6,9 @@
 //! change or a deletion request hides its rows at once on the node that accepted it and within one refresh on
 //! every other node.
 //!
-//! The shipper reads the deletion requests through [`ControlDeletions`] before it ships anything, so that stage B
-//! drops what a request that completed while this node was down deleted (contract 13.3).
+//! The shipper reads the deletion requests through [`ControlDeletions`] before it ships what they can select, so
+//! that stage B drops what a request that completed while this node was down deleted (contract 13.3). It reads only
+//! the requests made after the data it ships arrived, because a deletion selects data received before it.
 
 use std::sync::{Arc, OnceLock};
 
@@ -177,7 +178,10 @@ impl DeletionRequests for ControlDeletions {
         true
     }
 
-    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+    fn requested_after(
+        &self,
+        received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
         Box::pin(async move {
             let repo = self.control.lifecycle();
             repo.heartbeat(&Node {
@@ -194,7 +198,7 @@ impl DeletionRequests for ControlDeletions {
             let mut after = 0;
             loop {
                 let page = repo
-                    .requests_after(after, REQUESTS_PAGE)
+                    .requests_after(received_at, after, REQUESTS_PAGE)
                     .await
                     .map_err(unavailable)?;
                 requests.extend(page.iter().map(known));
@@ -360,7 +364,10 @@ mod tests {
                     .unwrap()
                     .is_empty()
             );
-            let all = deletions.all().await.unwrap();
+            let all = deletions
+                .requested_after(Timestamp::from_micros(0))
+                .await
+                .unwrap();
             // A request that completed while the node was down still applies to what the node never shipped.
             let states: Vec<DeletionState> = all.iter().map(|known| known.state).collect();
             assert_eq!(
@@ -410,13 +417,43 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let all = deletions.all().await.unwrap();
+            let all = deletions
+                .requested_after(Timestamp::from_micros(0))
+                .await
+                .unwrap();
             let seqs: Vec<u64> = all
                 .iter()
                 .map(|known| known.tombstone.deletion_seq)
                 .collect();
             assert_eq!(seqs.len(), count as usize);
             assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
+        });
+    }
+
+    /// A request made at or before an instant selects nothing received then, so the shipper does not read it, on
+    /// any page.
+    #[test]
+    fn only_the_requests_made_after_the_instant_are_read() {
+        node(async |deletions, model| {
+            let repo = model.lifecycle();
+            let count = REQUESTS_PAGE + 3;
+            for n in 1..=count {
+                let selector = DeletionSelector::Session(format!("s-{n}"));
+                repo.insert_request(&request(n, selector, DeletionState::Completed))
+                    .await
+                    .unwrap();
+            }
+            // Each request was made `n` microseconds after the epoch.
+            let read = deletions
+                .requested_after(Timestamp::from_micros(2))
+                .await
+                .unwrap();
+            let made: Vec<i64> = read
+                .iter()
+                .map(|known| known.tombstone.requested_at.micros())
+                .collect();
+            assert_eq!(made.len(), count as usize - 2);
+            assert!(made.iter().all(|&micros| micros > 2), "{made:?}");
         });
     }
 
@@ -436,7 +473,10 @@ mod tests {
                 control: Arc::new(model),
                 wal,
             };
-            let error = deletions.all().await.unwrap_err();
+            let error = deletions
+                .requested_after(Timestamp::from_micros(0))
+                .await
+                .unwrap_err();
             assert!(
                 error.0.contains("check that Postgres is reachable"),
                 "{error}"

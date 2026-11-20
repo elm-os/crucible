@@ -16,6 +16,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   startup and logs the warning at the first refusal.
 - Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
   scope name, and are mapped as that product's traffic.
+- A server that starts reads from Postgres only the deletion requests made after the oldest data in its write-ahead
+  log arrived, not every request ever made, before it sends that data to ClickHouse.
+- The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
+  shipper dropped before ClickHouse because a deletion request selects them.
 - The MCP server's `list_spans`, `list_sessions`, `list_users` and `list_user_sessions` tools list a window's
   spans, sessions and users, and `list_traces` and `list_spans` take the filters of the REST trace and span lists.
 - `crucible proxy` records the error message of a failed operation, scrubbed with the shared rules and cut at 2 KiB,

@@ -23,6 +23,8 @@ open, by sequence: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", P
 every project's, by sequence: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
 every project's, one page: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
 every project's after the first: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+every project's requested after the second: [("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+every project's requested after the second, after the third: [("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
 update: true
 updated: Some(("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Completed, "{\"planned\":true}", 2, Some("why")))
 update a request that does not exist: false

@@ -258,15 +258,28 @@ async fn requests(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     );
     t.outcome(
         "every project's, by sequence",
-        repo.requests_after(0, 10).await.map(|r| shapes(&r)),
+        repo.requests_after(at(0), 0, 10).await.map(|r| shapes(&r)),
     );
     t.outcome(
         "every project's, one page",
-        repo.requests_after(0, 1).await.map(|r| shapes(&r)),
+        repo.requests_after(at(0), 0, 1).await.map(|r| shapes(&r)),
     );
     t.outcome(
         "every project's after the first",
-        repo.requests_after(one, 10).await.map(|r| shapes(&r)),
+        repo.requests_after(at(0), one, 10)
+            .await
+            .map(|r| shapes(&r)),
+    );
+    // Only the requests made after an instant: one made at that instant selects nothing received then.
+    t.outcome(
+        "every project's requested after the second",
+        repo.requests_after(at(2), 0, 10).await.map(|r| shapes(&r)),
+    );
+    t.outcome(
+        "every project's requested after the second, after the third",
+        repo.requests_after(at(2), three, 10)
+            .await
+            .map(|r| shapes(&r)),
     );
 
     let mut stored = DeletionRequest {
@@ -296,7 +309,7 @@ async fn requests(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     );
     t.outcome(
         "a completed request is still among every project's",
-        repo.requests_after(0, 10).await.map(|r| shapes(&r)),
+        repo.requests_after(at(0), 0, 10).await.map(|r| shapes(&r)),
     );
 
     // Acknowledgements.

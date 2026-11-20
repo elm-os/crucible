@@ -707,6 +707,9 @@ pub(crate) fn add(total: &mut StatsSnapshot, s: &StatsSnapshot) {
     total.quarantined_frames += s.quarantined_frames;
     total.mixed_version_batches += s.mixed_version_batches;
     total.inventory_dropped += s.inventory_dropped;
+    total.deleted_spans += s.deleted_spans;
+    total.deleted_ops += s.deleted_ops;
+    total.deleted_facts += s.deleted_facts;
     total.encoded_bytes_peak = total.encoded_bytes_peak.max(s.encoded_bytes_peak);
     total.largest_frame_bytes = total.largest_frame_bytes.max(s.largest_frame_bytes);
 }

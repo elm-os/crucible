@@ -136,6 +136,7 @@ docker run --rm --network container:crucible-crucible-1 curlimages/curl:8.23.0 -
 | `crucible_wal_backend_info{backend,reason}` | gauge | The disk backend in use and why, for a fallback |
 | `crucible_shipper_batches_total`, `crucible_shipper_inserts_total`, `crucible_shipper_probes_total`, `crucible_shipper_checkpoints_total` | counter | Batches sealed and shipped, inserts sent and those with an unknown outcome, existence probes, checkpoints |
 | `crucible_shipper_quarantined_frames_total`, `crucible_shipper_quarantined_pairs_total` | counter | Frames this binary could not decode or normalize, copied to the `quarantine` directory, and data that failed repeatedly |
+| `crucible_shipper_deletion_drops_total{kind}` | counter | Spans, MCP operations and facts (`span`, `mcp_operation`, `fact`) that the shipper dropped before they reached ClickHouse because a deletion request selects them |
 | `crucible_shipper_encoded_bytes`, `crucible_shipper_drain_bytes_per_second` | gauge | Rows the shipper holds, against its budget; the rate at which the log drains |
 | `crucible_clickhouse_connections_opened_total` | counter | Connections opened to ClickHouse |
 | `crucible_auth_key_snapshot_age_seconds` | gauge | Seconds since the API keys last loaded from Postgres; -1 before the first load |
