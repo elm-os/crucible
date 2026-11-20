@@ -95,8 +95,8 @@ services:
     depends_on:
       crucible:
         condition: service_started
-        # Compose restarts this service whenever it recreates the server, as on an upgrade to a new image, so the
-        # start period applies again and `up --wait` waits until the new server is ready.
+        # When Compose recreates the server, as on an upgrade to a new image, it stops this service first and starts it
+        # again after, so the start period applies again and `up --wait` waits until the new server is ready.
         restart: true
     command: ["sleep", "infinity"]
     stop_signal: SIGKILL

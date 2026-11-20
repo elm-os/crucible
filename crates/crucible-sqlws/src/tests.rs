@@ -863,5 +863,13 @@ fn the_reconciler_repairs_the_probe_identities_while_the_probe_cannot_run() {
         assert!(node.probe().await.enabled);
         node.reconcile_once("node-a").await.unwrap();
         assert_eq!(probes(), expected);
+        // A probe that found a breach is not repaired away: the workspace stays off and says why.
+        w.stub.set_probe(Ok(vec![ProbeBreach {
+            check: "cross_project_read",
+            detail: "the statement answered something else".to_owned(),
+        }]));
+        assert_eq!(node.probe().await.reason, Some("isolation_probe_failed"));
+        node.reconcile_once("node-a").await.unwrap();
+        assert_eq!(probes(), expected);
     });
 }

@@ -11,9 +11,9 @@
 //! - `active` and `target_generation` is ahead: provision with the new generation's password (rotation);
 //! - `active` and not confirmed for an hour: provision again, which repairs drift.
 //!
-//! While this node's self-probe has not passed, the pass also provisions the two probe identities again (contract
-//! 7.5), with the passwords of this node's master key: a start with another key can have left them with that
-//! key's passwords, and then the probe cannot sign in.
+//! While this node's self-probe cannot sign in, or has not run yet, the pass also provisions the two probe
+//! identities again (contract 7.5), with the passwords of this node's master key: a start with another key can have
+//! left them with that key's passwords. A probe that found a breach is left as it is: the breach stays reported.
 //!
 //! Every ClickHouse statement is idempotent and every row change is a compare-and-set on the state and the
 //! generation, so a leader that lost its lease mid-run, or a first use on another node, cannot leave an
@@ -58,7 +58,7 @@ pub struct ReconcileReport {
     pub confirmed: u32,
     /// Identities removed.
     pub dropped: u32,
-    /// Probe identities provisioned again because this node's self-probe had not passed.
+    /// Probe identities provisioned again because this node's self-probe could not sign in or had not run yet.
     pub probes: u32,
     /// Identities whose step failed and will be tried again next pass.
     pub failed: u32,
@@ -195,7 +195,10 @@ impl SqlWorkspace {
         report.leader = true;
         let mut held = HeldLease::new(lease, asked.nanos(), LEASE_TTL);
         let mut renewed = asked;
-        if !self.status().enabled {
+        if matches!(
+            self.status().reason,
+            Some("probe_pending" | "probe_unavailable")
+        ) {
             for project in PROBE_PROJECTS {
                 match self
                     .store()

@@ -25,8 +25,8 @@ skips the ones the ledger in Postgres already holds. The write-ahead log is reco
 is shipped. Stopping the old server lets it finish its open requests first: Compose sends SIGTERM and allows
 35 seconds, and a server with no request open stops within a second.
 
-- Compose restarts the `ready` service with the new server, so `--wait` returns once the new server answers
-  `/readyz`. `docker compose ps` shows the `ready` service as `starting` until then.
+- Compose stops the `ready` service before it replaces the server and starts it again after, so `--wait` returns
+  once the new server answers `/readyz`.
 - Keep `CRUCIBLE_MASTER_KEY` across upgrades. The ClickHouse service users were created with passwords derived
   from it, and the API keys and sealed secrets in Postgres depend on it.
 - Migrations only move forward. An older image started on a database that a newer one migrated stays not ready,

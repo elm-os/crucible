@@ -45,7 +45,7 @@ services:
     depends_on:
       crucible:
         condition: service_started
-        # Restarted whenever Compose recreates the server, so `up --wait` waits for the new one (see compose.yaml).
+        # Stopped and started again around a recreated server, so `up --wait` waits for the new one (see compose.yaml).
         restart: true
     command: ["sleep", "infinity"]
     stop_signal: SIGKILL
