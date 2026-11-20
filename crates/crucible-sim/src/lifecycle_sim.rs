@@ -1598,3 +1598,58 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
 pub fn run_lifecycle_sim(seed: u64, options: Options) -> Outcome {
     run(seed, |sim| simulate(sim, options))
 }
+
+#[cfg(test)]
+mod tests {
+    use crucible_records::DeletionRequestId;
+
+    use super::*;
+
+    /// A frame whose MCP rows carry the hash of `ada` under the first issuer and no `user_id`.
+    fn hashed() -> Spans {
+        Spans {
+            project: ProjectId::from_bytes([1; 16]),
+            trace: TraceId::from_bytes([2; 16]),
+            user: "ada".to_owned(),
+            identity: Identity {
+                spans: false,
+                mcp_user: false,
+                issuer: Some(ISSUERS[0]),
+            },
+            session: "s-1".to_owned(),
+            start: Timestamp::from_micros(0),
+            received_at: Timestamp::from_micros(5),
+            span_ids: vec![[3; 8]],
+        }
+    }
+
+    fn by_user(issuer: Option<&str>) -> DeletionRequest {
+        DeletionRequest {
+            id: DeletionRequestId::from_bytes([4; 16]),
+            project_id: ProjectId::from_bytes([1; 16]),
+            selector: DeletionSelector::User {
+                user_id: "ada".to_owned(),
+                issuer: issuer.map(str::to_owned),
+            },
+            state: DeletionState::Pending,
+            requested_at: Timestamp::from_micros(9),
+            deletion_seq: 1,
+            requested_by: "user:test".to_owned(),
+            idempotency_key: None,
+            request_hash: String::new(),
+            places: "{}".to_owned(),
+            attempts: 0,
+            error: None,
+            updated_at: Timestamp::from_micros(9),
+        }
+    }
+
+    #[test]
+    fn a_deletion_by_user_selects_mcp_rows_hashed_under_the_issuer_it_names_or_any() {
+        let frame = hashed();
+        assert!(frame.mcp_selected_by(&by_user(None)));
+        assert!(frame.mcp_selected_by(&by_user(Some(ISSUERS[0]))));
+        // Hashed under another issuer: another identity, which the request keeps.
+        assert!(!frame.mcp_selected_by(&by_user(Some(ISSUERS[1]))));
+    }
+}
