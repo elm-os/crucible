@@ -9,6 +9,7 @@ use crucible_schema::{ColumnRef, IndexKind, Ty, table};
 
 use crate::error::PlanError;
 use crate::literal::Literal;
+use crate::node::Aggregate;
 
 /// The longest `In` or `HasAny` list a plan may hold.
 pub const MAX_LIST: usize = 10_000;
@@ -56,6 +57,11 @@ pub enum Pred {
     },
     /// A text match on the table's `name` column, served by its text index.
     TextMatch(String),
+    /// A column whose value is among the ids an aggregate produces, its first group dimension, read over the
+    /// plan's project and window like every table reference: a semi-join (contract 8.1) that can be negated and
+    /// combined, which a filter by a fact needs (contract 3.8). Like [`crate::SemiJoin`], a set above
+    /// [`crate::DEFAULT_MAX_IDS`] ids refuses the read as too broad.
+    InSet(ColumnRef, Box<Aggregate>),
 }
 
 impl Pred {
@@ -149,6 +155,29 @@ impl Pred {
                     Err(PlanError::UnsupportedPred("name"))
                 }
             }
+            Self::InSet(column, set) => {
+                own(column)?;
+                match set.group().first() {
+                    Some(id) if id.ty().scalar() == column.ty().scalar() => Ok(()),
+                    _ => Err(PlanError::SemiJoin),
+                }
+            }
+        }
+    }
+
+    /// The tables that the predicate's sets read, besides the table it filters.
+    pub(crate) fn set_tables(&self) -> Vec<TableId> {
+        match self {
+            Self::And(operands) | Self::Or(operands) => {
+                operands.iter().flat_map(Self::set_tables).collect()
+            }
+            Self::Not(operand) => operand.set_tables(),
+            Self::InSet(_, set) => {
+                let mut tables = vec![set.table()];
+                tables.extend(set.pred().set_tables());
+                tables
+            }
+            _ => Vec::new(),
         }
     }
 }

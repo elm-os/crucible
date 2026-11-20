@@ -14,9 +14,9 @@ use crucible_env::{
     StoreFacts, StoreHealth, TelemetryStore,
 };
 use crucible_plan::{
-    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, Direction, FieldRange,
-    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, RowBlock, Scan,
-    SemiJoin, TextSearch, TimeSeries, TokenMode, Value,
+    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DEFAULT_MAX_IDS, DeletePlan, Direction,
+    FieldRange, Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, RowBlock,
+    Scan, SemiJoin, TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid};
 use crucible_schema::{AggFn, ColumnRef, MigrationStep, Ty, table};
@@ -247,6 +247,7 @@ fn holds(pred: &Pred, row: &StoredRow) -> bool {
                 other => panic!("metadata_kv is {other:?}"),
             }
         }
+        Pred::InSet(..) => panic!("a set is resolved to its ids before rows are tested"),
     }
 }
 
@@ -323,8 +324,29 @@ impl FakeStore {
         self.state().executed.clone()
     }
 
+    /// `pred` with each set membership replaced by the list of its ids, read under the same plan.
+    fn resolved(&self, plan: &QueryPlan, pred: &Pred) -> Pred {
+        let all = |operands: &[Pred]| operands.iter().map(|p| self.resolved(plan, p)).collect();
+        match pred {
+            Pred::And(operands) => Pred::And(all(operands)),
+            Pred::Or(operands) => Pred::Or(all(operands)),
+            Pred::Not(operand) => Pred::Not(Box::new(self.resolved(plan, operand))),
+            Pred::InSet(column, set) => {
+                let ids: Vec<Literal> = self
+                    .aggregate(plan, set)
+                    .iter()
+                    .map(|row| to_literal(&row.values()[0]))
+                    .collect();
+                assert!(ids.len() <= DEFAULT_MAX_IDS as usize, "a set above its cap");
+                Pred::In(*column, ids)
+            }
+            other => other.clone(),
+        }
+    }
+
     /// The rows of a table that the plan may read: the scope's project, inside the window.
     fn visible(&self, plan: &QueryPlan, table_id: TableId, pred: &Pred) -> Vec<StoredRow> {
+        let pred = &self.resolved(plan, pred);
         let project = Value::Uuid(plan.scope().project_id().uuid());
         let state = self.state();
         let rows = state.tables.get(&table_id).map_or(&[][..], Vec::as_slice);
@@ -558,14 +580,30 @@ impl FakeStore {
     }
 
     fn aggregate(&self, plan: &QueryPlan, aggregate: &Aggregate) -> Vec<Row> {
-        assert!(aggregate.having_conditions().is_empty());
         let rows = self.visible(plan, aggregate.table(), aggregate.pred());
-        let groups = group_rows(aggregate, rows, |row| {
+        let mut groups = group_rows(aggregate, rows, |row| {
             aggregate
                 .group()
                 .iter()
                 .map(|c| cell(row, c).clone())
                 .collect()
+        });
+        let dims = aggregate.group().len();
+        groups.retain(|row| {
+            aggregate.having_conditions().iter().all(|having| {
+                let order = compare(
+                    &row.values()[dims + having.measure],
+                    &literal(&having.value),
+                );
+                match having.op {
+                    CmpOp::Eq => order.is_eq(),
+                    CmpOp::Ne => order.is_ne(),
+                    CmpOp::Lt => order.is_lt(),
+                    CmpOp::Le => order.is_le(),
+                    CmpOp::Gt => order.is_gt(),
+                    CmpOp::Ge => order.is_ge(),
+                }
+            })
         });
         ordered_groups(aggregate, groups)
     }
@@ -699,7 +737,16 @@ fn group_rows(
                         }
                         Value::Array(union)
                     }
-                    other => panic!("the fake store does not compute {other:?}"),
+                    // The value on the row with the greatest `(version, fact_id)`.
+                    Measure::LatestByVersion(c) => {
+                        let at = |name| position(aggregate.table(), name);
+                        let (version, fact_id) = (at("version"), at("fact_id"));
+                        let latest = members.iter().max_by(|a, b| {
+                            compare(&a[version], &b[version])
+                                .then_with(|| compare(&a[fact_id], &b[fact_id]))
+                        });
+                        cell(latest.unwrap(), c).clone()
+                    }
                 }
             }));
             Row::new(values)

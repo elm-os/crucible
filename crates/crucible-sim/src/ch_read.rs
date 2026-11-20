@@ -450,17 +450,23 @@ enum Test {
     HasAny(usize, Vec<Value>),
     Has(usize, Vec<u8>),
     TextMatch(usize, String),
+    /// The column's value is among the ids of a set, evaluated before the test.
+    InSet(usize, BTreeSet<Vec<u8>>),
 }
 
+/// The ids of a set membership's aggregate, as the read that holds it evaluates them.
+type Sets<'s> = &'s dyn Fn(&Aggregate) -> Result<BTreeSet<Vec<u8>>, QueryError>;
+
 impl Test {
-    fn of(def: &TableDef, pred: &Pred) -> Result<Self, QueryError> {
+    fn of(def: &TableDef, pred: &Pred, sets: Sets<'_>) -> Result<Self, QueryError> {
         let all = |operands: &[Pred]| -> Result<Vec<Self>, QueryError> {
-            operands.iter().map(|p| Self::of(def, p)).collect()
+            operands.iter().map(|p| Self::of(def, p, sets)).collect()
         };
         Ok(match pred {
             Pred::And(operands) => Self::And(all(operands)?),
             Pred::Or(operands) => Self::Or(all(operands)?),
-            Pred::Not(operand) => Self::Not(Box::new(Self::of(def, operand)?)),
+            Pred::Not(operand) => Self::Not(Box::new(Self::of(def, operand, sets)?)),
+            Pred::InSet(column, set) => Self::InSet(index(def, column.name())?, sets(set)?),
             Pred::Cmp(column, op, value) => {
                 Self::Cmp(index(def, column.name())?, *op, literal(value))
             }
@@ -520,6 +526,13 @@ impl Test {
                 }
                 Some(values.iter().any(|value| equal(found, value)))
             }
+            Self::InSet(at, ids) => {
+                let found = row.get(*at)?;
+                if matches!(found, Value::Null) {
+                    return None;
+                }
+                Some(ids.contains(&key_of([found])))
+            }
             Self::StartsWith(at, prefix) => Some(bytes_of(row.get(*at)?)?.starts_with(prefix)),
             Self::HasAny(at, values) => match row.get(*at)? {
                 Value::Array(items) => Some(
@@ -559,16 +572,50 @@ impl Test {
     }
 }
 
-/// The longest literal `In` list of a predicate, which the renderer lets the set-size cap admit.
-fn longest_in(pred: &Pred) -> usize {
+/// The longest literal `In` list of a predicate, its sets' predicates included, and whether it holds a set.
+fn lists(pred: &Pred) -> (usize, bool) {
     match pred {
-        Pred::And(operands) | Pred::Or(operands) => {
-            operands.iter().map(longest_in).max().unwrap_or(0)
-        }
-        Pred::Not(operand) => longest_in(operand),
-        Pred::In(_, values) => values.len(),
-        _ => 0,
+        Pred::And(operands) | Pred::Or(operands) => operands
+            .iter()
+            .map(lists)
+            .fold((0, false), |(a, x), (b, y)| (a.max(b), x || y)),
+        Pred::Not(operand) => lists(operand),
+        Pred::In(_, values) => (values.len(), false),
+        Pred::InSet(_, set) => (lists(set.pred()).0, true),
+        _ => (0, false),
     }
+}
+
+/// The most ids a set of a plan's statement may hold, as the renderer sets `max_rows_in_set` for the whole
+/// statement: the largest semi-join cap, [`crucible_plan::DEFAULT_MAX_IDS`] for a set membership, and the longest
+/// literal `In` list, which the server counts as a set too. `None` when the plan holds no set.
+fn set_cap(node: &Node) -> Option<usize> {
+    let (joined, preds): (Option<usize>, Vec<&Pred>) = match node {
+        Node::Scan(n) => (None, vec![n.pred()]),
+        Node::Aggregate(n) => (None, vec![n.pred()]),
+        Node::TextSearch(n) => (None, vec![n.pred()]),
+        Node::TimeSeries(n) => (None, vec![n.aggregate().pred()]),
+        Node::SemiJoin(n) => {
+            let right = match n.right() {
+                Node::Scan(scan) => Some(scan.pred()),
+                Node::Aggregate(aggregate) => Some(aggregate.pred()),
+                _ => None,
+            };
+            let preds = std::iter::once(n.left().pred()).chain(right).collect();
+            (Some(n.max_ids() as usize), preds)
+        }
+        Node::PointLookup(_) | Node::FieldRange(_) => (None, Vec::new()),
+    };
+    let (longest, set) = preds
+        .into_iter()
+        .map(lists)
+        .fold((0, false), |(a, x), (b, y)| (a.max(b), x || y));
+    let member = set.then_some(crucible_plan::DEFAULT_MAX_IDS as usize);
+    let cap = match (joined, member) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (one, other) => one.or(other),
+    };
+    cap.map(|cap| cap.max(longest))
 }
 
 /// The window predicates of one table reference, as the renderer writes them.
@@ -950,7 +997,9 @@ impl ReadSide {
         done_at: u64,
     ) -> Result<MutationId, QueryError> {
         let def = table(plan.table());
-        let test = Test::of(def, plan.pred())?;
+        let test = Test::of(def, plan.pred(), &|_| {
+            Err(internal("a delete holds no set"))
+        })?;
         let target: Box<dyn Fn(&Cells) -> bool> = match plan.target() {
             DeleteTarget::Project(scope) => {
                 let project = Value::Uuid(scope.project_id().uuid());
@@ -1290,6 +1339,8 @@ struct Interp<'a> {
     /// The bytes of the rows that passed the filters of the plan's table references, and of filled buckets:
     /// what the read holds in memory.
     held: Cell<u64>,
+    /// The most distinct ids any set of the statement may hold ([`set_cap`]).
+    set_cap: usize,
 }
 
 impl<'a> Interp<'a> {
@@ -1297,7 +1348,9 @@ impl<'a> Interp<'a> {
     fn rows(&self, id: TableId, pred: &Pred) -> Result<(Vec<&'a Cells>, Window), QueryError> {
         let def = table(id);
         let window = Window::of(def, self.window)?;
-        let test = Test::of(def, pred)?;
+        let test = Test::of(def, pred, &|set| {
+            self.ids(&self.aggregate(set, None, false)?)
+        })?;
         let mut rows = Vec::new();
         if let Some(stored) = self.side.tables.get(&id) {
             if let Some(broken) = &stored.broken {
@@ -1483,30 +1536,31 @@ impl<'a> Interp<'a> {
     }
 
     fn semi_join(&self, n: &SemiJoin) -> Result<Answer, QueryError> {
-        let (ids, right_in) = match n.right() {
-            Node::Aggregate(right) => (
-                self.aggregate(right, None, false)?,
-                longest_in(right.pred()),
-            ),
-            Node::Scan(right) => (self.scan(right, None)?, longest_in(right.pred())),
+        let ids = match n.right() {
+            Node::Aggregate(right) => self.aggregate(right, None, false)?,
+            Node::Scan(right) => self.scan(right, None)?,
             _ => return Err(internal("a semi-join over a node that produces no ids")),
         };
-        let ids: BTreeSet<Vec<u8>> = ids
-            .into_rows()
+        let ids = self.ids(&ids)?;
+        let on = index(table(n.left().table()), n.on().name())?;
+        self.scan(n.left(), Some((on, &ids)))
+    }
+
+    /// The distinct ids in the first column of a set's answer. More than the statement's set cap refuse the read
+    /// as too broad, as the server's `max_rows_in_set` does.
+    fn ids(&self, answer: &Answer) -> Result<BTreeSet<Vec<u8>>, QueryError> {
+        let ids: BTreeSet<Vec<u8>> = answer
+            .runs
             .iter()
+            .flatten()
             .filter_map(|row| row.values().first())
             .filter(|id| !matches!(id, Value::Null))
             .map(|id| key_of([id]))
             .collect();
-        // The cap counts distinct ids, and admits the longest literal list of the statement.
-        let cap = (n.max_ids() as usize)
-            .max(right_in)
-            .max(longest_in(n.left().pred()));
-        if ids.len() > cap {
+        if ids.len() > self.set_cap {
             return Err(QueryError::TooBroad);
         }
-        let on = index(table(n.left().table()), n.on().name())?;
-        self.scan(n.left(), Some((on, &ids)))
+        Ok(ids)
     }
 
     fn text_search(&self, n: &TextSearch) -> Result<Answer, QueryError> {
@@ -1713,6 +1767,8 @@ pub(crate) fn interpret(side: &ReadSide, plan: &QueryPlan) -> Result<Answer, Que
         project: Value::Uuid(plan.scope().project_id().uuid()),
         window: plan.window(),
         held: Cell::new(0),
+        // A plan without a set never asks for one.
+        set_cap: set_cap(plan.root()).unwrap_or(0),
     };
     let answer = interp.node(plan.root())?;
     if limits.max_memory_usage > 0 && interp.held.get() > limits.max_memory_usage {

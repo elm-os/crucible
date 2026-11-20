@@ -210,6 +210,46 @@ fn facts_are_written_and_read_back() {
     });
 }
 
+/// The trace list's `tags` filter matches the tags its rows show, the effective tags (contract 3.8): a trace sent
+/// with `beta`, then tagged `reviewed` and untagged `beta` through the API, is found by `?tags=reviewed` and no
+/// longer by `?tags=beta`.
+#[test]
+fn the_tags_filter_follows_tag_edits() {
+    run(|env| async move {
+        let mut world = World::new(100);
+        let root = span(1, 10, 0, ago(60));
+        let lsn = world.ack(vec![root.clone()]);
+        let head = crate::world::tagged_head_row(&root, &["beta"], lsn, NOW);
+        world.store.insert(TableId::TraceHeads, head);
+        let api = api(&env, &world);
+        let t = trace(1).to_string();
+        for (tag, op) in [("reviewed", "add"), ("beta", "remove")] {
+            let edit = json!({"trace_id": t, "tag": tag, "op": op}).to_string();
+            let written = post(&api, &path(1, "/tags"), &edit, &[]).await;
+            assert_eq!(written.status, StatusCode::CREATED, "{:#}", written.body);
+        }
+        let list = |tag: &str| {
+            let uri = format!(
+                "{}?from={}&to={}&tags={tag}",
+                path(1, "/traces"),
+                ago(3_600),
+                NOW.saturating_add_micros(1)
+            );
+            let api = api.clone();
+            async move { get(&api, &uri).await }
+        };
+        let reviewed = list("reviewed").await;
+        assert_eq!(reviewed.status, StatusCode::OK, "{:#}", reviewed.body);
+        assert_eq!(
+            reviewed.body["data"][0]["trace_id"], t,
+            "{:#}",
+            reviewed.body
+        );
+        assert_eq!(reviewed.body["data"][0]["tags"], json!(["reviewed"]));
+        assert_eq!(list("beta").await.body["data"], json!([]));
+    });
+}
+
 /// A project's public key as Bearer writes feedback and nothing else (contracts 11.3 and 12.2). The feedback route
 /// answers cross-origin requests without credentials and takes at most 16 KiB from a public key; every other route
 /// refuses the public key with 401 and says which key to send, and another project's feedback route does not see
