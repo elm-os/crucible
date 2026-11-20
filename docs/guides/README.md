@@ -32,6 +32,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 | [Dashboards](dashboards.md) | The starter dashboards, your own dashboards, the editor, the widget kinds and who can edit |
 | [Alerts](alerts.md) | Alert rules, notification channels and verifying a webhook |
 | [Exports](exports.md) | Exporting spans from the UI, the API, the MCP server and `crucible export`, and validating models with rightmodeler |
+| [Media](media.md) | Images, audio and files in traces: kept inline or uploaded to object storage, the upload flow, limits and retention |
 | [SQL workspace](sql-workspace.md) | Read-only SQL over the project's telemetry, saved queries and limits |
 | [Retention and deletion](../self-hosting/retention-and-deletion.md) | How long a project keeps data, and deleting a trace, a user or a session |
 | [REST API](../api/README.md) | Every route, authentication, errors, windows and cursors |
