@@ -222,6 +222,9 @@ pub struct Config {
     pub data: Data,
     /// Bound on the memory of the recent-span index, in bytes; `None` for the default.
     pub recent_max_bytes: Option<u64>,
+    /// The CPU budget: the blocking jobs that run at once, at least 1; `None` for the default, which the binary
+    /// computes from the CPUs the process may use.
+    pub cpu_permits: Option<u32>,
     /// The MCP server's rate limit.
     pub mcp: Mcp,
     /// The SQL workspace.

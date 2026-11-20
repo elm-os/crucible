@@ -274,10 +274,33 @@ fn wal_backend(backend: crucible_config::WalBackend) -> crucible_env_prod::WalBa
     }
 }
 
-fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+/// Blocking threads the runtime keeps beyond the CPU budget, for the blocking work that takes no permit: disk reads,
+/// name lookups and password hashing.
+const BLOCKING_RESERVE: usize = 8;
+
+/// Permits per CPU when `cpu.permits` is unset (default; revisit when the shipper's stages take their shares). The
+/// blocking jobs share the CPUs with the runtime's workers, which run the rest of ingest and the shipper. With one
+/// permit per CPU, a burst on the perf gate's small rig (2 CPUs) acknowledged 12 to 26% fewer spans per second than
+/// with main's unbounded blocking pool (docs/development.md).
+const PERMITS_PER_CPU: u32 = 8;
+
+/// `cpu.permits`: the setting, or [`PERMITS_PER_CPU`] per CPU this process may use (its affinity and its cgroup
+/// quota count). The binary is the one place that reads the core count.
+fn cpu_permits(config: &Config) -> u32 {
+    config.cpu_permits.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map_or(1, |cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX))
+            .saturating_mul(PERMITS_PER_CPU)
+    })
+}
+
+/// The runtime, whose blocking threads are the CPU budget's `cpu_permits` plus [`BLOCKING_RESERVE`].
+fn runtime(cpu_permits: u32) -> anyhow::Result<tokio::runtime::Runtime> {
+    let permits = usize::try_from(cpu_permits).unwrap_or(usize::MAX);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("crucible-worker")
+        .max_blocking_threads(permits.saturating_add(BLOCKING_RESERVE))
         .build()
         .context("starting the runtime")
 }
@@ -324,15 +347,16 @@ fn main() -> anyhow::Result<()> {
         Command::Proxy(args) => proxy::run(args),
         Command::Serve(args) => {
             let config = args.config.load_for_run()?;
-            runtime()?.block_on(serve::run(config, args.migrate))
+            let permits = cpu_permits(&config);
+            runtime(permits)?.block_on(serve::run(config, args.migrate, permits))
         }
         Command::Migrate(args) => {
             let config = args.load_for_run()?;
-            runtime()?.block_on(migrate(config))
+            runtime(cpu_permits(&config))?.block_on(migrate(config))
         }
         Command::Export(args) => {
             let config = args.config.load_for_run()?;
-            runtime()?.block_on(export::run(&args, config))
+            runtime(cpu_permits(&config))?.block_on(export::run(&args, config))
         }
         Command::Config { command } => {
             let (args, print) = match &command {
@@ -361,7 +385,7 @@ fn main() -> anyhow::Result<()> {
             AdminCommand::Init(args) => {
                 let config = args.config.load_for_run()?;
                 let password = read_password(args.password_file.as_deref())?;
-                runtime()?.block_on(identity::admin_init(
+                runtime(cpu_permits(&config))?.block_on(identity::admin_init(
                     &config,
                     &args.org_name,
                     &args.email,
@@ -371,13 +395,14 @@ fn main() -> anyhow::Result<()> {
             }
             AdminCommand::CreateKey(args) => {
                 let config = args.config.load_for_run()?;
-                let printed = runtime()?.block_on(identity::admin_create_key(
-                    &config,
-                    &args.project,
-                    &args.scopes,
-                    args.note.clone(),
-                    args.import,
-                ))?;
+                let printed =
+                    runtime(cpu_permits(&config))?.block_on(identity::admin_create_key(
+                        &config,
+                        &args.project,
+                        &args.scopes,
+                        args.note.clone(),
+                        args.import,
+                    ))?;
                 std::io::stdout().lock().write_all(printed.as_bytes())?;
                 writeln!(
                     std::io::stderr().lock(),
@@ -387,8 +412,8 @@ fn main() -> anyhow::Result<()> {
             }
             AdminCommand::ResetPassword(args) => {
                 let config = args.config.load_for_run()?;
-                let link =
-                    runtime()?.block_on(identity::admin_reset_password(&config, &args.email))?;
+                let link = runtime(cpu_permits(&config))?
+                    .block_on(identity::admin_reset_password(&config, &args.email))?;
                 writeln!(std::io::stdout().lock(), "{link}")?;
                 if config.server.public_url.is_none() {
                     writeln!(
@@ -407,6 +432,8 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use std::net::SocketAddr;
     use std::path::Path;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
 
     use clap::CommandFactory;
     use crucible_config::{Layers, resolve};
@@ -652,5 +679,54 @@ mod tests {
             Command::Openapi
         ));
         assert!(Cli::try_parse_from(["crucible", "openapi", "--yaml"]).is_err());
+    }
+
+    /// The most blocking jobs `runtime` runs at once, out of `jobs` jobs that each hold their thread until all of
+    /// them run or 50 ms pass.
+    fn blocking_at_once(runtime: &tokio::runtime::Runtime, jobs: usize) -> usize {
+        let state = Arc::new((Mutex::new((0usize, 0usize)), Condvar::new()));
+        runtime.block_on(async {
+            let handles: Vec<_> = (0..jobs)
+                .map(|_| {
+                    let state = Arc::clone(&state);
+                    runtime.spawn_blocking(move || {
+                        let (lock, changed) = &*state;
+                        let mut counts = lock.lock().unwrap();
+                        counts.0 += 1;
+                        counts.1 = counts.1.max(counts.0);
+                        changed.notify_all();
+                        let mut counts = changed
+                            .wait_timeout_while(counts, Duration::from_millis(50), |c| c.0 < jobs)
+                            .unwrap()
+                            .0;
+                        counts.0 -= 1;
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.await.unwrap();
+            }
+        });
+        state.0.lock().unwrap().1
+    }
+
+    #[test]
+    fn the_server_runtime_caps_its_blocking_threads() {
+        // Two permits and a reserve of eight threads: at most ten blocking jobs at once, out of 64 that could run.
+        let at_once = blocking_at_once(&runtime(2).unwrap(), 64);
+        assert!(
+            at_once <= 10,
+            "{at_once} blocking jobs ran at once, above the ceiling of 10"
+        );
+        assert_eq!(at_once, 2 + BLOCKING_RESERVE);
+    }
+
+    #[test]
+    fn the_cpu_budget_defaults_to_8_per_cpu_of_the_process() {
+        let unset = config(&["crucible", "serve"], &[]).unwrap();
+        let cpus = std::thread::available_parallelism().unwrap().get();
+        assert_eq!(cpu_permits(&unset), u32::try_from(cpus).unwrap() * 8);
+        let set = config(&["crucible", "serve"], &[("CRUCIBLE_CPU_PERMITS", "3")]).unwrap();
+        assert_eq!(cpu_permits(&set), 3);
     }
 }
