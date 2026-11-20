@@ -87,7 +87,9 @@ test.describe("trace detail: media in a payload", () => {
     setUp(api);
     const release = api.hold(MEDIA_LIST_PATH, uses([IMAGE]));
     await page.goto(inputTab);
-    await expect(page.getByRole("status").filter({ hasText: "Loading the media of the input" })).toBeVisible();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Loading the media of the input" }),
+    ).toBeVisible();
     await expectAccessible(page, "media loading");
     release();
     await expect(page.getByRole("img", { name: /Image from the payload/ })).toBeVisible();
@@ -107,7 +109,10 @@ test.describe("trace detail: media in a payload", () => {
       .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
       .toBeGreaterThan(0);
     const download = region.getByRole("link", { name: "Download application/pdf, 2 KB" });
-    await expect(download).toHaveAttribute("href", `${OBJECTS}/media/${PDF_ID}?X-Amz-Signature=e2e`);
+    await expect(download).toHaveAttribute(
+      "href",
+      `${OBJECTS}/media/${PDF_ID}?X-Amz-Signature=e2e`,
+    );
     await expectAccessible(page, "media success");
   });
 
