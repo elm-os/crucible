@@ -33,8 +33,8 @@ configurations, any 10 do with 99.2% probability.
 ## Conformance
 
 The in-memory ClickHouse and Postgres models may be stricter than the real systems but never more permissive.
-Differential scripts run the same operations against the models, ClickHouse 26.3 LTS, 26.8 LTS and the latest stable
-release in Docker, and ClickHouse Cloud. A mismatch means the model is fixed first.
+Differential scripts run the same operations against the models and against ClickHouse 26.3 LTS, 26.8 LTS and the
+latest stable release, and Postgres 15 and 18, in Docker. A mismatch means the model is fixed first.
 
 ## Other test layers
 

@@ -8,8 +8,7 @@ server over OTLP/HTTP. It has two packages:
 | `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user, tags and metadata of a trace carried in a `context.Context`, and `Observe` for spans with input, output, model, usage and cost |
 | `cruciblemcp` | Middleware for the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, tested at v1.8.0) in both protocol eras: one span per MCP operation on the server, and trace context propagation from the client |
 
-It needs Go 1.26 or later. The module is not tagged yet; releases are planned as tags `sdk/go/vX.Y.Z`, after which
-`go get github.com/elm-os/crucible/sdk/go@vX.Y.Z` will install it.
+It needs Go 1.26 or later. Add it with `go get github.com/elm-os/crucible/sdk/go@main`.
 
 ## Send traces from an agent
 
@@ -53,10 +52,10 @@ and it replaces the calculated cost. `Span()` returns the OpenTelemetry span for
 |---|---|
 | `Endpoint` | Base URL of the Crucible server. Spans go to `Endpoint + "/v1/traces"` as OTLP protobuf |
 | `SecretKey` | Project secret key, sent as `Authorization: Bearer <key>` |
-| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible is designed to use them as an MCP server's name and version when `cruciblemcp.Options` gives none |
+| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible uses them as an MCP server's name and version when `cruciblemcp.Options` gives none |
 | `Environment` | Resource `deployment.environment.name` |
 | `Release` | `crucible.release` on every span; when empty Crucible uses the service version |
-| `DeployID` | Resource `crucible.deploy.id`; when it is empty, Crucible is designed to use the server version (contracts 9.7) |
+| `DeployID` | Resource `crucible.deploy.id`; when it is empty, Crucible uses the server version (contracts 9.7) |
 | `QueueSize` | Finished spans waiting for export; default 2048 |
 | `QueueBytes` | Bytes of spans waiting for export or being exported, estimated from their strings; default 8 MiB |
 | `FlushInterval` | How often the queue is exported; default one second |
@@ -128,8 +127,8 @@ era over HTTP a closed response stream, is recorded as `stream_close`.
 `Options.Identify` is called for every request and notification and returns what your server knows about the
 caller: user id, token issuer and subject, tenant and handle id. When it gives no subject and the request came over streamable HTTP
 with a token your `auth.TokenVerifier` accepted, the token's `UserID` is the subject and the `iss` entry of
-`TokenInfo.Extra` its issuer. The token's `client_id` entry is sent as the OAuth client id. Crucible is designed to
-hash the subject with a per-project salt and keep only the hash and the issuer (contracts 9.3).
+`TokenInfo.Extra` its issuer. The token's `client_id` entry is sent as the OAuth client id. Crucible hashes
+the subject with a per-project salt and keeps only the hash and the issuer (contracts 9.3).
 `Options.NoIdentity` suppresses every identity key.
 
 A handle id groups the operations of one logical session. It comes from `Identify`, or from `HandleParams`, which
@@ -140,7 +139,7 @@ or arguments.
 
 In the modern era a tool can answer `input_required` with a `requestState`, and the client retries with it. The span
 of each round carries keyed hashes of that state (`crucible.mcp.mrtr.state_out` on the answer,
-`crucible.mcp.mrtr.state_in` on the retry), which Crucible is designed to chain; the state itself is never sent. In the
+`crucible.mcp.mrtr.state_in` on the retry), which Crucible stores with each operation; the state itself is never sent. In the
 legacy era the MCP SDK completes the exchange inside one request, which is one span.
 
 ### Content capture and scrubbing
@@ -188,7 +187,7 @@ The MCP Go SDK hands middleware a method, its decoded params and a context, whic
 | Not observed | Why |
 |---|---|
 | `jsonrpc.request.id` without `Transport` or `Handler` | go-sdk v1.8.0 keeps the request id under an unexported context key |
-| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; the planned `crucible proxy` is designed to see them |
+| Errors raised before the middleware runs | An unknown method (-32601), a malformed request (-32600, -32700), params that fail to decode and invalid `_meta` are answered before any middleware; `crucible proxy` sees them |
 | HTTP status and transport failures | They happen in the HTTP handler and the transport, outside the middleware |
 | The resource template of `resources/read` | Only the concrete URI is visible, and a raw URI is not used as a target name |
 | Client IP prefix, response size, client capabilities hash | The SDK does not expose the peer address or the encoded response, and the contract fixes no algorithm for the capabilities hash |

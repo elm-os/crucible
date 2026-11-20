@@ -66,6 +66,11 @@ impl Control {
         })
     }
 
+    /// The store, as the API's dashboard routes hold it.
+    pub(crate) fn dashboards(&self) -> Arc<dyn crucible_control::ControlStore> {
+        Arc::new(self.store.clone())
+    }
+
     /// Applies the Postgres migrations, then the steps of `steps` that the ledger does not hold.
     pub(crate) async fn migrate(
         &self,

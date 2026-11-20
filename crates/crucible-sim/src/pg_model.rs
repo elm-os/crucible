@@ -149,6 +149,8 @@ enum Tbl {
     DeletionAcks,
     Actions,
     Floors,
+    Dashboards,
+    Widgets,
 }
 
 type Key = Vec<u8>;
@@ -260,6 +262,8 @@ enum Row {
     DeletionAck(NodeAck),
     Action(LifecycleAction),
     Floor((ProjectId, RetentionFloor)),
+    Dashboard(crucible_control::Dashboard),
+    Widget(dashboards::WidgetRow),
 }
 
 /// The secondary unique constraints of a row, by the names of the production schema.
@@ -391,6 +395,16 @@ fn parents(row: &Row) -> Vec<(&'static str, Tbl, Key)> {
             Tbl::Projects,
             project(*id),
         )],
+        Row::Dashboard(d) => vec![(
+            "dashboards_project_id_fkey",
+            Tbl::Projects,
+            project(d.project_id),
+        )],
+        Row::Widget(w) => vec![(
+            "widgets_dashboard_id_fkey",
+            Tbl::Dashboards,
+            w.dashboard_id.to_bytes().to_vec(),
+        )],
         _ => Vec::new(),
     }
 }
@@ -408,6 +422,7 @@ fn cascades(table: Tbl) -> &'static [Tbl] {
         Tbl::AuthProviders => &[Tbl::OauthAccounts],
         Tbl::Projects => &[Tbl::ProjectSalts],
         Tbl::AlertRules => &[Tbl::AlertState, Tbl::AlertEvents],
+        Tbl::Dashboards => &[Tbl::Widgets],
         _ => &[],
     }
 }
@@ -1312,6 +1327,9 @@ macro_rules! repos {
             fn alert_events(&self) -> &dyn AlertEventRepo {
                 &self.runner
             }
+            fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
+                &self.runner
+            }
             fn leases(&self) -> &dyn Leases {
                 &self.runner
             }
@@ -1403,6 +1421,9 @@ impl Repos for PgModel {
     fn alert_events(&self) -> &dyn AlertEventRepo {
         &*self.runner
     }
+    fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
+        &*self.runner
+    }
     fn leases(&self) -> &dyn Leases {
         &*self.runner
     }
@@ -1453,6 +1474,7 @@ macro_rules! all {
 }
 
 mod alerts;
+mod dashboards;
 mod exports;
 mod identity;
 mod lifecycle;

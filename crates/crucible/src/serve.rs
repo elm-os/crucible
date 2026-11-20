@@ -762,6 +762,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("reading the quarantine manifests")?;
     hook.restore_quarantined(pairs);
     hook.restore_unshippable(frames);
+    let dashboards = control.as_ref().map(Control::dashboards);
     // The SQL workspace needs the control plane: its identities, saved queries and audit rows live there.
     let sql = match &control {
         Some(control) => {
@@ -828,7 +829,8 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
     let telemetry = Arc::clone(&stores.telemetry);
-    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch);
+    let service = QueryService::new(stores, Arc::clone(&env.clock), index, report.epoch)
+        .with_metrics(env.metrics.as_ref());
     // Every typed read, the export job's included, leaves out what a pending deletion selects.
     let service = match &lifecycle {
         Some(lifecycle) => {
@@ -869,6 +871,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
                 exports: export_service,
                 alerts,
                 lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                dashboards,
             },
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
@@ -1165,6 +1168,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
             exports: export_service.clone(),
             alerts: alerts.as_ref().map(|(api, _)| api.clone()),
             lifecycle: None,
+            dashboards: control.as_ref().map(Control::dashboards),
         },
         control.as_ref(),
         ingest,
