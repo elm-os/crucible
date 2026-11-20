@@ -167,17 +167,13 @@ wrapping, and a new key's secret wraps inside its dialog.
 On the SQL page the schema, query, result, saved queries and history stack in that order; the result grid and the
 history table scroll inside their frames.
 
-## Not covered yet
+## Not covered
 
-- The alert rule form picks measures and dimensions from a list in the UI that mirrors the span rollup; it will
-  read `metrics/schema` once the shared query builder of the dashboards lands. The preview shows the current
-  window; the chart of the last 24 hours with the threshold line is planned with that builder.
-
-- The span panel's metadata and MCP tabs wait for the payload route's `metadata`, `mcp_args` and `mcp_result`
-  selectors (contract 12.6), which it does not serve yet.
-- A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
-  `ancestors_of` (contract 8.8); the panel says how to find it.
-- The account page, password change, organization settings, ownership transfer, project members and the
-  sign-in provider settings have API routes (contract 12.6) but no pages yet.
-- The set-up steps will read data bounds and API keys once those screens land.
-- Brush-to-zoom on charts is planned; the crosshair, the bucket slider and the table view cover reading values.
+- The alert rule form picks measures and dimensions from a fixed list that follows the span rollup, and its preview
+  shows the current window.
+- The span panel has no metadata or MCP tabs.
+- A deep link to a span below the loaded levels of a paged trace is not revealed; the panel says how to find it.
+- The account page, password change, organization settings, ownership transfer, project members and the sign-in
+  provider settings have API routes and no pages.
+- The set-up steps on Home do not read data bounds or API keys.
+- Charts have no brush-to-zoom; the crosshair, the bucket slider and the table view cover reading values.
