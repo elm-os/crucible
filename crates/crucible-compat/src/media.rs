@@ -41,6 +41,16 @@ pub const MEDIA_ROUTES: [MediaRoute; 1] = [MediaRoute {
 /// The length of a compat media id.
 pub const MEDIA_ID_LEN: usize = 22;
 
+/// Why the compat media endpoint refuses every call on a server without object storage, and how to keep the
+/// media (contracts 1.7 and 14). The SDKs put the reference in the payload before they ask for the upload, so a
+/// refused upload loses the media unless the SDK keeps them inline.
+pub const NOT_SUPPORTED: &str = "this server has no object storage, so it stores no media, and the SDK has already \
+    replaced each media in the payload with a reference: with uploads on, those media are lost. Set \
+    LANGFUSE_MEDIA_UPLOAD_ENABLED=false where the SDK runs to keep media inline in the payload, under the 8 MiB \
+    field cap, or turn media on in the server with object_store.endpoint, object_store.bucket, \
+    object_store.access_key and object_store.secret_key (or their CRUCIBLE_OBJECT_STORE_* variables) and \
+    postgres.url";
+
 /// A field of a request that is wrong, as a JSON pointer and what to send instead.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FieldError {
@@ -354,6 +364,20 @@ mod tests {
                     .any(|ingest| ingest.dialect == route.dialect)
             );
             assert!(route.collection.starts_with('/') && !route.collection.ends_with('/'));
+        }
+    }
+
+    /// The refusal names both ways to keep the media: the SDK's setting and the server's (contract 1.7).
+    #[test]
+    fn the_refusal_without_object_storage_says_how_to_keep_the_media() {
+        for setting in [
+            "LANGFUSE_MEDIA_UPLOAD_ENABLED=false",
+            "object_store.endpoint",
+            "object_store.bucket",
+            "CRUCIBLE_OBJECT_STORE_",
+            "postgres.url",
+        ] {
+            assert!(NOT_SUPPORTED.contains(setting), "{setting}");
         }
     }
 

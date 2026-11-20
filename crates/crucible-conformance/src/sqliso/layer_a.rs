@@ -835,31 +835,58 @@ async fn w7(iso: &Iso) -> Result<String> {
 }
 
 /// W8: quota exhaustion, on an identity of its own, at the real limits.
+///
+/// The quota's hour follows the clock, and the server starts counting a new hour only when a statement goes over
+/// the limit: in a run that crosses into the next hour, statement 1,801 starts the new count instead of being
+/// refused. Such a run is repeated once on a fresh identity, which has the whole new hour ahead of it, so the row
+/// does not depend on the time of day the suite runs at.
 async fn w8(iso: &Iso) -> Result<String> {
-    let project = iso.ctx.project();
-    iso.provision(project).await?;
     let limit = SQL_QUOTA_QUERIES_PER_HOUR;
-    let mut refused_at = None;
-    for n in 1..=limit + 5 {
-        // A statement that reads a table: the server does not count a constant `SELECT 1` against the quota.
-        let reply = iso
-            .send(project, "SELECT count() FROM crucible.sql_probe", &[])
-            .await?;
-        match reply.code() {
-            None => {}
-            Some(201) => {
-                refused_at = Some(n);
-                break;
+    let mut runs = 0;
+    let (project, refused_at) = loop {
+        runs += 1;
+        let project = iso.ctx.project();
+        iso.provision(project).await?;
+        let started = iso.ctx.admin_count("SELECT toUnixTimestamp(now())").await?;
+        let mut refused_at = None;
+        for n in 1..=limit + 5 {
+            // A statement that reads a table: the server does not count a constant `SELECT 1` against the quota.
+            let reply = iso
+                .send(project, "SELECT count() FROM crucible.sql_probe", &[])
+                .await?;
+            match reply.code() {
+                None => {}
+                Some(201) => {
+                    refused_at = Some(n);
+                    break;
+                }
+                Some(code) => bail!("statement {n} was refused with code {code}, not the quota"),
             }
-            Some(code) => bail!("statement {n} was refused with code {code}, not the quota"),
         }
-    }
-    let refused_at = refused_at.ok_or_else(|| {
-        anyhow!(
-            "{} statements ran without the quota refusing one",
-            limit + 5
-        )
-    })?;
+        if let Some(n) = refused_at {
+            break (project, n);
+        }
+        // Whether the hour the identity's statements count in now began after the run started.
+        let crossed = iso
+            .ctx
+            .admin_count(format!(
+                "SELECT count() FROM system.quotas_usage WHERE quota_name = '{SQL_QUOTA}' AND quota_key = '{}' \
+                 AND toUnixTimestamp(end_time) - duration > {started}",
+                workspace_user(project)
+            ))
+            .await?
+            > 0;
+        expect(crossed && runs == 1, || {
+            format!(
+                "{} statements ran without the quota refusing one",
+                limit + 5
+            )
+        })?;
+        iso.sql
+            .deprovision(project)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+    };
     expect(refused_at == limit + 1, || {
         format!(
             "the quota refused statement {refused_at}, expected {}",
@@ -872,9 +899,14 @@ async fn w8(iso: &Iso) -> Result<String> {
         .deprovision(project)
         .await
         .map_err(|e| anyhow!("{e}"))?;
+    let again = if runs > 1 {
+        "; the first run crossed into the next hour of the quota, so it ran again on a fresh identity"
+    } else {
+        ""
+    };
     Ok(format!(
         "statement {refused_at} of one identity is refused with code 201 after {limit} in the hour; another \
-         identity still runs"
+         identity still runs{again}"
     ))
 }
 
