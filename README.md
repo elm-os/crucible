@@ -123,6 +123,12 @@ testing and development.
 against real databases, the SDKs and the pull request process; [docs/development.md](docs/development.md) has the
 details of the dev container and of running the server from source. Commits follow Conventional Commits, and the
 git hooks and CI check every commit message and file against the naming rule and refuse AI attribution trailers.
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Report a vulnerability privately through the repository's Security tab, **Report a vulnerability**, as
+[SECURITY.md](SECURITY.md) describes. Do not open a public issue for it.
 
 ## License
 
