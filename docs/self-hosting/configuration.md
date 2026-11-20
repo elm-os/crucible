@@ -118,6 +118,12 @@ in Postgres stop working under another key.
 | `data.wal_backend` | `CRUCIBLE_DATA_WAL_BACKEND` | `--wal-backend` | `auto` | The disk backend of the write-ahead log: `auto`, `portable` or `uring`. `uring` needs a binary built with the `wal-uring` feature on Linux; `auto` uses it when it is there and the kernel allows it, and `portable` otherwise. The image is built without it, so it runs `portable` and refuses `uring` |
 | `recent.max_bytes` | `CRUCIBLE_RECENT_MAX_BYTES` | `--recent-max-bytes` | 10% of the memory limit, at most 1 GiB | The memory bound of the recent-span index, in bytes. The default is 10% of the container's memory limit (cgroup v2), or of the machine's memory without one, at most 1 GiB |
 
+### `[cpu]`
+
+| Key | Environment variable | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `cpu.permits` | `CRUCIBLE_CPU_PERMITS` | | 8 per CPU the process may use | How many blocking jobs of ingest (inflating, transcoding, scanning and compressing requests) run at once. The CPUs counted are those of the process's affinity and its cgroup quota. A request beyond the budget waits its turn without holding a thread, and 8 more threads are kept for disk reads, name lookups and password hashing |
+
 ### `[mcp]` and `[sql]`
 
 | Key | Environment variable | Flag | Default | Meaning |
@@ -161,7 +167,7 @@ Outbound calls to webhook and Slack channels ([alerts and egress](alerts-and-egr
 | Key | Environment variable | Flag | Default | Meaning |
 |---|---|---|---|---|
 | `egress.mode` | `CRUCIBLE_EGRESS_MODE` | | `open` | `open` calls any `http` or `https` address, private networks included, except cloud metadata addresses, which are always refused. `strict` calls public `https` addresses only |
-| `egress.allow_cidrs` | `CRUCIBLE_EGRESS_ALLOW_CIDRS` | | none | Comma-separated address ranges that `strict` lets through, such as `10.20.0.0/16`. They never open a metadata address |
+| `egress.allow_cidrs` | `CRUCIBLE_EGRESS_ALLOW_CIDRS` | | none | Comma-separated address ranges that `strict` lets through, over `https`, such as `10.20.0.0/16`. They never open a metadata address |
 
 ### `[smtp]`
 

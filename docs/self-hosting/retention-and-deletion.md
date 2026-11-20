@@ -14,8 +14,9 @@ A project has three settings, all in days. Project admins change them in **Setti
 | Keep inputs and outputs for | `payload_retention_days` | Span inputs, outputs, attributes and the other large fields, and corrections. At most `retention_days`; empty keeps them as long as the data |
 | Keep MCP arguments and results for | `mcp_content_retention_days` | The captured arguments and results of MCP operations. At most `retention_days`; empty keeps them as long as the data |
 
-- Reads hide expired data at once: the API, the UI, the MCP server, exports and the SQL workspace all stop showing
-  data older than the cut-off when the setting is saved.
+- Reads hide expired data when the setting is saved: the API, the UI, the MCP server and exports stop showing data
+  older than the cut-off at once. The SQL workspace follows within 5 minutes, when the job that keeps each project's
+  ClickHouse user rewrites the project's row policies ([SQL workspace](sql-workspace.md#provisioning)).
 - Shortening retention applies to the data already stored. Lengthening it never brings back data that a shorter
   setting already hid; `GET .../retention` reports what stays hidden in `hidden_before`.
 - The retention job runs hourly on the server that holds the `lifecycle` lease. It drops whole partitions where it

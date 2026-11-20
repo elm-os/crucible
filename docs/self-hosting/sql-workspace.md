@@ -6,11 +6,11 @@ the API. It needs the control plane (Postgres). This page covers what an operato
 ## How isolation works
 
 Each project's queries run as that project's own ClickHouse user, behind row policies that let it see only its
-project's rows within the project's retention, a read-only settings profile with the workspace's limits, and an
-hourly quota. Crucible sends the query text to ClickHouse as written, so isolation rests on ClickHouse's access
-control, not on parsing. Queries read curated views in the `crucible_sql` database, such as `crucible_sql.spans`
-and `crucible_sql.mcp_operations`; the SQL page's schema browser and `GET .../sql/schema` list them with their
-columns.
+project's rows within the project's retention (a change to retention reaches them within 5 minutes), a read-only
+settings profile with the workspace's limits, and an hourly quota. Crucible sends the query text to ClickHouse as
+written, so isolation rests on ClickHouse's access control, not on parsing. Queries read curated views in the
+`crucible_sql` database, such as `crucible_sql.spans` and `crucible_sql.mcp_operations`; the SQL page's schema
+browser and `GET .../sql/schema` list them with their columns.
 
 ## Provisioning
 
@@ -29,15 +29,17 @@ No workspace password is stored: each is derived from the master key, the user n
 
 ## The self-probe
 
-Every 5 minutes, and every 30 seconds until it first succeeds, each server checks that a workspace user sees only
-its own project. The result is in each signed-in session's `features.sql_workspace`, and the SQL page shows it.
+Each server checks that a workspace user sees only its own project: every 30 seconds until the first check passes,
+then every 5 minutes. A check that cannot run, for example while ClickHouse is down, leaves the state as it was.
+The state is in each signed-in session's `features.sql_workspace`, and the SQL page shows it.
 
 | Reason | What it means | What to do |
 |---|---|---|
 | none (`enabled: true`) | The last check passed | Nothing |
-| `probe_pending` | The server has just started and the first check has not finished | Wait a few seconds |
-| `probe_unavailable` | The check could not reach its ClickHouse user | Check that ClickHouse is up, then run `crucible migrate` |
-| `isolation_probe_failed` | The check found a breach: a workspace user saw rows it should not | The workspace stays off on every server. Run `crucible migrate` and check the ClickHouse server's access configuration, such as a user or role that grants more than Crucible's |
+| `not_configured` | The server has no telemetry store yet, for example while it waits for ClickHouse at startup | Wait until `/readyz` answers `ready`; the workspace turns on with it |
+| `probe_pending` | The first check has not finished | Wait a few seconds |
+| `probe_unavailable` | No check has passed since the server started, because the check could not sign in as its ClickHouse user | The server logs why each check could not run (`the SQL workspace self-probe could not run`) |
+| `isolation_probe_failed` | The check found a breach: a workspace user saw rows it should not | The workspace stays off on every server. Check the ClickHouse server's access configuration for a user or role that grants more than Crucible's |
 
 While the workspace is off, runs answer 503 `sql_workspace_unavailable` with the reason, and the rest of Crucible
 works as before.

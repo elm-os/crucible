@@ -8,7 +8,7 @@ server gives and the fix.
 | Message | Fix |
 |---|---|
 | `required variable CLICKHOUSE_PASSWORD is missing a value: set CLICKHOUSE_PASSWORD in .env` (or `POSTGRES_PASSWORD`, `CRUCIBLE_MASTER_KEY`, `CRUCIBLE_CLICKHOUSE_URL`) | Make `.env` beside the Compose file, as in step 2 of the [quickstart](quickstart.md#2-make-env) |
-| `container crucible-ready-1 is unhealthy` right after an upgrade or a restart | The `ready` service saw the server restarting. Once `curl -s http://127.0.0.1:8080/readyz` answers `ready`, run `docker compose up -d --wait` again |
+| `container crucible-ready-1 is unhealthy` right after an upgrade or a restart | The `ready` service saw the server restarting. Check `curl -s http://127.0.0.1:8080/readyz`: once it answers `ready`, the `ready` service turns healthy at its next check, within 10 seconds |
 | `error from registry: denied` while pulling `ghcr.io/elm-os/crucible` | Build the image and set `CRUCIBLE_IMAGE` to its tag in `.env` ([quickstart](quickstart.md#1-build-the-image)) |
 
 ## The configuration is refused
@@ -35,9 +35,9 @@ that names a database that is still starting clears by itself.
 
 | Reason | Fix |
 |---|---|
-| `startup detection (the service users are missing, or were created under a different master key; see --migrate and --master-key-file)` with `AUTHENTICATION_FAILED` | The server runs with another master key than the one this ClickHouse was migrated with. Start it with the original master key. For a new ClickHouse, start once with `--migrate` |
+| `startup detection (the service users are missing, or were created under a different master key; see --migrate and --master-key-file)` with `AUTHENTICATION_FAILED` | The server runs with another master key than the one this ClickHouse was migrated with. Start it with the original master key |
 | `N of M tables exist; start once with --migrate` | Start once with `--migrate` (Compose always does), or run `crucible migrate` |
-| `ClickHouse 25.8 is older than the minimum, 26.3` | Upgrade ClickHouse to 26.3 or newer |
+| `ClickHouse <version> is older than the minimum, 26.3` | Upgrade ClickHouse to 26.3 or newer |
 | The ClickHouse server is `Cloud` or `Clustered` | Crucible needs a single-node ClickHouse server |
 | `the server lacks the text index or the text-search functions`, or `the server lacks the settings ...` | Use a ClickHouse release that has them: 26.3 or newer, with its default configuration |
 | `applying the Postgres migrations: ... migration V5__export_jobs is missing from the filesystem` | An older image started on a database that a newer one migrated. Start the newer image, or restore the backup taken before the upgrade ([operations](operations.md#upgrades)) |

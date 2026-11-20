@@ -26,8 +26,9 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
 35 seconds.
 
 - While the old server stops and the new one starts, the port answers nothing, so `--wait` can report
-  `container crucible-ready-1 is unhealthy`. That is the `ready` service catching the restart; once
-  `curl -s http://127.0.0.1:8080/readyz` answers `ready`, `docker compose up -d --wait` returns at once.
+  `container crucible-ready-1 is unhealthy`. That is the `ready` service catching the restart, and the upgrade goes
+  on: `curl -s http://127.0.0.1:8080/readyz` answers `ready` once the new server is up, and the `ready` service
+  turns healthy at its next check, within 10 seconds (`docker compose ps`).
 - Keep `CRUCIBLE_MASTER_KEY` across upgrades. The ClickHouse service users were created with passwords derived
   from it, and the API keys and sealed secrets in Postgres depend on it.
 - Migrations only move forward. An older image started on a database that a newer one migrated stays not ready,

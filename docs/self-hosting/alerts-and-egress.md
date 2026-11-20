@@ -21,7 +21,7 @@ limit the calls it makes. Creating rules and channels, and verifying a webhook's
 | `egress.mode` | Allowed targets |
 |---|---|
 | `open` (default) | Any `http` or `https` address, private networks and plain `http` included, except cloud metadata addresses |
-| `strict` | Public `https` addresses only. Loopback, private, link-local, carrier-grade NAT and reserved ranges are refused, and so are the hosts of the server's own ClickHouse and Postgres. `egress.allow_cidrs` lets named ranges through |
+| `strict` | Public `https` addresses only. Loopback, private, link-local, carrier-grade NAT and reserved ranges are refused, and so are the hosts of the server's own ClickHouse and Postgres. `egress.allow_cidrs` lets named ranges through, still over `https` |
 
 Cloud metadata addresses are refused in both modes, and no setting allows them: `169.254.169.0/24`,
 `169.254.170.0/24`, `100.100.100.200`, `168.63.129.16`, `192.0.0.192`, `fd00:ec2::/32`, `fe80::a9fe:a9fe` and
@@ -35,7 +35,8 @@ The policy is checked when a channel is saved and again at every delivery and te
 (CRUCIBLE_EGRESS_ALLOW_CIDRS), or set egress.mode = open
 ```
 
-To run strict but reach an internal receiver:
+To run strict but reach an internal receiver, allow its range. Strict mode still calls `https` addresses only,
+inside an allowed range too:
 
 ```yaml
       CRUCIBLE_EGRESS_MODE: strict
