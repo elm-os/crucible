@@ -11,6 +11,11 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The project menu shows a name changed in another session as soon as the project settings page reads the project
   list.
 - The SQL page sends you to sign in when your session ends, and back to the page afterwards, as every other page does.
+- Without object storage, the media endpoint of compatible SDKs answers with both ways to keep their media, the SDK
+  setting that keeps media inline or the server's object storage settings; the server names the SDK setting at
+  startup and logs the warning at the first refusal.
+- Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
+  scope name, and are mapped as that product's traffic.
 
 ## [0.1.0] - 2026-11-20
 

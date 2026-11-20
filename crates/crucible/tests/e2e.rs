@@ -34,14 +34,17 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use common::{ANY_PORT, plain, serving};
 use crucible_env::{Env, StoreError, TlsRoots};
 use crucible_env_prod::ProdConfig;
 use crucible_loadgen::{
@@ -85,13 +88,6 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
-}
-
-fn free_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
 }
 
 /// One HTTP/1.1 exchange on a fresh connection: the status and the body.
@@ -184,18 +180,18 @@ impl Media {
 }
 
 impl Rig {
-    /// Starts the binary on fresh ports over the rig's data directory and waits until `/readyz` answers 200.
+    /// Starts the binary over the rig's data directory, on ports the server picks, and waits until `/readyz`
+    /// answers 200.
     fn start(&mut self, migrate: bool) -> Server {
         self.starts += 1;
         let log = self.out.join(format!("serve-{}.log", self.starts));
-        let (api, ingest, grpc, metrics) = (free_addr(), free_addr(), free_addr(), free_addr());
         let mut command = Command::new(&self.binary);
         command
             .arg("serve")
-            .args(["--listen", &api.to_string()])
-            .args(["--ingest-listen", &ingest.to_string()])
-            .args(["--grpc-listen", &grpc.to_string()])
-            .args(["--metrics-listen", &metrics.to_string()])
+            .args(["--listen", ANY_PORT])
+            .args(["--ingest-listen", ANY_PORT])
+            .args(["--grpc-listen", ANY_PORT])
+            .args(["--metrics-listen", ANY_PORT])
             .arg("--data-dir")
             .arg(self.dir.join("data"))
             .args(["--clickhouse-url", &self.clickhouse_url])
@@ -223,17 +219,22 @@ impl Rig {
                 .env("CRUCIBLE_OBJECT_STORE_ACCESS_KEY", &media.access_key)
                 .env("CRUCIBLE_OBJECT_STORE_SECRET_KEY", &media.secret_key);
         }
+        let unbound = SocketAddr::from(([127, 0, 0, 1], 0));
         let mut server = Server {
             child: command.spawn().unwrap(),
-            api,
-            ingest,
-            grpc,
+            api: unbound,
+            ingest: unbound,
+            grpc: unbound,
             log,
         };
+        let bound = serving(&mut server.child, &server.log, Duration::from_secs(90));
+        server.api = bound.addr("listen");
+        server.ingest = bound.addr("ingest");
+        server.grpc = bound.addr("grpc");
         let deadline = Instant::now() + Duration::from_secs(90);
         let mut last = String::new();
         loop {
-            if let Ok((status, body)) = http(api, "GET", "/readyz", &[], b"") {
+            if let Ok((status, body)) = http(server.api, "GET", "/readyz", &[], b"") {
                 if status == 200 {
                     return server;
                 }
@@ -724,20 +725,6 @@ async fn send_and_time(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     (listed, acked.elapsed())
-}
-
-/// The log without the terminal colour codes.
-fn plain(log: &str) -> String {
-    let mut out = String::with_capacity(log.len());
-    let mut chars = log.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            chars.by_ref().find(|c| *c == 'm');
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The number a log line gives for ` field=`, from its first occurrence.
