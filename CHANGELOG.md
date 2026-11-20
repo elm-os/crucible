@@ -5,7 +5,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 ## [Unreleased]
 
 - Without object storage, the media endpoint of compatible SDKs answers with both ways to keep their media, the SDK
-  setting that keeps media inline or the server's object storage settings, and the server logs the warning once.
+  setting that keeps media inline or the server's object storage settings; the server names the SDK setting at
+  startup and logs the warning at the first refusal.
 - Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
   scope name, and are mapped as that product's traffic.
 

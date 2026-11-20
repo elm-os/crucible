@@ -51,6 +51,12 @@ pub const NOT_SUPPORTED: &str = "this server has no object storage, so it stores
     object_store.access_key and object_store.secret_key (or their CRUCIBLE_OBJECT_STORE_* variables) and \
     postgres.url";
 
+/// What a server without object storage says at startup: media stay inline, and the SDKs that upload media
+/// separately keep them only when told to.
+pub const NO_OBJECT_STORAGE: &str = "media stay inline in payloads: no object storage is configured \
+    (object_store.endpoint). An SDK that uploads media separately loses them on this server unless it keeps them \
+    inline: set LANGFUSE_MEDIA_UPLOAD_ENABLED=false where the SDK runs";
+
 /// A field of a request that is wrong, as a JSON pointer and what to send instead.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FieldError {
@@ -367,7 +373,8 @@ mod tests {
         }
     }
 
-    /// The refusal names both ways to keep the media: the SDK's setting and the server's (contract 1.7).
+    /// The refusal names both ways to keep the media: the SDK's setting and the server's (contract 1.7). The
+    /// startup notice names both settings too.
     #[test]
     fn the_refusal_without_object_storage_says_how_to_keep_the_media() {
         for setting in [
@@ -378,6 +385,12 @@ mod tests {
             "postgres.url",
         ] {
             assert!(NOT_SUPPORTED.contains(setting), "{setting}");
+        }
+        for setting in [
+            "LANGFUSE_MEDIA_UPLOAD_ENABLED=false",
+            "object_store.endpoint",
+        ] {
+            assert!(NO_OBJECT_STORAGE.contains(setting), "{setting}");
         }
     }
 

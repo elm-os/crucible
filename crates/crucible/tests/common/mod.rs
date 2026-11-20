@@ -40,6 +40,8 @@ pub fn serving(child: &mut Child, log: &Path, within: Duration) -> Serving {
             return Serving(plain(line));
         }
         if let Some(status) = child.try_wait().unwrap() {
+            // Read again: the error line can come after the read above.
+            let text = std::fs::read_to_string(log).unwrap_or_default();
             panic!(
                 "crucible serve exited ({status}) before it listened: {}",
                 exit_error(&text)

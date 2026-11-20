@@ -843,7 +843,7 @@ async fn w7(iso: &Iso) -> Result<String> {
 async fn w8(iso: &Iso) -> Result<String> {
     let limit = SQL_QUOTA_QUERIES_PER_HOUR;
     let mut runs = 0;
-    let (project, refused_at) = loop {
+    let project = loop {
         runs += 1;
         let project = iso.ctx.project();
         iso.provision(project).await?;
@@ -863,36 +863,27 @@ async fn w8(iso: &Iso) -> Result<String> {
                 Some(code) => bail!("statement {n} was refused with code {code}, not the quota"),
             }
         }
-        if let Some(n) = refused_at {
-            break (project, n);
-        }
         // Whether the hour the identity's statements count in now began after the run started.
-        let crossed = iso
-            .ctx
-            .admin_count(format!(
-                "SELECT count() FROM system.quotas_usage WHERE quota_name = '{SQL_QUOTA}' AND quota_key = '{}' \
-                 AND toUnixTimestamp(end_time) - duration > {started}",
-                workspace_user(project)
-            ))
-            .await?
-            > 0;
-        expect(crossed && runs == 1, || {
-            format!(
-                "{} statements ran without the quota refusing one",
-                limit + 5
-            )
-        })?;
-        iso.sql
-            .deprovision(project)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        let crossed = refused_at != Some(limit + 1)
+            && iso
+                .ctx
+                .admin_count(format!(
+                    "SELECT count() FROM system.quotas_usage WHERE quota_name = '{SQL_QUOTA}' AND quota_key = \
+                     '{}' AND toUnixTimestamp(end_time) - duration > {started}",
+                    workspace_user(project)
+                ))
+                .await?
+                > 0;
+        match w8_verdict(limit, refused_at, crossed, runs > 1) {
+            W8Run::Refused => break project,
+            W8Run::Again => iso
+                .sql
+                .deprovision(project)
+                .await
+                .map_err(|e| anyhow!("{e}"))?,
+            W8Run::Failed(reason) => bail!("{reason}"),
+        }
     };
-    expect(refused_at == limit + 1, || {
-        format!(
-            "the quota refused statement {refused_at}, expected {}",
-            limit + 1
-        )
-    })?;
     // The quota is keyed by user: project A is not affected.
     iso.answers("SELECT 1", "1").await?;
     iso.sql
@@ -905,9 +896,40 @@ async fn w8(iso: &Iso) -> Result<String> {
         ""
     };
     Ok(format!(
-        "statement {refused_at} of one identity is refused with code 201 after {limit} in the hour; another \
-         identity still runs{again}"
+        "statement {} of one identity is refused with code 201 after {limit} in the hour; another identity still \
+         runs{again}",
+        limit + 1
     ))
+}
+
+/// What one W8 run shows.
+#[derive(Debug, PartialEq, Eq)]
+enum W8Run {
+    /// The quota refused the first statement over the limit.
+    Refused,
+    /// The quota's hour began during the run: run again on a fresh identity.
+    Again,
+    /// Why the row fails.
+    Failed(String),
+}
+
+/// The verdict on one W8 run: the statement the quota refused, if one, whether the hour the identity's statements
+/// count in began after the run started, and whether this run is already the repeat.
+fn w8_verdict(limit: u64, refused_at: Option<u64>, crossed: bool, repeat: bool) -> W8Run {
+    // A new hour can only delay the refusal: its count starts from zero.
+    let delayed = refused_at.is_none_or(|n| n > limit + 1);
+    match refused_at {
+        Some(n) if n == limit + 1 => W8Run::Refused,
+        _ if delayed && crossed && !repeat => W8Run::Again,
+        Some(n) => W8Run::Failed(format!(
+            "the quota refused statement {n}, expected {}",
+            limit + 1
+        )),
+        None => W8Run::Failed(format!(
+            "{} statements ran without the quota refusing one",
+            limit + 5
+        )),
+    }
 }
 
 /// W9: what a read-only identity may still change. No profile element is `changeable_in_readonly`; whatever
@@ -1456,4 +1478,39 @@ pub(crate) async fn run(iso: &Iso, options: &Options) -> Vec<(&'static str, Resu
     ];
     rows.push(("W15 Cloud specifics", Ok(w15(iso))));
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The quota's hour can begin anywhere in a W8 run. Before statement 1,801 it moves the refusal to a later
+    /// statement or past the end of the run, and such a run is repeated once, on a fresh identity; a run whose hour
+    /// did not change, or a repeat, fails, and so does a refusal before the limit.
+    #[test]
+    fn a_w8_run_is_repeated_once_when_the_quotas_hour_began_during_it() {
+        let limit = SQL_QUOTA_QUERIES_PER_HOUR;
+        for crossed in [false, true] {
+            assert_eq!(
+                w8_verdict(limit, Some(limit + 1), crossed, false),
+                W8Run::Refused
+            );
+        }
+        for refused_at in [None, Some(limit + 2), Some(limit + 5)] {
+            assert_eq!(
+                w8_verdict(limit, refused_at, true, false),
+                W8Run::Again,
+                "{refused_at:?}"
+            );
+            for (crossed, repeat) in [(false, false), (true, true)] {
+                let verdict = w8_verdict(limit, refused_at, crossed, repeat);
+                assert!(
+                    matches!(verdict, W8Run::Failed(_)),
+                    "{refused_at:?}: {verdict:?}"
+                );
+            }
+        }
+        let early = w8_verdict(limit, Some(limit), true, false);
+        assert!(matches!(early, W8Run::Failed(_)), "{early:?}");
+    }
 }
