@@ -44,7 +44,7 @@ impl QueryService {
         query: FilterValuesQuery,
     ) -> Result<FilterValues, QueryServiceError> {
         let FilterValuesQuery { window, request } = query;
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "filter_values");
         let consistency = self.consistency();
         let state = self.index.read_state(ctx.scope);
         let named = matches!(

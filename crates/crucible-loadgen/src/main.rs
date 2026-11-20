@@ -11,7 +11,10 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use crucible_env::Root;
 use crucible_env_prod::{ProdConfig, WalBackend};
-use crucible_loadgen::{GeneratorCpu, Pool, PoolConfig, RunConfig, SpanSize};
+use crucible_loadgen::{
+    Dataset, FreshConfig, GeneratorCpu, Pool, PoolConfig, ReadClass, ReadConfig, RunConfig,
+    SpanSize, Think,
+};
 use crucible_records::Uuid;
 use http::{HeaderName, HeaderValue};
 use serde::Serialize;
@@ -31,8 +34,101 @@ struct Cli {
 enum Command {
     /// Send OTLP/HTTP trace requests on a fixed schedule and report latency, statuses and rates as JSON.
     Run(RunArgs),
+    /// Send API reads on a think-time schedule over a dataset that `run` loaded, and report latency per class.
+    Read(ReadArgs),
+    /// Send one small trace at a time and measure how soon after its acknowledgement the API lists it.
+    Fresh(FreshArgs),
     /// Measure write-plus-fdatasync latency on a volume and classify its flushes, as JSON.
     FsyncProbe(ProbeArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReadArgs {
+    /// The API listener as host:port.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    target: String,
+    /// The project that `{project}` names.
+    #[arg(long)]
+    project: String,
+    /// A `crucible-loadgen.run.v1` report of a run that loaded the dataset; repeatable.
+    #[arg(long = "dataset", required = true)]
+    datasets: Vec<PathBuf>,
+    /// A read class as JSON: `{"name", "method", "path", "body"?, "nonempty"?}`; repeatable, used in turn.
+    #[arg(long = "class", required = true, value_parser = parse_class)]
+    classes: Vec<ReadClass>,
+    /// Requests per second, on average.
+    #[arg(long)]
+    rate: f64,
+    /// Schedule length in seconds.
+    #[arg(long, default_value_t = 30)]
+    duration_secs: u64,
+    /// How the gaps between requests are drawn: exponential (a Poisson process) or fixed.
+    #[arg(long, default_value = "exponential", value_parser = parse_think)]
+    think: Think,
+    /// Connections, which bound the requests in flight.
+    #[arg(long, default_value_t = 16)]
+    concurrency: usize,
+    /// Deadline for connecting and for each request, in milliseconds.
+    #[arg(long, default_value_t = 10_000)]
+    timeout_ms: u64,
+    /// The read window that `{from}` and `{to}` span, in seconds (default 30 days).
+    #[arg(long, default_value_t = 2_592_000)]
+    window_secs: u64,
+    /// Seed for the think times and the traces drawn.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Extra request header as `Name: value`, for example an Authorization header; repeatable.
+    #[arg(long = "header", value_parser = parse_header)]
+    headers: Vec<(HeaderName, HeaderValue)>,
+    /// Write the report here instead of to stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct FreshArgs {
+    /// The OTLP/HTTP ingest listener as host:port.
+    #[arg(long, default_value = "127.0.0.1:4318")]
+    ingest: String,
+    /// The API listener as host:port.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    api: String,
+    /// The project of the key.
+    #[arg(long)]
+    project: String,
+    /// Traces to send, one at a time.
+    #[arg(long, default_value_t = 50)]
+    probes: u32,
+    /// Milliseconds from one probe's end to the next probe.
+    #[arg(long, default_value_t = 200)]
+    interval_ms: u64,
+    /// Milliseconds between two lists of the traces.
+    #[arg(long, default_value_t = 2)]
+    poll_ms: u64,
+    /// The most a probe waits to be listed, and each request's deadline, in milliseconds.
+    #[arg(long, default_value_t = 30_000)]
+    timeout_ms: u64,
+    /// Seed for the probes' span content.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Extra request header as `Name: value`: an Authorization header with the ingest and read scopes.
+    #[arg(long = "header", value_parser = parse_header)]
+    headers: Vec<(HeaderName, HeaderValue)>,
+    /// Write the report here instead of to stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+fn parse_class(raw: &str) -> Result<ReadClass, String> {
+    serde_json::from_str(raw).map_err(|e| format!("a read class as JSON: {e}"))
+}
+
+fn parse_think(raw: &str) -> Result<Think, String> {
+    match raw {
+        "exponential" => Ok(Think::Exponential),
+        "fixed" => Ok(Think::Fixed),
+        _ => Err("expected exponential or fixed".to_owned()),
+    }
 }
 
 #[derive(Debug, Args)]
@@ -52,9 +148,19 @@ struct RunArgs {
     /// Spans per request.
     #[arg(long, default_value_t = 100)]
     spans_per_request: u32,
+    /// Traces per request: the request's spans split into this many traces of consecutive spans.
+    #[arg(long, default_value_t = 1)]
+    traces_per_request: u32,
+    /// Give no trace a root: the first span of every trace names a parent that no span carries.
+    #[arg(long)]
+    rootless: bool,
     /// Gzip every request body.
     #[arg(long)]
     gzip: bool,
+    /// With --gzip, the most bodies compressed at a time, each on its own blocking thread; the default is half
+    /// the CPUs available to the process, at least one.
+    #[arg(long)]
+    gzip_threads: Option<usize>,
     /// Connections, which bound the requests in flight.
     #[arg(long, default_value_t = 64)]
     concurrency: usize,
@@ -73,12 +179,36 @@ struct RunArgs {
     /// Extra request header as `Name: value`, for example an Authorization header; repeatable.
     #[arg(long = "header", value_parser = parse_header)]
     headers: Vec<(HeaderName, HeaderValue)>,
-    /// Runtime worker threads; the default is the CPUs available to the process.
+    /// Spread the requests' span times evenly over this many seconds before the schedule's start, instead of
+    /// following the schedule: to load a dataset that covers a read window.
+    #[arg(long, default_value_t = 0)]
+    spread_secs: u64,
+    /// Move the span times this many seconds before the schedule: with --spread-secs the spread ends there, so
+    /// a dataset can be loaded in time-ordered slices of its window.
+    #[arg(long, default_value_t = 0)]
+    backdate_secs: u64,
+    /// Runtime worker threads; the default is the CPUs available to the process, less the gzip threads with
+    /// --gzip, so that compression never competes with the pacer for a CPU.
     #[arg(long)]
     threads: Option<usize>,
     /// Write the report here instead of to stdout.
     #[arg(long)]
     out: Option<PathBuf>,
+}
+
+impl RunArgs {
+    /// The compression threads and the runtime's worker threads.
+    fn threads(&self) -> (usize, usize) {
+        let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+        if !self.gzip {
+            return (0, self.threads.unwrap_or(cpus));
+        }
+        let gzip = self.gzip_threads.unwrap_or((cpus / 2).max(1));
+        (
+            gzip,
+            self.threads.unwrap_or(cpus.saturating_sub(gzip).max(1)),
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -107,8 +237,71 @@ fn parse_header(raw: &str) -> Result<(HeaderName, HeaderValue), String> {
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Run(args) => run(args),
+        Command::Read(args) => read(args),
+        Command::Fresh(args) => fresh(args),
         Command::FsyncProbe(args) => probe(args),
     }
+}
+
+#[allow(clippy::disallowed_methods)] // The binary reads the dataset's run reports.
+fn read_reports(paths: &[PathBuf]) -> anyhow::Result<Vec<String>> {
+    paths
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))
+        })
+        .collect()
+}
+
+fn read(args: ReadArgs) -> anyhow::Result<()> {
+    let reports = read_reports(&args.datasets)?;
+    let dataset = Dataset::from_reports(reports.iter().map(String::as_str))?;
+    let runtime = runtime(None)?;
+    let prod = crucible_env_prod::build(runtime.handle().clone(), &ProdConfig::default())?;
+    let env = prod.env;
+    let report = runtime.block_on(async {
+        let target = crucible_loadgen::resolve(&env, &args.target).await?;
+        let config = ReadConfig {
+            target,
+            authority: args.target.clone(),
+            headers: args.headers.clone(),
+            project: args.project.clone(),
+            classes: args.classes.clone(),
+            rate: args.rate,
+            duration: Duration::from_secs(args.duration_secs),
+            think: args.think,
+            concurrency: args.concurrency,
+            timeout: Duration::from_millis(args.timeout_ms),
+            window: Duration::from_secs(args.window_secs),
+            seed: args.seed,
+        };
+        anyhow::Ok(crucible_loadgen::read(&env, dataset, &config).await?)
+    })?;
+    write_report(args.out.as_deref(), &report)
+}
+
+fn fresh(args: FreshArgs) -> anyhow::Result<()> {
+    let runtime = runtime(None)?;
+    let prod = crucible_env_prod::build(runtime.handle().clone(), &ProdConfig::default())?;
+    let env = prod.env;
+    let report = runtime.block_on(async {
+        let config = FreshConfig {
+            ingest: crucible_loadgen::resolve(&env, &args.ingest).await?,
+            ingest_authority: args.ingest.clone(),
+            api: crucible_loadgen::resolve(&env, &args.api).await?,
+            api_authority: args.api.clone(),
+            headers: args.headers.clone(),
+            project: args.project.clone(),
+            probes: args.probes,
+            interval: Duration::from_millis(args.interval_ms),
+            poll: Duration::from_millis(args.poll_ms),
+            timeout: Duration::from_millis(args.timeout_ms),
+            seed: args.seed,
+        };
+        anyhow::Ok(crucible_loadgen::fresh(&env, &config).await?)
+    })?;
+    write_report(args.out.as_deref(), &report)
 }
 
 fn runtime(threads: Option<usize>) -> anyhow::Result<tokio::runtime::Runtime> {
@@ -120,7 +313,8 @@ fn runtime(threads: Option<usize>) -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
-    let runtime = runtime(args.threads)?;
+    let (gzip_threads, threads) = args.threads();
+    let runtime = runtime(Some(threads))?;
     let prod = crucible_env_prod::build(runtime.handle().clone(), &ProdConfig::default())?;
     let env = prod.env;
     let report = runtime.block_on(async {
@@ -130,6 +324,8 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             PoolConfig {
                 span_size: args.span_size,
                 spans_per_request: args.spans_per_request,
+                traces_per_request: args.traces_per_request,
+                rootless: args.rootless,
                 templates: args.templates,
                 seed: args.seed,
             },
@@ -142,8 +338,11 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
             duration: Duration::from_secs(args.duration_secs),
             concurrency: args.concurrency,
             gzip: args.gzip,
+            gzip_threads,
             timeout: Duration::from_millis(args.timeout_ms),
             headers: args.headers.clone(),
+            spread: Duration::from_secs(args.spread_secs),
+            backdate: Duration::from_secs(args.backdate_secs),
         };
         let before = process_cpu();
         let outcome = crucible_loadgen::run(&env, Arc::new(pool), &config).await?;

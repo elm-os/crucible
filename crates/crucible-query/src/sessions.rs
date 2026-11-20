@@ -107,7 +107,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: SessionListQuery,
     ) -> Result<SessionListPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "session_list");
         let limit = page_limit(query.limit)?;
         let cursor = match &query.cursor {
             Some(cursor) => Some(cursor.check(ctx.scope, query.window)?),
@@ -156,7 +156,7 @@ impl QueryService {
         window: TimeWindow,
         session_id: &str,
     ) -> Result<SessionDetail, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "session");
         let base = self.consistency();
         let (unconfirmed, state) = read.unconfirmed()?;
         let left_out = unconfirmed.iter().any(|span| {

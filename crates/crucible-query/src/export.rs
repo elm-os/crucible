@@ -596,7 +596,7 @@ impl QueryService {
         if limits.rows == 0 || limits.rows > EXPORT_PAGE_MAX {
             return Err(QueryServiceError::Validation("limit"));
         }
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "export_page");
         let scope = ctx.scope;
         let selection = query.selection();
         let plan = export_spans(

@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use crucible_env::QueryError;
+use crucible_env::metrics::registry;
+use crucible_env::{MemoryRecorder, QueryError};
 use crucible_plan::{TRACE_INLINE_SPAN_LIMIT, TRACE_PAGED_SPAN_LIMIT};
 use crucible_query::{
     ChildCursor, Consistency, PartialReason, QueryServiceError, SpanChildrenQuery, SpanSource,
@@ -56,6 +57,43 @@ fn an_acked_span_is_readable_from_the_index_and_then_from_the_store() {
     assert!(whole(&found) && found.span_count == 2);
     assert!(found.spans.iter().all(from_store));
     assert_eq!(found.spans[1].summary, span(1, 11, 10, NOW).summary);
+}
+
+#[test]
+fn every_read_counts_its_store_reads_and_its_barrier_wait_by_class() {
+    let mut world = World::new(100);
+    let recorder = MemoryRecorder::new();
+    world.service = world.service.clone().with_metrics(&recorder);
+    world.ack(vec![span(1, 10, 0, NOW), span(1, 11, 10, NOW)]);
+    world.settle();
+    let before = world.store.executed().len() as u64;
+    detail(&world, 1).unwrap();
+    let issued = world.store.executed().len() as u64 - before;
+    let reads = recorder
+        .histogram_value(&registry::API_STORE_READS, &["trace_by_id"])
+        .unwrap();
+    // One request, and every plan it sent to the store.
+    assert_eq!((reads.count, reads.sum), (1, issued));
+    assert!(issued >= 2, "{issued}");
+    // Caught up, the barrier answers at once: one wait of zero on the manual clock.
+    let waited = recorder
+        .histogram_value(&registry::API_BARRIER_WAIT, &["trace_by_id"])
+        .unwrap();
+    assert_eq!((waited.count, waited.sum), (1, 0));
+    // A class that never waits for the barrier records only its reads.
+    run(world.service.data_bounds(&ctx(1))).unwrap();
+    let bounds = recorder
+        .histogram_value(&registry::API_STORE_READS, &["data_bounds"])
+        .unwrap();
+    assert_eq!(bounds.count, 1);
+    assert_eq!(
+        recorder.histogram_value(&registry::API_BARRIER_WAIT, &["data_bounds"]),
+        Some(crucible_env::metrics::HistogramSnapshot {
+            buckets: vec![0; registry::API_BARRIER_WAIT.buckets().len() + 1],
+            sum: 0,
+            count: 0,
+        })
+    );
 }
 
 #[test]
