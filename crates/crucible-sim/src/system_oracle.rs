@@ -339,6 +339,10 @@ pub(crate) struct Admitted {
     pub(crate) relying: BTreeMap<u64, u64>,
 }
 
+/// The usage aggregates of a frame by span key, each with its support: the LSN of the frame whose span carries the
+/// usage (contract 5.3).
+type Flagged = BTreeMap<Vec<u8>, u64>;
+
 /// The usage aggregates of each frame at `targets` when stage B holds what the frames from `floor` on give it
 /// (contract 5.3, usage descendant set), each with its support: the set starts empty at `floor`; in LSN order,
 /// every span of a frame that carries usage or is in the set adds its parent, to a fixed point over all the spans
@@ -349,8 +353,8 @@ fn usage_aggregates(
     frames: &BTreeMap<u64, Vec<FrameSpan>>,
     floor: u64,
     targets: &BTreeSet<u64>,
-) -> BTreeMap<u64, BTreeMap<Vec<u8>, u64>> {
-    let mut set: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+) -> BTreeMap<u64, Flagged> {
+    let mut set = Flagged::new();
     let mut out = BTreeMap::new();
     let Some(&last) = targets.last() else {
         return out;
@@ -393,12 +397,12 @@ fn usage_aggregates(
 fn usage_rule(
     frames: &BTreeMap<u64, Vec<FrameSpan>>,
     admissions: &BTreeMap<(u64, u64), BTreeSet<u32>>,
-) -> (BTreeMap<u64, BTreeMap<Vec<u8>, u64>>, BTreeSet<u64>) {
+) -> (BTreeMap<u64, Flagged>, BTreeSet<u64>) {
     let mut by_floor: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     for &(lsn, floor) in admissions.keys() {
         by_floor.entry(floor).or_default().insert(lsn);
     }
-    let mut expected: BTreeMap<u64, BTreeMap<Vec<u8>, u64>> = BTreeMap::new();
+    let mut expected: BTreeMap<u64, Flagged> = BTreeMap::new();
     // The flags the rule gives each span, by (LSN, stage A ordinal), at the admissions that kept it.
     let mut kept_flags: BTreeMap<(u64, u32), BTreeSet<bool>> = BTreeMap::new();
     for (floor, targets) in &by_floor {

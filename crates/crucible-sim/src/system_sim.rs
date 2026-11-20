@@ -2855,12 +2855,10 @@ impl StageBHook for Observed {
                 if let Some(support) = support
                     && admission.relies_on.is_none_or(|at| at.get() > support)
                 {
-                    let relied = admission
-                        .relies_on
-                        .map_or_else(
-                            || "no earlier frame".to_owned(),
-                            |at| format!("frame {}", at.get()),
-                        );
+                    let relied = admission.relies_on.map_or_else(
+                        || "no earlier frame".to_owned(),
+                        |at| format!("frame {}", at.get()),
+                    );
                     ledger.violate(Violation::DerivedMismatch(format!(
                         "frame {lsn} keeps a span that the usage in frame {support} flags, and its admission \
                          relies on {relied}, so garbage collection may remove frame {support} before frame \

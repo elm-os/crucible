@@ -153,9 +153,9 @@ that a kept span's flag relied on, is a violation.
 The oracle also checks the rule where it is broken, at the admission itself. The rule gives each mark the support
 that contract 5.3 names (the LSN of the frame whose span carries the usage, the highest when several marks reach a
 span), and a kept span flagged on an earlier frame's support must have the admission rely on that frame
-(`Admission::relies_on` at or below it), which the WAL then keeps until the frame is checkpointed. Without this
-check a stage B that forgot the reliance was caught only when garbage collection removed that frame while the
-frame was unchecked and a restart followed.
+(`Admission::relies_on` at or below it), which the WAL then keeps until the later frame is checkpointed. Without
+this check, a stage B that forgot the reliance showed only when garbage collection removed the earlier frame
+while the later one was unchecked, and a restart followed.
 
 A span that an admission dropped, an exact repeat or a span that a deletion selects, has no row from it, so its
 flag relies on nothing (contract 5.3): garbage collection may remove the frame that marked it, and a restart then
@@ -252,9 +252,9 @@ usage and the awaited parent beside it. The directed and property tests of `cruc
 `skip-flag-reliance` shows only where a kept span's flag is the one decision that reaches back to an earlier
 frame: a span carries usage below a parent that a later request sends, and another frame of the trace comes
 between them, so the admission's sightings rely on nothing that early. While the oracle compared only the flags
-of two admissions, no run of the budget caught it, because the frame had to be collected while the parent's frame
-was unchecked and a restart had to follow. The check at admission (see "Usage aggregates, exactly") catches it
-without either.
+of two admissions, no run of the budget caught it, because the frame of the usage had to be collected while the
+parent's frame was unchecked, and a restart had to follow. The check at admission (see "Usage aggregates,
+exactly") catches it without either.
 
 A change to the workload, the fault model or the product moves the recorded runs. The failing assertion says so;
 the ignored test `mutant_census` lists the first catching run of each mutant again.

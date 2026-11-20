@@ -260,7 +260,9 @@ impl ShipperConfig {
                 Some(Mutant::IgnoreTombstoneIssuer) => {
                     Some(crucible_normalize::Mutant::IgnoreTombstoneIssuer)
                 }
-                Some(Mutant::SkipFlagReliance) => Some(crucible_normalize::Mutant::SkipFlagReliance),
+                Some(Mutant::SkipFlagReliance) => {
+                    Some(crucible_normalize::Mutant::SkipFlagReliance)
+                }
                 _ => None,
             }
         }
