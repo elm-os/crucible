@@ -7,7 +7,7 @@
 //! Each case crashes the start that follows the stop at every one of its disk operations, on several disks,
 //! because each disk draws what a crash keeps from its own stream.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 
-use crucible_env::{DiskPath, Root};
+use crucible_env::{Disk, DiskPath, OpenMode, Root};
 use crucible_records::Lsn;
 use crucible_sim::{Host, Sim, SimDisk, run};
 use crucible_wal::{AppendError, RecoveryError, RecoveryReport, Wal, WalConfig};
@@ -236,10 +236,10 @@ fn a_readable_epoch_is_durable_before_the_first_segment_is_created() {
     });
 }
 
-/// The other entries recovery relies on, each left pending by a failed directory sync and a process stop: the
-/// successor of a segment, a removal by garbage collection, and the `CHECKPOINT` hint. Recovery trusts none of
-/// them in a way a crash can break: whatever a crash of the next start keeps, the log opens with every
-/// acknowledged frame and the watermark.
+/// The other entries recovery relies on, each left pending by a process stop after a failed or missing directory
+/// sync: the successor of a segment, a removal by garbage collection, the `CHECKPOINT` hint, and a removal by
+/// recovery itself. Recovery trusts none of them in a way a crash can break: whatever a crash of the next start
+/// keeps, the log opens with every acknowledged frame and the watermark.
 #[test]
 fn other_pending_entries_leave_a_log_that_opens_whatever_a_crash_keeps() {
     run(2, |sim| async move {
@@ -310,5 +310,26 @@ fn other_pending_entries_leave_a_log_that_opens_whatever_a_crash_keeps() {
         )
         .await;
         assert!(kept.sometimes("CHECKPOINT"));
+
+        // Recovery removed segment 2, a rotation that never wrote its header, and the process stopped before
+        // the directory sync.
+        let kept = sweep(
+            sim,
+            "unfinished",
+            move |disk| async move {
+                let node = start(sim, &disk, "build").await;
+                node.fill(1..=4).await;
+                node.stop().await;
+                let path = DiskPath::new(Root::Wal, &segment(2)).unwrap();
+                let file = disk.open(&path, OpenMode::CreateNew).await.unwrap();
+                file.preallocate(SEGMENT).await.unwrap();
+                file.sync_data().await.unwrap();
+                disk.sync_dir(&wal_dir()).await.unwrap();
+                disk.remove(&path).await.unwrap();
+            },
+            |trial, report, _| assert_eq!(report.last_lsn, Lsn::new(4), "{trial}"),
+        )
+        .await;
+        assert!(kept.sometimes(&segment(2)));
     });
 }
