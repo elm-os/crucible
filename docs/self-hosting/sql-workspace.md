@@ -23,9 +23,12 @@ It:
 - provisions a user again when it has not been confirmed for an hour, which repairs drift;
 - removes the user of a project that was deleted, or that has run no query for 30 days (the next query creates it
   again);
+- provisions the two users of the self-probe again while this server's check cannot sign in or has not run yet;
 - deletes run history older than 30 days.
 
 No workspace password is stored: each is derived from the master key, the user name and a generation number.
+`--migrate` and `crucible migrate` also provision the two self-probe users again with the current master key, so
+after a start with another key the workspace works again as soon as the server runs with the right key.
 
 ## The self-probe
 
@@ -38,7 +41,7 @@ The state is in each signed-in session's `features.sql_workspace`, and the SQL p
 | none (`enabled: true`) | The last check passed | Nothing |
 | `not_configured` | The server has no telemetry store yet, for example while it waits for ClickHouse at startup | Wait until `/readyz` answers `ready`; the workspace turns on with it |
 | `probe_pending` | The first check has not finished | Wait a few seconds |
-| `probe_unavailable` | No check has passed since the server started, because the check could not sign in as its ClickHouse user | The server logs why each check could not run (`the SQL workspace self-probe could not run`) |
+| `probe_unavailable` | No check has passed since the server started, because the check could not sign in as its ClickHouse user | Check that ClickHouse is up and that the server runs with the master key it was migrated with. The job above provisions the check's users again within 5 minutes, and `crucible migrate` does so at once. The server logs why each check could not run (`the SQL workspace self-probe could not run`) |
 | `isolation_probe_failed` | The check found a breach: a workspace user saw rows it should not | The workspace stays off on every server. Check the ClickHouse server's access configuration for a user or role that grants more than Crucible's |
 
 While the workspace is off, runs answer 503 `sql_workspace_unavailable` with the reason, and the rest of Crucible

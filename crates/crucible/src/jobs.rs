@@ -1,18 +1,23 @@
 //! The background jobs of this node (contract 11.7): the registry of `crucible-jobs`, and its start.
 //!
 //! With Postgres configured, every node runs the registry: leader jobs under their lease rows, queue
-//! consumers on their claims, per-node timers. Without Postgres only the per-node timers run. The jobs live
-//! in the node's shutdown scope: on shutdown a leader lets its run in flight end and releases its lease.
+//! consumers on their claims, per-node timers. They start once the control plane is ready. Without Postgres
+//! only the per-node timers run. The jobs live in the node's shutdown scope: on shutdown a leader lets its run
+//! in flight end and releases its lease.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use crucible_auth::DbKeys;
 use crucible_control::ControlStore;
-use crucible_env::Env;
+use crucible_env::{Env, JoinHandle};
 use crucible_export::ExportRuntime;
-use crucible_jobs::{Job, Registry, Running, housekeeping};
+use crucible_jobs::{Job, Registry, housekeeping};
 
-use crate::control::Control;
 use crate::lifecycle::Lifecycle;
+
+/// How often the start of the jobs looks whether the control plane is ready.
+const READY_POLL: Duration = Duration::from_millis(250);
 
 /// Every job of the binary. A track adds its job with one line here (docs/architecture/adding-a-job.md). The
 /// export jobs need a control plane, whose rows are the exports: without one, `exports` is `None`, and so
@@ -43,19 +48,45 @@ fn registry(
     registry
 }
 
-/// Starts the jobs. The holder name of this process in the lease rows is new at every start. The export job
-/// reads through `exports`, which gets its query service once the telemetry store is up.
+/// Starts the jobs once the control plane is ready, in a task that ends when they all have stopped after the
+/// shutdown signal. With Postgres, `control` is the store and the key snapshot: the snapshot loads only once
+/// Postgres answers and its migrations have run (with `--migrate`, the key feed starts after them), so no first run
+/// meets a table that does not exist yet. Without Postgres only the per-node timers start, at once. The holder name
+/// of this process in the lease rows is new at every start. The export job reads through `exports`, which gets its
+/// query service once the telemetry store is up.
 pub(crate) fn start(
     env: &Env,
-    control: Option<&Control>,
+    control: Option<(Arc<dyn ControlStore>, Arc<DbKeys>)>,
     exports: &ExportRuntime,
     alerts: Vec<Job>,
     lifecycle: Option<&Lifecycle>,
     media: Option<Job>,
-) -> Running {
-    let store = control.map(|control| Arc::new(control.store.clone()) as Arc<dyn ControlStore>);
+) -> JoinHandle<()> {
+    let registry = registry(control.as_ref().map(|_| exports), alerts, lifecycle, media);
     let holder = format!("node-{}", env.new_id());
-    registry(control.map(|_| exports), alerts, lifecycle, media).start(env, store, &holder)
+    let task_env = env.clone();
+    env.spawn("jobs", async move {
+        let env = task_env;
+        let mut shutdown = env.shutdown();
+        let store = match control {
+            Some((store, keys)) => {
+                while !keys.is_loaded() {
+                    tokio::select! {
+                        biased;
+                        () = &mut shutdown => return,
+                        () = env.clock.sleep(READY_POLL) => {}
+                    }
+                }
+                Some(store)
+            }
+            None => None,
+        };
+        let mut running = registry.start(&env, store, &holder);
+        if running.tasks() > 0 {
+            tracing::info!(tasks = running.tasks(), "the background jobs are running");
+        }
+        running.join().await;
+    })
 }
 
 #[cfg(test)]
@@ -126,21 +157,78 @@ mod tests {
         });
     }
 
+    /// A first start applies the Postgres migrations while the node starts. A job that ran before they had would
+    /// meet a table that does not exist yet and log a warning, so the jobs start once the control plane is ready:
+    /// the migrations have run and the key snapshot has loaded.
+    #[test]
+    fn the_jobs_start_once_the_control_plane_is_ready() {
+        use crucible_auth::{LookupKey, OutageMode};
+        use crucible_control::{LeaseName, Repos as _};
+        use crucible_sim::pg_model::{PgFaults, PgModel};
+
+        crucible_sim::run(3, |sim| async move {
+            let host = sim.host("node", &sim.disk("node"), 0);
+            let env = host.env.clone();
+            let model = PgModel::new(
+                host.clock.clone(),
+                sim.rng("pg").as_ref(),
+                PgFaults::default(),
+            );
+            let keys = Arc::new(DbKeys::new(
+                &env,
+                LookupKey::new([5; 32]),
+                OutageMode::default(),
+            ));
+            let store: Arc<dyn ControlStore> = Arc::new(model.clone());
+            let _jobs = start(
+                &env,
+                Some((store, Arc::clone(&keys))),
+                &ExportRuntime::new(),
+                Vec::new(),
+                None,
+                None,
+            );
+            // The housekeeping job takes its lease as soon as it runs.
+            let housekeeping = async || {
+                model
+                    .leases()
+                    .get(LeaseName::Housekeeping)
+                    .await
+                    .unwrap()
+                    .is_some()
+            };
+            env.clock.sleep(Duration::from_secs(30)).await;
+            assert!(
+                !housekeeping().await,
+                "a job ran before the control plane was ready"
+            );
+            keys.load(&model.key_feed().snapshot().await.unwrap());
+            env.clock.sleep(Duration::from_secs(1)).await;
+            assert!(
+                housekeeping().await,
+                "the jobs did not start once the key snapshot had loaded"
+            );
+        });
+    }
+
     #[test]
     fn without_postgres_no_job_task_starts() {
         crucible_sim::run(1, |sim| async move {
             let host = sim.host("node", &sim.disk("node"), 0);
+            let mut jobs = start(
+                &host.env,
+                None,
+                &ExportRuntime::new(),
+                Vec::new(),
+                None,
+                None,
+            );
+            // A job task runs until shutdown; with none started, the task that holds them ends at once.
             assert_eq!(
-                start(
-                    &host.env,
-                    None,
-                    &ExportRuntime::new(),
-                    Vec::new(),
-                    None,
-                    None
-                )
-                .tasks(),
-                0
+                host.env
+                    .timeout(Duration::from_millis(1), jobs.join())
+                    .await,
+                Ok(Ok(()))
             );
         });
     }
