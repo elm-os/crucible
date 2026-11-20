@@ -63,7 +63,7 @@ const COPY: Record<UiErrorKind, Copy> = {
   // Without a control plane the server has no sign-in: the Connect dialog's key stands in for it.
   unauthenticated: {
     title: "Connect to a project to see this.",
-    detail: "This development preview has no sign-in yet. Connect with a project id and its key.",
+    detail: "This server runs without a control plane, so there is no sign-in. Connect with a project id and its secret key.",
     action: "sign_in",
     autoRetries: 0,
   },

@@ -24,8 +24,8 @@ import { type ConnectionCheck, checkConnection } from "@/api/client";
 import { AlertIcon, CheckIcon } from "@/components/icons";
 import { clearConnection, saveConnection, useConnectedProject } from "@/lib/connection";
 
-// Temporary, for the milestone 1 development preview: a project id and its secret key stand in for
-// signing in. Browser sessions replace this dialog in milestone 4.
+// A server without a control plane (keys-file mode) has no sign-in: a project id and its secret
+// key stand in for it. With Postgres, browser sessions are used and this dialog is not shown.
 const controller = createDialogController();
 
 const FAILURES: Record<Exclude<ConnectionCheck, "ok">, string> = {
