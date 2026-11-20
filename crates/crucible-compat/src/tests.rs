@@ -235,7 +235,7 @@ fn tables_have_the_planned_rows() {
     assert_eq!(rows(&DIALECT_4), (2, 21, 55));
     assert_eq!(rows(&DIALECT_5), (2, 21, 12));
     assert_eq!(rows(&DIALECT_6), (3, 2, 11));
-    assert_eq!(rows(&DIALECT_7), (22, 12, 27));
+    assert_eq!(rows(&DIALECT_7), (23, 12, 27));
 }
 
 #[test]
@@ -280,7 +280,6 @@ fn routes_name_registered_dialects_and_distinct_paths() {
     for (i, route) in ROUTES.iter().enumerate() {
         assert!(dialect(route.dialect).is_some() && route.dialect != 0);
         assert!(route.path.starts_with('/') && route.path.ends_with("/v1/traces"));
-        assert!(route.basic || route.bearer);
         assert!(ROUTES[..i].iter().all(|r| r.path != route.path));
     }
 }

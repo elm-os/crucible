@@ -3,9 +3,12 @@
 //!
 //! Without `[object_store]` there is no media: the API's media routes and the compat media endpoint check the
 //! request's key and answer 501 `media_not_supported` with the settings that turn media on, and SDKs keep media
-//! inline in their payloads under the field cap.
+//! inline in their payloads under the field cap. The compat SDKs replace media with references before they upload,
+//! so the compat endpoint's answer also names the SDK setting that keeps media inline, and the server logs the
+//! first such refusal.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context as _;
 use axum::Router;
@@ -18,8 +21,8 @@ use axum::routing::{get, post};
 use crucible_api_types::ProblemCode;
 use crucible_auth::{KeyPrincipal, KeyVerifier, Refusal, authenticate};
 use crucible_compat::media::{
-    MEDIA_ROUTES, MediaAnswer, hash_range, media_answer, media_id, parse_report, parse_upload,
-    upload_answer,
+    MEDIA_ROUTES, MediaAnswer, NOT_SUPPORTED, hash_range, media_answer, media_id, parse_report,
+    parse_upload, upload_answer,
 };
 use crucible_config::Config;
 use crucible_control::{ControlStore, MediaState};
@@ -117,6 +120,8 @@ struct Compat {
     /// Keys with the `read` scope: reads.
     read: Arc<dyn KeyVerifier>,
     media: Option<Media>,
+    /// Set once the log has said that this server stores no media.
+    warned: Arc<AtomicBool>,
 }
 
 /// The compat media endpoint's routes (contracts 12.1 and 14.3), for both HTTP ingest listeners.
@@ -131,6 +136,7 @@ pub(crate) fn compat_routes(
         ingest,
         read,
         media,
+        warned: Arc::default(),
     };
     let mut router = Router::new();
     for route in MEDIA_ROUTES {
@@ -188,7 +194,16 @@ async fn begin(
     let rid = crucible_api::request_id(request.extensions(), &state.env);
     let principal = principal(keys, &request, rid)?;
     let Some(media) = state.media.clone() else {
-        return Err(Box::new(crucible_api::media_not_supported(rid)));
+        // Once in the log as well: the SDK logs the answer where the application runs, which the operator of
+        // this server may not see.
+        if !state.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("an SDK called the media endpoint: {NOT_SUPPORTED}");
+        }
+        return Err(Box::new(crucible_api::problem(
+            rid,
+            ProblemCode::MediaNotSupported,
+            NOT_SUPPORTED,
+        )));
     };
     let body = to_bytes(request.into_body(), BODY_LIMIT)
         .await
@@ -322,5 +337,92 @@ async fn report(State(state): State<Compat>, Path(id): Path<String>, request: Re
     match media.confirm(principal.scope, object.id).await {
         Ok(_) => (StatusCode::OK, Body::empty()).into_response(),
         Err(error) => crucible_api::media_refusal(rid, &error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use axum::http::Request;
+    use crucible_compat::media::{UploadRequest, upload_request};
+    use crucible_records::TraceId;
+    use tower::ServiceExt as _;
+
+    use super::*;
+
+    /// What a test's log subscriber writes.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Without object storage the compat media endpoint refuses an upload with how to keep the media, and the
+    /// server says so once in its log: the SDK has already put the reference in the payload, so the media are lost
+    /// until the SDK keeps them inline or the server stores them.
+    #[tokio::test]
+    async fn without_object_storage_an_upload_is_refused_with_how_to_keep_the_media() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let _log = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let prod = crucible_env_prod::build(
+            tokio::runtime::Handle::current(),
+            &crucible_env_prod::ProdConfig::default(),
+        )
+        .unwrap();
+        let env = &prod.env;
+        let secret = format!("csk_{}", "7".repeat(43));
+        let keys: Arc<dyn KeyVerifier> = Arc::new(
+            crate::keys::parse(
+                &format!(
+                    "[[project_key]]\nproject_id = \"0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b\"\npublic_key = \
+                     \"cpk_{}\"\nsecret = \"{secret}\"\n",
+                    "7".repeat(43)
+                ),
+                env,
+            )
+            .unwrap(),
+        );
+        let router = compat_routes(env, Arc::clone(&keys), keys, None);
+        let body = upload_request(&UploadRequest {
+            trace_id: TraceId::from_bytes([1; 16]),
+            span_id: None,
+            content_type: "image/png".to_owned(),
+            len: 3,
+            sha256: [7; 32],
+            field: "input".to_owned(),
+        });
+        for _ in 0..2 {
+            let upload = Request::post(MEDIA_ROUTES[0].collection)
+                .header(AUTHORIZATION, format!("Bearer {secret}"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap();
+            let response = router.clone().oneshot(upload).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            let problem: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1 << 16).await.unwrap())
+                    .unwrap();
+            assert_eq!(problem["code"], "media_not_supported");
+            assert_eq!(problem["detail"], NOT_SUPPORTED);
+        }
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let warnings: Vec<&str> = log.lines().filter(|line| line.contains(" WARN ")).collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(warnings[0].contains(NOT_SUPPORTED), "{log}");
     }
 }

@@ -56,7 +56,7 @@ pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID,
 pub use openapi::{openapi, openapi_json};
 pub use problem::{PROBLEM_JSON, problem, request_id};
 pub use routes::exports::export_dto;
-pub use routes::media::{media_invalid, media_not_supported, media_refusal};
+pub use routes::media::{media_invalid, media_refusal};
 pub use settings::{
     DEFAULT_MAX_WINDOW_DAYS, ProjectSettings, ProjectSettingsSource, StaticProjectSettings,
 };
