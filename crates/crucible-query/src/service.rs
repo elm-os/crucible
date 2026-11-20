@@ -65,7 +65,7 @@ pub trait HiddenSource: fmt::Debug + Send + Sync {
 }
 
 /// The request classes of the read services, which label the per-request counters: one per method.
-pub const READ_CLASSES: [&str; 19] = [
+pub const READ_CLASSES: [&str; 34] = [
     "trace_by_id",
     "trace_list",
     "trace_list_since",
@@ -85,6 +85,21 @@ pub const READ_CLASSES: [&str; 19] = [
     "user",
     "user_sessions",
     "export_page",
+    "mcp_servers",
+    "mcp_tools",
+    "mcp_tool",
+    "mcp_error_classes",
+    "mcp_clients",
+    "mcp_deploys",
+    "mcp_compare",
+    "mcp_error_breakdown",
+    "mcp_client_versions",
+    "mcp_users",
+    "mcp_sessions",
+    "mcp_operations",
+    "mcp_operation",
+    "mcp_metrics",
+    "mcp_metrics_totals",
 ];
 
 /// The handles of the per-request counters, fetched once per class.

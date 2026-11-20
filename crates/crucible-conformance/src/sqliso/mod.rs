@@ -25,13 +25,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use crucible_env::{Env, SqlWorkspaceStore as _, TelemetryStore as _};
+use crucible_env::{Env, SqlError, SqlWorkspaceStore as _, TelemetryStore as _};
 use crucible_records::ProjectId;
 use crucible_schema::{
-    CURATED_VIEWS, Granularity, Ident, PolicyForm, RetentionSettings, SQL_PROFILE, SQL_QUOTA,
-    SQL_QUOTA_ERRORS_PER_HOUR, SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR, SQL_QUOTA_QUERIES_PER_HOUR,
-    SQL_QUOTA_READ_ROWS_PER_HOUR, SQL_READER_ROLE, SqlProfile, TableDef, Ty, access_service,
-    access_workspace, expected_policies, policy_inventory, schema_base, sql_tables, workspace_user,
+    CURATED_VIEWS, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PolicyForm,
+    RetentionSettings, SQL_PROFILE, SQL_QUOTA, SQL_QUOTA_ERRORS_PER_HOUR,
+    SQL_QUOTA_EXECUTION_SECONDS_PER_HOUR, SQL_QUOTA_QUERIES_PER_HOUR, SQL_QUOTA_READ_ROWS_PER_HOUR,
+    SQL_READER_ROLE, SqlProfile, TableDef, Ty, access_service, access_workspace, expected_policies,
+    policy_inventory, schema_base, sql_tables, without_secrets, workspace_user,
 };
 use crucible_store_clickhouse::{ClickHouseSqlStore, RawReply, SqlPasswords, SqlStoreConfig};
 
@@ -72,6 +73,16 @@ struct Passwords;
 impl SqlPasswords for Passwords {
     fn password(&self, user: &str, generation: u32) -> String {
         format!("sqliso-{user}-{generation}")
+    }
+}
+
+/// The passwords a node with another master key derives.
+#[derive(Debug)]
+struct OtherKey;
+
+impl SqlPasswords for OtherKey {
+    fn password(&self, user: &str, generation: u32) -> String {
+        format!("other-key-{user}-{generation}")
     }
 }
 
@@ -524,6 +535,74 @@ impl Iso {
             report.statements, report.version
         ))
     }
+
+    /// One start with a wrong master key under `--migrate` (contracts 6.6 and 7.5). Access step A2 rendered under
+    /// another key differs from the deployed one only in the probe identities' password digests, and its ledger
+    /// form is the same, so the ledger does not apply it again. Applied anyway, as an earlier version did, it leaves
+    /// the probe identity refusing the right key's password and the probe unable to run. Provisioning the probe
+    /// identities again with the right key, as `crucible migrate` and the identity reconciler do, repairs it.
+    pub(crate) async fn wrong_master_key(&self) -> Result<String> {
+        let other = ClickHouseSqlStore::new(
+            self.ctx.store.clone(),
+            SqlStoreConfig {
+                passwords: Arc::new(OtherKey),
+                variant: self.ctx.variant.clone(),
+                admin_user: Ident::new(&self.ctx.config.admin.user)?,
+                statements_per_hour: SQL_QUOTA_QUERIES_PER_HOUR,
+            },
+        );
+        let step = |store: &ClickHouseSqlStore| -> Result<MigrationStep> {
+            let params = store
+                .workspace_params(self.profile)
+                .map_err(|e| anyhow!("{e}"))?;
+            Ok(access_workspace(&self.ctx.variant, &params))
+        };
+        let (right, wrong) = (step(&self.sql)?, step(&other)?);
+        let ledger = |step: &MigrationStep| -> Vec<String> {
+            step.statements
+                .iter()
+                .map(|statement| without_secrets(statement).into_owned())
+                .collect()
+        };
+        expect(right.statements != wrong.statements, || {
+            "access step A2 does not carry the probe identities' password digests".to_owned()
+        })?;
+        expect(ledger(&right) == ledger(&wrong), || {
+            "the ledger form of access step A2 depends on the master key".to_owned()
+        })?;
+        self.ctx
+            .store
+            .apply_migration(&wrong)
+            .await
+            .context("access step A2 under another key")?;
+        match self.sql.probe().await {
+            Err(SqlError::Unavailable(_)) => {}
+            other => bail!(
+                "with another key's passwords on the probe identities the probe should not run, but it gave \
+                 {other:?}"
+            ),
+        }
+        for project in PROBE_PROJECTS {
+            self.sql
+                .provision(project, 0, &RetentionSettings::default())
+                .await
+                .map_err(|e| anyhow!("provisioning the probe identity {project}: {e}"))?;
+        }
+        let report = self
+            .sql
+            .probe()
+            .await
+            .map_err(|e| anyhow!("the probe after the repair: {e}"))?;
+        expect(report.breaches.is_empty(), || {
+            format!("the probe after the repair reports {:?}", report.breaches)
+        })?;
+        Ok(format!(
+            "A2 under another key differs only in its digests and has the same ledger form; applied, it left the \
+             probe unable to sign in; provisioning the probe identities with the right key restored a clean probe \
+             of {} statements",
+            report.statements
+        ))
+    }
 }
 
 /// One row of `project` in a table: its time column at the current time, every string column the canary, and
@@ -587,6 +666,10 @@ pub async fn run(env: &Env, target: &Target, options: &Options) -> Vec<Outcome> 
     }
     row!("W0 deployment as declared", iso.deployment());
     row!("Runtime self-probe (7.5)", iso.runtime_probe());
+    row!(
+        "A start with a wrong master key (6.6, 7.5)",
+        iso.wrong_master_key()
+    );
     if options.layer_a {
         for (name, result) in layer_a::run(&iso, options).await {
             outcomes.push(Outcome {

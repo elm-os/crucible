@@ -1036,6 +1036,55 @@ mod tests {
         assert!(sessions.contains("GROUP BY project_id, day, session_id"));
     }
 
+    proptest::proptest! {
+        /// The ledger form of access steps A1 and A2 holds no password digest and is the same whatever digests the
+        /// master key gave; the statements without a digest keep their text.
+        #[test]
+        fn the_ledger_form_of_the_access_steps_holds_no_digest(
+            a in "[0-9a-f]{64}",
+            b in "[0-9a-f]{64}",
+        ) {
+            use crate::access::{AccessParams, ProfileCaps, without_secrets};
+            use crate::migrate::access_service;
+            let digest = |hex: &str| PasswordHash::new(hex).unwrap();
+            let steps = |hex: &str| {
+                let caps = ProfileCaps {
+                    max_execution_time_secs: 300,
+                    max_memory_usage: 8 << 30,
+                    max_rows_to_read: None,
+                    max_threads: 8,
+                };
+                let service = AccessParams {
+                    admin_user: Ident::new("crucible_admin").unwrap(),
+                    ingest: digest(hex),
+                    read_ui: digest(hex),
+                    read_agent: digest(hex),
+                    maint: digest(hex),
+                    read_ui_caps: caps,
+                    read_agent_caps: caps,
+                };
+                let workspace = WorkspaceParams {
+                    probe: [digest(hex), digest(hex)],
+                    ..params()
+                };
+                let mut statements = access_service(&Variant::SingleNode, &service).statements;
+                statements.extend(access_workspace(&Variant::SingleNode, &workspace).statements);
+                statements
+            };
+            let (with_a, with_b) = (steps(&a), steps(&b));
+            let ledger = |statements: &[String]| {
+                statements.iter().map(|s| without_secrets(s).into_owned()).collect::<Vec<_>>()
+            };
+            proptest::prop_assert_eq!(ledger(&with_a), ledger(&with_b));
+            for (statement, form) in with_a.iter().zip(ledger(&with_a)) {
+                proptest::prop_assert!(!form.contains(&a));
+                if !statement.contains(&a) {
+                    proptest::prop_assert_eq!(&form, statement);
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_expected_inventory_names_every_policy() {
         let none = expected_policies(&[]);

@@ -1,0 +1,10 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "rendered(&live(mcp_presence(s, w, &c, caller, McpSide::Client,\nSome(\"files\"))))"
+---
+SELECT server_name, capture_source, sum(count) AS m0, max(last_seen) AS m1 FROM crucible.mcp_tool_rollup WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} AND (side = {p3:String} AND server_name = {p4:String}) GROUP BY server_name, capture_source ORDER BY server_name ASC, capture_source ASC
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1794911340"
+p3: String = "client"
+p4: String = "files"

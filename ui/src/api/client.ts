@@ -38,6 +38,20 @@ import type { InvitationCreate } from "./generated/InvitationCreate";
 import type { InvitationCreated } from "./generated/InvitationCreated";
 import type { InvitationList } from "./generated/InvitationList";
 import type { LoginRequest } from "./generated/LoginRequest";
+import type { McpClientList } from "./generated/McpClientList";
+import type { McpCompare } from "./generated/McpCompare";
+import type { McpDeployList } from "./generated/McpDeployList";
+import type { McpErrors } from "./generated/McpErrors";
+import type { McpOperationDetail } from "./generated/McpOperationDetail";
+import type { McpOperationPage } from "./generated/McpOperationPage";
+import type { McpServerList } from "./generated/McpServerList";
+import type { McpSessionList } from "./generated/McpSessionList";
+import type { McpSideParam } from "./generated/McpSideParam";
+import type { McpToolDetail } from "./generated/McpToolDetail";
+import type { McpToolList } from "./generated/McpToolList";
+import type { McpUserList } from "./generated/McpUserList";
+import type { McpView } from "./generated/McpView";
+import type { SourceParam } from "./generated/SourceParam";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { MetricsSchema } from "./generated/MetricsSchema";
@@ -293,6 +307,155 @@ export function getTrace(
   signal?: AbortSignal,
 ): Promise<TraceDetail> {
   return apiGet(projectPath(project, `/traces/${encodeURIComponent(traceId)}`), {}, signal);
+}
+
+// What every MCP analytics read takes besides its window (contract 9.9).
+export interface McpScope {
+  side: McpSideParam;
+  source: SourceParam;
+  faults: boolean;
+  server: string | null;
+}
+
+function mcpGet<T>(
+  project: string,
+  rest: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  extra: Query,
+  signal?: AbortSignal,
+): Promise<T> {
+  const query: Query = { side: scope.side, from: timeWindow.from, to: timeWindow.to, ...extra };
+  if (scope.source !== "auto") query.source = scope.source;
+  if (scope.faults) query.include_caller_faults = "true";
+  if (scope.server) query.server = scope.server;
+  return apiGet(projectPath(project, `/mcp/${rest}`), query, signal);
+}
+
+export function listMcpServers(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpServerList> {
+  return mcpGet(project, "servers", timeWindow, scope, {}, signal);
+}
+
+export function listMcpTools(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpToolList> {
+  return mcpGet(project, "tools", timeWindow, scope, {}, signal);
+}
+
+export function getMcpTool(
+  project: string,
+  name: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpToolDetail> {
+  return mcpGet(project, `tools/${encodeURIComponent(name)}`, timeWindow, scope, {}, signal);
+}
+
+export function getMcpErrors(
+  project: string,
+  view: McpView,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpErrors> {
+  return mcpGet(project, "errors", timeWindow, scope, { view }, signal);
+}
+
+export function getMcpClients(
+  project: string,
+  view: McpView,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpClientList> {
+  return mcpGet(project, "clients", timeWindow, scope, { view }, signal);
+}
+
+export function listMcpUsers(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpUserList> {
+  return mcpGet(project, "users", timeWindow, scope, {}, signal);
+}
+
+export function listMcpSessions(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpSessionList> {
+  return mcpGet(project, "sessions", timeWindow, scope, {}, signal);
+}
+
+export interface McpOperationFilter {
+  target?: string;
+  client?: string;
+  session?: string;
+  user?: string;
+  errorsOnly?: boolean;
+}
+
+export function listMcpOperations(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  filter: McpOperationFilter,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<McpOperationPage> {
+  const extra: Query = {
+    target: filter.target,
+    client: filter.client,
+    session: filter.session,
+    user: filter.user,
+    errors_only: filter.errorsOnly ? "true" : undefined,
+    cursor: cursor ?? undefined,
+  };
+  return mcpGet(project, "operations", timeWindow, scope, extra, signal);
+}
+
+export function getMcpOperation(
+  project: string,
+  traceId: string,
+  spanId: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpOperationDetail> {
+  const rest = `operations/${encodeURIComponent(traceId)}/${encodeURIComponent(spanId)}`;
+  return mcpGet(project, rest, timeWindow, scope, {}, signal);
+}
+
+export function listMcpDeploys(
+  project: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpDeployList> {
+  return mcpGet(project, "deploys", timeWindow, scope, {}, signal);
+}
+
+export function compareMcpDeploys(
+  project: string,
+  baseline: string,
+  candidate: string,
+  timeWindow: TimeWindow,
+  scope: McpScope,
+  signal?: AbortSignal,
+): Promise<McpCompare> {
+  const extra = { baseline_deploy: baseline, candidate_deploy: candidate };
+  return mcpGet(project, "compare", timeWindow, scope, extra, signal);
 }
 
 export function listSpanChildren(

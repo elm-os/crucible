@@ -42,6 +42,7 @@ export function TimeSeriesChart({
   form = "line",
   family = false,
   format,
+  markers = [],
 }: {
   title: string;
   series: ChartSeries[];
@@ -49,6 +50,8 @@ export function TimeSeriesChart({
   /** Percentiles of one measure: one ink family, told apart by dash. */
   family?: boolean;
   format: (value: number) => string;
+  /** Instants to mark with a vertical rule, such as deploys, each with a label. */
+  markers?: { t: number; label: string }[];
 }) {
   const shown = series.slice(0, MAX_SERIES);
   const [active, setActive] = useState<number | null>(null);
@@ -162,6 +165,20 @@ export function TimeSeriesChart({
                       </g>
                     );
                   })}
+              {markers
+                .filter((m) => model.times.length > 0 && m.t >= (model.times[0] ?? 0))
+                .map((m) => (
+                  <line
+                    key={`${m.t}-${m.label}`}
+                    data-marker-rule
+                    x1={model.x(new Date(m.t))}
+                    x2={model.x(new Date(m.t))}
+                    y1={LAYOUT.top}
+                    y2={LAYOUT.height - LAYOUT.bottom}
+                    stroke="var(--color-chart-axis)"
+                    strokeDasharray="2 3"
+                  />
+                ))}
               {at === null ? null : (
                 <line
                   data-crosshair
@@ -208,6 +225,13 @@ export function TimeSeriesChart({
           </Field>
         </>
       )}
+      {markers.length > 0 ? (
+        <ul data-markers className="flex flex-wrap gap-x-4 gap-y-1 text-label text-ink-soft">
+          {markers.map((m) => (
+            <li key={`${m.t}-${m.label}`}>{`${m.label}, ${bucketFormat.format(m.t)}`}</li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

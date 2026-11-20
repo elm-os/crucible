@@ -20,7 +20,7 @@ The rig has three parts:
 | Freshness | at most 2 s p95 from ack to readable | the gate's `e2e` path (freshness) |
 | Trace by id | at most 100 ms p95 | the read bench's `trace_by_id` lane |
 | A 30-day trace list over 1 billion spans | at most 500 ms p95 | the read bench's `trace_list_30d` lane, measured at 100 million spans and labelled with its scale |
-| The MCP tool dashboard | at most 300 ms p95 | the read bench, once the MCP analytics endpoints exist (below) |
+| The MCP tool dashboard | at most 300 ms p95 | no lane of the read bench measures it (below) |
 | SDK and proxy overhead | at most 1 ms p99 | the SDK and proxy suites, not this rig |
 
 ## The rig
@@ -587,11 +587,10 @@ Paths are relative to `/api/v1/projects/{project_id}`. A lane whose requests wer
 non-empty is marked invalid: its latency would not cover them. So is a saturated lane, whose requests waited more
 than 25 ms (send lag p95) for a free connection: the schedule outran the server, and the latency grew with the
 queue rather than with the read. The session and user detail routes need ids that
-the dataset does not carry (its spans have no session or user), so they have no lane yet.
+the dataset does not carry (its spans have no session or user), so they have no lane.
 
-**The MCP tool dashboard** gets its lane in `LANES` (`xtask/src/perf/reads.rs`) once the MCP analytics endpoints
-exist: one entry with the dashboard's request, the JSON pointer that must not be empty, and the request class its
-read service records.
+**The MCP tool dashboard** has no lane. A lane is one entry in `LANES` (`xtask/src/perf/reads.rs`): the request,
+the JSON pointer that must not be empty in its answer, and the request class its read service records.
 
 ```sh
 tools/perf/xtask.sh reads                                   # the small rig: 2 million spans, HEAD's build

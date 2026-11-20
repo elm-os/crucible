@@ -455,3 +455,93 @@ fn channels_show_their_secret_once_and_refuse_targets_with_the_setting_that_allo
         .assert_problem(422, "validation_failed");
     });
 }
+
+/// An `mcp_ops` rule: the server-side error rate per server, above 5%.
+fn mcp_rule_body() -> Value {
+    json!({
+        "name": "MCP errors",
+        "source": "mcp_ops",
+        "side": "server",
+        "measure": "mcp.error_rate",
+        "aggregation": "rate",
+        "dimensions": ["server_name"],
+        "comparison": "gt",
+        "threshold": 50_000,
+        "window_secs": 300,
+    })
+}
+
+#[test]
+fn an_mcp_rule_names_its_side_and_capture_source() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform_with(&env, &world, false).await;
+        let send = |method: Method, rest: &str, body: Value, m: Option<&str>| {
+            let (router, uri, who) = (p.router.clone(), path(rest), p.owner.clone());
+            let m = m.map(str::to_owned);
+            async move {
+                let extra: Vec<(&str, &str)> = m.iter().map(|m| ("if-match", m.as_str())).collect();
+                call(&router, method, &uri, &who, Some(body), &extra).await
+            }
+        };
+        let refused_at = |reply: &Reply| -> Vec<String> {
+            reply.assert_problem(422, "validation_failed");
+            reply
+                .field_errors()
+                .iter()
+                .map(|(p, _)| (*p).to_owned())
+                .collect()
+        };
+
+        // The capture source is `auto` unless one is named, and the unit of a rate is parts per million.
+        let created = send(Method::POST, "/alerts", mcp_rule_body(), None).await;
+        assert_eq!(created.status.as_u16(), 201, "{:#}", created.body);
+        let rule = &created.body;
+        assert_eq!(
+            (&rule["source"], &rule["side"], &rule["capture_source"]),
+            (&json!("mcp_ops"), &json!("server"), &json!("auto"))
+        );
+        assert_eq!(rule["unit"], "ppm");
+        let one = format!("/alerts/{}", rule["id"].as_str().unwrap());
+
+        // An MCP rule names its side, reads its own dimensions, and a capture source needs a side.
+        let mut no_side = mcp_rule_body();
+        no_side.as_object_mut().unwrap().remove("side");
+        let reply = send(Method::POST, "/alerts", no_side.clone(), None).await;
+        assert_eq!(refused_at(&reply), ["/side"]);
+        no_side["capture_source"] = json!("proxy");
+        let reply = send(Method::POST, "/alerts", no_side, None).await;
+        assert_eq!(refused_at(&reply), ["/side"]);
+        let mut spans_dimension = mcp_rule_body();
+        spans_dimension["dimensions"] = json!(["environment"]);
+        let reply = send(Method::POST, "/alerts", spans_dimension, None).await;
+        assert_eq!(refused_at(&reply), ["/dimensions"]);
+        // A spans rule takes no side.
+        let mut spans_side = rule_body();
+        spans_side["side"] = json!("client");
+        let reply = send(Method::POST, "/alerts", spans_side, None).await;
+        assert_eq!(refused_at(&reply), ["/side"]);
+
+        // A patch of the capture source keeps the side.
+        let patch = json!({ "capture_source": "proxy" });
+        let changed = send(Method::PATCH, &one, patch, Some("\"1\"")).await;
+        assert_eq!(changed.status.as_u16(), 200, "{:#}", changed.body);
+        assert_eq!(
+            (&changed.body["side"], &changed.body["capture_source"]),
+            (&json!("server"), &json!("proxy"))
+        );
+
+        // On a spans rule a side is refused.
+        let spans = send(Method::POST, "/alerts", rule_body(), None).await;
+        let spans_one = format!("/alerts/{}", spans.body["id"].as_str().unwrap());
+        assert!(spans.body.get("side").is_none(), "{:#}", spans.body);
+        let reply = send(
+            Method::PATCH,
+            &spans_one,
+            json!({ "side": "server" }),
+            Some("\"1\""),
+        )
+        .await;
+        assert_eq!(refused_at(&reply), ["/side"]);
+    });
+}

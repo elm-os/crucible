@@ -1,13 +1,18 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/coming-soon";
+import { ServersSection } from "@/features/mcp/servers-section";
+import { McpPageFrame } from "@/features/mcp/mcp-page";
 
-export const metadata: Metadata = { title: "MCP" };
+export const metadata: Metadata = { title: "MCP servers" };
 
 export default function Page() {
   return (
-    <ComingSoon
-      title="MCP"
-      description="MCP analytics will show calls, error rates and latency for each server, tool, client and session."
-    />
+    <McpPageFrame
+      title="MCP servers"
+      description="Calls, error rate and latency of each MCP server in the selected time range."
+      active="servers"
+      section="Servers"
+    >
+      <ServersSection />
+    </McpPageFrame>
   );
 }

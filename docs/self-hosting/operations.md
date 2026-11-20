@@ -23,12 +23,10 @@ An upgrade is a new image and a restart:
 On start, `--migrate` applies the Postgres migrations and ClickHouse schema steps that the new version adds and
 skips the ones the ledger in Postgres already holds. The write-ahead log is recovered and whatever it still holds
 is shipped. Stopping the old server lets it finish its open requests first: Compose sends SIGTERM and allows
-35 seconds.
+35 seconds, and a server with no request open stops within a second.
 
-- While the old server stops and the new one starts, the port answers nothing, so `--wait` can report
-  `container crucible-ready-1 is unhealthy`. That is the `ready` service catching the restart, and the upgrade goes
-  on: `curl -s http://127.0.0.1:8080/readyz` answers `ready` once the new server is up, and the `ready` service
-  turns healthy at its next check, within 10 seconds (`docker compose ps`).
+- Compose stops the `ready` service before it replaces the server and starts it again after, so `--wait` returns
+  once the new server answers `/readyz`.
 - Keep `CRUCIBLE_MASTER_KEY` across upgrades. The ClickHouse service users were created with passwords derived
   from it, and the API keys and sealed secrets in Postgres depend on it.
 - Migrations only move forward. An older image started on a database that a newer one migrated stays not ready,

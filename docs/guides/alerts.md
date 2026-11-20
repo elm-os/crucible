@@ -1,17 +1,23 @@
 # Alerts
 
-An alert rule watches one measure of a project's spans and notifies channels when it crosses a threshold. This
-guide covers rules, channels, what a receiver gets, and the server settings for outbound calls and mail. Alerts
-need the control plane (Postgres) and the master key.
+An alert rule watches one measure of a project's spans or MCP calls and notifies channels when it crosses a
+threshold. This guide covers rules, channels, what a receiver gets, and the server settings for outbound calls and
+mail. Alerts need the control plane (Postgres) and the master key.
 
 ## Rules
 
 A rule has:
 
 - **A measure** of the span rollup: errors, spans, duration or time to first token (as a percentile), cost, or
-  tokens.
-- **Up to two group-by dimensions** (environment, model, span type, level, release). Each combination of values
-  is one series with its own state. A rule tracks at most 50 series, the ones nearest to the threshold.
+  tokens. Or, with the source `mcp_ops`, a measure of the MCP rollup: the error rate (typed in percent), errors,
+  calls, or the p50, p90 or p99 duration of the calls.
+- **For an MCP rule, a side and a capture source.** The rule reads the server side or the client side. With the
+  capture source Automatic, each check reads each server from its SDK, else its proxy, else OTLP, so a server
+  captured twice is never counted twice; SDK, Proxy or OTLP reads that source only. Calls the caller caused, such
+  as invalid parameters, never count, and a server with calls and no error reads 0.
+- **Up to two group-by dimensions** (environment, model, span type, level, release; for an MCP rule, server and
+  tool). Each combination of values is one series with its own state. A rule tracks at most 50 series, the ones
+  nearest to the threshold.
 - **A condition**: above, at or above, below, or at or below a threshold, over a window of 1 minute to 24 hours.
 - **An interval** of at least 60 seconds. Each check reads the window that ends at the last whole minute at least
   30 seconds before it, which gives the rollup time to receive that minute.

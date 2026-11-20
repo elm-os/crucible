@@ -1,0 +1,16 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "rendered(&live(mcp_operation_peers(s, w, &c, caller, McpSide::Client,\n(trace, span, SpanId::from_bytes([1; 8])))))"
+---
+SELECT side, capture_source, era, transport, target_kind, direction, result_type, cancel_source, status, error_class, error_subclass, identity_source, group_key_kind, content_truncation, start_minute, trace_hash, start_time, span_id, parent_span_id, transport_link_span_id, trace_id, transport_link_trace_id, user_subject_hash, mrtr_state_in, mrtr_state_out, server_name, method, target_name, client_name, server_version, deploy_id, instance_id, protocol_version, jsonrpc_id, task_id, subscription_id, error_type, error_message, client_version, oauth_client_id, user_id, user_issuer, tenant, session_key, handle_id, group_key, ip_prefix, user_agent, is_notification, is_batch, timed_out, caller_fault, content_captured, mrtr_round, duration_us, request_bytes, response_bytes, client_capabilities_hash, progress_count, jsonrpc_code, http_status, content_block_types, content_block_counts, content_sample_rate, normalizer_version, wal_epoch, batch_seq, lsn, received_at FROM crucible.mcp_ops WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (side = {p5:String} AND trace_hash = {p6:UInt32} AND trace_id = unhex({p7:String}) AND (parent_span_id = unhex({p8:String}) OR span_id = unhex({p9:String}))) ORDER BY start_time ASC, span_id ASC LIMIT {p10:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000000"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911340"
+p5: String = "client"
+p6: UInt32 = "1524766824"
+p7: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+p8: String = "0202020202020202"
+p9: String = "0101010101010101"
+p10: UInt64 = "8"

@@ -156,6 +156,99 @@ expression: schema.pretty()
       "source": "spans"
     },
     {
+      "dimensions": [
+        {
+          "high_cardinality": false,
+          "id": "server_name",
+          "type": "string"
+        },
+        {
+          "high_cardinality": false,
+          "id": "target_name",
+          "type": "string"
+        }
+      ],
+      "filter_fields": [],
+      "granularities": [
+        "minute",
+        "five_minutes",
+        "fifteen_minutes",
+        "hour",
+        "day",
+        "week"
+      ],
+      "limits": {
+        "max_buckets": 500,
+        "max_dimensions": 2,
+        "max_measures": 1,
+        "max_points": 10000,
+        "max_series": 20
+      },
+      "measures": [
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "mcp.calls",
+          "label": "MCP calls",
+          "tier": "rollup",
+          "unit": "count"
+        },
+        {
+          "additive": true,
+          "aggregations": [
+            "sum"
+          ],
+          "id": "mcp.error_count",
+          "label": "MCP errors",
+          "tier": "rollup",
+          "unit": "count"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "rate"
+          ],
+          "id": "mcp.error_rate",
+          "label": "MCP error rate",
+          "tier": "rollup",
+          "unit": "ppm"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "p50"
+          ],
+          "id": "mcp.duration_p50",
+          "label": "MCP duration p50",
+          "tier": "rollup",
+          "unit": "us"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "p90"
+          ],
+          "id": "mcp.duration_p90",
+          "label": "MCP duration p90",
+          "tier": "rollup",
+          "unit": "us"
+        },
+        {
+          "additive": false,
+          "aggregations": [
+            "p99"
+          ],
+          "id": "mcp.duration_p99",
+          "label": "MCP duration p99",
+          "tier": "rollup",
+          "unit": "us"
+        }
+      ],
+      "source": "mcp_ops"
+    },
+    {
       "dimensions": [],
       "filter_fields": [],
       "granularities": [

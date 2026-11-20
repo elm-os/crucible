@@ -76,27 +76,41 @@ fn hash_permits() -> usize {
 }
 
 /// Starts the key feed, the `last_used_at` writes and the first-run setup link, after the Postgres migrations
-/// when `migrate` asks for them. Each retries until Postgres answers, so a node starts while Postgres is down.
+/// when `migrate` asks for them. Each retries until Postgres answers, so a node starts while Postgres is down,
+/// and each stops at the shutdown signal.
 pub(crate) fn start(env: &Env, identity: &Arc<Identity>, control: &Control, migrate: bool) {
+    let store: Arc<dyn ControlStore> = Arc::new(control.store.clone());
     if !migrate {
-        start_tasks(env, identity, control);
+        start_tasks(env, identity, store);
         return;
     }
     let (env2, identity, control) = (env.clone(), Arc::clone(identity), control.clone());
     env.spawn("postgres-migrate", async move {
-        while let Err(error) = control.migrate_postgres(&env2).await {
+        let mut shutdown = env2.shutdown();
+        loop {
+            // The migrations run in one transaction, which a dropped connection rolls back.
+            let migrated = tokio::select! {
+                biased;
+                () = &mut shutdown => return,
+                migrated = control.migrate_postgres(&env2) => migrated,
+            };
+            let Err(error) = migrated else { break };
             tracing::warn!(
                 error = format!("{error:#}"),
                 "the Postgres migrations did not run; retrying"
             );
-            env2.clock.sleep(SETUP_RETRY).await;
+            tokio::select! {
+                biased;
+                () = &mut shutdown => return,
+                () = env2.clock.sleep(SETUP_RETRY) => {}
+            }
         }
-        start_tasks(&env2, &identity, &control);
+        start_tasks(&env2, &identity, store);
     });
 }
 
-fn start_tasks(env: &Env, identity: &Arc<Identity>, control: &Control) {
-    let store: Arc<dyn ControlStore> = Arc::new(control.store.clone());
+/// The key feed, the `last_used_at` writes and the first-run setup link, over `store`.
+pub(crate) fn start_tasks(env: &Env, identity: &Arc<Identity>, store: Arc<dyn ControlStore>) {
     let keys = Arc::clone(identity.keys());
     env.spawn(
         "key-feed",
@@ -108,10 +122,16 @@ fn start_tasks(env: &Env, identity: &Arc<Identity>, control: &Control) {
     );
     env.spawn("key-last-used", run_last_used(env.clone(), keys, store));
     let identity = Arc::clone(identity);
-    let clock = Arc::clone(&env.clock);
+    let setup_env = env.clone();
     env.spawn("first-run-setup", async move {
+        let mut shutdown = setup_env.shutdown();
         loop {
-            match identity.issue_setup_token().await {
+            let issued = tokio::select! {
+                biased;
+                () = &mut shutdown => return,
+                issued = identity.issue_setup_token() => issued,
+            };
+            match issued {
                 Ok(Some(link)) => {
                     // Without a public URL the link is the server's own address, for example
                     // http://127.0.0.1:8080, followed by this path.
@@ -132,7 +152,11 @@ fn start_tasks(env: &Env, identity: &Arc<Identity>, control: &Control) {
                 Ok(None) => return,
                 Err(error) => {
                     tracing::debug!(%error, "checking for a first owner; retrying");
-                    clock.sleep(SETUP_RETRY).await;
+                    tokio::select! {
+                        biased;
+                        () = &mut shutdown => return,
+                        () = setup_env.clock.sleep(SETUP_RETRY) => {}
+                    }
                 }
             }
         }

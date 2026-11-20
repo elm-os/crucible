@@ -208,6 +208,26 @@ signed-in person, and `none` needs no credential.
 | `PATCH projects/{project_id}/alerts/{alert_id}` | Change an alert rule | `edit_content`; no key |
 | `GET projects/{project_id}/alerts/{alert_id}/history` | Get the history of an alert rule | `read`; key `read` |
 
+### MCP analytics
+
+Every route takes `side` (`client` or `server`), `from` and `to`, and accepts `source` (`auto`, the default, `sdk`,
+`proxy` or `otlp`), `include_caller_faults` and `server`. Each answer names the capture source it read for each server
+(`capture_sources`); see the [MCP overview](../guides/mcp.md).
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/mcp/clients` | Get MCP clients | `read`; key `read` |
+| `GET projects/{project_id}/mcp/compare` | Compare MCP deploys | `read`; key `read` |
+| `GET projects/{project_id}/mcp/deploys` | List MCP deploys | `read`; key `read` |
+| `GET projects/{project_id}/mcp/errors` | Get MCP errors | `read`; key `read` |
+| `GET projects/{project_id}/mcp/operations` | List MCP operations | `read`; key `read` |
+| `GET projects/{project_id}/mcp/operations/{trace_id}/{span_id}` | Get an MCP operation | `read`; key `read` |
+| `GET projects/{project_id}/mcp/servers` | List MCP servers | `read`; key `read` |
+| `GET projects/{project_id}/mcp/sessions` | List MCP sessions | `read`; key `read` |
+| `GET projects/{project_id}/mcp/tools` | List MCP tools | `read`; key `read` |
+| `GET projects/{project_id}/mcp/tools/{name}` | Get an MCP tool | `read`; key `read` |
+| `GET projects/{project_id}/mcp/users` | List MCP users | `read`; key `read` |
+
 ### Channels
 
 | Method and path | What it does | Permission |
@@ -712,7 +732,7 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 
 | Member | Meaning |
 |---|---|
-| `source` | `spans`, or `traces` (which has the one measure `traces`) |
+| `source` | `spans`, `traces` (which has the one measure `traces`), or `mcp_ops`, the MCP calls: one of `mcp.calls`, `mcp.error_count`, `mcp.error_rate` (aggregation `rate`, in parts per million), `mcp.duration_p50`, `mcp.duration_p90` and `mcp.duration_p99`, split by `server_name` or `target_name` |
 | `measures` | One to four, each a measure id and an aggregation it allows: `sum`, or a percentile `p50`, `p90`, `p95`, `p99`. The `spans` measures are `count`, `error_count`, `input_tokens`, `output_tokens`, `total_tokens`, `total_cost` (USD), `duration` and `ttft` (time to first token, microseconds) |
 | `dimensions` | Up to two of `environment`, `observation_type`, `model`, `level` and `release`; each combination of values is one series |
 | `filter` | Conditions over the filter fields, combined with `and`, `or` and `not` |
@@ -720,6 +740,7 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 | `from`, `to` | The window, at most the project's maximum |
 | `top_n` | With dimensions, how many keys to return, 1 to 20 (default 20); the rest of an additive measure is summed into an `other` series |
 | `fill` | `zero` (default): every bucket is returned, 0 for a sum and null for a percentile. `none`: empty buckets are left out |
+| `side`, `capture_source`, `include_caller_faults` | Source `mcp_ops` only, where `side` (`client` or `server`) is required: the capture source each server is read from (`auto`, the default, `sdk`, `proxy` or `otlp`), and whether calls the caller caused count (default `false`) |
 
 The answer above is cut to its first series; the query returns one series per measure and environment. It also says
 which granularity it used, whether the last bucket may still grow (`partial_last_bucket`), and where the measures
@@ -792,8 +813,9 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   `POST sql/export` returns the result as CSV, JSONL or Parquet; saved queries keep a statement with declared
   parameters. Each project's statements run as its own ClickHouse user
   ([SQL workspace](../self-hosting/sql-workspace.md)).
-- **Alerts and channels**: alert rules over the `spans` metrics measures, a preview of what a rule would read now,
-  each rule's history, and webhook, Slack and email channels with a test send; see [alerts](../guides/alerts.md).
+- **Alerts and channels**: alert rules over the `spans` or `mcp_ops` metrics measures, a preview of what a rule
+  would read now, each rule's history, and webhook, Slack and email channels with a test send; see
+  [alerts](../guides/alerts.md).
 - **Exports**: `POST exports` starts a job that writes a project's spans of a window as `crucible-jsonl` or
   `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}` until `state` is `ready`, then download it
   from `download_path`. Files are kept 7 days, and a project may start 5 exports an hour.

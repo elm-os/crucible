@@ -124,6 +124,9 @@ export function WidgetForm({
   const maxKeys = kind === "timeseries" ? maxChartKeys(measures, catalog) : MAX_SERIES_KEYS;
   const keys = dimensions.length === 0 ? null : Math.min(topN ?? maxKeys, maxKeys);
 
+  // An `mcp_ops` query reads one side: the widget's own, else the server side. No other source takes the side,
+  // the capture source or the caller-fault rule.
+  const mcp = source === "mcp_ops";
   const query: WidgetQuery | undefined = markdown
     ? undefined
     : {
@@ -133,6 +136,9 @@ export function WidgetForm({
         dimensions: dimensions.length > 0 ? dimensions : undefined,
         top_n: keys ?? undefined,
         granularity: granularity === "auto" ? undefined : granularity,
+        side: mcp ? (initial.query?.side ?? "server") : undefined,
+        capture_source: mcp ? initial.query?.capture_source : undefined,
+        include_caller_faults: mcp ? initial.query?.include_caller_faults : undefined,
       };
   const display: Widget["display"] = {
     kind,
