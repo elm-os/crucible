@@ -34,9 +34,11 @@ export BRAINTRUST_APP_URL=http://127.0.0.1:4318
 export BRAINTRUST_API_KEY=csk_...
 ```
 
-The Go SDK logs in to its app URL at startup with the API key, and the app URL defaults to
-`https://www.braintrust.dev`: with only the API URL changed, your Crucible secret key goes there. With both set, the
-login answers 404, the SDK logs a warning, and its spans export to Crucible.
+The Go SDK logs in to its app URL at startup: in braintrust-sdk-go 0.20.0, its `internal/auth` package posts to
+`/api/apikey/login` on the app URL with a client that carries the API key, and the app URL defaults to
+`https://www.braintrust.dev`. In the verification run, with only the API URL changed, the SDK opened connections to
+`www.braintrust.dev`, so your Crucible secret key would go there. With both set, the login answers 404, the SDK logs
+a warning, and its spans export to Crucible.
 
 These steps were run with the SDKs above. Before pointing another Braintrust SDK at Crucible, check which hosts it
 contacts with the key.
