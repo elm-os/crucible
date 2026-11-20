@@ -103,8 +103,9 @@ trace lists and trace pages also read the newest spans from memory.
 Every telemetry read is a typed query plan: a scope (project), a time window, a query class with resource limits,
 and a tree of nodes. The renderer turns plans into parameterized SQL, and the same plans run against an in-memory
 model of ClickHouse in the simulation. Reads merge the recent-span index above the shipper's watermark, decorate rows
-with resolved facts, and hide what retention and pending deletion requests remove. The REST API, the MCP server and
-exports all read through the query services.
+with resolved facts, and hide what retention and pending deletion requests remove. A request sends the store reads
+that do not depend on each other together: trace by id its spans and its facts, the trace list its fact lookups. The
+REST API, the MCP server and exports all read through the query services.
 
 The SQL workspace is the one exception: it sends user SQL as written, under a per-project ClickHouse user whose row
 policies, read-only profile and quota enforce isolation.

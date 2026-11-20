@@ -33,7 +33,7 @@ const MUTANTS: [(Mutant, u64, &str); 19] = [
     (Mutant::SkipWalSync, 0, "I3"),
     (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 0, "liveness"),
-    (Mutant::SilentEviction, 1, "I3"),
+    (Mutant::SilentEviction, 5001, "I3"),
     (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
     (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 1, "I7"),

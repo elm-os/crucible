@@ -17,4 +17,5 @@ mod sessions;
 mod span_list;
 mod store;
 mod trace;
+mod waves;
 mod world;

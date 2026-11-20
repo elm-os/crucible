@@ -203,7 +203,7 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace-by-id read of an acknowledged request finds no trace (other runs of the budget report liveness, I1 or I9) | 0 | `0xb04e3dca437a47` |
 | `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x1f2fe574beef1d` |
 | `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | Liveness: the shipper stops because a frame above the watermark was reclaimed (most runs report I12: recovery finds a gap between the watermark and the oldest segment) | 0 | `0xb04e3dca437a47` |
-| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 1 | `0xb04e3dca437a47` |
+| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 5001 | `0x4e0e48461657e2` |
 | `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0xc443c5fa7b02ff` |
 | `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace-by-id read of an acknowledged request finds no trace (other runs report I1, and I9 for the deleted project) | 0 | `0xb04e3dca437a47` |
 | `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 1 | `0xb04e3dca437a47` |
