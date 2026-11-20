@@ -113,6 +113,7 @@ the reasons behind it. [docs/testing/methodology.md](docs/testing/methodology.md
 | Go agents, MCP servers and MCP clients (`sdk/go`) | [Go SDK](docs/guides/sdk-go.md) |
 | Rust agents, MCP servers and MCP clients (`sdk/rust`) | [Rust SDK](sdk/rust/README.md) |
 | An MCP server you do not change, over stdio or Streamable HTTP | [MCP proxy](docs/guides/mcp-proxy.md) |
+| Other instrumentation libraries and tracing SDKs, exporting OTLP | [Integrations](docs/integrations/README.md) |
 
 Reading data back, from the REST API, is described in [docs/api](docs/api/README.md).
 
