@@ -183,6 +183,24 @@ The mail server of email channels. Without `smtp.host` and `smtp.from`, email ch
 | `smtp.password_file` | `CRUCIBLE_SMTP_PASSWORD_FILE` | | none | A file that holds it |
 | `smtp.from` | `CRUCIBLE_SMTP_FROM` | | none | The sender address of notification email, such as `crucible@example.com` |
 
+### `[object_store]` and `[media]`
+
+Media on an S3-compatible object store ([media](media.md)). Media need Postgres too. Without
+`object_store.endpoint`, media stay inline in payloads and the media routes answer `media_not_supported`.
+
+| Key | Environment variable | Flag | Default | Meaning |
+|---|---|---|---|---|
+| `object_store.endpoint` | `CRUCIBLE_OBJECT_STORE_ENDPOINT` | | none | The endpoint the server reaches, such as `http://versitygw:7070`. Setting it turns media on |
+| `object_store.public_endpoint` | `CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT` | | `object_store.endpoint` | The endpoint SDKs and browsers reach, which upload and download links name |
+| `object_store.bucket` | `CRUCIBLE_OBJECT_STORE_BUCKET` | | none | The bucket, which must exist |
+| `object_store.region` | `CRUCIBLE_OBJECT_STORE_REGION` | | `us-east-1` | The region the request signatures name |
+| `object_store.access_key` | `CRUCIBLE_OBJECT_STORE_ACCESS_KEY` | | none | The access key id |
+| `object_store.secret_key` | `CRUCIBLE_OBJECT_STORE_SECRET_KEY` | | none | The secret access key |
+| `object_store.secret_key_file` | `CRUCIBLE_OBJECT_STORE_SECRET_KEY_FILE` | | none | A file that holds it |
+| `object_store.url_style` | `CRUCIBLE_OBJECT_STORE_URL_STYLE` | | `path` | `path` (`host/bucket/key`) or `virtual_host` (`bucket.host/key`) |
+| `object_store.prefix` | `CRUCIBLE_OBJECT_STORE_PREFIX` | | `media` | The key prefix of media objects |
+| `media.max_bytes` | `CRUCIBLE_MEDIA_MAX_BYTES` | | `67108864` (64 MiB) | The largest media object, in bytes, at most 5 GiB |
+
 ## Docker Compose variables
 
 The Compose files in `deploy/compose/` read these from `.env` beside them and pass them to the server:
@@ -200,6 +218,9 @@ The Compose files in `deploy/compose/` read these from `.env` beside them and pa
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the main listener |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
+| `MEDIA_ACCESS_KEY`, `MEDIA_SECRET_KEY` | none, required by `compose.media.yaml` | The credentials of the bundled S3 gateway ([media](media.md)) |
+| `CRUCIBLE_MEDIA_PORT` | `7070` | The host port of the bundled S3 gateway |
+| `CRUCIBLE_MEDIA_PUBLIC_URL` | `http://localhost:7070` | The gateway's address as SDKs and browsers reach it, which upload and download links name |
 
 Any other server setting is one more line in the `environment` of the `crucible` service, for example:
 

@@ -34,7 +34,7 @@ fn request(
             HeaderValue::from_str(value).unwrap(),
         );
     }
-    serve(source, method, &uri, &map)
+    serve(source, method, &uri, &map, None)
 }
 
 fn response(
@@ -527,7 +527,7 @@ fn each_page_carries_its_own_script_hashes() {
             let response = response(&*UI, &Method::GET, uri, &[("accept-encoding", accept)]);
             let policy = header(&response, CONTENT_SECURITY_POLICY).unwrap();
             let hashes = &manifest.csp_hashes[page];
-            assert_eq!(policy, csp::policy(hashes), "{uri}");
+            assert_eq!(policy, csp::policy(hashes, None), "{uri}");
             for hash in hashes {
                 assert!(policy.contains(&format!("'{hash}'")), "{uri}: {hash}");
             }

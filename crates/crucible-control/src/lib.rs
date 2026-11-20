@@ -8,6 +8,7 @@
 //! - [`HeldLease`], the holder's local validity rule for leases.
 //! - [`LifecycleRepo`] and its rows: the node registry, deletion requests, leader actions and retention floors.
 //! - [`DashboardRepo`]: dashboards and their widgets.
+//! - [`MediaRepo`] and its rows: media objects and their references.
 
 mod alerts;
 mod dashboards;
@@ -18,6 +19,7 @@ mod sqlws;
 #[macro_use]
 mod types;
 mod lifecycle;
+mod media;
 mod repo;
 
 pub use alerts::{
@@ -31,6 +33,7 @@ pub use lifecycle::{
     ActionKind, ActionState, DeletionRequest, DeletionSelector, LifecycleAction, LifecycleRepo,
     MAX_DELETION_TRACES, Node, NodeAck, RetentionFloor,
 };
+pub use media::{MediaObject, MediaRef, MediaRepo, MediaState, MediaUse};
 pub use repo::{
     ApiKeyRepo, AuthFlowRepo, AuthProviderRepo, Claims, ControlStore, ControlTx, CredentialRepo,
     ExportJobRepo, InvitationRepo, KeyFeed, Leases, MembershipRepo, Migrations, OauthAccountRepo,

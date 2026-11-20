@@ -52,6 +52,9 @@ import type { McpToolList } from "./generated/McpToolList";
 import type { McpUserList } from "./generated/McpUserList";
 import type { McpView } from "./generated/McpView";
 import type { SourceParam } from "./generated/SourceParam";
+import type { Media } from "./generated/Media";
+import type { MediaList } from "./generated/MediaList";
+import type { MediaListParams } from "./generated/MediaListParams";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { MetricsSchema } from "./generated/MetricsSchema";
@@ -64,6 +67,8 @@ import type { PayloadField } from "./generated/PayloadField";
 import type { PayloadParams } from "./generated/PayloadParams";
 import type { Project } from "./generated/Project";
 import type { ProjectCreate } from "./generated/ProjectCreate";
+import type { ProjectList } from "./generated/ProjectList";
+import type { ProjectPatch } from "./generated/ProjectPatch";
 import type { Retention } from "./generated/Retention";
 import type { RetentionUpdate } from "./generated/RetentionUpdate";
 import type { SearchPage } from "./generated/SearchPage";
@@ -577,6 +582,25 @@ export async function getPayloadRange(
   return { bytes, total };
 }
 
+// Where media appear in one span: one entry per use, each with its media's metadata.
+export async function listMedia(
+  project: string,
+  traceId: string,
+  spanId: string,
+  signal?: AbortSignal,
+): Promise<MediaList> {
+  const query: MediaListParams = { trace_id: traceId, span_id: spanId };
+  return read<MediaList>(
+    await call(projectPath(project, "/media"), "telemetry", { query, signal }),
+  );
+}
+
+// One media object, with a presigned download that lives 5 minutes once it is uploaded.
+export async function getMedia(project: string, id: string, signal?: AbortSignal): Promise<Media> {
+  const path = projectPath(project, `/media/${encodeURIComponent(id)}`);
+  return read<Media>(await call(path, "telemetry", { signal }));
+}
+
 export type SignInMode = { mode: "keys" } | { mode: "session"; options: SignInOptions };
 
 // A server without a control plane answers 404 `feature_disabled`: it has no sign-in, and the Connect
@@ -677,6 +701,18 @@ export async function createExport(
 
 export async function createProject(body: ProjectCreate): Promise<Project> {
   return read<Project>(await call("/projects", "session", { method: "POST", body }));
+}
+
+export async function listProjects(signal?: AbortSignal): Promise<ProjectList> {
+  return read<ProjectList>(await call("/projects", "session", { signal }));
+}
+
+export async function renameProject(
+  project: Pick<Project, "id" | "version">,
+  body: ProjectPatch,
+): Promise<Project> {
+  const init: Init = { method: "PATCH", body, version: project.version };
+  return read<Project>(await call(projectPath(project.id, ""), "session", init));
 }
 
 export async function revokeApiKey(

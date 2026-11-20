@@ -286,6 +286,7 @@ impl PgControlStore {
              d28 AS (DELETE FROM deletion_node_acks), d29 AS (DELETE FROM deletion_requests), \
              d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
              d32 AS (DELETE FROM nodes), d33 AS (DELETE FROM widgets), d34 AS (DELETE FROM dashboards), \
+             d35 AS (DELETE FROM media_refs), d36 AS (DELETE FROM media_objects), \
              s2 AS (SELECT setval('deletion_seq', 1, false)) \
              SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
@@ -585,6 +586,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn sql_runs(&self) -> &dyn crucible_control::SqlRunRepo {
+                $($deref)* self.handle
+            }
+            fn media(&self) -> &dyn crucible_control::MediaRepo {
                 $($deref)* self.handle
             }
         }

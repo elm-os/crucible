@@ -87,6 +87,18 @@ with either form of [authentication](../guides/sending-traces.md#authentication)
   version, status message, version and the public flag are columns of `crucible_sql.spans`; metadata and trace
   metadata are in `crucible_sql.span_payloads`.
 
+## Media
+
+The SDKs move images, audio and files out of a payload and upload them separately, leaving a reference such as
+`@@@langfuseMedia:type=image/png|id=...|source=base64_data_uri@@@` in its place. Crucible serves their media
+endpoint, `/api/public/media`, on both HTTP listeners:
+
+- With object storage configured ([media](../self-hosting/media.md)), the uploads go to the bucket, and the span
+  panel shows the media beside the span's input or output ([media](../guides/media.md)).
+- Without it, the media endpoint answers `501 media_not_supported`: the SDK logs a media upload error, and the stored
+  payload keeps only the reference. Set `LANGFUSE_MEDIA_UPLOAD_ENABLED=false` to keep the media inline in the
+  payload instead, under the 8 MiB cap of one field.
+
 ## Known limits
 
 - Trace-level input and output (`langfuse.trace.input`, `langfuse.trace.output`) are not mapped and stay among the

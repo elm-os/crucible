@@ -187,6 +187,27 @@ pub struct Smtp {
     pub from: String,
 }
 
+/// The `[object_store]` section, present when `object_store.endpoint` is set: S3-compatible storage for media.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ObjectStore {
+    /// The endpoint this server reaches.
+    pub endpoint: String,
+    /// The endpoint clients reach, which presigned URLs name; the internal one when `None`.
+    pub public_endpoint: Option<String>,
+    /// The region the signatures name.
+    pub region: String,
+    /// The bucket.
+    pub bucket: String,
+    /// The access key id.
+    pub access_key: String,
+    /// The secret access key.
+    pub secret_key: Secret,
+    /// Virtual-host-style URLs instead of path-style ones.
+    pub virtual_host: bool,
+    /// The key prefix of media objects.
+    pub prefix: String,
+}
+
 /// The `[clickhouse]` section, present when `clickhouse.url` is set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClickHouse {
@@ -241,6 +262,10 @@ pub struct Config {
     pub egress: Egress,
     /// The mail server; `None` when email channels are off.
     pub smtp: Option<Smtp>,
+    /// Object storage for media; `None` when media are off.
+    pub object_store: Option<ObjectStore>,
+    /// `media.max_bytes`: the largest media object.
+    pub media_max_bytes: u64,
 }
 
 /// Everything that is wrong with a configuration, one message per problem.

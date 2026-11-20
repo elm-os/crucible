@@ -1,0 +1,74 @@
+name: s3-conformance
+
+# The object store adapter of crates/crucible-media against a real S3-compatible server, the Versity S3 gateway:
+# presign, upload, confirm by HEAD, get, delete and list, with a client of the presigned URLs
+# (docs/testing/media-simulation.md). The gateway runs in a step rather than as a service container, because its
+# bucket directory is made before it starts.
+
+on:
+  pull_request:
+    paths:
+      - crates/crucible-media/**
+      - crates/crucible-env/src/object.rs
+      - crates/crucible-conformance/src/s3.rs
+      - crates/crucible-conformance/src/s3_main.rs
+      - .github/workflows/s3-conformance.yml
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: s3-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  versitygw:
+    name: versitygw ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["v1.10.0"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: s3-conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Start the gateway
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          docker run -d --name vgw -p 7070:7070 \
+            -e ROOT_ACCESS_KEY=conformance -e ROOT_SECRET_KEY=conformance-secret \
+            -e VGW_BACKEND=posix -e VGW_BACKEND_ARG=/data -e VGW_HEALTH=/health \
+            --entrypoint sh "versity/versitygw:$TAG" \
+            -c "mkdir -p /data/media && exec /usr/local/bin/docker-entrypoint.sh"
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:7070/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs vgw
+          exit 1
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance --bin crucible-s3-conformance
+      - name: Object store rows
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          cargo run --locked -p crucible-conformance --bin crucible-s3-conformance -- \
+            --endpoint http://localhost:7070 --bucket media --access-key conformance \
+            --secret-key conformance-secret --label "versitygw $TAG"

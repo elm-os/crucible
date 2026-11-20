@@ -263,7 +263,11 @@ test passes as skipped, which is what the ordinary CI jobs see; `.github/workflo
 `crucible admin init`, sign-in, a project and an API key made through the API, a key from
 `crucible admin create-key`, ingest and read-back with each key, revocation and sign-out, and last a SIGTERM
 that must end the server within 10 s with nothing left to abort. The log of that first start on an empty database
-must hold no warning about a table that does not exist yet.
+must hold no warning about a table that does not exist yet. With
+`CRUCIBLE_E2E_S3_ENDPOINT` too (an S3-compatible endpoint the server and the test both reach, with
+`CRUCIBLE_E2E_S3_BUCKET`, default `media`, which must exist, `CRUCIBLE_E2E_S3_ACCESS_KEY` and
+`CRUCIBLE_E2E_S3_SECRET_KEY`), it also uploads media through the compat media endpoint, confirms them and reads
+them back; without it, it checks that the endpoint answers `media_not_supported`.
 
 ```sh
 docker network create crucible-e2e

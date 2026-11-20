@@ -6757,6 +6757,452 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/media": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "summary": "List media uses",
+        "description": "Where media appear in one trace, or in one span of it: one entry per use, by payload field, each with its\nmedia's metadata. Read `GET media/{media_id}` for a download.",
+        "operationId": "list_media",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "description": "The trace, 32 hexadecimal characters.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "span_id",
+            "in": "query",
+            "description": "The span, 16 hexadecimal characters; without it, every use in the trace.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The uses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the caller cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: no object store is configured.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "media"
+        ],
+        "summary": "Ask for an upload",
+        "description": "Declares bytes a span uses and answers the media id with a presigned `PUT`, valid for an hour, whose\ncontent type, length and SHA-256 are signed headers: send them exactly as listed. When the project already\nholds these bytes, the answer has no upload, and the use is recorded at once. Then upload the bytes to the\nURL and confirm with `PATCH media/{media_id}`.",
+        "operationId": "create_media",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1 to 128 characters of A-Z, a-z, 0-9, `_` and `-`; a repeat with the same body answers as the first request did.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The media id, and the upload when the bytes are not stored yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUpload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: uploading needs an API key with the `ingest` scope.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: the key cannot see the project.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`idempotency_key_reused` or `conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`media_too_large`: above `media.max_bytes`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: no object store is configured.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/media/{media_id}": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "summary": "Get media",
+        "description": "The media's metadata and, once it is uploaded, a presigned download on the object store that lives 5\nminutes. Images, audio and video of common types are served inline; every other type downloads as a file.",
+        "operationId": "get_media",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "media_id",
+            "in": "path",
+            "description": "The media id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The media.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Media"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no media of the project has this id, or it was deleted.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: no object store is configured.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "media"
+        ],
+        "summary": "Confirm an upload",
+        "description": "Checks with the object store that the bytes were uploaded with the declared length (and SHA-256, where the\nstore reports it) and marks the media uploaded. Confirming uploaded media answers it again.",
+        "operationId": "confirm_media",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "media_id",
+            "in": "path",
+            "description": "The media id (a UUID).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The media, uploaded, with a presigned download.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Media"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: confirming needs an API key with the `ingest` scope.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no media of the project has this id, or its upload expired after 24 hours.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: nothing was uploaded yet.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`media_hash_mismatch`: the upload differs from what was declared; upload again.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "`media_not_supported`: no object store is configured.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "project_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/members": {
       "get": {
         "tags": [
@@ -14400,6 +14846,114 @@
         },
         "additionalProperties": false
       },
+      "Media": {
+        "type": "object",
+        "description": "A media object.",
+        "required": [
+          "id",
+          "content_type",
+          "len",
+          "sha256",
+          "state",
+          "disposition",
+          "created_at",
+          "saturated"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "The content type."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the upload was asked for."
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/MediaDisposition",
+            "description": "How a download is served."
+          },
+          "id": {
+            "type": "string",
+            "description": "The media id."
+          },
+          "len": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The length in bytes."
+          },
+          "saturated": {
+            "type": "boolean",
+            "description": "Whether `len` was cut to 2^53 - 1."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "The SHA-256 of the bytes, lowercase hex."
+          },
+          "state": {
+            "$ref": "#/components/schemas/MediaState",
+            "description": "Pending or uploaded."
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the upload was confirmed."
+          },
+          "url": {
+            "type": "string",
+            "description": "A presigned download on the object store's public endpoint, once uploaded. It lives 5 minutes; read\nthe media again for a new one."
+          },
+          "url_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When `url` stops working."
+          }
+        }
+      },
+      "MediaCreate": {
+        "type": "object",
+        "description": "The body of `POST media`: the bytes a client is about to upload and where they are used.",
+        "required": [
+          "content_type",
+          "len",
+          "sha256",
+          "trace_id"
+        ],
+        "properties": {
+          "content_type": {
+            "type": "string",
+            "description": "The content type, from the allowlist (for example `image/png`); it is a signed header of the upload."
+          },
+          "field": {
+            "type": "string",
+            "description": "The payload field they appear in: one of the payload route's `field` values (`input`, `output`,\n`system_instructions`, `metadata`, `attributes`, `resource_attributes`, `events`, `links`,\n`tool_definitions`, `tool_calls`, `mcp_args`, `mcp_result`)."
+          },
+          "len": {
+            "$ref": "#/components/schemas/SafeU64",
+            "description": "The length in bytes, at most `features.media.max_bytes`."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "The SHA-256 of the bytes, 64 lowercase hexadecimal characters."
+          },
+          "span_id": {
+            "type": "string",
+            "description": "The span that uses them, 16 hexadecimal characters."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "The trace that uses the bytes, 32 hexadecimal characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MediaDisposition": {
+        "type": "string",
+        "description": "How a browser is asked to treat a download.",
+        "enum": [
+          "inline",
+          "attachment"
+        ]
+      },
       "MediaFeature": {
         "type": "object",
         "description": "Media uploads.",
@@ -14417,6 +14971,95 @@
             "format": "int32",
             "description": "The largest upload, in bytes.",
             "minimum": 0
+          }
+        }
+      },
+      "MediaList": {
+        "type": "object",
+        "description": "The answer of `GET media`: the uses in a trace or a span, by field.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaUse"
+            },
+            "description": "The uses."
+          }
+        }
+      },
+      "MediaState": {
+        "type": "string",
+        "description": "Where a media object is (contract 14.3).",
+        "enum": [
+          "pending",
+          "uploaded"
+        ]
+      },
+      "MediaUpload": {
+        "type": "object",
+        "description": "The answer of `POST media`.",
+        "required": [
+          "media_id"
+        ],
+        "properties": {
+          "media_id": {
+            "type": "string",
+            "description": "The media id; confirm the upload with `PATCH media/{media_id}`."
+          },
+          "upload": {
+            "$ref": "#/components/schemas/MediaUploadUrl",
+            "description": "The presigned upload; absent when the project already holds these bytes, so there is nothing to upload\nor confirm."
+          }
+        }
+      },
+      "MediaUploadUrl": {
+        "type": "object",
+        "description": "A presigned upload: `PUT` the bytes to `url` with exactly these headers before `expires_at`.",
+        "required": [
+          "url",
+          "headers",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the URL stops working (one hour after it was made)."
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignedHeader"
+            },
+            "description": "The signed headers: the content type, the length and the checksum."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL, on the object store's public endpoint."
+          }
+        }
+      },
+      "MediaUse": {
+        "type": "object",
+        "description": "One use of a media object: where it appears.",
+        "required": [
+          "media"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The payload field, as `POST media` named it; absent when the use names none."
+          },
+          "media": {
+            "$ref": "#/components/schemas/Media",
+            "description": "The object, without a download URL: read `GET media/{media_id}` for one."
+          },
+          "span_id": {
+            "type": "string",
+            "description": "The span; absent when the use names none."
           }
         }
       },
@@ -16538,6 +17181,24 @@
           }
         }
       },
+      "SignedHeader": {
+        "type": "object",
+        "description": "A header a presigned request must carry exactly as given.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The lowercase header name."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value."
+          }
+        }
+      },
       "SourceParam": {
         "type": "string",
         "description": "The `source` parameter (contract 9.5).",
@@ -18266,6 +18927,10 @@
     {
       "name": "mcp",
       "description": "MCP analytics: servers, tools, errors, clients, users, sessions, operations, deploys and compare, per side."
+    },
+    {
+      "name": "media",
+      "description": "Media on the object store: presigned uploads, confirms, downloads and where media appear."
     },
     {
       "name": "metrics",
