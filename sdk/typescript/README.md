@@ -108,12 +108,7 @@ const traceId = await observe("answer", { type: "agent" }, async (agent) => {
 });
 
 feedback({ traceId, name: "helpful", value: 1, comment: "solved it" });
-feedback({
-  sessionId: "conv-42",
-  name: "resolved",
-  value: true,
-  idempotencyKey: "conv-42-resolved",
-});
+feedback({ traceId, name: "tone", value: "friendly", idempotencyKey: `tone-${traceId}` });
 ```
 
 `feedback(score)` records a score with source `feedback` on a trace (`traceId`), a span (`traceId` and `spanId`) or a
@@ -136,8 +131,10 @@ scope.
 - Up to 1,024 scores wait to be sent; beyond that a score is dropped. `stats()` counts sent, dropped and failed
   scores, and the first drop and the first failure each raise one process warning (`CRUCIBLE_FEEDBACK`) that says
   what to change. `flush` and `shutdown` send the queued scores too.
-- Crucible stores a session about ten seconds after its spans and refuses a score on a session it has not stored with
-  404, which counts as failed.
+- Crucible answers 404 for a target it does not know yet, which counts as failed: a trace none of whose spans has
+  ended and been sent (a score sent from inside the trace's only open span, for example), and a session, which
+  Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended, and a session
+  once its spans are stored.
 
 ## MCP servers
 

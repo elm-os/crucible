@@ -115,7 +115,7 @@ with crucible_sdk.observe("answer", type="agent") as span:
     trace_id = format(span.get_span_context().trace_id, "032x")
 
 crucible_sdk.feedback("helpful", 1, trace_id=trace_id, comment="solved it")
-crucible_sdk.feedback("resolved", True, session_id="conversation-17", idempotency_key="conversation-17-resolved")
+crucible_sdk.feedback("tone", "friendly", trace_id=trace_id, idempotency_key=f"tone-{trace_id}")
 ```
 
 `feedback(name, value, ...)` records a score with source `feedback` on a trace (`trace_id`), a span (`trace_id` and
@@ -137,8 +137,10 @@ crucible_sdk.feedback("resolved", True, session_id="conversation-17", idempotenc
 - Up to 1,024 scores wait to be sent; beyond that a score is dropped. `export_stats()` counts sent, dropped and
   failed scores, and the first drop and the first failure each log one warning that says what to change. `flush` and
   `shutdown` send the queued scores too.
-- Crucible stores a session about ten seconds after its spans and refuses a score on a session it has not stored with
-  404, which counts as failed.
+- Crucible answers 404 for a target it does not know yet, which counts as failed: a trace none of whose spans has
+  ended and been sent (a score sent from inside the trace's only open span, for example), and a session, which
+  Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended, and a session
+  once its spans are stored.
 
 ## Instrument an MCP server
 

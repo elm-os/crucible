@@ -108,7 +108,8 @@ def init(
         raise ValueError(f"crucible_sdk.init: flush_interval must be positive, got {flush_interval!r}")
     endpoint = endpoint or os.environ.get("CRUCIBLE_ENDPOINT") or _pipeline.DEFAULT_ENDPOINT
     feedback_url = _feedback_url(
-        api_url or os.environ.get("CRUCIBLE_API_URL") or endpoint,
+        api_url or os.environ.get("CRUCIBLE_API_URL") or None,
+        endpoint,
         project_id or os.environ.get("CRUCIBLE_PROJECT_ID") or None,
     )
     key = secret_key or os.environ.get("CRUCIBLE_SECRET_KEY") or None
@@ -131,13 +132,15 @@ def init(
     )
 
 
-def _feedback_url(api_url: str, project_id: str | None) -> str | None:
-    parts = urlsplit(api_url)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
-        raise ValueError(
-            f"crucible_sdk.init: api_url {api_url!r} is not an http or https URL; pass api_url= or set "
-            "CRUCIBLE_API_URL to the API listener, for example http://localhost:8080"
-        )
+def _feedback_url(api_url: str | None, endpoint: str, project_id: str | None) -> str | None:
+    """The project's feedback route under `api_url`, else under `endpoint`; `None` without a project id."""
+    if api_url is not None:
+        parts = urlsplit(api_url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(
+                f"crucible_sdk.init: api_url {api_url!r} is not an http or https URL; pass api_url= or set "
+                "CRUCIBLE_API_URL to the API listener, for example http://localhost:8080"
+            )
     if project_id is None:
         return None
     if not _UUID.fullmatch(project_id):
@@ -145,7 +148,7 @@ def _feedback_url(api_url: str, project_id: str | None) -> str | None:
             f"crucible_sdk.init: project_id {project_id!r} is not a project id; pass the project's UUID, not its slug, "
             "or set CRUCIBLE_PROJECT_ID (crucible admin create-key prints it as project_id)"
         )
-    return f"{api_url.rstrip('/')}/api/v1/projects/{project_id.lower()}/feedback"
+    return f"{(api_url or endpoint).rstrip('/')}/api/v1/projects/{project_id.lower()}/feedback"
 
 
 def feedback(

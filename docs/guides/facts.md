@@ -28,7 +28,8 @@ Each SDK needs the key's project id (`projectId`, `project_id`, `ProjectID`; `cr
 as `project_id`) and posts to the API listener: point the SDK's endpoint at port 8080, which takes spans too, or
 set its API URL. The guides for [TypeScript](sdk-typescript.md#send-feedback), [Python](sdk-python.md#send-feedback)
 and [Go](sdk-go.md#send-feedback), and the Rust SDK's README (`sdk/rust/README.md`), have complete examples. A
-session is stored about ten seconds after its spans, and a score on a session sent before then is refused with 404.
+score on a trace none of whose spans has ended and been sent is refused with 404, and so is a score on a session
+sent before Crucible stores the session, about ten seconds after its spans.
 
 ## Through the API
 

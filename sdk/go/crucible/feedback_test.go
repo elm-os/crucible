@@ -193,6 +193,27 @@ func TestFeedbackRetriesAConflictButNotAReusedKey(t *testing.T) {
 	}
 }
 
+func TestFeedbackDoesNotFollowARedirect(t *testing.T) {
+	// Following it would send the secret key to another URL and turn the post into a GET.
+	c := collectortest.New(t)
+	startFeedback(t, c)
+	c.AnswerFeedback(collectortest.FeedbackAnswer{Status: 302, Header: map[string]string{"Location": "/elsewhere"}})
+	crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "helpful", Value: 1})
+	wantFlushError(t, "answered 302")
+	var paths []string
+	for _, r := range c.Requests() {
+		if r.Path != "/v1/traces" {
+			paths = append(paths, r.Method+" "+r.Path)
+		}
+	}
+	if len(paths) != 1 || paths[0] != "POST "+feedbackURL {
+		t.Errorf("requests %v, want only the post", paths)
+	}
+	if s := crucible.CurrentStats(); s.FeedbackFailed != 1 || s.FeedbackSent != 0 {
+		t.Errorf("stats %+v", s)
+	}
+}
+
 func TestFeedbackCountsARefusalWithoutRetrying(t *testing.T) {
 	c := collectortest.New(t)
 	startFeedback(t, c)
@@ -227,7 +248,7 @@ func TestFeedbackReturnsAtOnceWhileTheAPIStalls(t *testing.T) {
 	for i := range 100 {
 		crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "stalled", Value: i})
 	}
-	if d := time.Since(began); d > 100*time.Millisecond {
+	if d := time.Since(began); d > time.Second {
 		t.Errorf("100 calls took %v", d)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)

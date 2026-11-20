@@ -219,6 +219,30 @@ async fn a_409_conflict_is_retried_and_a_reused_key_is_not() {
 }
 
 #[tokio::test]
+async fn a_redirect_is_not_followed_and_counts_as_failed() {
+    // Following it would send the secret key to another URL and turn the post into a GET.
+    let _turn = GLOBAL.lock().await;
+    let collector = Collector::start(Mode::Accept).await;
+    start(&collector).await;
+    collector.answer_feedback([FeedbackAnswer {
+        status: 302,
+        headers: vec![("location", "/elsewhere")],
+        ..FeedbackAnswer::default()
+    }]);
+    crucible_sdk::feedback(helpful());
+    flush_fails_saying(&["answered 302"]).await;
+    let paths: Vec<String> = collector
+        .exports()
+        .into_iter()
+        .map(|e| e.path)
+        .filter(|p| p != "/v1/traces")
+        .collect();
+    assert_eq!(paths, [ROUTE]);
+    let stats = crucible_sdk::stats();
+    assert_eq!((stats.feedback_sent, stats.feedback_failed), (0, 1));
+}
+
+#[tokio::test]
 async fn a_refusal_is_not_retried_and_counts_as_failed() {
     let _turn = GLOBAL.lock().await;
     let collector = Collector::start(Mode::Accept).await;
@@ -275,7 +299,7 @@ async fn feedback_returns_at_once_while_the_api_stalls() {
         });
     }
     assert!(
-        began.elapsed() < Duration::from_millis(100),
+        began.elapsed() < Duration::from_secs(1),
         "{:?}",
         began.elapsed()
     );

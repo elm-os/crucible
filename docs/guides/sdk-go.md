@@ -283,8 +283,10 @@ Each score goes to `POST <APIURL>/api/v1/projects/<ProjectID>/feedback` as JSON 
   `FeedbackSent`, `FeedbackDropped` (queue full, no project id, or `Shutdown` out of time) and `FeedbackFailed`
   (refused, or failed on every attempt), and `Flush` returns the reason, with the URL, Crucible's answer and the
   options to check.
-- **Sessions.** Crucible stores a session about ten seconds after its spans and answers 404 for a session it has
-  not stored, which counts as a failure: score a session once its spans are stored.
+- **Not found yet.** Crucible answers 404 for a target it does not know yet, which counts as a failure: a trace
+  none of whose spans has ended and been sent (a score sent from inside the trace's only open span, for example), and
+  a session, which Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended,
+  and a session once its spans are stored.
 
 ## Instrument an MCP server
 

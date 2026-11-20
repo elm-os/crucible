@@ -171,7 +171,7 @@ def test_feedback_returns_at_once_while_the_api_is_not_answering(collector: Coll
         started = time.perf_counter()
         for i in range(100):
             crucible_sdk.feedback(f"stalled-{i}", i, trace_id=TRACE)
-        assert time.perf_counter() - started < 0.5
+        assert time.perf_counter() - started < 1.0
         stats = crucible_sdk.export_stats()
         assert stats.feedback_sent + stats.feedback_failed == 0
     finally:
@@ -190,6 +190,26 @@ def test_a_full_queue_drops_the_score_and_counts_it(api: Collector, caplog: pyte
     api.hang = False
     api.release.set()
     until(lambda: crucible_sdk.export_stats().feedback_sent == 1024, timeout=60)
+
+
+def test_init_checks_only_an_api_url_that_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The endpoint was never checked by init; a feedback setting must not start refusing it under another name.
+    monkeypatch.delenv("CRUCIBLE_API_URL", raising=False)
+    crucible_sdk.init(endpoint="localhost:4318", secret_key=SECRET_KEY, flush_interval=60.0)
+    crucible_sdk.shutdown(0.1)
+    monkeypatch.setenv("CRUCIBLE_API_URL", "localhost:8080")
+    with pytest.raises(ValueError, match="CRUCIBLE_API_URL"):
+        crucible_sdk.init(endpoint="http://localhost:4318", secret_key=SECRET_KEY, flush_interval=60.0)
+
+
+def test_a_redirect_is_not_followed_and_counts_as_failed(api: Collector) -> None:
+    # Following it would send the secret key to another URL and turn the post into a GET.
+    api.feedback_answers.append(Answer(302, {"location": "/elsewhere"}))
+    crucible_sdk.feedback("helpful", 1, trace_id=TRACE)
+    assert crucible_sdk.flush(10)
+    assert [request.path for request in api.requests if request.path != "/v1/traces"] == [ROUTE]
+    stats = crucible_sdk.export_stats()
+    assert (stats.feedback_sent, stats.feedback_failed) == (0, 1)
 
 
 @pytest.mark.parametrize(

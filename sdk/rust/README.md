@@ -131,8 +131,10 @@ session (`session_id`), and returns at once; it never blocks or panics. It posts
   `project=` in the address bar. Without it, scores are dropped.
 - Up to 1,024 scores wait to be sent; beyond that a score is dropped. `stats` counts sent, dropped and failed
   scores, and `flush` returns why the last score that was not sent was dropped or failed.
-- Crucible stores a session about ten seconds after its spans and refuses a score on a session it has not stored with
-  404, which counts as failed.
+- Crucible answers 404 for a target it does not know yet, which counts as failed: a trace none of whose spans has
+  ended and been sent (a score sent from inside the trace's only open span, for example), and a session, which
+  Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended, and a session
+  once its spans are stored.
 
 ## Instrument an MCP server
 

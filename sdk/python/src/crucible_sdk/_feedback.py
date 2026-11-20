@@ -24,6 +24,8 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from email.message import Message
+from typing import IO
 
 from opentelemetry import context as context_api
 
@@ -39,6 +41,24 @@ SETTINGS = (
     "scores go to api_url= (CRUCIBLE_API_URL), the API listener, under project_id= (CRUCIBLE_PROJECT_ID), the key's "
     "project, with a secret key that has the write scope"
 )
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses redirects: following one would send the secret key to another URL and turn the post into a GET."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: Message,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 @dataclass(frozen=True)
@@ -216,7 +236,7 @@ class FeedbackSender:
         # The SDK's own request must not produce spans in an instrumented application.
         token = context_api.attach(context_api.set_value(context_api._SUPPRESS_INSTRUMENTATION_KEY, True))
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310 - as above
+            with _OPENER.open(request, timeout=self._timeout) as response:
                 response.read()
             return _Outcome(sent=True)
         except urllib.error.HTTPError as error:

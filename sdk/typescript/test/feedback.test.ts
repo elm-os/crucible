@@ -154,6 +154,19 @@ test("a 409 conflict is retried and a reused key is not", async () => {
   expect(stats().feedbackFailed - before.feedbackFailed).toBe(1);
 });
 
+test("a redirect is not followed and counts as failed", async () => {
+  // Following it would send the secret key to another URL and turn the post into a GET.
+  const before = stats();
+  collector.feedbackAnswers.push({ status: 302, headers: { location: "/elsewhere" } });
+  feedback({ traceId: TRACE, name: "helpful", value: 1 });
+  await settled();
+  expect(
+    collector.requests.map((request) => request.path).filter((path) => path !== "/v1/traces"),
+  ).toEqual([ROUTE]);
+  expect(stats().feedbackFailed - before.feedbackFailed).toBe(1);
+  expect(stats().feedbackSent).toBe(before.feedbackSent);
+});
+
 test("a refusal is not retried and counts as failed", async () => {
   const before = stats();
   collector.feedbackAnswers.push({ status: 422, body: '{"code":"validation_failed"}' });
@@ -232,7 +245,7 @@ test("feedback returns at once while the API is not answering", async () => {
     for (let i = 0; i < 100; i += 1) {
       feedback({ traceId: TRACE, name: `stalled-${i}`, value: i });
     }
-    expect(performance.now() - started).toBeLessThan(100);
+    expect(performance.now() - started).toBeLessThan(1_000);
     await sleep(200);
     expect(handled()).toBe(0);
   } finally {

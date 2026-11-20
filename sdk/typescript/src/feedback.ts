@@ -252,6 +252,8 @@ export class FeedbackSender {
             "user-agent": userAgent,
           },
           body: item.body,
+          // Following a redirect would send the secret key to another URL and turn the post into a GET.
+          redirect: "manual",
           signal,
         }),
       );

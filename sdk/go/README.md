@@ -88,7 +88,7 @@ traceID := answer.Span().SpanContext().TraceID().String()
 answer.End()
 
 crucible.SendFeedback(crucible.Feedback{TraceID: traceID, Name: "helpful", Value: 1, Comment: "solved it"})
-crucible.SendFeedback(crucible.Feedback{SessionID: "conv-42", Name: "resolved", Value: true, IdempotencyKey: "conv-42-resolved"})
+crucible.SendFeedback(crucible.Feedback{TraceID: traceID, Name: "tone", Value: "friendly", IdempotencyKey: "tone-" + traceID})
 ```
 
 `SendFeedback` records a score with source `feedback` on a trace (`TraceID`), a span (`TraceID` and `SpanID`) or a
@@ -109,8 +109,10 @@ with the secret key, which needs the `write` scope.
   `project=` in the address bar. Without it, scores are dropped.
 - Up to 1,024 scores wait to be sent; beyond that a score is dropped. `CurrentStats` counts sent, dropped and failed
   scores, and `Flush` returns why the last score that was not sent was dropped or failed.
-- Crucible stores a session about ten seconds after its spans and refuses a score on a session it has not stored with
-  404, which counts as failed.
+- Crucible answers 404 for a target it does not know yet, which counts as failed: a trace none of whose spans has
+  ended and been sent (a score sent from inside the trace's only open span, for example), and a session, which
+  Crucible stores about ten seconds after its spans. Score a trace once one of its spans has ended, and a session
+  once its spans are stored.
 
 ## Instrument an MCP server
 

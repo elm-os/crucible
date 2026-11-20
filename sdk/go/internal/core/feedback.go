@@ -94,9 +94,13 @@ type FeedbackSender struct {
 func NewFeedbackSender(url, secretKey string, flushSpans func(context.Context) error) *FeedbackSender {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &FeedbackSender{
-		url:        url,
-		secretKey:  secretKey,
-		client:     &http.Client{},
+		url:       url,
+		secretKey: secretKey,
+		// Following a redirect would send the secret key to another URL and turn the post into a GET, so the 3xx
+		// answer is the result.
+		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
 		flushSpans: flushSpans,
 		work:       make(chan work, feedbackQueue),
 		stop:       make(chan struct{}),
