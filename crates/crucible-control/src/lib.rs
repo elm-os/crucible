@@ -7,8 +7,10 @@
 //! - [`TxError`], the one typed error.
 //! - [`HeldLease`], the holder's local validity rule for leases.
 //! - [`LifecycleRepo`] and its rows: the node registry, deletion requests, leader actions and retention floors.
+//! - [`DashboardRepo`]: dashboards and their widgets.
 
 mod alerts;
+mod dashboards;
 mod error;
 mod lease;
 mod sqlws;
@@ -22,6 +24,7 @@ pub use alerts::{
     AlertEvent, AlertEventKind, AlertEventRepo, AlertRule, AlertRuleRepo, AlertSeriesState,
     AlertStateRepo, AlertStatus, Channel, ChannelKind, ChannelRepo,
 };
+pub use dashboards::{Dashboard, DashboardEntry, DashboardRepo, DashboardRows, Widget};
 pub use error::TxError;
 pub use lease::{HeldLease, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL};
 pub use lifecycle::{

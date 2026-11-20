@@ -254,6 +254,7 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
             exports: Some(exports),
             alerts: Some(crate::alerts::api(env, &model, mail)),
             lifecycle: Some(lifecycle(env, &model)),
+            dashboards: Some(Arc::new(model.clone())),
         },
     );
     Platform {

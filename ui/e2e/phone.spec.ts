@@ -349,3 +349,74 @@ test.describe("phone at 390 px: lists", () => {
     await expectAccessible(page, "traces with a filter chip on a phone");
   });
 });
+
+test.describe("phone at 390 px: dashboards", () => {
+  const id = "0193a1b2-0000-7000-8000-0000000d0001";
+  const dashboard = {
+    id,
+    name: "Checkout health",
+    description: "What the checkout agents did.",
+    version: 1,
+    created_at: "2026-11-17T12:00:00.000000Z",
+    updated_at: "2026-11-17T12:30:00.000000Z",
+    widgets: [
+      {
+        id: "w-spans",
+        query: { source: "spans", measures: [{ measure: "count", aggregation: "sum" }] },
+        display: { kind: "stat", title: "Spans" },
+        layout: { x: 0, y: 0, w: 3, h: 2 },
+      },
+      {
+        id: "w-notes",
+        display: { kind: "markdown", title: "Notes", text: "Watch checkout after a release." },
+        layout: { x: 3, y: 0, w: 9, h: 2 },
+      },
+      {
+        id: "w-errors",
+        query: { source: "spans", measures: [{ measure: "error_count", aggregation: "sum" }] },
+        display: { kind: "timeseries", title: "Errors over time", chart: "bar" },
+        layout: { x: 0, y: 2, w: 12, h: 3 },
+      },
+    ],
+  };
+
+  test("a dashboard reads in one column, and editing waits for a wider screen", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(new RegExp(`/projects/${PROJECT}/dashboards/${id}$`), json(dashboard));
+    api.on(new RegExp(`/projects/${PROJECT}/metrics/schema$`), json({ sources: [] }));
+    api.on(METRICS_PATH, (route) =>
+      route.fulfill(
+        json(metrics(measuresOf(route).map((measure) => ({ measure, values: [3, 4, 5] })))),
+      ),
+    );
+    await page.goto(`/dashboard/?project=${PROJECT}&id=${id}`);
+    await expect(page.getByRole("region", { name: "Spans" }).locator("[data-value]")).toHaveText(
+      "12",
+    );
+    await expect(
+      page.getByRole("region", { name: "Errors over time" }).locator("svg"),
+    ).not.toHaveCount(0);
+    // One column, in reading order: every widget starts at the same left edge, one under another.
+    const boxes = await page
+      .locator("[data-dashboard-cell]")
+      .evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect()));
+    expect(new Set(boxes.map((box) => Math.round(box.left))).size).toBe(1);
+    expect(boxes.map((box) => box.top)).toEqual(
+      boxes.map((box) => box.top).toSorted((a, b) => a - b),
+    );
+    await expect(page.getByText("Editing needs a wider screen.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Edit Checkout health" })).toBeHidden();
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "dashboard on a phone");
+
+    const before = api.calls.length;
+    await page.goto(`/dashboard/edit/?project=${PROJECT}&id=${id}`);
+    await expect(page.getByText("Editing needs a wider screen.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "view the dashboard" })).toBeVisible();
+    expect(api.calls.slice(before).filter((call) => call.includes("/dashboards"))).toEqual([]);
+    await expectNoPageScrollX(page);
+  });
+});

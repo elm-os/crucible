@@ -36,6 +36,8 @@ infrastructure you control.
 
 - A metrics API over spans and traces: counts, errors, tokens, cost and latency percentiles, by minute to week,
   split by up to two dimensions.
+- Dashboards of charts, numbers, tables and notes over those metrics, laid out on a grid and edited by pointer or
+  keyboard, with built-in starter dashboards to duplicate and change.
 - Threshold alerts on those measures, delivered to webhooks, Slack and email.
 - A read-only SQL workspace for each project, with saved queries. ClickHouse access control keeps each project's
   SQL inside that project's data.
@@ -121,6 +123,12 @@ testing and development.
 against real databases, the SDKs and the pull request process; [docs/development.md](docs/development.md) has the
 details of the dev container and of running the server from source. Commits follow Conventional Commits, and the
 git hooks and CI check every commit message and file against the naming rule and refuse AI attribution trailers.
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Report a vulnerability privately through the repository's Security tab, **Report a vulnerability**, as
+[SECURITY.md](SECURITY.md) describes. Do not open a public issue for it.
 
 ## License
 
