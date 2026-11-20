@@ -120,7 +120,7 @@ dimensions! {
     McpDeploys, "mcp_deploys", Workload, "Server versions and deploy ids that change between calls.";
     McpContent, "mcp_content", Workload, "Opted-in arguments and results on tool calls.";
     McpIdentity, "mcp_identity", Workload, "MCP operations carry a user subject, and the node has a control store for the project salts, whose reads sometimes fail. Without it the node is ingest-only and drops the identity keys.";
-    DirSyncErrors, "dir_sync_errors", Fault, "Windows in which every directory sync fails, so a created or removed segment is not durably so.";
+    DirSyncErrors, "dir_sync_errors", Fault, "Windows in which every directory sync fails, while the node runs and while it starts, so a created or removed segment or entry is not durably so and a recovery attempt fails.";
     Deletions, "deletions", Workload, "One more project, whose data is deleted: requests by trace, by user (with and without a token issuer) and by session, with their tombstones in the WAL, requests that complete while the node is down, and a control store whose reads of them sometimes fail.";
 }
 

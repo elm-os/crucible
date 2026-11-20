@@ -4,7 +4,9 @@
 use std::fmt;
 
 use crucible_normalize::{Admission, NormalizedFrame, ProjectSalt, Tombstone};
-use crucible_records::{DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId};
+use crucible_records::{
+    DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId, Timestamp,
+};
 use crucible_wal::WalFrame;
 use futures::future::{self, BoxFuture};
 
@@ -124,17 +126,24 @@ pub struct DeletionsUnavailable(pub String);
 /// Where the deletion requests come from (contract 13.3): the control store's `deletion_requests`.
 ///
 /// Stage B drops what a deletion selects from the frames after the deletion's `Tombstone` frame. A request can
-/// also complete while this node is down, and then this node appends no tombstone for it, so before it ships the
-/// shipper reads every request in every state, after the node has registered in the node registry: a request made
-/// after the read waits for this node's tombstone, because the node is live. The issuer of a deletion by user is
-/// not in its tombstone (contract 13.6), so the shipper reads it here too. The hook is a trait the shipper takes,
-/// as the salts are, so that the shipper does not depend on the control plane.
+/// also complete while this node is down, and then this node appends no tombstone for it, so before stage B admits
+/// a frame the shipper reads the requests in every state that can select it, after the node has registered in the
+/// node registry: a request made after the read waits for this node's tombstone, because the node is live. A
+/// deletion selects data received before its `requested_at`, so those are the requests made after the frame was
+/// received, and requests are never pruned, so the read is bounded by that instant rather than reading them all.
+/// The issuer of a deletion by user is not in its tombstone (contract 13.6), so the shipper reads it here too. The
+/// hook is a trait the shipper takes, as the salts are, so that the shipper does not depend on the control plane.
 pub trait DeletionRequests: fmt::Debug + Send + Sync {
     /// Whether a control store holds deletion requests. Without one there are none, and the shipper reads none.
     fn configured(&self) -> bool;
 
-    /// Registers the node, then reads every deletion request of the deployment, in every state.
-    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>>;
+    /// Registers the node, then reads every deletion request of the deployment, in every state, whose
+    /// `requested_at` is after `received_at`: every request that can select data received at or after that
+    /// instant.
+    fn requested_after(
+        &self,
+        received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>>;
 
     /// The request with this id in `project`; `None` when there is none.
     fn request(
@@ -153,7 +162,10 @@ impl DeletionRequests for NoDeletions {
         false
     }
 
-    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+    fn requested_after(
+        &self,
+        _received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
         Box::pin(future::ready(Ok(Vec::new())))
     }
 

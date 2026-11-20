@@ -1,7 +1,7 @@
 //! The shipper task: tail the durable WAL, normalize, fill and seal batches, ship their pairs, checkpoint, and
 //! drive garbage collection (contract sections 4.6, 5.1, 5.7 and 5.9). Stage B drops what the deletion requests
 //! select (contract 13.3, step 3): those of the `Tombstone` frames it has passed, and every request the control
-//! store holds when the shipper starts, which it reads before it ships anything.
+//! store holds that can select a frame, which it reads before it admits the frame.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,6 +104,9 @@ pub struct ShipperStats {
     pub(crate) quarantined_frames: Tally,
     pub(crate) mixed_version_batches: Tally,
     pub(crate) inventory_dropped: Tally,
+    deleted_spans: Tally,
+    deleted_ops: Tally,
+    deleted_facts: Tally,
     /// The rows held now, in estimated bytes (the `shipper.encoded_bytes` budget), with its gauge.
     encoded_bytes: AtomicU64,
     encoded_gauge: Gauge,
@@ -139,6 +142,13 @@ pub struct StatsSnapshot {
     pub mixed_version_batches: u64,
     /// Tool inventory entries beyond the per-frame cap, which were not kept (contract 5.1).
     pub inventory_dropped: u64,
+    /// Spans that stage B dropped from the frames it shipped because a deletion request selects them.
+    pub deleted_spans: u64,
+    /// MCP operations that stage B dropped from the frames it shipped because a deletion request selects them:
+    /// with their spans, or by their own identity.
+    pub deleted_ops: u64,
+    /// Facts that stage B dropped from the frames it shipped because a deletion request selects them.
+    pub deleted_facts: u64,
     /// The most estimated row bytes held at once (the `shipper.encoded_bytes` budget).
     pub encoded_bytes_peak: u64,
     /// The estimated row bytes of the largest frame placed.
@@ -150,6 +160,7 @@ impl ShipperStats {
         let batches = |kind| Tally::new(m.counter(&registry::SHIPPER_BATCHES, &[kind]));
         let inserts = |outcome| Tally::new(m.counter(&registry::SHIPPER_INSERTS, &[outcome]));
         let probes = |result| Tally::new(m.counter(&registry::SHIPPER_PROBES, &[result]));
+        let deleted = |kind| Tally::new(m.counter(&registry::SHIPPER_DELETION_DROPS, &[kind]));
         let encoded_gauge = m.gauge(&registry::SHIPPER_ENCODED_BYTES, &[]);
         encoded_gauge.set(0);
         let drain_gauge = m.gauge(&registry::SHIPPER_DRAIN_BYTES_PER_SECOND, &[]);
@@ -171,6 +182,9 @@ impl ShipperStats {
             inventory_dropped: Tally::new(
                 m.counter(&registry::SHIPPER_INVENTORY_ROWS_DROPPED, &[]),
             ),
+            deleted_spans: deleted("span"),
+            deleted_ops: deleted("mcp_operation"),
+            deleted_facts: deleted("fact"),
             encoded_bytes: AtomicU64::new(0),
             encoded_gauge,
             encoded_peak: AtomicU64::new(0),
@@ -194,6 +208,9 @@ impl ShipperStats {
             quarantined_frames: self.quarantined_frames.get(),
             mixed_version_batches: self.mixed_version_batches.get(),
             inventory_dropped: self.inventory_dropped.get(),
+            deleted_spans: self.deleted_spans.get(),
+            deleted_ops: self.deleted_ops.get(),
+            deleted_facts: self.deleted_facts.get(),
             encoded_bytes_peak: self.encoded_peak.load(Ordering::Relaxed),
             largest_frame_bytes: self.largest_frame.load(Ordering::Relaxed),
         }
@@ -390,9 +407,12 @@ pub struct Shipper {
     salt_failures: u32,
     /// Whether the drop of identity keys without a control store was logged.
     identity_drop_logged: bool,
-    /// The deletions stage B applies (contract 13.3, step 3): every request the control store held at start, and
-    /// those of the `Tombstone` frames stage B has passed since.
+    /// The deletions stage B applies (contract 13.3, step 3): the requests of the control store that can select the
+    /// frames stage B admits, and those of the `Tombstone` frames it has passed.
     tombstones: Tombstones,
+    /// Stage B knows every request that the control store held at a read and that can select data received at or
+    /// after this instant; `None` before the first read. See [`Shipper::cover`].
+    covered_from: Option<Timestamp>,
     /// The issuer of each deletion by user that is known, by request: a `Tombstone` frame does not carry it.
     issuers: DetMap<DeletionRequestId, Option<Box<str>>>,
     /// Consecutive failures to read the deletion requests, for the backoff of what waits for them.
@@ -569,6 +589,7 @@ impl Shipper {
             salt_failures: 0,
             identity_drop_logged: false,
             tombstones: Tombstones::new(),
+            covered_from: None,
             issuers: det_map(),
             deletion_failures: 0,
             drain: DrainRate::new(ctx.env.clock.now()),
@@ -631,45 +652,47 @@ impl Shipper {
         }
     }
 
-    /// Reads every deletion request of the control store, in every state, before anything is shipped (contract
-    /// 13.3): a request can complete while this node is down, and then no tombstone of it is in this node's log,
-    /// yet the frames this node never shipped may hold what it deleted. The hook registers the node first, so a
-    /// request made after the read waits for this node's tombstone. A read that fails is tried again; nothing is
-    /// shipped meanwhile. `false` when the host shut down first.
-    async fn seed_deletions(&mut self) -> bool {
-        if !self.ctx.deletions.configured() {
+    /// Makes stage B know every deletion request of the control store, in every state, that can select a frame
+    /// received at `received_at`, before it admits the frame (contract 13.3). A request can complete while this
+    /// node is down, and then no tombstone of it is in this node's log, yet the frames this node never shipped may
+    /// hold what it deleted. A deletion selects data received before its `requested_at`, so the requests that can
+    /// select the frame are those requested after `received_at`, and only those are read: requests are never
+    /// pruned, and one that completed long before the oldest frame stage B admits selects nothing it ships. The
+    /// first frame stage B admits reads them; a later frame reads again only when it was received before every
+    /// frame read for so far, which a wall clock that stepped back can cause. The hook registers the node first,
+    /// so a request made after a read waits for this node's tombstone. `false` when the read failed: the frame
+    /// waits, and nothing after it ships.
+    async fn cover(&mut self, received_at: Timestamp) -> bool {
+        if !self.ctx.deletions.configured()
+            || self.covered_from.is_some_and(|from| from <= received_at)
+        {
             return true;
         }
-        let shutdown = self.ctx.env.shutdown();
-        loop {
-            if shutdown.is_shutdown() {
-                return false;
-            }
-            match self.ctx.deletions.all().await {
-                Ok(requests) => {
-                    let count = requests.len();
-                    for known in requests {
-                        let done = matches!(
-                            known.state,
-                            DeletionState::Completed | DeletionState::Failed
-                        );
-                        if done && self.ctx.config.seeds_only_open_requests() {
-                            continue;
-                        }
-                        self.learn(known.tombstone);
-                    }
-                    self.deletion_failures = 0;
-                    tracing::info!(
-                        requests = count,
-                        "stage B applies the deletion requests of the control store"
+        match self.ctx.deletions.requested_after(received_at).await {
+            Ok(requests) => {
+                let count = requests.len();
+                for known in requests {
+                    let done = matches!(
+                        known.state,
+                        DeletionState::Completed | DeletionState::Failed
                     );
-                    return true;
+                    if done && self.ctx.config.seeds_only_open_requests() {
+                        continue;
+                    }
+                    self.learn(known.tombstone);
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "nothing ships until the deletion requests can be read");
-                    self.ctx.pause(self.deletion_failures).await;
-                    self.deletion_failures = self.deletion_failures.saturating_add(1);
-                }
+                self.covered_from = Some(received_at);
+                self.deletion_failures = 0;
+                tracing::info!(
+                    requests = count,
+                    requested_after = %received_at,
+                    "stage B applies the deletion requests of the control store"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "nothing ships until the deletion requests can be read");
+                false
             }
         }
     }
@@ -771,6 +794,10 @@ impl Shipper {
                 RecordType::IngestRequest | RecordType::FactBatch
             ) {
                 self.ctx.recent.passed(&frame);
+                continue;
+            }
+            if !self.cover(frame.received_at()).await {
+                self.wait_for_deletions(frame.lsn()).await;
                 continue;
             }
             match read_frame(&self.ctx.wal, &frame, &self.norm_ctx(), &self.ctx.config) {
@@ -884,6 +911,10 @@ impl Shipper {
                 .take_frame(lsn, frame.received_at(), raw_bytes, !own, now);
             return Ok(());
         }
+        if !self.cover(frame.received_at()).await {
+            self.wait_for_deletions(lsn).await;
+            return Ok(());
+        }
         let rows = match read_frame(&self.ctx.wal, frame, &self.norm_ctx(), &self.ctx.config) {
             Ok(Content::Spans(mut normalized)) => {
                 let Some(identity) = self.identity_of(&normalized).await else {
@@ -898,6 +929,13 @@ impl Shipper {
                     .stage_b
                     .admit_with(&mut normalized, &ctx)
                     .map_err(|e| frame_error(lsn, e))?;
+                let deleted_ops =
+                    u64::from(admission.deleted_span_ops) + u64::from(admission.deleted_ops);
+                if admission.deleted > 0 || deleted_ops > 0 {
+                    let stats = &self.ctx.stats;
+                    stats.deleted_spans.add(u64::from(admission.deleted));
+                    stats.deleted_ops.add(deleted_ops);
+                }
                 if normalized.summary.inventory_dropped > 0 {
                     self.ctx
                         .stats
@@ -912,7 +950,12 @@ impl Shipper {
             }
             Ok(Content::Facts(mut facts)) => {
                 if !self.ctx.config.skips_tombstone_filter() && !self.tombstones.is_empty() {
+                    let before = facts.len();
                     facts.retain(|fact| !self.tombstones.selects_fact(fact));
+                    let deleted = before - facts.len();
+                    if deleted > 0 {
+                        self.ctx.stats.deleted_facts.add(deleted as u64);
+                    }
                 }
                 self.ctx.recent.passed(frame);
                 Unplaced::Facts(facts)
@@ -1157,14 +1200,12 @@ impl Shipper {
 
     /// Runs the shipper until the host shuts down.
     ///
-    /// On start it reads the deletion requests of the control store, rebuilds stage B from the retained prefix,
-    /// ships the sealed batches recovery found (every pair probed first, because everything before a restart is
-    /// in doubt), then normalizes and seals the tail with fresh boundaries and keeps tailing the log.
+    /// On start it rebuilds stage B from the retained prefix, ships the sealed batches recovery found (every pair
+    /// probed first, because everything before a restart is in doubt), then normalizes and seals the tail with
+    /// fresh boundaries and keeps tailing the log. Before stage B admits a frame it reads the deletion requests of
+    /// the control store that can select it.
     pub async fn run(mut self) -> Result<(), ShipError> {
         let mut shutdown = self.ctx.env.shutdown();
-        if !self.seed_deletions().await {
-            return Ok(());
-        }
         self.rebuild().await?;
         loop {
             if shutdown.is_shutdown() {

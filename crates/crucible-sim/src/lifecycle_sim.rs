@@ -22,7 +22,7 @@
 //!   and a read that carries the set returns none of the rows the request selects.
 //! - **L3 (completion)**: at the end every deletion request is `completed` and every action is `verified`.
 //! - **I9**: at the end no reach-list table holds a row, masked or not, that a completed request selects or
-//!   that retention has expired, and every span that nothing selected is still there.
+//!   that retention has expired, and every span and MCP row that nothing selected is still there.
 //!
 //! The model's stage B keeps the two rules that the deletion executor relies on: it applies a tombstone to the
 //! frames after it in the log, and a node that starts registers first and then consults the deletion requests
@@ -30,7 +30,8 @@
 //!
 //! A trace shows its user on its spans, on its MCP operations or on both; an operation carries the user as
 //! `user_id` or only as the hash of the user's subject under one of two issuers. A deletion by user must reach
-//! the MCP rows by their own identity, also where no span of the trace names the user.
+//! the MCP rows by their own identity, also where no span of the trace names the user, and when it names an
+//! issuer it must keep the rows hashed under the other one.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -67,6 +68,7 @@ use futures::future::BoxFuture;
 
 use crate::blocks::Rows;
 use crate::ch_model::{ChFaults, ChModel};
+use crate::ch_read::rows_of as stored_rows;
 use crate::pg_model::{PgFaults, PgModel};
 use crate::{Sim, run};
 
@@ -171,6 +173,8 @@ pub struct Stats {
     pub by_user: u64,
     /// See `by_trace`.
     pub by_session: u64,
+    /// Of the requests by user, those that name a token issuer.
+    pub by_user_issuer: u64,
     /// Requests whose call failed and was sent again under the same idempotency key.
     pub request_retries: u64,
     /// Retention changes accepted.
@@ -192,6 +196,9 @@ pub struct Stats {
     pub mcp_identity_frames: u64,
     /// Frames whose MCP rows the model's stage B dropped for a deletion by user while it kept their spans.
     pub mcp_drops: u64,
+    /// MCP rows that a deletion by user would select if it named no issuer, kept because it names another issuer
+    /// than theirs, and checked still there at the end.
+    pub mcp_kept_by_issuer: u64,
     /// Reads of the project salts that failed.
     pub salt_failures: u64,
 }
@@ -212,6 +219,7 @@ impl Stats {
         self.by_trace += other.by_trace;
         self.by_user += other.by_user;
         self.by_session += other.by_session;
+        self.by_user_issuer += other.by_user_issuer;
         self.request_retries += other.request_retries;
         self.retention_changes += other.retention_changes;
         self.deletes += other.deletes;
@@ -222,6 +230,7 @@ impl Stats {
         self.rows_checked += other.rows_checked;
         self.mcp_identity_frames += other.mcp_identity_frames;
         self.mcp_drops += other.mcp_drops;
+        self.mcp_kept_by_issuer += other.mcp_kept_by_issuer;
         self.salt_failures += other.salt_failures;
     }
 }
@@ -1120,9 +1129,12 @@ fn check_hidden(world: &World, up: &Up, request: &DeletionRequest) {
     }
 }
 
-/// Asks for deletions and shortens the first project's retention until `until`.
+/// Asks for deletions and shortens the first project's retention until `until`. A deletion by user names one of
+/// the two token issuers two times in three: it then reaches MCP rows hashed under that issuer and keeps those
+/// hashed under the other.
 async fn requests(world: World, rng: Arc<dyn Rng>, until: u64) {
     let clock = &world.database.clock;
+    let issuers = rng.fork("issuers");
     let retention_at = clock
         .now()
         .saturating_add(millis(rng.as_ref(), 120_000, 420_000))
@@ -1190,7 +1202,10 @@ async fn requests(world: World, rng: Arc<dyn Rng>, until: u64) {
             ),
             1 => DeletionSelector::User {
                 user_id: pick(rng.as_ref()).user,
-                issuer: None,
+                issuer: match below(issuers.as_ref(), 3) {
+                    0 => None,
+                    n => ISSUERS.get(n as usize - 1).map(|&issuer| issuer.to_owned()),
+                },
             },
             _ => DeletionSelector::Session(pick(rng.as_ref()).session),
         };
@@ -1209,7 +1224,10 @@ async fn requests(world: World, rng: Arc<dyn Rng>, until: u64) {
                     let mut ledger = lock(&world.ledger);
                     match accepted.request.selector {
                         DeletionSelector::Traces(_) => ledger.stats.by_trace += 1,
-                        DeletionSelector::User { .. } => ledger.stats.by_user += 1,
+                        DeletionSelector::User { ref issuer, .. } => {
+                            ledger.stats.by_user += 1;
+                            ledger.stats.by_user_issuer += u64::from(issuer.is_some());
+                        }
                         DeletionSelector::Session(_) => ledger.stats.by_session += 1,
                     }
                     if attempt > 0 {
@@ -1351,6 +1369,23 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
     }
 }
 
+/// The request as it would be if it named no issuer, for a deletion by user that names one.
+fn any_issuer(request: &DeletionRequest) -> Option<DeletionRequest> {
+    match &request.selector {
+        DeletionSelector::User {
+            user_id,
+            issuer: Some(_),
+        } => Some(DeletionRequest {
+            selector: DeletionSelector::User {
+                user_id: user_id.clone(),
+                issuer: None,
+            },
+            ..request.clone()
+        }),
+        _ => None,
+    }
+}
+
 /// L3 and I9 over what the stores hold once every node has stopped.
 fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
     ledger.violations.extend(
@@ -1464,6 +1499,51 @@ fn audit(world: &World, ledger: &mut Ledger, now: Timestamp) {
                 }
             }
             _ => {}
+        }
+    }
+    // Nor did an MCP row go that no request selects and that retention keeps: a deletion by user that names an
+    // issuer keeps the rows hashed under the other one. Every row that ever landed is checked.
+    let mcp = table(TableId::McpOps);
+    let key = |row: &Held<'_>| Some((row.trace()?, row.bytes("span_id")?.to_vec()));
+    let visible_ops: BTreeSet<(TraceId, Vec<u8>)> = world
+        .ch
+        .held_rows(TableId::McpOps)
+        .iter()
+        .filter(|(_, masked, _)| !masked)
+        .filter_map(|(_, _, cells)| {
+            key(&Held {
+                table_id: TableId::McpOps,
+                cells,
+            })
+        })
+        .collect();
+    for part in world.ch.parts(TableId::McpOps) {
+        for cells in stored_rows(mcp, &part.block).unwrap_or_default() {
+            let row = Held {
+                table_id: TableId::McpOps,
+                cells: &cells,
+            };
+            let Some(project) = row.project() else {
+                continue;
+            };
+            let of_project = || requests.iter().filter(|r| r.project_id == project);
+            let wanted = of_project().any(|request| selected(request, &row, &ledger.spans));
+            // Rows that a deletion would select if it named no issuer.
+            let by_issuer = !wanted
+                && of_project()
+                    .filter_map(any_issuer)
+                    .any(|request| selected(&request, &row, &ledger.spans));
+            ledger.stats.mcp_kept_by_issuer += u64::from(by_issuer);
+            let expired = ledger.retention_set
+                && project == world.projects[0]
+                && kept.contains(&TableId::McpOps)
+                && row.time().is_some_and(|time| time < expired_before);
+            if !wanted && !expired && key(&row).is_some_and(|key| !visible_ops.contains(&key)) {
+                ledger.violations.push(format!(
+                    "I9: an mcp_ops row of trace {} that no request selects and retention keeps is gone",
+                    row.trace().map_or_else(String::new, |trace| trace.to_string())
+                ));
+            }
         }
     }
 }

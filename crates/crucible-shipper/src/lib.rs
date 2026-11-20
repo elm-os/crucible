@@ -27,9 +27,11 @@
 //!
 //! Stage B drops the spans, MCP operations and facts that a deletion request selects (contract 13.3, step 3):
 //! those of every `Tombstone` frame it has passed, and those of every request in every state that the
-//! [`DeletionRequests`] hook gives before the shipper ships anything, so that a replay after a restart never inserts
-//! what a request completed while the node was down deleted. A `Tombstone` frame also evicts what its deletion
-//! selects from the recent-span index.
+//! [`DeletionRequests`] hook gives before stage B admits a frame the request can select, so that a replay after a
+//! restart never inserts what a request completed while the node was down deleted. The read is bounded by the
+//! frames' arrival: a deletion selects data received before its `requested_at`. A `Tombstone` frame also evicts
+//! what its deletion selects from the recent-span index. The drops are counted by kind
+//! (`crucible_shipper_deletion_drops_total`).
 
 mod batch;
 mod config;
