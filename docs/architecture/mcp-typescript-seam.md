@@ -1,11 +1,13 @@
 # MCP TypeScript seam: decision record
 
 Status: decided by a spike on 2026-11-17. The spike lives in `sdk/typescript/spikes/mcp-seam/` and is not part of
-any published package. The production SDK described under "API sketch" is planned, not shipped.
+any published package. The SDK's `@elm-os/crucible/mcp` entry point implements the decision; the API sketch below is
+the design it started from, and the [TypeScript SDK guide](../guides/sdk-typescript.md#instrument-an-mcp-server)
+describes the API as it is.
 
 ## Question
 
-The Crucible TypeScript SDK will instrument MCP servers built on the official TypeScript MCP SDK
+The Crucible TypeScript SDK instruments MCP servers built on the official TypeScript MCP SDK
 (`@modelcontextprotocol/server`, 2.x line). That SDK has no public request middleware. This record decides where
 Crucible attaches, so that every request and notification becomes one operation with method, target, JSON-RPC id,
 timing, outcome class, era and client info, without reading private members of the SDK.
@@ -107,8 +109,9 @@ SDK sends no response for a cancelled request, so the tap finishes the operation
 the handler runs on. In `in-memory-abandon` the transport closes with a call in flight, and the operation is
 recorded once as `protocol_error` with error type `connection_closed`.
 
-The criterion in the design reads "all conformance transcripts pass". The shared conformance suite does not exist
-yet, so the driver's fixed workload stands in for it. Re-run this criterion against the transcripts when they land.
+The criterion in the design reads "all conformance transcripts pass". The shared conformance suite did not exist at
+the time of the spike, so the driver's fixed workload stood in for it. The suite now runs every SDK against the same
+cases ([SDK conformance](../testing/sdk-conformance.md)).
 
 ## Latency
 
@@ -153,8 +156,8 @@ not include.
   directly, the decoration on the outer object is bypassed. The production SDK should decorate both; the tap already
   refuses to tap a transport twice.
 - **The seam depends on two behaviours that are public but not promised.** The entries call `connect` through the
-  instance, and the SDK assigns `onmessage` as a plain property. Both hold from 2.0.0 to 2.4.0. A weekly run of
-  `scripts/matrix.mjs` against the newest 2.x will catch a change. The production code must catch a failed tap and
+  instance, and the SDK assigns `onmessage` as a plain property. Both hold from 2.0.0 to 2.4.0. Running
+  `scripts/matrix.mjs` against the newest 2.x shows a change. The production code must catch a failed tap and
   leave the server uninstrumented instead of failing `connect`.
 - **Modern HTTP cancellation is a closed stream, not a notification.** The tap then reports the operation through
   the close path as `connection_closed`. The driver covers the close path only on the in-memory transport.
@@ -171,7 +174,7 @@ stream response, at the cost of losing handler context for `annotateError` and `
 
 ## API sketch for the production SDK
 
-Planned for the `./mcp` subpath of `@elm-os/crucible`, with `@modelcontextprotocol/server` as an optional peer.
+The design for the `./mcp` subpath of `@elm-os/crucible`, with `@modelcontextprotocol/server` as an optional peer.
 The peer range can be `>=2.0.0 <3` on this evidence; the design asked for `>=2.4`.
 
 ```ts
@@ -193,7 +196,7 @@ annotateError("upstream");            // also markValidation(), markNotFound()
 identify({ userId, tenant });         // merges into the active operation
 ```
 
-Options will follow the common surface in the design: `capture` rules, `identify(extra)` called once per inbound
+The design gave the options the common surface: `capture` rules, `identify(extra)` called once per inbound
 message with the transport's `authInfo` and HTTP request, `transport` label override, and `measureSizes`.
 
 Mapping from the spike's operation to the wire contract:
@@ -210,13 +213,13 @@ Mapping from the spike's operation to the wire contract:
 | `httpStatus` | `http.response.status_code` |
 | `progressCount` | `crucible.mcp.progress.count` |
 | `identity` | `user.id`, `crucible.mcp.tenant`, `crucible.mcp.user.issuer`, `crucible.mcp.user.subject`, `crucible.mcp.handle.id` |
-| `source` | No key in the contract yet. One is needed if edge operations are to be told apart |
+| `source` | No key in the contract at the time of the spike. One is needed if edge operations are to be told apart |
 
-In the production SDK the stored value will be the active span, set through the OpenTelemetry context, which
+The design made the stored value the active span, set through the OpenTelemetry context, which
 itself rides on `AsyncLocalStorage` in Node. The spike shows that this context survives from the transport callback
 to the tool handler on every path.
 
-The lint rule for criterion 2 in the production package will be Oxlint `no-underscore-dangle` (allowing only the
+For criterion 2 the design named the Oxlint rule `no-underscore-dangle` (allowing only the
 wire field `_meta`) and `typescript/no-explicit-any` scoped to `./mcp`, plus the scan from the spike in CI.
 
 ## How to reproduce
