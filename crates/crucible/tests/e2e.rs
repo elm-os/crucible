@@ -1633,5 +1633,30 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
     assert_eq!(status, 204);
     let (status, _, _) = as_owner("GET", "/api/v1/auth/session", Value::Null);
     assert_eq!(status, 401);
-    drop(server);
+
+    // 9. A graceful stop with every task of a node with a control plane running (the key feed, the jobs, the SQL
+    //    workspace's loops, the Postgres connections) ends well inside its 30 s grace period, with nothing left to
+    //    abort.
+    #[cfg(unix)]
+    {
+        let mut server = server;
+        let asked = Instant::now();
+        let clean = terminate(&mut server);
+        let took = asked.elapsed();
+        let log = std::fs::read_to_string(&server.log).unwrap();
+        assert!(clean && log.contains("shutdown complete"), "{log}");
+        assert!(
+            !log.contains("did not stop within the grace period"),
+            "{log}"
+        );
+        assert!(took < Duration::from_secs(10), "the stop took {took:?}: {log}");
+        drop(server);
+    }
+    // The server started on an empty Postgres with `--migrate`. The jobs start once the migrations have run, so no
+    // run met a table that did not exist yet.
+    let log = std::fs::read_to_string(rig.out.join("serve-1.log")).unwrap();
+    assert!(
+        !log.contains("does not exist"),
+        "a job ran before the migrations: {log}"
+    );
 }

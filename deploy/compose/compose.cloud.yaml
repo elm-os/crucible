@@ -1,8 +1,8 @@
-# Crucible alone, against a ClickHouse and a Postgres that run elsewhere: ClickHouse Cloud and a managed Postgres, or
-# servers that you operate. Development preview: see docs/self-hosting/README.md.
+# Crucible alone, against a ClickHouse and a Postgres that run elsewhere: servers that you operate, or a managed
+# Postgres. docs/self-hosting/README.md covers the settings.
 #
-# This preview supports a single-node ClickHouse only. It refuses a ClickHouse Cloud service at startup and /readyz
-# names the reason; Cloud support is planned.
+# Crucible runs on a single-node ClickHouse. It refuses a ClickHouse Cloud service at startup, and /readyz names the
+# reason.
 #
 # Settings in .env beside this file:
 #   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS (Cloud), or http://<host>:8123; ClickHouse 26.3 or newer
@@ -44,14 +44,17 @@ services:
     image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
     restart: unless-stopped
     depends_on:
-      - crucible
+      crucible:
+        condition: service_started
+        # Restarted whenever Compose recreates the server, so `up --wait` waits for the new one (see compose.yaml).
+        restart: true
     command: ["sleep", "infinity"]
     stop_signal: SIGKILL
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--output", "/dev/null", "http://crucible:8080/readyz"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 6
       start_period: 120s
       start_interval: 1s
 

@@ -9,7 +9,8 @@ name: sqliso
 #   layer D: broken deployments (mutants) that must each make the suite fail, the switch flipped among them.
 # Job `api`, per version:
 #   layer C: the same isolation and the workspace's own guarantees through the REST API of the real binary,
-#   with a real Postgres (crates/crucible/tests/sqliso_api.rs).
+#   with a real Postgres (crates/crucible/tests/sqliso_api.rs); then one start with a wrong master key between
+#   two with the right one, after which the workspace still runs queries (crates/crucible/tests/sqlws_master_key.rs).
 #
 # The servers are started with `docker run`, not as service containers: the switch is server configuration,
 # which a service container cannot take.
@@ -27,6 +28,7 @@ on:
       - crates/crucible-control-pg/**
       - crates/crucible/src/**
       - crates/crucible/tests/sqliso_api.rs
+      - crates/crucible/tests/sqlws_master_key.rs
       - Cargo.lock
       - .github/workflows/sqliso.yml
   schedule:
@@ -196,8 +198,8 @@ jobs:
           cargo build --locked --package crucible
           mkdir -p "$RUNNER_TEMP/bin"
           cp target/debug/crucible "$RUNNER_TEMP/bin/crucible"
-      - name: Build the test
-        run: cargo test --locked --package crucible --test sqliso_api --no-run
+      - name: Build the tests
+        run: cargo test --locked --package crucible --test sqliso_api --test sqlws_master_key --no-run
       - name: Wait for ClickHouse
         run: |
           for _ in $(seq 1 90); do
@@ -215,3 +217,13 @@ jobs:
         run: |
           export CRUCIBLE_SQLISO_BIN="$RUNNER_TEMP/bin/crucible"
           cargo test --locked --package crucible --test sqliso_api -- --nocapture
+      # After layer C, on the same servers and with the master key it migrated them with.
+      - name: A start with a wrong master key leaves the workspace working
+        env:
+          CRUCIBLE_SQLISO_CLICKHOUSE_URL: http://localhost:8123
+          CRUCIBLE_SQLISO_CLICKHOUSE_USER: crucible_admin
+          CRUCIBLE_SQLISO_CLICKHOUSE_PASSWORD: sqliso-admin
+          CRUCIBLE_SQLISO_POSTGRES_URL: postgres://crucible:sqliso@localhost:5432/crucible
+        run: |
+          export CRUCIBLE_SQLISO_BIN="$RUNNER_TEMP/bin/crucible"
+          cargo test --locked --package crucible --test sqlws_master_key -- --nocapture
