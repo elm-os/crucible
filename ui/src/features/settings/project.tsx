@@ -132,22 +132,24 @@ function Details({ project, canRename }: { project: Project; canRename: boolean 
         )}
         <div className="flex flex-col gap-1">
           <dt className="text-label font-medium">Slug</dt>
-          <dd className="font-mono break-all">{project.slug}</dd>
+          <dd className="font-mono wrap-anywhere">{project.slug}</dd>
           <dd className="text-ink-soft">
             Commands such as{" "}
-            <code className="font-mono break-all">crucible export --project {project.slug}</code>{" "}
+            <code className="font-mono wrap-anywhere">
+              crucible export --project {project.slug}
+            </code>{" "}
             take it in place of the id.
           </dd>
         </div>
         <div className="flex flex-col gap-1">
           <dt className="text-label font-medium">Project id</dt>
           <dd className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <code className="min-w-0 font-mono break-all select-all">{project.id}</code>
+            <span className="min-w-0 font-mono wrap-anywhere select-all">{project.id}</span>
             <CopyId id={project.id} />
           </dd>
           <dd className="text-ink-soft">
             REST calls name the project by it, as in{" "}
-            <code className="font-mono break-all">/api/v1/projects/{project.id}/traces</code>.
+            <code className="font-mono wrap-anywhere">/api/v1/projects/{project.id}/traces</code>.
           </dd>
         </div>
       </dl>
@@ -302,7 +304,7 @@ function RelatedSettings({ name }: { name: string }) {
         </li>
         <li>
           Organization owners and admins delete a whole project in the REST API, with{" "}
-          <code className="font-mono break-all">{"DELETE /api/v1/projects/{project_id}"}</code>.
+          <code className="font-mono wrap-anywhere">{"DELETE /api/v1/projects/{project_id}"}</code>.
         </li>
       </ul>
     </SectionFrame>

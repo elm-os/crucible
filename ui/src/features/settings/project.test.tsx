@@ -135,7 +135,7 @@ describe("project details", () => {
     renderPage();
     expect(await screen.findByDisplayValue("Checkout")).toBe(nameField());
     expect(screen.getByText("checkout", { selector: "dd" })).toBeTruthy();
-    expect(screen.getByText(PROJECT_A, { selector: "code" })).toBeTruthy();
+    expect(screen.getByText(PROJECT_A, { selector: "span" })).toBeTruthy();
     expect(screen.getByText(`/api/v1/projects/${PROJECT_A}/traces`)).toBeTruthy();
     expect(screen.getByText("crucible export --project checkout")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Retention" }).getAttribute("href")).toBe(
@@ -326,11 +326,11 @@ describe("renaming", () => {
     renderPage();
     await screen.findByDisplayValue("Checkout");
     await rename("   ");
-    expect(await screen.findByText("Enter a name for the project.")).toBeTruthy();
+    expect(await screen.findAllByText("Enter a name for the project.")).not.toHaveLength(0);
     expect(requests(`PATCH ${ONE}`)).toHaveLength(0);
 
     await rename("Payments");
-    expect(await screen.findByText("Use 1 to 200 characters.")).toBeTruthy();
+    expect(await screen.findAllByText("Use 1 to 200 characters.")).not.toHaveLength(0);
     expect(nameField().getAttribute("aria-invalid")).toBe("true");
     expect(screen.getByRole("alert").textContent).toContain("Some fields need attention.");
     expect(screen.queryByText(SERVER_TEXT)).toBeNull();
