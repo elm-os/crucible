@@ -302,6 +302,9 @@ pub struct StageB {
     /// The seeded defect that flags usage aggregates after the duplicate drop; never set outside the
     /// simulation suite.
     marks_after_drop: bool,
+    /// The seeded defect that lets the flag of a kept span rely on no earlier frame.
+    #[cfg(feature = "test-mutants")]
+    flags_rely_on_nothing: bool,
 }
 
 impl Default for StageB {
@@ -320,6 +323,8 @@ impl StageB {
             usage_parents: UsageParents::new(USAGE_PARENT_SPANS),
             last: None,
             marks_after_drop: false,
+            #[cfg(feature = "test-mutants")]
+            flags_rely_on_nothing: false,
         }
     }
 
@@ -328,6 +333,7 @@ impl StageB {
     #[must_use]
     pub fn with_mutant(mut self, mutant: Option<crate::Mutant>) -> Self {
         self.marks_after_drop = mutant == Some(crate::Mutant::MarkAfterDuplicateDrop);
+        self.flags_rely_on_nothing = mutant == Some(crate::Mutant::SkipFlagReliance);
         self
     }
 
@@ -486,6 +492,8 @@ impl StageB {
         } else {
             self.mark_usage_aggregates(frame, &keys)
         };
+        #[cfg(feature = "test-mutants")]
+        let supports = supports.filter(|_| !self.flags_rely_on_nothing);
         let mut relies_on: Option<Lsn> = None;
         let mut rely = |at: Lsn| {
             if at < lsn {

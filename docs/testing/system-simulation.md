@@ -142,12 +142,22 @@ the rollups counted a repeat that `span_core` did not hold, or the reverse.
 The flag `usage_aggregate` is stage B state, and stage B holds what the retained prefix of the WAL holds. The
 oracle listens at the shipper's recent-index hook: for every frame that stage B admits it records all the spans
 stage A made of it (from the frame itself, so the exact repeats that stage B then drops are there too), whether
-each carries usage as the client sent it, and the first LSN the WAL retains at that moment. At quiescence it runs
-the rule of contract 5.3 itself: the set starts empty at the first retained LSN; in LSN order every span of a
-frame that carries usage or is in the set adds its parent, to a fixed point over all the spans of the frame; a
-span is an aggregate when it is in the set then. Every `span_core` row must carry exactly that flag, and two
-admissions of one frame above the watermark, before and after a restart, must give the same aggregates. So a
-mark taken after the duplicate drop, or a prefix that lost a frame an unchecked frame relied on, is a violation.
+each carries usage as the client sent it, the first LSN the WAL retains at that moment, and which spans stage B
+kept. At quiescence it runs the rule of contract 5.3 itself: the set starts empty at the first retained LSN; in
+LSN order every span of a frame that carries usage or is in the set adds its parent, to a fixed point over all
+the spans of the frame; a span is an aggregate when it is in the set then. Every `span_core` row must carry
+exactly that flag, and two admissions of one frame above the watermark, before and after a restart, must give
+every span that both kept the same flag. So a mark taken after the duplicate drop, or a prefix that lost a frame
+that a kept span's flag relied on, is a violation.
+
+A span that an admission dropped, an exact repeat or a span that a deletion selects, has no row from it, so its
+flag relies on nothing (contract 5.3): garbage collection may remove the frame that marked it, and a restart then
+flags it otherwise. The corpus line of seed 44676373797002 (invariant I7) is a run where the oracle compared such
+flags too: one request went into the log three times (frames 25, 27 and 36), and another, with a span that
+carries usage under a span of the first, three times as well (frames 9, 13 and 26). Frame 36 relied on frame 27
+for its repeats, so the collection after its batch was sealed removed every segment up to frame 26, and after the
+restart the rule no longer flagged the dropped repeat in frame 36 that frame 26 had marked. No admission of frame
+36 kept a span.
 
 ### Deletions
 

@@ -81,6 +81,11 @@ pub enum Mutant {
     /// node was down (contract 13.3).
     #[cfg(feature = "test-mutants")]
     SeedOnlyOpenRequests,
+    /// Let a kept span flagged a usage aggregate on an earlier frame's support rely on nothing for its flag, so
+    /// garbage collection may remove that frame before the span's batch is checkpointed (a defect of stage B,
+    /// contract 5.3).
+    #[cfg(feature = "test-mutants")]
+    SkipFlagReliance,
 }
 
 /// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
@@ -255,6 +260,7 @@ impl ShipperConfig {
                 Some(Mutant::IgnoreTombstoneIssuer) => {
                     Some(crucible_normalize::Mutant::IgnoreTombstoneIssuer)
                 }
+                Some(Mutant::SkipFlagReliance) => Some(crucible_normalize::Mutant::SkipFlagReliance),
                 _ => None,
             }
         }

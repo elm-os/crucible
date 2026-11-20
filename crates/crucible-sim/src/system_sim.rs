@@ -182,11 +182,14 @@ pub enum Mutant {
     IgnoreTombstoneIssuer,
     /// `crucible-shipper` applies, before shipping, only the deletion requests that are still open.
     SeedOnlyOpenRequests,
+    /// `crucible-normalize` lets a kept span flagged a usage aggregate on an earlier frame's support rely on
+    /// nothing for its flag.
+    SkipFlagReliance,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -205,6 +208,7 @@ impl Mutant {
         Self::SkipTombstoneFilter,
         Self::IgnoreTombstoneIssuer,
         Self::SeedOnlyOpenRequests,
+        Self::SkipFlagReliance,
     ];
 
     /// The name used on the command line.
@@ -228,6 +232,7 @@ impl Mutant {
             Self::SkipTombstoneFilter => "skip-tombstone-filter",
             Self::IgnoreTombstoneIssuer => "ignore-tombstone-issuer",
             Self::SeedOnlyOpenRequests => "seed-only-open-requests",
+            Self::SkipFlagReliance => "skip-flag-reliance",
         }
     }
 
@@ -847,6 +852,7 @@ impl Plan {
                 Some(Mutant::SeedOnlyOpenRequests) => {
                     Some(crucible_shipper::Mutant::SeedOnlyOpenRequests)
                 }
+                Some(Mutant::SkipFlagReliance) => Some(crucible_shipper::Mutant::SkipFlagReliance),
                 _ => None,
             },
             ..ShipperConfig::default()
@@ -2830,6 +2836,30 @@ impl StageBHook for Observed {
                     .extend(admission.stage_a_ordinals.iter().copied());
                 if let Some(relied) = admission.relies_on {
                     ledger.admitted.relying.insert(lsn, relied.get());
+                }
+                // Contract 5.3: a kept span flagged on an earlier frame's support lowers `relies_on` to that
+                // LSN, which check_retained then holds the WAL to.
+                let support = frame
+                    .spans
+                    .iter()
+                    .any(|span| span.core.usage_aggregate)
+                    .then(|| {
+                        system_oracle::flag_support(
+                            &ledger.admitted.frames,
+                            floor,
+                            lsn,
+                            &admission.stage_a_ordinals,
+                        )
+                    })
+                    .flatten();
+                if let Some(support) = support
+                    && admission.relies_on.is_none_or(|at| at.get() > support)
+                {
+                    ledger.violate(Violation::DerivedMismatch(format!(
+                        "frame {lsn} keeps a span that the usage in frame {support} flags, and its admission \
+                         relies on no frame that early, so garbage collection may remove frame {support} \
+                         before frame {lsn} is checkpointed"
+                    )));
                 }
                 // I2: the pairs of a sealed batch hold the same spans whether they land before or after a
                 // restart, so this admission keeps and flags what the process before it did. A restart that
