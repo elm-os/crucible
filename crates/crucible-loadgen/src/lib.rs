@@ -8,6 +8,8 @@
 //!   client (coordinated omission).
 //! - [`AckLedger`] records which requests were acknowledged; [`SequenceReader`] and [`check_zero_loss`] are
 //!   the seam for the zero-loss check that a store-backed reader will close in a later wave.
+//! - [`read`] sends API reads open loop on a think-time schedule over a dataset that [`run`] loaded, and
+//!   reports latency per class; [`fresh`] measures how soon an acknowledged trace is listed by the API.
 //! - [`probe`] measures write-plus-fdatasync latency through `Env`'s disk and classifies the volume's
 //!   flushes as honest or suspicious.
 //! - [`stub`] is a minimal OTLP/HTTP server for calibrating the generator.
@@ -18,21 +20,27 @@
 mod ledger;
 mod pool;
 mod probe;
+mod read;
 mod run;
 pub mod stub;
 
 pub use ledger::{AckLedger, LossCheck, SequenceReader, check_zero_loss, verify};
 pub use pool::{
-    MAX_BODY_BYTES, MAX_SPANS_PER_REQUEST, Pool, PoolConfig, PoolError, RUN_ID_KEY, SEQ_KEY,
-    SpanSize, SpanSizeError,
+    Identity, MAX_BODY_BYTES, MAX_SPANS_PER_REQUEST, Pool, PoolConfig, PoolError, RUN_ID_KEY,
+    SEQ_KEY, SpanSize, SpanSizeError, span_offset_nanos,
 };
 pub use probe::{
     BYTES_PER_SIZE, Check, DIR_SYNC_FLOOR_NS, DirSync, Distribution, FLUSH_FLOOR_NS,
     MAX_DEVICE_BYTES_PER_S, Medians, PROBE_SCHEMA, ProbeReport, Verdict, WARMUP_ITERATIONS,
     WRITE_SIZES, WriteSize, classify, probe,
 };
+pub use read::{
+    ClassReport, Dataset, Drawn, FRESH_SCHEMA, FreshConfig, FreshReport, MAX_READS, READ_SCHEMA,
+    ReadClass, ReadConfig, ReadError, ReadReport, ReadSchedule, Think, due_offsets, fill, fresh,
+    nonempty, read,
+};
 pub use run::{
     ConnectError, ErrorCounts, GeneratorCpu, Lane, MAX_REQUESTS, Outcome, RUN_SCHEMA, ResolveError,
-    RunConfig, RunError, RunOutcome, RunReport, SPIN_WINDOW, Schedule, Summary, TRACES_PATH,
-    offset_nanos, resolve, run, scheduled_requests,
+    RunConfig, RunError, RunOutcome, RunReport, SPIN_WINDOW, Schedule, SpanTimes, Summary,
+    TRACES_PATH, offset_nanos, resolve, run, scheduled_requests,
 };

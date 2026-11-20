@@ -51,7 +51,7 @@ impl QueryService {
     /// Data bounds: `min` and `max` of the minute rollups, merged with the recent index, whose spans the
     /// rollups do not hold yet. Both sources are cut at the retention horizon.
     pub async fn data_bounds(&self, ctx: &ReadContext) -> Result<DataBounds, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "data_bounds");
         let consistency = self.consistency();
         let horizon = read.cutoff(TableId::SpanCore)?;
         let (recent, state) = self.index.time_bounds(ctx.scope);

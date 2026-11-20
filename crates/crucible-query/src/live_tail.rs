@@ -54,7 +54,7 @@ impl QueryService {
     ) -> Result<TraceTail, QueryServiceError> {
         // Before the clock, as in `trace_list`, for the head cursor of this response.
         let applied = self.index.applied();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "trace_list_since");
         let scope = ctx.scope;
         let limit = page_limit(query.limit)?;
         let (since, epoch, since_lsn) = query.since.check(scope, query.window)?;
