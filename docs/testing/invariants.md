@@ -94,8 +94,9 @@ timing, part layout or restarts. Effective tags equal ingest tags plus latest-ad
 ### I5. Backpressure, never out of memory
 
 Tracked bytes in every `ByteBudget` (`ingest.inflight_bytes`, `wal.unshipped_bytes`, `normalize.cache_bytes`,
-`shipper.encoded_bytes`, `recent.bytes`) stay at or below their caps. When a cap is hit the answer is 429 or 503
-with `Retry-After` (or the gRPC equivalents). No accepted request is dropped silently.
+`shipper.encoded_bytes`, `recent.bytes`) stay at or below their caps, except that the rows the shipper holds can
+exceed `shipper.encoded_bytes` by one frame, because frames are never split (contract 4.8). When a cap is hit the
+answer is 429 or 503 with `Retry-After` (or the gRPC equivalents). No accepted request is dropped silently.
 
 | Check | Kind |
 |---|---|

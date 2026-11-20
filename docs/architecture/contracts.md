@@ -467,6 +467,7 @@ Decisions made while implementing the traits above; they bind every backend.
 | Read deadline (#117) | A read whose Rust-side deadline passes before the server sent any byte of its answer ends with `QueryError::Unavailable` (`telemetry_store_unavailable`): a server that runs the statement ends it at its class limit, which falls before the deadline, so one that sent nothing is not answering. A read the server began to answer stays `Timeout` (`query_timeout`) |
 | Shutdown order (#114) | One signal reaches every task. The listeners finish their open requests, the jobs let a leader run end and release their leases (section 11.7), and the telemetry store's task stops the shipper, whose in-flight inserts are left in doubt for the next start to probe (section 5.5); every loop of the key feed, the SQL workspace and the project salts ends at the signal. The Postgres pools close after those tasks, because each may still need Postgres, and the WAL committer stops once no handle to the log is left. Whatever is still running after the 30 s grace is aborted |
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
+| `AssetSource` | Not a field of `Env`: the router takes an `Arc<dyn AssetSource>`, and `manifest()` returns a reference to the source's manifest. A directory source (`--ui-dir`) reads its files once at startup |
 | `ChildProcess` | Not a field of `Env`: only the proxy uses it, and takes it as an argument. Linux delivers the parent-death signal through a re-exec trampoline (a hidden `crucible proxy exec-child`), so the workspace stays free of `unsafe`; macOS has no parent-death signal. The simulation of a scripted MCP server (seeded chunk splits, stalls, crashes) lives in `crucible-proxy`'s tests; exit codes are covered by the scripted and real-process tests, because `ProxyCore` takes no exit status |
 | Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
 | File operations | Per-file operations (`append`, `read_at`, `sync_data`, `truncate`, `preallocate`) are methods on `File`. `OpenMode::Write` creates a missing file and never truncates |
@@ -851,6 +852,8 @@ sums rule of 3.1; their counts and histograms include every span.
 | Explicit error class | An explicitly annotated class is kept only when the classifier table pairs it with the observed status; a subclass is kept only with `tool_execution` |
 | Time parsing | RFC 3339 inputs: a leap second `:60` carries into the next minute; lowercase `t` and `z` are accepted; a space separator is rejected |
 | Provided cost | A NaN provided cost becomes 0 |
+| Error count | A span counts toward `error_count` (`trace_stats`, `session_rollup`, `user_rollup`, `span_metrics`) when its status or its level is `error` |
+| Pricing | Every unit is priced once, by the most specific key that holds it and has a price: a key is priced on its units less the units priced within its parts (`cache_read` and `cache_write` inside `input`, `reasoning` inside `output`, `input` and `output` inside `total`), and a part without a price stays in the key that holds it; any other key is priced on its own units. The calculated total is the saturating sum of the per-key costs, and a provided total still wins. The model name matched is `model_response`, else `model_requested`, so a response model without a row is not priced as the requested one. Patterns compile as `(?i)^(?:pattern)$`, at most 1 KiB each, nested at most 32 deep, at most 256 KiB compiled, and at most 16 MiB compiled per table. `BUNDLED_PRICE_TABLE_VERSION` is the low 32 bits of the xxh3-64 of the bundled data file, and a test fails until the two match. `docs/architecture/price-table.md` has the data format |
 | No-head sentinel | `NO_HEAD_START` is `2299-12-31T23:59:59.999999Z`, the largest `DateTime64(6)` value |
 
 ## 4. WAL
@@ -1030,6 +1033,19 @@ allocation.
 No accepted request is ever dropped silently. Un-normalized data beyond `normalize.cache_bytes` lives only on disk
 and is read back from the WAL in LSN order.
 
+Settled in code:
+- **Decision order** (`crucible_admission::decide`). Server-side conditions come before throttling, so a request
+  that meets a 503 condition never gets a 429. The key-unknown 503 waits 5 s, because the key feed picks a new key up
+  within seconds of Postgres returning; a failed WAL's 503 waits 30 s; a WAL over high-water or a disk below its
+  floor waits the time the backlog takes to drain at the rate the shipper reports (at each checkpoint and on its
+  idle timer), rounded up and clamped to 5 to 30 s (30 s while nothing drains). Only the 429 is jittered.
+- **Per-project token bucket.** It meters request bytes as received, and fact payload bytes. The binary sets no
+  rate, so ingest is not rate-limited (section 11.9) and a 429 comes from the in-flight byte budget.
+- **`shipper.encoded_bytes`** (1 GiB, fixed in the build) is enforced inside the shipper. Rows are charged at their
+  estimated size from a frame's placement in a batch until the batch's pairs resolve; while the budget is exhausted
+  the shipper reads no further frame, so the open batch seals and the next frame waits for a batch in flight. Frames
+  are never split, so the rows held can exceed the budget by at most one frame.
+
 **CPU budget** (#88). Preparing a request (inflate, JSON transcode, scan, frame compression) is a blocking job that
 takes a permit of the ingest-prepare share of `cpu.permits` (section 2.14) before it is spawned; ingest prepare is
 the only stage that takes permits, so its share is the whole total. Permits are first come, first served: a job that
@@ -1075,7 +1091,9 @@ Payload codecs and checksum strength over whole payloads are covered by property
 | Optional UUID | A presence byte (0 or 1) followed by the UUID when present (for example a score's `config_id`) |
 | Batch ranges | `BatchSeal` and `Quarantine` carry `first_lsn` and `last_lsn`; decoders reject `batch_seq != first_lsn` and `first_lsn > last_lsn` |
 | Value domains | Unknown flag bits, enum values outside their frozen set and bool bytes other than 0 and 1 are `InvalidValue`; header version 0 is `UnsupportedVersion` |
-| Bitmaps | The `rejected` bitmap is read least-significant bit first |
+| Bitmaps | The `rejected` bitmap is read least-significant bit first. It ends at the byte of the last rejected span and is empty when no span is rejected |
+| OTLP ids | An id field is absent or exactly 16 (trace) or 8 (span) bytes; any other length makes the body malformed (400). Only a missing or all-zero id is a partial-success rejection. A second occurrence of a singular message field is refused |
+| OTLP JSON | Ids are hex in either case; 64-bit integers are decimal strings or numbers, never floats; enums are integers, never names; bytes are base64 in either alphabet, padding optional; unknown keys are ignored and `null` means absent. The JSON text itself is held to the canonical body cap before it is transcoded. In a JSON reply `rejectedSpans` is a decimal string (the int64 mapping of OTLP/JSON) |
 | Caps | Field and list caps are enforced on encode and on decode |
 | Quarantine pairs | `table_id` is a `u16` that must name a known table; `partition_id` must parse as a partition id |
 | Classification order | The header CRC is checked first, so every other header error implies a valid header CRC. `payload_len` above `MAX_PAYLOAD` with a valid header CRC is `Corrupt`. A non-zero wrong magic with both CRCs valid is `Corrupt`. Fewer than four remaining bytes that are all zero are a clean end; otherwise a short header is a torn tail |
@@ -1216,13 +1234,16 @@ data in `crucible-store-clickhouse` and its stability across versions is pinned 
 |---|---|---|
 | Retry with backoff | Network error before the request was sent; 202 (too many queries); 252 with the too-many-parts message (also widens batches); 241 (memory; also halves concurrency); 243 (no space); 242 (read-only) | Same token, same bytes. Full jitter, 100 ms to 30 s, from `Clock` and `Rng` |
 | Unknown outcome | Timeout, reset mid-request, 159, 319, 999, process crash | Probe; insert only if absent |
-| Fatal configuration | 516, 497, 60, 16 | Stop the shipper for that table, raise an operator alert, keep the WAL. Ingest continues until `wal.unshipped_bytes` hits its cap |
+| Fatal configuration | 516, 497, 60, 16 | Stop the shipper for that table, raise an operator alert, keep the WAL. Ingest continues until `wal.unshipped_bytes` hits its cap. As built, the refused pair stays unresolved, so its batch is never checkpointed in that process and the WAL keeps it; an error log that names the table and the code is the alert, and a restart ships the batch again |
 | Poison data | 53, 27, 117, the Native-format data errors 33, 271, 432, 376 and 43, and similar data errors for one pair after 3 identical failures; 252 with the multi-partition message at once (a routing bug) | Quarantine |
 | Read guardrails (SELECT only) | 158, 307, 396, 191, 159, 241 | Never retried; mapped to `query_too_broad`, `query_timeout`, `query_memory_exceeded` |
 
 **Quarantine.** The frames of the batch are copied to `quarantine/<quarantine_ref>/` with a manifest (identity,
 failing pairs, error), synced; a `Quarantine` frame is appended and synced; the failing pairs then count as
 resolved for the watermark; an operator alert fires. Other pairs of the batch land normally. Data is never dropped.
+As built, `quarantine_ref` is the pair's token with `:` replaced by `_`, so each pair has one directory, which holds
+`frames` (every frame of the batch's range as its WAL frame header and stored payload) and `manifest` (text, one
+`key=value` per line).
 `crucible wal requeue <quarantine_ref>` re-ships the named pairs with the original identity and tokens, probing
 first. A quarantined batch counts as durable for invariant I1. A pair with an attempt in doubt may be quarantined
 only after a probe reads absent; otherwise a quarantined pair could also be present.
@@ -1258,6 +1279,10 @@ Before a node accepts ingest it must, through `TelemetryStore::detect` and `dedu
 Ingest is refused, loudly, when the version is below 26.3, the text index is unavailable, a required setting is
 missing, or either self-test fails. All behaviour-affecting settings are sent per query, so a Cloud service's
 `compatibility` value cannot change behaviour.
+
+Settled in code: `crucible serve` also refuses ingest on a server whose flavour is not single node, saying to point
+`clickhouse.url` at a single-node server, and on one where not every table exists, saying to start once with
+`--migrate`. `--migrate` and `crucible migrate` render the single-node variant of every step.
 
 ### 5.9 Crash barriers
 
@@ -1568,6 +1593,7 @@ Found against ClickHouse 26.3, 26.8, 26.10 and a one-shard, two-replica Keeper c
 | Native block headers | The TableDef type, except `LowCardinality(String)` is sent as `String`; `SimpleAggregateFunction` wrappers are kept, so the server converts nothing |
 | Insert compression | ZSTD level 1 when ZSTD is configured. A `compress=1` response may come back LZ4 or ZSTD (26.10 answers ZSTD), and readers accept both |
 | Empty blocks | Never sent; a zero-row block is a header only and creates no part |
+| Row order in a block | The shipper sorts by the ORDER BY key with UUIDs compared in RFC 9562 byte order, which is not ClickHouse's UUID order; the server sorts each inserted block itself, so the shipper's order fixes the block's bytes and nothing else |
 
 ## 7. ClickHouse identities and access
 
@@ -1842,7 +1868,7 @@ ClickHouse serves it.
 
 | Aspect | Contract |
 |---|---|
-| Entry | About 200 bytes: ids, times, type, level, model, cost, tokens, interned name, user and session, `lsn`, and a WAL locator (segment, offset, span ordinal). No payload and no previews |
+| Entry | Ids, times, type, level, model, cost, tokens, interned name, user and session, `lsn`, and a WAL locator (segment, offset, span ordinal). No payload and no previews. Each entry is charged `ENTRY_BYTES`, at most 400 bytes: the stored form, its key in each map, its place in the eviction queue and an allowance for the tree nodes; interned strings are charged once per distinct string |
 | Payload of a recent span | Re-read the frame at the locator and re-normalize that span (the normalizer is pure) |
 | Maps | By (project, trace_id); by (project, start_time, span_id); by (project, lsn) for live tail; a per-trace summary that includes rootless traces. 16 shards behind read-write locks; one writer (stage B) |
 | Bound | `recent.max_bytes`, default min(1 GiB, 10% of the container's memory limit (`/sys/fs/cgroup/memory.max`), else of the host's RAM) |
@@ -1911,7 +1937,7 @@ and `mcp.duration_p99` (one percentile each) (#91).
 ### 8.9 Settled in code
 
 - Trace detail reads spans in `[min_start, max_end + 1 µs)`, so a span that starts exactly at the trace's end is
-  included.
+  included. Its `hint_time` parameter is validated, then unused: the service finds the trace's time bounds itself.
 - `dedup_selftest` is reachable only through `TelemetryStore::dedup_selftest`, never through a plan.
 - The retention clamp of 8.3 is structural: every plan builder takes a `RetentionClamp` and returns `None` when the
   window has fully expired; `QueryPlan::new` is private to `crucible-plan`.
@@ -2381,8 +2407,8 @@ applications fill the field too. These names are wire contract: renaming one is 
 | `trace_name` | `crucible.trace.name`; when no span of the trace sets it, displays use the root span's `name` |
 | `session_id` | `crucible.session.id`, `session.id`, `gen_ai.conversation.id` (string, or an integer rendered in decimal) |
 | `user_id` | `crucible.user.id`, `user.id` |
-| `environment` | `crucible.environment`, resource `deployment.environment.name`, resource `deployment.environment` |
-| `release` | `crucible.release`, resource `service.version` |
+| `environment` | `crucible.environment` (on the span), resource `deployment.environment.name`, resource `deployment.environment` |
+| `release` | `crucible.release` (on the span), resource `service.version` |
 | `version` | `crucible.version` |
 | `tags` | `crucible.tags` (string array) |
 | `metadata` | `crucible.metadata.*` (prefix-flattened to a map) |
@@ -2390,7 +2416,7 @@ applications fill the field too. These names are wire contract: renaming one is 
 | `trace_tags`, `trace_metadata`, `trace_public` | `crucible.trace.tags`, `crucible.trace.metadata.*`, `crucible.trace.public` (bool) |
 | `input`, `output` (non-GenAI spans) | `crucible.input`, `crucible.output` (JSON or string); GenAI spans keep the message keys of 10.3; tool spans without messages take `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` |
 | `prompt_name`, `prompt_version` | `crucible.prompt.name`, `crucible.prompt.version` |
-| Provided cost | `crucible.cost.total` and `crucible.cost.<usage key>`, in USD as a decimal string or a double |
+| Provided cost | `crucible.cost.total` and `crucible.cost.<usage key>`, in USD as a decimal string, a double or an integer (whole USD) |
 | `completion_start_time` | `crucible.completion_start_time` (RFC 3339 string or Unix nanoseconds) |
 | `model_parameters` | `crucible.model_parameters.*`, then every `gen_ai.request.*` key other than the model under its suffix name (temperature, top_p, max_tokens and the rest), then `openai.request.service_tier` as `service_tier`. Dialect tables use the same member names |
 | `provider` | `gen_ai.provider.name`, then the deprecated `gen_ai.system` |
@@ -2685,8 +2711,9 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   instead of the embedded one), `--ingest-listen` (default `0.0.0.0:4318`), `--grpc-listen` (default
   `0.0.0.0:4317`), `--postgres-url` and `--postgres-password-file` (the control plane; also `CRUCIBLE_POSTGRES_URL`,
   `CRUCIBLE_POSTGRES_PASSWORD_FILE` and `CRUCIBLE_POSTGRES_PASSWORD`) and `--keys-file` (TOML `[[project_key]]`
-  entries with `project_id`, `public_key` and `secret`; error messages never echo the file). The keys file is the
-  mode without Postgres
+  entries with `project_id`, `public_key` and `secret`; error messages never echo the file; each key gets a fresh
+  `api_key_id` from `Env::new_id` at every start, so the `api_key_id` its rows carry changes across restarts). The
+  keys file is the mode without Postgres
   (ingest and the API on file keys, no sign-in); with Postgres configured, keys live in the control plane and a keys
   file is refused with a message that says how to fix it. `crucible admin create-key --project <slug|id>
   [--scopes ...] [--note ...] [--import]` creates a key from the command line; running servers see it within 5 s
@@ -3207,4 +3234,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |
 | v2 | 2026-11-18 | Settled in code by #58, #78 and #79: SDK export queues bounded by spans and bytes (9.10); the MCP storage readings and normalizer version 5 (9.11); project salts (11.1); the fake collector's normalizer edge (1.5); the filtered trace list, span list, sessions of a user and list consistency (8.9); list filters, routes and cursor routes 4 to 7 (12.5) |
 | v2 | 2026-11-19 | Settled in code by wave B (#84 alerts, #85 lifecycle, #87 exports): five crate rows and the `crucible-api` edges (1.5); queues, columns, permissions, egress and export rules (11.10); deletion hiding bounds and the gaps then open (13.6) |
-| v2 | 2026-11-20 | Settled in code since #94 (#86, #88, #91, #93, #98, #99, #114, #115, #117, #119, #121), and the planned-tense wording removed: the `crucible-media` row with the edges to it and `crucible-mcp-server` to `crucible-export` (1.5); the age check's retention horizon (1.2); what `Stores` holds (2); `ObjectStore` as built (2.10); memory budgets, the CPU budget, read counters, the read deadline and the shutdown order (2.14); never-stored keys in events and links (3.5); `BatchSeal.deletion_seq` (4.4); the ingest CPU budget and its proved kernel (4.8, 4.9); `EPOCH`'s directory entry (4.10); the ledger checksum and probe identity repair (6.6, 7.5); `InSet` (8.1); capture-source selection as a presence read (8.2, 9.5); store-outage reads (8.5, 8.9); MCP metrics and the tags filter (8.8, 8.9, 12.5); SDK feedback (9.10); MCP storage fixes and MCP analytics (9.11); dialect 0 sources (10.5); salts, dashboards and deletion replay (11.1, 11.10); the cursor key (11.2); public-key feedback (11.3); job start (11.7); exports on the disk root (11.10, 12.8); the serve flags, the identity generation, cursor route 8, the search body, the media list route and `features` (12.1, 12.5, 12.6, 12.7); deletion in stage B and what the executor does and does not do (13.3, 13.6); media (14.2, 14.3, 14.5). Rule I9 gains the repeat exception (`invariants.md`) |
+| v2 | 2026-11-20 | Settled in code since #94 (#86, #88, #91, #93, #98, #99, #114, #115, #117, #119, #121), and the planned-tense wording removed: the `crucible-media` row with the edges to it and `crucible-mcp-server` to `crucible-export` (1.5); the age check's retention horizon (1.2); what `Stores` holds (2); `ObjectStore` as built (2.10); memory budgets, the CPU budget, read counters, the read deadline and the shutdown order (2.14); never-stored keys in events and links (3.5); `BatchSeal.deletion_seq` (4.4); the ingest CPU budget and its proved kernel (4.8, 4.9); `EPOCH`'s directory entry (4.10); the ledger checksum and probe identity repair (6.6, 7.5); `InSet` (8.1); capture-source selection as a presence read (8.2, 9.5); store-outage reads (8.5, 8.9); MCP metrics and the tags filter (8.8, 8.9, 12.5); SDK feedback (9.10); MCP storage fixes and MCP analytics (9.11); dialect 0 sources (10.5); salts, dashboards and deletion replay (11.1, 11.10); the cursor key (11.2); public-key feedback (11.3); job start (11.7); exports on the disk root (11.10, 12.8); the serve flags, the identity generation, cursor route 8, the search body, the media list route and `features` (12.1, 12.5, 12.6, 12.7); deletion in stage B and what the executor does and does not do (13.3, 13.6); media (14.2, 14.3, 14.5). From the earlier queue: `AssetSource` (2.14); error count and pricing (3.11); the decision order, the per-project bucket and `shipper.encoded_bytes` (4.8); OTLP ids, OTLP/JSON and the rejected bitmap (4.10); the fatal-configuration action and the quarantine layout as built (5.6); single-node serving (5.8); row order in a block (6.7); the index entry charge (8.6); `hint_time` (8.9); span-only `crucible.environment` and `crucible.release` and whole-USD costs (10.6); keys-file key ids (12.1). Rules I5 (one frame over `shipper.encoded_bytes`) and I9 (the repeat exception) in `invariants.md` |
