@@ -33,6 +33,8 @@ export interface RunSpec {
   transport?: "stdio" | "streamable_http";
   otlp: { endpoint: string; traces_url: string };
   checkpoint_url: string;
+  api_url: string;
+  project_id: string;
   keys: { public_key: string; secret_key: string };
   sdk: {
     service_name: string;
@@ -59,6 +61,8 @@ const REQUEST_STATE = "crucible-conformance-request-state-1";
 export function initFromSpec(spec: RunSpec): void {
   init({
     endpoint: spec.otlp.endpoint,
+    apiUrl: spec.api_url,
+    projectId: spec.project_id,
     secretKey: spec.keys.secret_key,
     serviceName: spec.sdk.service_name,
     flushIntervalMs: spec.sdk.flush_interval_ms,

@@ -20,6 +20,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 | [MCP](mcp.md) | The ways Crucible covers MCP, the SDK wrappers per language, and what it records about MCP operations |
 | [MCP proxy](mcp-proxy.md) | `crucible proxy`, which records an MCP server's operations without changing the server |
 | [Crucible's MCP server](mcp-server.md) | Connecting a coding agent to `/mcp` with a project key, and its tools |
+| [MCP analytics](mcp-analytics.md) | The MCP pages: servers, tools, errors, clients, users, sessions, operations, deploys and compare, their scope, and the API behind them |
 
 ## Using the data
 
@@ -27,7 +28,7 @@ How to send telemetry to Crucible and use it. To run a server first, follow the
 |---|---|
 | [Exploring traces](exploring-traces.md) | Home, traces and the trace page, spans, sessions, users, filters and the time range |
 | [Search](search.md) | Finding spans by the words of their input and output or their metadata, and reading payloads |
-| [Tags, flags, scores and corrections](facts.md) | Adding facts in the UI and the API, and how they resolve |
+| [Tags, flags, scores and corrections](facts.md) | Adding facts in the UI, scores from the SDKs, the API, and how facts resolve |
 | [Dashboards](dashboards.md) | The starter dashboards, your own dashboards, the editor, the widget kinds and who can edit |
 | [Alerts](alerts.md) | Alert rules, notification channels and verifying a webhook |
 | [Exports](exports.md) | Exporting spans from the UI, the API, the MCP server and `crucible export`, and validating models with rightmodeler |

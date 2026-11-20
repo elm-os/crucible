@@ -1,0 +1,40 @@
+{
+  "schema": "crucible.conformance.golden/v1",
+  "scenario": "agent-feedback",
+  "spans": [
+    {
+      "id": "answer",
+      "select": { "name": "answer" },
+      "parent": null,
+      "fields": { "observation_type": "agent", "session_id": "conformance-session" }
+    }
+  ],
+  "feedback": [
+    {
+      "id": "thumbs-up",
+      "idempotency_key": "conformance-feedback-1",
+      "body": { "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "name": "helpful", "value": 1, "comment": "good answer" },
+      "after": ["answer"]
+    },
+    {
+      "id": "tone",
+      "idempotency_key": { "matches": "^[A-Za-z0-9_-]{1,128}$" },
+      "body": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "span_id": "00f067aa0ba902b7",
+        "name": "tone",
+        "value": "friendly",
+        "score_id": "reviewer-2",
+        "data_type": "categorical",
+        "metadata": { "source": "thumbs", "rating": 4 }
+      },
+      "after": ["answer"]
+    },
+    {
+      "id": "resolved",
+      "idempotency_key": { "matches": "^[A-Za-z0-9_-]{1,128}$" },
+      "body": { "session_id": "conformance-session", "name": "resolved", "value": true },
+      "after": ["answer"]
+    }
+  ]
+}

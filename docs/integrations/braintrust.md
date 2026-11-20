@@ -3,7 +3,8 @@
 Spans that carry Braintrust's OpenTelemetry attributes (`braintrust.input_json`, `braintrust.metrics`,
 `braintrust.span_attributes` and the rest) are sent to `/otel/v1/traces`, from a plain OTLP exporter or from a
 Braintrust SDK's OpenTelemetry exporter. Crucible reads their span types, inputs and outputs, metadata, token
-metrics, models, levels and tags. The Braintrust features that call its REST API are not served.
+metrics, models, levels and tags. The Braintrust features that call its REST API are not served;
+[moving from Braintrust](../migration/braintrust.md) lists them.
 
 Verified with braintrust 0.52.0 (Python, `BraintrustSpanProcessor`), braintrust-sdk-go 0.20.0, and the OpenTelemetry
 Python OTLP exporter 1.45.2.

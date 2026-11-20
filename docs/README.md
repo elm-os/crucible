@@ -24,15 +24,17 @@
 | [MCP](guides/mcp.md) | SDK wrappers, the proxy and Crucible's MCP server |
 | [MCP proxy](guides/mcp-proxy.md) | Recording an MCP server without changing it |
 | [Crucible's MCP server](guides/mcp-server.md) | Connecting a coding agent to `/mcp` |
+| [MCP analytics](guides/mcp-analytics.md) | Servers, tools, errors, clients, sessions, operations and deploys, per side |
 | [Exploring traces](guides/exploring-traces.md) | Home, traces, the trace page, spans, sessions and users |
 | [Search](guides/search.md) | Full-text and metadata search, and payloads |
-| [Tags, flags, scores and corrections](guides/facts.md) | Facts in the UI and the API |
+| [Tags, flags, scores and corrections](guides/facts.md) | Facts in the UI, the SDKs and the API |
 | [Dashboards](guides/dashboards.md) | Starter dashboards, your own, the editor and the widget kinds |
 | [Alerts](guides/alerts.md) | Alert rules, channels and webhook verification |
 | [Exports](guides/exports.md) | Exports and the rightmodeler workflow |
 | [SQL workspace](guides/sql-workspace.md) | Read-only SQL over a project's telemetry |
 | [REST API](api/README.md) | Every route, authentication, errors, windows, cursors and idempotency |
 | [Integrations](integrations/README.md) | Pointing other instrumentation libraries and tracing SDKs at Crucible, and what each maps |
+| [Migration](migration/README.md) | Moving an application's tracing from another platform to Crucible |
 | [Authorization matrix](architecture/authz-matrix.md) | The permission of every route, and the roles and scopes that grant it |
 
 ## Comparisons

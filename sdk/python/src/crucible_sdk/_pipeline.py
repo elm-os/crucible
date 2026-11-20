@@ -4,12 +4,13 @@
 batches spans and sends them as OTLP HTTP protobuf to `/v1/traces`.
 
 OpenTelemetry's global tracer provider can be set only once per process, so the processor is registered once and
-`init` and `shutdown` replace the pipeline behind it.
+`init` and `shutdown` replace the pipeline behind it. Each pipeline has a feedback sender (`_feedback`) beside it.
 """
 
 from __future__ import annotations
 
 import atexit
+import dataclasses
 import logging
 import os
 import threading
@@ -27,7 +28,7 @@ from opentelemetry.sdk.trace import Event, ReadableSpan, Span, SpanProcessor, Tr
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import Status
 
-from crucible_sdk import _context, _keys
+from crucible_sdk import _context, _feedback, _keys
 from crucible_sdk._scrub import Scrubber
 from crucible_sdk._version import __version__
 
@@ -60,6 +61,12 @@ class ExportStats:
     """Spans in export requests that failed."""
     queued_bytes: int = 0
     """The estimated size of the queued spans and of the batch being exported (see `span_bytes`)."""
+    feedback_sent: int = 0
+    """Scores Crucible accepted."""
+    feedback_dropped: int = 0
+    """Scores never sent: the feedback queue was full, no project id is set, or `shutdown` ran out of time."""
+    feedback_failed: int = 0
+    """Scores Crucible refused, or that failed on every attempt."""
 
 
 # What a span costs beyond its strings: ids, times, kind, status code, links and the resource and scope refs.
@@ -103,10 +110,15 @@ class Config:
     export_timeout: float = EXPORT_TIMEOUT
     queue_bytes: int = QUEUE_BYTES
     """Estimated bytes of the queued spans and the batch being exported (see `span_bytes`) held before dropping."""
+    feedback_url: str | None = None
+    """The project's feedback route; `None` without a project id."""
+
+
+USER_AGENT = f"crucible-sdk-python/{__version__}"
 
 
 def _exporter(config: Config) -> SpanExporter:
-    headers = {"User-Agent": f"crucible-sdk-python/{__version__}"}
+    headers = {"User-Agent": USER_AGENT}
     if config.secret_key:
         headers["Authorization"] = f"Bearer {config.secret_key}"
     return OTLPSpanExporter(
@@ -273,8 +285,16 @@ def _scrub_event(event: Event) -> Event:
 class _State:
     lock = threading.Lock()
     pipeline: Pipeline | None = None
+    feedback: _feedback.FeedbackSender | None = None
     provider: TracerProvider | None = None
     hooks_registered = False
+
+
+def _sender(pipeline: Pipeline) -> _feedback.FeedbackSender:
+    config = pipeline.config
+    return _feedback.FeedbackSender(
+        config.feedback_url, config.secret_key, USER_AGENT, config.export_timeout, pipeline.flush
+    )
 
 
 class CrucibleProcessor(SpanProcessor):
@@ -326,10 +346,14 @@ def _attach(resource: Mapping[str, str]) -> None:
 def init(config: Config) -> None:
     with _State.lock:
         old, _State.pipeline = _State.pipeline, None
+        old_feedback, _State.feedback = _State.feedback, None
         if old is not None:
             old.shutdown(5.0)
+        if old_feedback is not None:
+            old_feedback.shutdown(5.0)
         _attach(config.resource)
         _State.pipeline = Pipeline(config)
+        _State.feedback = _sender(_State.pipeline)
         if not _State.hooks_registered:
             _State.hooks_registered = True
             atexit.register(shutdown)
@@ -338,20 +362,39 @@ def init(config: Config) -> None:
 
 
 def flush(timeout: float = 5.0) -> bool:
-    pipeline = _State.pipeline
-    return True if pipeline is None else pipeline.flush(timeout)
+    deadline = time.monotonic() + timeout
+    pipeline, sender = _State.pipeline, _State.feedback
+    spans = True if pipeline is None else pipeline.flush(timeout)
+    scores = True if sender is None else sender.flush(max(deadline - time.monotonic(), 0.0))
+    return spans and scores
 
 
 def shutdown(timeout: float = 5.0) -> None:
+    """Sends the queued spans, then the queued scores, within `timeout` seconds in all, and stops."""
+    deadline = time.monotonic() + timeout
     with _State.lock:
         pipeline, _State.pipeline = _State.pipeline, None
+        sender, _State.feedback = _State.feedback, None
     if pipeline is not None:
         pipeline.shutdown(timeout)
+    if sender is not None:
+        sender.shutdown(max(deadline - time.monotonic(), 0.0))
 
 
 def stats() -> ExportStats:
-    pipeline = _State.pipeline
-    return ExportStats(0, 0, 0, 0) if pipeline is None else pipeline.stats()
+    pipeline, sender = _State.pipeline, _State.feedback
+    spans = ExportStats(0, 0, 0, 0) if pipeline is None else pipeline.stats()
+    if sender is None:
+        return spans
+    sent, dropped, failed = sender.counts()
+    return dataclasses.replace(spans, feedback_sent=sent, feedback_dropped=dropped, feedback_failed=failed)
+
+
+def feedback(payload: Mapping[str, object], key: str | None) -> None:
+    """Queues one score with the current pipeline's sender; before `init` and after `shutdown` it does nothing."""
+    sender = _State.feedback
+    if sender is not None:
+        sender.add(payload, key)
 
 
 def secret_key() -> str | None:
@@ -366,6 +409,7 @@ def _after_fork_in_child() -> None:
     old = _State.pipeline
     if old is not None:
         _State.pipeline = Pipeline(old.config)
+        _State.feedback = _sender(_State.pipeline)
 
 
 def default_resource(
