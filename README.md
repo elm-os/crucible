@@ -77,7 +77,7 @@ flowchart TB
     apps["Your agents and MCP servers"]
     receive["1. Crucible receives the traces"]
     log[("2. Crucible saves them to a log on disk, then replies OK")]
-    clickhouse[("ClickHouse: your traces")]
+    clickhouse[("3. ClickHouse: your traces, copied in batches, never twice")]
     memory["The newest traces, kept in memory"]
     postgres[("Postgres: users, projects, API keys, alerts, dashboards")]
     read["4. Crucible's web UI, REST API and MCP server"]
@@ -85,7 +85,7 @@ flowchart TB
 
     apps -->|OpenTelemetry| receive
     receive --> log
-    log -->|"3. copied in batches, never twice"| clickhouse
+    log --> clickhouse
     log --> memory
     log ~~~ postgres
     clickhouse --> read
