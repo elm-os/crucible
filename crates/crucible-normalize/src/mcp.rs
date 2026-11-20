@@ -64,6 +64,10 @@ pub enum Mutant {
     /// issuer (contract 13.3).
     #[cfg(feature = "test-mutants")]
     IgnoreTombstoneIssuer,
+    /// Let a kept span flagged a usage aggregate on an earlier frame's support rely on nothing for its flag
+    /// (contract 5.3).
+    #[cfg(feature = "test-mutants")]
+    SkipFlagReliance,
 }
 
 /// The salt of a project (contract 9.3): the key of the keyed hash of a user subject. It is random, immutable for
