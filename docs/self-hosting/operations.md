@@ -34,6 +34,13 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   filesystem`. Take a [backup](#backups) before an upgrade so that you can return to it.
 - Changes to the storage format are recorded in the change log of the
   [contract](../architecture/contracts.md#15-change-control), with the migration each one needs.
+- The first start with migration step `0005_mcp_tool_rollup_hourly` copies the MCP tool rollup, by hour, into
+  `crucible.mcp_tool_rollup_hourly`, before the server accepts traffic. On two cores the copy takes about a minute
+  for every 25 million rows of `crucible.mcp_tool_rollup` (a month of a busy MCP deployment), and ClickHouse ends it
+  after an hour. Stop every server of the earlier version first: calls that an earlier version stores after the
+  copy reach only the minute rollup, so reads over 12 hours or more would leave them out. If the copy stops
+  part-way, the next migration refuses to start and says to run `TRUNCATE TABLE crucible.mcp_tool_rollup_hourly` as
+  the ClickHouse admin user before migrating again.
 
 ## Backups
 

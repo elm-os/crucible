@@ -20,6 +20,11 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   log arrived, not every request ever made, before it sends that data to ClickHouse.
 - The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
   shipper dropped before ClickHouse because a deletion request selects them.
+- MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
+  rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
+  minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
+- Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
+  once, on the first start of this version.
 
 ## [0.1.0] - 2026-11-20
 
