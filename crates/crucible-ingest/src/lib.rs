@@ -16,7 +16,9 @@
 //!    or older than the age cutoff are rejected through OTLP partial success (400 or 413 refuse the request).
 //! 5. The `IngestRequest` payload: the envelope of contract 4.4 (with the rejected spans in its bitmap, by
 //!    ordinal, the transport, and the dialect hint of a compat route or a routing header) and the canonical
-//!    body, prepared as a frame off the async threads.
+//!    body, prepared as a frame. A small uncompressed body is prepared on the async worker; any other body in a
+//!    blocking job under a permit of the CPU budget's ingest-prepare share, which bounds the jobs that run at
+//!    once (requests beyond it wait their turn without holding a thread).
 //! 6. [`crucible_wal::Wal::append`]. Only after it resolves, which under `wal.durability = group` means the
 //!    frame is durable, does the client get 200 with an `ExportTraceServiceResponse` (contract 4.5).
 //!
@@ -41,6 +43,6 @@ pub use crucible_admission::BucketConfig;
 pub use facts::{AcceptedFact, FactAuthor, FactWriteError, NewFact};
 pub use grpc::grpc_unavailable;
 pub use service::{
-    CompatRoute, DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, Ingest, IngestConfig, Mutant,
-    RoutingHeader,
+    CompatRoute, DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, DEFAULT_PREPARE_PERMITS, Ingest,
+    IngestConfig, Mutant, RoutingHeader,
 };
