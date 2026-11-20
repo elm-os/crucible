@@ -12,15 +12,16 @@ The rig has three parts:
 
 ## v0 targets
 
-| Target | Value |
-|---|---|
-| Ingest throughput per node | at least 250,000 spans/s of 1 KiB spans, and at least 50,000 spans/s of 10 KiB spans |
-| Durable-ack latency | p99 at most 20 ms, with `wal.durability = group` on a volume the probe classified `honest` |
-| Acknowledged loss | zero (invariant I1) |
-| Freshness | at most 2 s p95 from ack to readable |
-
-The read-side targets (trace by id, list queries, MCP dashboards, SDK and proxy overhead) will be added with the
-tools that measure them.
+| Target | Value | Measured by |
+|---|---|---|
+| Ingest throughput per node | at least 250,000 spans/s of 1 KiB spans, and at least 50,000 spans/s of 10 KiB spans, sustained | the gate's `e2e` path (sustained) and `ack` path (throughput) |
+| Durable-ack latency | p99 at most 20 ms, with `wal.durability = group` on a volume the probe classified `honest` | the gate's `ack` path (latency) |
+| Acknowledged loss | zero (invariant I1) | every `e2e` arm |
+| Freshness | at most 2 s p95 from ack to readable | the gate's `e2e` path (freshness) |
+| Trace by id | at most 100 ms p95 | the read bench's `trace_by_id` lane |
+| A 30-day trace list over 1 billion spans | at most 500 ms p95 | the read bench's `trace_list_30d` lane, measured at 100 million spans and labelled with its scale |
+| The MCP tool dashboard | at most 300 ms p95 | no lane of the read bench measures it (below) |
+| SDK and proxy overhead | at most 1 ms p99 | the SDK and proxy suites, not this rig |
 
 ## The rig
 
@@ -60,13 +61,15 @@ Results are reported per lane and never averaged across lanes:
 ```sh
 cargo xtask perf gate --base main                          # the candidate is HEAD
 cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --post
+cargo xtask perf gate --base main --path e2e --lane 1kb-gzip   # shipped spans/s and freshness, gzip bodies
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--base` | required | The base ref (A) |
 | `--candidate` | `HEAD` | The candidate ref (B) |
-| `--lane` | `1kb` | `1kb`: 1 KiB spans, 100 per request. `10kb`: 10 KiB spans, 10 per request, which keep the generator accurate ([`perf-baseline.md`](perf-baseline.md)) |
+| `--path` | `ack` | `ack`: receive to durable acknowledgement (throughput and durable-ack p99). `e2e`: receive to readable in the store (sustained spans/s over a run and its drain, and freshness p95, each with the zero-loss check) |
+| `--lane` | `1kb` | `1kb`: 1 KiB spans, 100 per request. `10kb`: 10 KiB spans, 10 per request, which keep the generator accurate ([`perf-baseline.md`](perf-baseline.md)). `1kb-gzip`, `10kb-gzip`: the same with gzip bodies, compressed on half the generator's CPUs |
 | `--pairs` | 5 | Interleaved pairs: at least 5 on the full rig, at least 1 on the small rig, at most 100 |
 | `--rig` | `full` | `full`: the rig above. `small`: reduced limits for smoke runs (below) |
 | `--post` | off | Set the `perf-gate` commit status on the candidate commit through `gh`. Refused with `--rig small` |
@@ -80,9 +83,13 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
 2. Builds `crucible-loadgen` in release from the checkout that runs the gate. That one binary measures both arms,
    and the report records its SHA-256.
 3. Runs the fsync-honesty probe on a fresh WAL volume of the session, with Crucible's CPUs and memory.
-4. Runs the pairs. Each pair runs the throughput measurement for A and B back to back, then the latency
-   measurement for both, with the same lane and offered load. The order alternates from pair to pair (AB, BA,
-   AB, ...), so that slow drift in temperature or background load does not favour one arm. Every arm gets a fresh
+4. Runs a discarded latency arm of A, then of B, so that neither image starts cold in a measured arm and the
+   first measured arm follows the same kind of work as every later one. Then runs the pairs. In a pair, the first
+   build runs the path's capacity measurement and then its latency measurement, and the second build the same,
+   with the same lane and offered load: every capacity arm follows a latency arm and every latency arm follows
+   its own build's capacity arm, whichever build goes first (see the A/A calibration below for why). The order
+   alternates from pair to pair (AB, BA, AB, ...), so that slow drift in temperature or background load does not
+   favour one arm. Every arm gets a fresh
    rig: ClickHouse, Postgres and Crucible (`serve --migrate`) from the arm's image on a new WAL volume; then the
    first owner and a key with the `ingest` and `read` scopes for the project `default` (`crucible admin init` and
    `crucible admin create-key`, run with the image's own binary, because with Postgres the keys live there and a
@@ -97,16 +104,32 @@ cargo xtask perf gate --base main --candidate my-branch --lane 10kb --pairs 7 --
      requests per second times `service_time_us.p50` comes near 128) while `generator_cpu` stays below the
      generator's CPUs.
    - Latency: offer a fixed rate below both builds' capacity, and the measurement is `latency_us.p99`.
+   - Sustained (`--path e2e`): offer more than the end-to-end path keeps up with, but less than the ack path
+     takes, for a fixed time, then wait until `span_core` holds every acknowledged span (the drain). The
+     measurement is acknowledged spans per second over the run and its drain: from the schedule's start
+     (`started_at` of the generator's report) to the end of the last `span_core` insert, from
+     `system.query_log`. Once the shipper saturates, the backlog drains at its rate, so the measurement is the
+     end-to-end capacity whatever the schedule's length.
+   - Freshness (`--path e2e`): offer a fixed rate below the end-to-end capacity, drain, and the measurement is
+     the p95 over the run's spans of the time from `received_at` (stamped by the WAL committer just before the
+     frame's append and sync) to the end of the `span_core` insert that made the span readable, matched through
+     the insert's deduplication token in `system.query_log`.
+   - Both end-to-end measurements start after the warm-up has drained, so no backlog carries into them, and
+     both check zero loss (invariant I1) after the drain: the run's stored `loadgen.seq` values in
+     `span_payload` must cover every acknowledged sequence number exactly once, and `span_core` must hold one
+     row per span.
 5. Compares the builds, writes the report and the summary, and with `--post` sets the commit status.
 
-| Rig | Throughput schedule | Latency schedule | Warm-up | `--recent-max-bytes` |
-|---|---|---|---|---|
-| `full` | 20,000 requests/s for 10 s | 1,000 requests/s for 30 s | 3 s | 256 MiB |
-| `small` | 10,000 requests/s for 3 s | 100 requests/s for 5 s | 2 s | 64 MiB |
+| Rig | Throughput schedule | Latency schedule | Sustained schedule | Freshness schedule | Drain limit | Warm-up | `--recent-max-bytes` |
+|---|---|---|---|---|---|---|---|
+| `full` | 20,000 requests/s for 10 s | 1,000 requests/s for 30 s | 1,500 requests/s for 20 s | 300 requests/s for 30 s | 300 s | 3 s | 256 MiB |
+| `small` | 10,000 requests/s for 3 s | 100 requests/s for 5 s | 1,000 requests/s for 10 s | 100 requests/s for 10 s | 180 s | 2 s | 64 MiB |
 
-On the full rig the 1 KiB lane offers 2,000,000 spans/s for throughput and 100,000 for latency, and the 10 KiB
-lane 200,000 and 10,000. Both measurements use 128 connections and uncompressed protobuf. The recent-span index
-is bounded explicitly because its default is a share of the VM's memory, not the container's.
+A request is 100 KiB of spans in both span sizes, so one schedule serves both. On the full rig the 1 KiB lane
+offers 2,000,000 spans/s for throughput and 100,000 for latency, and the 10 KiB lane 200,000 and 10,000; the
+end-to-end path offers 150,000 and 30,000 spans/s of 1 KiB spans, above and below the shipper's limit of about
+69,000 in the baseline ([`perf-baseline.md`](perf-baseline.md)). Every measurement uses 128 connections. The
+recent-span index is bounded explicitly because its default is a share of the VM's memory, not the container's.
 
 ### The decision
 
@@ -120,16 +143,75 @@ distribution is counted exactly over every assignment of signs.
   five pairs move in the regression direction (p = 1/32). More pairs make the test more sensitive.
 - Durable-ack p99 gates only when the probe classified the WAL volume `honest` in the same session. On a
   `suspicious` volume, or when the probe failed, the latency is reported, labelled `not gated`, and cannot block.
+  Sustained spans/s and freshness p95 always gate: the sync is a small part of either. The sustained rate follows
+  the throughput rule (a drop of more than 5%) and freshness the p99 rule (a rise of more than 10%).
 - An arm cannot be compared, which makes its metric's comparison **invalid**, when:
   - a throughput arm acknowledged 90% or more of the offered spans per second: the offered load did not exceed
     the build's capacity, so the value measures the schedule;
   - a latency arm had a failed request or a non-2xx response. `latency_us` covers 2xx responses only, so a stall
     longer than `--timeout-ms` shows up in `errors.timeout` rather than in the latency;
-  - Crucible, ClickHouse or Postgres was not running after the measurement, for example after an OOM kill.
+  - Crucible, ClickHouse or Postgres was not running after the measurement, for example after an OOM kill;
+  - an end-to-end arm did not drain within the limit, or lost or duplicated an acknowledged span (the reason says
+    how many);
+  - a sustained arm shipped 90% or more of the offered spans per second, or its drain after the last response
+    took less than a tenth of its time: the store kept up, so the ack path or the generator set the rate;
+  - a freshness arm had a failed request or a non-2xx response, or its freshness covers fewer spans than it
+    acknowledged.
 
 The verdict is `regression` when a valid, gated metric blocks, otherwise `invalid` when a comparison did not hold,
 otherwise `pass`. The command exits with 0 for `pass`, 1 for `regression` or `invalid`, and 2 when it could not
 run: a bad argument, a failed build, a rig that did not start.
+
+### Order effects and other jobs
+
+The gate also estimates how much running second rather than first moves a metric, so that an A/A run (the same
+commit as base and candidate) can show whether the rig favours a position. In an AB pair the second arm minus the
+first is the builds' difference plus the order effect; in a BA pair it is the order effect minus the builds'
+difference. The order effect is the mean of the AB pairs' median second-minus-first difference and the BA pairs',
+relative to the median of every value, so the builds' difference cancels. It is reported for every metric (the
+summary's "Second vs first" column), and a note names it when it exceeds the metric's threshold. It never blocks.
+
+Each measured arm also records what else the machine did: busy cores on the rig's CPUs and on the Docker host's
+other CPUs (from `/proc/stat`, which a container reads unnamespaced), the share of the measurement during which
+the busiest block device had I/O in flight (from `/proc/diskstats`), the page-cache drops on the host (from
+`/proc/vmstat`: a job that frees memory by dropping the cache sends the next reads to the disk), the 1-minute load
+average before and after, and the containers that ran outside the session. Other jobs' containers carry no cpuset,
+so they can take the rig's CPUs as well, and they write to the disk the WAL flushes to; the summary's last table
+lists every run in order with this context.
+
+### A/A calibration
+
+Two early smoke runs of `main` against itself on the small rig, with 2 pairs each, differed by +12.9% and +43.7%
+in median throughput, and arm A was slower in all four throughput pairs. The question was whether the rig
+favours a position (warm caches, image layers, the page cache, Docker network or volume set-up) or whether other
+jobs' load made the noise. Both runs below measured one image (`39360ec`) as A and B on the small rig, ack path,
+1 KiB lane, 8 pairs, on 2026-11-19, **measured on a laptop, not reference hardware**, with other tracks' builds
+sharing the machine. The pass criterion for the second run was written down before it ran: the verdict is `pass`;
+for each metric the two-sided sign test of the per-pair second-minus-first differences gives p of at least 0.05;
+and the throughput order effect is below the throughput threshold of 5%.
+
+| Run | Schedule | Throughput medians A, B | Throughput order effect | Second arm higher | p99 order effect | Second arm higher | Verdict |
+|---|---|---|---|---|---|---|---|
+| Before | each pair: both capacity arms, then both latency arms; no warm-up arm | 573,840; 575,878 spans/s | -0.6% | 2 of 8 pairs (sign test p = 0.29) | -11.4% | 3 of 8 (p = 0.73) | pass |
+| After | a discarded latency arm of each build, then each build's capacity and latency arms in turn | 542,391; 529,760 spans/s | -3.1% | 3 of 8 pairs (p = 0.73) | +8.0% | 5 of 8 (p = 0.73) | pass |
+
+- **Neither run shows a systematic order effect.** No sign test comes near significance, and the throughput
+  order effect stays within its threshold in both. The early smoke runs' differences were noise from other jobs:
+  over the first run, throughput fell as the other CPUs' load rose (correlation -0.73 between an arm's
+  throughput and the busy cores on the other CPUs), and the second run, with heavier load from other jobs (1-minute
+  load average 7 to 10), had two throughput arms at 410,000 and 152,000 spans/s, one in second position and one in
+  first. With 2 pairs, one build slower in all four pairs happens one time in eight by chance.
+- **The one structural asymmetry is gone.** In the first schedule the second capacity arm of a pair always
+  followed a capacity arm, which writes gigabytes and whose rig removal precedes it, while the first followed a
+  light latency arm; it measured 1.0% less than the first in the median (6 of 8 pairs, not significant). In the
+  current schedule every capacity arm follows a latency arm, and every latency arm its own build's capacity arm,
+  whichever build goes first, and the warm-up arms load both images before the first measured arm. A property test
+  checks the schedule (`every_arm_follows_the_same_kind_of_work`).
+- **Small-rig p99 is too noisy to bound an order effect** at 10% with 8 pairs: single arms swung from 4 ms to 67
+  ms while other jobs wrote to the shared disk. Durable-ack p99 decides only on the full rig, alone on the machine.
+- Other jobs can only be measured, not removed: the disk busy share now in every arm's context shows when a slow
+  arm waited behind other jobs' writes, since the ack path is bound by the WAL's flushes on this disk
+  ([`perf-baseline.md`](perf-baseline.md)).
 
 ### Output
 
@@ -201,13 +283,13 @@ Paths are relative to the results directory.
 | `started_at`, `finished_at` | string | UTC, RFC 3339 |
 | `ac_power` | object | `state` (`online`, `battery` or `unknown`) and `source` |
 | `rig` | object | `name`, `containers[]` (`role`, `image`, `cpuset`, `memory`) and `docker` (server version, CPUs, memory, kernel, operating system) |
-| `lane` | object | `name`, `span_size`, `spans_per_request`, `concurrency`, `warmup_s`, `throughput_requests_per_s`, `throughput_s`, `latency_requests_per_s`, `latency_s` |
+| `lane` | object | `name`, `path` (`ack` or `e2e`), `span_size`, `spans_per_request`, `gzip`, `concurrency`, `warmup_s`, `throughput_requests_per_s`, `throughput_s`, `latency_requests_per_s`, `latency_s`, `sustained_requests_per_s`, `sustained_s`, `freshness_requests_per_s`, `freshness_s`, `drain_s` |
 | `base`, `candidate` | object | `reference` as given, `sha`, `image`, `image_id` |
 | `loadgen_sha256` | string | The load generator binary that measured both arms |
 | `pairs`, `order` | integer, array | The number of pairs, and each pair's order, `AB` or `BA` |
 | `probe` | object | `verdict` (`honest`, `suspicious` or `failed`), `report` (path or null) and `error` (null, or why the probe failed) |
-| `comparisons[]` | array | `throughput`, then `latency`, each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `gated`, `valid`, `notes[]` and `blocks` |
-| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx` and `invalid` (null, or why the arm cannot be compared) |
+| `comparisons[]` | array | The path's two metrics (`throughput` and `latency`, or `sustained` and `freshness`), each with `metric`, `unit`, `better` (`higher` or `lower`), `base[]` and `candidate[]` (one value per pair), `median_base`, `median_candidate`, `change` (relative change of the median, null when the base median is 0), `differences[]` (B - A per pair), `wilcoxon` (`n` non-zero differences, `w_plus`, one-sided `p`), `threshold`, `order_differences[]` (second arm minus first per pair), `order_change` (the order effect above, null without pairs of both orders), `gated`, `valid`, `notes[]` and `blocks` |
+| `runs[]` | array | Every measured arm in run order: `pair`, `kind`, `arm`, `report`, `log`, `offered_spans_per_s`, `acked_spans_per_s`, `latency_p99_us`, `errors`, `non_2xx`, `invalid` (null, or why the arm cannot be compared) and `context`: `started_at`, `finished_at`, `rig_cpus_busy` and `other_cpus_busy` (busy cores averaged over the measurement), `disk_busy` (the busiest block device's share of the measurement with I/O in flight), `page_cache_drops` (the host's page-cache drops during it), `load_before`, `load_after` and `others[]` (the other containers' names); for an end-to-end arm `stored`: `acked_spans`, `drained_s` and `drain_after_run_s` (null when it did not drain), `shipped_spans_per_s`, `freshness_p95_us`, `freshness_spans`, `lost_spans` and `duplicate_spans` |
 | `verdict` | string | `pass`, `regression` or `invalid` |
 
 ## The fsync-honesty probe
@@ -311,11 +393,17 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 - **Deterministic content.** Span names, kinds, durations and payload text are a function of `--seed` alone. The
   payload text is drawn from a small word list, so the gzip lane compresses text rather than random bytes (about
   3.2 times for 1 KiB spans). Given the same seed, run id and start time, every byte is the same.
-- **Identity.** Every request is one trace. Every span carries the attributes `loadgen.run_id` (the run id,
-  minted fresh unless `--run-id` is given) and `loadgen.seq`, its sequence number
-  `request_index * spans_per_request + position`, as 20 zero-padded digits. Trace ids are the run tag followed
-  by a bijective mix of the request index, so they never repeat within a run. Span ids are the same mix of the
-  sequence number. No id is ever zero. Span times follow the request's intended send time on the wall clock.
+- **Request shapes.** A request holds `--spans-per-request` spans in `--traces-per-request` traces (1 by default)
+  of consecutive spans whose lengths differ by at most one. The first span of each trace is its root; with
+  `--rootless` it names a parent that no span of the run carries, so no trace has a root, the shape of a client
+  that exports child spans before their parent.
+- **Identity.** Every span carries the attributes `loadgen.run_id` (the run id, minted fresh unless `--run-id`
+  is given) and `loadgen.seq`, its sequence number `request_index * spans_per_request + position`, as 20
+  zero-padded digits. Trace ids are the run tag followed by a bijective mix of `request_index *
+  traces_per_request + trace`, so they never repeat within a run. Span ids are the same mix of the sequence
+  number. No id is ever zero. Span times follow the request's intended send time on the wall clock, or with
+  `--spread-secs` spread evenly over that many seconds before the schedule's start, to load a dataset that covers
+  a read window. The read generator derives every id and start time of a loaded run from its report alone.
 
 ### How it sends
 
@@ -327,6 +415,12 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 - **Bounded concurrency.** Each of `--concurrency` connections carries one request at a time (HTTP/1.1). A free
   connection takes the next request and prepares its body (the patch, and the gzip in the gzip lane) before the
   request is due.
+- **Gzip off the runtime's workers.** A 1 MiB body takes a few milliseconds of CPU to compress (the generator
+  spends 4 to 5 ms per such request); on a runtime worker it held up the pacer and the other connections of that
+  thread, so the generator sent late: send lag p99 3.3 to 98.7 ms at 25,600 spans/s of 10 KiB spans in 100-span
+  requests, and 0.06 ms off the workers ([`perf-baseline.md`](perf-baseline.md)). Bodies are compressed on the
+  runtime's blocking threads, at most `--gzip-threads` at a time (by default half the CPUs available, at least
+  one; the runtime's workers get the rest), each by an encoder that keeps its deflate state from body to body.
 - **A pacer.** The production timer has millisecond resolution, so waiting on it alone sent requests up to
   about 2.5 ms late. One pacer task sleeps on the timer until 3 ms before a due time, then yields in a loop until
   the time comes, and releases the request to its connection. The pacer keeps about one core busy, and the CPU
@@ -341,9 +435,9 @@ The default target is `127.0.0.1:4318` (contract 12.1).
 The run keeps a ledger of which requests were acknowledged: answered 2xx, with no rejected spans. Every span of
 an acknowledged request must be readable afterwards (invariant I1). The report lists the requests that were not
 acknowledged as index ranges, so the acknowledged sequence numbers can be reconstructed from the report alone.
-`SequenceReader` is the interface a store-backed reader will implement: it returns the stored `loadgen.seq`
-values of one run. `check_zero_loss` compares them with the ledger and counts lost and duplicated spans. No
-reader exists yet, because ingest and the read API land in a later wave.
+`SequenceReader` is the interface of a store-backed reader: it returns the stored `loadgen.seq` values of one
+run. `check_zero_loss` compares them with the ledger and counts lost and duplicated spans; the end-to-end test of
+the binary reads ClickHouse through it, and the gate's end-to-end path runs the same check in SQL.
 
 ### Running it
 
@@ -359,14 +453,19 @@ crucible-loadgen run --target crucible:4318 --rate 2500 --duration-secs 60 \
 | `--duration-secs` | 10 | Schedule length; the schedule holds `rate * duration` requests |
 | `--span-size` | `1k` | `1k` or `10k` |
 | `--spans-per-request` | 100 | Spans per request |
+| `--traces-per-request` | 1 | Traces per request, from 1 to the spans per request |
+| `--rootless` | off | Give no trace a root |
 | `--gzip` | off | Gzip every body (`Content-Encoding: gzip`) |
+| `--gzip-threads` | half the CPUs, at least 1 | With `--gzip`, the most bodies compressed at a time, each on a blocking thread |
 | `--concurrency` | 64 | Connections, and so the most requests in flight |
 | `--seed` | 1 | Content seed |
 | `--run-id` | fresh UUIDv7 | The run id every span carries |
 | `--templates` | 16 | Pre-encoded templates; memory is about `templates * spans_per_request * span size` |
 | `--timeout-ms` | 10000 | Deadline for connecting and for each request |
 | `--header` | none | Extra header as `Name: value`, repeatable; ingest needs an `Authorization` header (contract 12.2) |
-| `--threads` | CPUs available | Runtime worker threads |
+| `--spread-secs` | 0 | Spread the span times evenly over this many seconds before the schedule's start (moved back by `--backdate-secs`) |
+| `--backdate-secs` | 0 | Move the span times this many seconds back: with a spread, the spread ends there |
+| `--threads` | CPUs available, less the gzip threads | Runtime worker threads |
 | `--out` | stdout | Where to write the JSON report |
 
 The process exits non-zero, without a report, when the target refuses the initial connections or the
@@ -389,7 +488,8 @@ crucible-loadgen run --target 127.0.0.1:14318 --rate 10000 --spans-per-request 1
 | `run_id` | string | The run id every span carries |
 | `seed` | integer | The content seed |
 | `target` | string | The target as given |
-| `lane` | object | `span_bytes`, `spans_per_request`, `gzip`, `templates`, `request_bytes_mean` (protobuf body before compression), `wire_bytes_mean` (body on the wire) |
+| `started_at` | string | The wall-clock time of the schedule's start, RFC 3339 with microseconds |
+| `lane` | object | `span_bytes`, `spans_per_request`, `traces_per_request`, `rootless`, `gzip`, `gzip_threads` (0 without gzip), `spread_s` (0 when span times follow the schedule), `backdate_s`, `templates`, `request_bytes_mean` (protobuf body before compression), `wire_bytes_mean` (body on the wire) |
 | `schedule` | object | `target_rps`, `duration_s`, `requests` (in the schedule), `concurrency`, `timeout_ms` |
 | `outcome.sent` | integer | Requests written to a connection |
 | `outcome.responses` | integer | Requests that got an HTTP response |
@@ -407,8 +507,158 @@ crucible-loadgen run --target 127.0.0.1:14318 --rate 10000 --spans-per-request 1
 | `not_acked_requests` | array | Half-open `[start, end)` request index ranges that were not acknowledged |
 | `generator_cpu` | object or null | `user_s`, `system_s` and `us_per_request` (user plus system CPU per sent request) during the run, from `/proc/self/stat`; null off Linux |
 
-A summary has `count`, `p50`, `p90`, `p99`, `p99_9` and `max`, in microseconds, from an HDR histogram with three
+A summary has `count`, `p50`, `p90`, `p95`, `p99`, `p99_9` and `max`, in microseconds, from an HDR histogram with three
 significant digits.
+
+## The read bench
+
+`cargo xtask perf reads` measures the read-side targets on one build. It starts one rig as the gate does
+(ClickHouse, Postgres and Crucible, with the first owner and a key with the `ingest` and `read` scopes), and then:
+
+1. **Ack to API on the empty store.** `crucible-loadgen fresh` sends one small trace (two 1 KiB spans) at a time
+   to ingest and, from its acknowledgement on, lists the project's traces every 2 ms until the list names it:
+   the method of milestone 1's end-to-end figure (13 to 28 ms from ack to the API). Each list's window starts at
+   the probe's own trace, so a list names that trace at most, as milestone 1's list named only its test's own
+   traces; a wider window would also list the earlier probes' traces, and each list would cost more the more
+   probes ran. 100 probes by default, 200 ms apart.
+2. **The dataset.** `crucible-loadgen run` loads 1 KiB spans in traces of 100 through ingest, one chunk per day of
+   the read window (30 days by default), oldest first: `--backdate-secs` places the chunk on its day and
+   `--spread-secs` spreads its spans over the day in time order, as live traffic arrives, so an insert touches
+   one or two daily partitions. Each chunk drains into the store before the next, so the WAL's backlog stays
+   bounded. The load runs below the rig's
+   end-to-end capacity: 15,000 spans/s on the small rig, 50,000 on the full one. It records the bytes of the
+   store's active parts per span, from `system.parts`.
+3. **Ack to API on the loaded store**, the same probe again.
+4. **One lane per read class**, more than the visibility grace after the load, so that the store rather than the
+   recent index answers for the dataset. A lane is `crucible-loadgen read` with that class alone: an open-loop
+   schedule of 2 reads/s on average for 60 s with exponential think times, 8 connections, its traces and spans
+   drawn from the dataset's run reports. Crucible's counters are read from its metrics listener before and
+   after the lane, so their change belongs to the lane's class.
+5. **The caches.** The lanes measure a store that no write has changed for a while, as ClickHouse then holds
+   it, so each lane attempt starts by settling and warming it:
+   - **Column statistics.** ClickHouse 26.8 keeps automatic statistics on every column (`auto_statistics_types
+     = 'basic, uniq_v2'`) and uses them to plan each read. Until its statistics cache refreshes, every
+     `refresh_statistics_interval` (300 s), a read loads every part's statistics from their files. In a 300 s
+     trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and the second 40.8
+     ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
+     (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the first refresh, about
+     300 s after the rig started in each of four runs, and 0 to about 1.5 ms afterwards, when its median fell
+     from about 92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's
+     bounds read on `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s,
+     until a read of `span_core` and one of `trace_heads`, shaped as trace by id's span read, load at most 5 ms
+     of statistics each. A lane that never settles is marked invalid.
+
+     **Not measured: a store under live ingest.** On a 41-part test table, one insert after a refresh sent
+     reads back to loading most parts' statistics (1.5 ms and 172 files cold, nothing and 6 files after the
+     refresh, 1.0 ms and 130 files after the insert). If Crucible's tables behave alike, every read under
+     ingest pays about the 75 ms measured above before the first refresh, and these lanes leave that out. The
+     test: settle, ingest one trace, then read `LoadedStatisticsMicroseconds` of a span read; about 75 ms means
+     every part reloads, about 1 ms only the new one.
+   - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
+     parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
+     first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
+   - **Page cache.** When the store's active parts fit within half of ClickHouse's memory limit (the
+     container's page cache counts against it), each attempt reads every file of the store once; a larger
+     store, such as the 100-million-span dataset, is read from the disk, as it would be. The Docker Desktop VM
+     (WSL 3.0.5) drops its whole page cache every few minutes: the `drop_pagecache` count of `/proc/vmstat`
+     rose by 31 in 124 minutes on 2026-11-19, at 1-minute loads of 2 to 16 and with 1.9 to 7.6 GB cached
+     before each drop, so neither idleness nor a cache size sets it off. The reads after a drop go to the disk:
+     span children measured 69.2 and 64.2 ms p95 in two attempts that a drop disturbed and 36.6 ms in the one
+     it did not, while the lanes over a window measured the same either way. So an attempt during which the
+     host dropped its page cache runs again, up to 3 attempts; a lane disturbed in all 3 is marked invalid.
+
+| Lane | Request | Answers that count | Server class |
+|---|---|---|---|
+| `trace_by_id` | `GET /traces/{trace_id}` | non-empty `spans` | `trace_by_id` |
+| `trace_by_id_hinted` | the same with `?hint_time=` the trace's start, as the UI sends it from a list | non-empty `spans` | `trace_by_id` |
+| `trace_list_30d` | `GET /traces?from=...&to=...&limit=50` over the window | non-empty `data` | `trace_list` |
+| `span_list_30d` | `GET /spans?from=...&to=...&limit=50` over the window | non-empty `data` | `span_list` |
+| `session_list_30d` | `GET /sessions?from=...&to=...&limit=50` over the window (the dataset has no sessions) | 2xx | `session_list` |
+| `user_list_30d` | `GET /users?from=...&to=...&limit=50` over the window (the dataset has no users) | 2xx | `user_list` |
+| `span_children` | `GET /traces/{trace_id}/spans?parent_span_id={root}&limit=100` | non-empty `data` | `span_children` |
+| `payload` | `GET /spans/{trace_id}/{span_id}/payload?field=attributes&start_time=...` | 2xx | `payload` |
+| `facts` | `GET /facts?trace_id=...` (the dataset has no facts) | 2xx | `facts` |
+| `filter_values_30d` | `GET /filter-values?source=spans&field=observation_type` over the window | non-empty `data` | `filter_values` |
+| `data_bounds` | `GET /data-bounds` | non-empty `spans.first` | `data_bounds` |
+| `search_30d` | `POST /search` over the window for a word no span holds: the dataset carries no input or output text, so this is a full-window search that matches nothing | 2xx | `search` |
+| `metrics_30d` | `POST /metrics/query`: the span count over the window | non-empty `series` | `metrics` |
+
+Paths are relative to `/api/v1/projects/{project_id}`. A lane whose requests were not all answered 2xx and
+non-empty is marked invalid: its latency would not cover them. So is a saturated lane, whose requests waited more
+than 25 ms (send lag p95) for a free connection: the schedule outran the server, and the latency grew with the
+queue rather than with the read. The session and user detail routes need ids that
+the dataset does not carry (its spans have no session or user), so they have no lane.
+
+**The MCP tool dashboard** has no lane. A lane is one entry in `LANES` (`xtask/src/perf/reads.rs`): the request,
+the JSON pointer that must not be empty in its answer, and the request class its read service records.
+
+```sh
+tools/perf/xtask.sh reads                                   # the small rig: 2 million spans, HEAD's build
+tools/perf/xtask.sh reads --rig full --spans 100000000      # the 100-million-span dataset, alone on the machine
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--image` | `HEAD` | The build to measure, as a ref; its image is built as the gate builds one |
+| `--rig` | `small` | `small` or `full`, as for the gate |
+| `--spans` | 2,000,000 on the small rig, 10,000,000 on the full one | Spans to load |
+| `--spread-days` | 30 | Days the spans' start times spread over, ending at the load, from 1 to 400 (ingest's maximum event age) |
+| `--rate` | 2 | Reads per second of each lane, on average. On the small rig, trace by id takes about 0.5 s and a 30-day span list about 1 s of its two ClickHouse CPUs, so a higher rate saturates those lanes |
+| `--seconds` | 60 | Seconds of each lane |
+| `--probes` | 100 | Traces of each ack-to-API probe |
+| `--lanes` | every lane | Only these lanes, comma-separated |
+
+The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json` (schema
+`crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span and whether the lanes read it
+into the page cache (`warmed`), both probes with their lists per probe and list round trips, and every lane with
+its attempts and, from the last attempt, its percentiles and its halves' percentiles, store reads per request,
+mean barrier wait, connections opened, ClickHouse merges at its start, its wait for the column statistics to
+settle and the statistics a read still loaded, what else the Docker host did during it (busy cores on the rig's
+CPUs and on the others, the load average, the busiest disk's busy share, the page-cache drops and the other
+containers, as the gate records per arm) and why it is invalid), `summary.md`, the generator's reports under
+`runs/` (one per lane attempt, `<lane>-<attempt>.json`) and `dataset/`, and Crucible's metrics before and after
+each lane attempt under `metrics/`.
+
+### Per-request counters
+
+The read services record two histograms per request class (one class per read service: `trace_by_id`,
+`trace_list`, `trace_list_since`, `span_children`, `span_list`, `payload`, `facts`, `fact_target_bounds`,
+`filter_values`, `data_bounds`, `search`, `metrics`, `metrics_totals` (the alert reads), `session_list`,
+`session`, `user_list`, `user`, `user_sessions`, `export_page`):
+
+- `crucible_api_store_reads{class}`: the store reads each request issued. Its count is the requests and its sum
+  the reads.
+- `crucible_api_barrier_wait_microseconds{class}`: how long each request that waits for the recent index's read
+  barrier waited (trace by id and the fact target bounds), timed by the read service with the `Env` clock, since
+  the metrics recorder never reads a clock (contract 2.12).
+
+Connections come from `crucible_clickhouse_connections_opened_total`, which the telemetry store counts at
+`Net::connect`. It has no class, and the shipper's inserts count too, so the bench reads it around one class at a
+time on a store that is not loading.
+
+### `crucible-loadgen read` and `crucible-loadgen fresh`
+
+`read` sends the reads of a lane open loop: request `i` is due at `start + t_i`, fixed before the first request,
+and its latency counts from that intended time, as in `run`. The gaps are the think times: exponential with mean
+`1 / rate` from `--seed` (a Poisson process), or all `1 / rate` with `--think fixed`. Request `i` uses class `i %
+classes`. A class is JSON (`name`, `method`, `path`, optional `body`, optional `nonempty`, a JSON pointer that
+must name a non-empty array, object or string in every 2xx answer), and its path and body take placeholders that
+name the dataset that `--dataset` reports describe: `{project}`, `{trace_id}`, `{root_span_id}`, `{span_id}`,
+`{span_start}`, `{trace_start}`, and the window `{from}` and `{to}` (`to` is the request's due time,
+`from` is `--window-secs` before it). Each request draws an acknowledged request of the dataset uniformly, then one
+of its traces and one of its spans, as a function of the seed and the request's index.
+
+The report (`crucible-loadgen.read.v1`) has `schedule` (`rate`, `duration_s`, `think`, `requests`,
+`concurrency`, `timeout_ms`, `window_s`), `dataset_runs` and `dataset_requests`, and per class `sent`, `ok`,
+`empty`, `status_counts`, `errors`, `latency_us` and `service_time_us` over the `ok` answers, and
+`latency_halves_us`: `latency_us` over the reads due in the schedule's first half and over those due in its
+second, so a server that was still settling, or a disturbance, shows as halves that differ; and `send_lag_us`
+and `elapsed_s`.
+
+`fresh`'s report (`crucible-loadgen.fresh.v1`) has `probes`, `listed`, `ack_us` (send to acknowledgement),
+`ack_to_list_us`, `lists_per_probe`, `list_us` (each list's round trip, over the lists answered 200, so that
+`ack_to_list_us` reads as lists times their cost), `ingest_errors`, `list_errors` and `missing` (acknowledged but
+not listed within `--timeout-ms`).
 
 ## Measurements
 
@@ -460,3 +710,142 @@ connections. Latency columns are in microseconds and give p50 / p99 / p99.9 (max
   backlog pushed latency to a p50 of 78 ms and a maximum of 365 ms, and service time rose to a p50 of 1.2 ms.
   The generator used 2.9 of its 4 cores. The stub inflates and decodes every body on its 2 threads, so the
   shared 6 CPUs set the limit, not the generator alone. In the rig, the generator gets its own 6 CPUs.
+
+### The end-to-end lanes
+
+Measured on 2026-11-19, on a laptop, not reference hardware, on the small rig (Crucible 2 CPUs and 1 GB,
+ClickHouse 2 CPUs and 1.5 GB), path `e2e`, lane `1kb`, with other tracks' builds sharing the machine (1-minute
+load average 6 to 11). The image is `39360ec` in both arms unless stated.
+
+| Run | Pairs | Sustained medians A, B (shipped spans/s) | Change, p | Freshness p95 medians A, B | Change, p | Verdict |
+|---|---|---|---|---|---|---|
+| Smoke | 1 | 57,888; 58,957 | +1.8% | 575 ms; 574 ms | -0.3% | pass |
+| A/A | 5 | 61,053; 58,828 | -3.6%, p = 0.22 | 579 ms; 587 ms | +1.4%, p = 0.69 | pass |
+| Seeded: B inserts with zstd level 1 instead of LZ4 | 5 | 60,288; 59,614 | -1.1%, p = 0.50 | 571 ms; 580 ms | +1.5%, p = 0.031 | pass |
+| Seeded: B inserts with zstd level 9 instead of LZ4 | 5 | 47,854; 35,243 | -26.4%, p = 0.031 | 611 ms; 738 ms | +20.9%, p = 0.031 | **regression** |
+
+- Every arm of the four runs acknowledged every request with 200 and drained in time, and the zero-loss check
+  found no lost or duplicated span: each sustained arm stored all 1,000,000 acknowledged spans and each freshness
+  arm all 100,000, and the freshness covered every one of them.
+- **The seeded slowdown is flagged.** Zstd at level 1 costs the store path little on this rig: the arms that
+  inserted with it measured 1.5% worse freshness in all 5 pairs (p = 0.031), below the 10% threshold, and no
+  sustained change. At level 9 every pair measured both metrics worse, the medians by 26.4% (sustained) and
+  20.9% (freshness), and the gate answered `regression` with exit code 1. The seeded builds were local commits on
+  top of `39360ec`, never pushed. The level 9 run's base arms measured lower than the A/A's (47,854 against
+  61,053) because image builds ran on the machine at the same time.
+- A sustained arm offers 100,000 spans/s for 10 s; the ack path takes them at that rate while the store falls
+  behind. In the A/A it drained for 5.9 to 8.5 s after the last response, and the store path shipped 54,000 to
+  63,000 spans/s, about what the full rig's single shipper task moved in the baseline (69,000).
+- The A/A's order effect was -0.7% (sustained) and -3.0% (freshness), and its arms spread by up to 15% from
+  pair to pair: throughput again followed the other jobs' load (correlation -0.50 with the other CPUs' busy
+  cores).
+
+### The read bench
+
+Measured on 2026-11-19, on a laptop, not reference hardware, on the small rig (ClickHouse 2 CPUs and 1.5 GB),
+build `7abc007`, with other tracks' work on the machine. Each run loaded 2,250,000 spans of 1 KiB over 30 days
+through ingest in 177 s; the store held them in 516 MB of active parts, 230 bytes per span, so the 100-million-span
+dataset needs about 23 GB of ClickHouse disk and the billion-span one about 230 GB.
+
+**Before the lanes settled and warmed the store** (`7abc007`'s bench), two runs, each lane 120 reads at 2 per second;
+latency in ms, p50 / p95 / p99:
+
+| Lane | Run 1 | Run 2 | p95 change | Store reads per request |
+|---|---|---|---|---|
+| `trace_by_id` | 90.0 / 154.8 / 209.0 | 83.1 / 137.2 / 174.5 | -11.3% | 6 |
+| `trace_by_id_hinted` | 35.3 / 60.2 / 67.1 | 32.7 / 38.4 / 41.9 | -36.1% | 6 |
+| `trace_list_30d` | 43.3 / 54.7 / 79.1 | 40.2 / 46.8 / 57.9 | -14.3% | 5 |
+| `span_list_30d` | 261.6 / 398.6 / 494.3 | 249.5 / 366.1 / 477.7 | -8.2% | 1 |
+| `session_list_30d` | 3.7 / 4.7 / 9.0 | 3.5 / 3.9 / 5.2 | -16.7% | 1 |
+| `user_list_30d` | 3.4 / 4.0 / 4.5 | 3.4 / 4.1 / 4.5 | +2.6% | 1 |
+| `span_children` | 35.4 / 61.6 / 73.0 | 32.7 / 38.2 / 40.3 | -38.0% | 3 |
+| `payload` | 11.4 / 20.0 / 22.3 | 10.7 / 13.6 / 15.9 | -31.6% | 1 |
+| `facts` | 17.2 / 21.0 / 24.8 | 19.1 / 65.7 / 90.6 | +212.8% | 4 |
+| `filter_values_30d` | 6.4 / 7.7 / 12.1 | 6.0 / 7.0 / 13.4 | -9.3% | 1 |
+| `data_bounds` | 7.2 / 13.4 / 36.1 | 7.4 / 22.0 / 43.2 | +64.1% | 2 |
+| `search_30d` | 19.4 / 47.1 / 286.2 | 19.9 / 28.0 / 485.6 | -40.5% | 1 |
+| `metrics_30d` | 6.7 / 10.7 / 14.1 | 9.3 / 38.1 / 60.7 | +257.4% | 1 |
+
+**With them** (`b3e4e45`: each attempt waits for the column statistics, prewarms the marks and reads the store into
+the page cache, and an attempt a page-cache drop disturbed runs again), two runs of the same build; latency in ms,
+p50 / p95 / p99, attempts in brackets:
+
+| Lane | Run 1 | Run 2 | p95 change |
+|---|---|---|---|
+| `trace_by_id` | 31.3 / 39.2 / 65.5 (2) | 29.4 / 34.6 / 36.9 (3) | -11.8% |
+| `trace_by_id_hinted` | 34.7 / 40.6 / 48.4 | 41.4 / 71.1 / 74.2 | +75.0% |
+| `trace_list_30d` | 48.4 / 61.0 / 80.3 | 53.3 / 66.5 / 139.6 (2) | +9.0% |
+| `span_list_30d` | 275.7 / 447.5 / 542.7 (2) | 166.9 / 225.3 / 312.3 | -49.7% |
+| `session_list_30d` | 3.6 / 4.7 / 7.4 | 3.6 / 4.7 / 7.4 | +0.8% |
+| `user_list_30d` | 3.3 / 3.9 / 4.3 | 3.4 / 4.3 / 5.6 | +9.9% |
+| `span_children` | 33.1 / 41.0 / 50.3 | 36.0 / 46.4 / 53.2 | +13.1% |
+| `payload` | 7.7 / 10.7 / 12.5 | 7.0 / 9.5 / 12.2 | -11.2% |
+| `facts` | 18.3 / 22.9 / 24.7 | 23.1 / 30.4 / 34.2 | +32.5% |
+| `filter_values_30d` | 6.5 / 8.7 / 10.5 | 6.8 / 7.8 / 15.8 | -10.0% |
+| `data_bounds` | 7.5 / 9.8 / 11.6 | 7.4 / 9.1 / 12.1 | -6.6% |
+| `search_30d` | 19.4 / 22.8 / 25.0 (2) | 17.2 / 22.3 / 27.7 | -2.5% |
+| `metrics_30d` | 6.9 / 9.6 / 12.2 | 7.4 / 8.9 / 9.9 | -8.1% |
+
+- Every lane of the four runs was valid: every read answered 2xx and non-empty where it must be, Crucible counted
+  every request under the lane's class, and no lane was saturated. Trace by id waited 0 ms for the read barrier
+  (the index was caught up), and each lane opened at most 2 store connections. In the second pair every lane
+  settled, its last probe loading no statistics, and six attempts that a page-cache drop disturbed ran again.
+- **Against the targets, at 2.25 million spans on 2 ClickHouse CPUs, on a store no write has changed for a
+  while:** trace by id meets 100 ms p95 with and without a hint (34.6 to 71.1 ms), and the 30-day trace list stays
+  far below 500 ms p95 (61.0 and 66.5 ms); the billion-span figure needs the full rig and the larger dataset. The
+  first pair's 137 to 155 ms for trace by id came from its lane running first after the load, while ClickHouse
+  still loaded every part's statistics for each read. Whether a store under live ingest stays in that state is
+  not measured (the caches, above); if it does, these figures leave out about 75 ms per `span_core` read on
+  this store.
+- **Two runs agree within 10% at p95 in 7 of 13 lanes**, against 3 of 13 before: not all of them. The settle, the
+  warm-up and the reruns removed the cache states that moved whole lanes. What still moves is the machine and the
+  rig between runs: run 1's first six lanes ran with 2.1 to 3.2 other CPUs busy and run 2's with 0.1 to 0.2 (the
+  30-day span list, CPU-bound on ClickHouse, measured half the latency in run 2), and three lanes shifted as a
+  whole in the quieter run 2, both halves alike (trace by id with a hint +75.0%, facts +32.5%, span children +13.1%),
+  which the recorded context does not explain. Each load leaves its own part layout, and on the small rig
+  ClickHouse runs at its 1.5 GB limit with about 1.1 GB of it page cache, so the kernel reclaims the cache under
+  the reads. The check belongs in the exclusive window: `tools/perf/xtask.sh reads --rig full`, twice, alone on the
+  machine, where ClickHouse has 9 GB.
+- An earlier run at 20 reads/s saturated trace by id (about 470 ms per read under that load, with
+  requests queued up to 4 s for a connection) and the 30-day span list (about 1.1 s per read): the saturation rule
+  and the default rate of 2 per second come from it.
+
+**Ack to API.** Measured on 2026-11-19 with each list's window starting at the probe's own trace, 100 probes,
+on the small rig, two runs per build, a dataset of 30,000 spans; latency in ms, p50 / p95 / p99:
+
+| Build | Empty store | Loaded store | List round trip p50 | Store reads per list |
+|---|---|---|---|---|
+| `7abc007` (this branch) | 26.1 / 31.8 / 46.3; 27.4 / 39.7 / 54.4 | 27.1 / 31.0 / 34.4; 29.5 / 53.5 / 83.7 | 14.6; 15.4 | 3.0 |
+| `3aef9d4`: `7abc007` without the trace list's fact decoration (local, never pushed) | 16.9 / 37.0 / 53.2; 14.5 / 16.4 / 34.7 | 17.5 / 55.4 / 85.1; 16.0 / 18.7 / 19.0 | 7.2; 4.9 | 1.5 |
+
+- **Milestone 1's figure is reproduced at the median.** Milestone 1 measured 16 ms (protobuf) and 22 ms (JSON),
+  one trace each, with a native release binary and a ClickHouse without CPU limits. The bench's median on this
+  branch's build lies in milestone 1's 13 to 28 ms, and without the fact decoration that #61 added to the trace
+  list it measures milestone 1's 16 ms. The p95 moved with the other jobs on the machine (1.2 to 8.0 other CPUs
+  busy).
+- Every probe took two lists: the first, sent at the acknowledgement, came before the shipper had applied the
+  trace to the recent index, and the second named it. The fact decoration doubles a list's store reads (3.0
+  against 1.5 per list, from `crucible_api_store_reads`), each a ClickHouse query on 2 CPUs.
+- The same method in CI's end-to-end test (`crates/crucible/tests/e2e.rs`, one trace per transport, on GitHub's
+  runners) moved the same way: ack to API list (protobuf) 17.7 ms on milestone 1's merge (`4a6e68b`), 11 to 15
+  ms on main and pull requests before #61, 19.4 and 19.6 ms on #61's own runs, and 46.2 ms on the nightly run of
+  `5794a3b`.
+- With the probe's earlier window, 10 minutes on each side, the n-th list also named the n - 1 traces sent before
+  it: 100 probes measured 57.7 and 53.3 ms p50 on `7abc007` and 10 probes 35.1 ms, and on the loaded store of
+  2.25 million spans 108.6 and 99.7 ms, since its window also held the dataset's newest traces.
+
+### Pre-ack copies
+
+Measured on 2026-11-19, on a laptop, not reference hardware, with release builds in the dev container (3 CPUs),
+each timing run interleaving the two forms over its rounds and taking medians.
+
+- **Inflate** (`crucible-ingest`, `inflate_throughput`, ignored): inflating into one allocation sized from the
+  gzip trailer, against 64 KiB reads copied into a doubling buffer. Time per body changed by -1.2%, -0.7% and
+  -0.5% in three runs for 100 KiB bodies (the 1 KiB lane), and by -1.7%, +0.4% and -0.7% for 1 MiB bodies (the
+  10 KiB lane). The decode itself takes most of the time (about 1.25 ms per 1 MiB body). What changes more is the
+  buffer: a body ends in exactly its size instead of up to twice it (131,072 bytes for a 102,400-byte body),
+  which the in-flight reservation now matches. Kept.
+- **Block frames** (`crucible-chfmt`): encoding a 262,144-row `span_core` block (62.3 MB of LZ4 frames) into a
+  buffer sized from the previous block measured 1.2%, 1.0% and 4.0% slower than from an empty buffer, in three
+  runs. Growing a large buffer remaps its pages rather than copying them, so there is nothing to save; the
+  change was not kept.

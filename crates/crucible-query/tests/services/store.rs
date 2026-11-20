@@ -173,6 +173,10 @@ fn compare(a: &Value, b: &Value) -> Ordering {
         _ => None,
     };
     match (a, b) {
+        // Nulls sort last, as the server sorts them.
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Null, _) => Ordering::Greater,
+        (_, Value::Null) => Ordering::Less,
         (Value::UInt(a), Value::UInt(b)) => a.cmp(b),
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
         (Value::Time(a), Value::Time(b)) => a.cmp(b),
@@ -268,10 +272,14 @@ fn in_window(table_id: TableId, row: &StoredRow, window: TimeWindow) -> bool {
         other => panic!("{name} is {other:?}"),
     };
     match table_id {
-        TableId::SpanCore | TableId::TraceHeads | TableId::SpanPayload => {
-            window.contains(time("start_time"))
-        }
+        TableId::SpanCore
+        | TableId::TraceHeads
+        | TableId::SpanPayload
+        | TableId::McpOps
+        | TableId::McpContent => window.contains(time("start_time")),
         TableId::SpanMetrics | TableId::McpToolRollup => window.contains(time("minute")),
+        // Their time columns are aggregated: the window applies to each group (`group_in_window`).
+        TableId::McpDeploys | TableId::McpToolInventory => true,
         TableId::FactScores | TableId::FactTags | TableId::FactFlags | TableId::FactCorrections => {
             window.contains(time("target_time"))
         }
@@ -559,7 +567,8 @@ impl FakeStore {
 
     fn aggregate(&self, plan: &QueryPlan, aggregate: &Aggregate) -> Vec<Row> {
         assert!(aggregate.having_conditions().is_empty());
-        let rows = self.visible(plan, aggregate.table(), aggregate.pred());
+        let mut rows = self.visible(plan, aggregate.table(), aggregate.pred());
+        group_in_window(aggregate, &mut rows, plan.window());
         let groups = group_rows(aggregate, rows, |row| {
             aggregate
                 .group()
@@ -636,6 +645,39 @@ impl FakeStore {
         });
         out.into_iter().map(Row::new).collect()
     }
+}
+
+/// The window of the tables whose time columns are aggregated (contract 8.9): a group is read when its
+/// `max(last_seen)` is at or after `from` and its `min(first_seen)` is before `to`. Drops the rows of the
+/// other groups.
+fn group_in_window(aggregate: &Aggregate, rows: &mut Vec<StoredRow>, window: TimeWindow) {
+    let table_id = aggregate.table();
+    if !matches!(table_id, TableId::McpDeploys | TableId::McpToolInventory) {
+        return;
+    }
+    let time = |row: &StoredRow, name: &str| match &row[position(table_id, name)] {
+        Value::Time(t) => *t,
+        other => panic!("{name} is {other:?}"),
+    };
+    let key = |row: &StoredRow| -> Vec<Value> {
+        aggregate
+            .group()
+            .iter()
+            .map(|c| cell(row, c).clone())
+            .collect()
+    };
+    let snapshot = rows.clone();
+    rows.retain(|row| {
+        let members = snapshot
+            .iter()
+            .filter(|other| compare_tuple(&key(other), &key(row)).is_eq());
+        let (mut first, mut last) = (Timestamp::MAX_EXCLUSIVE, Timestamp::EPOCH);
+        for member in members {
+            first = first.min(time(member, "first_seen"));
+            last = last.max(time(member, "last_seen"));
+        }
+        last >= window.from() && first < window.to()
+    });
 }
 
 /// The rows of an aggregate grouped by `key`, each group's key then its measures, in first-seen order.

@@ -12,7 +12,7 @@ use crucible_fake_collector::golden::{self, CaseInput, Finding};
 use crucible_fake_collector::spec::{self, Case};
 use crucible_fake_collector::suite::{Kind, ProgressCount, Skip, ThrowOutcome, Variant};
 use crucible_fake_collector::value::{Value, get};
-use crucible_fake_collector::{Collector, Event, RecordedSpan};
+use crucible_fake_collector::{Collector, Event, FeedbackPost, RecordedSpan};
 use crucible_fake_collector::{
     Manifest, Mutant, Options, Report, RunOutcome, RunSpec, Runner, SelfTestOptions,
     SelfTestRunner, Status, Suite, mrtr_hash, run_suite, session_hash,
@@ -100,18 +100,18 @@ fn variants_of(scenario: &str) -> BTreeSet<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_self_test_passes_every_case() {
     let suite = suite();
-    assert_eq!(suite.scenarios.len(), 14);
-    assert_eq!(suite.goldens.len(), 14);
+    assert_eq!(suite.scenarios.len(), 15);
+    assert_eq!(suite.goldens.len(), 15);
     let report = run(&selftest(SelfTestOptions::default()), &manifest()).await;
-    assert_eq!(report.results.len(), 39);
+    assert_eq!(report.results.len(), 40);
     for r in &report.results {
         assert_eq!(r.status, Status::Pass, "{}: {:#?}", r.case, r.failures);
         assert!(r.checks >= 20, "{} ran only {} checks", r.case, r.checks);
     }
     assert!(report.passed());
     let markdown = report.to_markdown();
-    assert!(markdown.contains("39 cases: 39 passed, 0 failed, 0 errors, 0 skipped"));
-    assert_eq!(report.to_jsonl().lines().count(), 39);
+    assert!(markdown.contains("40 cases: 40 passed, 0 failed, 0 errors, 0 skipped"));
+    assert_eq!(report.to_jsonl().lines().count(), 40);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -203,7 +203,7 @@ impl Runner for Silent {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_runner_that_emits_nothing_fails_every_case() {
     let report = run(&Silent { exit_code: 0 }, &manifest()).await;
-    assert_eq!(report.results.len(), 39);
+    assert_eq!(report.results.len(), 40);
     for r in &report.results {
         assert_eq!(r.status, Status::Fail, "{}", r.case);
         assert!(
@@ -493,6 +493,99 @@ fn the_loader_refuses_cases_that_break_the_wire_rules() {
         "steps": [{ "step": "a", "observe": { "name": "n", "type": "widget" } }],
     });
     assert!(load_with("scenarios/agent-tool.json", agent).contains("not an observation type"));
+    let trace = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let feedback = |score: Json| {
+        json!({
+            "schema": "crucible.conformance.scenario/v1",
+            "id": "agent-feedback",
+            "kind": "agent",
+            "title": "t",
+            "steps": [
+                { "step": "answer", "observe": { "name": "answer", "type": "agent" } },
+                { "step": "a", "feedback": score },
+                { "step": "b", "feedback": { "trace_id": trace, "name": "x", "value": 1 } },
+                { "step": "c", "feedback": { "trace_id": trace, "name": "y", "value": 1 } },
+            ],
+        })
+    };
+    for (score, needle) in [
+        (
+            json!({ "trace_id": trace, "name": "a#b", "value": 1 }),
+            "without '#'",
+        ),
+        (json!({ "name": "n", "value": 1 }), "names one target"),
+        (
+            json!({ "span_id": "00f067aa0ba902b7", "name": "n", "value": 1 }),
+            "names one target",
+        ),
+        (
+            json!({ "trace_id": "0".repeat(32), "name": "n", "value": 1 }),
+            "names one target",
+        ),
+        (
+            json!({ "trace_id": trace, "session_id": "s", "name": "n", "value": 1 }),
+            "names one target",
+        ),
+        (
+            json!({ "trace_id": trace, "name": "n", "value": "x", "data_type": "numeric" }),
+            "takes a number",
+        ),
+        (
+            json!({ "trace_id": trace, "name": "n", "value": [1] }),
+            "takes a number",
+        ),
+        (
+            json!({ "trace_id": trace, "name": "n", "value": 1, "metadata": [1] }),
+            "metadata is a JSON object",
+        ),
+        (
+            json!({ "trace_id": trace, "name": "n", "value": 1, "idempotency_key": "a b" }),
+            "idempotency_key is 1 to 128",
+        ),
+    ] {
+        let error = load_with("scenarios/agent-feedback.json", feedback(score.clone()));
+        assert!(error.contains(needle), "{score}: {error}");
+    }
+    let unknown = json!({ "trace_id": trace, "name": "n", "value": 1, "user": "u" });
+    assert!(
+        load_with("scenarios/agent-feedback.json", feedback(unknown)).contains("unknown field")
+    );
+    // An MCP scenario has no feedback step, even when its golden expects the post.
+    let mut golden: Json = serde_json::from_slice(&file("goldens/mcp-echo.json")).unwrap();
+    golden["feedback"] = json!([{ "id": "a", "idempotency_key": "k", "body": {} }]);
+    let mcp_feedback =
+        mcp(json!([{ "step": "a", "feedback": { "trace_id": trace, "name": "n", "value": 1 } }]));
+    let files = files().into_iter().map(|(p, bytes)| match p.as_str() {
+        "scenarios/mcp-echo.json" => (p, serde_json::to_vec(&mcp_feedback).unwrap()),
+        "goldens/mcp-echo.json" => (p, serde_json::to_vec(&golden).unwrap()),
+        _ => (p, bytes),
+    });
+    let error = Suite::from_files(files).unwrap_err().to_string();
+    assert!(error.contains("MCP scenarios use"), "{error}");
+}
+
+#[test]
+fn a_golden_lists_one_feedback_post_per_feedback_step() {
+    let golden: Json = serde_json::from_slice(&file("goldens/agent-feedback.json")).unwrap();
+    let with = |golden: Json| {
+        let files = files().into_iter().map(|(p, bytes)| {
+            if p == "goldens/agent-feedback.json" {
+                (p, serde_json::to_vec(&golden).unwrap())
+            } else {
+                (p, bytes)
+            }
+        });
+        Suite::from_files(files).unwrap_err().to_string()
+    };
+    let mut fewer = golden.clone();
+    fewer["feedback"].as_array_mut().unwrap().pop();
+    assert!(with(fewer).contains("feedback lists 2 posts; the scenario has 3 feedback steps"));
+    let mut unknown = golden.clone();
+    unknown["feedback"][0]["after"] = json!(["nope"]);
+    assert!(with(unknown).contains("after names unknown span \"nope\""));
+    let mut bad_key = golden;
+    bad_key["feedback"][1]["idempotency_key"] = json!({ "present": true });
+    assert!(with(bad_key).contains("idempotency_key is a string or"));
 }
 
 #[test]
@@ -502,9 +595,10 @@ fn every_case_has_a_run_spec_a_runner_can_parse() {
         endpoint: "http://127.0.0.1:1".to_owned(),
         traces_url: "http://127.0.0.1:1/v1/traces".to_owned(),
         checkpoint_url: "http://127.0.0.1:1/conformance/checkpoint".to_owned(),
+        api_url: "http://127.0.0.1:1".to_owned(),
     };
     let cases = suite.cases();
-    assert_eq!(cases.len(), 39);
+    assert_eq!(cases.len(), 40);
     for case in &cases {
         let run = spec::run_spec(&suite.constants, case, &endpoints).unwrap();
         let text = serde_json::to_string(&run).unwrap();
@@ -512,6 +606,8 @@ fn every_case_has_a_run_spec_a_runner_can_parse() {
         assert_eq!(back, run);
         assert_eq!(run.schema, "crucible.conformance.run/v1");
         assert_eq!(run.server.is_some(), case.scenario.kind == Kind::Mcp);
+        assert_eq!(run.project_id, suite.constants.project_id);
+        assert_eq!(run.api_url, "http://127.0.0.1:1");
     }
 }
 
@@ -526,6 +622,7 @@ async fn record(
         endpoint: collector.endpoint(),
         traces_url: collector.traces_url(),
         checkpoint_url: collector.checkpoint_url(),
+        api_url: collector.endpoint(),
     };
     let cases = suite.cases();
     let case = cases.iter().find(|c| c.id == case_id).unwrap();
@@ -556,10 +653,17 @@ fn failures_of(
     .failures
 }
 
+fn feedback_mut(events: &mut [Event]) -> impl Iterator<Item = &mut FeedbackPost> {
+    events.iter_mut().filter_map(|e| match e {
+        Event::Feedback(post) => Some(post),
+        _ => None,
+    })
+}
+
 fn exports_mut(events: &mut [Event]) -> impl Iterator<Item = &mut crucible_fake_collector::Export> {
     events.iter_mut().filter_map(|e| match e {
         Event::Export(x) => Some(x),
-        Event::Checkpoint(_) => None,
+        Event::Checkpoint(_) | Event::Feedback(_) => None,
     })
 }
 
@@ -682,7 +786,7 @@ type Mutation = fn(&mut Vec<Event>);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_check_class_fails_when_its_rule_is_broken() {
     let suite = suite();
-    let cases: [(&str, &str, Mutation); 13] = [
+    let cases: [(&str, &str, Mutation); 20] = [
         ("mcp-echo@modern-stdio", "exactly one span with", |events| {
             let export = exports_mut(events).next().unwrap();
             let mut copy = export.spans[0].clone();
@@ -771,6 +875,42 @@ async fn each_check_class_fails_when_its_rule_is_broken() {
                     TraceId::from_bytes([9; 16]);
             },
         ),
+        ("agent-feedback", "posts to the feedback route", |events| {
+            let last = events
+                .iter()
+                .rposition(|e| matches!(e, Event::Feedback(_)))
+                .unwrap();
+            events.remove(last);
+        }),
+        ("agent-feedback", "the project's feedback route", |events| {
+            feedback_mut(events).next().unwrap().path =
+                "/api/v1/projects/01938a2e-0000-7000-8000-000000000000/feedback".to_owned();
+        }),
+        ("agent-feedback", "feedback Authorization", |events| {
+            feedback_mut(events).next().unwrap().authorization =
+                Some("Bearer cpk_conformance00000000000000000000000000000000".to_owned());
+        }),
+        ("agent-feedback", "Idempotency-Key", |events| {
+            // A retried post must keep its key; two scores sharing one is a defect.
+            let first = feedback_mut(events).nth(1).unwrap().idempotency_key.clone();
+            feedback_mut(events).nth(2).unwrap().idempotency_key = first;
+        }),
+        ("agent-feedback", "Idempotency-Key", |events| {
+            feedback_mut(events).next().unwrap().idempotency_key = None;
+        }),
+        ("agent-feedback", "feedback body", |events| {
+            // camelCase field names would be refused by the route.
+            feedback_mut(events).nth(2).unwrap().body =
+                br#"{"sessionId":"conformance-session","name":"resolved","value":true}"#.to_vec();
+        }),
+        ("agent-feedback", "posted after the span", |events| {
+            let at = events
+                .iter()
+                .position(|e| matches!(e, Event::Export(_)))
+                .unwrap();
+            let export = events.remove(at);
+            events.push(export);
+        }),
     ];
     for (case, check, mutate) in cases {
         let (events, responses) = record(&suite, case).await;

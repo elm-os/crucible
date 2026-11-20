@@ -72,7 +72,7 @@ impl QueryService {
         // The applied LSN is read before the clock, so every frame at or below it was stamped by `as_of`: a head
         // this page leaves out for arriving after `as_of` is above the head cursor's LSN.
         let applied = self.index.applied();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "trace_list");
         let scope = ctx.scope;
         let limit = page_limit(query.limit)?;
         let (as_of, mut position) = match query.cursor {

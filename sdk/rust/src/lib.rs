@@ -3,6 +3,8 @@
 //! - [`init`], [`flush`], [`shutdown`] and [`stats`] run one process-wide exporter. Finished spans go on a bounded
 //!   queue that a background thread exports in batches; a full queue drops and counts, and ending a span never
 //!   waits for the network.
+//! - [`feedback`] queues a score for the project's feedback route; a background thread sends it after the spans
+//!   that ended before the call, and the call never waits for the network.
 //! - The agent helpers ([`with_session`], [`with_user`], [`with_tags`], [`with_metadata`] and [`observe`]) record
 //!   the steps of an agent with the span keys Crucible reads.
 //! - The `mcp` feature adds [`mcp::CrucibleService`], a wrapper for MCP servers built on rmcp that records one
@@ -16,6 +18,7 @@
 mod agent;
 mod client;
 mod export;
+mod feedback;
 mod keys;
 #[cfg(any(feature = "mcp", feature = "mcp-client"))]
 mod pattern;
@@ -34,6 +37,7 @@ pub use agent::{
     with_user,
 };
 pub use client::{FlushError, InitError, Options, Stats, flush, init, shutdown, stats};
+pub use feedback::{Feedback, ScoreValue, feedback};
 /// The OpenTelemetry context type the agent helpers take and return.
 pub use opentelemetry::Context;
 /// Attribute values for [`with_metadata`] and [`Observation::set_attribute`].

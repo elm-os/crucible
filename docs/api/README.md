@@ -91,7 +91,7 @@ server's features:
   "csrf_token": "<token>",
   "session": {"expires_at": "2026-12-20T00:11:32.825262Z", "idle_expires_at": "2026-11-27T00:38:46.795830Z", "auth_method": "password"},
   "features": {"sql_workspace": {"enabled": true}, "media": {"enabled": false, "max_bytes": 0}, "smtp": false, "signup_mode": "invite_only"},
-  "server": {"version": "0.0.0"}
+  "server": {"version": "0.1.0"}
 }
 ```
 
@@ -156,6 +156,20 @@ signed-in person, and `none` needs no credential.
 | `POST projects/{project_id}/metrics/query` | Query metrics | `read`; key `read` |
 | `GET projects/{project_id}/metrics/schema` | Get the metrics schema | `read`; key `read` |
 
+### Dashboards
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/dashboards` | List dashboards | `read`; key `read` |
+| `POST projects/{project_id}/dashboards` | Create a dashboard | `edit_content`; no key |
+| `GET projects/{project_id}/dashboards/{dashboard_id}` | Get a dashboard | `read`; key `read` |
+| `DELETE projects/{project_id}/dashboards/{dashboard_id}` | Delete a dashboard | `edit_content`; no key |
+| `PATCH projects/{project_id}/dashboards/{dashboard_id}` | Change a dashboard | `edit_content`; no key |
+| `POST projects/{project_id}/dashboards/{dashboard_id}/duplicate` | Duplicate a dashboard | `edit_content`; no key |
+| `POST projects/{project_id}/dashboards/{dashboard_id}/widgets` | Add a widget | `edit_content`; no key |
+| `DELETE projects/{project_id}/dashboards/{dashboard_id}/widgets/{widget_id}` | Delete a widget | `edit_content`; no key |
+| `PATCH projects/{project_id}/dashboards/{dashboard_id}/widgets/{widget_id}` | Change a widget | `edit_content`; no key |
+
 ### Facts
 
 | Method and path | What it does | Permission |
@@ -193,6 +207,26 @@ signed-in person, and `none` needs no credential.
 | `DELETE projects/{project_id}/alerts/{alert_id}` | Delete an alert rule | `edit_content`; no key |
 | `PATCH projects/{project_id}/alerts/{alert_id}` | Change an alert rule | `edit_content`; no key |
 | `GET projects/{project_id}/alerts/{alert_id}/history` | Get the history of an alert rule | `read`; key `read` |
+
+### MCP analytics
+
+Every route takes `side` (`client` or `server`), `from` and `to`, and accepts `source` (`auto`, the default, `sdk`,
+`proxy` or `otlp`), `include_caller_faults` and `server`. Each answer names the capture source it read for each server
+(`capture_sources`); see the [MCP overview](../guides/mcp.md).
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/mcp/clients` | Get MCP clients | `read`; key `read` |
+| `GET projects/{project_id}/mcp/compare` | Compare MCP deploys | `read`; key `read` |
+| `GET projects/{project_id}/mcp/deploys` | List MCP deploys | `read`; key `read` |
+| `GET projects/{project_id}/mcp/errors` | Get MCP errors | `read`; key `read` |
+| `GET projects/{project_id}/mcp/operations` | List MCP operations | `read`; key `read` |
+| `GET projects/{project_id}/mcp/operations/{trace_id}/{span_id}` | Get an MCP operation | `read`; key `read` |
+| `GET projects/{project_id}/mcp/servers` | List MCP servers | `read`; key `read` |
+| `GET projects/{project_id}/mcp/sessions` | List MCP sessions | `read`; key `read` |
+| `GET projects/{project_id}/mcp/tools` | List MCP tools | `read`; key `read` |
+| `GET projects/{project_id}/mcp/tools/{name}` | Get an MCP tool | `read`; key `read` |
+| `GET projects/{project_id}/mcp/users` | List MCP users | `read`; key `read` |
 
 ### Channels
 
@@ -555,7 +589,7 @@ Filtered lists read ClickHouse only, so a trace acknowledged a moment ago may be
 filters and without `cursor`, to get the traces that arrived after it, with `new_count` (how many arrived, counted
 up to 100) and a fresh `head_cursor` for the next poll. The UI's traces page polls this way.
 
-## Search
+## Searching
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type: application/json' \
@@ -698,7 +732,7 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 
 | Member | Meaning |
 |---|---|
-| `source` | `spans`, or `traces` (which has the one measure `traces`) |
+| `source` | `spans`, `traces` (which has the one measure `traces`), or `mcp_ops`, the MCP calls: one of `mcp.calls`, `mcp.error_count`, `mcp.error_rate` (aggregation `rate`, in parts per million), `mcp.duration_p50`, `mcp.duration_p90` and `mcp.duration_p99`, split by `server_name` or `target_name` |
 | `measures` | One to four, each a measure id and an aggregation it allows: `sum`, or a percentile `p50`, `p90`, `p95`, `p99`. The `spans` measures are `count`, `error_count`, `input_tokens`, `output_tokens`, `total_tokens`, `total_cost` (USD), `duration` and `ttft` (time to first token, microseconds) |
 | `dimensions` | Up to two of `environment`, `observation_type`, `model`, `level` and `release`; each combination of values is one series |
 | `filter` | Conditions over the filter fields, combined with `and`, `or` and `not` |
@@ -706,10 +740,69 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 | `from`, `to` | The window, at most the project's maximum |
 | `top_n` | With dimensions, how many keys to return, 1 to 20 (default 20); the rest of an additive measure is summed into an `other` series |
 | `fill` | `zero` (default): every bucket is returned, 0 for a sum and null for a percentile. `none`: empty buckets are left out |
+| `side`, `capture_source`, `include_caller_faults` | Source `mcp_ops` only, where `side` (`client` or `server`) is required: the capture source each server is read from (`auto`, the default, `sdk`, `proxy` or `otlp`), and whether calls the caller caused count (default `false`) |
 
 The answer above is cut to its first series; the query returns one series per measure and environment. It also says
 which granularity it used, whether the last bucket may still grow (`partial_last_bucket`), and where the measures
 were read (`source_tier`: the minute rollup or the span table).
+
+## Dashboards and widgets
+
+A dashboard is a grid of 12 columns holding at most 50 widgets. A widget has a `query`, which is the body of
+`POST metrics/query` without `from` and `to` (the dashboard's time range supplies the window), a `display` (its
+`kind`: `timeseries`, `stat`, `bar`, `table` or `markdown`; a `title`; `chart` `line` or `bar` for a time series;
+`text` for Markdown, which takes no query) and a `layout` in cells (`x`, `y`, `w`, `h`, each widget at most 12 by
+12, and no two widgets overlapping). The [dashboards guide](../guides/dashboards.md) lists what each kind may query
+and its smallest size.
+
+`GET projects/{project_id}/dashboards` lists the project's dashboards, oldest first, then the built-in starters,
+whose `id` is their `builtin_key`:
+
+```sh
+curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/dashboards"
+```
+
+```json
+{
+  "data": [
+    {"id": "overview", "builtin_key": "overview", "name": "Agent overview", "description": "Traces, spans, errors and cost at a glance.", "widget_count": 8, "version": 1, "updated_at": null},
+    {"id": "cost-and-tokens", "builtin_key": "cost-and-tokens", "name": "Cost and tokens", "description": "What the models cost, and the tokens behind it.", "widget_count": 6, "version": 1, "updated_at": null},
+    {"id": "latency", "builtin_key": "latency", "name": "Latency", "description": "How long spans take, and how long models take to answer.", "widget_count": 7, "version": 1, "updated_at": null},
+    {"id": "errors", "builtin_key": "errors", "name": "Errors", "description": "Where spans fail: by type, model and environment.", "widget_count": 6, "version": 1, "updated_at": null}
+  ]
+}
+```
+
+`GET .../dashboards/{dashboard_id}` returns one dashboard with its widgets, in reading order, and its `version` as
+`ETag`. A key with `read` reads dashboards; every change needs `edit_content`, which project members and admins hold
+and keys never do, so changes are made with a session. Creating one:
+
+```sh
+curl -s -i -b cookies.txt -X POST "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/dashboards" \
+  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: <csrf_token>" -H "Origin: $CRUCIBLE_URL" \
+  -d '{"name": "Agent health",
+       "widgets": [{"display": {"kind": "stat", "title": "Errors"}, "layout": {"x": 0, "y": 0, "w": 3, "h": 2},
+                    "query": {"source": "spans", "measures": [{"measure": "error_count", "aggregation": "sum"}]}}]}'
+```
+
+The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: "1"`.
+
+- **Changes carry the version.** `PATCH` and `DELETE` of a dashboard or of a widget send the `ETag` they read as
+  `If-Match`. Without it the answer is 428 `precondition_required`; with an older one, 412 `precondition_failed`
+  ("the dashboard changed since it was read; read it again and repeat the change with its new ETag"). Each change
+  answers the dashboard's next version as `ETag`, except deleting the dashboard, which answers 204.
+- **Adding a widget** (`POST .../widgets`) takes no `If-Match`: it is placed only where it overlaps no widget, checked
+  again if another change lands first, and answers 201 with the widget and the dashboard's new `ETag`.
+- **`PATCH .../dashboards/{dashboard_id}` with `widgets`** replaces the whole set in one change: a widget with the
+  `id` of an existing one rewrites it, one without an `id` is added, and one left out is deleted.
+- **Rules are checked on every write**, and a refusal is 422 `validation_failed` whose `errors` point at the member
+  to fix, for example `{"pointer": "/layout", "code": "overlaps", "message": "the widget overlaps \"Errors\"; move
+  or resize one of them"}`.
+- **Starters are read-only.** A change to one answers 409 `conflict` and says to duplicate it.
+  `POST .../dashboards/{dashboard_id}/duplicate` copies any dashboard, starters included, as one of the project's own;
+  the copy is named after the original with " (copy)" unless the body gives a `name`.
+- **Without the control plane** the starters are still listed and read; creating or duplicating a dashboard answers
+  404 `feature_disabled`.
 
 ## The rest of the API
 
@@ -720,8 +813,9 @@ were read (`source_tier`: the minute rollup or the span table).
   `POST sql/export` returns the result as CSV, JSONL or Parquet; saved queries keep a statement with declared
   parameters. Each project's statements run as its own ClickHouse user
   ([SQL workspace](../self-hosting/sql-workspace.md)).
-- **Alerts and channels**: alert rules over the `spans` metrics measures, a preview of what a rule would read now,
-  each rule's history, and webhook, Slack and email channels with a test send; see [alerts](../guides/alerts.md).
+- **Alerts and channels**: alert rules over the `spans` or `mcp_ops` metrics measures, a preview of what a rule
+  would read now, each rule's history, and webhook, Slack and email channels with a test send; see
+  [alerts](../guides/alerts.md).
 - **Exports**: `POST exports` starts a job that writes a project's spans of a window as `crucible-jsonl` or
   `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}` until `state` is `ready`, then download it
   from `download_path`. Files are kept 7 days, and a project may start 5 exports an hour.

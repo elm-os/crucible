@@ -1,8 +1,8 @@
 //! Alert rules (contracts 11.7 and 12.6; design: alerts engine).
 //!
-//! - [`RuleSpec`] is a rule's definition: one measure of the span rollup, at most two dimensions, a
-//!   comparison and threshold, a window, an interval of at least 60 s, a `for` duration, a no-data policy,
-//!   `renotify` and channels.
+//! - [`RuleSpec`] is a rule's definition: one measure of the span rollup or of the MCP rollup (with a side and
+//!   a capture source), at most two dimensions, a comparison and threshold, a window, an interval of at least
+//!   60 s, a `for` duration, a no-data policy, `renotify` and channels.
 //! - [`schedule`] gives each rule its ticks, shifted inside the interval by an offset derived from the rule's
 //!   id, and the window each tick reads, which lags the tick by at least 30 s.
 //! - [`machine`] is the pure state machine of one series: ok, pending, firing, resolved and no_data.
@@ -28,7 +28,7 @@ pub use scheduler::{KEEP_EVALUATIONS, KEEP_NOTIFICATIONS, SCAN_EVERY};
 pub use service::{AlertError, Alerts, Preview, PreviewSeries, RuleInput, RuleView};
 pub use source::{Observed, QuerySource, ReadFailure, SeriesSource, series_key, series_values};
 pub use spec::{
-    Comparison, FOR_MAX_SECS, INTERVAL_SECS, MAX_CHANNELS, MAX_SERIES, NAME_MAX_CHARS,
+    Comparison, FOR_MAX_SECS, INTERVAL_SECS, MAX_CHANNELS, MAX_SERIES, McpRuleRead, NAME_MAX_CHARS,
     NO_DATA_FOR_DEFAULT_SECS, NO_DATA_FOR_MAX_SECS, NoDataPolicy, RENOTIFY_DEFAULT_SECS,
     RENOTIFY_SECS, RuleSpec, SpecIssue, WINDOW_SECS, display_value,
 };

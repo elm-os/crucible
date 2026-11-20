@@ -2,7 +2,7 @@
 
 **Search** finds spans by the words of their input and output, or by their metadata entries, over the time range
 in the header (up to 30 days). The REST API's `POST search` does the same
-([API](../api/README.md#search)), and so does the MCP server's `search_spans` tool ([MCP server](mcp-server.md)).
+([API](../api/README.md#searching)), and so does the MCP server's `search_spans` tool ([MCP server](mcp-server.md)).
 
 ## Finding spans
 

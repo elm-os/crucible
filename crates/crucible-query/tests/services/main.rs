@@ -8,6 +8,7 @@ mod export;
 mod facts;
 mod hidden;
 mod list;
+mod mcp;
 mod metrics;
 mod payload;
 mod properties;

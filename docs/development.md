@@ -166,9 +166,12 @@ password_file = "/run/secrets/postgres"
 server keeps sign-in, the organization, projects, members and API keys there and needs the master key, and
 `crucible migrate` (or `serve --migrate`) applies the Postgres migrations of `crates/crucible-control-pg/migrations`
 and then the ClickHouse steps, and records each in the ledger table `schema_migrations` (contract 6.6). A step that
-the ledger holds with the same checksum is skipped. The ClickHouse steps run under the `migrations` lease, and each
-is recorded in a transaction fenced by the lease's token (contract 11.7), so two nodes that migrate at once do not
-interleave. `crucible migrate` with only `[postgres]` migrates Postgres alone.
+the ledger holds with the same checksum is skipped. The checksum leaves out the password digests that the access
+steps carry, because they come from the master key: a start with another key applies nothing again. The ClickHouse
+steps run under the `migrations` lease, and each is recorded in a transaction fenced by the lease's token (contract
+11.7), so two nodes that migrate at once do not interleave. After the steps, the SQL workspace's two probe
+identities are provisioned again with the passwords of the current master key, unless the service users refuse that
+key. `crucible migrate` with only `[postgres]` migrates Postgres alone.
 
 Startup, in order:
 
@@ -199,9 +202,15 @@ Every server started with the same master key opens the cursors of the
 others, across restarts. Without ClickHouse no list issues a cursor, and a random key made at startup only lets
 the API refuse the cursors it is sent.
 
+With Postgres, the background jobs start once the control plane is ready: the Postgres migrations have run and the
+API key snapshot has loaded, so no first run meets a table that does not exist yet.
+
 On SIGTERM or Ctrl-C the listeners stop accepting and finish their open requests, whose WAL appends complete; the
 shipper stops at its next step and abandons the inserts in flight. That is safe: after a restart every pair of
-every sealed batch is probed before anything is sent again. Tasks get 30 s before they are aborted.
+every sealed batch is probed before anything is sent again. The jobs let a leader run end and release their leases,
+and the key feed, the SQL workspace's probe and reconciler and the other background loops end at once. The Postgres
+pools close after all of them, which ends their connections. An idle server stops in well under a second; tasks get
+30 s before they are aborted.
 
 ## A local build in Compose
 
@@ -252,7 +261,9 @@ traces table must show the traces after connecting through the dialog. Without `
 test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real. With
 `CRUCIBLE_E2E_POSTGRES_URL` as well, naming an empty database, a second test runs the control-plane path:
 `crucible admin init`, sign-in, a project and an API key made through the API, a key from
-`crucible admin create-key`, ingest and read-back with each key, revocation and sign-out.
+`crucible admin create-key`, ingest and read-back with each key, revocation and sign-out, and last a SIGTERM
+that must end the server within 10 s with nothing left to abort. The log of that first start on an empty database
+must hold no warning about a table that does not exist yet.
 
 ```sh
 docker network create crucible-e2e

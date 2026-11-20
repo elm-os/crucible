@@ -338,6 +338,8 @@ def run_agent(spec: Mapping[str, Any]) -> None:
     sdk = spec["sdk"]
     crucible_sdk.init(
         endpoint=spec["otlp"]["endpoint"],
+        api_url=spec["api_url"],
+        project_id=spec["project_id"],
         secret_key=spec["keys"]["secret_key"],
         service_name=sdk.get("service_name"),
         environment=sdk.get("environment"),
@@ -353,6 +355,10 @@ def run_agent(spec: Mapping[str, Any]) -> None:
                 raise TimeoutError(f"step {step['step']!r}: flush did not finish in {TIMEOUT} s")
         elif "checkpoint" in step:
             checkpoint(spec["checkpoint_url"], step["checkpoint"])
+        elif "feedback" in step:
+            # The step's keys are the route's body fields and the Idempotency-Key, as the SDK names its arguments.
+            score = dict(step["feedback"])
+            crucible_sdk.feedback(score.pop("name"), score.pop("value"), **score)
         elif "shutdown" in step:
             crucible_sdk.shutdown(TIMEOUT)
         elif "sleep_ms" in step:

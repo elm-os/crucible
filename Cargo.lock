@@ -763,7 +763,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crucible"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-admission"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-records",
  "proptest",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-alerts"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "crucible-auth",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-api-types"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-records",
  "proptest",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-auth"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-chfmt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "cityhash-rs",
@@ -955,14 +955,14 @@ dependencies = [
 
 [[package]]
 name = "crucible-compat"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-records",
 ]
 
 [[package]]
 name = "crucible-config"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-conformance"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-control"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "crucible-records",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-control-pg"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-cursor"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "crucible-records",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-egress"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-env"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-env-prod"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-export"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-fake-collector"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-ingest"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-jobs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-control",
  "crucible-env",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-lifecycle"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "crucible-auth",
@@ -1241,7 +1241,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-loadgen"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-mcp-server"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-normalize"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "crucible-compat",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-notify"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-otlp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-plan"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-auth",
  "crucible-plan",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-proxy"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-query"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-recent"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-auth",
  "crucible-env",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-records"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "hashbrown 0.17.1",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-schema"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crucible-records",
  "insta",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-shipper"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "crucible-chfmt",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-sim"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-sqlws"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1546,6 +1546,7 @@ dependencies = [
  "crucible-records",
  "crucible-schema",
  "crucible-sim",
+ "futures",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
@@ -1554,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-store-clickhouse"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1581,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-ui-assets"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1594,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-wal"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "crucible-env",
@@ -1609,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-wal-codec"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "crc32c",
@@ -5567,7 +5568,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "brotli",
  "crucible-api",

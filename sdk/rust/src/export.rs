@@ -108,8 +108,8 @@ pub(crate) struct Processor {
     counters: Arc<Counters>,
 }
 
-/// The handle behind `flush`, `shutdown` and `stats`.
-#[derive(Debug)]
+/// The handle behind `flush`, `shutdown` and `stats`; the feedback sender holds a clone to flush before it posts.
+#[derive(Clone, Debug)]
 pub(crate) struct Pipeline {
     commands: mpsc::UnboundedSender<Command>,
     counters: Arc<Counters>,
@@ -226,6 +226,7 @@ impl Pipeline {
             dropped: self.counters.dropped.load(Ordering::Relaxed),
             failed: self.counters.failed.load(Ordering::Relaxed),
             queued_bytes: self.counters.queued_bytes.load(Ordering::Relaxed),
+            ..Stats::default()
         }
     }
 }

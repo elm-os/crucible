@@ -9,14 +9,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use crucible_alerts::schedule::tick_at;
 use crucible_alerts::{
-    AlertError, Comparison, NO_DATA_FOR_DEFAULT_SECS, NoDataPolicy, RENOTIFY_DEFAULT_SECS,
-    RuleInput, RuleSpec, RuleView, SpecIssue, series_values,
+    AlertError, Comparison, McpRuleRead, NO_DATA_FOR_DEFAULT_SECS, NoDataPolicy,
+    RENOTIFY_DEFAULT_SECS, RuleInput, RuleSpec, RuleView, SpecIssue, series_values,
 };
 use crucible_api_types as wire;
 use crucible_api_types::{FieldError, Problem, ProblemCode, SafeI64, Saturation, SeriesKey};
 use crucible_control as control;
-use crucible_plan::{Aggregation, DimensionId, MeasureId, Source};
-use crucible_records::{AlertRuleId, ChannelId, RequestId, Timestamp, Uuid};
+use crucible_plan::{Aggregation, CaptureClass, DimensionId, MeasureId, Source, SourceChoice};
+use crucible_records::{AlertRuleId, ChannelId, McpSide, RequestId, Timestamp, Uuid};
 use utoipa::OpenApi;
 
 use crate::access::{ApiState, EditContent, Read, Scoped};
@@ -119,6 +119,64 @@ fn problem(rid: RequestId) -> impl FnOnce(AlertError) -> ApiError {
     }
 }
 
+const fn side_in(side: wire::McpSideParam) -> McpSide {
+    match side {
+        wire::McpSideParam::Client => McpSide::Client,
+        wire::McpSideParam::Server => McpSide::Server,
+    }
+}
+
+const fn side_out(side: McpSide) -> Option<wire::McpSideParam> {
+    match side {
+        McpSide::Client => Some(wire::McpSideParam::Client),
+        McpSide::Server => Some(wire::McpSideParam::Server),
+        _ => None,
+    }
+}
+
+const fn choice_in(source: wire::SourceParam) -> SourceChoice {
+    match source {
+        wire::SourceParam::Auto => SourceChoice::Auto,
+        wire::SourceParam::Sdk => SourceChoice::Class(CaptureClass::Sdk),
+        wire::SourceParam::Proxy => SourceChoice::Class(CaptureClass::Proxy),
+        wire::SourceParam::Otlp => SourceChoice::Class(CaptureClass::Otlp),
+    }
+}
+
+const fn choice_out(choice: SourceChoice) -> wire::SourceParam {
+    match choice {
+        SourceChoice::Auto => wire::SourceParam::Auto,
+        SourceChoice::Class(CaptureClass::Sdk) => wire::SourceParam::Sdk,
+        SourceChoice::Class(CaptureClass::Proxy) => wire::SourceParam::Proxy,
+        SourceChoice::Class(CaptureClass::Otlp) => wire::SourceParam::Otlp,
+    }
+}
+
+/// The side and capture source a request names (contract 9.5): `auto` unless a capture source is named. Both
+/// apply to an `mcp_ops` rule only, which [`RuleSpec::issues`] checks; a capture source without a side is
+/// refused here, since the side is what an `mcp_ops` rule cannot do without.
+fn mcp_read(
+    rid: RequestId,
+    side: Option<wire::McpSideParam>,
+    source: Option<wire::SourceParam>,
+) -> Result<Option<McpRuleRead>, ApiError> {
+    match (side, source) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(ApiError::validation(
+            rid,
+            vec![field_error(
+                "side",
+                "required",
+                "capture_source applies to an mcp_ops rule, which reads one side: client or server",
+            )],
+        )),
+        (Some(side), source) => Ok(Some(McpRuleRead {
+            side: side_in(side),
+            source: source.map_or(SourceChoice::Auto, choice_in),
+        })),
+    }
+}
+
 const fn comparison(c: Comparison) -> wire::AlertComparison {
     match c {
         Comparison::Gt => wire::AlertComparison::Gt,
@@ -204,6 +262,8 @@ fn rule(view: &RuleView) -> wire::AlertRule {
         name: rule.name.clone(),
         enabled: rule.enabled,
         source: spec.source.as_str().to_owned(),
+        side: spec.mcp.and_then(|mcp| side_out(mcp.side)),
+        capture_source: spec.mcp.map(|mcp| choice_out(mcp.source)),
         measure: spec.measure.as_str().to_owned(),
         aggregation: spec.aggregation.as_str().to_owned(),
         unit: spec.measure.unit().to_owned(),
@@ -264,7 +324,7 @@ fn names(names: &Names<'_>, errors: &mut Vec<FieldError>) -> Option<Parsed> {
         errors.push(field_error(
             "source",
             "unknown",
-            "alert rules read the span rollup; use the source `spans`",
+            "alert rules read the span rollup or the MCP rollup; use the source `spans` or `mcp_ops`",
         ));
     }
     let measure = MeasureId::parse(names.measure);
@@ -329,11 +389,13 @@ fn input(rid: RequestId, body: &wire::AlertRuleInput) -> Result<RuleInput, ApiEr
     let Some(parsed) = parsed.filter(|_| errors.is_empty()) else {
         return Err(ApiError::validation(rid, errors));
     };
+    let mcp = mcp_read(rid, body.side, body.capture_source)?;
     Ok(RuleInput {
         name: body.name.clone(),
         enabled: body.enabled.unwrap_or(true),
         spec: RuleSpec {
             source: parsed.source,
+            mcp,
             measure: parsed.measure,
             aggregation: parsed.aggregation,
             dimensions: parsed.dimensions,
@@ -387,11 +449,21 @@ fn patched(
     let Some(parsed) = parsed.filter(|_| errors.is_empty()) else {
         return Err(ApiError::validation(rid, errors));
     };
+    // A side or capture source the patch leaves out keeps its value; on a spans rule, naming one is refused.
+    let mcp = match (patch.side, patch.capture_source, spec.mcp) {
+        (None, None, kept) => kept,
+        (side, source, Some(kept)) => Some(McpRuleRead {
+            side: side.map_or(kept.side, side_in),
+            source: source.map_or(kept.source, choice_in),
+        }),
+        (side, source, None) => mcp_read(rid, side, source)?,
+    };
     Ok(RuleInput {
         name: patch.name.clone().unwrap_or_else(|| view.rule.name.clone()),
         enabled: patch.enabled.unwrap_or(view.rule.enabled),
         spec: RuleSpec {
             source: parsed.source,
+            mcp,
             measure: parsed.measure,
             aggregation: parsed.aggregation,
             dimensions: parsed.dimensions,

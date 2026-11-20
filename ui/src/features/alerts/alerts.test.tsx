@@ -211,6 +211,57 @@ describe("alert rules", () => {
     );
   });
 
+  test("an MCP rule reads one side under a capture source, its rate typed in percent", async () => {
+    const created = rule({
+      source: "mcp_ops",
+      side: "client",
+      capture_source: "proxy",
+      measure: "mcp.error_rate",
+      aggregation: "rate",
+      unit: "ppm",
+    });
+    serve({
+      [`GET ${BASE}/alerts`]: json({ data: [] }),
+      [`GET ${BASE}/channels`]: json({ data: [] }),
+      [`POST ${BASE}/alerts`]: json(created, 201),
+    });
+    renderPage(<AlertRules />);
+    await screen.findByText("No alert rules yet.");
+    const result = await agent.act({
+      steps: [
+        { ref: "New rule", action: "press" },
+        { ref: "Name", action: "setValue", args: ["Tool errors"] },
+        { ref: "Watch", action: "setValue", args: ["MCP calls"] },
+        { ref: "Side", action: "setValue", args: ["Client side"] },
+        { ref: "Capture source", action: "setValue", args: ["Proxy"] },
+        { ref: "Group by", action: "setValue", args: ["Server"] },
+        { ref: "Threshold, in percent", action: "setValue", args: ["5"] },
+        { ref: "Create rule", action: "press" },
+      ],
+    });
+    expect(result.ok, result.error?.message).toBe(true);
+    await waitFor(() => expect(requests(`POST ${BASE}/alerts`)).toHaveLength(1));
+    const [post] = requests(`POST ${BASE}/alerts`);
+    expect(JSON.parse(String(post?.body))).toEqual({
+      name: "Tool errors",
+      source: "mcp_ops",
+      side: "client",
+      capture_source: "proxy",
+      measure: "mcp.error_rate",
+      aggregation: "rate",
+      dimensions: ["server_name"],
+      comparison: "gt",
+      threshold: 50_000,
+      window_secs: 300,
+      interval_secs: 60,
+      for_secs: 0,
+      no_data: "keep",
+      no_data_for_secs: 300,
+      renotify_secs: 14_400,
+      channels: [],
+    });
+  });
+
   test("the server's field errors mark their fields, in the page's words", async () => {
     serve({
       [`GET ${BASE}/alerts`]: json({ data: [] }),

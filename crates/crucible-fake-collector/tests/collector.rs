@@ -96,7 +96,7 @@ fn exports(collector: &Collector) -> Vec<Export> {
         .into_iter()
         .filter_map(|e| match e {
             Event::Export(x) => Some(x),
-            Event::Checkpoint(_) => None,
+            Event::Checkpoint(_) | Event::Feedback(_) => None,
         })
         .collect()
 }

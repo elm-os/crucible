@@ -37,6 +37,15 @@ its method, tool, prompt or resource, JSON-RPC id, outcome and error class, dura
 transport, client name and version, session, the hashed user subject, and the sizes of the request and response.
 Captured arguments and results are kept beside it, under their own retention (`mcp_content_retention_days`).
 
+**MCP** in the navigation reads them per side: servers, tools (with the ones a server listed but nobody called),
+one tool over time with its deploys marked, errors, clients, users, sessions, operations with their captured content,
+deploys, and a compare of two deploys or two windows. Each page reads every server from one capture source, the
+automatic choice by default, and says which. The same reads are the routes under `projects/{project_id}/mcp/` (see
+the [API reference](../api/README.md#mcp-analytics)) and the analytics tools of [Crucible's MCP
+server](mcp-server.md); [alert rules](alerts.md) and the MCP servers [starter dashboard](dashboards.md) read the
+`mcp_ops` metrics.
+[MCP analytics](mcp-analytics.md) describes each page and how it chooses what to read.
+
 The SQL workspace reads them in `crucible_sql.mcp_operations`, `crucible_sql.mcp_contents`,
 `crucible_sql.mcp_tool_metrics` (per minute and tool), `crucible_sql.mcp_tools` (the tools, prompts and resources
 each server listed) and `crucible_sql.mcp_deploys`:

@@ -1,8 +1,9 @@
 # Crucible's MCP server
 
 Crucible serves an MCP server at `/mcp` on its main listener, so a coding agent can read a project's traces while
-it works: list them, open one, read a span's input or output, search, and start an export. It speaks Streamable
-HTTP in both MCP protocol eras: the session-based revisions and the stateless 2026-07-28 revision.
+it works: list them, open one, read a span's input or output, search, read the MCP analytics of the project's MCP
+servers, and start an export. It speaks Streamable HTTP in both MCP protocol eras: the session-based revisions and
+the stateless 2026-07-28 revision.
 
 ## Connect an agent
 
@@ -35,6 +36,11 @@ A request without a usable key answers 401 with a problem document that says how
 | `get_span_children` | The direct children of one span, for walking a paged trace. Up to 200 per call |
 | `get_span_payload` | One payload field of one span (input, output, system instructions, attributes, resource attributes, events, links, tool definitions or tool calls), up to 32 KiB of text per call, continued with `offset` |
 | `search_spans` | Spans whose input or output contain words, or whose metadata holds `key=value` entries, newest first, with highlighted fragments. Up to 20 hits per call |
+| `list_mcp_servers` | The MCP servers seen on one side in the window, most calls first: calls, errors, error rate, calls the caller caused, latency p50, p90 and p99, distinct clients, last seen and the latest deploy's version, with the capture source read for each |
+| `list_mcp_tools` | The MCP tools called on one side, most calls first, then the tools a server listed but nobody called: calls, errors, latency, bytes and the latest schema hash |
+| `get_mcp_tool` | One MCP tool over the window and per time bucket: calls, errors and latency, calls per error class, the top clients, and its servers' deploys |
+| `list_mcp_errors` | The errors of MCP calls on one side: calls per error class and failed calls per method and tool, or with `breakdown` the failed calls grouped down to the JSON-RPC code and message |
+| `compare_mcp_deploys` | One MCP server's tools in two deploys: per tool the calls, errors, error rate and latency of each, and the tools added, removed or with a changed schema |
 | `create_export` | Starts an export of the window's spans as `crucible-jsonl` or `otlp-json` |
 | `get_export` | One export's state and, once it is `ready`, the REST path to download the file from with the same key |
 

@@ -15,6 +15,7 @@ crucible-schema = { workspace = true }
 # A path dependency: the crate has no entry in the root [workspace.dependencies] table yet.
 crucible-control = { path = "../crucible-control" }
 bytes = { workspace = true }
+futures = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

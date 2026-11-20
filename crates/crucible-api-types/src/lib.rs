@@ -21,6 +21,7 @@ mod exports;
 mod facts;
 mod identity;
 mod lifecycle;
+mod mcp;
 mod meta;
 mod metrics;
 mod payload;
@@ -70,6 +71,16 @@ pub use identity::{
 pub use lifecycle::{
     DeletionKind, DeletionPlace, DeletionRequest, DeletionRequestCreate, DeletionRequestList,
     DeletionState, Retention, RetentionHidden, RetentionUpdate,
+};
+pub use mcp::{
+    CaptureClass, CaptureSource, Era, ErrorClass, ErrorSubclass, GroupKeyKind, IdentitySource,
+    McpChainLink, McpClassCount, McpClientList, McpClientRow, McpClientVersionRow, McpCompare,
+    McpCompareParams, McpContentPreview, McpDeployList, McpDeployRow, McpErrorGroupRow, McpErrors,
+    McpLatency, McpListParams, McpOperation, McpOperationDetail, McpOperationPage, McpOperationRow,
+    McpOperationsParams, McpParams, McpSeriesPoint, McpServerList, McpServerRow, McpServerSource,
+    McpSessionList, McpSessionRow, McpSide, McpSideParam, McpStats, McpStatus, McpTargetErrorRow,
+    McpTargetKind, McpToolDeltaRow, McpToolDetail, McpToolList, McpToolRow, McpUserList,
+    McpUserRow, McpView, McpViewParams, ResultType, SourceParam, Transport,
 };
 pub use meta::Meta;
 pub use metrics::{
@@ -148,6 +159,22 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<InvitationCreated>();
     visitor.visit::<InvitationList>();
     visitor.visit::<LoginRequest>();
+    visitor.visit::<McpClientList>();
+    visitor.visit::<McpCompare>();
+    visitor.visit::<McpCompareParams>();
+    visitor.visit::<McpDeployList>();
+    visitor.visit::<McpErrors>();
+    visitor.visit::<McpListParams>();
+    visitor.visit::<McpOperationDetail>();
+    visitor.visit::<McpOperationPage>();
+    visitor.visit::<McpOperationsParams>();
+    visitor.visit::<McpParams>();
+    visitor.visit::<McpServerList>();
+    visitor.visit::<McpSessionList>();
+    visitor.visit::<McpToolDetail>();
+    visitor.visit::<McpToolList>();
+    visitor.visit::<McpUserList>();
+    visitor.visit::<McpViewParams>();
     visitor.visit::<MetricsQueryRequest>();
     visitor.visit::<MetricsResponse>();
     visitor.visit::<MetricsSchema>();

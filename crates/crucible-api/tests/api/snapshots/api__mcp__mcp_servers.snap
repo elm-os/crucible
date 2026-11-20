@@ -1,0 +1,67 @@
+---
+source: crates/crucible-api/tests/api/mcp.rs
+expression: reply.pretty()
+---
+{
+  "capture_sources": [
+    {
+      "available": [
+        "otlp"
+      ],
+      "chosen": "otlp",
+      "server_name": "db"
+    },
+    {
+      "available": [
+        "sdk",
+        "proxy"
+      ],
+      "chosen": "sdk",
+      "server_name": "files"
+    }
+  ],
+  "data": [
+    {
+      "clients": 1,
+      "deploys": 1,
+      "server_name": "files",
+      "stats": {
+        "caller_faults": 2,
+        "calls": 5,
+        "error_rate": 0.0,
+        "errors": 0,
+        "last_seen": "2026-11-17T09:20:00.000000Z",
+        "latency": {
+          "p50_us": 656,
+          "p90_us": 656,
+          "p99_us": 656
+        }
+      },
+      "version": "1.0.0"
+    },
+    {
+      "clients": 1,
+      "deploys": 0,
+      "server_name": "db",
+      "stats": {
+        "caller_faults": 0,
+        "calls": 1,
+        "error_rate": 1.0,
+        "errors": 1,
+        "last_seen": "2026-11-17T09:20:00.000000Z",
+        "latency": {
+          "p50_us": 656,
+          "p90_us": 656,
+          "p99_us": 656
+        }
+      },
+      "version": null
+    }
+  ],
+  "meta": {
+    "as_of": "2026-11-17T09:30:00.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "saturated": false
+}

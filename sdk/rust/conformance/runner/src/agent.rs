@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crucible_sdk::{
-    Context, Cost, KeyValue, ObservationType, Usage, Value as AttributeValue, observe,
-    with_metadata, with_session, with_tags, with_user,
+    Context, Cost, Feedback, KeyValue, ObservationType, ScoreValue, Usage, Value as AttributeValue,
+    observe, with_metadata, with_session, with_tags, with_user,
 };
 use opentelemetry::{Array, StringValue};
 use serde::Deserialize;
@@ -36,6 +36,54 @@ pub(crate) struct Node {
     children: Vec<Node>,
 }
 
+/// One score: the route's body fields and the caller's Idempotency-Key.
+#[derive(Debug, Deserialize)]
+pub(crate) struct FeedbackStep {
+    name: String,
+    value: Value,
+    #[serde(default)]
+    trace_id: String,
+    #[serde(default)]
+    span_id: String,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    score_id: String,
+    #[serde(default)]
+    data_type: String,
+    #[serde(default)]
+    comment: String,
+    metadata: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    retracted: bool,
+    #[serde(default)]
+    idempotency_key: String,
+}
+
+impl FeedbackStep {
+    fn score(&self) -> Result<Feedback, String> {
+        let value = match &self.value {
+            Value::Number(n) => ScoreValue::Number(n.as_f64().ok_or("a score is out of range")?),
+            Value::Bool(b) => ScoreValue::Bool(*b),
+            Value::String(s) => ScoreValue::Text(s.clone()),
+            other => return Err(format!("a score value is {other}, not a scalar")),
+        };
+        Ok(Feedback {
+            name: self.name.clone(),
+            value,
+            trace_id: self.trace_id.clone(),
+            span_id: self.span_id.clone(),
+            session_id: self.session_id.clone(),
+            score_id: self.score_id.clone(),
+            data_type: self.data_type.clone(),
+            comment: self.comment.clone(),
+            metadata: self.metadata.clone(),
+            retracted: self.retracted,
+            idempotency_key: self.idempotency_key.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct NodeContext {
     session_id: Option<String>,
@@ -59,6 +107,8 @@ pub(crate) async fn run(spec: &RunSpec) -> Result<(), String> {
                 .map_err(|e| fail(e.to_string()))?;
         } else if let Some(name) = &step.checkpoint {
             checkpoint(&spec.checkpoint_url, name).await.map_err(fail)?;
+        } else if let Some(score) = &step.feedback {
+            crucible_sdk::feedback(score.score().map_err(fail)?);
         } else if step.shutdown.is_some() {
             crucible_sdk::shutdown()
                 .await
