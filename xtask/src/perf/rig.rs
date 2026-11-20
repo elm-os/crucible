@@ -835,6 +835,22 @@ pub struct Context {
     pub others: Vec<String>,
 }
 
+/// The most column statistics a read may load once the store has settled, in microseconds per read. A part that
+/// a merge made after the statistics cache's last refresh costs a read about a millisecond; the small rig's whole
+/// store, 81 parts, cost about 75 ms per read before the first refresh.
+pub const SETTLED_STATISTICS_US: u64 = 5_000;
+
+/// The wait of [`Session::settle_statistics`].
+#[derive(Clone, Copy, Debug)]
+pub struct Settle {
+    /// How long it waited.
+    pub waited: Duration,
+    /// Whether the reads settled within the limit.
+    pub settled: bool,
+    /// The column statistics its last probe loaded, in microseconds per read.
+    pub load_us: u64,
+}
+
 /// Milliseconds spent with I/O in flight per block device, from `/proc/diskstats` (its 13th field).
 pub fn disk_ticks(diskstats: &str) -> BTreeMap<String, u64> {
     diskstats
@@ -1555,21 +1571,18 @@ impl<'r> Session<'r> {
         self.drained(key, rows, limit)
     }
 
-    /// Waits until reads of `span_core` and `trace_heads` load no column statistics from the parts' files, or
-    /// until `limit` passes, and returns how long it waited and whether they settled. ClickHouse (26.8, automatic
-    /// statistics on every column) loads every part's statistics for each read with a condition outside the
-    /// primary key until its statistics cache refreshes, every `refresh_statistics_interval` (300 s by default),
-    /// and a new part sends reads back to loading them all. The probe has the shape of trace by id's span read.
-    pub fn settle_statistics(
-        &self,
-        key: &ArmKey,
-        limit: Duration,
-    ) -> Result<(Duration, bool), String> {
+    /// Waits until reads of `span_core` and `trace_heads` load at most [`SETTLED_STATISTICS_US`] of column
+    /// statistics each, or until `limit` passes. ClickHouse (26.8, automatic statistics on every column) loads
+    /// every part's statistics for each read with a condition outside the primary key until its statistics cache
+    /// refreshes, every `refresh_statistics_interval` (300 s by default), and a new part sends reads back to
+    /// loading them, all but those the cache still holds. The probe has the shape of trace by id's span read.
+    pub fn settle_statistics(&self, key: &ArmKey, limit: Duration) -> Result<Settle, String> {
         let started = Instant::now();
+        let stamp = super::now().1;
         let mut probe = 0u64;
         loop {
             probe += 1;
-            let comment = format!("crucible-perf-settle-{}-{probe}", self.id);
+            let comment = format!("crucible-perf-settle-{}-{stamp}-{probe}", self.id);
             for table in ["span_core", "trace_heads"] {
                 self.clickhouse_text(&format!(
                     "SELECT count() FROM crucible.{table} WHERE project_id = toUUID('{}') AND trace_hash = 0 AND \
@@ -1587,9 +1600,14 @@ impl<'r> Session<'r> {
                     .as_u64()
                     .or_else(|| row[field].as_str().and_then(|s| s.parse().ok()))
             };
-            let settled = number("reads") == Some(2) && number("us") == Some(0);
+            let load_us = number("us").unwrap_or(u64::MAX) / 2;
+            let settled = number("reads") == Some(2) && load_us <= SETTLED_STATISTICS_US;
             if settled || started.elapsed() >= limit {
-                return Ok((started.elapsed(), settled));
+                return Ok(Settle {
+                    waited: started.elapsed(),
+                    settled,
+                    load_us,
+                });
             }
             std::thread::sleep(Duration::from_secs(5));
         }

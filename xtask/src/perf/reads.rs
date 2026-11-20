@@ -283,11 +283,14 @@ pub struct LaneReport {
     pub connections_opened: u64,
     /// ClickHouse merges running at the lane's start.
     pub merges_at_start: u64,
-    /// How long the last attempt waited, before its reads, for ClickHouse's reads to stop loading column
-    /// statistics, and whether they did.
+    /// How long the last attempt waited, before its reads, for ClickHouse's reads to stop loading the column
+    /// statistics of every part, whether they did, and the statistics its last probe still loaded, in
+    /// microseconds per read.
     pub statistics_wait_s: f64,
     /// See `statistics_wait_s`.
     pub statistics_settled: bool,
+    /// See `statistics_wait_s`.
+    pub statistics_load_us: u64,
     /// What else the Docker host did during the lane.
     pub context: Option<Context>,
     /// Why the lane's latency does not stand, or `None`.
@@ -591,8 +594,7 @@ fn bench(
     // that neither the load's new parts nor what an earlier lane or a page-cache drop left in the caches decides
     // its latency.
     let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
-        let (statistics_wait, statistics_settled) =
-            session.settle_statistics(&key, SETTLE_LIMIT)?;
+        let settle = session.settle_statistics(&key, SETTLE_LIMIT)?;
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()
@@ -640,11 +642,12 @@ fn bench(
         let name = format!("runs/{}-{attempt}.json", lane.name);
         write(&dir.join(&name), &text)?;
         let mut lane_report = judge_lane(lane, &parse(&text, &name)?, &before, &after, name);
-        if !statistics_settled {
+        if !settle.settled {
             let unsettled = format!(
-                "ClickHouse's reads still loaded column statistics after {} s, so its reads paid for them while \
-                 the other lanes' did not",
-                statistics_wait.as_secs()
+                "ClickHouse's reads still loaded {:.1} ms of column statistics each after {} s, so its reads paid \
+                 for them while the other lanes' did not",
+                settle.load_us as f64 / 1000.0,
+                settle.waited.as_secs()
             );
             lane_report.invalid = Some(match lane_report.invalid.take() {
                 Some(reasons) => format!("{reasons}; {unsettled}"),
@@ -654,8 +657,9 @@ fn bench(
         Ok(LaneReport {
             attempts: attempt,
             merges_at_start,
-            statistics_wait_s: statistics_wait.as_secs_f64(),
-            statistics_settled,
+            statistics_wait_s: settle.waited.as_secs_f64(),
+            statistics_settled: settle.settled,
+            statistics_load_us: settle.load_us,
             context: Some(context),
             ..lane_report
         })
@@ -781,6 +785,7 @@ fn judge_lane(
         merges_at_start: 0,
         statistics_wait_s: 0.0,
         statistics_settled: true,
+        statistics_load_us: 0,
         context: None,
         invalid: (!reasons.is_empty()).then(|| reasons.join("; ")),
     }

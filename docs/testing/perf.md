@@ -547,9 +547,10 @@ significant digits.
      300 s after the rig started in each of four runs, and nothing afterwards, when its median fell from about
      92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's bounds read on
      `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s, until a read of
-     `span_core` and one of `trace_heads`, shaped as trace by id's span read, load no statistics; a lane that
-     never settles is marked invalid. A store under live ingest stays in the loading state, so these lanes leave
-     that cost out.
+     `span_core` and one of `trace_heads`, shaped as trace by id's span read, load at most 5 ms of statistics
+     each: after a refresh, the parts that merges made since cost a read about a millisecond. A lane that never
+     settles is marked invalid. A store under live ingest stays in the loading state, so these lanes leave that
+     cost out.
    - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
      parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
      first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
@@ -609,11 +610,12 @@ The run writes `perf/results/local/reads/<time>-<commit>[-smoke]/`: `reads.json`
 `crucible-perf.reads.v1`: the build, the rig, the dataset with its bytes per span and whether the lanes read it
 into the page cache (`warmed`), both probes with their lists per probe and list round trips, and every lane with
 its attempts and, from the last attempt, its percentiles and its halves' percentiles, store reads per request,
-mean barrier wait, connections opened, ClickHouse merges at its start, what else the Docker host did during it
-(busy cores on the rig's CPUs and on the others, the load average, the busiest disk's busy share, the page-cache
-drops and the other containers, as the gate records per arm) and why it is invalid), `summary.md`, the
-generator's reports under `runs/` (one per lane attempt, `<lane>-<attempt>.json`) and `dataset/`, and Crucible's
-metrics before and after each lane attempt under `metrics/`.
+mean barrier wait, connections opened, ClickHouse merges at its start, its wait for the column statistics to
+settle and the statistics a read still loaded, what else the Docker host did during it (busy cores on the rig's
+CPUs and on the others, the load average, the busiest disk's busy share, the page-cache drops and the other
+containers, as the gate records per arm) and why it is invalid), `summary.md`, the generator's reports under
+`runs/` (one per lane attempt, `<lane>-<attempt>.json`) and `dataset/`, and Crucible's metrics before and after
+each lane attempt under `metrics/`.
 
 ### Per-request counters
 
