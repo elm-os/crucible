@@ -17,17 +17,22 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - Fixed byte budgets for memory, with 429 or 503 and Retry-After under load instead of dropped data.
 - Ingest's blocking work (decompression, scanning and frame compression) runs under one CPU budget of first-come
   permits, so a burst of large requests queues instead of oversubscribing the machine.
-- Recent spans are served from memory, so a trace can be read as soon as it is acknowledged.
+- Recent spans are served from memory, so a trace can be read as soon as it is acknowledged. During a ClickHouse
+  outage, the trace list and trace detail answer from memory and say the answer is partial.
 - Mappings for the OpenTelemetry GenAI and MCP semantic conventions and for popular instrumentation libraries,
   with compatible ingest paths for other platforms' OTLP exporters ([integrations](docs/integrations/)).
 - Cost calculated from usage with a built-in price table, in exact integer arithmetic, when the client sends none.
+- Spans older than a project's retention horizon, or than the maximum event age, are rejected through OTLP partial
+  success.
 - Single-node ClickHouse 26.3 or newer for telemetry, and Postgres 15 or newer for the control plane.
 
 ### Explore
 
 - A web UI embedded in the binary: a home overview, traces with a timeline and an agent graph, spans, sessions,
   users, full-text search, and a payload viewer that loads large payloads by byte range.
-- Tags, flags, feedback scores and corrections, written through the same durable path as spans.
+- Tags, flags, feedback scores and corrections, written through the same durable path as spans. The trace list's tag
+  filter matches a trace's current tags, edits included, and feedback also accepts a project's public key, for
+  browser clients.
 - A REST API under `/api/v1`, described by an OpenAPI 3.1 document (`crucible openapi`).
 - A read-only SQL workspace, isolated per project by ClickHouse users, row policies and quotas, with saved queries
   and CSV, JSON lines and Parquet downloads.
