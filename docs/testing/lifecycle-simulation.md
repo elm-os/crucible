@@ -13,7 +13,7 @@ is in [`methodology.md`](methodology.md); the job runners below the executors ar
 | Unit and property tests | `crates/crucible-lifecycle/src`, `crates/crucible-plan/src/hidden.rs` | The drop-or-delete decision, the partitions of a span of time, the reach list as data, the predicates of a delete, the pending-deletion set, the predicate a pending deletion adds to a plan |
 | Simulation | `crucible_sim::lifecycle_sim`, `crates/crucible-sim/tests/lifecycle_dst.rs` | The real jobs and the real service on several nodes over `ChModel` and `PgModel` under faults, with the oracle and the mutants |
 | Directed scenarios | `crates/crucible-sim/tests/lifecycle_directed.rs` | One node with the real WAL and the real shipper: the tombstone is a durable frame that reads back as the request, the checkpoint passes it on a node that receives nothing else, and a deletion by trace runs to `completed` |
-| Stage B | `crates/crucible-normalize/src/tombstone.rs`, `crates/crucible-normalize/src/stage_b.rs`, `crates/crucible-sim/tests/stage_b_deletions.rs` | What a deletion selects of spans, MCP operations and facts, against a linear model; that dropping leaves stage B's state alone; the frames after a tombstone, a request that completed while the node was down, and a shipper that ships nothing until it has read the requests, each also with the defect it guards against |
+| Stage B | `crates/crucible-normalize/src/tombstone.rs`, `crates/crucible-normalize/src/stage_b.rs`, `crates/crucible-sim/tests/stage_b_deletions.rs` | What a deletion selects of spans, MCP operations and facts, against a linear model; that dropping leaves stage B's state alone; the frames after a tombstone, a request that completed while the node was down, and a shipper that ships nothing until it has read the requests, each also with the defect it guards against; a read that leaves out a request made before the frames arrived and reads again for a frame that arrived before it after the wall clock stepped back; the drop counts by kind |
 | Write path | The dimension `deletions` of the system simulation ([`system-simulation.md`](system-simulation.md)) | The real WAL, stage B and shipper with deletion requests, tombstones and requests that complete while the node is down, under the system simulation's faults, with invariant I9 and three mutants |
 | Read services | `crates/crucible-query/tests/services/hidden.rs` | Trace detail, the trace list, the payload route, the session, user and span lists and the pages of an export in progress under a pending-deletion set, from the recent index and from the store |
 | Project salts | `crates/crucible/src/salts.rs` | A deletion by user hashes the user with the stored salt as stage B did, never creates a salt, and says how to fix one that does not open |
@@ -44,7 +44,9 @@ traces show their user everywhere. The others show it only on their MCP rows, as
 of the user's subject under one of two issuers, or on their spans with the MCP rows hashed: a deletion by user
 has to reach those MCP rows by their own columns, in partitions where no span names the user. Every 15 to 50 s a
 caller asks a node for a deletion by trace, by user or by session, with an idempotency key, and sends the
-request again when the call fails. Once in a run the first project's retention is shortened to three days.
+request again when the call fails. A deletion by user names one of the two issuers two times in three: it reaches
+the MCP rows hashed under that issuer and keeps those hashed under the other. Once in a run the first project's
+retention is shortened to three days.
 
 The mask cycle is 30 min and the retention executor plans every 10 min, so that a run covers several cycles; the
 other settings are the defaults.
@@ -71,12 +73,13 @@ at its end every node is stopped.
 | L1: every action on ClickHouse is recorded under the fencing token before it is issued | The leader reaches the store through a wrapper. At each delete, partition drop and mask application it looks for an action row of that kind, table and partition in the state `issued` with a fencing token |
 | L2: a deletion is hidden at once on the accepting node | When `request_deletion` returns, the node's pending-deletion set holds the request, and the plan that reads exactly the spans the request selects returns nothing once it carries the set |
 | L3: every request completes | At the end every deletion request is `completed` and every action is `verified` |
-| I9: nothing a completed request selects is left | Every row the store still holds of the twelve tables, masked or not, is compared with every completed request: a span table by the request's own column, the MCP, fact and stats tables by the traces the request resolves to, the MCP tables for a deletion by user also by their own `user_id` and by the hash of the user under either issuer, the rollups by key. A row received at or after the request is kept; a table without an arrival time is exempt for a key that got data after the request |
+| I9: nothing a completed request selects is left | Every row the store still holds of the twelve tables, masked or not, is compared with every completed request: a span table by the request's own column, the MCP, fact and stats tables by the traces the request resolves to, the MCP tables for a deletion by user also by their own `user_id` and by the hash of the user under the issuer it names, or under either when it names none, the rollups by key. A row received at or after the request is kept; a table without an arrival time is exempt for a key that got data after the request |
 | I9: nothing retention expired is left | No table with a retention binding holds a row of the shortened project that is more than five days old, masked or not |
-| I9: nothing else went | Every shipped span that no request selects and that retention keeps is still visible in `span_core`, and the model's stage B dropped only spans that a request selects |
+| I9: nothing else went | Every shipped span that no request selects and that retention keeps is still visible in `span_core`, and so is every `mcp_ops` row that ever landed and that no request selects: a deletion by user that names an issuer keeps the rows hashed under the other. The model's stage B dropped only spans that a request selects |
 
 The suite fails unless frames, all three kinds of request, the retention change, deletes, partition drops, mask
-applications, hidden reads, shipper stalls and frames whose MCP rows alone carry their user occurred, and unless
+applications, hidden reads, shipper stalls, frames whose MCP rows alone carry their user, deletions by user that
+name an issuer and MCP rows that such a deletion kept because they are hashed under the other occurred, and unless
 every accepted request completed. The profile with every fault also requires crashes, long downtimes, lease
 steals, failovers, store outages and stage B drops.
 

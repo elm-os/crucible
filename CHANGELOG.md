@@ -2,6 +2,13 @@
 
 Notable changes to Crucible, newest first. Versions follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+- A server that starts reads from Postgres only the deletion requests made after the oldest data in its write-ahead
+  log arrived, not every request ever made, before it sends that data to ClickHouse.
+- The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
+  shipper dropped before ClickHouse because a deletion request selects them.
+
 ## [0.1.0] - 2026-11-20
 
 The first release of Crucible: open-source, self-hosted observability and analytics for AI agents and MCP

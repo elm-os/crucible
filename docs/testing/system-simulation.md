@@ -21,7 +21,7 @@ One simulated node, on one thread with a paused virtual clock and seeded random 
 | Query service | Real | `crucible_query::QueryService`: trace by id and the trace list, decorated with their facts; the facts of a target; the metrics query |
 | ClickHouse | Model | `ChModel`: inserts, deduplication, probes, the typed-plan interpreter, merges, and seeded faults |
 | Keys | Real | `crucible_auth::StaticKeys`, one secret key per project |
-| Deletion requests | Model | With `deletions`: the requests of a control store behind the shipper's `DeletionRequests` hook, some of whose reads fail; a node timer that appends each open request's `Tombstone` frame to the real WAL and completes the request once the checkpoint passes it; requests that complete while the node is down. Stage B, which applies them, is the real one (contract 13.3, step 3). The production hook (`crucible/src/lifecycle.rs`: the node registers, then reads every request in every state page by page) has its own tests over `PgModel` |
+| Deletion requests | Model | With `deletions`: the requests of a control store behind the shipper's `DeletionRequests` hook, some of whose reads fail; a node timer that appends each open request's `Tombstone` frame to the real WAL and completes the request once the checkpoint passes it; requests that complete while the node is down. Stage B, which applies them, is the real one (contract 13.3, step 3). A read gives the requests made after the arrival it is for, as the production hook does (`crucible/src/lifecycle.rs`: the node registers, then reads every such request in every state page by page), which has its own tests over `PgModel` |
 
 ### The boundary
 
@@ -70,7 +70,7 @@ Configuration seed `c` gives the mask and the run seeds `c * 1000 + s`.
 | Kind | Dimensions |
 |---|---|
 | Workload | `mcp` (MCP operations of both sides, in both eras, over stdio and HTTP, from all four capture sources), `mcp_double_capture` (an SDK and the proxy report one server call), `mcp_errors` (every class of the taxonomy, and annotated classes that the exchange does not warrant), `mcp_mrtr` (multi-round exchanges), `mcp_inventory` (tool lists that change), `mcp_deploys` (versions and deploy ids that change), `mcp_content` (opted-in arguments and results), `mcp_identity` (user subjects, a control store for the salts whose reads sometimes fail; without it the node is ingest-only), `deletions` (one more project, whose data deletion requests select; see "Deletions"), `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts`, `nested_usage` (spans form parent chains within a request, across requests with the child first, and under a span that a request sends again, so some have a descendant that carries usage; a span sent again before its parent arrives is weighted toward an exact repeat whose new child carries usage, see "Mutants") |
-| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize), `dir_sync_errors` (windows in which every directory sync fails) |
+| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize), `dir_sync_errors` (windows in which every directory sync fails, while the node runs and while it starts: then a seeded number of the start's directory syncs pass and up to three fail, each ending the recovery attempt it is in with its directory entries pending) |
 | Config | `wal_compression_off`, `small_batches`, `week_partitions`, `tiny_recent`, `small_segments`, `clustered`, `one_connection`, `replay_retention`, `project_rate` (a per-project byte rate), `small_budget` (a `shipper.encoded_bytes` budget of 20 or 200 KiB) |
 
 That is 56 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
@@ -176,7 +176,10 @@ issuer, by a session, and now and then the whole project. A request is accepted 
 completes once the checkpoint passes its tombstone and the inserts in flight then have landed: an attempt sent
 before stage B knew the request can land later, and the executor's verification deletes it, which is no part of
 stage B. At each start, before the shipper runs, some requests complete as if while the node was down: no
-tombstone of them is in the log, and the shipper must read them before it ships.
+tombstone of them is in the log, and the shipper must read them before it ships. It reads only the requests made
+after the frame it is about to admit arrived, and again for a frame that arrived before every frame it read for
+(wall-clock steps): a request made earlier selects nothing of that frame. Runs in which a read leaves a request out
+reach the target "deletion request made before what the shipper read for", and I9 holds in them.
 
 The oracle knows every span of every admitted frame of the project as stage A made it (trace, `user_id`,
 `session_id`) and when the frame arrived, the identity of every MCP operation as the exchange carried it, and when
