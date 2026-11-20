@@ -1738,7 +1738,10 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
             !log.contains("did not stop within the grace period"),
             "{log}"
         );
-        assert!(took < Duration::from_secs(10), "the stop took {took:?}: {log}");
+        assert!(
+            took < Duration::from_secs(10),
+            "the stop took {took:?}: {log}"
+        );
         drop(server);
     }
     // The server started on an empty Postgres with `--migrate`. The jobs start once the migrations have run, so no

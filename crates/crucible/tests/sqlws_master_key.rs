@@ -193,7 +193,13 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn call(&self, server: &Server, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
+    fn call(
+        &self,
+        server: &Server,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> (u16, Value) {
         let path = format!("/api/v1/projects/{}/sql/{path}", self.project);
         let bytes = body
             .map(|body| serde_json::to_vec(body).unwrap())
@@ -222,7 +228,8 @@ impl Workspace {
             );
             std::thread::sleep(Duration::from_millis(500));
         }
-        let run = json!({ "sql": QUERY, "from": "2020-01-01T00:00:00Z", "to": "2100-01-01T00:00:00Z" });
+        let run =
+            json!({ "sql": QUERY, "from": "2020-01-01T00:00:00Z", "to": "2100-01-01T00:00:00Z" });
         let (status, grid) = self.call(server, "POST", "run", Some(&run));
         assert_eq!(status, 200, "{when}: {grid:#}");
         assert_eq!(grid["columns"][0]["name"], "count()", "{when}: {grid:#}");
@@ -283,13 +290,8 @@ fn a_start_with_a_wrong_master_key_leaves_the_sql_workspace_working() {
     if !created {
         eprintln!("crucible admin init did not create an owner: {stderr}");
     }
-    let (made, printed, stderr) = rig.admin(&[
-        "create-key",
-        "--project",
-        "default",
-        "--scopes",
-        "read,sql",
-    ]);
+    let (made, printed, stderr) =
+        rig.admin(&["create-key", "--project", "default", "--scopes", "read,sql"]);
     assert!(made, "crucible admin create-key: {stderr}");
     let field = |name: &str| {
         printed
