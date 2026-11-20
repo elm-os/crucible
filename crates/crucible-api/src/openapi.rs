@@ -46,6 +46,7 @@ impl Modify for ProjectKey {
         (name = "exports", description = "Export jobs: the project's spans in the crucible-jsonl or otlp-json format, as a file to download."),
         (name = "facts", description = "Scores, tags, flags and corrections written about traces, spans and sessions."),
         (name = "lifecycle", description = "Retention settings and deletion requests."),
+        (name = "mcp", description = "MCP analytics: servers, tools, errors, clients, users, sessions, operations, deploys and compare, per side."),
         (name = "media", description = "Media on the object store: presigned uploads, confirms, downloads and where media appear."),
         (name = "metrics", description = "Time series over the project's spans and traces, their schema and filter values."),
         (name = "org", description = "The organization, its members, invitations and sign-in providers."),

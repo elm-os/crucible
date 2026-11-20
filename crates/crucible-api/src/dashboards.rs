@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::control::version;
 use crate::problem::{ApiError, field_error};
-use crate::routes::metrics::parse_request;
+use crate::routes::metrics::{mcp_options, parse_request};
 
 pub(crate) use starters::{starter, starters};
 
@@ -237,6 +237,11 @@ fn check_query(
         Ok((_, parsed)) => parsed,
         Err(problem) => return problem.field_errors_under(&format!("{at}query")),
     };
+    // The side, capture source and caller-fault rule are checked as the read checks them, so that a widget that
+    // saves also reads: an `mcp_ops` query names its side, and no other source takes the three.
+    if let Err(problem) = mcp_options(rid, &request, parsed.source) {
+        return problem.field_errors_under(&format!("{at}query"));
+    }
     let at = format!("{at}query/");
     let (measures, dimensions) = (parsed.measures.len(), parsed.dimensions.len());
     let mut errors = Vec::new();

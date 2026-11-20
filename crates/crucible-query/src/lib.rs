@@ -33,6 +33,10 @@ mod facts;
 mod filter_values;
 mod heads;
 mod live_tail;
+mod mcp;
+mod mcp_metrics;
+mod mcp_ops;
+mod mcp_rollup;
 mod metrics;
 mod payload;
 mod search;
@@ -64,6 +68,19 @@ pub use facts::{
 pub use filter_values::{FilterValues, FilterValuesQuery};
 pub use heads::{TRACE_LIST_DEFAULT_LIMIT, TraceListItem};
 pub use live_tail::{NEW_COUNT_MAX, TraceTail, TraceTailQuery};
+pub use mcp::{CaptureSources, Latency, McpQuery, McpTotals};
+pub use mcp_metrics::McpMetricsRequest;
+pub use mcp_ops::{
+    MCP_CONTENT_PREVIEW, McpChainLink, McpClientVersion, McpClientVersions, McpContent,
+    McpErrorBreakdown, McpErrorGroup, McpOperationCursor, McpOperationDetail, McpOperationFull,
+    McpOperationRow, McpOperationsPage, McpOperationsQuery, McpSession, McpSessions, McpUser,
+    McpUsers,
+};
+pub use mcp_rollup::{
+    CompareSide, McpClient, McpClients, McpCompare, McpCompareQuery, McpDeploy, McpDeploys,
+    McpErrorClasses, McpPoint, McpServer, McpServers, McpTargetErrors, McpTool, McpToolDelta,
+    McpToolDetail, McpTools, TOP_CLIENTS,
+};
 pub use metrics::{
     MetricValue, MetricsPoint, MetricsRequest, MetricsResult, MetricsSeries, MetricsTotal,
     MetricsTotals,

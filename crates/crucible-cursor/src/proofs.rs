@@ -33,7 +33,7 @@ fn any_id() -> CursorId {
 }
 
 fn any_position() -> Position {
-    match kani::any::<u8>() % 6 {
+    match kani::any::<u8>() % 7 {
         0 => Position::TracePage {
             window: any_window(),
             as_of: any_time(),
@@ -59,6 +59,11 @@ fn any_position() -> Position {
             window: any_window(),
             as_of: any_time(),
             last: (any_time(), kani::any(), SpanId::from_bytes(kani::any())),
+        },
+        5 => Position::McpOperationPage {
+            window: any_window(),
+            as_of: any_time(),
+            last: (any_time(), SpanId::from_bytes(kani::any())),
         },
         _ => Position::IdPage {
             list: match kani::any::<u8>() % 3 {

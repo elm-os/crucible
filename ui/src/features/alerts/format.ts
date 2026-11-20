@@ -3,44 +3,134 @@ import type { AlertNoDataPolicy } from "@/api/generated/AlertNoDataPolicy";
 import type { AlertRule } from "@/api/generated/AlertRule";
 import type { AlertStatus } from "@/api/generated/AlertStatus";
 import type { ChannelKind } from "@/api/generated/ChannelKind";
+import type { McpSideParam } from "@/api/generated/McpSideParam";
 import type { SeriesKey } from "@/api/generated/SeriesKey";
+import type { SourceParam } from "@/api/generated/SourceParam";
 import { formatCost, formatCount, formatDuration } from "@/lib/format";
 
-export type Unit = "count" | "tokens" | "us" | "nusd";
+export type Unit = "count" | "tokens" | "us" | "nusd" | "ppm";
+
+// What a rule reads: the span rollup, or the MCP rollup of one side (contracts 9.9 and 12.6).
+export type RuleSource = "spans" | "mcp_ops";
+
+export const RULE_SOURCES: { value: RuleSource; label: string }[] = [
+  { value: "spans", label: "Spans" },
+  { value: "mcp_ops", label: "MCP calls" },
+];
+
+export const SIDES: { value: McpSideParam; label: string }[] = [
+  { value: "server", label: "Server side" },
+  { value: "client", label: "Client side" },
+];
 
 export interface MeasureOption {
   value: string;
   label: string;
   unit: Unit;
   aggregations: readonly string[];
+  source: RuleSource;
 }
 
 const SUM = ["sum"] as const;
 const PERCENTILES = ["p50", "p90", "p95", "p99"] as const;
 
-// The measures of the span rollup, which is what alert rules read (contract 12.6). The server checks the
-// rule again, so a measure it no longer has comes back as a field error.
+// The measures of the span rollup and of the MCP rollup, which are what alert rules read. An MCP percentile is
+// a measure of its own. The server checks the rule again, so a measure it no longer has comes back as a field
+// error.
 export const MEASURES: MeasureOption[] = [
-  { value: "error_count", label: "Errors", unit: "count", aggregations: SUM },
-  { value: "count", label: "Spans", unit: "count", aggregations: SUM },
-  { value: "duration", label: "Duration", unit: "us", aggregations: PERCENTILES },
-  { value: "ttft", label: "Time to first token", unit: "us", aggregations: PERCENTILES },
-  { value: "total_cost", label: "Total cost", unit: "nusd", aggregations: SUM },
-  { value: "total_tokens", label: "Total tokens", unit: "tokens", aggregations: SUM },
-  { value: "input_tokens", label: "Input tokens", unit: "tokens", aggregations: SUM },
-  { value: "output_tokens", label: "Output tokens", unit: "tokens", aggregations: SUM },
+  { value: "error_count", label: "Errors", unit: "count", aggregations: SUM, source: "spans" },
+  { value: "count", label: "Spans", unit: "count", aggregations: SUM, source: "spans" },
+  { value: "duration", label: "Duration", unit: "us", aggregations: PERCENTILES, source: "spans" },
+  {
+    value: "ttft",
+    label: "Time to first token",
+    unit: "us",
+    aggregations: PERCENTILES,
+    source: "spans",
+  },
+  { value: "total_cost", label: "Total cost", unit: "nusd", aggregations: SUM, source: "spans" },
+  {
+    value: "total_tokens",
+    label: "Total tokens",
+    unit: "tokens",
+    aggregations: SUM,
+    source: "spans",
+  },
+  {
+    value: "input_tokens",
+    label: "Input tokens",
+    unit: "tokens",
+    aggregations: SUM,
+    source: "spans",
+  },
+  {
+    value: "output_tokens",
+    label: "Output tokens",
+    unit: "tokens",
+    aggregations: SUM,
+    source: "spans",
+  },
+  {
+    value: "mcp.error_rate",
+    label: "MCP error rate",
+    unit: "ppm",
+    aggregations: ["rate"],
+    source: "mcp_ops",
+  },
+  {
+    value: "mcp.error_count",
+    label: "MCP errors",
+    unit: "count",
+    aggregations: SUM,
+    source: "mcp_ops",
+  },
+  { value: "mcp.calls", label: "MCP calls", unit: "count", aggregations: SUM, source: "mcp_ops" },
+  {
+    value: "mcp.duration_p50",
+    label: "MCP duration p50",
+    unit: "us",
+    aggregations: ["p50"],
+    source: "mcp_ops",
+  },
+  {
+    value: "mcp.duration_p90",
+    label: "MCP duration p90",
+    unit: "us",
+    aggregations: ["p90"],
+    source: "mcp_ops",
+  },
+  {
+    value: "mcp.duration_p99",
+    label: "MCP duration p99",
+    unit: "us",
+    aggregations: ["p99"],
+    source: "mcp_ops",
+  },
 ];
+
+export function measuresOf(source: RuleSource): MeasureOption[] {
+  return MEASURES.filter((measure) => measure.source === source);
+}
 
 export const NO_DIMENSION = "none";
 
-export const DIMENSIONS: { value: string; label: string }[] = [
-  { value: NO_DIMENSION, label: "None" },
-  { value: "environment", label: "Environment" },
-  { value: "model", label: "Model" },
-  { value: "observation_type", label: "Span type" },
-  { value: "level", label: "Level" },
-  { value: "release", label: "Release" },
+const DIMENSION_OPTIONS: { value: string; label: string; source: RuleSource }[] = [
+  { value: "environment", label: "Environment", source: "spans" },
+  { value: "model", label: "Model", source: "spans" },
+  { value: "observation_type", label: "Span type", source: "spans" },
+  { value: "level", label: "Level", source: "spans" },
+  { value: "release", label: "Release", source: "spans" },
+  { value: "server_name", label: "Server", source: "mcp_ops" },
+  { value: "target_name", label: "Tool", source: "mcp_ops" },
 ];
+
+// The dimensions a rule of `source` may group by, after None.
+export function dimensionsOf(source: RuleSource): { value: string; label: string }[] {
+  return [
+    { value: NO_DIMENSION, label: "None" },
+    ...DIMENSION_OPTIONS.filter((dimension) => dimension.source === source),
+  ];
+}
 
 export const COMPARISONS: { value: AlertComparison; label: string }[] = [
   { value: "gt", label: "is above" },
@@ -81,14 +171,35 @@ export function measureOf(id: string): MeasureOption {
   return MEASURES.find((measure) => measure.value === id) ?? MEASURES[0];
 }
 
-export function isUnit(unit: string): unit is Unit {
-  return unit === "count" || unit === "tokens" || unit === "us" || unit === "nusd";
+// The capture sources an MCP rule may read, as the MCP pages name them.
+export const CAPTURE_SOURCES: { value: SourceParam; label: string }[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "sdk", label: "SDK" },
+  { value: "proxy", label: "Proxy" },
+  { value: "otlp", label: "OTLP" },
+];
+
+// "Server side, capture source Automatic": what an MCP rule reads.
+export function mcpReadText(rule: Pick<AlertRule, "side" | "capture_source">): string {
+  const side = rule.side === "client" ? "Client side" : "Server side";
+  const source = CAPTURE_SOURCES.find((option) => option.value === rule.capture_source);
+  return `${side}, capture source ${source?.label ?? "Automatic"}`;
 }
 
-// A stored value as people read it: counts as they are, microseconds as a duration, nano-USD as dollars.
+export function isUnit(unit: string): unit is Unit {
+  return (
+    unit === "count" || unit === "tokens" || unit === "us" || unit === "nusd" || unit === "ppm"
+  );
+}
+
+const percent = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
+
+// A stored value as people read it: counts as they are, microseconds as a duration, nano-USD as dollars,
+// parts per million as a percentage.
 export function formatValue(unit: string, value: number): string {
   if (unit === "us") return formatDuration(value);
   if (unit === "nusd") return formatCost(value / 1e9);
+  if (unit === "ppm") return `${percent.format(value / 10_000)}%`;
   return formatCount(value);
 }
 
@@ -98,23 +209,26 @@ export const THRESHOLD_UNIT: Readonly<Record<Unit, string>> = {
   tokens: "tokens",
   us: "milliseconds",
   nusd: "US dollars",
+  ppm: "percent",
 };
 
 // The threshold as typed, in the stored unit: a whole count, milliseconds as microseconds, dollars as
-// nano-USD. Commas and a leading dollar sign are forgiven. `null` when it is not a number.
+// nano-USD, a percentage as parts per million. Commas, a leading dollar sign and a trailing percent sign are
+// forgiven. `null` when it is not a number.
 export function thresholdToStored(unit: Unit, text: string): number | null {
-  const cleaned = text.trim().replace(/^\$/, "").replaceAll(",", "");
+  const cleaned = text.trim().replace(/^\$/, "").replace(/%$/, "").replaceAll(",", "");
   if (cleaned === "" || !/^-?\d*\.?\d*$/.test(cleaned)) return null;
   const typed = Number(cleaned);
   if (!Number.isFinite(typed)) return null;
-  const stored = unit === "us" ? typed * 1_000 : unit === "nusd" ? typed * 1e9 : typed;
-  const rounded = Math.round(stored);
+  const scale = unit === "us" ? 1_000 : unit === "nusd" ? 1e9 : unit === "ppm" ? 10_000 : 1;
+  const rounded = Math.round(typed * scale);
   return Math.abs(rounded) <= Number.MAX_SAFE_INTEGER ? rounded : null;
 }
 
 export function thresholdFromStored(unit: string, value: number): string {
   if (unit === "us") return String(value / 1_000);
   if (unit === "nusd") return String(value / 1e9);
+  if (unit === "ppm") return String(value / 10_000);
   return String(value);
 }
 
@@ -125,8 +239,9 @@ export function formatSpan(secs: number): string {
   return `${secs} s`;
 }
 
-export function seriesLabel(key: readonly SeriesKey[]): string {
-  if (key.length === 0) return "All spans";
+// A series by its dimension values; a rule without dimensions has one series, of all its spans or calls.
+export function seriesLabel(key: readonly SeriesKey[], source = "spans"): string {
+  if (key.length === 0) return source === "mcp_ops" ? "All calls" : "All spans";
   return key
     .map((part) => `${part.dimension}=${part.value === "" ? "(empty)" : part.value}`)
     .join(", ");
@@ -139,15 +254,17 @@ const COMPARISON_TEXT: Readonly<Record<AlertComparison, string>> = {
   lte: "at or below",
 };
 
-// "Errors (sum) above 5 over 5 min".
+// "Errors above 5 over 5 min"; a percentile is named when the measure has several.
 export function conditionText(
   rule: Pick<
     AlertRule,
     "measure" | "aggregation" | "comparison" | "threshold" | "unit" | "window_secs"
   >,
 ): string {
-  const measure = MEASURES.find((option) => option.value === rule.measure)?.label ?? rule.measure;
-  const aggregation = rule.aggregation === "sum" ? "" : ` ${rule.aggregation}`;
+  const option = MEASURES.find((candidate) => candidate.value === rule.measure);
+  const measure = option?.label ?? rule.measure;
+  const named = option === undefined || option.aggregations.length > 1;
+  const aggregation = rule.aggregation === "sum" || !named ? "" : ` ${rule.aggregation}`;
   const threshold = formatValue(rule.unit, rule.threshold);
   return `${measure}${aggregation} ${COMPARISON_TEXT[rule.comparison]} ${threshold} over ${formatSpan(rule.window_secs)}`;
 }

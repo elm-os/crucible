@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::mcp::{McpSideParam, SourceParam};
 use crate::metrics::SeriesKey;
 use crate::wire::{SafeI64, SafeU64};
 
@@ -73,11 +74,22 @@ pub struct AlertRuleInput {
     #[schema(nullable = false)]
     #[ts(optional)]
     pub enabled: Option<bool>,
-    /// The source of the measure. Rules read the span rollup: `spans` (the default).
+    /// The source of the measure: `spans` (the default) or `mcp_ops`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     #[ts(optional)]
     pub source: Option<String>,
+    /// Source `mcp_ops` only, and required there: the side the rule reads, `client` or `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub side: Option<McpSideParam>,
+    /// Source `mcp_ops` only: which capture source each server is read from (contract 9.5), `auto` by
+    /// default; `auto` is resolved at each evaluation, for its window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub capture_source: Option<SourceParam>,
     /// The measure, from `GET metrics/schema`.
     pub measure: String,
     /// How the measure is aggregated over the window, one of the measure's aggregations.
@@ -89,7 +101,8 @@ pub struct AlertRuleInput {
     pub dimensions: Option<Vec<String>>,
     /// The comparison.
     pub comparison: AlertComparison,
-    /// The threshold in the measure's stored unit: a count, microseconds, or nano-USD.
+    /// The threshold in the measure's stored unit: a count, microseconds, nano-USD, or parts per million for
+    /// `mcp.error_rate`.
     pub threshold: SafeI64,
     /// The window each evaluation reads, in seconds: whole minutes from 60 to 86400.
     pub window_secs: u32,
@@ -141,6 +154,16 @@ pub struct AlertRulePatch {
     #[schema(nullable = false)]
     #[ts(optional)]
     pub enabled: Option<bool>,
+    /// A new side, for an `mcp_ops` rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub side: Option<McpSideParam>,
+    /// A new capture source, for an `mcp_ops` rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub capture_source: Option<SourceParam>,
     /// A new measure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
@@ -235,14 +258,24 @@ pub struct AlertRule {
     pub name: String,
     /// Whether the rule is evaluated.
     pub enabled: bool,
-    /// The source of the measure.
+    /// The source of the measure: `spans` or `mcp_ops`.
     pub source: String,
+    /// The side an `mcp_ops` rule reads; absent for `spans`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub side: Option<McpSideParam>,
+    /// The capture source an `mcp_ops` rule reads (contract 9.5); absent for `spans`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    #[ts(optional)]
+    pub capture_source: Option<SourceParam>,
     /// The measure.
     pub measure: String,
     /// The aggregation.
     pub aggregation: String,
-    /// The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds) or `nusd`
-    /// (nano-USD).
+    /// The unit of the threshold and of every value: `count`, `tokens`, `us` (microseconds), `nusd`
+    /// (nano-USD) or `ppm` (parts per million).
     pub unit: String,
     /// The dimensions.
     pub dimensions: Vec<String>,

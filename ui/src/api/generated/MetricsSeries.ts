@@ -15,7 +15,7 @@ measure: string,
  */
 aggregation: string, 
 /**
- * The unit of the values: `count`, `tokens`, `usd` or `us`.
+ * The unit of the values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
  */
 unit: string, 
 /**

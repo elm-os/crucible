@@ -1,0 +1,15 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "rendered(&live(mcp_error_breakdown(s, w, &c, caller, &read, 50)))"
+---
+SELECT server_name, method, target_name, error_class, error_subclass, jsonrpc_code, error_message, count() AS m0, max(start_time) AS m1 FROM crucible.mcp_ops WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (side = {p5:String} AND capture_source IN ({p6:String}) AND caller_fault = {p7:UInt8} AND error_class != {p8:String}) GROUP BY server_name, method, target_name, error_class, error_subclass, jsonrpc_code, error_message ORDER BY m0 DESC, m1 DESC, server_name ASC, method ASC, target_name ASC, error_class ASC, error_subclass ASC, jsonrpc_code ASC, error_message ASC LIMIT {p9:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000000"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911340"
+p5: String = "server"
+p6: String = "sdk"
+p7: UInt8 = "0"
+p8: String = "none"
+p9: UInt64 = "51"

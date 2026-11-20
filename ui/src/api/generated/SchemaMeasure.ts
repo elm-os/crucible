@@ -13,7 +13,7 @@ id: string,
  */
 label: string, 
 /**
- * The unit of its values: `count`, `tokens`, `usd` or `us`.
+ * The unit of its values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
  */
 unit: string, 
 /**

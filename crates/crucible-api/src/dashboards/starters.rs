@@ -4,8 +4,8 @@
 //! appears once the `mcp_ops` source does.
 
 use crucible_api_types::{
-    ChartForm, Dashboard, MeasureRequest, Widget, WidgetDisplay, WidgetKind, WidgetLayout,
-    WidgetQuery,
+    ChartForm, Dashboard, McpSideParam, MeasureRequest, Widget, WidgetDisplay, WidgetKind,
+    WidgetLayout, WidgetQuery,
 };
 use crucible_plan::{Source, SourceSchema};
 
@@ -34,6 +34,10 @@ fn query(
         timezone: None,
         top_n,
         fill: None,
+        // An `mcp_ops` query reads one side; the starters show the servers'.
+        side: (source == "mcp_ops").then_some(McpSideParam::Server),
+        capture_source: None,
+        include_caller_faults: None,
     }
 }
 

@@ -39,7 +39,7 @@ pub enum Granularity {
 /// `MetricsQuery` v1, without its window (which every builder takes) and its timezone.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MetricsQuery {
-    /// The source: `spans` or `traces`; `mcp_ops` is not compiled yet.
+    /// The source: `spans` or `traces`; an `mcp_ops` query is built by the `mcp_metrics` builders.
     pub source: Source,
     /// One to [`METRICS_MAX_MEASURES`] measures, each with an aggregation it allows.
     pub measures: Vec<(MeasureId, Aggregation)>,
@@ -111,7 +111,7 @@ impl MetricsShape {
     }
 }
 
-const fn invalid(field: &'static str, reason: &'static str) -> MetricsError {
+pub(super) const fn invalid(field: &'static str, reason: &'static str) -> MetricsError {
     MetricsError::Invalid { field, reason }
 }
 
@@ -132,8 +132,18 @@ pub fn metrics_shape(
     let Some(schema) = SourceSchema::of(query.source) else {
         return Err(invalid("source", "the source has no metrics yet"));
     };
-    if query.measures.is_empty() || query.measures.len() > METRICS_MAX_MEASURES {
-        return Err(invalid("measures", "one to four measures are required"));
+    if query.measures.is_empty() || query.measures.len() > schema.limits.max_measures {
+        let reason = match schema.limits.max_measures {
+            METRICS_MAX_MEASURES => "one to four measures are required",
+            _ => "the source takes one measure per query",
+        };
+        return Err(invalid("measures", reason));
+    }
+    if query.dimensions.iter().any(|d| d.source() != query.source) {
+        return Err(invalid(
+            "dimensions",
+            "the dimension belongs to another source",
+        ));
     }
     if query.dimensions.len() > schema.limits.max_dimensions {
         let reason = match schema.limits.max_dimensions {
@@ -178,8 +188,13 @@ pub fn metrics_shape(
         columns.push(place(&mut measures, measure));
         other_columns.push(id.additive().then(|| place(&mut other, measure)));
     }
-    // Rank by the first additive measure, or by the span count when every measure is a percentile.
-    let rank = other.first().copied().unwrap_or(MeasureId::Count.measure());
+    // Rank by the first additive measure, or by the span count (the MCP call count) when every measure is a
+    // percentile or a rate.
+    let count = match query.source {
+        Source::McpOps => MeasureId::McpCalls,
+        Source::Spans | Source::Traces => MeasureId::Count,
+    };
+    let rank = other.first().copied().unwrap_or(count.measure());
 
     // One series per measure and dimension key; the `other` series counts as a key.
     let per_key = query.measures.len() as u64;
@@ -228,7 +243,7 @@ pub fn metrics_shape(
     })
 }
 
-fn dimensions(query: &MetricsQuery) -> Vec<crucible_schema::ColumnRef> {
+pub(super) fn dimensions(query: &MetricsQuery) -> Vec<crucible_schema::ColumnRef> {
     query.dimensions.iter().map(|d| d.column()).collect()
 }
 
@@ -249,7 +264,7 @@ pub fn metrics_keys(query: &MetricsQuery, rows: &[Row]) -> Option<Vec<Vec<Litera
 }
 
 /// The rows whose dimensions are one of `keys`.
-fn among(query: &MetricsQuery, keys: &[Vec<Literal>]) -> Result<Pred, MetricsError> {
+pub(super) fn among(query: &MetricsQuery, keys: &[Vec<Literal>]) -> Result<Pred, MetricsError> {
     let columns = dimensions(query);
     if keys.is_empty() || keys.iter().any(|key| key.len() != columns.len()) {
         return Err(invalid("keys", "each key needs one value per dimension"));
@@ -290,9 +305,16 @@ fn source_table(source: Source) -> (TableId, ColumnRef, QueryClass) {
 fn filtered(query: &MetricsQuery, extra: Option<Pred>) -> Result<Pred, MetricsError> {
     let mut parts = Vec::new();
     match query.source {
+        // An MCP query reads one side under a capture-source selection: `mcp_metrics_series` builds it.
+        Source::McpOps => {
+            return Err(invalid(
+                "source",
+                "an MCP metrics query names its side and capture source; build it with the mcp_metrics builders",
+            ));
+        }
         _ if query.filter.is_all() => {}
         Source::Spans => parts.push(query.filter.pred(FilterTarget::SpanMetrics)?),
-        Source::Traces | Source::McpOps => {
+        Source::Traces => {
             return Err(invalid("filter", "the source has no filter fields yet"));
         }
     }
@@ -438,7 +460,10 @@ pub fn metrics_totals(
         return Err(invalid("measures", "an alert reads exactly one measure"));
     };
     if query.source != Source::Spans || id.source() != Source::Spans {
-        return Err(invalid("source", "alerts read the span rollup only"));
+        return Err(invalid(
+            "source",
+            "this read is of the span rollup; an mcp_ops rule is read by mcp_metrics_totals",
+        ));
     }
     if !id.aggregations().contains(aggregation) {
         return Err(invalid(

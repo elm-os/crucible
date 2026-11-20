@@ -13,6 +13,7 @@ pub(crate) mod exports;
 mod facts;
 mod filter_values;
 mod lifecycle;
+mod mcp;
 pub(crate) mod media;
 pub(crate) mod metrics;
 mod org;
@@ -54,6 +55,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(facts::routes())
         .merge(filter_values::routes())
         .merge(lifecycle::routes())
+        .merge(mcp::routes())
         .merge(media::routes())
         .merge(metrics::routes())
         .merge(org::routes())
@@ -81,6 +83,7 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(facts::Paths::openapi());
     doc.merge(filter_values::Paths::openapi());
     doc.merge(lifecycle::Paths::openapi());
+    doc.merge(mcp::Paths::openapi());
     doc.merge(media::Paths::openapi());
     doc.merge(metrics::Paths::openapi());
     doc.merge(org::Paths::openapi());
