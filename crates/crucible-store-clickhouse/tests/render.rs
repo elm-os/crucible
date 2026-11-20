@@ -602,6 +602,23 @@ fn m2_lists() {
     // resolved over `fact_tags` in the window, then semi-joined (contract 3.8).
     let tags = Filter::Tags(vec!["reviewed".to_owned()]);
     insta::assert_snapshot!("trace_list_effective_tags", rendered(&filtered(&tags)));
+    // The most tags the trace list takes stay well inside a server's 1,000 values and settings per request,
+    // with room for the pending deletions that a read hides; one more is refused.
+    let most: Vec<String> = (0..crucible_plan::TRACE_LIST_MAX_TAGS)
+        .map(|n| format!("tag-{n}"))
+        .collect();
+    let statement = render::plan(&filtered(&Filter::Tags(most.clone()))).unwrap();
+    assert!(statement.params.len() <= 400, "{}", statement.params.len());
+    let one_more = Filter::Tags([most, vec!["tag-x".to_owned()]].concat());
+    let refused = filtered_trace_list(
+        project(),
+        window(),
+        &clamp(),
+        Caller::Session,
+        request.clone(),
+        &one_more,
+    );
+    assert_eq!(refused, Err(PlanError::ListLength("tags")));
     let sessions = live(user_sessions(
         project(),
         window(),
@@ -1208,9 +1225,12 @@ enum PredShape {
     StartsWith(bool),
     HasAny(usize),
     TextMatch,
+    /// The trace ids of the spans that match the inner predicate.
+    InSet(Box<PredShape>),
 }
 
-fn pred_shape() -> impl Strategy<Value = PredShape> {
+/// A predicate shape, with set memberships when `sets` holds.
+fn shape_of_pred(sets: bool) -> impl Strategy<Value = PredShape> {
     let leaf = prop_oneof![
         (0..COMPARED.len(), 0..OPS.len()).prop_map(|(c, o)| PredShape::Cmp(c, o)),
         (0..COMPARED.len(), 1usize..10).prop_map(|(c, n)| PredShape::In(c, n)),
@@ -1218,13 +1238,24 @@ fn pred_shape() -> impl Strategy<Value = PredShape> {
         (1usize..6).prop_map(PredShape::HasAny),
         Just(PredShape::TextMatch),
     ];
-    leaf.prop_recursive(3, 12, 3, |inner| {
-        prop_oneof![
+    leaf.prop_recursive(3, 12, 3, move |inner| {
+        let set = inner.clone().prop_map(|p| PredShape::InSet(Box::new(p)));
+        let not = inner.clone().prop_map(|p| PredShape::Not(Box::new(p)));
+        let combined = prop_oneof![
             prop::collection::vec(inner.clone(), 0..3).prop_map(PredShape::And),
-            prop::collection::vec(inner.clone(), 0..3).prop_map(PredShape::Or),
-            inner.prop_map(|p| PredShape::Not(Box::new(p))),
-        ]
+            prop::collection::vec(inner, 0..3).prop_map(PredShape::Or),
+            not,
+        ];
+        if sets {
+            prop_oneof![3 => combined, 1 => set].boxed()
+        } else {
+            combined.boxed()
+        }
     })
+}
+
+fn pred_shape() -> impl Strategy<Value = PredShape> {
+    shape_of_pred(true)
 }
 
 fn pred(shape: &PredShape, v: &mut Values) -> Pred {
@@ -1253,6 +1284,18 @@ fn pred(shape: &PredShape, v: &mut Values) -> Pred {
             (0..*len).map(|_| Literal::String(v.string())).collect(),
         ),
         PredShape::TextMatch => Pred::TextMatch(v.string()),
+        PredShape::InSet(inner) => Pred::InSet(
+            SpanCoreCol::TraceId.column_ref(),
+            Box::new(
+                Aggregate::new(
+                    TableId::SpanCore,
+                    pred(inner, v),
+                    [SpanCoreCol::TraceId],
+                    vec![Measure::Count],
+                )
+                .unwrap(),
+            ),
+        ),
     }
 }
 
@@ -2082,7 +2125,10 @@ proptest! {
 
     /// A delete always carries the project predicate or the marker predicate, and only bound values.
     #[test]
-    fn every_delete_is_scoped_and_bound(shape in pred_shape(), seeds in (any::<u64>(), any::<u64>())) {
+    fn every_delete_is_scoped_and_bound(
+        shape in shape_of_pred(false),
+        seeds in (any::<u64>(), any::<u64>()),
+    ) {
         let delete = |seed: u64| {
             let v = &mut Values(seed);
             let day = PartitionId::date(CivilDate::from_day_number(v.below(40_000) as i64));

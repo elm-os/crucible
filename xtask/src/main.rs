@@ -109,3 +109,13 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The help says how to run the conformance suite, in the present tense.
+    #[test]
+    fn the_help_says_how_to_run_conformance() {
+        assert!(super::CONFORMANCE.contains("scripts/conformance.sh"));
+        assert!(!super::CONFORMANCE.to_lowercase().contains("planned"));
+    }
+}

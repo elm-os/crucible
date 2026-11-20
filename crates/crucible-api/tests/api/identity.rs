@@ -287,6 +287,39 @@ fn answered(reply: &Reply) -> bool {
     reply.status.as_u16() < 400 || reply.header("content-type") == Some("application/problem+json")
 }
 
+/// A provider sign-in is never refused for its query string: providers add parameters of their own and one may
+/// repeat, so the first value of each is read, and what the flow lacks redirects to the sign-in page with the
+/// reason. A repeated `next` or `state` once answered 400 with the query extractor's text.
+#[test]
+fn provider_sign_in_reads_any_query_string() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform(&env, &world).await;
+        let provider = "/api/v1/auth/oauth/05050505-0505-0505-0505-050505050505";
+        for (uri, error) in [
+            (
+                format!("{provider}/start?next=/a&next=/b&prompt=consent"),
+                "provider_disabled",
+            ),
+            // Without the flow cookie the state check fails first.
+            (
+                format!("{provider}/callback?state=a&state=b&code=c&code=d&iss=x"),
+                "oauth_state_invalid",
+            ),
+        ] {
+            let reply = call(&p.router, Method::GET, &uri, &As::Nobody, None, &[]).await;
+            assert_eq!(
+                reply.status,
+                StatusCode::SEE_OTHER,
+                "{uri}: {:#}",
+                reply.body
+            );
+            let location = format!("/login/?error={error}");
+            assert_eq!(reply.header("location"), Some(location.as_str()), "{uri}");
+        }
+    });
+}
+
 /// No route answers raw extractor text (contract 12.3): every error is a problem document, with the API mounted
 /// the way the server mounts it, for anyone, a session and a key, with well-formed path parameters and with
 /// ones that are not even UTF-8.

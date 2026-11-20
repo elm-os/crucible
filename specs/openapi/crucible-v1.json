@@ -7731,7 +7731,7 @@
           {
             "name": "tags",
             "in": "query",
-            "description": "Keep traces whose head span carries at least one of these tags.",
+            "description": "Keep traces whose effective tags hold at least one of these: the head span's tags, plus the tags added and\nminus the tags removed with `POST tags`. At most 20.",
             "required": false,
             "schema": {
               "type": "array",

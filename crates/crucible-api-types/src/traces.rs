@@ -72,7 +72,8 @@ pub struct TraceListParams {
     #[param(style = Form, explode)]
     #[ts(optional)]
     pub session_id: Option<Vec<String>>,
-    /// Keep traces whose head span carries at least one of these tags.
+    /// Keep traces whose effective tags hold at least one of these: the head span's tags, plus the tags added and
+    /// minus the tags removed with `POST tags`. At most 20.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[param(style = Form, explode)]
     #[ts(optional)]

@@ -278,6 +278,10 @@ impl DeletePlan {
     ) -> Result<Self, PlanError> {
         check_partition(table_id, partition)?;
         pred.check(table_id)?;
+        // A delete reads no other table: a set membership has no window to bound its table reference by.
+        if !pred.set_tables().is_empty() {
+            return Err(PlanError::UnsupportedPred("a set membership in a delete"));
+        }
         Ok(Self {
             target,
             table: table_id,

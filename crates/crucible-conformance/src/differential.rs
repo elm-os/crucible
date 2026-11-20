@@ -459,6 +459,39 @@ fn plans(f: &Extra) -> Result<Vec<(&'static str, QueryPlan, usize)>> {
         )?;
         out.push((name, plan(QueryClass::List, Node::Scan(heads)), least));
     }
+    // The most tags the trace list takes, in one statement the server accepts.
+    let most: Vec<String> = (1..crucible_plan::TRACE_LIST_MAX_TAGS)
+        .map(|n| format!("unused-{n}"))
+        .chain(["reviewed".to_owned()])
+        .collect();
+    let heads = Scan::new(
+        TableId::TraceHeads,
+        [TraceHeadsCol::TraceId],
+        Filter::Tags(most).pred(FilterTarget::TraceHeads)?,
+    )?;
+    out.push((
+        "the effective tags, as many as the trace list takes",
+        plan(QueryClass::List, Node::Scan(heads)),
+        1,
+    ));
+    // Sets inside a semi-join's left scan: one cap for every set of the statement.
+    let heads = Scan::new(
+        TableId::TraceHeads,
+        [TraceHeadsCol::TraceId],
+        tagged(&["beta"]).pred(FilterTarget::TraceHeads)?,
+    )?;
+    let all = Scan::new(TableId::TraceHeads, [TraceHeadsCol::TraceId], Pred::all())?;
+    let join = SemiJoin::new(
+        heads,
+        TraceHeadsCol::TraceId,
+        Node::Scan(all),
+        crucible_plan::DEFAULT_MAX_IDS,
+    )?;
+    out.push((
+        "the effective tags inside a semi-join",
+        plan(QueryClass::List, Node::SemiJoin(join)),
+        1,
+    ));
 
     out.push((
         "the window keeps its first instant and not its end",

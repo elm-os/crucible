@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{Problem, Saturation, TraceListPage, TraceListParams, usd_from_nanos};
-use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_LIMIT};
+use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_LIMIT, TRACE_LIST_MAX_TAGS};
 use crucible_query as query;
 use crucible_query::{TraceListQuery, TraceTailQuery};
 use utoipa::OpenApi;
@@ -63,6 +63,13 @@ pub(crate) async fn list_traces(
     let limit = params.limit(TRACE_LIST_MAX_LIMIT);
     let (page, since) = (params.optional("cursor"), params.optional("since"));
     let filter = list_filter(&mut params);
+    if tags(&filter) > TRACE_LIST_MAX_TAGS {
+        let message = format!(
+            "the trace list filters by at most {TRACE_LIST_MAX_TAGS} tags, each resolved over the traces' tag \
+             edits; filter by fewer tags"
+        );
+        params.error("tags", "too_many_values", &message);
+    }
     params.finish()?;
     let Some(window) = window else {
         return Err(ApiError::validation(rid, Vec::new()));
@@ -110,6 +117,16 @@ pub(crate) async fn list_traces(
     let page = service.trace_list(&project.ctx, query).await;
     let page = page.map_err(|e| ApiError::query(rid, &e))?;
     Ok(Json(trace_list(&page, &cursors, &filter)))
+}
+
+/// The number of tags the filter tests.
+fn tags(filter: &Filter) -> usize {
+    match filter {
+        Filter::And(operands) | Filter::Or(operands) => operands.iter().map(tags).sum(),
+        Filter::Not(operand) => tags(operand),
+        Filter::Tags(values) => values.len(),
+        _ => 0,
+    }
 }
 
 /// The conditions that heads do not carry are evaluated on one span table, `span_core` or `span_payload`
