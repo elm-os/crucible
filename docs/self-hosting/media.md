@@ -7,7 +7,9 @@ only a short reference to it. The trace view then shows images, audio and video 
 download.
 
 Media are optional. A server without object storage answers every media route, including the media endpoint of
-compatible SDKs, with `501 media_not_supported`, and the answer names the settings below.
+compatible SDKs, with `501 media_not_supported`, and the answer names the settings below. Those SDKs have already
+replaced the media in the payload with a reference by then, so the media endpoint's answer also names the SDK
+setting that keeps media inline, and the server logs that warning the first time it refuses an upload.
 
 ## What it needs
 

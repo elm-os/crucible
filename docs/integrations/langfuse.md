@@ -95,9 +95,11 @@ endpoint, `/api/public/media`, on both HTTP listeners:
 
 - With object storage configured ([media](../self-hosting/media.md)), the uploads go to the bucket, and the span
   panel shows the media beside the span's input or output ([media](../guides/media.md)).
-- Without it, the media endpoint answers `501 media_not_supported`: the SDK logs a media upload error, and the stored
-  payload keeps only the reference. Set `LANGFUSE_MEDIA_UPLOAD_ENABLED=false` to keep the media inline in the
-  payload instead, under the 8 MiB cap of one field.
+- Without it, the SDK has already put the reference in the payload when it asks for the upload, so the media are
+  lost. The media endpoint answers `501 media_not_supported` with the two ways to keep them, which the SDK logs as
+  a media upload error, and Crucible logs the same warning the first time it refuses an upload. Set
+  `LANGFUSE_MEDIA_UPLOAD_ENABLED=false` where the SDK runs to keep media inline in the payload, under the 8 MiB cap
+  of one field, or configure object storage.
 
 ## Known limits
 

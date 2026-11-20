@@ -2,6 +2,13 @@
 
 Notable changes to Crucible, newest first. Versions follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Without object storage, the media endpoint of compatible SDKs answers with both ways to keep their media, the SDK
+  setting that keeps media inline or the server's object storage settings, and the server logs the warning once.
+- Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
+  scope name, and are mapped as that product's traffic.
+
 ## [0.1.0] - 2026-11-20
 
 The first release of Crucible: open-source, self-hosted observability and analytics for AI agents and MCP
