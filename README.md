@@ -117,9 +117,10 @@ testing and development.
 
 ## Contributing
 
-The development setup, the Linux dev container and the commands that CI runs are in
-[docs/development.md](docs/development.md). Commits follow Conventional Commits, and the git hooks and CI check
-every commit message and file against the naming rule and refuse AI attribution trailers.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the setup, the checks CI runs, deterministic simulation, conformance
+against real databases, the SDKs and the pull request process; [docs/development.md](docs/development.md) has the
+details of the dev container and of running the server from source. Commits follow Conventional Commits, and the
+git hooks and CI check every commit message and file against the naming rule and refuse AI attribution trailers.
 
 ## License
 
