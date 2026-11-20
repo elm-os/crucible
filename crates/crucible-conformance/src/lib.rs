@@ -25,6 +25,7 @@ mod m2_export;
 mod m2_facts;
 mod maintenance;
 mod mcp;
+mod mcp_reads;
 mod reads;
 pub mod sqliso;
 mod startup;
@@ -351,6 +352,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "ChModel differential: MCP tables (3.5 to 3.7, 3.10)",
         mcp::mcp(&ctx)
+    );
+    row!(
+        "ChModel differential: MCP analytics plans (9.9)",
+        mcp_reads::mcp_reads(&ctx)
     );
     if single {
         row!(

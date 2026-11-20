@@ -43,14 +43,17 @@ services:
     image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
     restart: unless-stopped
     depends_on:
-      - crucible
+      crucible:
+        condition: service_started
+        # Stopped and started again around a recreated server, so `up --wait` waits for the new one (see compose.yaml).
+        restart: true
     command: ["sleep", "infinity"]
     stop_signal: SIGKILL
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--output", "/dev/null", "http://crucible:8080/readyz"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 6
       start_period: 120s
       start_interval: 1s
 

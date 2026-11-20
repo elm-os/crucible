@@ -98,7 +98,7 @@ fn dimension_value(dimension: DimensionId, value: &Value) -> Result<Arc<str>, Qu
 }
 
 /// The value of a measure: a sum as it is, a percentile through the histogram kernel of contract 6.5.
-fn measure_value(
+pub(crate) fn measure_value(
     aggregation: Aggregation,
     value: &Value,
 ) -> Result<Option<MetricValue>, QueryServiceError> {
@@ -134,13 +134,16 @@ fn measure_value(
 }
 
 /// The buckets of one series key: each bucket's first instant with the plan's measures.
-type Buckets = Vec<(Timestamp, Vec<Value>)>;
+pub(crate) type Buckets = Vec<(Timestamp, Vec<Value>)>;
 
 /// The series of a plan: each dimension key with its buckets.
-type Keyed = Vec<(Vec<Arc<str>>, Buckets)>;
+pub(crate) type Keyed = Vec<(Vec<Arc<str>>, Buckets)>;
 
 /// Splits the rows of a series plan into the buckets of each dimension key, in the order the keys first appear.
-fn by_key(rows: Vec<Row>, dimensions: &[DimensionId]) -> Result<Keyed, QueryServiceError> {
+pub(crate) fn by_key(
+    rows: Vec<Row>,
+    dimensions: &[DimensionId],
+) -> Result<Keyed, QueryServiceError> {
     let mut keys: Vec<Vec<Arc<str>>> = Vec::new();
     let mut buckets: BTreeMap<usize, Buckets> = BTreeMap::new();
     for row in rows {

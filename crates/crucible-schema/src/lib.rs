@@ -18,7 +18,7 @@ pub use access::{
     AGENT_MAX_CONCURRENT_QUERIES, AGENT_QUOTA, AGENT_QUOTA_EXECUTION_SECONDS_PER_HOUR,
     AGENT_QUOTA_QUERIES_PER_HOUR, AccessParams, INGEST_MAX_EXECUTION_SECONDS, InvalidPasswordHash,
     MAINT_SYSTEM_TABLES, PasswordHash, ProfileCaps, ServiceIdentity, service_policy,
-    service_policy_check, service_policy_name,
+    service_policy_check, service_policy_name, without_secrets,
 };
 pub use columns::{
     DedupSelftestCol, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,

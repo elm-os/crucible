@@ -140,7 +140,7 @@ const MUTANT_BUDGET: Range<u64> = 0..200;
 /// message, which prints the new first catching seed.
 const CAUGHT_ACK_BEFORE_SYNC: u64 = 0;
 const CAUGHT_GC_ABOVE_CHECKPOINT: u64 = 1;
-const CAUGHT_KEEP_TORN_TAIL: u64 = 20;
+const CAUGHT_KEEP_TORN_TAIL: u64 = 39;
 
 fn assert_caught(mutant: Mutant, recorded: u64) {
     let caught = first_catching_seed(mutant, MUTANT_BUDGET);

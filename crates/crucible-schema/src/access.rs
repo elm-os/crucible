@@ -1,6 +1,7 @@
 //! ClickHouse identities and the statements of access step A1 (contract sections 7.1 to 7.3).
 
 use core::fmt;
+use std::borrow::Cow;
 
 use crucible_records::TableId;
 
@@ -117,6 +118,29 @@ impl fmt::Debug for PasswordHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PasswordHash(..)")
     }
+}
+
+/// What precedes a password digest in a `CREATE USER` or `ALTER USER` statement.
+const DIGEST_CLAUSE: &str = "IDENTIFIED WITH sha256_hash BY '";
+
+/// The statement with every password digest replaced by `<digest>`; a statement without one comes back as it is.
+/// The digests are derived from the master key, so the migrations ledger takes its checksums over this form
+/// (contract 6.6): a start with another master key finds every step that a start with the right key recorded.
+pub fn without_secrets(statement: &str) -> Cow<'_, str> {
+    if !statement.contains(DIGEST_CLAUSE) {
+        return Cow::Borrowed(statement);
+    }
+    let mut out = String::with_capacity(statement.len());
+    let mut rest = statement;
+    while let Some(at) = rest.find(DIGEST_CLAUSE) {
+        let (head, tail) = rest.split_at(at + DIGEST_CLAUSE.len());
+        out.push_str(head);
+        out.push_str("<digest>");
+        // A digest is hex, so the next quote closes it.
+        rest = tail.find('\'').map_or("", |end| &tail[end..]);
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
 }
 
 /// The ceilings a read profile places on per-query settings: the largest values of the query classes that use

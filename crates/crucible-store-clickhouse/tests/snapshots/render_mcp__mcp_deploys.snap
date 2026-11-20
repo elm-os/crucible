@@ -1,0 +1,9 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "rendered(&live(mcp_deploys(s, w, &c, caller, Some(\"files\"))))"
+---
+SELECT server_name, deploy_id, server_version, capture_source, min(first_seen) AS m0, max(last_seen) AS m1 FROM crucible.mcp_deploys WHERE project_id = {p0:UUID} AND server_name = {p3:String} GROUP BY server_name, deploy_id, server_version, capture_source HAVING max(last_seen) >= {p1:DateTime64(6, 'UTC')} AND min(first_seen) < {p2:DateTime64(6, 'UTC')}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000000"
+p3: String = "files"

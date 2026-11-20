@@ -10,6 +10,7 @@ import { setAuth } from "@/lib/auth";
 import { PROJECT_A, sessionInfo, sessionProject } from "@/test/session";
 import { DashboardEditor } from "./dashboard-editor";
 import { DashboardList } from "./dashboard-list";
+import { DashboardView } from "./dashboard-view";
 
 const navigation = vi.hoisted(() => ({ search: "" }));
 
@@ -250,6 +251,81 @@ describe("dashboards for agents", () => {
     const latency = body.widgets.find((w) => w.id === undefined);
     expect(latency?.query).toMatchObject({
       measures: [{ measure: "duration", aggregation: "p95" }],
+    });
+  });
+});
+
+describe("the MCP starter", () => {
+  test("reads the server side, and its error rate reads as a percentage", async () => {
+    const mcpSchema: MetricsSchema = {
+      sources: [
+        ...SCHEMA.sources,
+        {
+          ...SCHEMA.sources[0],
+          source: "mcp_ops",
+          measures: [
+            {
+              id: "mcp.error_rate",
+              label: "MCP error rate",
+              unit: "ppm",
+              aggregations: ["rate"],
+              additive: false,
+              tier: "rollup",
+            },
+          ],
+          dimensions: [{ id: "server_name", type: "string", high_cardinality: false }],
+        },
+      ],
+    };
+    const starter: Dashboard = {
+      ...DASHBOARD,
+      id: "mcp",
+      name: "MCP servers",
+      builtin_key: "mcp",
+      widgets: [
+        {
+          id: "error-rate",
+          query: {
+            source: "mcp_ops",
+            measures: [{ measure: "mcp.error_rate", aggregation: "rate" }],
+            side: "server",
+          },
+          display: { kind: "stat", title: "Error rate" },
+          layout: { x: 0, y: 0, w: 4, h: 2 },
+        },
+      ],
+    };
+    navigation.search = `project=${PROJECT_A}&id=mcp`;
+    serve({
+      [`GET ${BASE}/dashboards/mcp`]: json(starter),
+      [`GET ${BASE}/metrics/schema`]: json(mcpSchema),
+      [`POST ${BASE}/metrics/query`]: json({
+        series: [
+          {
+            measure: "mcp.error_rate",
+            aggregation: "rate",
+            unit: "ppm",
+            key: [],
+            other: false,
+            points: [{ bucket: "2026-11-18T09:00:00.000000Z", value: 50_000 }],
+          },
+        ],
+        granularity: "hour",
+        truncated: false,
+        source_tier: "rollup",
+        as_of: "2026-11-18T10:00:00.000000Z",
+        partial_last_bucket: false,
+        saturated: false,
+        meta: { as_of: "2026-11-18T10:00:00.000000Z", partial: false, consistency: "strong" },
+      }),
+    });
+    renderPage(<DashboardView />);
+    expect(await screen.findByText("5%")).toBeTruthy();
+    const [post] = requests(`POST ${BASE}/metrics/query`);
+    expect(JSON.parse(String(post?.body))).toMatchObject({
+      source: "mcp_ops",
+      side: "server",
+      measures: [{ measure: "mcp.error_rate", aggregation: "rate" }],
     });
   });
 });

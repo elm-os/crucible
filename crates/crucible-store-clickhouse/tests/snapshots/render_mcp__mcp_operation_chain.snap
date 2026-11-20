@@ -1,0 +1,17 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "rendered(&live(mcp_operation_chain(s, w, &c, caller, McpSide::Server,\n(trace, CaptureSource::Sdk))))"
+---
+SELECT span_id, start_time, mrtr_round, mrtr_state_in, mrtr_state_out, method, target_name, result_type FROM crucible.mcp_ops WHERE project_id = {p0:UUID} AND start_time >= {p1:DateTime64(6, 'UTC')} AND start_time < {p2:DateTime64(6, 'UTC')} AND start_minute >= {p3:DateTime('UTC')} AND start_minute <= {p4:DateTime('UTC')} AND (side = {p5:String} AND trace_hash = {p6:UInt32} AND trace_id = unhex({p7:String}) AND capture_source = {p8:String} AND (mrtr_state_in != unhex({p9:String}) OR mrtr_state_out != unhex({p10:String}))) ORDER BY start_time ASC, span_id ASC LIMIT {p11:UInt64}
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime64(6, 'UTC') = "1794907800.000000"
+p2: DateTime64(6, 'UTC') = "1794911400.000000"
+p3: DateTime('UTC') = "1794907800"
+p4: DateTime('UTC') = "1794911340"
+p5: String = "server"
+p6: UInt32 = "1524766824"
+p7: String = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+p8: String = "sdk"
+p9: String = "00000000000000000000000000000000"
+p10: String = "00000000000000000000000000000000"
+p11: UInt64 = "64"

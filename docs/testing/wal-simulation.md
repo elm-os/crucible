@@ -12,6 +12,7 @@ How `crucible-wal` is verified in `crucible-sim`, and how to replay a failing se
 | Workload and oracle | `crucible_sim::wal_sim` | Seeded clients, a stand-in shipper (seal, checkpoint, garbage collection), seeded crash points, and the ledger that checks I1, I12, I13 and I14 |
 | Suite | `crates/crucible-sim/tests/wal_dst.rs` | Tiers, mutants, the determinism meta-test, the long run and the replay tool |
 | Directed tests | `crates/crucible-sim/tests/wal_directed.rs` | Recovery, the failed-group path, garbage collection, admission signals, durability modes |
+| Pending entries | `crates/crucible-sim/tests/wal_pending_entries.rs` | A process stop leaves a directory entry readable and not durable (`EPOCH`, a segment's successor, a removal by garbage collection or by recovery, the `CHECKPOINT` hint); the next start is crashed at every one of its disk operations, on 32 disks each, and the start after it must open the log with every acknowledged frame |
 | Real filesystem | `crates/crucible-sim/tests/wal_real_fs.rs` | Smoke test and an ignored measurement over the production `PortableDisk` |
 
 Disk-backed tests of `crucible-wal` live in `crucible-sim` because the crate dependency table of the contract
@@ -36,7 +37,7 @@ plan and disk in its own suite, [`shipper-simulation.md`](shipper-simulation.md)
 
 ## What recovery does beyond the letter of the contract
 
-The fault model above forces four steps that contract section 4.6 does not spell out. Each has a test that
+The fault model above forces five steps that contract section 4.6 does not spell out. Each has a test that
 fails without it.
 
 | Step | Why | Test |
@@ -45,6 +46,7 @@ fails without it.
 | Read a torn tail, and an unreadable newest header, a second time before truncating or removing | One read can be wrong, and both actions destroy data | Realistic tier with bit flips (without the second read of the tail, seeds 12, 101, 261 and more of the first 1,000 lose acknowledged frames or fail recovery) |
 | Remove a newest segment whose header is zero, short or partly written and that holds nothing else | A rotation or a first start can crash, or fail in a write, before the header is durable | `an_unfinished_newest_segment_is_removed_and_any_other_bad_header_is_fatal` |
 | Write `EPOCH` and the header and frames of the last segment again from their verified bytes, sync them, and sync the directory, before accepting appends | After a process stop, readable does not mean durable, and a sync on a new handle does not cover bytes whose earlier sync failed | `a_restart_without_a_crash_does_not_trust_what_was_never_synced`, mutant `TrustRecoveredTail` |
+| Sync the directory as soon as `EPOCH` is written again, before a segment is created or removed | A crash keeps any subset of the pending entries: a segment created while the entry of `EPOCH` is pending can survive without it, and every later start refuses the directory (`wal_epoch`) | `a_readable_epoch_is_durable_before_the_first_segment_is_created` in `wal_pending_entries.rs`; corpus seed 44656233854002 |
 
 ## Limits of the model
 
