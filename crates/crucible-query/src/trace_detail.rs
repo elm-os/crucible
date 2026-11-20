@@ -59,19 +59,22 @@ impl QueryService {
         ctx: &ReadContext,
         trace_id: TraceId,
     ) -> Result<TraceDetail, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "trace_by_id");
         let (scope, caller) = (ctx.scope, ctx.caller);
         // The index read (barrier, then snapshot) runs in parallel with the first store read. It is polled
         // first, so a node that is caught up snapshots the index before it touches the store. A node that is
         // behind snapshots at most one read barrier later, which is safe because the barrier is shorter than
         // the visibility grace: an entry cannot be applied, checkpointed and evicted inside it.
         let index_read = async {
+            let waiting = self.clock.now();
             let consistency = self.index.read_barrier().await;
+            let waited = self.clock.now().saturating_duration_since(waiting);
             let (entries, state) = self.index.trace(scope, trace_id);
-            (consistency, entries, state)
+            (consistency, entries, state, waited)
         };
-        let ((consistency, entries, state), trace) =
+        let ((consistency, entries, state, waited), trace) =
             futures::join!(index_read, read.stored_trace(trace_id));
+        read.barrier_waited(waited);
         let trace = trace?;
         let entries = read.retained(entries)?;
         let unconfirmed = entries
