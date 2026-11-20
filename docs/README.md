@@ -32,6 +32,7 @@
 | [Dashboards](guides/dashboards.md) | Starter dashboards, your own, the editor and the widget kinds |
 | [Alerts](guides/alerts.md) | Alert rules, channels and webhook verification |
 | [Exports](guides/exports.md) | Exports and the rightmodeler workflow |
+| [Media](guides/media.md) | Images, audio and files in traces: inline, or in object storage |
 | [SQL workspace](guides/sql-workspace.md) | Read-only SQL over a project's telemetry |
 | [REST API](api/README.md) | Every route, authentication, errors, windows, cursors and idempotency |
 | [Integrations](integrations/README.md) | Pointing other instrumentation libraries and tracing SDKs at Crucible, and what each maps |

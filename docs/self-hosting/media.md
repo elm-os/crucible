@@ -13,11 +13,11 @@ compatible SDKs, with `501 media_not_supported`, and the answer names the settin
 
 - **The control plane.** Crucible records each object and every use of it in Postgres, so media need `postgres.url`.
   A configuration with object storage and without Postgres is refused at startup with that message.
-- **An S3-compatible bucket** that both the server and the clients reach. The conformance rows of
+- **An S3-compatible bucket** that both the server and the clients reach. The service must check the signed headers
+  of a presigned upload and return an object's checksum on request. The conformance rows of
   `crucible-s3-conformance` run against the [Versity S3 gateway](https://github.com/versity/versitygw), which
-  `deploy/compose/compose.media.yaml` adds; other S3-compatible services that check signed headers and return
-  checksums on request are expected to work and are not tested yet. The bucket must exist; Crucible does not create
-  it, and at startup it logs whether the bucket answers.
+  `deploy/compose/compose.media.yaml` adds. The bucket must exist; Crucible does not create it, and at startup it
+  logs whether the bucket answers.
 
 ## With Docker Compose
 
