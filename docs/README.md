@@ -17,8 +17,16 @@
 | Retention and deletion: the simulation, its oracle and its mutants | [testing/lifecycle-simulation.md](testing/lifecycle-simulation.md) |
 | Media: the simulation, its oracle and its mutants, and the object store conformance rows | [testing/media-simulation.md](testing/media-simulation.md) |
 | Development setup | [development.md](development.md) |
-| Self-hosting (development preview) | [self-hosting/README.md](self-hosting/README.md) |
-| Media on S3-compatible object storage | [self-hosting/media.md](self-hosting/media.md) |
+| Self-hosting: deployments, the image, Compose, the binary and ports | [self-hosting/README.md](self-hosting/README.md) |
+| Quickstart: Docker Compose from an empty machine to a first trace | [self-hosting/quickstart.md](self-hosting/quickstart.md) |
+| Configuration: every setting, with its key, environment variable, flag and default | [self-hosting/configuration.md](self-hosting/configuration.md) |
+| Operations: upgrades, backups, health checks, metrics and logs | [self-hosting/operations.md](self-hosting/operations.md) |
+| Security: what is on by default and the switches that harden a deployment | [self-hosting/security.md](self-hosting/security.md) |
+| Retention and deletion | [self-hosting/retention-and-deletion.md](self-hosting/retention-and-deletion.md) |
+| Alerts and egress: outbound calls, the egress policy and email | [self-hosting/alerts-and-egress.md](self-hosting/alerts-and-egress.md) |
+| SQL workspace: provisioning, the self-probe, limits and the quota | [self-hosting/sql-workspace.md](self-hosting/sql-workspace.md) |
+| Troubleshooting: common refusals and their fixes | [self-hosting/troubleshooting.md](self-hosting/troubleshooting.md) |
+| Media: images, audio and files on S3-compatible object storage | [self-hosting/media.md](self-hosting/media.md) |
 | Guides for sending telemetry and reading it back | [guides/README.md](guides/README.md) |
 | Sending traces over OTLP from any OpenTelemetry SDK or the Collector | [guides/sending-traces.md](guides/sending-traces.md) |
 | TypeScript SDK | [guides/sdk-typescript.md](guides/sdk-typescript.md) |

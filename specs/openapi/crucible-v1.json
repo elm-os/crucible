@@ -2805,6 +2805,859 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/dashboards": {
+      "get": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "List dashboards",
+        "description": "The project's dashboards, oldest first, then the built-in starter dashboards, which are read-only and carry\na `builtin_key`. Without a control plane, the built-in dashboards only.",
+        "operationId": "list_dashboards",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dashboards.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Create a dashboard",
+        "description": "A dashboard with its name and, optionally, its widgets. Each widget is checked against the rules of its kind\nand the metrics schema, and no two may overlap.",
+        "operationId": "create_dashboard",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The dashboard; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`, or `feature_disabled` without a control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`: `errors` names each member to change.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/dashboards/{dashboard_id}": {
+      "get": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Get a dashboard",
+        "description": "A dashboard with its widgets in reading order. `{dashboard_id}` is a dashboard's id or a built-in\ndashboard's `builtin_key`.",
+        "operationId": "get_dashboard",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id, or a built-in dashboard's key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dashboard; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`control_plane_unavailable`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "project_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Delete a dashboard",
+        "description": "Deletes the dashboard with its widgets.",
+        "operationId": "delete_dashboard",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The dashboard's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: a built-in dashboard is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Change a dashboard",
+        "description": "Changes the name, the description, or the whole set of widgets in one change: a widget with an `id` is\nrewritten, one without is added, and one the list leaves out is deleted. The result is checked whole, so\nwidgets can trade places.",
+        "operationId": "patch_dashboard",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The dashboard's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The dashboard; `ETag` is its new version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: a built-in dashboard is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/duplicate": {
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Duplicate a dashboard",
+        "description": "Copies a dashboard, or a built-in dashboard named by its key, into a new dashboard of the project, with new\nwidget ids. The copy can be changed.",
+        "operationId": "duplicate_dashboard",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id, or a built-in dashboard's key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardDuplicate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The copy; `ETag` is its version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`, or `feature_disabled` without a control plane.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/widgets": {
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Add a widget",
+        "description": "Adds one widget where it does not overlap another. It takes no `If-Match`: when another change lands first,\nthe widget is checked again against it. The answer's `ETag` is the dashboard's new version.",
+        "operationId": "create_widget",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WidgetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The widget; `ETag` is the dashboard's new version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Widget"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: a built-in dashboard is read-only, or the dashboard kept changing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/widgets/{widget_id}": {
+      "delete": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Delete a widget",
+        "description": "Removes one widget. The answer's `ETag` is the dashboard's new version.",
+        "operationId": "delete_widget",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "widget_id",
+            "in": "path",
+            "description": "The widget id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The dashboard's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed; `ETag` is the dashboard's new version."
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: a built-in dashboard is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "dashboards"
+        ],
+        "summary": "Change a widget",
+        "description": "Changes the members in the body. A `markdown` display drops the query. The result is checked against the\ndashboard's other widgets. The answer's `ETag` is the dashboard's new version.",
+        "operationId": "patch_widget",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The project id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dashboard_id",
+            "in": "path",
+            "description": "The dashboard id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "widget_id",
+            "in": "path",
+            "description": "The widget id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "The dashboard's `ETag`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WidgetPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The widget; `ETag` is the dashboard's new version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Widget"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: a built-in dashboard is read-only.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/data-bounds": {
       "get": {
         "tags": [
@@ -9240,6 +10093,14 @@
           }
         }
       },
+      "ChartForm": {
+        "type": "string",
+        "description": "How a time series draws its values.",
+        "enum": [
+          "line",
+          "bar"
+        ]
+      },
       "Consistency": {
         "type": "string",
         "description": "Whether a response reflects every span this node acknowledged before the request arrived.",
@@ -9319,6 +10180,211 @@
           }
         },
         "additionalProperties": false
+      },
+      "Dashboard": {
+        "type": "object",
+        "description": "A dashboard with its widgets.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "widgets",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "builtin_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key of a built-in dashboard, which is read-only: duplicate it to change it. Absent on the project's\nown dashboards."
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the dashboard was created; null for a built-in one."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the dashboard is for; may be empty."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id: a UUID, or the `builtin_key` of a built-in dashboard."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the dashboard or a widget last changed; null for a built-in one."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, also sent as `ETag`; every change to the dashboard or a widget takes it in `If-Match`. A\nbuilt-in dashboard has the version of its definition.",
+            "minimum": 0
+          },
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Widget"
+            },
+            "description": "The widgets, in reading order: by row, then by column."
+          }
+        }
+      },
+      "DashboardCreate": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/dashboards`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the dashboard is for, at most 1,000 characters."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name, 1 to 120 characters."
+          },
+          "widgets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WidgetInput"
+            },
+            "description": "The widgets, without ids; at most 50."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DashboardDuplicate": {
+        "type": "object",
+        "description": "The body of `POST projects/{project_id}/dashboards/{dashboard_id}/duplicate`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The copy's name; the original's name with \" (copy)\" by default."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DashboardList": {
+        "type": "object",
+        "description": "The answer of `GET projects/{project_id}/dashboards`: the project's dashboards, oldest first, then the\nbuilt-in ones.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardSummary"
+            },
+            "description": "The dashboards."
+          }
+        }
+      },
+      "DashboardPatch": {
+        "type": "object",
+        "description": "The body of `PATCH projects/{project_id}/dashboards/{dashboard_id}`: the members to change.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the dashboard is for."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name."
+          },
+          "widgets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WidgetInput"
+            },
+            "description": "Every widget of the dashboard after the change: a member with the `id` of one of its widgets rewrites\nthat widget, one without an `id` adds a widget, and a widget the list leaves out is deleted. One change,\nso a layout that moves several widgets is checked and stored whole."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DashboardSummary": {
+        "type": "object",
+        "description": "A dashboard as the list shows it.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "widget_count",
+          "version",
+          "updated_at"
+        ],
+        "properties": {
+          "builtin_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key of a built-in dashboard; absent on the project's own dashboards."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the dashboard is for; may be empty."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id: a UUID, or the `builtin_key` of a built-in dashboard."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the dashboard or a widget last changed; null for a built-in one."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version.",
+            "minimum": 0
+          },
+          "widget_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many widgets it has.",
+            "minimum": 0
+          }
+        }
       },
       "DataBounds": {
         "type": "object",
@@ -14090,6 +15156,283 @@
           "active",
           "disabled"
         ]
+      },
+      "Widget": {
+        "type": "object",
+        "description": "A widget of a dashboard.",
+        "required": [
+          "id",
+          "display",
+          "layout"
+        ],
+        "properties": {
+          "display": {
+            "$ref": "#/components/schemas/WidgetDisplay",
+            "description": "How it is drawn."
+          },
+          "id": {
+            "type": "string",
+            "description": "The id: a UUID, or a name within a built-in dashboard."
+          },
+          "layout": {
+            "$ref": "#/components/schemas/WidgetLayout",
+            "description": "Where it sits."
+          },
+          "query": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetQuery",
+                "description": "The query; absent for `markdown`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "WidgetDisplay": {
+        "type": "object",
+        "description": "How a widget is drawn.",
+        "required": [
+          "kind",
+          "title"
+        ],
+        "properties": {
+          "chart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChartForm",
+                "description": "`timeseries` only: lines (the default) or bars per bucket."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WidgetKind",
+            "description": "What the widget shows."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`markdown` only: the text, 1 to 10,000 characters."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title, 1 to 120 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WidgetInput": {
+        "type": "object",
+        "description": "A widget to add with `POST .../widgets`, or one of the widgets of a dashboard's `widgets`.",
+        "required": [
+          "display",
+          "layout"
+        ],
+        "properties": {
+          "display": {
+            "$ref": "#/components/schemas/WidgetDisplay",
+            "description": "How it is drawn."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "In a dashboard's `widgets`: the id of one of its widgets, which is rewritten; absent for a new widget.\n`POST .../widgets` does not take it."
+          },
+          "layout": {
+            "$ref": "#/components/schemas/WidgetLayout",
+            "description": "Where it sits."
+          },
+          "query": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetQuery",
+                "description": "The query; required unless the widget is `markdown`, which takes none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "WidgetKind": {
+        "type": "string",
+        "description": "What a widget shows.",
+        "enum": [
+          "timeseries",
+          "stat",
+          "table",
+          "bar",
+          "markdown"
+        ]
+      },
+      "WidgetLayout": {
+        "type": "object",
+        "description": "A widget's rectangle on the dashboard's grid of 12 columns, in cells. Rows are as tall as columns are wide.\nWidgets of one dashboard never overlap.",
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "properties": {
+          "h": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The height in rows, at most 12.",
+            "minimum": 0
+          },
+          "w": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The width in columns, at most 12.",
+            "minimum": 0
+          },
+          "x": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The first column, from 0.",
+            "minimum": 0
+          },
+          "y": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The first row, from 0.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "WidgetPatch": {
+        "type": "object",
+        "description": "The body of `PATCH .../widgets/{widget_id}`: the members to change. A `markdown` display drops the query.",
+        "properties": {
+          "display": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetDisplay",
+                "description": "How it is drawn."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "layout": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetLayout",
+                "description": "Where it sits."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetQuery",
+                "description": "The query."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "WidgetQuery": {
+        "type": "object",
+        "description": "A widget's metrics query: `MetricsQuery` v1 without its window, which the dashboard's time range supplies. Its\nmembers are those of the body of `POST metrics/query` other than `from` and `to`.",
+        "required": [
+          "source",
+          "measures"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to two dimension ids of the source, to split the series by."
+          },
+          "fill": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FillMode",
+                "description": "What an empty bucket holds; `zero` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MetricsFilter",
+                "description": "A filter over the source's filter fields."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "granularity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Granularity",
+                "description": "The bucket width; `auto` by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MeasureRequest"
+            },
+            "description": "One to four measures."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source, as the metrics schema lists it."
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The time zone of the buckets. Only `UTC` is supported yet."
+          },
+          "top_n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "With dimensions: how many keys to return, 1 to 20, default 20.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

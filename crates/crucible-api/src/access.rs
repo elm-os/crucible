@@ -64,6 +64,8 @@ pub(crate) struct ApiState {
     pub(crate) lifecycle: Option<crucible_lifecycle::Service>,
     /// Exports; `None` without a control plane, which holds them.
     pub(crate) exports: Option<Exports>,
+    /// Where dashboards are stored; `None` without a control plane, when only the built-in ones are served.
+    pub(crate) dashboards: Option<Arc<dyn crucible_control::ControlStore>>,
     /// Media; `None` without an object store and a control plane.
     pub(crate) media: Option<crucible_media::Media>,
 }

@@ -137,6 +137,22 @@ impl ApiError {
         &self.errors
     }
 
+    /// The entries of a `validation_failed` problem with each pointer under `/{prefix}`; any other problem as
+    /// it is.
+    pub(crate) fn field_errors_under(self, prefix: &str) -> Result<Vec<FieldError>, Self> {
+        if self.code != ProblemCode::ValidationFailed {
+            return Err(self);
+        }
+        Ok(self
+            .errors
+            .into_iter()
+            .map(|error| FieldError {
+                pointer: format!("/{prefix}{}", error.pointer),
+                ..error
+            })
+            .collect())
+    }
+
     /// The same problem with these entries in `errors`.
     pub(crate) fn with_errors(self, errors: Vec<FieldError>) -> Self {
         Self { errors, ..self }

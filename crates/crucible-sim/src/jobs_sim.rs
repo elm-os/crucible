@@ -560,6 +560,9 @@ impl Repos for NodeStore {
     fn alert_events(&self) -> &dyn AlertEventRepo {
         self.model.alert_events()
     }
+    fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
+        self.model.dashboards()
+    }
     fn leases(&self) -> &dyn Leases {
         &self.leases
     }
@@ -682,6 +685,9 @@ impl Repos for NodeTx {
     }
     fn alert_events(&self) -> &dyn AlertEventRepo {
         self.inner.alert_events()
+    }
+    fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
+        self.inner.dashboards()
     }
     fn leases(&self) -> &dyn Leases {
         self.inner.leases()

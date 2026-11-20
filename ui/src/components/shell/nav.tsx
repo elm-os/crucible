@@ -24,6 +24,7 @@ const DETAIL_PARENT: Record<string, string> = {
   trace: "traces",
   session: "sessions",
   user: "users",
+  dashboard: "dashboards",
 };
 
 export function navValueFor(pathname: string): string | null {

@@ -77,6 +77,8 @@ export function Section<T>({
   actions,
   label = title.toLowerCase(),
   className,
+  errorCopy,
+  errorActions,
 }: {
   title: string;
   query: UseQueryResult<T>;
@@ -88,6 +90,10 @@ export function Section<T>({
   // What "Loading" and "Retry" name, for a title that lowercasing would spoil.
   label?: string;
   className?: string;
+  // The section's own words for an error it understands better than the shared table does.
+  errorCopy?: (error: UiError) => { title: string; detail: string } | null;
+  // What else the section offers when it fails, beside the retry.
+  errorActions?: ReactNode;
 }) {
   const phase = useLoadingPhase(query.isPending);
   const retry = () => query.refetch();
@@ -108,7 +114,15 @@ export function Section<T>({
       </>
     );
   } else if (query.isLoadingError) {
-    body = <ErrorCard error={asUiError(query.error)} label={label} onRetry={retry} />;
+    body = (
+      <ErrorCard
+        error={asUiError(query.error)}
+        label={label}
+        onRetry={retry}
+        copy={errorCopy}
+        actions={errorActions}
+      />
+    );
   } else {
     body = (
       <>
@@ -136,20 +150,26 @@ export function ErrorCard({
   error,
   label,
   onRetry,
+  copy,
+  actions,
 }: {
   error: UiError;
   label: string;
   onRetry: () => Promise<unknown>;
+  copy?: (error: UiError) => { title: string; detail: string } | null;
+  actions?: ReactNode;
 }) {
+  const words = copy?.(error) ?? error;
   return (
     <div data-error={error.kind} className="flex flex-col items-start gap-2 py-6">
       <p className="flex items-center gap-2 text-body font-medium">
         <AlertIcon className="shrink-0" />
-        {error.title}
+        {words.title}
       </p>
-      <p className="text-data text-ink-soft">{error.detail}</p>
+      <p className="text-data text-ink-soft">{words.detail}</p>
       <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
         {error.action === "retry" ? <Button onClick={onRetry}>Retry {label}</Button> : null}
+        {actions}
         {error.kind === "signed_out" ? (
           <Link href={loginHref(currentPath()) as Route}>Sign in</Link>
         ) : null}

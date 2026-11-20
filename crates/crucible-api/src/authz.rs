@@ -215,6 +215,51 @@ pub const ROUTES: &[RouteAccess] = &[
     ),
     route(
         "GET",
+        "/api/v1/projects/{project_id}/dashboards",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/dashboards",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "GET",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}",
+        Project(ProjectPermission::Read),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/duplicate",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "POST",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/widgets",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "DELETE",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/widgets/{widget_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "PATCH",
+        "/api/v1/projects/{project_id}/dashboards/{dashboard_id}/widgets/{widget_id}",
+        Project(ProjectPermission::EditContent),
+    ),
+    route(
+        "GET",
         "/api/v1/projects/{project_id}/data-bounds",
         Project(ProjectPermission::Read),
     ),

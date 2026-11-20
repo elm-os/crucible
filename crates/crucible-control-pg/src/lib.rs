@@ -15,6 +15,7 @@
 
 mod alerts;
 mod conn;
+mod dashboards;
 mod exports;
 mod identity;
 mod lifecycle;
