@@ -13,6 +13,7 @@ mod store;
 mod world;
 
 mod alerts;
+mod dashboards;
 mod document;
 mod endpoints;
 mod errors;
