@@ -14,8 +14,10 @@
 //!   `EPOCH` entry and the header and valid frames of the last segment are written again from their
 //!   verified bytes and synced, and the directory is synced. Their durability is unknown: the previous
 //!   process may have stopped after a failed sync or before a `sync_dir`, and a sync on a fresh handle
-//!   says nothing about bytes written before it. Earlier segments need no such step: a segment gets a
-//!   successor only after its own sync succeeded, or with a first LSN that supersedes what was in doubt.
+//!   says nothing about bytes written before it. `EPOCH` comes first, with a `sync_dir` of its own, so
+//!   that no segment entry becomes durable while the entry of `EPOCH` is pending. Earlier segments need
+//!   no such step: a segment gets a successor only after its own sync succeeded, or with a first LSN
+//!   that supersedes what was in doubt.
 
 use bytes::Bytes;
 use crucible_env::{Clock, Disk, DiskError, Env, File, OpenMode};
@@ -194,17 +196,20 @@ async fn create_epoch(env: &Env) -> Result<WalEpoch, DiskError> {
 }
 
 /// Reads `EPOCH`, or creates it when the directory holds no segment. Returns the epoch and whether it was
-/// created.
+/// created. Either way the entry and its bytes are durable when this returns.
 async fn load_epoch(env: &Env, has_segments: bool) -> Result<(WalEpoch, bool), RecoveryError> {
     // One byte more than the entry, so that a longer file fails the length check.
     let stored = read_entry(env.disk.as_ref(), EPOCH_NAME, EPOCH_ENTRY_LEN + 1).await?;
     match stored.as_deref().map(decode_epoch) {
         Some(Ok(epoch)) => {
-            // Readable is not durable: write the verified entry again and sync it.
+            // Readable is not durable: write the verified entry again, sync it, and sync the directory. A
+            // crash keeps any subset of the pending entries, so a segment created while the entry of `EPOCH`
+            // is pending could survive without it, and every later recovery would refuse the directory.
             let file = env.disk.open(&entry(EPOCH_NAME)?, OpenMode::Write).await?;
             file.append(0, vec![Bytes::copy_from_slice(&encode_epoch(epoch))])
                 .await?;
             file.sync_data().await?;
+            env.disk.sync_dir(&wal_dir()).await?;
             Ok((epoch, false))
         }
         Some(Err(e)) if has_segments => Err(RecoveryError::InvalidEpoch(e)),
