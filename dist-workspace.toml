@@ -22,7 +22,7 @@ targets = [
   "x86_64-unknown-linux-musl",
 ]
 installers = ["shell", "powershell"]
-include = ["THIRD_PARTY_NOTICES"]
+include = ["LICENSE", "THIRD_PARTY_NOTICES", "CHANGELOG.md"]
 # Builds the UI and its compressed variants before each binary build.
 github-build-setup = "../build-setup.yml"
 # Release runs start only from a tag.
