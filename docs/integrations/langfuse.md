@@ -2,7 +2,8 @@
 
 Crucible takes the OTLP export of the Langfuse SDKs on `/api/public/otel/v1/traces`, with a Crucible key pair in
 place of the Langfuse keys. Observation types, levels, models, token usage, cost, prompts and the trace attributes
-map to Crucible's fields. The SDK calls that go to Langfuse's REST API (scores, prompts, datasets) are not served.
+map to Crucible's fields. The SDK calls that go to Langfuse's REST API (scores, prompts, datasets) are not served;
+[moving from Langfuse](../migration/langfuse.md) lists each one and what it does against Crucible.
 
 Verified with langfuse 5.2.0 (Python), and @langfuse/otel and @langfuse/tracing 6.1.1 with @opentelemetry/sdk-node
 0.208.0 (JavaScript).
@@ -93,4 +94,5 @@ with either form of [authentication](../guides/sending-traces.md#authentication)
 - A span sent on this path that carries another library's keys is read as that library: the path is a hint, and a
   stronger rule wins over it.
 - Calls to Langfuse's REST API answer 404. In Python, `auth_check()` raises, `get_prompt()` raises unless it is
-  given a `fallback`, and `create_score()` logs an error and drops the score.
+  given a `fallback`, and `create_score()` logs an error and drops the score. See
+  [moving from Langfuse](../migration/langfuse.md).
