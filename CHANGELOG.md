@@ -47,8 +47,8 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
   traffic byte for byte, and keep the session working when Crucible is unreachable.
 - Crucible's own MCP server at `/mcp`, with tools to list and search traces, read spans and payloads, create
   exports, and read MCP analytics (servers, tools, errors and deploy comparison).
-- SDKs for TypeScript, Python, Go and Rust in [`sdk/`](sdk/), with agent helpers and MCP server wrappers. They
-  install from the repository.
+- SDKs for TypeScript, Python, Go and Rust in [`sdk/`](sdk/), with agent helpers, feedback scores sent off the
+  caller's path, and MCP server wrappers. They install from the repository.
 
 ### Platform
 
