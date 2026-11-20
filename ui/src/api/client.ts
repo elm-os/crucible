@@ -64,6 +64,8 @@ import type { PayloadField } from "./generated/PayloadField";
 import type { PayloadParams } from "./generated/PayloadParams";
 import type { Project } from "./generated/Project";
 import type { ProjectCreate } from "./generated/ProjectCreate";
+import type { ProjectList } from "./generated/ProjectList";
+import type { ProjectPatch } from "./generated/ProjectPatch";
 import type { Retention } from "./generated/Retention";
 import type { RetentionUpdate } from "./generated/RetentionUpdate";
 import type { SearchPage } from "./generated/SearchPage";
@@ -677,6 +679,18 @@ export async function createExport(
 
 export async function createProject(body: ProjectCreate): Promise<Project> {
   return read<Project>(await call("/projects", "session", { method: "POST", body }));
+}
+
+export async function listProjects(signal?: AbortSignal): Promise<ProjectList> {
+  return read<ProjectList>(await call("/projects", "session", { signal }));
+}
+
+export async function renameProject(
+  project: Pick<Project, "id" | "version">,
+  body: ProjectPatch,
+): Promise<Project> {
+  const init: Init = { method: "PATCH", body, version: project.version };
+  return read<Project>(await call(projectPath(project.id, ""), "session", init));
 }
 
 export async function revokeApiKey(
