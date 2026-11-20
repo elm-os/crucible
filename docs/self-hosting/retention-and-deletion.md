@@ -19,6 +19,10 @@ A project has three settings, all in days. Project admins change them in **Setti
   ClickHouse user rewrites the project's row policies ([SQL workspace](sql-workspace.md#provisioning)).
 - Shortening retention applies to the data already stored. Lengthening it never brings back data that a shorter
   setting already hid; `GET .../retention` reports what stays hidden in `hidden_before`.
+- Ingest refuses spans older than the cut-off: a span that started before it is rejected through OTLP partial
+  success, as one that started more than 400 days ago is
+  ([sending traces](../guides/sending-traces.md#what-an-acknowledgement-means)), so expired data is not stored
+  again. Every server applies a changed setting within 5 seconds.
 - The retention job runs hourly on the server that holds the `lifecycle` lease. It drops whole partitions where it
   can and deletes the expired rows of the rest, at day boundaries in UTC. ClickHouse removes deleted rows from
   storage within 24 hours.
@@ -54,6 +58,14 @@ traces deleted: media follow `payload_retention_days`, and an object is removed 
 ([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts hold counts with no
 user, session or content, and are kept.
 
+A request also reaches data that is not in ClickHouse yet. Spans received before the request that still wait in a
+server's write-ahead log, because ClickHouse was slow or unreachable, are dropped before they are sent, and the
+in-memory index of recent spans forgets them at once. A replay of the log after a restart therefore never stores
+deleted data again.
+
 Typically a request reaches `applied` within minutes, once every server's write-ahead log has passed it, and
-physical removal follows within 24 hours. A server that is down does not hold a request back. An export reads the
-stored rows, so an export made while a request is still `pending` or `logged` can include the data it names.
+physical removal follows within 24 hours. A server that is down does not hold a request back. When it starts again
+it reads every deletion request from Postgres before it sends ClickHouse the data it had not sent yet, so it does not
+store again what a request deleted while it was down; until Postgres answers it keeps accepting data into its
+write-ahead log and sends nothing. An export reads the stored rows, so an export made while a request is still
+`pending` or `logged` can include the data it names.

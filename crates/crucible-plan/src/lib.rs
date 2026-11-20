@@ -30,7 +30,7 @@ pub use class::{
 };
 pub use endpoints::*;
 pub use error::PlanError;
-pub use filter::{Filter, FilterField, FilterTarget, TextField};
+pub use filter::{Filter, FilterField, FilterTarget, TRACE_LIST_MAX_TAGS, TextField};
 pub use hidden::{HIDDEN_REQUESTS, HIDDEN_TRACE_IDS, Hidden, HiddenSelector};
 pub use literal::{Literal, pad_in_list, padded_in_len};
 pub use node::{

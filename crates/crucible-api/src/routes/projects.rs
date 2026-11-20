@@ -1,7 +1,6 @@
 //! Projects, project members and API keys (contracts 11.3, 11.6 and 12.6). Keys never manage keys, members or
 //! settings, so these routes answer an API key with 403.
 
-use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, patch};
 use axum::{Json, Router};
@@ -12,7 +11,9 @@ use crucible_records::{ApiKeyId, ProjectId, RequestId, Timestamp, UserId, Uuid};
 use std::sync::Arc;
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, Manage, OrgProjects, OrgScoped, Principal, Scoped, Signed};
+use crate::access::{
+    ApiState, Manage, OrgProjects, OrgScoped, PathParams, Principal, Scoped, Signed,
+};
 use crate::control::{self as c, ApiJson, auth, etag, if_match, project_role, project_role_in};
 use crate::problem::{ApiError, field_error};
 
@@ -168,14 +169,14 @@ pub(crate) async fn create_project(
 )]
 pub(crate) async fn get_project(
     signed: Signed,
-    Path(project_id): Path<String>,
+    path: PathParams,
 ) -> Result<(HeaderMap, Json<wire::Project>), ApiError> {
-    let rid = signed.request_id;
-    let (project, role) = project_id
-        .parse::<Uuid>()
-        .ok()
-        .and_then(|id| signed.principal.projects.get(&ProjectId::from_uuid(id)))
-        .ok_or_else(|| ApiError::not_found(rid))?;
+    let id = path.id("project_id", ProjectId::from_uuid)?;
+    let (project, role) = signed
+        .principal
+        .projects
+        .get(&id)
+        .ok_or_else(|| ApiError::not_found(signed.request_id))?;
     Ok((etag(project.version), Json(c::project(project, *role))))
 }
 
@@ -234,14 +235,11 @@ pub(crate) async fn patch_project(
 )]
 pub(crate) async fn delete_project(
     org: OrgScoped<OrgProjects>,
-    Path(project_id): Path<String>,
+    path: PathParams,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let rid = org.request_id;
-    let id = project_id
-        .parse::<Uuid>()
-        .map(ProjectId::from_uuid)
-        .map_err(|_| ApiError::not_found(rid))?;
+    let id = path.id("project_id", ProjectId::from_uuid)?;
     if org.principal.project_role(id).is_none() {
         return Err(ApiError::not_found(rid));
     }

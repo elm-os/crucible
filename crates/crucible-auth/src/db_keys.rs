@@ -447,6 +447,22 @@ impl DbKeys {
         }
     }
 
+    /// Verifies a public key presented alone as `Bearer`, which only `POST projects/{project_id}/feedback`
+    /// accepts (contract 11.3): the key of its pair, unless that key is revoked or expired. A public key is no
+    /// secret, so the lookup needs no constant-time compare. Allocates nothing.
+    pub fn check_public(&self, public: &str) -> KeyVerdict {
+        let Some(snapshot) = self.current() else {
+            return Self::unavailable();
+        };
+        if self.closed() {
+            return Self::unavailable();
+        }
+        match snapshot.by_public.get(public) {
+            Some(entry) => self.grant(entry),
+            None => self.unknown(),
+        }
+    }
+
     /// The keys used since their last write, with the time of their last use; marks them written.
     fn take_uses(&self) -> Vec<(ApiKeyId, Timestamp)> {
         let Some(snapshot) = self.current() else {

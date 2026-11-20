@@ -25,13 +25,14 @@ commands:
   ui compress [<dir>]  write .br and .gz variants beside the compressible files of a UI export
                        (default ui/out); run it after every UI build that will be embedded or served";
 
-const PLANNED: &str = "Planned: conformance.";
+const CONFORMANCE: &str = "The conformance suite against real ClickHouse servers runs with \
+                           crates/crucible-conformance/scripts/conformance.sh.";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("help" | "--help" | "-h") => {
-            println!("{USAGE}\n{}\n{}\n\n{PLANNED}", sim::USAGE, perf::USAGE);
+            println!("{USAGE}\n{}\n{}\n\n{CONFORMANCE}", sim::USAGE, perf::USAGE);
             ExitCode::SUCCESS
         }
         Some("perf") => match perf::main(args) {
@@ -106,5 +107,15 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The help says how to run the conformance suite, in the present tense.
+    #[test]
+    fn the_help_says_how_to_run_conformance() {
+        assert!(super::CONFORMANCE.contains("scripts/conformance.sh"));
+        assert!(!super::CONFORMANCE.to_lowercase().contains("planned"));
     }
 }

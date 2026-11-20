@@ -330,7 +330,8 @@ fn refusal(facts: &StoreFacts) -> Option<String> {
     }
     if facts.flavour != StoreFlavour::SingleNode {
         return Some(format!(
-            "Crucible runs on a single-node ClickHouse, and this server is {:?}",
+            "Crucible stores telemetry on a single-node ClickHouse server, and this server is {:?}; point \
+             clickhouse.url (--clickhouse-url or CRUCIBLE_CLICKHOUSE_URL) at a single-node server",
             facts.flavour
         ));
     }
@@ -393,6 +394,108 @@ mod tests {
     use super::*;
 
     const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+    /// A server on a fresh local port that takes every connection, reads the request, writes `answer` and then
+    /// holds the connection open without another byte.
+    async fn holding_server(env: &Env, answer: &'static [u8]) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let mut listener = env
+            .net
+            .listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(env.spawn("holding-server", async move {
+            let mut held = Vec::new();
+            while let Ok((mut stream, _)) = listener.accept().await {
+                if !answer.is_empty() {
+                    let mut request = [0; 1 << 16];
+                    let _ = stream.read(&mut request).await;
+                    let _ = stream.write_all(answer).await;
+                }
+                held.push(stream);
+            }
+        }));
+        addr
+    }
+
+    /// A ClickHouse that holds the connection and answers nothing (stopped behind a name that resolves slowly, or
+    /// paused) fails a read with `telemetry_store_unavailable` once the read's deadline passes, so trace detail
+    /// answers from the recent-span index, as the trace list does (contract 8.6). It once ended with
+    /// `query_timeout`, and trace detail answered 504. A read the server began to answer and did not finish stays
+    /// `query_timeout`: the server's own limit should have ended it first.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_read_the_store_never_answers_is_unavailable() {
+        use crucible_env::QueryError;
+        use crucible_plan::{Caller, RetentionClamp, trace_time_bounds};
+        use crucible_records::{ProjectId, TimeWindow, Timestamp, TraceId};
+
+        let config = crucible_env_prod::ProdConfig {
+            roots: std::collections::BTreeMap::new(),
+            wal_backend: crucible_env_prod::WalBackend::Auto,
+        };
+        let prod = crucible_env_prod::build(tokio::runtime::Handle::current(), &config).unwrap();
+        let env = &prod.env;
+        let project = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b";
+        let keys = crate::keys::parse(
+            &format!(
+                "[[project_key]]\nproject_id = \"{project}\"\npublic_key = \"cpk_{0}\"\nsecret = \"csk_{0}\"\n",
+                "7".repeat(43)
+            ),
+            env,
+        )
+        .unwrap();
+        let scope = keys
+            .project_scope(ProjectId::parse(project).unwrap())
+            .unwrap();
+        let all = TimeWindow::new(Timestamp::EPOCH, Timestamp::MAX_EXCLUSIVE).unwrap();
+        let clamp = RetentionClamp::new(Default::default(), env.clock.wall_now());
+        let trace = TraceId::from_bytes([1; 16]);
+        let plan = trace_time_bounds(scope, all, &clamp, Caller::Session, trace)
+            .unwrap()
+            .unwrap();
+        let store = |addr: std::net::SocketAddr| {
+            let user = || Credentials {
+                user: "crucible".to_owned(),
+                password: "x".to_owned(),
+            };
+            ClickHouseStore::new(
+                env.clone(),
+                StoreConfig {
+                    url: format!("http://{addr}"),
+                    read_url: None,
+                    admin: user(),
+                    ingest: user(),
+                    read_ui: user(),
+                    read_agent: user(),
+                    maint: user(),
+                    flavour: Some(StoreFlavour::SingleNode),
+                    tls_roots: TlsRoots::WebPki,
+                    connect_timeout: CONNECT_TIMEOUT,
+                    idle_timeout: None,
+                },
+            )
+        };
+
+        let silent = holding_server(env, b"").await;
+        let read = store(silent)
+            .execute(plan.clone())
+            .await
+            .unwrap()
+            .rows()
+            .await;
+        assert!(matches!(read, Err(QueryError::Unavailable(_))), "{read:?}");
+
+        // The answer begins with the column count of the plan's six outputs, then stops before their names.
+        let stalling = holding_server(
+            env,
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n\x06\r\n",
+        )
+        .await;
+        let read = store(stalling).execute(plan).await.unwrap().rows().await;
+        assert_eq!(read, Err(QueryError::Timeout));
+    }
 
     #[test]
     fn master_keys_are_64_hex_characters_and_never_echoed() {
@@ -570,7 +673,14 @@ mod tests {
             refusal(&facts).unwrap()
         };
         assert!(refused(|f| f.version.minor = 2).contains("older than the minimum"));
-        assert!(refused(|f| f.flavour = StoreFlavour::Clustered).contains("single-node"));
+        // The refusal states the limit and the setting that fixes it (contract 1.7).
+        let clustered = refused(|f| f.flavour = StoreFlavour::Clustered);
+        assert!(
+            clustered.contains("single-node")
+                && clustered.contains("clickhouse.url")
+                && !clustered.contains("preview"),
+            "{clustered}"
+        );
         assert!(refused(|f| f.engines.clear()).contains("--migrate"));
         assert!(refused(|f| f.missing_settings.push("x".to_owned())).contains("settings x"));
         assert!(refused(|f| f.text_index = false).contains("text index"));

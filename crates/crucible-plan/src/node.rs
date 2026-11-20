@@ -1084,19 +1084,25 @@ impl Node {
         }
     }
 
-    /// Every table the node reads. The renderer adds the project predicate and the window predicate to each.
+    /// Every table the node reads, those of its predicates' sets included. The renderer adds the project
+    /// predicate and the window predicate to each.
     pub fn tables(&self) -> Vec<TableId> {
+        let with_sets = |table: TableId, pred: &Pred| {
+            let mut tables = vec![table];
+            tables.extend(pred.set_tables());
+            tables
+        };
         match self {
-            Self::Scan(n) => vec![n.table],
+            Self::Scan(n) => with_sets(n.table, &n.pred),
             Self::PointLookup(n) => vec![n.table],
-            Self::Aggregate(n) => vec![n.table],
+            Self::Aggregate(n) => with_sets(n.table, &n.pred),
             Self::SemiJoin(n) => {
-                let mut tables = vec![n.left.table];
+                let mut tables = with_sets(n.left.table, &n.left.pred);
                 tables.extend(n.right.tables());
                 tables
             }
-            Self::TextSearch(n) => vec![n.table],
-            Self::TimeSeries(n) => vec![n.aggregate.table],
+            Self::TextSearch(n) => with_sets(n.table, &n.pred),
+            Self::TimeSeries(n) => with_sets(n.aggregate.table, &n.aggregate.pred),
             Self::FieldRange(n) => vec![n.table],
         }
     }

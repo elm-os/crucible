@@ -288,7 +288,7 @@ impl Inner {
             transport: IngestTransport::Grpc,
             principal,
             origin,
-            min_start: self.min_start(),
+            min_start: self.min_start(principal.scope.project_id()),
         };
         self.commit(job, held).await
     }

@@ -69,6 +69,18 @@ pub enum Mutant {
     /// 5.3).
     #[cfg(feature = "test-mutants")]
     MarkAfterDuplicateDrop,
+    /// Apply no deletion: neither the tombstones of the log nor the requests read before shipping drop anything
+    /// (contract 13.3, step 3).
+    #[cfg(feature = "test-mutants")]
+    SkipTombstoneFilter,
+    /// Match the subject hash of an MCP operation under its own issuer for a deletion by user that names another
+    /// issuer (a defect of stage B, contract 13.3).
+    #[cfg(feature = "test-mutants")]
+    IgnoreTombstoneIssuer,
+    /// Before shipping, apply only the deletion requests that are still open, not those that completed while the
+    /// node was down (contract 13.3).
+    #[cfg(feature = "test-mutants")]
+    SeedOnlyOpenRequests,
 }
 
 /// A seeded fault of the normalizer, for the simulation suite: a share of the frames does not normalize, as a
@@ -224,6 +236,8 @@ mutant_flags! {
     collects_what_frames_rely_on => CollectWhatFramesRelyOn,
     sums_capture_sources => SumCaptureSources,
     drops_rollup_marker => DropRollupMarker,
+    skips_tombstone_filter => SkipTombstoneFilter,
+    seeds_only_open_requests => SeedOnlyOpenRequests,
 }
 
 impl ShipperConfig {
@@ -237,6 +251,9 @@ impl ShipperConfig {
                 }
                 Some(Mutant::MarkAfterDuplicateDrop) => {
                     Some(crucible_normalize::Mutant::MarkAfterDuplicateDrop)
+                }
+                Some(Mutant::IgnoreTombstoneIssuer) => {
+                    Some(crucible_normalize::Mutant::IgnoreTombstoneIssuer)
                 }
                 _ => None,
             }

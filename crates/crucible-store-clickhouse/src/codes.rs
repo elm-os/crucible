@@ -87,9 +87,15 @@ pub(crate) enum Failure {
     Network(String),
     /// The Rust-side deadline passed.
     Timeout,
+    /// The Rust-side deadline of a read passed before the server sent a byte of its answer: the server did not
+    /// even end the statement at its class limit, which falls before the deadline, so it is not answering.
+    NoAnswer,
     /// The client refused the statement or could not read the answer.
     Client(String),
 }
+
+/// What a read whose server never answered reports.
+const NO_ANSWER: &str = "the telemetry store sent nothing before the read's deadline";
 
 /// The exception code in a server answer: the digits after the first `Code: `.
 pub fn parse_code(text: &str) -> Option<u32> {
@@ -138,7 +144,7 @@ impl Failure {
                 code: None,
                 message,
             },
-            Self::Timeout => InsertError::UnknownOutcome {
+            Self::Timeout | Self::NoAnswer => InsertError::UnknownOutcome {
                 code: None,
                 message: "the insert deadline passed".to_owned(),
             },
@@ -150,6 +156,7 @@ impl Failure {
             Self::Server { code, message } => classify_read(code, message),
             Self::NotSent(message) | Self::Network(message) => QueryError::Unavailable(message),
             Self::Timeout => QueryError::Timeout,
+            Self::NoAnswer => QueryError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => QueryError::Internal(message),
         }
     }
@@ -159,6 +166,7 @@ impl Failure {
             Self::Server { code, message } => StoreError::Rejected { code, message },
             Self::NotSent(message) | Self::Network(message) => StoreError::Unavailable(message),
             Self::Timeout => StoreError::Unavailable("the statement deadline passed".to_owned()),
+            Self::NoAnswer => StoreError::Unavailable(NO_ANSWER.to_owned()),
             Self::Client(message) => StoreError::Internal(message),
         }
     }
@@ -284,6 +292,11 @@ mod tests {
             InsertClass::UnknownOutcome
         );
         assert_eq!(Failure::Timeout.into_query(), QueryError::Timeout);
+        // A read the server never answered is the store being unavailable, not a slow query.
+        assert_eq!(
+            Failure::NoAnswer.into_query(),
+            QueryError::Unavailable(NO_ANSWER.to_owned())
+        );
         let refused = Failure::Server {
             code: 497,
             message: "denied".into(),

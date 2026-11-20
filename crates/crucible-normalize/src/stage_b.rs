@@ -35,6 +35,13 @@
 //! them with an exact repeat, so the window decides alike for every table (invariant I2). It then hashes the user
 //! subject of each remaining operation with the salt of the frame's project and discards the subject (contract
 //! 9.3). That needs no state: the hash is a function of the frame and the salt, which never changes.
+//!
+//! **Deletions.** [`StageB::admit_with`] also drops what the deletions of its context select (contract 13.3, step
+//! 3; [`crate::Tombstones`]): the spans, with their operations and inventory entries, and the operations that a
+//! deletion by user names by their own identity. A drop is not part of the state: every span is sighted by the
+//! duplicate window and the first-seen set and passes its usage mark on whether it is dropped or not, so the state
+//! stays a function of the LSN stream, and a rebuild from the retained prefix decides as the process before it did.
+//! The provisional heads are those of the spans that remain.
 
 use core::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, VecDeque};
@@ -42,7 +49,7 @@ use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 use crucible_records::{DetMap, DetSet, Lsn, SpanCore, SpanId, det_map, det_set};
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::{IdentityCtx, NormalizedFrame};
+use crate::{IdentityCtx, NormCtx, NormalizedFrame, Tombstones};
 
 /// Keys the duplicate window holds (contract 5.3).
 pub const DUPLICATE_WINDOW_KEYS: usize = 4_000_000;
@@ -250,6 +257,10 @@ impl UsageParents {
 pub struct Admission {
     /// Spans dropped as exact repeats.
     pub duplicates: u32,
+    /// Spans dropped because a deletion selects them, with their MCP operations and inventory entries.
+    pub deleted: u32,
+    /// MCP operations of remaining spans dropped because a deletion by user names them by their own identity.
+    pub deleted_ops: u32,
     /// For each remaining span, its position among the spans stage A made of the frame. A re-read of the frame
     /// through [`crate::normalize`] finds the span there, whatever stage B dropped before it, so this is the
     /// ordinal of the recent-span index's WAL locator (contract 8.6).
@@ -428,6 +439,34 @@ impl StageB {
         frame: &mut NormalizedFrame,
         identity: &IdentityCtx<'_>,
     ) -> Result<Admission, OutOfOrder> {
+        self.admit_dropping(frame, identity, None, false)
+    }
+
+    /// Admits the next frame as [`StageB::admit`] does with the identity of `ctx`, and drops what the deletions of
+    /// `ctx` select (contract 13.3, step 3): the spans received before a deletion of their trace, user or session
+    /// (or of their whole project), with their operations and inventory entries, and the operations that a
+    /// deletion by user names by their `user_id` or subject hash. The deletions leave the state as it would be
+    /// without them.
+    pub fn admit_with(
+        &mut self,
+        frame: &mut NormalizedFrame,
+        ctx: &NormCtx<'_>,
+    ) -> Result<Admission, OutOfOrder> {
+        #[cfg(feature = "test-mutants")]
+        let every_issuer = ctx.mutant == Some(crate::Mutant::IgnoreTombstoneIssuer);
+        #[cfg(not(feature = "test-mutants"))]
+        let every_issuer = false;
+        self.admit_dropping(frame, &ctx.identity, ctx.tombstones, every_issuer)
+    }
+
+    fn admit_dropping(
+        &mut self,
+        frame: &mut NormalizedFrame,
+        identity: &IdentityCtx<'_>,
+        tombstones: Option<&Tombstones>,
+        every_issuer: bool,
+    ) -> Result<Admission, OutOfOrder> {
+        let tombstones = tombstones.filter(|t| !t.is_empty());
         if let Some(last) = self.last.filter(|&last| frame.lsn <= last) {
             return Err(OutOfOrder {
                 last,
@@ -466,6 +505,7 @@ impl StageB {
             }
         }
         let mut duplicates = 0u32;
+        let mut deleted = 0u32;
         let window = &mut self.window;
         let mut stage_a_ordinals = Vec::with_capacity(frame.spans.len());
         let mut ordinal = 0u32;
@@ -476,14 +516,18 @@ impl StageB {
                 .get(position)
                 .copied()
                 .unwrap_or_else(|| span_key(&span.core));
-            let kept = match window.sight(key, digest, lsn) {
+            // Every span is sighted, so that the window does not depend on the deletions.
+            let repeat = match window.sight(key, digest, lsn) {
                 Some((remembered, at)) if remembered == digest => {
                     rely(at);
-                    false
+                    true
                 }
-                _ => true,
+                _ => false,
             };
-            duplicates += u32::from(!kept);
+            let dropped = !repeat && tombstones.is_some_and(|t| t.selects_span(&span.core));
+            duplicates += u32::from(repeat);
+            deleted += u32::from(dropped);
+            let kept = !repeat && !dropped;
             if kept {
                 stage_a_ordinals.push(ordinal);
                 // A kept span flagged on a descendant of an earlier frame relies on that frame.
@@ -505,6 +549,7 @@ impl StageB {
                 .collect();
             drop(self.mark_usage_aggregates(frame, &kept));
         }
+        let mut deleted_ops = 0u32;
         if !frame.mcp_ops.is_empty() || !frame.inventory.is_empty() {
             // Where each span of stage A stands among the spans that remain.
             const DROPPED: u32 = u32::MAX;
@@ -520,13 +565,21 @@ impl StageB {
                     .copied()
                     .filter(|&at| at != DROPPED)
             };
+            let salt = match identity {
+                IdentityCtx::Salted(Some(salt)) => Some(*salt),
+                _ => None,
+            };
             frame.mcp_ops.retain_mut(|op| {
                 let Some(at) = now(op.span) else {
                     return false;
                 };
                 op.span = at;
                 op.seal_identity(identity);
-                true
+                // A deletion by user also names an operation by its own identity, whatever its span carries.
+                let named =
+                    tombstones.is_some_and(|t| t.op_selected(&op.record, salt, every_issuer));
+                deleted_ops += u32::from(named);
+                !named
             });
             frame.inventory.retain_mut(|entry| {
                 let Some(at) = now(entry.span) else {
@@ -555,6 +608,8 @@ impl StageB {
             .collect();
         Ok(Admission {
             duplicates,
+            deleted,
+            deleted_ops,
             stage_a_ordinals,
             provisional_heads,
             relies_on,
@@ -577,8 +632,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::FrameSummary;
-    use crate::test_support::record;
+    use crate::test_support::{op_record, record};
+    use crate::{FrameSummary, McpOp, PayloadCaps, PriceTable, Tombstone, TombstoneSelector};
 
     /// A span as the tests describe it: (project, trace, span, digest, is_root), from small domains so that
     /// keys repeat.
@@ -604,6 +659,32 @@ mod tests {
         }
     }
 
+    /// A frame whose spans arrived at the instant `lsn`, so that a deletion requested at `r` selects the frames
+    /// below `r`.
+    fn timed_frame(lsn: u64, spans: &[Desc]) -> NormalizedFrame {
+        let mut f = frame(lsn, spans);
+        for span in &mut f.spans {
+            span.core.ingestion.received_at = crucible_records::Timestamp::from_micros(lsn as i64);
+        }
+        f
+    }
+
+    /// A deletion of the traces `traces` of project `p`, requested at the instant `at`.
+    fn trace_deletion(p: u8, traces: &[u8], at: u64) -> Tombstone {
+        Tombstone {
+            request_id: crucible_records::DeletionRequestId::from_bytes([at as u8 + 1; 16]),
+            project_id: ProjectId::from_bytes([p + 1; 16]),
+            requested_at: crucible_records::Timestamp::from_micros(at as i64),
+            deletion_seq: at,
+            selector: TombstoneSelector::Traces(
+                traces
+                    .iter()
+                    .map(|&t| TraceId::from_bytes([t + 1; 16]))
+                    .collect(),
+            ),
+        }
+    }
+
     /// A linear model of stage B over the descriptions themselves: no hashing, no maps, no stale positions.
     struct Oracle {
         window_cap: usize,
@@ -618,6 +699,17 @@ mod tests {
         /// The kept spans (as indexes into `spans`), the provisional heads (as positions among the kept) and
         /// the lowest earlier LSN a decision used.
         fn admit(&mut self, lsn: u64, spans: &[Desc]) -> (Vec<usize>, Vec<usize>, Option<u64>) {
+            self.admit_dropping(lsn, spans, |_| false)
+        }
+
+        /// As [`Oracle::admit`], with the spans at the indexes `deleted` selects dropped after the window saw
+        /// them.
+        fn admit_dropping(
+            &mut self,
+            lsn: u64,
+            spans: &[Desc],
+            deleted: impl Fn(usize) -> bool,
+        ) -> (Vec<usize>, Vec<usize>, Option<u64>) {
             let mut relied: Vec<u64> = Vec::new();
             let mut new: Vec<(u8, u8)> = Vec::new();
             for &(p, t, ..) in spans {
@@ -660,6 +752,9 @@ mod tests {
                         }
                     }
                 }
+                if deleted(i) {
+                    continue;
+                }
                 kept.push(i);
             }
             let mut heads = Vec::new();
@@ -685,6 +780,123 @@ mod tests {
 
     fn desc() -> impl Strategy<Value = Desc> {
         (0u8..2, 0u8..4, 0u8..4, 0u8..3, any::<bool>())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        /// Deletions drop what they select, after the window has seen it: the state is the one stage B holds
+        /// without them, the remaining spans are the others in wire order, and the provisional heads are those of
+        /// the remaining spans, as the linear model says.
+        #[test]
+        fn deletions_drop_what_they_select_and_leave_the_state_alone(
+            frames in vec(vec(desc(), 0..10), 1..12),
+            deletions in vec((0u8..2, vec(0u8..4, 1..3), 1u64..14), 0..4),
+            window_cap in 0usize..8,
+            seen_cap in 0usize..8,
+        ) {
+            let mut tombstones = Tombstones::new();
+            for (p, traces, at) in &deletions {
+                tombstones.insert(&trace_deletion(*p, traces, *at));
+            }
+            let prices = PriceTable::bundled().unwrap();
+            let ctx = NormCtx::new(prices, PayloadCaps::DEFAULT).with_tombstones(&tombstones);
+            let selected = |lsn: u64, &(p, t, ..): &Desc| {
+                deletions.iter().any(|(dp, traces, at)| *dp == p && traces.contains(&t) && lsn < *at)
+            };
+            let mut plain = StageB::new(window_cap, seen_cap);
+            let mut dropping = StageB::new(window_cap, seen_cap);
+            let mut oracle = Oracle { window_cap, seen_cap, window: Vec::new(), seen: Vec::new() };
+            for (n, spans) in frames.iter().enumerate() {
+                let lsn = n as u64 + 1;
+                let mut whole = timed_frame(lsn, spans);
+                let mut left = timed_frame(lsn, spans);
+                let all = plain.admit(&mut whole, &IdentityCtx::Suppressed).unwrap();
+                let admission = dropping.admit_with(&mut left, &ctx).unwrap();
+                let (kept, heads, _) =
+                    oracle.admit_dropping(lsn, spans, |i| selected(lsn, &spans[i]));
+                let expected: Vec<SpanRecord> = kept.iter().map(|&i| timed_frame(lsn, spans).spans[i].clone()).collect();
+                prop_assert_eq!(&left.spans, &expected);
+                prop_assert_eq!(admission.duplicates, all.duplicates);
+                prop_assert_eq!(admission.deleted as usize, whole.spans.len() - left.spans.len());
+                prop_assert_eq!(&admission.provisional_heads, &heads);
+                let ordinals: Vec<u32> = kept.iter().map(|&i| i as u32).collect();
+                prop_assert_eq!(&admission.stage_a_ordinals, &ordinals);
+                prop_assert_eq!(dropping.window.snapshot(), plain.window.snapshot());
+                prop_assert_eq!(dropping.first_seen.snapshot(), plain.first_seen.snapshot());
+                prop_assert_eq!(dropping.usage_parents.snapshot(), plain.usage_parents.snapshot());
+            }
+        }
+    }
+
+    /// A deletion by user names an operation by its own `user_id` although its span carries none: the operation
+    /// goes and its span and inventory entry stay. The operation of a span that a deletion drops goes with it.
+    #[test]
+    fn a_deletion_by_user_drops_the_operations_it_names_and_their_spans_stay() {
+        let mut f = timed_frame(
+            3,
+            &[(0, 0, 0, 0, true), (0, 0, 1, 1, false), (0, 1, 2, 2, true)],
+        );
+        // The third span is of a deleted trace.
+        let mut deletions = Tombstones::new();
+        deletions.insert(&trace_deletion(0, &[1], 9));
+        deletions.insert(&Tombstone {
+            request_id: crucible_records::DeletionRequestId::from_bytes([7; 16]),
+            project_id: ProjectId::from_bytes([1; 16]),
+            requested_at: crucible_records::Timestamp::from_micros(i64::MAX),
+            deletion_seq: 2,
+            selector: TombstoneSelector::User {
+                user_id: "ada".into(),
+                issuer: None,
+            },
+        });
+        for (at, span) in f.spans.clone().iter().enumerate() {
+            let mut record = op_record(&span.core);
+            if at == 1 {
+                record.user_id = "ada".into();
+            }
+            f.mcp_ops.push(McpOp {
+                span: at as u32,
+                record,
+                subject: "".into(),
+            });
+            f.inventory.push(crate::McpInventory {
+                span: at as u32,
+                record: crucible_records::McpToolInventoryRecord {
+                    project_id: span.core.project_id,
+                    server_name: "server".into(),
+                    deploy_id: "".into(),
+                    tool_name: format!("tool-{at}").into(),
+                    schema_hash: 0,
+                    capture_source: crucible_records::CaptureSource::Sdk,
+                    first_seen: span.core.start_time,
+                    last_seen: span.core.start_time,
+                },
+            });
+        }
+        let prices = PriceTable::bundled().unwrap();
+        let ctx = NormCtx::new(prices, PayloadCaps::DEFAULT)
+            .with_identity(IdentityCtx::Salted(None))
+            .with_tombstones(&deletions);
+        let admission = StageB::default().admit_with(&mut f, &ctx).unwrap();
+        assert_eq!((admission.deleted, admission.deleted_ops), (1, 1));
+        let spans: Vec<SpanId> = f.spans.iter().map(|s| s.core.span_id).collect();
+        assert_eq!(
+            spans,
+            [SpanId::from_bytes([1; 8]), SpanId::from_bytes([2; 8])]
+        );
+        let ops: Vec<(u32, SpanId)> = f
+            .mcp_ops
+            .iter()
+            .map(|op| (op.span, op.record.span_id))
+            .collect();
+        assert_eq!(ops, [(0, SpanId::from_bytes([1; 8]))]);
+        let tools: Vec<(u32, &str)> = f
+            .inventory
+            .iter()
+            .map(|entry| (entry.span, &*entry.record.tool_name))
+            .collect();
+        assert_eq!(tools, [(0, "tool-0"), (1, "tool-1")]);
     }
 
     proptest! {

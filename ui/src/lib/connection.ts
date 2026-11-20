@@ -3,9 +3,9 @@
 import { createLocalStorage } from "@ui-sdk/core";
 import { useSyncExternalStore } from "react";
 
-// Temporary, for the milestone 1 development preview: the UI has no browser sessions yet, so the
-// Connect dialog keeps a project id and its key in this browser until Disconnect, so a new tab or a
-// restart does not ask again. Sessions replace this file in milestone 4.
+// A server without a control plane (keys-file mode) has no browser sessions, so the Connect
+// dialog keeps a project id and its key in this browser until Disconnect, so a new tab or a
+// restart does not ask again.
 const project = createLocalStorage("crucible.connection.project");
 const key = createLocalStorage("crucible.connection.key");
 
