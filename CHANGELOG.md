@@ -12,6 +12,22 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   so each waits for fewer ClickHouse round trips.
 - Reads by API keys and the MCP server wait for one of the 16 ClickHouse statements their identity may run at once,
   instead of answering 503 `telemetry_store_unavailable` when more are asked for at the same time.
+- The dashboard editor sets the side, the capture source and whether caller faults count for a widget over MCP
+  operations. The sheet's field for what a widget reads is called Data.
+- The retention page keeps saying that the settings changed since the page loaded after it reloads the stored values,
+  until you edit them, also when the change was a shortening you confirmed.
+- The project menu shows a name changed in another session as soon as the project settings page reads the project
+  list.
+- The SQL page sends you to sign in when your session ends, and back to the page afterwards, as every other page does.
+- Without object storage, the media endpoint of compatible SDKs answers with both ways to keep their media, the SDK
+  setting that keeps media inline or the server's object storage settings; the server names the SDK setting at
+  startup and logs the warning at the first refusal.
+- Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
+  scope name, and are mapped as that product's traffic.
+- A server that starts reads from Postgres only the deletion requests made after the oldest data in its write-ahead
+  log arrived, not every request ever made, before it sends that data to ClickHouse.
+- The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
+  shipper dropped before ClickHouse because a deletion request selects them.
 
 ## [0.1.0] - 2026-11-20
 

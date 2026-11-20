@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { OrgRole } from "@/api/generated/OrgRole";
 import type { Project } from "@/api/generated/Project";
 import { createQueryClient } from "@/components/providers";
+import { ProjectSwitcher } from "@/components/shell/project-switcher";
 import { currentAuth, setAuth } from "@/lib/auth";
 import { PROJECT_A, PROJECT_B, sessionInfo } from "@/test/session";
 import { ProjectSettings } from "./project";
@@ -299,6 +300,26 @@ describe("renaming", () => {
     expect(await screen.findByText(/Renamed\./)).toBeTruthy();
     expect(new Headers(requests(`PATCH ${ONE}`)[1]?.headers).get("if-match")).toBe('"4"');
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("a rename made in another session reaches the project menu once the list shows it", async () => {
+    signIn();
+    serve({
+      [`GET ${LIST}`]: json({ data: [project({ name: "Checkout EU", version: 4 }), SEARCH] }),
+    });
+    window.history.replaceState(null, "", `/settings/project/?project=${PROJECT_A}`);
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <ProjectSwitcher />
+        <ProjectSettings />
+      </QueryClientProvider>,
+    );
+    const menu = screen.getByRole("combobox", { name: "Project" });
+    expect(menu.textContent).toBe("Checkout");
+    expect(await screen.findByDisplayValue("Checkout EU")).toBe(nameField());
+    await waitFor(() => expect(menu.textContent).toBe("Checkout EU"));
+    expect(sessionName(PROJECT_A)).toBe("Checkout EU");
+    expect(sessionName(PROJECT_B)).toBe("Search");
   });
 
   test("403: a role that lost the admin role is told who renames, and nothing else changes", async () => {

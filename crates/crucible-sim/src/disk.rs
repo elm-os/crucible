@@ -206,6 +206,12 @@ struct State {
     failing_renames: bool,
     /// Directory syncs fail and leave their directory operations pending, for directed tests.
     failing_dir_syncs: bool,
+    /// Directory syncs that still succeed before `failing_dir_syncs_left` applies.
+    passing_dir_syncs: u32,
+    /// Directory syncs that fail regardless of `failing_dir_syncs`, after `passing_dir_syncs`.
+    failing_dir_syncs_left: u32,
+    /// Directory syncs that failed by injection.
+    dir_syncs_failed: u64,
 }
 
 impl State {
@@ -373,6 +379,8 @@ impl SimDisk {
         state.passing_syncs = 0;
         state.failing_renames = false;
         state.failing_dir_syncs = false;
+        state.passing_dir_syncs = 0;
+        state.failing_dir_syncs_left = 0;
         state.crash_at_op = None;
         state.frozen = false;
         Self::with_state(rng, Arc::new(Trace::new()), state)
@@ -414,6 +422,19 @@ impl SimDisk {
     /// so a crash may keep or drop them.
     pub fn fail_dir_syncs(&self, on: bool) {
         self.shared.lock().failing_dir_syncs = on;
+    }
+
+    /// Lets `skip` directory syncs through, then makes the next `n` fail with EIO as
+    /// [`SimDisk::fail_dir_syncs`] does. `(0, 0)` lets every directory sync through again.
+    pub fn fail_dir_syncs_after(&self, skip: u32, n: u32) {
+        let mut state = self.shared.lock();
+        state.passing_dir_syncs = skip;
+        state.failing_dir_syncs_left = n;
+    }
+
+    /// Directory syncs that failed by injection so far.
+    pub fn dir_syncs_failed(&self) -> u64 {
+        self.shared.lock().dir_syncs_failed
     }
 
     /// Operations started so far.
@@ -615,7 +636,13 @@ impl Disk for SimDisk {
         if !state.dir_exists(dir) {
             return Err(DiskError::NotFound);
         }
-        if state.failing_dir_syncs {
+        let counted = state.passing_dir_syncs == 0 && state.failing_dir_syncs_left > 0;
+        if counted {
+            state.failing_dir_syncs_left -= 1;
+        }
+        state.passing_dir_syncs = state.passing_dir_syncs.saturating_sub(1);
+        if state.failing_dir_syncs || counted {
+            state.dir_syncs_failed += 1;
             return Err(io_error(std::io::ErrorKind::Other, "injected EIO"));
         }
         let pending = std::mem::take(&mut state.pending_dir_ops);

@@ -48,7 +48,7 @@ path.
 | W5 | Writes, DDL, temporary and attached objects, `SYSTEM`, `KILL`, users, roles, grants, policies, quotas, profiles, backups, `OUTFILE` | Refused, and the admin sees an unchanged catalogue |
 | W6 | Every function the server lists, with six argument shapes | No canary, an unchanged catalogue, a healthy admin ping |
 | W7 | Each resource guard | Its error code: rows to read, sleep, AST depth and size, subquery depth, query size, join, set and group-by caps, the result cap, the window backstop, the concurrency cap |
-| W8 | The quota, at its real limits, on an identity of its own | Statement 1,801 of the hour is refused with code 201; another identity is unaffected |
+| W8 | The quota, at its real limits, on an identity of its own | Statement 1,801 of the hour is refused with code 201; another identity is unaffected. The quota's hour follows the clock and its count starts again at each hour, so a run that crosses into the next hour runs again on a fresh identity |
 | W9 | Settings a read-only identity may still change | No profile element is changeable; what the server itself leaves changeable is a presentation setting and shows no other row |
 | W10 | Error text, `EXPLAIN` in nine forms, the query cache | Errors quote project A's rows only; no row of B is evaluated; the same text answers A and B with their own rows |
 | W11 | Lifecycle races: the user before its policies, policies dropped, a malformed user name, a retention change, deprovisioning | No state reads another project; a retention change hides old rows at once |

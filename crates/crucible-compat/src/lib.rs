@@ -741,7 +741,8 @@ pub static TABLES: [&DialectTable; 8] = [
     &DIALECT_0, &DIALECT_1, &DIALECT_2, &DIALECT_3, &DIALECT_4, &DIALECT_5, &DIALECT_6, &DIALECT_7,
 ];
 
-/// One compat ingest route (contract 12.1); path, header and product strings live only here.
+/// One compat ingest route (contract 12.1); path, header and product strings live only here. Every route accepts
+/// Crucible keys as Basic or Bearer (contract 12.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CompatRoute {
     /// The dialect the route hints.
@@ -754,10 +755,6 @@ pub struct CompatRoute {
     pub sdk_name_header: Option<&'static str>,
     /// A header that fills the envelope's `sdk_version` when present.
     pub sdk_version_header: Option<&'static str>,
-    /// Whether the route accepts `Basic public:secret`.
-    pub basic: bool,
-    /// Whether the route accepts `Bearer secret`.
-    pub bearer: bool,
 }
 
 /// The compat ingest routes.
@@ -768,8 +765,6 @@ pub static ROUTES: [CompatRoute; 2] = [
         hint_header: None,
         sdk_name_header: Some("x-langfuse-sdk-name"),
         sdk_version_header: Some("x-langfuse-sdk-version"),
-        basic: true,
-        bearer: true,
     },
     CompatRoute {
         dialect: 7,
@@ -777,8 +772,6 @@ pub static ROUTES: [CompatRoute; 2] = [
         hint_header: Some("x-bt-parent"),
         sdk_name_header: None,
         sdk_version_header: None,
-        basic: false,
-        bearer: true,
     },
 ];
 

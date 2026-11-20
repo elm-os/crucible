@@ -1,0 +1,61 @@
+{
+  "provenance": {
+    "values": "invented",
+    "shape": "braintrust-sdk-go commit 31a87dafd05438bdf81aabdb8b548d58af21ee52 eval/functions_api.go lines 173-176 and api/functions/functions.go lines 89-95: the span of a function invocation, from the tracer named braintrust-functions, with braintrust.parent from the span processor of trace/trace.go lines 481-495",
+    "license_of_the_shape_source": "Apache-2.0",
+    "envelope": "synthesized: the trace id is 16 bytes of 0xD7, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
+    "notes": "The Go SDK names this tracer with a hyphen. Its span carries no key of the dialect and arrives on the native path, so the scope name alone chooses dialect 7."
+  },
+  "request": {
+    "path": "/v1/traces",
+    "headers": {}
+  },
+  "otlp": {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "braintrust-functions"
+            },
+            "spans": [
+              {
+                "traceId": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
+                "spanId": "0000000000000001",
+                "name": "function.invoke",
+                "kind": 1,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  {
+                    "key": "braintrust.parent",
+                    "value": {
+                      "stringValue": "project_name:support-bot"
+                    }
+                  },
+                  {
+                    "key": "function.id",
+                    "value": {
+                      "stringValue": "fn-0a1b2c3d"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "0000000000000001": {
+      "compat_dialect": 7,
+      "source_format": "compat",
+      "observation_type": "span",
+      "residual": [
+        "braintrust.parent",
+        "function.id"
+      ]
+    }
+  }
+}

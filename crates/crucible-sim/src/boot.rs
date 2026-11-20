@@ -2,7 +2,8 @@
 //!
 //! One uninterrupted recovery on a fault-free copy of the crashed disk gives the reference state. The real
 //! recovery is then attempted on the faulty disk, cut by seeded crashes and process stops, until it succeeds;
-//! after three failures the faults are healed, so a failure from then on is a defect.
+//! after three failures the faults are healed, failing directory syncs included, so a failure from then on is a
+//! defect.
 
 use futures::FutureExt;
 
@@ -92,10 +93,13 @@ pub(crate) async fn recover(
         }
         let recovery_ops = expected.as_ref().map_or(1, |e| e.2);
         attempt += 1;
-        // After three failures the faults are healed: a recovery must then succeed.
+        // After three failures the faults are healed, failing directory syncs included: a recovery must then
+        // succeed.
         let healed = attempt > 3;
         if healed {
             r.disk.set_faults(DiskFaults::default());
+            r.disk.fail_dir_syncs(false);
+            r.disk.fail_dir_syncs_after(0, 0);
         }
         let name = format!("wal-sim/boot-{}/attempt-{attempt}", r.boots);
         let host = r.sim.host(&name, r.disk, r.plan.wall_offset_micros);

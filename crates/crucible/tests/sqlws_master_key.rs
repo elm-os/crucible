@@ -21,12 +21,15 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use common::{ANY_PORT, exit_error, serving};
 use serde_json::{Value, json};
 
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
@@ -34,13 +37,6 @@ const WRONG_KEY: &str = "0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0ba
 const OWNER_PASSWORD: &str = "correct horse battery staple";
 const QUERY: &str = "SELECT count() FROM crucible_sql.spans WHERE start_time >= {from:DateTime64(6)} AND \
                      start_time < {to:DateTime64(6)}";
-
-fn free_addr() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// One HTTP/1.1 exchange on a fresh connection: the status and the body.
 fn http(
@@ -103,7 +99,8 @@ impl Server {
         Some((status, String::from_utf8_lossy(&body).into_owned()))
     }
 
-    /// Waits until `GET /readyz` answers in a way `done` accepts; panics after `within`.
+    /// Waits until `GET /readyz` answers in a way `done` accepts; panics after `within`, and with the server's
+    /// error when it exits.
     fn wait_for(&mut self, within: Duration, what: &str, done: impl Fn(u16, &str) -> bool) {
         let deadline = Instant::now() + within;
         let mut last = None;
@@ -114,10 +111,13 @@ impl Server {
                 }
                 last = Some((status, body));
             }
-            assert!(
-                self.child.try_wait().unwrap().is_none(),
-                "crucible serve exited while waiting until {what}"
-            );
+            if let Some(status) = self.child.try_wait().unwrap() {
+                let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+                panic!(
+                    "crucible serve exited ({status}) while waiting until {what}: {}",
+                    exit_error(&log)
+                );
+            }
             assert!(
                 Instant::now() < deadline,
                 "not {what} within {within:?}; /readyz answered {last:?}"
@@ -138,17 +138,16 @@ struct Rig {
 }
 
 impl Rig {
-    /// Starts `crucible serve --migrate` with the master key in `key_file`.
+    /// Starts `crucible serve --migrate` with the master key in `key_file`, and waits until it listens.
     fn start(&mut self, key_file: &str) -> Server {
         self.starts += 1;
         let log = self.dir.join(format!("serve-{}.log", self.starts));
-        let (api, ingest, grpc, metrics) = (free_addr(), free_addr(), free_addr(), free_addr());
         let child = Command::new(&self.binary)
             .arg("serve")
-            .args(["--listen", &api.to_string()])
-            .args(["--ingest-listen", &ingest.to_string()])
-            .args(["--grpc-listen", &grpc.to_string()])
-            .args(["--metrics-listen", &metrics.to_string()])
+            .args(["--listen", ANY_PORT])
+            .args(["--ingest-listen", ANY_PORT])
+            .args(["--grpc-listen", ANY_PORT])
+            .args(["--metrics-listen", ANY_PORT])
             .arg("--data-dir")
             .arg(self.dir.join("data"))
             .args(["--clickhouse-url", &self.clickhouse_url])
@@ -164,7 +163,14 @@ impl Rig {
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
             .unwrap();
-        Server { child, api, log }
+        let mut server = Server {
+            child,
+            api: SocketAddr::from(([127, 0, 0, 1], 0)),
+            log,
+        };
+        server.api =
+            serving(&mut server.child, &server.log, Duration::from_secs(60)).addr("listen");
+        server
     }
 
     /// `crucible admin <args>` with the right key: whether it succeeded, and what it printed.

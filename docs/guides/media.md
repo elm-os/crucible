@@ -45,6 +45,11 @@ A server without a bucket answers every media route, including the compatibility
 `501 media_not_supported`, and the message names the settings that turn media on. Media sent inline are stored with
 the payload as usual.
 
+SDKs that upload media separately replace each media with its reference before they ask for the upload, so a server
+without a bucket loses those media. The compatibility media endpoint's answer also names the SDK setting that keeps
+media inline, and the server logs that warning the first time it refuses an upload
+([integrations](../integrations/README.md)).
+
 ## Retention and deletion
 
 A media use lives as long as the payload that holds it: deletion requests remove the uses of the traces they delete,

@@ -504,8 +504,12 @@ pub struct Stats {
     pub mcp_keys: u64,
     /// Reads of a project salt that the simulated control store did not answer.
     pub salt_waits: u64,
-    /// Windows in which directory syncs failed.
+    /// Windows in which directory syncs failed, while the node ran.
     pub dir_sync_windows: u64,
+    /// Windows in which directory syncs failed, while the node started.
+    pub boot_dir_sync_windows: u64,
+    /// Directory syncs that failed while the WAL recovered.
+    pub recovery_dir_sync_failures: u64,
     /// Deletion requests made, those that completed while the node was down included.
     pub deletions: u64,
     /// Of those, requests that completed while the node was down, which left no tombstone in its log.
@@ -520,6 +524,11 @@ pub struct Stats {
     pub ops_deleted: u64,
     /// Reads of the deletion requests that the simulated control store did not answer.
     pub deletion_waits: u64,
+    /// Reads of the deletion requests that the simulated control store answered.
+    pub deletion_reads: u64,
+    /// Requests that those reads left out, because they were made at or before the arrival the read was for, so
+    /// that they select nothing the shipper had to ship.
+    pub deletions_left_unread: u64,
     /// The shipper's counters, summed over its incarnations.
     pub shipper: StatsSnapshot,
     /// The store's counters.
@@ -573,6 +582,10 @@ impl Stats {
             (self.mcp_keys, "mcp aggregates compared with the reference"),
             (self.salt_waits, "frame waited for its project salt"),
             (self.dir_sync_windows, "directory syncs failed"),
+            (
+                self.recovery_dir_sync_failures,
+                "directory sync failed during wal recovery",
+            ),
             (self.tombstones, "tombstone appended"),
             (
                 self.deletions_while_down,
@@ -585,6 +598,10 @@ impl Stats {
                 "mcp operation dropped by its user identity",
             ),
             (self.deletion_waits, "read of the deletion requests failed"),
+            (
+                self.deletions_left_unread,
+                "deletion request made before what the shipper read for",
+            ),
             (
                 self.shipper.quarantined_frames,
                 "shipper quarantined a frame",
@@ -2367,14 +2384,23 @@ impl DeletionRequests for SimDeletions {
         true
     }
 
-    fn all(
+    fn requested_after(
         &self,
+        received_at: Timestamp,
     ) -> futures::future::BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
         let answer = if self.fails() {
             Err(DeletionsUnavailable("the store did not answer".to_owned()))
         } else {
-            let ledger = self.shared.ledger();
-            Ok(ledger.deletions.iter().map(|d| d.known.clone()).collect())
+            let mut ledger = self.shared.ledger();
+            let read: Vec<KnownDeletion> = ledger
+                .deletions
+                .iter()
+                .map(|d| d.known.clone())
+                .filter(|known| known.tombstone.requested_at > received_at)
+                .collect();
+            ledger.stats.deletion_reads += 1;
+            ledger.stats.deletions_left_unread += (ledger.deletions.len() - read.len()) as u64;
+            Ok(read)
         };
         Box::pin(futures::future::ready(answer))
     }
@@ -3708,11 +3734,29 @@ impl Run<'_> {
     }
 
     /// Recovers the WAL on a new host through crashes and faults, compares the result with the uninterrupted
-    /// reference recovery (I12) and checks the store and the log against the ledger (I1, I2). `None` when a
-    /// violation ended the run.
-    async fn boot(&mut self) -> Option<(Host, Wal, RecoveryReport)> {
+    /// reference recovery (I12) and checks the store and the log against the ledger (I1, I2). With `faulty`, a
+    /// window of failing directory syncs may be open while the node starts. `None` when a violation ended the run.
+    async fn boot(&mut self, faulty: bool) -> Option<(Host, Wal, RecoveryReport)> {
         self.boots += 1;
         let workload_faults = self.disk.faults();
+        let dir_syncs_failed = self.disk.dir_syncs_failed();
+        // A window in which directory syncs fail can be open while the node starts, as while it runs: a seeded
+        // number of the start's directory syncs pass, then up to three fail. Each failed sync ends the recovery
+        // attempt it is in and leaves its directory entries pending for the crash or the stop that follows. The
+        // window closes with the start; the boot driver heals it with the other faults after three failed
+        // attempts. Drawn from a stream of its own, so a mask without the dimension draws what it drew before.
+        if faulty && self.plan().mask.has(Dim::DirSyncErrors) {
+            let rng = self
+                .sim
+                .rng(&format!("system-sim/boot-dir-syncs-{}", self.boots));
+            let rng = rng.as_ref();
+            if coin(rng) {
+                let (skip, failing) = (pick(rng, 3), 1 + pick(rng, 3));
+                self.event("dir_sync.boot", &[skip, failing]);
+                self.shared.ledger().stats.boot_dir_sync_windows += 1;
+                self.disk.fail_dir_syncs_after(skip as u32, failing as u32);
+            }
+        }
         let recovery = Recovery {
             sim: self.sim,
             disk: &self.disk,
@@ -3722,11 +3766,13 @@ impl Run<'_> {
         };
         let mut counts = BootCounts::default();
         let booted = recover(&recovery, &mut self.stopped, &mut counts).await;
+        self.disk.fail_dir_syncs_after(0, 0);
         {
             let stats = &mut self.shared.ledger().stats;
             stats.stops += counts.stops;
             stats.crashes += counts.crashes;
             stats.recovery_crashes += counts.crashes;
+            stats.recovery_dir_sync_failures += self.disk.dir_syncs_failed() - dir_syncs_failed;
         }
         let Booted {
             host,
@@ -4349,7 +4395,7 @@ impl Run<'_> {
 
     /// One incarnation: recover, serve clients and readers and ship until a seeded crash point, crash.
     async fn incarnation(&mut self) -> Option<()> {
-        let (host, wal, report) = self.boot().await?;
+        let (host, wal, report) = self.boot(true).await?;
         self.shared.ledger().stats.incarnations += 1;
         if self.plan().deleted().is_some() {
             // Requests that completed while the node was down: the executor ran without it, after the inserts
@@ -4534,7 +4580,7 @@ impl Run<'_> {
         self.disk.set_faults(DiskFaults::default());
         self.model.set_faults(ChFaults::default());
         self.model.end_outage();
-        let (host, wal, report) = self.boot().await?;
+        let (host, wal, report) = self.boot(false).await?;
         let first_retained = report.first_retained_lsn();
         if self.plan().deleted().is_some() {
             // The node timer appends the tombstone of every open request before the drain.
@@ -4627,7 +4673,7 @@ impl Run<'_> {
             watermark(&wal),
         );
         self.crash(host, wal).await;
-        let (host, wal, report) = self.boot().await?;
+        let (host, wal, report) = self.boot(false).await?;
         let (node, shipping) = self.start(&host, &wal, &report)?;
         host.env.clock.sleep(Duration::from_secs(5)).await;
         self.account(&shipping, true);

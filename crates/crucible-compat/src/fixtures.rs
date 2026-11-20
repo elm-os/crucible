@@ -188,4 +188,9 @@ pub static FIXTURES: &[Fixture] = &[
         id: "s3-flattened-messages",
         json: include_str!("../fixtures/d7/s3-flattened-messages.json"),
     },
+    Fixture {
+        dialect: 7,
+        id: "s4-go-functions-scope",
+        json: include_str!("../fixtures/d7/s4-go-functions-scope.json"),
+    },
 ];

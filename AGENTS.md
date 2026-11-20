@@ -89,6 +89,27 @@ docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/us
 - Go: the `golang:1.27` image, or a local Go toolchain if present.
 - Policy: `node tools/policy/policy.mjs files` and `node tools/policy/policy.mjs selftest`.
 
+## Agent skills
+
+`.claude/` and `.agents/` are not committed, so a fresh checkout or worktree starts without skills. Restore them from
+`skills-lock.json` before any UI or design work:
+
+```sh
+npx skills install -a claude-code
+```
+
+They install under `.claude/skills/` and `.agents/skills/`, which git ignores; never commit them. To add a skill, run
+`npx skills add <owner>/<repo> -s <skill> -a claude-code -y` and commit only the updated `skills-lock.json`.
+
+| Skill | Source | Use it to |
+|---|---|---|
+| `ux-guidelines` | `00-Aakash-00/skills` | design every screen's states, forms, feedback, choices and mobile behaviour |
+| `ui-sdk` | `vercel-labs/ui` | build every interactive behaviour with UI SDK (`@ui-sdk/core`, `@ui-sdk/react`) |
+| `frontend-design` | `anthropics/skills` | set visual direction, typography and layout within the tokens in `ui/src/app/globals.css` |
+| `emil-design-eng` | `emilkowalski/skills` | craft interactions and motion: timing, easing, gestures and polish |
+| `review-animations` | `emilkowalski/skills` | audit motion code before you finish a UI change |
+| `animation-vocabulary` | `emilkowalski/skills` | name a motion effect you can describe but cannot name |
+
 ## Web UI
 
 This is NOT the Next.js you know: version 16.4 has breaking changes. Read the relevant guide in

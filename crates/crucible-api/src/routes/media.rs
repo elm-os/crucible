@@ -158,11 +158,6 @@ pub(crate) fn media_problem(rid: RequestId, error: &MediaError) -> ApiError {
     }
 }
 
-/// The answer of a media route that cannot run here: `media_not_supported`, for the compat media endpoint.
-pub fn media_not_supported(rid: RequestId) -> Response {
-    not_supported(rid).into_response()
-}
-
 /// The answer to a failed media call, for the compat media endpoint.
 pub fn media_refusal(rid: RequestId, error: &MediaError) -> Response {
     media_problem(rid, error).into_response()

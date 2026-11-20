@@ -1,6 +1,9 @@
 # Rust
 /target/
 **/*.rs.bk
+# Pending insta snapshots that a failing test writes beside the committed ones (binary snapshots add .snap.new.<ext>)
+*.snap.new
+*.snap.new.*
 
 # Node / UI
 node_modules/
@@ -36,8 +39,30 @@ __pycache__/
 graphify-out/
 .DS_Store
 Thumbs.db
+desktop.ini
 # The ban self-test resolves its own (exactly pinned) dependencies; a committed lock would pin crucible-records' tree.
 /tools/ban-selftest/Cargo.lock
+
+# A server run from the repository root: the default data directory (data.dir), its keys file and its configuration file
+/data/
+/keys.toml
+/crucible.toml
+
+# The server configuration that crates/crucible-schema/scripts/conformance.sh writes for a run and removes after it
+/crates/crucible-schema/tests/conformance/.server-config.xml
+
+# Editor files and merge or patch leftovers
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
+*.orig
+*.rej
+
+# Per-developer overrides of the git hooks (lefthook)
+/lefthook-local.yml
+/.lefthook-local/
 
 # Formal tools
 _apalache-out/
@@ -51,5 +76,7 @@ specs/tmp/
 /deploy/compose/.env
 /e2e-out/
 
-# Local Claude Code configuration and installed skills are not committed (skills-lock.json records the skills' sources)
+# Local agent configuration and installed skills are not committed (skills-lock.json records the skills' sources)
 .claude/
+.agents/
+/CLAUDE.local.md

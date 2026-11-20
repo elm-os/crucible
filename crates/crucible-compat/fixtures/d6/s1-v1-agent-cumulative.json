@@ -1,10 +1,10 @@
 {
   "provenance": {
     "values": "invented",
-    "shape": "synthetic: an agent run span of pydantic/pydantic-ai v1.107.10 (tests/test_logfire.py lines 264-321), whose usage keys hold the cumulative usage of the run, with one model request below it",
+    "shape": "pydantic/pydantic-ai v1.107.10: an agent run span under instrumentation version 1, with the attributes of pydantic_ai_slim/pydantic_ai/capabilities/instrumentation.py lines 144-152, 179-187 and 204-258 as tests/test_logfire.py lines 322-391 show them, whose usage keys hold the cumulative usage of the run, with one model request below it",
     "license_of_the_shape_source": "MIT",
     "envelope": "synthesized: the trace id is 16 bytes of 0xD6, span ids count from 1 in listed order, and times are 1 s and 2 s after the epoch unless the fixture needs others",
-    "notes": "The agent span stores and shows its cumulative usage and is flagged as a usage aggregate, so token and cost sums count the model request only."
+    "notes": "The agent span stores and shows its cumulative usage and is flagged as a usage aggregate, so token and cost sums count the model request only. A run span always names its operation invoke_agent and carries the run and conversation ids, which pydantic-ai mints as UUIDv7 strings."
   },
   "request": {
     "path": "/v1/traces",
@@ -41,9 +41,39 @@
                     }
                   },
                   {
+                    "key": "gen_ai.agent.name",
+                    "value": {
+                      "stringValue": "helper"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.agent.call.id",
+                    "value": {
+                      "stringValue": "019a3c2e-5b10-7c4d-8e2f-1a2b3c4d5e6f"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.conversation.id",
+                    "value": {
+                      "stringValue": "019a3c2e-5b10-7c4d-8e2f-6f5e4d3c2b1a"
+                    }
+                  },
+                  {
+                    "key": "gen_ai.operation.name",
+                    "value": {
+                      "stringValue": "invoke_agent"
+                    }
+                  },
+                  {
                     "key": "logfire.msg",
                     "value": {
                       "stringValue": "helper run"
+                    }
+                  },
+                  {
+                    "key": "final_result",
+                    "value": {
+                      "stringValue": "done"
                     }
                   },
                   {
@@ -59,9 +89,15 @@
                     }
                   },
                   {
-                    "key": "final_result",
+                    "key": "all_messages_events",
                     "value": {
-                      "stringValue": "done"
+                      "stringValue": "[{\"content\":\"hi\",\"role\":\"user\",\"gen_ai.message.index\":0,\"event.name\":\"gen_ai.user.message\"},{\"role\":\"assistant\",\"content\":\"done\",\"gen_ai.message.index\":1,\"event.name\":\"gen_ai.assistant.message\"}]"
+                    }
+                  },
+                  {
+                    "key": "logfire.json_schema",
+                    "value": {
+                      "stringValue": "{\"type\":\"object\",\"properties\":{\"all_messages_events\":{\"type\":\"array\"},\"final_result\":{\"type\":\"object\"}}}"
                     }
                   }
                 ]
@@ -110,7 +146,8 @@
   "expect": {
     "0000000000000001": {
       "compat_dialect": 6,
-      "observation_type": "span",
+      "observation_type": "agent",
+      "session_id": "019a3c2e-5b10-7c4d-8e2f-6f5e4d3c2b1a",
       "usage_provided": {
         "input": 51,
         "output": 4
@@ -121,7 +158,12 @@
       "residual": [
         "model_name",
         "agent_name",
-        "logfire.msg"
+        "gen_ai.agent.name",
+        "gen_ai.agent.call.id",
+        "gen_ai.operation.name",
+        "logfire.msg",
+        "all_messages_events",
+        "logfire.json_schema"
       ]
     },
     "0000000000000002": {
