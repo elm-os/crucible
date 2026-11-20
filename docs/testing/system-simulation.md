@@ -221,8 +221,11 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `skip-flag-reliance` | `crucible-normalize` | A kept span flagged a usage aggregate on an earlier frame's support does not lower `relies_on` | I2: a kept span is flagged on the usage of an earlier frame that the admission does not rely on | 15000 | `0xc1f46c2a19a297` |
 
 Of the 600 runs of the budget, the mutants are caught by 594, 140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48,
-219, 292, 41, 127, 11 and 96 runs, in the order of the table. The dimension `deletions` moved the first catching
-runs of several mutants: before it, the first fifteen were caught by 593, 137, 62, 46, 105, 499, 480, 76, 149, 162,
+219, 292, 67, 127, 11, 96 and 36 runs, in the order of the table. The check at admission of "Usage aggregates,
+exactly" raised `mark-after-duplicate-drop` from 41: a stage B that marks after the drop has its flags rely on no
+frame either, so 36 of its runs report I2, and its first catching run still reports I7. The dimension `deletions`
+moved the first catching runs of several mutants: before it, the first fifteen were caught by 593, 137, 62, 46,
+105, 499, 480, 76, 149, 162,
 20, 48, 229, 292 and 43 runs. Before the planted event keys and the weighting of `nested_usage` below, they were
 caught by 587, 147, 59, 43, 102, 498, 479, 71, 157, 161, 22, 49, 233, 292 and 2 runs. Before the
 dimensions, the weighted profile and the oracle checks of milestone 3, the first eleven were caught by 592, 163, 41,
