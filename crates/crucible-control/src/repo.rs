@@ -16,6 +16,7 @@ use crate::alerts::{AlertEventRepo, AlertRuleRepo, AlertStateRepo, ChannelRepo};
 use crate::dashboards::DashboardRepo;
 use crate::error::TxError;
 use crate::lifecycle::LifecycleRepo;
+use crate::media::MediaRepo;
 use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
 use crate::types::{
     ApiKey, AuthFlow, AuthProvider, Claim, Credential, Email, ExportCommit, ExportJob, Invitation,
@@ -462,6 +463,8 @@ pub trait Repos: Send + Sync {
     fn saved_queries(&self) -> &dyn SavedQueryRepo;
     /// The audit rows of SQL runs.
     fn sql_runs(&self) -> &dyn SqlRunRepo;
+    /// Media objects and their uses.
+    fn media(&self) -> &dyn MediaRepo;
 }
 
 /// Postgres behind repositories (contract 2.7). Through [`Repos`], each call is its own statement.

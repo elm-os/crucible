@@ -24,11 +24,14 @@ crucible-sim = { path = "../crucible-sim" }
 # The control store: the traits, the Postgres adapter and (in crucible-sim) its model.
 crucible-control = { path = "../crucible-control" }
 crucible-control-pg = { path = "../crucible-control-pg", features = ["test-support"] }
+# The object store adapter that the S3 rows run against a real server.
+crucible-media = { path = "../crucible-media", features = ["test-support"] }
 anyhow = { workspace = true }
 # The connection-counting `Net` of the idle-connection rows.
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -36,6 +39,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [[bin]]
 name = "crucible-pg-conformance"
 path = "src/pg_main.rs"
+
+# The object store rows of contract 2.10 against an S3-compatible server.
+[[bin]]
+name = "crucible-s3-conformance"
+path = "src/s3_main.rs"
 
 # The isolation suite of the SQL workspace (contract 7.5).
 [[bin]]

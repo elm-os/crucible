@@ -1,0 +1,50 @@
+# Media for compose.yaml: an S3-compatible object store (the Versity S3 gateway over a local volume) that holds the
+# images, audio and files SDKs upload beside their traces. Without it, media stay inline in payloads, under the
+# 8 MiB field cap, and the media routes answer 501 media_not_supported. See docs/self-hosting/media.md.
+#
+# Two more settings in .env beside this file, made once:
+#   MEDIA_ACCESS_KEY   the gateway's access key:   printf 'MEDIA_ACCESS_KEY=%s\n' "$(openssl rand -hex 8)" >> .env
+#   MEDIA_SECRET_KEY   the gateway's secret key:   printf 'MEDIA_SECRET_KEY=%s\n' "$(openssl rand -hex 24)" >> .env
+# Optional:
+#   CRUCIBLE_MEDIA_PORT        host port of the gateway (default 7070)
+#   CRUCIBLE_MEDIA_PUBLIC_URL  the gateway's address as SDKs and browsers reach it, which upload and download links
+#                              name (default http://localhost:7070; set it to this host's name for other machines)
+# Then: docker compose -f compose.yaml -f compose.media.yaml up -d --wait
+#
+# Uploads and downloads go straight between the clients and the gateway, so its port is published like Crucible's.
+services:
+  versitygw:
+    image: versity/versitygw:v1.10.0
+    restart: unless-stopped
+    environment:
+      ROOT_ACCESS_KEY: ${MEDIA_ACCESS_KEY:?set MEDIA_ACCESS_KEY in .env (docs/self-hosting/media.md)}
+      ROOT_SECRET_KEY: ${MEDIA_SECRET_KEY:?set MEDIA_SECRET_KEY in .env (docs/self-hosting/media.md)}
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARG: /data
+      VGW_HEALTH: /health
+    # Each top-level directory is a bucket: the bucket Crucible uses exists before the gateway starts.
+    entrypoint: ["sh", "-c", "mkdir -p /data/crucible-media && exec /usr/local/bin/docker-entrypoint.sh"]
+    volumes:
+      - media-data:/data
+    ports:
+      - "${CRUCIBLE_BIND_ADDRESS:-0.0.0.0}:${CRUCIBLE_MEDIA_PORT:-7070}:7070"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:7070/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  crucible:
+    depends_on:
+      versitygw:
+        condition: service_healthy
+    environment:
+      # Crucible reaches the gateway inside the Compose network; links it hands out name the public address.
+      CRUCIBLE_OBJECT_STORE_ENDPOINT: http://versitygw:7070
+      CRUCIBLE_OBJECT_STORE_PUBLIC_ENDPOINT: ${CRUCIBLE_MEDIA_PUBLIC_URL:-http://localhost:7070}
+      CRUCIBLE_OBJECT_STORE_BUCKET: crucible-media
+      CRUCIBLE_OBJECT_STORE_ACCESS_KEY: ${MEDIA_ACCESS_KEY:?set MEDIA_ACCESS_KEY in .env (docs/self-hosting/media.md)}
+      CRUCIBLE_OBJECT_STORE_SECRET_KEY: ${MEDIA_SECRET_KEY:?set MEDIA_SECRET_KEY in .env (docs/self-hosting/media.md)}
+
+volumes:
+  media-data:

@@ -48,6 +48,9 @@ pub struct LifecycleConfig {
     /// How far behind the database clock the retention executor computes its cut-offs, so that it never
     /// removes a row that a node with a slower clock still serves.
     pub clock_margin: Duration,
+    /// Whether the deployment stores media (an object store is configured): a completed deletion request
+    /// then reports the media place `done`, otherwise `not_present`.
+    pub media: bool,
     pub(crate) mutant: Option<Mutant>,
 }
 
@@ -62,6 +65,7 @@ impl Default for LifecycleConfig {
             granularity: Granularity::Day,
             max_attempts: 8,
             clock_margin: Duration::from_secs(3_600),
+            media: false,
             mutant: None,
         }
     }

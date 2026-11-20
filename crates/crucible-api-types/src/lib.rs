@@ -22,6 +22,7 @@ mod facts;
 mod identity;
 mod lifecycle;
 mod mcp;
+mod media;
 mod meta;
 mod metrics;
 mod payload;
@@ -81,6 +82,10 @@ pub use mcp::{
     McpSessionList, McpSessionRow, McpSide, McpSideParam, McpStats, McpStatus, McpTargetErrorRow,
     McpTargetKind, McpToolDeltaRow, McpToolDetail, McpToolList, McpToolRow, McpUserList,
     McpUserRow, McpView, McpViewParams, ResultType, SourceParam, Transport,
+};
+pub use media::{
+    Media, MediaCreate, MediaDisposition, MediaList, MediaListParams, MediaState, MediaUpload,
+    MediaUploadUrl, MediaUse, SignedHeader,
 };
 pub use meta::Meta;
 pub use metrics::{
@@ -175,6 +180,11 @@ pub fn visit_exported(visitor: &mut impl ts_rs::TypeVisitor) {
     visitor.visit::<McpToolList>();
     visitor.visit::<McpUserList>();
     visitor.visit::<McpViewParams>();
+    visitor.visit::<Media>();
+    visitor.visit::<MediaCreate>();
+    visitor.visit::<MediaList>();
+    visitor.visit::<MediaListParams>();
+    visitor.visit::<MediaUpload>();
     visitor.visit::<MetricsQueryRequest>();
     visitor.visit::<MetricsResponse>();
     visitor.visit::<MetricsSchema>();
