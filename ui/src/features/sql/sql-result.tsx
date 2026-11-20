@@ -11,6 +11,8 @@ import {
   PaginationPrevious,
 } from "@ui-sdk/react/pagination";
 import { Progress, ProgressIndicator, ProgressLabel, ProgressTrack } from "@ui-sdk/react/progress";
+import type { Route } from "next";
+import Link from "next/link";
 import { type ReactNode, useState } from "react";
 import type { UiError } from "@/api/errors";
 import type { SqlResult } from "@/api/generated/SqlResult";
@@ -18,6 +20,7 @@ import { EmptyState } from "@/components/empty-state";
 import { AlertIcon, UnsetIcon } from "@/components/icons";
 import { ConnectTrigger } from "@/components/shell/connect-dialog";
 import { formatCount, formatDuration } from "@/lib/format";
+import { currentPath, loginHref } from "@/lib/next-path";
 import { formatBytes, formatCell, isNumericType, MAX_ROWS, PAGE_ROWS } from "./cells";
 import { SqlError } from "./errors";
 
@@ -95,7 +98,10 @@ export function SqlErrorCard({
       ) : null}
       {error.action === "sign_in" || children || error.requestId !== null ? (
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2">
-          {error.action === "sign_in" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
+          {error.kind === "signed_out" ? (
+            <Link href={loginHref(currentPath()) as Route}>Sign in</Link>
+          ) : null}
+          {error.kind === "unauthenticated" ? <ConnectTrigger>Connect</ConnectTrigger> : null}
           {children}
           {error.requestId !== null ? (
             <p className="text-label text-ink-soft">

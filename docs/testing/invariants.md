@@ -94,8 +94,9 @@ timing, part layout or restarts. Effective tags equal ingest tags plus latest-ad
 ### I5. Backpressure, never out of memory
 
 Tracked bytes in every `ByteBudget` (`ingest.inflight_bytes`, `wal.unshipped_bytes`, `normalize.cache_bytes`,
-`shipper.encoded_bytes`, `recent.bytes`) stay at or below their caps. When a cap is hit the answer is 429 or 503
-with `Retry-After` (or the gRPC equivalents). No accepted request is dropped silently.
+`shipper.encoded_bytes`, `recent.bytes`) stay at or below their caps, except that the rows the shipper holds can
+exceed `shipper.encoded_bytes` by one frame, because frames are never split (contract 4.8). When a cap is hit the
+answer is 429 or 503 with `Retry-After` (or the gRPC equivalents). No accepted request is dropped silently.
 
 | Check | Kind |
 |---|---|
@@ -168,7 +169,8 @@ After a deletion request or a retention expiry:
 - **SQL path**: rows past retention are invisible to the workspace immediately (row policy); a deletion is
   invisible to the workspace from the moment the masking delete is issued;
 - a replay, requeue or drain never re-inserts deleted data;
-- data received at or after `requested_at` is kept.
+- data received at or after `requested_at` is kept, except an exact repeat of a deleted span that the duplicate
+  window still remembers, which is dropped as a repeat (contract 13.3).
 
 Minute rollups keep their counts by contract.
 

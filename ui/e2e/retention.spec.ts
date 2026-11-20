@@ -116,6 +116,48 @@ test.describe("settings: retention", () => {
     });
   });
 
+  test("a save after someone else's change reloads the stored settings and keeps saying why", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api, admin());
+    api.on(REQUESTS_PATH, json({ data: [], next_cursor: null }));
+    const newer = [
+      retention({ retention_days: 60, version: 9 }),
+      retention({ retention_days: 45, version: 10 }),
+    ];
+    let stored = retention({ retention_days: 30 });
+    api.on(RETENTION_PATH, (route) => {
+      if (route.request().method() === "PUT") {
+        stored = newer.shift() ?? stored;
+        return route.fulfill(problem(412, "precondition_failed", "req-stale"));
+      }
+      return route.fulfill(json(stored));
+    });
+    await page.goto(URL);
+    const region = retentionRegion(page);
+    const days = region.getByLabel("Keep data for");
+    await days.fill("90");
+    await region.getByRole("button", { name: "Save retention" }).click();
+    await expect(days).toHaveValue("60");
+    const alert = region.getByRole("alert");
+    await expect(alert).toContainText("These settings changed since the page loaded.");
+    await expect(alert).toContainText("Enter your change again, then save.");
+    await expect(alert).toContainText("req-stale");
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expectAccessible(page, "retention reloaded after someone else's change");
+
+    // Editing clears it; a shortening that meets a newer version closes its question and says so too.
+    await days.fill("14");
+    await expect(alert).toHaveCount(0);
+    await region.getByRole("button", { name: "Save retention" }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Shorten retention?" });
+    await dialog.getByRole("button", { name: "Shorten retention" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(days).toHaveValue("45");
+    await expect(alert).toContainText("These settings changed since the page loaded.");
+  });
+
   test("error: the section keeps the failure to itself, with a retry, and shows no server text", async ({
     page,
     api,

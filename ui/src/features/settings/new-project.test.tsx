@@ -199,7 +199,12 @@ describe("what a refusal says", () => {
     renderControl();
     fetchMock.mockResolvedValueOnce(problem(409, "conflict"));
     await fillAndCreate();
-    expect(await screen.findByText("Choose a slug no other project uses.")).toBeTruthy();
+    // UI SDK's screen-reader announcer briefly holds the same text, so the query names the field's error.
+    expect(
+      await screen.findByText("Choose a slug no other project uses.", {
+        selector: '[data-slot="field-error"]',
+      }),
+    ).toBeTruthy();
     await act([{ ref: "Slug", action: "setValue", args: ["payments-2"] }]);
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(input("Slug").getAttribute("aria-invalid")).toBeNull();
