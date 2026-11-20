@@ -195,6 +195,9 @@ where
     kept
 }
 
+/// A fault that makes the first start fail before the entry of `EPOCH` is durable.
+type Fault = fn(&SimDisk);
+
 /// The first start fails before the entry of `EPOCH` is durable and the process stops, so the entry is readable
 /// and pending. The next start finds a valid `EPOCH` and creates segment 1. Recovery must make `EPOCH` durable,
 /// its directory entry included, before it creates the segment: a crash that kept the segment's entry and lost
@@ -203,7 +206,7 @@ where
 fn a_readable_epoch_is_durable_before_the_first_segment_is_created() {
     run(1, |sim| async move {
         let sim = &sim;
-        let first_start_fails = move |disk: SimDisk, fault: fn(&SimDisk)| async move {
+        let first_start_fails = move |disk: SimDisk, fault: Fault| async move {
             fault(&disk);
             let error = try_start(sim, &disk, "first").await.err();
             assert!(matches!(error, Some(RecoveryError::Disk(_))), "{error:?}");
@@ -211,7 +214,7 @@ fn a_readable_epoch_is_durable_before_the_first_segment_is_created() {
             assert_eq!(disk.names(&wal_dir()), ["EPOCH"]);
         };
         // The directory sync fails, or the sync of the entry's bytes before it.
-        let faults: [(&str, fn(&SimDisk)); 2] = [
+        let faults: [(&str, Fault); 2] = [
             ("dir-sync", |disk| disk.fail_dir_syncs(true)),
             ("sync", |disk| disk.fail_next_syncs(1)),
         ];
