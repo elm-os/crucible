@@ -168,7 +168,8 @@ After a deletion request or a retention expiry:
 - **SQL path**: rows past retention are invisible to the workspace immediately (row policy); a deletion is
   invisible to the workspace from the moment the masking delete is issued;
 - a replay, requeue or drain never re-inserts deleted data;
-- data received at or after `requested_at` is kept.
+- data received at or after `requested_at` is kept, except an exact repeat of a deleted span that the duplicate
+  window still remembers, which is dropped as a repeat (contract 13.3).
 
 Minute rollups keep their counts by contract.
 

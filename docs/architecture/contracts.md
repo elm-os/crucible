@@ -7,8 +7,8 @@ The map of the system is [`overview.md`](overview.md); the reasons for the load-
 
 Language: "must" and "must not" are binding. "(default; revisit)" marks a value chosen here because no design fixed
 it; it is binding until a contract change replaces it. "Pinned by conformance" marks a statement about ClickHouse or
-Postgres behaviour that a named conformance row must establish before code relies on it. Features are described in
-planned tense where they are not yet shipped.
+Postgres behaviour that a named conformance row must establish before code relies on it. Where the code settled a
+detail that the design left open, or departs from it, the section's "Settled in code" part says what main does.
 
 Sections: 1 conventions, 2 env traits, 3 records, 4 WAL, 5 insert protocol, 6 ClickHouse schema, 7 ClickHouse
 identities and access, 8 read side, 9 MCP, 10 compat dialect registry, 11 control plane, 12 API, 13 retention and
@@ -42,7 +42,7 @@ Uppercase hex on input is accepted and lowered. Any other id form is `validation
 | Valid range | `0 <= t < 4102444800000000` (year 2100). Span times outside the range are clamped and the span is flagged `clock_skew` |
 | Clock skew | A `start_time` more than 24 h ahead of `received_at` is accepted and flagged `clock_skew = 1` |
 | Event time and arrival time | Partitioning, retention and list windows use `start_time` (facts: `target_time`). `received_at` is for freshness, cursors' `as_of` and deletion cut-offs only |
-| Maximum event age | A span whose `start_time` is older than the project's retention horizon, or older than `ingest.max_event_age` (default 400 days), is rejected through OTLP partial success. An import key (section 11.3) bypasses the age check when `ingest.admin_import = true` |
+| Maximum event age | A span whose `start_time` is older than the project's retention horizon, or older than `ingest.max_event_age` (default 400 days), is rejected through OTLP partial success. An import key (section 11.3) bypasses the age check when `ingest.admin_import = true`. Settled in code: the horizon is the read cut-off of `span_core` (`retention_days`, never below a retention floor that an earlier, shorter retention set), taken from the node's retention snapshot, which the per-node lifecycle timer refreshes every 5 s (section 13.3), and looked up once per request; without a control plane only the age limit applies. Ingest reads no import flag: every key gets the age check, and the envelope's admin-import bit is always 0 |
 | Time windows | `TimeWindow { from, to }` is half-open `[from, to)`, both required, `from < to` |
 
 ### 1.3 Wire rules
@@ -121,13 +121,13 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-store-clickhouse` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan` |
 | `crucible-ingest` | `crucible-env`, `crucible-records`, `crucible-otlp`, `crucible-admission`, `crucible-wal`, `crucible-wal-codec`, `crucible-auth` |
 | `crucible-ui-assets` | `crucible-env` |
-| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws`, `crucible-alerts`, `crucible-notify`, `crucible-export`, `crucible-lifecycle` |
+| `crucible-api` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-recent`, `crucible-auth`, `crucible-api-types`, `crucible-cursor`, `crucible-control` (identity and authorization), `crucible-sqlws`, `crucible-alerts`, `crucible-notify`, `crucible-export`, `crucible-lifecycle`, `crucible-media` |
 | `crucible-cursor` | `crucible-records` |
 | `crucible-config` | none (the only crate that reads the process environment) |
 | `crucible-control` | `crucible-records` (`crucible-env` depends on it for the `ControlStore` trait, so it never depends on `crucible-env`) |
 | `crucible-control-pg` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-fake-collector` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-otlp`, `crucible-normalize` (it runs every export through the real normalizer) |
-| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg` |
+| `crucible-conformance` | `crucible-env`, `crucible-env-prod`, `crucible-records`, `crucible-schema`, `crucible-chfmt`, `crucible-plan`, `crucible-store-clickhouse`, `crucible-auth`, `crucible-sim` (the ChModel and PgModel differentials), `crucible-control`, `crucible-control-pg`, `crucible-media` (the object-store conformance run) |
 | `crucible-loadgen` | `crucible-env`, `crucible-env-prod`, `crucible-records` |
 | `crucible-jobs` | `crucible-env`, `crucible-records`, `crucible-control` |
 | `crucible-sqlws` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-control` |
@@ -136,8 +136,9 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 | `crucible-alerts` | `crucible-env`, `crucible-records`, `crucible-control`, `crucible-auth`, `crucible-jobs`, `crucible-plan`, `crucible-query`, `crucible-notify` |
 | `crucible-export` | `crucible-env`, `crucible-records`, `crucible-schema`, `crucible-plan`, `crucible-query`, `crucible-control`, `crucible-jobs`, `crucible-auth` |
 | `crucible-lifecycle` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-schema`, `crucible-control`, `crucible-auth`, `crucible-jobs`, `crucible-wal`, `crucible-wal-codec`, `crucible-export` |
+| `crucible-media` | `crucible-env`, `crucible-records`, `crucible-schema` (retention cut-offs), `crucible-control` (the media rows), `crucible-jobs` (the collector) |
 | `crucible-proxy` | `crucible-env`, `crucible-records` |
-| `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types` |
+| `crucible-mcp-server` | `crucible-env`, `crucible-records`, `crucible-plan`, `crucible-query`, `crucible-schema`, `crucible-auth`, `crucible-cursor`, `crucible-api`, `crucible-api-types`, `crucible-export` (the export tools) |
 | `crucible-sdk` | none (it depends on no internal crate) |
 | `crucible-sdk-conformance` | `crucible-sdk` |
 | `crucible-sim`, `crucible` (binary) | any crate above |
@@ -146,8 +147,7 @@ path deals only in `crucible-records` types, so the dev-dependency cycle that ca
 Dev-dependency edges are allowed where a test needs another crate's test support (for example `crucible-query` on
 `crucible-recent` and `crucible-chfmt`, `crucible-recent` on `crucible-auth`). Test-only features (`test-support`,
 `test-mutants`) only add constructors or hooks that stay inert unless a test harness configures them; release builds
-of the binary never enable them. Crates of later milestones (control plane, proxy, MCP server and the rest of section
-1.5's map) add their rows here before their first code lands.
+of the binary never enable them. A new crate adds its row here before its first code lands.
 
 ### 1.6 Frozen enums
 
@@ -209,8 +209,10 @@ Construction has two phases, because a store runs over the primitives:
 
 1. The core `Env`: `Clock`, `Rng`, `Spawner`, `Disk`, `Net`, `Metrics` and the id generator.
 2. `Stores`, each store built over that `Env`: it connects through `env.net`, takes deadlines from `env.clock` and
-   mints query ids with `env.new_id()`. `Stores` holds `telemetry: Arc<dyn TelemetryStore>`; `ControlStore` and the
-   later stores join it as their traits land. In simulation the stores are in-memory models over the same `Env`.
+   mints query ids with `env.new_id()`. `Stores` holds `telemetry: Arc<dyn TelemetryStore>` and three optional
+   handles, each `None` when its backend is not configured: `control` (`ControlStore`), `sql`
+   (`SqlWorkspaceStore`) and `object` (`ObjectStore`). The `Mailer` is built on its own (section 11.10). In
+   simulation the stores are in-memory models over the same `Env`.
 
 Components then receive the `Env` and the `Stores`. Stores are not fields of `Env`.
 
@@ -418,11 +420,17 @@ only against real ClickHouse by the `sqliso` suite.
 
 | Method | Semantics |
 |---|---|
-| `presign_put(key, content_type, sha256, len, ttl) -> Url` | Content type and checksum are signed headers; uses the public endpoint |
-| `presign_get(key, disposition, ttl) -> Url` | Uses the public endpoint |
-| `head(key) -> Option<ObjectMeta { len, sha256?, created_at }>` | |
+| `presign_put(key, content_type, sha256, len, ttl) -> Presigned` | Content type, length and checksum are signed headers, so the store refuses any other body or type; uses the public endpoint |
+| `presign_get(key, disposition, ttl) -> Presigned` | Uses the public endpoint; the answer carries the disposition (`inline` or `attachment`) |
+| `head(key) -> Option<ObjectMeta { key, len, sha256?, created_at }>` | |
 | `put_small(key, bytes)`, `get_stream(key) -> ByteStream` | Internal endpoint |
-| `delete(key)`, `delete_batch(keys)`, `list(prefix, after) -> Page<ObjectMeta>` | |
+| `delete(key)`, `delete_batch(keys)`, `list(prefix, after) -> ObjectPage { objects, next }` | Deleting a key that holds nothing succeeds; `delete_batch` takes up to 1,000 keys; a listing may lag behind recent writes and deletes |
+
+`Presigned` is `{ url, headers, expires_at }`: the client sends the signed headers exactly as given. Every method
+returns `ObjectError` on failure: `NotFound`, `Unavailable` (no answer, a server error or throttling; a retry can
+succeed), `Rejected { status, code }` (usually credentials, bucket or endpoint) or `Invalid` (a request that cannot
+be built). The production store is `S3Store` in `crucible-media`: requests are presigned at the `Env` clock's time
+and sent through `Net`, one HTTP/1.1 exchange per connection.
 
 `SimObjectStore` must model: uploads that never arrive, eventually consistent listing, throttling, and a stored
 object whose hash or length differs from what was signed.
@@ -453,7 +461,11 @@ Decisions made while implementing the traits above; they bind every backend.
 | Topic | Rule |
 |---|---|
 | Store connections (#76) | Startup detection reads the server's `keep_alive_timeout` (`system.server_settings`); the pool keeps an idle connection for that value minus min(1 s, half of it) (default; revisit), rebuilt once after detection; 2 s when it cannot be read; `clickhouse.idle_timeout` overrides it, for a balancer in front of the store. A read whose connection could not be opened is sent once more; inserts are unchanged. Metric `crucible_clickhouse_connections_opened_total`, counted at `Net::connect` |
-| Memory budgets (#76) | At startup the node adds up its byte budgets (the recent index, the shipper and ingest) and warns above 90% (default; revisit) of the memory the process may use, naming each budget and the setting that changes it |
+| Memory budgets (#76, #117) | At startup the node adds up its byte budgets (the recent index, the shipper and ingest) and warns above 90% (default; revisit) of the memory the process may use, naming each budget's size and the flag that changes it: `recent.max_bytes` takes `--recent-max-bytes` (`CRUCIBLE_RECENT_MAX_BYTES`), while `ingest.inflight_bytes` and `shipper.encoded_bytes` are fixed in the build and the warning says so |
+| CPU budget (#88) | Blocking work that takes a permit runs under one total, `cpu.permits` (`CRUCIBLE_CPU_PERMITS`, at least 1), else 8 per CPU the process may use (default; revisit); only the binary reads the core count (affinity and cgroup quota). The runtime's blocking threads are that total plus 8, and the 8 serve the blocking work that takes no permit: disk reads, name lookups and password hashing. Section 4.8 says how ingest takes permits. Metrics `crucible_cpu_permit_wait_microseconds{stage}` and `crucible_cpu_permit_hold_microseconds{stage}` (stage `ingest_prepare`) |
+| Read counters (#86) | Each read service records, once per request, `crucible_api_store_reads{class}` (a histogram: its count is the requests, its sum the store reads they issued) and, for the reads that wait for the recent index's read barrier, `crucible_api_barrier_wait_microseconds{class}`, timed by the service with the `Env` clock. The classes are one per read-service method, listed in `crucible_query::READ_CLASSES`. Store connections stay counted by `crucible_clickhouse_connections_opened_total` |
+| Read deadline (#117) | A read whose Rust-side deadline passes before the server sent any byte of its answer ends with `QueryError::Unavailable` (`telemetry_store_unavailable`): a server that runs the statement ends it at its class limit, which falls before the deadline, so one that sent nothing is not answering. A read the server began to answer stays `Timeout` (`query_timeout`) |
+| Shutdown order (#114) | One signal reaches every task. The listeners finish their open requests, the jobs let a leader run end and release their leases (section 11.7), and the telemetry store's task stops the shipper, whose in-flight inserts are left in doubt for the next start to probe (section 5.5); every loop of the key feed, the SQL workspace and the project salts ends at the signal. The Postgres pools close after those tasks, because each may still need Postgres, and the WAL committer stops once no handle to the log is left. Whatever is still running after the 30 s grace is aborted |
 | Id state | `new_id` needs state for strict monotonicity, and statics are forbidden, so `Env` owns one `IdGen`; the free form is `new_id(&IdGen, &dyn Clock, &dyn Rng)`. Backward wall-clock steps and an exhausted random field keep ids increasing |
 | `ChildProcess` | Not a field of `Env`: only the proxy uses it, and takes it as an argument. Linux delivers the parent-death signal through a re-exec trampoline (a hidden `crucible proxy exec-child`), so the workspace stays free of `unsafe`; macOS has no parent-death signal. The simulation of a scripted MCP server (seeded chunk splits, stalls, crashes) lives in `crucible-proxy`'s tests; exit codes are covered by the scripted and real-process tests, because `ProxyCore` takes no exit status |
 | Join | `JoinHandle::join(&mut self)` is cancel-safe; a task that panics surfaces as `Cancelled`. HTTP server per-connection tasks are spawned by the server library outside the `Spawner` scope; the accept loops are inside it and graceful shutdown waits for open connections |
@@ -700,7 +712,11 @@ or summed.
 | Ingestion | `wal_epoch`, `lsn`, `batch_seq`, `received_at`, `normalizer_version` | | |
 
 Never stored, in any record or residual attribute: Authorization values, `requestState`, cookies, `Mcp-Param-*`
-values, baggage, raw IP addresses and raw user subjects (the subject is hashed in stage B; section 9.3).
+values, baggage, raw IP addresses and raw user subjects (the subject is hashed in stage B; section 9.3). The rule
+covers the attributes of span events and links as well as the span's own (normalizer version 6). The raw token
+issuer is kept only in an MCP operation's `user_issuer`, and a raw `mcp.session.id` only as its hash in
+`session_key` (section 9.4); a span that is not an MCP operation drops both. `requestState` has no attribute key:
+senders hash it (section 9.6).
 
 ### 3.6 Tool inventory record
 
@@ -904,10 +920,10 @@ error.
 | Code | Type | Payload after `payload_version` |
 |---|---|---|
 | 1 | `IngestRequest` | Envelope, then `otlp: bytes` (the canonical OTLP protobuf `ExportTraceServiceRequest`; JSON bodies are transcoded before append). Envelope: `project_id: uuid`, `api_key_id: uuid`, `compat_dialect: u8` (request-level hint), `transport: u8` (1 HTTP, 2 gRPC), `content_origin: u8` (1 protobuf, 2 JSON), `flags: u8` (bit 0 admin import), `sdk_name: str` (128 bytes), `sdk_version: str` (64 bytes), `idempotency_key: bytes` (128 bytes; empty when absent), `span_count: u32`, `rejected: bytes` (bitmap over span ordinals in wire order; bit set means the span was rejected before the ack and must be skipped). The envelope, together with the payload version and the length prefix of `otlp`, is at most 64 KiB. It never holds secrets or Authorization values |
-| 2 | `NativeBatch` | Reserved. No v0 writer emits it (the proxy ships OTLP). Decoders must accept the type code and skip the frame. Its layout will be frozen by a contract change before first use |
+| 2 | `NativeBatch` | Reserved. No v0 writer emits it (the proxy ships OTLP). Decoders must accept the type code and skip the frame. Freezing its layout is a contract change that comes before any writer emits it |
 | 3 | `FactBatch` | `project_id: uuid`, `author_kind: u8`, `author_id: uuid`, `facts: list<Fact>` (at most 1,000 facts and at most 16 MiB of uncompressed payload per frame; the API splits a larger write into several frames and rejects a single fact above the cap with `payload_too_large`). `Fact`: `table: u8` (1 score, 2 tag, 3 flag, 4 correction), `fact_id: uuid`, `target_kind: u8`, `trace_id: [u8; 16]`, `span_id: [u8; 8]`, `session_id: str`, `target_time: i64`, `key: str`, `version: u64`, `retracted: u8`, `created_at: i64`, `body: bytes` (the body fields of section 3.8 in declaration order, in this codec) |
 | 4 | `Tombstone` | `deletion_request_id: uuid`, `project_id: uuid`, `kind: u8` (`DeletionKind`), `requested_at: i64`, `deletion_seq: u64` (deployment-wide, from Postgres), `selector`: for trace `list<[u8; 16]>` (at most 10,000), for user or session `str`, for project nothing |
-| 5 | `BatchSeal` | `batch_seq: u64` (equals `first_lsn`), `first_lsn: u64`, `last_lsn: u64`, `frame_count: u32`, `normalizer_version: u32`, `price_table_version: u32`, `deletion_seq: u64` (highest tombstone sequence applied while normalizing the range) |
+| 5 | `BatchSeal` | `batch_seq: u64` (equals `first_lsn`), `first_lsn: u64`, `last_lsn: u64`, `frame_count: u32`, `normalizer_version: u32`, `price_table_version: u32`, `deletion_seq: u64` (the highest deletion sequence that stage B knows when it reads the range's last frame) |
 | 6 | `Checkpoint` | `batch_seq: u64`, `last_lsn: u64` (the low watermark: every frame with an LSN at or below it is resolved), `table_bitmap: u64` (bit `table_id` set for every table; all ones for known tables in v0; kept for format stability) |
 | 7 | `Quarantine` | `batch_seq: u64`, `first_lsn: u64`, `last_lsn: u64`, `pairs: list<{ table_id: u16, partition_id: str }>`, `error_code: i32`, `attempts: u16`, `quarantine_ref: str` (directory name under the quarantine root), `reason: str` (512 bytes) |
 | 8 | `Noop` | Arbitrary bytes, ignored. Used for padding by backends that need aligned writes |
@@ -1014,6 +1030,16 @@ allocation.
 No accepted request is ever dropped silently. Un-normalized data beyond `normalize.cache_bytes` lives only on disk
 and is read back from the WAL in LSN order.
 
+**CPU budget** (#88). Preparing a request (inflate, JSON transcode, scan, frame compression) is a blocking job that
+takes a permit of the ingest-prepare share of `cpu.permits` (section 2.14) before it is spawned; ingest prepare is
+the only stage that takes permits, so its share is the whole total. Permits are first come, first served: a job that
+finds none waits on its request's task and holds no thread, and an ending job hands its permit straight to the job
+that has waited longest, which runs next on the same thread, so a permit never idles while a job waits. An
+uncompressed body of at most 16 KiB is prepared on the async worker without the hop, because preparing it costs
+less than the hop; a gzip body always takes the hop, since its inflated size is unknown until it is inflated. A
+request that waits holds only its body as received in `ingest.inflight_bytes`; the reservation grows as its job
+inflates and transcodes it.
+
 ### 4.9 Kani obligations
 
 Frame codec (`crucible-wal-codec`; no allocation in the header path, no unchecked arithmetic):
@@ -1032,6 +1058,7 @@ Other proved kernels, each owned by the named crate:
 | Partition routing and retention boundary | `crucible-schema` | No overflow over the valid time range; monotone in time |
 | Histogram bucket function | `crucible-records` | Total; monotone; `lower(bucket(v)) <= v < lower(bucket(v)) + width(bucket(v))` |
 | Backpressure accounting | `crucible-admission` | Reserve and release never underflow or exceed the cap |
+| CPU permit pool | `crucible-admission` | Proved by induction over states of up to three waiting jobs: free plus held permits equal the total; running jobs never exceed it; a free permit leaves no job waiting; an offered job runs on a free permit or waits last; an ending job hands its permit to the job that waited longest; a withdrawn job leaves the queue and nothing else changes |
 | Cursor codec | `crucible-cursor` | Round-trip; no panic on arbitrary input |
 | MCP error classifier | `crucible-records` | Total over (era, side, JSON-RPC code, `isError`, HTTP status, cancel source, timeout, transport failure, unhandled exception, annotations) |
 | Rate limiter arithmetic | `crucible-auth` | No overflow |
@@ -1052,7 +1079,7 @@ Payload codecs and checksum strength over whole payloads are covered by property
 | Caps | Field and list caps are enforced on encode and on decode |
 | Quarantine pairs | `table_id` is a `u16` that must name a known table; `partition_id` must parse as a partition id |
 | Classification order | The header CRC is checked first, so every other header error implies a valid header CRC. `payload_len` above `MAX_PAYLOAD` with a valid header CRC is `Corrupt`. A non-zero wrong magic with both CRCs valid is `Corrupt`. Fewer than four remaining bytes that are all zero are a clean end; otherwise a short header is a torn tail |
-| Recovery hardening | Each step is forced by the 2.4 fault model and proven necessary by a test that fails without it: the last segment is cut and re-extended at every recovery (stale frames can follow a clean end; readable zeros may not be durable); a torn tail or unreadable newest header is read twice before truncating or removing; a newest segment whose header was never completed and that holds nothing else is removed; `EPOCH`, the last segment's header and frames and the directory are rewritten and synced before appends resume (after a process stop, readable is not durable) |
+| Recovery hardening | Each step is forced by the 2.4 fault model and proven necessary by a test that fails without it: the last segment is cut and re-extended at every recovery (stale frames can follow a clean end; readable zeros may not be durable); a torn tail or unreadable newest header is read twice before truncating or removing; a newest segment whose header was never completed and that holds nothing else is removed; `EPOCH`, the last segment's header and frames and the directory are rewritten and synced before appends resume (after a process stop, readable is not durable); `EPOCH`'s directory entry is synced, after its bytes, before recovery creates or removes a segment, because a crash keeps any subset of the pending directory entries (#119) |
 | Failed group | A failed append or `sync_data` fails the whole group and rewinds the LSN; the segment is abandoned and the log rotates; the WAL is `failed` until restart only if rotation also fails. The failed handle is never synced again |
 | Control records | `append` refuses a `BatchSeal` or `Checkpoint` whose range is above the durable LSN; recovery treats one as fatal |
 | `CHECKPOINT` hint | Rewritten by WAL GC, off the committer, not when the checkpoint frame becomes durable; `segment_no` names the segment that holds the checkpoint frame |
@@ -1514,9 +1541,14 @@ Ledger (settled in code): with Postgres configured, `crucible migrate` (and `ser
 Postgres migration, then every pending ClickHouse schema and access step in `crucible_schema::LEDGER_ORDER`, under the
 `migrations` lease. Each ClickHouse step is recorded after it applied, in a transaction fenced by the lease token
 (steps are idempotent, so a crash between apply and record only repeats the step). A step that outlives the lease is
-not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step (for
-example after a master-key change) makes the step reapply, with a warning. Without Postgres, `--migrate` applies the
-ClickHouse steps on every start.
+not recorded and the run reports that it must be repeated. A ledger row whose checksum differs from the step makes
+the step reapply, with a warning. The checksum is SHA-256 over the step's statements with every password digest left
+out (`crucible_schema::without_secrets`), because the digests come from the master key: a start with another master
+key finds every recorded step and applies nothing again. A row written before digests were left out holds the
+checksum over the whole statements and still matches under the key it was recorded with (#114). After the steps,
+every migration with Postgres provisions the SQL workspace's two probe identities again with the current key's
+passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use. Without
+Postgres, `--migrate` applies the ClickHouse steps on every start.
 
 ### 6.7 Settled in code
 
@@ -1671,6 +1703,10 @@ concurrent run per user, 4 per project, 30 runs per minute per user.
   run as a probe identity (cross-project canary read, a system log table, a URL table function, `SET`, `INSERT`, a
   settings override). Any unexpected success disables the workspace deployment-wide with
   `sql_workspace_unavailable` and a reason in health and in the session DTO.
+- **Probe identity repair** (#114): while this node's self-probe cannot sign in, or before it first runs, every
+  reconciler pass provisions the two probe identities again with the passwords of the node's master key, so a
+  deployment whose probe identities hold another key's passwords converges by itself. A probe that found a breach is
+  left as it is, so the breach stays reported. Migrations repair them too (section 6.6).
 - **`sqliso` conformance suite** (`crucible-conformance`; real ClickHouse only): layer A direct attacks W1 to W15
   as the project identity; layer B grammar fuzzing with canary oracles (5,000 queries per PR, 500,000 nightly);
   layer C through the API; layer D mutants (policy dropped, a source granted, `readonly = 2`, a system log table
@@ -1701,8 +1737,12 @@ A plan cannot be constructed without a scope and a window.
 | `FieldRange` | Point lookup of one payload field with a byte range |
 
 `Pred` is a closed AST: `And`, `Or`, `Not`, comparisons (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) between a column from
-the table's column enum and a typed literal, `In`, `StartsWith`, array `HasAny`, `MetadataEq(key, value)` and
-`TextMatch` on `name`. **`Pred` has no project variant.** The renderer adds `project_id = {scope}` to every table
+the table's column enum and a typed literal, `In`, `StartsWith`, array `HasAny`, `MetadataEq(key, value)`,
+`TextMatch` on `name`, and `InSet(column, aggregate)`: the column's value is among the ids that an `Aggregate`
+produces as its first group dimension, read over the plan's project and window like every table reference. `InSet`
+is a semi-join that can be negated and combined (a filter by a fact needs that, section 3.8); like `SemiJoin`, a set
+above `max_ids` is `query_too_broad`, and the renderer writes `IN (SELECT ...)` under one statement-wide
+`max_rows_in_set`. **`Pred` has no project variant.** The renderer adds `project_id = {scope}` to every table
 reference itself, and adds `project_id != nil` nowhere because a scope can never be nil.
 
 `BatchProbe { table, partition, epoch, batch_seq }` (section 5.5) is deliberately **not a `Node`**: it is the one
@@ -1747,8 +1787,9 @@ pass `OutputSchema::check_row`, and a store reports a result that does not as `i
 
 Post-operators run in Rust above the store (`crucible-query`) and are identical in simulation and production:
 merge with the recent-span index, fact decoration (section 3.8), histogram quantiles (section 6.5), pick
-resolution (section 3.3), provisional-head filtering (section 3.9), span de-duplication by `span_id`, automatic
-capture-source selection (section 9.5), and search highlighting.
+resolution (section 3.3), provisional-head filtering (section 3.9), span de-duplication by `span_id`, and search
+highlighting. The automatic capture-source selection of section 9.5 is not a post-operator: a presence read picks
+the source per server, and the main read takes the choice as a predicate.
 
 ### 8.3 Rendering rules
 
@@ -1788,7 +1829,8 @@ and `query_memory_exceeded`.
 
 Read classes set `cancel_http_readonly_queries_on_client_close = 1` explicitly. A caller cancels a read by dropping
 its `RowStream`; a client disconnect drops it. On that drop, or on the Rust deadline (which ends the stream with
-`query_timeout`), the adapter drops the connection and issues `KILL QUERY` by `query_id` through `crucible_maint`.
+`query_timeout`, or with `telemetry_store_unavailable` when the server had sent nothing; section 2.14), the adapter
+drops the connection and issues `KILL QUERY` by `query_id` through `crucible_maint`.
 `TelemetryStore::kill(query_id)` with `RowStream::query_id()` is the same path for a caller that cannot drop the
 stream. Whether cancel-on-close fires for POSTed SELECTs is pinned by conformance C13; the `KILL QUERY` path must
 work regardless.
@@ -1859,6 +1901,13 @@ Each item has a contract here, a route in section 12 and owning crates. `crucibl
 Response: series with keys and points, the granularity used, `truncated`, `source_tier`, `as_of`,
 `partial_last_bucket`.
 
+The sources are `spans` and `mcp_ops` (over their minute rollups) and `traces` (section 8.9). A query of `mcp_ops`
+also carries `side` (required), `capture_source` (section 9.5, default `auto`; the body cannot call it `source`,
+which names the metrics source) and `include_caller_faults` (default false); it takes one measure, offers the
+dimensions `server_name` and `target_name` and no filter fields. Its measures are `mcp.calls`, `mcp.error_count`,
+`mcp.error_rate` (aggregation `rate`, in parts per million, unit `ppm`) and `mcp.duration_p50`, `mcp.duration_p90`
+and `mcp.duration_p99` (one percentile each) (#91).
+
 ### 8.9 Settled in code
 
 - Trace detail reads spans in `[min_start, max_end + 1 µs)`, so a span that starts exactly at the trace's end is
@@ -1890,14 +1939,15 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   `(wal_epoch = E AND (lsn > L OR received_at > as_of)) OR (wal_epoch != E AND received_at >= as_of)`, and the recent
   index by LSN only for a cursor from this node's WAL, so a head that was durable but unapplied when the cursor was
   issued, or that shares the cursor's microsecond, is not missed. The `OR` stops the `received_at` skip index from
-  pruning the tail scan (a performance follow-up). A head applied while a page is being built can appear on that page
-  and on the next tail, which only inflates `new_count`.
+  pruning the tail scan, so each poll reads the window's `wal_epoch`, `lsn` and `received_at` columns. A head applied
+  while a page is being built can appear on that page and on the next tail, which only inflates `new_count`.
 - `Fill::Zero` is supported. A zero-filled histogram bucket is `([], [])` and a zero-filled set merge is `[]`, not
   null, because the floor version has no nullable tuple or array; `sum` in a filled bucket is 0, including a bucket
   whose values are all null.
-- `MetricsQuery.timezone` is accepted but not yet compiled: buckets are UTC. Only the `spans` source over
-  `span_metrics` is compiled; the `analytics_raw` fallback and the `mcp_ops` and `traces` sources come with their
-  slices.
+- Metrics buckets are UTC: a `timezone` other than `UTC` or `Etc/UTC` is refused (`validation_failed`, code
+  `unsupported`). The `spans` source offers only the `span_metrics` dimensions and filter fields, so every spans query
+  reads the rollup (`source_tier: rollup`) and the `analytics_raw` fallback of 8.7 never applies; `mcp_ops` reads
+  `mcp_tool_rollup` the same way (section 8.8).
 - A filter's canonical form and its 16-byte hash (`Filter::hash`) are what cursors bind to (`FilterHash`). A span-list
   metadata condition must be a top-level conjunct; any other placement is refused as `UnsupportedFilter`.
 - Session and user list pages are not snapshots: the rollups carry no `as_of`, so a later page can reflect newer
@@ -1923,11 +1973,11 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   only within a field's first 240 bytes. Tokens are lowered only for lowered indexes; metadata entries are compared as
   written, a metadata term needs an `=`, and a phrase over metadata means all of its entries. Mixing metadata with
   the text fields in one plan is refused (`PlanError::Tokenizers`).
-- Metrics (#61): the `traces` source is compiled (one measure, `traces`, counting root heads of `trace_heads` by
-  `start_time`, class `analytics_raw`, tier `core`, no dimensions or filters); `metrics/schema` lists `spans` and
-  `traces`; `metrics/query` and `filter-values` responses carry `saturated` and `meta`. Not built yet: the
-  `analytics_raw` fallback of the spans source over `span_core`, and filter values beyond the `span_metrics`
-  dimensions. A `timezone` other than UTC is refused (`validation_failed`, code `unsupported`).
+- Metrics (#61, #91): the `traces` source has one measure, `traces`, counting root heads of `trace_heads` by
+  `start_time` (class `analytics_raw`, tier `core`, no dimensions or filters); `metrics/schema` lists `spans`,
+  `mcp_ops` and `traces`; `metrics/query` and `filter-values` responses carry `saturated` and `meta`.
+  `filter-values` answers the filter fields of the metrics schema, which only the `spans` source has (its
+  `span_metrics` dimensions).
 - Lists (#58): the filtered trace list filters `trace_heads` on the fields heads carry; `observation_type` and
   `metadata` keep only traces with a matching span, through a semi-join into the trace ids of `span_core` (or
   `span_payload` for metadata), at most 10,000 traces. It refuses metadata combined with `observation_type`, or
@@ -1939,6 +1989,15 @@ Response: series with keys and points, the granularity used, `truncated`, `sourc
   Session and user reads read the store only and answer `lagging` while the recent index holds unconfirmed spans on
   those days; their detail follows the trace-detail `not_found` rule; a filtered trace list counts the span table it
   reads toward the quarantine rule.
+- Trace-list tags (#117): `tags` tests the effective tags the rows show (section 3.8). Per tag the plan is
+  `(head has the tag AND trace_id NOT IN removed) OR trace_id IN added`, through `InSet`, where `added` and `removed`
+  are the traces whose latest trace-level edit of the tag in the window is an `add` or a `remove` (latest-by-version
+  over `fact_tags`; a retracted latest row counts as no edit). A tag costs the statement about twenty bound values
+  and a ClickHouse request takes fewer than 1,000, so the trace list takes at most 20 tags
+  (`TRACE_LIST_MAX_TAGS`) and refuses more with 422 `validation_failed` (pointer `/tags`, code `too_many_values`).
+- Trace detail during a store outage (#117): a store read that ends with `telemetry_store_unavailable` (section 2.14)
+  lets the read path answer from the recent index with `partial: true` and `partial_reason: store_unavailable`, as
+  the lists do; a trace that only the store holds answers 503.
 
 ## 9. MCP
 
@@ -2060,8 +2119,10 @@ An SDK wrapper and a proxy in front of one server both produce `side = server` r
 - Every MCP analytics endpoint and every `mcp_ops` metrics source takes a `source` query parameter:
   `auto` (default), `sdk`, `proxy` (both proxy sources) or `otlp`.
 - `auto` selects one source per `(server_name, side)` for the request window by preference **SDK, then proxy, then
-  OTLP**: the best-ranked source that has at least one row in the window. The selection is a post-operator over
-  the rollup, and the response names the chosen source per server (`capture_sources`).
+  OTLP**: the best-ranked source that has at least one row in the window. A presence read over the rollup finds the
+  sources each server has rows of, and the main read takes the choice as a predicate, so the rows of a source not
+  chosen are never aggregated. The response names, per server, the classes it has rows of and the one read
+  (`capture_sources`).
 - Rows from different capture sources are never summed.
 - Alert rules store an explicit `source`; `auto` is resolved per evaluation.
 
@@ -2125,6 +2186,7 @@ Alert measures over `mcp_ops`: `mcp.calls`, `mcp.error_rate` (caller faults excl
 | Proxy passthrough | Bytes are forwarded unchanged and immediately in both directions; analysis runs on a copy through a bounded non-blocking channel; the proxy never injects; telemetry buffer 8 MiB or 10,000 operations, drop-oldest; logs go to stderr only |
 | Proxy correlation | Pending operations are keyed by (direction, JSON-RPC id); operations pending at child exit become `transport` errors |
 | Shipping | OTLP HTTP protobuf to `/v1/traces` with a project key holding the `ingest` scope |
+| Feedback (#115) | Each of the four SDKs sends scores to `POST projects/{id}/feedback` with the project secret key as Bearer (`write` scope). The call only queues (at most 1,024 scores); one background sender posts them in call order, one at a time, after flushing the span queue, so a score on a trace that just ended finds the trace. Each post carries the caller's `Idempotency-Key` or a random 32-hex key; a failed connection, a timeout, 408, 429, 5xx and a `conflict` 409 are retried with the same key and body, three attempts in all, after `Retry-After` (at most 10 s) or else 1 s and 2 s; other refusals are final, and redirects are never followed. Nothing is thrown to the caller: each SDK counts sent, dropped and failed scores. The project id is an explicit option, because no route tells a key its project; the API URL defaults to the endpoint, so it must reach the 8080 listener (4318 serves ingest only) |
 | SDK targets | The MCP server wrappers target the 2.x lines of the official SDKs; servers on 1.x use the proxy |
 
 The Crucible MCP server (`crucible-mcp-server`, at `/mcp`, both eras): Bearer project secret key (Basic also
@@ -2138,8 +2200,38 @@ code; a SQL tool exists only for keys with the `sql` scope.
 - MCP storage (#79): the tool inventory key is `crucible.mcp.tools` (JSON text, registry type string); the normalizer
   computes the schema hash. An explicit error class of `transport` or `timeout` is the capture source's observation;
   a numeric `error.type` equal to the HTTP status is not read as a JSON-RPC code. Content without the captured flag
-  counts as captured when arguments or a result are present; a content block type is cut at 64 bytes. The normalizer
-  version is 5.
+  counts as captured when arguments or a result are present; a content block type is cut at 64 bytes. Normalizer
+  version 5 brought these readings.
+- MCP storage fixes (#93): the keys that must never be stored (section 3.5) also leave the attributes of span events
+  and links, and the raw user issuer is one of them outside `user_issuer`; the normalizer version is 6. Each
+  project's salt is made with its project (section 11.1). The swarm's oracle fails a run when a planted never-stored
+  value reaches any text cell of `span_core`, `span_payload`, `mcp_ops` or `mcp_content`; it reports that check
+  under I7.
+- MCP analytics (#91):
+  - Every route under `projects/{id}/mcp/` also takes `server` (one server only). `tools/{name}` reads the tool on
+    every server unless `server` names one. `compare` needs `server` and either `baseline_deploy` and
+    `candidate_deploy` (both inside the window) or `baseline_from` and `baseline_to` (a window compared with the
+    request window).
+  - `source=proxy` is one class for `proxy_stdio` and `proxy_http`, so a server that both proxies observed in one
+    window has both counted under the class. In `capture_sources`, each server lists the classes it has rows of on
+    the side, best first, and the class read, which is null when the request names a class the server lacks.
+  - Without `include_caller_faults`, caller-fault calls leave calls, errors and latency, not only the error rate,
+    and every answer reports them apart as `caller_faults`.
+  - `errors` and `clients` take `view=summary` (the rollup section, the default, and the only gated one) or
+    `view=breakdown` (the `mcp_ops` section, with a `limit` of 1 to 200, default 50). `users` and `sessions` answer
+    one capped page with `truncated` and no cursor, and sessions with an empty group key are left out; only
+    `operations` pages by cursor (cursor route 8, section 12.5).
+  - Deploys come from server-side operations, so `deploys` and the deploy markers ignore `side`; the inventory has
+    no side either, so the unused flag and the schema hashes count whoever observed them.
+  - Operation detail shows the first 16 KiB of each captured content field of `mcp_content`; the multi-round chain
+    is assembled within the operation's trace. The payload route does not serve `mcp_args` and `mcp_result`.
+  - An alert rule on `mcp_ops` stores `side` (required) and `capture_source` (default `auto`, resolved for each
+    evaluation's window), named as in the metrics body; a capture source without a side is refused, and a rule's
+    source cannot change after it is created. Each evaluation reads the totals with caller faults left out. The two
+    error measures keep the keys nearest a breach by value, the percentiles the busiest keys, and a server with
+    calls and no error reads 0, not no data.
+  - The Crucible MCP server adds five read-only tools: `list_mcp_servers`, `list_mcp_tools`, `get_mcp_tool`,
+    `list_mcp_errors` and `compare_mcp_deploys`.
 
 ## 10. Compat dialect registry
 
@@ -2262,11 +2354,11 @@ Mapping must be total (never panics), idempotent, and identical for the protobuf
 | Topic | Rule |
 |---|---|
 | Interface | The normalizer takes its own `IngestFrame` (section 1.5 forbids a dependency on the WAL codec) and returns a `Result`. `SpanMapper` and `McpProjector` live in `crucible-normalize`, because they take `SpanView` |
-| Dialect 0 sources | Only keys the contract or the semantic conventions name; fields with no named key (trace name, session, tags, metadata, public flag, environment, release, version, level, provided cost, prompt version) stay empty until milestone 2 names their keys |
+| Dialect 0 sources | Only keys the contract or the semantic conventions name. The fields without a semantic convention (trace name, session, user, environment, release, version, tags, metadata, level, trace tags, trace metadata, the public flag, `crucible.input` and `crucible.output`, the prompt reference, provided cost, completion start and model parameters) are read from the keys of section 10.6, from normalizer version 3 on |
 | Usage parts | `cache_read` and `cache_write` count inside input tokens and `reasoning` inside output tokens; pricing treats them as parts, not additions. Without a provided total, total is input plus output |
 | `row_digest` | Version 1: xxh3-64 over a canonical encoding of both tiers, excluding the ingestion group, `event_bytes` and `api_key_id`. `clock_skew` and forward-filled values are included, so a retry that crosses the 24-hour boundary or splits a trace differently is kept |
 | Residual JSON | Wire order, duplicates kept; integers as numbers; NaN and infinities as strings; bytes as lowercase hex; events capped at 128 and links at 32 (not listed in `truncated_fields`, because the JSON stays valid) |
-| Dropped in milestone 1 | Instrumentation-scope attributes (name and version are kept), link `trace_state`, span flags, dropped counts and schema URLs |
+| Not stored | Instrumentation-scope attributes (name and version are kept), link `trace_state`, span flags, dropped counts and schema URLs |
 | Stage B | A changed repeat moves its key to the newest position; the first-seen set is bounded at 4,000,000 traces; the provisional head is the first kept span, in wire order, of a trace first seen in a frame without its root; an out-of-order LSN is refused |
 | Layers | `crucible.*` keys form their own table at the first position; the tables are applied as layers `[crucible keys, 1, 7, 0, 2, 4, 3, 5, 6]`; a candidate's rank is (layer, source position) |
 | Consumption | An attribute leaves the residual when a winning source read its whole value. A family decoder (indexed, prefix) consumes the keys it used; keys it skipped stay. Losing candidates and member-path sources never consume |
@@ -2280,7 +2372,7 @@ Mapping must be total (never panics), idempotent, and identical for the protobuf
 
 ### 10.6 Source keys for fields without a semantic convention
 
-Crucible SDKs (milestone 3) and hand instrumentation set these keys; dialect 0 reads them, and they take priority
+Crucible SDKs and hand instrumentation set these keys; dialect 0 reads them, and they take priority
 1 in section 10.3. Where an OpenTelemetry semantic convention exists, it is the second source, so unmodified OTel
 applications fill the field too. These names are wire contract: renaming one is a breaking change.
 
@@ -2331,12 +2423,12 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 | `api_keys` | `id`, `project_id`, `public_key` (unique), `secret_salt`, `secret_hash`, `lookup_tag`, `scopes`, `import`, `note`, `expires_at`, `last_used_at`, `revoked_at`, `version` | Section 11.3 |
 | `key_feed` | `seq` (pk, sequence), `key_id`, `change`, `key_version`, `at` | Written in the transaction that changes the key |
 | `secrets` | `id`, `scope`, `kind`, `key_id`, `nonce`, `ciphertext` | AAD binds id, kind and scope |
-| `project_salts` | `project_id`, encrypted salt | Immutable for the project's life: 32 random bytes sealed with the project id as associated data, inserted if absent and re-read, never replaced. Until salts are created with the project, a frame carrying a subject for a project whose salt was never loaded waits for it (a Postgres outage holds the shipper); without a control store the identity keys are dropped |
+| `project_salts` | `project_id`, encrypted salt | Immutable for the project's life: 32 random bytes sealed with the project id as associated data, never replaced. The salt is inserted in the transaction that creates its project (project creation, and first-owner setup for the default project), and its row references the project with `ON DELETE CASCADE`. Each node loads every salt at start (retrying until Postgres answers) and again every 5 s, so a frame of a loaded project never waits on Postgres. A project whose salt is not loaded takes the first-frame path: read, insert if absent for a live project, read again; only that frame waits during a Postgres outage. A stored salt that does not open is never replaced, and the project's frames wait for the master key it was sealed with. A deleted project never gets a salt, and stage B drops its user subjects; without a control store the identity keys are dropped |
 | `signing_keys` | `kid`, `purpose` (cursor, download, media_token), encrypted key, `state` (active, verify_only, retired) | |
 | `channels` | `id`, `project_id`, `kind` (slack, email, webhook), `config`, `secret_id`, `enabled`, `last_test`, `version` | |
 | `alert_rules`, `alert_state`, `alert_events` | rule; (`rule_id`, `series_key`); history | |
 | `notification_outbox` | `id`, `dedup_key` (unique), `payload`, `attempts`, `next_attempt_at`, `status` | Written in the transaction of the state change |
-| `dashboards`, `widgets` | `id`, `project_id`, `version`; widget: `dashboard_id`, `query`, `display`, `layout` | Built-in dashboards are code, not rows |
+| `dashboards`, `widgets` | `id`, `project_id`, `name`, `description`, `version`; widget: (`dashboard_id`, `id`), `query` (none for a Markdown widget), `display`, `layout` | Built-in dashboards are code, not rows. The dashboard's `version` covers its widgets, a widget set is written whole in one statement, and widgets are deleted with their dashboard |
 | `saved_queries`, `sql_runs` | saved query: `id`, `project_id`, `owner_id`, `visibility`, `sql`, `parameters`, `version`; run: `id`, `project_id`, `user_id`, `query_id`, outcome, statistics | `sql_runs` kept 30 days |
 | `deletion_requests`, `deletion_node_acks` | request: `id`, `project_id`, `kind`, `selector`, `state`, `requested_at`, `deletion_seq` (sequence), per-place status, attempts, counts; ack: (`request_id`, `wal_epoch`), `tombstone_lsn`, `passed_at` | Section 13.3 |
 | `comments` | `id`, `project_id`, target, `version`, `body`, `mentions`, `anchor_path`, `edited_from`, `retracted`, `author_id`, `created_at` | Versioned append-only rows |
@@ -2354,9 +2446,11 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 A 32-byte master key comes from `CRUCIBLE_MASTER_KEY` or its `_FILE` form, with a ring of at most two keys for
 rotation. HKDF-SHA256 gives one subkey per purpose. Secrets are sealed with XChaCha20-Poly1305 and a random nonce
 from `Rng`. Cursor-signing keys are random, stored sealed, rotated every 30 days, and kept `verify_only` for 24 h
-(the cursor lifetime). Until the `signing_keys` rows and their rotation job exist (milestone 4), the cursor key is the
-master-key subkey with HKDF info `crucible/cursor-signing/v1/0` and key id `master-0`; a node without a master key
-(ingest-only mode) uses a random per-process key, so its cursors reset on restart and clients restart from page one.
+(the cursor lifetime). Settled in code: cursors are signed with one key, the master-key subkey with HKDF info
+`crucible/cursor-signing/v1/0` and key id `master-0`, so every node that shares the master key opens every other
+node's cursors, across restarts; no `signing_keys` row of purpose `cursor` is written and no rotation runs. A node
+without a master key (ingest-only mode) uses a random per-process key, so its cursors reset on restart and clients
+restart from page one.
 
 ### 11.3 API keys
 
@@ -2382,7 +2476,11 @@ master-key subkey with HKDF info `crucible/cursor-signing/v1/0` and key id `mast
 | `sql` | SQL workspace runs and the MCP server's SQL tool |
 
 A public key used as a Bearer token is accepted on `POST projects/{id}/feedback` only (body cap 16 KiB; that route
-alone answers cross-origin requests, without credentials; a project setting can turn it off).
+alone answers cross-origin requests, without credentials; a project setting can turn it off). Settled in code
+(#117): the public key acts as its key pair, so it needs the pair's `write` scope and stops working when the pair
+is revoked; a larger body is 413; the route answers preflight requests and sends `Access-Control-Allow-Origin: *`;
+every other route refuses a public key alone with 401 and says to send the secret key. No project setting turns
+the public-key path off.
 
 ### 11.4 Sessions and CSRF
 
@@ -2467,6 +2565,7 @@ Leader-only work is coordinated by lease rows, never by session advisory locks.
 | Lease names | `migrations`, `lifecycle` (retention, deletion leader steps, mask scheduler, marker purge, rollup rebuild), `sql_identities`, `media_gc`, `signing_keys`, `housekeeping` |
 | Claimed work | Alert evaluations, the notification outbox, deletion steps and export jobs use row claims with `lease_until` and an attempt counter, not leases. A claim lasts 60 s; a failed run is retried after a backoff of 5 s doubling to 1 h (less up to a tenth of jitter), computed on the database clock from the claim's `lease_until`; after 12 attempts (a per-queue default) the row is parked (`status = parked`, `Claims::park`) and logged, never deleted. Handlers are idempotent |
 | Job state | A job's cursor (`job_cursors`) is keyed by its lease name, so jobs that share a lease (for example under `lifecycle`) share one cursor. `crucible-jobs` holds the registry: per-node timers, leader jobs under a lease name and claimed-work consumers, each added by one registration line (`docs/architecture/adding-a-job.md`). Without Postgres, leader and claimed jobs do not run; this is logged once and readiness is unaffected |
+| Start (#114) | With Postgres, the registry starts in one `jobs` task once the control plane is ready: the key snapshot has loaded, which needs Postgres to answer with its schema in place (with `--migrate`, the key feed starts after the migrations), so no job runs before its tables exist. Without Postgres only the per-node timers start, at once |
 | Housekeeping | The `housekeeping` lease job runs every 60 s and prunes `key_feed` rows older than the poll overlap window plus the reconcile interval (75 s) and `sessions` rows more than 10 min past their absolute expiry, each in its own fenced transaction |
 | Shutdown | A leader run in flight may finish within 5 s, then its lease is released; a run that has to be cut leaves its lease to expire, because one of its actions may still be on its way; an acquisition in flight at shutdown is awaited briefly and released. Claimed rows simply expire |
 
@@ -2517,21 +2616,35 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 - Alerts (#84): a second claimed queue, `alert_evaluations`, beside the outbox; `Claims::prune_done` prunes done
   outbox and evaluation rows. The outbox allows 50 attempts (not the per-queue default of 12), so a row is never
   parked while its channel is enabled. `channels` adds `name`, `disabled_reason` and `failures`; `alert_rules` adds
-  `interval_secs`, `last_eval_seq`, `eval_failures` and `skipped_ticks`. Rules take the `spans` source (and
-  `mcp_ops` once the MCP analytics source lands); each scheduled evaluation runs at a stable offset within its
+  `interval_secs`, `last_eval_seq`, `eval_failures` and `skipped_ticks`. Rules take the `spans` or the `mcp_ops`
+  source (section 9.11 has the `mcp_ops` rules); each scheduled evaluation runs at a stable offset within its
   interval derived from its rule id. `GET channels` (names and states only) needs `edit_content`, so members can pick
   channels for a rule; everything else on channels needs the admin `channels` permission, which no key holds.
   `Mailer` is an optional trait in `crucible-env`, not a field of `Env`, built from `smtp.*`. The egress client is
-  HTTP/1 over `Net::connect` or `tls_connect` to the vetted address; strict mode's infrastructure list is the
-  ClickHouse and Postgres hosts (node addresses and the object store are a follow-up).
+  HTTP/1 over `Net::connect` or `tls_connect` to the vetted address; strict mode's infrastructure list holds the
+  ClickHouse and Postgres hosts only, so node addresses and the object store are not on it.
 - Exports (#87): files live 7 days; the export claim lasts 30 minutes (crucible-jobs has no heartbeat for long
   runs); an export's idempotency key lives in its row for the row's life, and a replay answers 202 with the current
-  state; the rate limit counts Postgres rows, so it applies across the deployment; until an object store exists, a
-  file downloads only from the node that wrote it.
+  state; the rate limit counts Postgres rows, so it applies across the deployment. Export files live on the
+  `exports` disk root of the node that wrote them, also when an object store is configured for media, so a file
+  downloads only from that node.
 - Lifecycle (#85): `lifecycle_actions` records every ClickHouse action under the fencing token before it is issued;
   `retention_floors`, `nodes` heartbeats, `deletion_node_acks` and the deletion request columns `requested_by`,
   `idempotency_key`, `request_hash`, `places`, `attempts`, `error` and `updated_at` hold the executor's state.
   Export files that predate a request are expired and removed through `crucible_export::purge`.
+- Deletion replay (#121): `LifecycleRepo::requests_after(after, limit)` reads the deletion requests of every
+  project, in every state, with a sequence number above `after`, in sequence order; the binary pages through it 500
+  at a time for the shipper's read at start (section 13.6).
+- Dashboards (#98): reads need `read` and writes `edit_content`, which no key holds. `{dashboard_id}` takes a
+  dashboard id or a built-in key. Every change sends the dashboard's `ETag` in `If-Match` (412 when stale, 428 when
+  missing), except adding a widget, which re-reads and compares on its own; `PATCH dashboards/{dashboard_id}` with
+  `widgets` replaces the whole set in one change. The rules are checked whole on every write: at most 50 widgets; a
+  12-column grid, a smallest size per kind, at most 12 by 12 cells, no overlap; a stat is one measure without
+  dimensions, a bar chart one measure with one or two dimensions, a time series at most four series of one unit, a
+  table any query, and a Markdown widget text without a query. Each query passes the checks of `metrics/query`,
+  and a widget query carries `side`, `capture_source` and `include_caller_faults` as the metrics body does
+  (section 8.8). The five starters (Agent overview, Cost and tokens, Latency, Errors, MCP servers) are read-only:
+  a change is refused with `conflict` and says to duplicate. Without a control plane the starters are still served.
 
 ## 12. API
 
@@ -2565,11 +2678,15 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   CSRF and origin, principal rate limit, handler.
 - Request id: UUIDv7. An inbound `X-Request-Id` is kept only from a trusted proxy and only if it matches
   `[A-Za-z0-9_-]{1,64}`. It is echoed as `X-Request-Id` and in every problem body.
-- `crucible serve` flags so far: `--listen` (API and UI, default `0.0.0.0:8080`), `--metrics-listen` (default
-  `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and `exports` roots), `--wal-backend`
-  (`auto`, `portable`, `uring`), `--ui-dir` (serve a UI build from a directory instead of the embedded one),
-  `--ingest-listen` (default `0.0.0.0:4318`) and `--keys-file` (TOML `[[project_key]]` entries with `project_id`,
-  `public_key` and `secret`; error messages never echo the file). The keys file is the mode without Postgres
+- `crucible serve` flags: `--config` (a TOML configuration file, also `CRUCIBLE_CONFIG`; the file, then the
+  `CRUCIBLE_*` variables, then the flags each override the one before), `--listen` (API and UI, default
+  `0.0.0.0:8080`), `--metrics-listen` (default `127.0.0.1:9464`), `--data-dir` (holds the `wal`, `quarantine` and
+  `exports` roots), `--wal-backend` (`auto`, `portable`, `uring`), `--ui-dir` (serve a UI build from a directory
+  instead of the embedded one), `--ingest-listen` (default `0.0.0.0:4318`), `--grpc-listen` (default
+  `0.0.0.0:4317`), `--postgres-url` and `--postgres-password-file` (the control plane; also `CRUCIBLE_POSTGRES_URL`,
+  `CRUCIBLE_POSTGRES_PASSWORD_FILE` and `CRUCIBLE_POSTGRES_PASSWORD`) and `--keys-file` (TOML `[[project_key]]`
+  entries with `project_id`, `public_key` and `secret`; error messages never echo the file). The keys file is the
+  mode without Postgres
   (ingest and the API on file keys, no sign-in); with Postgres configured, keys live in the control plane and a keys
   file is refused with a message that says how to fix it. `crucible admin create-key --project <slug|id>
   [--scopes ...] [--note ...] [--import]` creates a key from the command line; running servers see it within 5 s
@@ -2584,8 +2701,9 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   replay, quarantine restore and shipper start have finished. Without ClickHouse, `serve` runs ingest only and the API
   answers 503.
 - Service-identity passwords are HKDF-SHA256 of the 64-hex-character master key with info
-  `crucible/clickhouse-identity/v1/<user>/<generation>` and no salt, written as 64 hex characters; generation 0 until
-  rotation lands (milestone 4). A server migrated under another master key fails `detect`.
+  `crucible/clickhouse-identity/v1/<user>/<generation>` and no salt, written as 64 hex characters. The generation is
+  0: the binary has no `crucible admin rotate-keys` command (section 7.1), so it never changes. A server migrated
+  under another master key fails `detect`.
 - `/api/v1` defaults: 30 s request timeout and 1 MiB body limit (default; revisit). A malformed project id answers 404
   (visibility); malformed trace and span ids answer 422.
 - UI serving: try-files ignores the query string; slashless routes serve the page directly; under `/api/`, `/v1/`,
@@ -2692,26 +2810,31 @@ message, because a user writing SQL needs the engine's error. Guardrail errors a
 - The Crucible MCP server at `/mcp` accepts control-plane keys only with the `read` scope, and answers 503 with
   `Retry-After` when the control plane cannot check a key (the fail-open rule of 11.8 for unknown keys).
 - A 405 carries an `Allow` header built from the route's methods.
-- Fact-write idempotency keys live in the node's memory (at most 10,000, oldest dropped first, lost on restart) until
-  the control plane's `idempotency_keys` table exists; a key whose first request is still running answers `conflict`,
+- Fact-write idempotency keys live in the node's memory (at most 10,000, oldest dropped first, lost on restart); the
+  control plane has no `idempotency_keys` table. A key whose first request is still running answers `conflict`,
   and a failed or cancelled request frees its key. A fact write answers 201 with `fact_id`, `key`, `version`,
   `created_at` and `target_time`. A span's facts are filed under its trace's earliest known start; a fact about an
   unknown target is `not_found` only when the lookup is whole and strong, else 503 with `Retry-After: 1`. The API's
   1 MiB body limit caps a correction request at 1 MiB.
 - Search and payload routes (#59): `POST search` takes query, mode, fields (input, output, metadata), from, to,
   limit and cursor (cursor route 3: window, `as_of` and `(start_minute, trace_hash, span_id)`; its filter hash covers
-  the mode, the fields and the tokens); `name` and `filters` are refused with a 422 until the shared filter DTO lands.
+  the mode, the fields and the tokens). `fields` takes no `name` and the body has no `filters` member, so a request
+  that sends either is refused with 422 `validation_failed`.
   The payload route takes a required `start_time`, serves only the nine `FieldRange` fields (others are a 422),
   honours a single byte range (206, or 416 without a problem body), and answers a miss that is not whole and strong
   with 503 `telemetry_store_unavailable`, because a byte response cannot carry `meta`.
 - List routes (#58): `GET users/{user_id}/sessions` joins the session and user routes. `GET traces` and `GET spans`
   take the filters environment, release, version, level, observation_type, user_id, session_id, tags, metadata
   (`key=value`, split at the first `=`) and name (a case-insensitive substring, at most once); repeating a parameter
-  matches any of its values, different parameters must all hold, at most 100 values per parameter. Cursor routes 4
+  matches any of its values, different parameters must all hold, at most 100 values per parameter (20 for `tags` on
+  the trace list, section 8.9). Cursor routes 4
   to 7 are the span list, the session list, the user list and the sessions of a user; a span-list page holds the
   window, `as_of` and `(start_time, span_id)`, and an id page holds the list, the window and `(last_seen, id)` with
   no `as_of`. Trace and span cursors bind to `Filter::hash`, the sessions of a user to a hash of the user id, and the
   session and user lists to an empty filter.
+- MCP routes (#91): cursor route 8 is the MCP operation list; its page holds the window, `as_of` and
+  `(start_time, span_id)`, and the cursor binds to the side, the capture source, the caller-fault rule, the server
+  and the list's filters. The other MCP routes take no cursor (section 9.11).
 
 ### 12.6 Endpoints
 
@@ -2801,7 +2924,7 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `GET exports`, `POST exports`, `GET exports/{export_id}`, `GET exports/{export_id}/download` | Section 12.8 |
 | `POST sql/run`, `DELETE sql/runs/{run_id}`, `GET sql/runs`, `GET sql/schema`, `POST sql/export` | Section 7.4. Export formats CSV, JSON lines, Parquet; CSV cells that start with `=`, `+`, `-` or `@` are prefixed |
 | `GET sql/saved-queries`, `POST sql/saved-queries`, `GET sql/saved-queries/{query_id}`, `PATCH sql/saved-queries/{query_id}`, `DELETE sql/saved-queries/{query_id}`, `POST sql/saved-queries/{query_id}/run` | Visibility `private` or `project` |
-| `POST media`, `PATCH media/{media_id}`, `GET media/{media_id}` | Section 14 |
+| `POST media`, `PATCH media/{media_id}`, `GET media/{media_id}`, `GET media` | Section 14. `GET media?trace_id=&span_id=` lists the media uses of a trace or one of its spans |
 
 **System**
 
@@ -2832,15 +2955,15 @@ the capability from section 11.6; key principals need the matching scope from 11
 | `password_login_enabled` | bool |
 | `csrf_token` | string |
 | `session` | `{ expires_at, idle_expires_at, auth_method }` |
-| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }`; `sql_workspace` reports the workspace's real state: `enabled`, or `not_configured`, or the runtime probe's reason |
+| `features` | `{ sql_workspace: { enabled, reason? }, media: { enabled, max_bytes }, smtp: bool, signup_mode }`; `sql_workspace` reports the workspace's real state: `enabled`, or `not_configured`, or the runtime probe's reason; `media.enabled` is true when an object store is configured; `smtp` is true when the email channels' transport has the mail server of `smtp.*` (#117) |
 | `server` | `{ version }` |
 
 ### 12.8 Export formats
 
 Exports are jobs (claimed work) with a fixed `as_of`, written to an attempt-scoped temporary object and committed
-atomically; gzip is optional; files go to the object store when configured, else to the `exports` disk root
-(multi-node deployments need the object store for downloads). Both formats are re-emitted from the normalized
-record with full payloads, never previews.
+atomically; gzip is optional; files go to the `exports` disk root of the node that runs the job, also when an object
+store is configured for media, so a file downloads only from that node (section 11.10). Both formats are re-emitted
+from the normalized record with full payloads, never previews.
 
 | Format | Contract |
 |---|---|
@@ -2898,7 +3021,9 @@ No table has a TTL and no table has projections, so a lightweight delete never t
 
 Kinds: `trace` (a list of trace ids, at most 10,000), `user` (`user_id`, optional `issuer`), `session`
 (`session_id`), `project`. A delete is point-in-time: data received at or after `requested_at` is new data and is
-kept. States: `pending`, `logged`, `applied`, `verified`, `completed`, `failed`.
+kept, with one exception: an exact repeat of a deleted span that the duplicate window still remembers is dropped as
+a repeat (section 5.3), as any repeat is. States: `pending`, `logged`, `applied`, `verified`, `completed`,
+`failed`.
 
 | Step | Actor | Action | State after |
 |---|---|---|---|
@@ -2919,6 +3044,26 @@ session deletes first resolve their trace ids (needed for MCP rows by trace, fac
 
 A node that is down does not block a request. When it returns, its recovery and any replay consult the deletion
 requests and drop matching rows before shipping. `crucible wal drain` does likewise.
+
+Stage B as built (#121):
+- A deletion applies to the frames after its `Tombstone` frame in LSN order, and every request that the node reads
+  at start (below) applies to every frame that incarnation normalizes, so a replay drops more rows, never fewer.
+- Spans received before a deletion of their trace, user id, session id or whole project are dropped, with their MCP
+  operations and inventory entries. A deletion by user also drops the MCP operations that name the user by
+  `user_id`, or by subject hash under the request's issuer (under the operation's own issuer when the request names
+  none, the only issuer under which that operation's hash can match). Facts are dropped by their target's trace id
+  or session id.
+- Stage B cannot resolve a user's or a session's traces, so the facts on those traces, and the MCP rows of those
+  traces whose own span and identity do not name the user, reach the store and go through the executor's delete
+  (step 5), which resolves the trace ids first.
+- Dropping leaves stage B's state alone: the duplicate window, the first-seen set and the usage descendant set see
+  every span, so a rebuild from the retained prefix decides as before, and provisional heads are those of the
+  spans that remain. That is why an exact repeat of a deleted span is still dropped as a repeat.
+- A `Tombstone` frame carries no issuer, so the shipper reads a user deletion's issuer from the control store, and
+  the frame waits while the control store does not answer. The recent index evicts what the tombstone selects.
+- Before the rebuild and before anything ships, a starting node registers in the node registry and reads every
+  deletion request ever made, in every state (section 11.10), and applies them all, so the frames it never shipped
+  lose what a request that completed while it was down selected. Nothing ships until that read succeeds.
 
 ### 13.4 Reach list
 
@@ -2957,11 +3102,23 @@ requests and drop matching rows before shipping. `crucible wal drain` does likew
   requests, because ClickHouse caps a request at 1,000 parameters. Until the delete runs, reads hide MCP rows of a
   deletion by user by `user_id` only, not by subject hash. A `Tombstone` record carries no issuer; anything that
   needs it reads the Postgres request.
-- Not built yet: replay filtering of tombstoned spans in stage B and startup seeding of the pending set before
-  shipping (the single-writer queue); the weekly purge of `mcp_tool_inventory` and `mcp_deploys` (13.2 step 4); the
-  marker purge (5.5); the `project` deletion kind; a route to resume a failed request; `crucible admin
-  rebuild-rollups`; the mask fallback (mask application passes on 26.3, 26.8 and latest). Comments and media do not
-  exist yet, so a completed request reports both as `not_present`. Export reads do not consult the pending set yet.
+- Stage B applies deletion requests, and a starting node reads every request before it ships (section 13.3, #121).
+  That read covers every request ever made: requests are never pruned, and the read is not bounded by the oldest
+  arrival above the watermark.
+- The deletion route takes the kinds `trace`, `user` and `session`; a body that names `project` is refused with 422
+  `validation_failed`. `DELETE projects/{id}` marks the project deleted and revokes its keys; it makes no deletion
+  request, so the project's key prefix in the object store stays (13.4).
+- A request whose attempts are exhausted stays `failed`; no route resumes it.
+- The weekly delete of `mcp_tool_inventory` and `mcp_deploys` keys (13.2 step 4) and the marker purge (5.5) do not
+  run: `DeletePlan::marker_purge` exists, but no job issues it, so those rows and the markers stay. The binary has
+  no `crucible admin rebuild-rollups` command, so the minute rollups keep their counts (13.4). Mask application has
+  no fallback; conformance shows that it works on 26.3, 26.8 and latest.
+- A completed request reports export files `done`, comments `not_present` (no comment is stored), and media `done`
+  when an object store is configured, else `not_present`. The media uses of the request's traces are deleted with
+  each page of resolved traces, in that page's fenced transaction (the uses recorded before `requested_at`), and
+  their objects go at the media collector's next run (#99).
+- Export reads do not consult the pending-deletion set.
+- The binary has no `crucible wal requeue` or `crucible wal drain` command (sections 5.6 and 13.3).
 
 ## 14. Media
 
@@ -2982,19 +3139,21 @@ Optional. Owner: `crucible-media` on `ObjectStore`. Without an object store, cli
 
 1. `POST projects/{id}/media` with content type, length, SHA-256, trace id, and optional span id and field.
 2. If `(project, sha256)` is already `uploaded`, the response carries the existing media id and no URL, and a
-   reference is added. Otherwise a `pending` row is created and a presigned PUT is returned with content type and
-   checksum as signed headers.
+   reference is added. Otherwise a `pending` row is created and a presigned PUT is returned with content type,
+   length and checksum as signed headers.
 3. The client uploads directly to the public endpoint.
 4. `PATCH projects/{id}/media/{media_id}` confirms: the server calls `head`, checks the length (and the checksum
    where the store returns it), and marks the object `uploaded`; a mismatch is `media_hash_mismatch`.
 5. `GET projects/{id}/media/{media_id}` returns metadata and a presigned GET.
+6. `GET projects/{id}/media?trace_id=&span_id=` lists the uses in a trace, or in one of its spans; the UI previews
+   media from this list.
 
 ### 14.3 Keys, references and tokens
 
 | Item | Contract |
 |---|---|
 | Object key | `<prefix>/<project_id>/<yyyy>/<mm>/<media_id>` |
-| `media_objects` | `id`, `project_id`, `sha256`, `content_type`, `len`, `state` (pending, uploaded, deleted), `created_at`; unique `(project_id, sha256)` |
+| `media_objects` | `id`, `project_id`, `sha256`, `content_type`, `len`, `state` (pending, uploaded), `created_at`, `uploaded_at`; unique `(project_id, sha256)`. A collected object's row is deleted (14.5) |
 | `media_refs` | `project_id`, `media_id`, `trace_id`, `span_id`, `field`, `target_time`; one row per use |
 | Crucible media token | An opaque string in a payload field that carries the media id and content type; the normalizer leaves it in place and the UI resolves it through the GET route |
 | Compat media token and endpoint | Parsed and served inside `crucible-compat`, mapped onto this flow |
@@ -3004,6 +3163,19 @@ Optional. Owner: `crucible-media` on `ObjectStore`. Without an object store, cli
 Under the `media_gc` lease: hourly, pending uploads older than 24 h are removed and objects whose last reference
 is gone are deleted; weekly, an orphan scan deletes stored objects older than 48 h that have no row. Operators are
 advised to add a bucket lifecycle rule as a backstop.
+
+### 14.5 Settled in code
+
+Media (#99), in the crate `crucible-media`:
+
+| Topic | Rule |
+|---|---|
+| Without an object store | Media stay inline in payloads, and the media routes and the compat media endpoint answer `501 media_not_supported` with the settings that turn media on. At startup a configured bucket is checked with the configured credentials |
+| Rows | Migration `V10__media`. `media_objects.state` holds only `pending` and `uploaded`: the collector deletes a collected object's row instead of marking it, and a new upload of the same bytes gets a new id and a new key. A `media_refs` row references its object without a cascade, so an object row can be deleted only once no use refers to it, and a use recorded while its object is collected makes one of the two transactions fail and keeps the object |
+| Object key | The `<yyyy>/<mm>` of the key is that of the media id's own time, so an id's key never changes |
+| Collector | The `media-gc` leader job, with fenced writes, in order: uses whose target time is before their project's payload cut-off go (`payload_retention_days`, capped by `retention_days`, aligned to UTC days); pending objects asked for more than 24 h ago lose their row and uses, then the stored object; uploaded objects that no use refers to lose their row, then the stored object; once a week, the orphan scan pages through the deployment's prefix (its position is the job cursor) and deletes objects older than 48 h whose media id has no row. A row is deleted before its object; a crash in between leaves an orphan for the next scan |
+| Tokens | No Crucible media token exists: the UI previews media from the list of uses (14.2 step 6). The compat endpoint serves both HTTP ingest listeners, with its wire shapes in `crucible-compat`; the dialect's media id is the first 22 characters of the URL-safe base64 of the SHA-256, and the object is found again by the hash range that the id fixes |
+| Serving | The UI's CSP allows `img-src` and `media-src` from the object store's public origin. Types outside the inline-safe list download as attachments |
 
 ## 15. Change control
 
@@ -3031,7 +3203,8 @@ advised to add a bucket lifecycle rule as a backstop.
 | v2 | 2026-11-18 | Additive (wave 3): edges for `crucible-proxy`, `crucible-mcp-server`, `crucible-sdk` and its conformance runner, and the SDK area row (1.5); the MCP key registry is `conformance/registry.json` (9.1); `ChildProcess` is not part of `Env` and its simulation lives in the proxy's tests (2.14) |
 | v2 | 2026-11-18 | Settled in code by the job runner (#72): the `crucible-jobs` edge (1.5); claim length, retry backoff, the attempt cap and parked rows; cursors keyed by lease name; the housekeeping job; the narrower shutdown rule (11.7) |
 | v2 | 2026-11-18 | Settled by identity (#56): edges `crucible-api` to `crucible-control` and `xtask` to `crucible-api` (1.5); `--keys-file` is the mode without Postgres and is refused alongside it, `admin create-key`, fact authors and per-author idempotency, the `/mcp` read scope, 405 `Allow` (12.1, 12.5) |
-| v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and what is not built (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
+| v2 | 2026-11-18 | Settled in code by #59, #61 and #76: search plans, phrases and metadata terms (8.9); the compiled `traces` metrics source and the gaps then open (8.9); three fact lookups per list page (8.7); fact-write idempotency and responses, search and payload routes (12.5); store connection keep-alive and memory-budget warnings (2.14); `recent.max_bytes` from the container limit (8.6) |
 | v2 | 2026-11-18 | Settled by the SQL workspace (#73): provisioning order, the 1,800-statement quota as an operator setting (7.4), the SQL route permissions and the export decision (11.6), the `/sql/` exception for engine errors (12.3), `features.sql_workspace` (12.7), the `crucible-sqlws` edges (1.5) |
 | v2 | 2026-11-18 | Settled in code by #58, #78 and #79: SDK export queues bounded by spans and bytes (9.10); the MCP storage readings and normalizer version 5 (9.11); project salts (11.1); the fake collector's normalizer edge (1.5); the filtered trace list, span list, sessions of a user and list consistency (8.9); list filters, routes and cursor routes 4 to 7 (12.5) |
-| v2 | 2026-11-19 | Settled in code by wave B (#84 alerts, #85 lifecycle, #87 exports): five crate rows and the `crucible-api` edges (1.5); queues, columns, permissions, egress and export rules (11.10); deletion hiding bounds and what is not built (13.6) |
+| v2 | 2026-11-19 | Settled in code by wave B (#84 alerts, #85 lifecycle, #87 exports): five crate rows and the `crucible-api` edges (1.5); queues, columns, permissions, egress and export rules (11.10); deletion hiding bounds and the gaps then open (13.6) |
+| v2 | 2026-11-20 | Settled in code since #94 (#86, #88, #91, #93, #98, #99, #114, #115, #117, #119, #121), and the planned-tense wording removed: the `crucible-media` row with the edges to it and `crucible-mcp-server` to `crucible-export` (1.5); the age check's retention horizon (1.2); what `Stores` holds (2); `ObjectStore` as built (2.10); memory budgets, the CPU budget, read counters, the read deadline and the shutdown order (2.14); never-stored keys in events and links (3.5); `BatchSeal.deletion_seq` (4.4); the ingest CPU budget and its proved kernel (4.8, 4.9); `EPOCH`'s directory entry (4.10); the ledger checksum and probe identity repair (6.6, 7.5); `InSet` (8.1); capture-source selection as a presence read (8.2, 9.5); store-outage reads (8.5, 8.9); MCP metrics and the tags filter (8.8, 8.9, 12.5); SDK feedback (9.10); MCP storage fixes and MCP analytics (9.11); dialect 0 sources (10.5); salts, dashboards and deletion replay (11.1, 11.10); the cursor key (11.2); public-key feedback (11.3); job start (11.7); exports on the disk root (11.10, 12.8); the serve flags, the identity generation, cursor route 8, the search body, the media list route and `features` (12.1, 12.5, 12.6, 12.7); deletion in stage B and what the executor does and does not do (13.3, 13.6); media (14.2, 14.3, 14.5). Rule I9 gains the repeat exception (`invariants.md`) |
