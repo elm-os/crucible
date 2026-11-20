@@ -491,9 +491,10 @@ values of fields named like passwords.
 
 Scrubbing runs off the request path. While the call runs, the SDK takes only the part of each field that scrubbing
 reads, a copy of at most the cap plus 1 KiB. The rules, `Scrub` and the scrubbing of error messages and handle ids
-run on the SDK's export goroutines when the span's batch is exported, so a slow `Scrub` never delays a call. `Scrub`
-must therefore be safe to call from several goroutines at once. What a field holds until then counts toward the
-export queue's 8 MiB.
+run on the SDK's export goroutine as it takes each span off the export queue, one span at a time, so a slow `Scrub`
+never delays a call and capture takes at most one processor from the server. What a field holds until then counts
+toward the export queue's 8 MiB: a server that captures faster than one processor scrubs fills the queue, which then
+drops spans and counts them, as it does when the collector cannot keep up. `Scrub` must be safe for concurrent use.
 
 Authorization headers, cookies, `requestState`, raw session ids, client IP addresses and baggage are never sent.
 

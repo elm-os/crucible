@@ -16,7 +16,7 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - `crucible proxy` records the error message of a failed operation, scrubbed with the shared rules and cut at 2 KiB,
   and the keyed hashes of a multi-round exchange's `requestState`, as the SDKs do.
 - The Go SDK scrubs captured arguments and results, error messages and handle ids off the request path, on its
-  export goroutines, so capture no longer adds the scrubbing time to a call.
+  export goroutine, so capture no longer adds the scrubbing time to a call.
 - The Rust SDK's `flush` and `shutdown` keep to the export timeout when an export to a stalled collector is already
   in flight.
 

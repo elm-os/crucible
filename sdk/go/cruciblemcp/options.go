@@ -76,7 +76,7 @@ type Options struct {
 	NoIdentity bool
 	// Scrub, when set, runs after the built-in scrubbing rules on every captured argument and result, error
 	// message and handle id from HandleParams. It returns the value to send, or false to send nothing. It runs
-	// off the request path, on the SDK's export goroutines, so it must be safe for concurrent use.
+	// off the request path, on the SDK's export goroutine, and must be safe for concurrent use.
 	Scrub func(field, value string) (string, bool)
 }
 

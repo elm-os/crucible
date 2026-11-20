@@ -152,13 +152,14 @@ the server above gave one row per message in the SQL workspace's `crucible_sql.m
 Through `crucible proxy http` the rows carry `capture_source = proxy_http`, the era (`legacy` for a session), the
 hash of the session id, the client's `/24` or `/48` address prefix and its user agent.
 
-Never sent: argument and result content, `Authorization` values, cookies, `Mcp-Param-*` values, raw session ids
-(only their hash), raw IP addresses (only the /24 or /48 prefix), raw `requestState` values (only their keyed hash)
-and unscrubbed error messages.
+Never sent: argument and result content (the one exception is the text of a failed tool result's first text block,
+which becomes the operation's error message, scrubbed and cut at 2 KiB), `Authorization` values, cookies,
+`Mcp-Param-*` values, raw session ids (only their hash), raw IP addresses (only the /24 or /48 prefix), raw
+`requestState` values (only their keyed hash) and unscrubbed error messages.
 
-Not recorded by the proxy: argument and result content, and the contents of compressed bodies (such a request is
-reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status only). An SDK wrapper records content
-([MCP](mcp.md)).
+Not recorded by the proxy: argument and result content beyond that error message, and the contents of compressed
+bodies (such a request is reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status only). An SDK
+wrapper records content ([MCP](mcp.md)).
 
 ## When Crucible is down
 

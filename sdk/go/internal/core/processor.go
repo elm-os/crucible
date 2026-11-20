@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -105,40 +104,11 @@ func complete(s sdktrace.ReadOnlySpan, work *Deferred) (out sdktrace.ReadOnlySpa
 	return finished{ReadOnlySpan: s, attrs: append(slices.Clip(s.Attributes()), attrs...), status: status}
 }
 
-// finish runs the deferred work of a batch and returns the spans to export. The work is spread over at most half
-// the processors, so that the requests running meanwhile keep the rest.
-func finish(batch []queued) []sdktrace.ReadOnlySpan {
-	spans := make([]sdktrace.ReadOnlySpan, len(batch))
-	var pending []int
-	for i, q := range batch {
-		spans[i] = q.span
-		if q.deferred != nil {
-			pending = append(pending, i)
-		}
-	}
-	var next atomic.Int64
-	work := func() {
-		for {
-			k := int(next.Add(1) - 1)
-			if k >= len(pending) {
-				return
-			}
-			spans[pending[k]] = complete(batch[pending[k]].span, batch[pending[k]].deferred)
-		}
-	}
-	var wg sync.WaitGroup
-	for range min(len(pending), (runtime.GOMAXPROCS(0)+1)/2) - 1 {
-		wg.Go(work)
-	}
-	work()
-	wg.Wait()
-	return spans
-}
-
 // Processor is the SDK's span processor. At span start it copies the session, user, tags and metadata carried in the
 // context onto the span. At span end it puts the span on a queue bounded by spans and by estimated bytes, without
 // blocking: when either bound is reached the span is dropped and counted. One goroutine drains the queue in
-// batches to the exporter, and runs the capture work the spans of a batch deferred (see Deferred) first.
+// batches to the exporter. It runs the capture work a span deferred (see Deferred) as it takes the span off the
+// queue, one span at a time, so that the work never comes in bursts and leaves the other processors to requests.
 type Processor struct {
 	exporter   sdktrace.SpanExporter
 	release    string
@@ -282,14 +252,14 @@ func (p *Processor) run() {
 	defer p.cancelExport()
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
-	batch := make([]queued, 0, p.batchSize)
+	batch := make([]sdktrace.ReadOnlySpan, 0, p.batchSize)
 	var batchBytes int64
 	var failed error
 	export := func() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := p.exporter.ExportSpans(p.exportCtx, finish(batch)); err != nil {
+		if err := p.exporter.ExportSpans(p.exportCtx, batch); err != nil {
 			p.exportFailed.Add(uint64(len(batch)))
 			failed = err
 		} else {
@@ -300,7 +270,11 @@ func (p *Processor) run() {
 		batch, batchBytes = batch[:0], 0
 	}
 	add := func(q queued) {
-		batch = append(batch, q)
+		span := q.span
+		if q.deferred != nil {
+			span = complete(q.span, q.deferred)
+		}
+		batch = append(batch, span)
 		batchBytes += q.size
 		if len(batch) >= p.batchSize {
 			export()
