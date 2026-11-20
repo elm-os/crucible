@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::gate::{Build, LABEL, Power, thousands};
-use super::rig::{self, ArmKey, Context, Session};
+use super::rig::{self, ArmKey, Context, Session, StatisticsLoad};
 use super::{RigName, create_dir, now, repository_root, shown, write};
 
 /// The `schema` value of `reads.json`.
@@ -38,6 +38,9 @@ pub struct ReadsArgs {
     pub probes: u32,
     /// Only these lanes, by name; `None` runs every lane.
     pub lanes: Option<Vec<String>>,
+    /// Each lane attempt ingests one trace once the store has settled, so that the lane reads the store as live
+    /// ingest leaves it: with new parts in the tables a trace writes.
+    pub after_insert: bool,
 }
 
 /// A read lane: a class of the load generator's `read`, and the request class of Crucible's counters it hits.
@@ -158,6 +161,7 @@ pub fn parse_reads(args: impl IntoIterator<Item = String>) -> Result<ReadsArgs, 
         seconds: 60,
         probes: 100,
         lanes: None,
+        after_insert: false,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -184,6 +188,7 @@ pub fn parse_reads(args: impl IntoIterator<Item = String>) -> Result<ReadsArgs, 
                 }
                 parsed.lanes = Some(names);
             }
+            "--after-insert" => parsed.after_insert = true,
             other => return Err(format!("perf reads: unexpected argument `{other}`")),
         }
     }
@@ -291,6 +296,8 @@ pub struct LaneReport {
     pub statistics_settled: bool,
     /// See `statistics_wait_s`.
     pub statistics_load_us: u64,
+    /// The column statistics that Crucible's own reads loaded during the lane, per set of tables.
+    pub statistics_loaded: Vec<StatisticsLoad>,
     /// What else the Docker host did during the lane.
     pub context: Option<Context>,
     /// Why the lane's latency does not stand, or `None`.
@@ -328,6 +335,8 @@ pub struct ReadsReport {
     pub concurrency: u32,
     /// See `rate`.
     pub window_days: u64,
+    /// Whether each lane attempt ingested one trace once the store had settled (`--after-insert`).
+    pub after_insert: bool,
     /// The ack-to-API probe on the empty store, and on the loaded one.
     pub fresh_empty: Fresh,
     /// See `fresh_empty`.
@@ -424,6 +433,7 @@ pub fn run_reads(args: &ReadsArgs) -> Result<(), String> {
         seconds: args.seconds,
         concurrency: CONCURRENCY,
         window_days: args.spread_days,
+        after_insert: args.after_insert,
         fresh_empty,
         fresh_loaded,
         dataset,
@@ -589,12 +599,18 @@ fn bench(
             .as_ref()
             .is_none_or(|names| names.iter().any(|name| name == lane.name))
     };
+    // The spans the store holds; under `--after-insert` each attempt's trace adds to them.
+    let held = std::cell::Cell::new(stored);
     // One attempt of a lane. It waits until ClickHouse's reads stop loading column statistics, then loads every
     // table's marks into the mark cache and, when the store fits the page cache, reads the store's files once, so
     // that neither the load's new parts nor what an earlier lane or a page-cache drop left in the caches decides
-    // its latency.
+    // its latency. Under `--after-insert` it then ingests one trace, as live ingest would.
     let attempt_lane = |index: usize, lane: &Lane, attempt: u32| -> Result<LaneReport, String> {
         let settle = session.settle_statistics(&key, SETTLE_LIMIT)?;
+        session.warm_store(warmed)?;
+        if args.after_insert {
+            held.set(insert_trace(session, &key, &crucible, &bearer, held.get())?);
+        }
         let merges = session.clickhouse_row("SELECT count() AS n FROM system.merges")?;
         let merges_at_start = merges["n"]
             .as_u64()
@@ -605,7 +621,6 @@ fn bench(
             &dir.join(format!("metrics/{}-{attempt}-before.txt", lane.name)),
             &before,
         )?;
-        session.warm_store(warmed)?;
         let mut command = vec![
             "read".to_owned(),
             "--target".to_owned(),
@@ -630,9 +645,11 @@ fn bench(
         for (_, path) in &reports {
             command.extend(["--dataset".to_owned(), path.clone()]);
         }
+        let from = session.clickhouse_now()?;
         let (text, context) = session.observed(|| {
             session.loadgen_exec(&command, Duration::from_secs(120 + 3 * args.seconds))
         })?;
+        let to = session.clickhouse_now()?;
         let text = text?;
         let after = session.metrics()?;
         write(
@@ -660,6 +677,7 @@ fn bench(
             statistics_wait_s: settle.waited.as_secs_f64(),
             statistics_settled: settle.settled,
             statistics_load_us: settle.load_us,
+            statistics_loaded: session.read_statistics(&from, &to)?,
             context: Some(context),
             ..lane_report
         })
@@ -786,9 +804,49 @@ fn judge_lane(
         statistics_wait_s: 0.0,
         statistics_settled: true,
         statistics_load_us: 0,
+        statistics_loaded: Vec::new(),
         context: None,
         invalid: (!reasons.is_empty()).then(|| reasons.join("; ")),
     }
+}
+
+/// Ingests one trace of two 1 KiB spans that start now, and waits until the store holds it, so that the tables a
+/// trace writes have a new part as under live ingest. Returns the spans the store then holds.
+fn insert_trace(
+    session: &Session<'_>,
+    key: &ArmKey,
+    crucible: &str,
+    bearer: &str,
+    held: u64,
+) -> Result<u64, String> {
+    let text = session.loadgen_exec(
+        &[
+            "run".to_owned(),
+            "--target".to_owned(),
+            format!("{crucible}:4318"),
+            "--rate".to_owned(),
+            "1".to_owned(),
+            "--duration-secs".to_owned(),
+            "1".to_owned(),
+            "--spans-per-request".to_owned(),
+            "2".to_owned(),
+            "--concurrency".to_owned(),
+            "1".to_owned(),
+            "--header".to_owned(),
+            bearer.to_owned(),
+        ],
+        Duration::from_secs(60),
+    )?;
+    let acked = parse(&text, "the inserted trace")?["outcome"]["acked_spans"]
+        .as_u64()
+        .unwrap_or(0);
+    let held = held + acked;
+    if acked == 0 || !session.wait_for_store(key, held, Duration::from_secs(60))? {
+        return Err("the store did not hold the inserted trace within 60 s".to_owned());
+    }
+    // The shipper inserts a batch into its tables one after another; this leaves the others time to land.
+    std::thread::sleep(Duration::from_secs(2));
+    Ok(held)
 }
 
 /// One ack-to-API probe of `probes` traces.
@@ -881,8 +939,16 @@ pub fn summary(report: &ReadsReport) -> String {
             "Lanes",
             format!(
                 "one class each, {} reads/s on average (exponential think times) for {} s, {} connections, \
-                 windows of {} days",
-                report.rate, report.seconds, report.concurrency, report.window_days
+                 windows of {} days{}",
+                report.rate,
+                report.seconds,
+                report.concurrency,
+                report.window_days,
+                if report.after_insert {
+                    "; each attempt ingests one trace of 2 spans once the store has settled, as live ingest would"
+                } else {
+                    ""
+                }
             ),
         ),
         (
@@ -960,6 +1026,24 @@ pub fn summary(report: &ReadsReport) -> String {
             lane.invalid.as_deref().unwrap_or("yes")
         );
     }
+    let _ = writeln!(
+        out,
+        "\n## Column statistics\n\nWhat Crucible's own reads loaded of column statistics during each lane, from \
+         `LoadedStatisticsMicroseconds` in `system.query_log`, by the tables a read touched.\n\n| Lane | Tables | \
+         Reads | Mean load ms per read |\n|---|---|---|---|"
+    );
+    for lane in &report.lanes {
+        for load in &lane.statistics_loaded {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {:.2} |",
+                lane.name,
+                load.tables,
+                load.reads,
+                load.load_us as f64 / 1000.0 / load.reads.max(1) as f64
+            );
+        }
+    }
     out
 }
 
@@ -1006,6 +1090,7 @@ mod tests {
                 .unwrap_err()
                 .contains("`nope` is not a lane")
         );
+        assert!(!some.after_insert && args("--after-insert").unwrap().after_insert);
     }
 
     #[test]

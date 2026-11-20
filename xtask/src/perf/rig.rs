@@ -840,6 +840,20 @@ pub struct Context {
 /// store, 81 parts, cost about 75 ms per read before the first refresh.
 pub const SETTLED_STATISTICS_US: u64 = 5_000;
 
+/// The ClickHouse users of Crucible's reads: the service identities `crucible_read_ui` and `crucible_read_agent`.
+const READ_USERS: &str = "'crucible_read_ui', 'crucible_read_agent'";
+
+/// The column statistics that Crucible's reads of one set of tables loaded, from [`Session::read_statistics`].
+#[derive(Clone, Debug, Serialize)]
+pub struct StatisticsLoad {
+    /// The tables the reads touched, as `system.query_log` names them.
+    pub tables: String,
+    /// The reads.
+    pub reads: u64,
+    /// Their `LoadedStatisticsMicroseconds`, in total.
+    pub load_us: u64,
+}
+
 /// The wait of [`Session::settle_statistics`].
 #[derive(Clone, Copy, Debug)]
 pub struct Settle {
@@ -1611,6 +1625,38 @@ impl<'r> Session<'r> {
             }
             std::thread::sleep(Duration::from_secs(5));
         }
+    }
+
+    /// ClickHouse's clock, as `system.query_log` stamps its entries.
+    pub fn clickhouse_now(&self) -> Result<String, String> {
+        Ok(self
+            .clickhouse_text("SELECT toString(now64(6))")?
+            .trim()
+            .to_owned())
+    }
+
+    /// The column statistics that Crucible's own reads loaded between two instants of [`Session::clickhouse_now`],
+    /// from `system.query_log`: per set of tables, the reads that started in that time and the
+    /// `LoadedStatisticsMicroseconds` they spent. Crucible's reads carry its query settings, which the probe of
+    /// [`Session::settle_statistics`] does not.
+    pub fn read_statistics(&self, from: &str, to: &str) -> Result<Vec<StatisticsLoad>, String> {
+        self.clickhouse_text("SYSTEM FLUSH LOGS")?;
+        let rows = self.clickhouse(&format!(
+            "SELECT arrayStringConcat(tables, ', ') AS tables, count() AS reads, \
+             sum(ProfileEvents['LoadedStatisticsMicroseconds']) AS load_us FROM system.query_log \
+             WHERE type = 'QueryFinish' AND event_date >= yesterday() AND user IN ({READ_USERS}) \
+             AND query_start_time_microseconds >= toDateTime64('{from}', 6, 'UTC') \
+             AND query_start_time_microseconds <= toDateTime64('{to}', 6, 'UTC') \
+             GROUP BY tables ORDER BY tables"
+        ))?;
+        Ok(rows
+            .iter()
+            .map(|row| StatisticsLoad {
+                tables: row["tables"].as_str().unwrap_or_default().to_owned(),
+                reads: number(&row["reads"]).unwrap_or(0.0) as u64,
+                load_us: number(&row["load_us"]).unwrap_or(0.0) as u64,
+            })
+            .collect())
     }
 
     /// Prepares the store for a measurement as on a server that has served reads for a while: loads the marks of
