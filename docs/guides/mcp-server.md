@@ -31,7 +31,11 @@ A request without a usable key answers 401 with a problem document that says how
 | Tool | What it returns |
 |---|---|
 | `get_data_bounds` | Where the project's data begins and ends: the first and last minute with spans and with MCP operations, the retention horizon, the widest window the list tools accept, and the server's time. Agents call it first to choose a window |
-| `list_traces` | Traces whose head span started in `[from, to)`, newest first, with name, status, duration, span and error counts, cost, tokens, user, session, environment, release and tags. Up to 50 per call |
+| `list_traces` | Traces whose head span started in `[from, to)`, newest first, with name, status, duration, span and error counts, cost, tokens, user, session, environment, release and tags. `filter` narrows them as the REST trace list's filter parameters do. Up to 50 per call |
+| `list_spans` | Spans that started in `[from, to)` across traces, newest first, with trace and span ids, name, observation type, status, level, duration, model, environment, user, session, cost and tokens. `filter` takes the REST span list's filter parameters. Up to 50 per call |
+| `list_sessions` | Sessions whose spans fall on the window's UTC days, last seen first, with trace, span and error counts, cost, tokens and up to 8 user ids. Up to 50 per call |
+| `list_users` | Users whose spans fall on the window's UTC days, last seen first, with trace, session, span and error counts, cost and tokens. Up to 50 per call |
+| `list_user_sessions` | The sessions one user's traces in the window name, latest trace first, with the first and last trace start and the user's trace count. Up to 50 per call |
 | `get_trace` | One trace's spans in start order, with parent links, timing, status, model, tokens, cost and the first 1,024 bytes of each input and output. Up to 200 spans per call; traces above 5,000 spans come back paged: the root spans and their direct children |
 | `get_span_children` | The direct children of one span, for walking a paged trace. Up to 200 per call |
 | `get_span_payload` | One payload field of one span (input, output, system instructions, attributes, resource attributes, events, links, tool definitions or tool calls), up to 32 KiB of text per call, continued with `offset` |
@@ -45,6 +49,9 @@ A request without a usable key answers 401 with a problem document that says how
 | `get_export` | One export's state and, once it is `ready`, the REST path to download the file from with the same key |
 
 - Every tool reads except `create_export`, which starts an export job and is marked as not read-only.
+- `filter` on `list_traces` and `list_spans` holds the conditions of the REST list filters: `environment`, `release`,
+  `version`, `user_id`, `session_id`, `level`, `observation_type`, `tags` and `metadata` (`key=value` entries) as
+  lists, any value of a list matching, and `name`, text the name contains. Every condition must hold.
 - A result stays under 64 KiB. A tool that cut its result returns a `next_cursor` to pass back as `cursor`, with the
   same other arguments, for the rest; cursors expire after 24 hours.
 - Results carry previews, never whole payloads: `get_span_payload` reads a payload in pieces.

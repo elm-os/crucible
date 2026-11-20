@@ -26,6 +26,7 @@
 mod auth;
 mod cursor;
 mod error;
+mod filters;
 mod mcp;
 mod rate;
 mod server;

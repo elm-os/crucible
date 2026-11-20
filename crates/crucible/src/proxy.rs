@@ -23,6 +23,7 @@ use crucible_proxy::http::{HostHeader, HttpProxyConfig};
 use crucible_proxy::identity::{IdentityResolver, VerifyConfig};
 use crucible_proxy::live::{ExportConfig, Telemetry};
 use crucible_proxy::net::Target;
+use crucible_proxy::scan::StateKey;
 use crucible_proxy::stdio::ClientIo;
 use crucible_proxy::{CoreConfig, ProxyCore};
 use crucible_records::CaptureSource;
@@ -231,10 +232,12 @@ fn telemetry(
         }
     };
     let endpoint = Target::parse(endpoint).map_err(|e| anyhow::anyhow!("--endpoint: {e}"))?;
-    let core = ProxyCore::new(
-        CoreConfig::new(capture_source),
-        env.rng.fork("crucible-proxy"),
-    );
+    // The multi-round state hashes are keyed with the export's secret key, as an SDK keys them (contract 9.6).
+    let config = CoreConfig {
+        state_key: StateKey::new(&key),
+        ..CoreConfig::new(capture_source)
+    };
+    let core = ProxyCore::new(config, env.rng.fork("crucible-proxy"));
     Ok(Telemetry::start(
         env,
         core,

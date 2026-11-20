@@ -113,6 +113,8 @@ pub(crate) struct Processor {
 pub(crate) struct Pipeline {
     commands: mpsc::UnboundedSender<Command>,
     counters: Arc<Counters>,
+    /// How long `flush` and `shutdown` wait, counted from the call: an export already in flight counts too.
+    timeout: Duration,
 }
 
 /// Starts the worker thread and returns the processor that feeds it and the handle that drives it.
@@ -152,7 +154,11 @@ pub(crate) fn start(
             release,
             counters: counters.clone(),
         },
-        Pipeline { commands, counters },
+        Pipeline {
+            commands,
+            counters,
+            timeout: config.export_timeout,
+        },
     ))
 }
 
@@ -216,8 +222,16 @@ impl Pipeline {
         if self.commands.send(command(Some(reply))).is_err() {
             return Err(FlushError("the exporter has stopped".to_owned()));
         }
-        done.await
-            .unwrap_or_else(|_| Err(FlushError("the exporter has stopped".to_owned())))
+        match tokio::time::timeout(self.timeout, done).await {
+            Ok(answer) => {
+                answer.unwrap_or_else(|_| Err(FlushError("the exporter has stopped".to_owned())))
+            }
+            // The worker may still be in an export that started before the call; it finishes on its own.
+            Err(_) => Err(FlushError(format!(
+                "the export did not finish within {:?}; raise Options::export_timeout if the server is slow",
+                self.timeout
+            ))),
+        }
     }
 
     pub(crate) fn stats(&self) -> Stats {

@@ -4,10 +4,19 @@
 
 use std::collections::BTreeMap;
 
-use crucible_proxy::scan::{JsonId, Message, Scanner};
+use crucible_proxy::scan::{JsonId, Message, Scanner, StateKey};
 use crucible_proxy::sse::SseReader;
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use proptest::prelude::*;
 use serde_json::{Map, Value, json};
+use sha2::Sha256;
+
+/// The secret key the scanners hash `requestState` with.
+const SECRET: &str = "csk_scan0000000000000000000000000000000000000";
+
+fn keyed(scanner: Scanner) -> Scanner {
+    scanner.keyed(StateKey::new(SECRET))
+}
 
 /// Any JSON value, a few levels deep, with keys that collide with the ones the scanner looks for.
 fn junk() -> BoxedStrategy<Value> {
@@ -22,6 +31,9 @@ fn junk_unboxed() -> impl Strategy<Value = Value> {
         Just("type".to_owned()),
         Just("isError".to_owned()),
         Just("_meta".to_owned()),
+        Just("text".to_owned()),
+        Just("message".to_owned()),
+        Just("requestState".to_owned()),
         "[a-z]{1,6}",
         ".{0,12}",
     ];
@@ -136,21 +148,24 @@ fn params_unboxed() -> impl Strategy<Value = Value> {
         member(text()),
         member(info()),
         member(meta),
-        junk(),
+        (member(text()), junk()),
     )
-        .prop_map(|(name, request_id, token, version, client, meta, extra)| {
-            object(
-                vec![
-                    ("name", name),
-                    ("requestId", request_id),
-                    ("progressToken", token),
-                    ("protocolVersion", version),
-                    ("clientInfo", client),
-                    ("_meta", meta),
-                ],
-                extra,
-            )
-        })
+        .prop_map(
+            |(name, request_id, token, version, client, meta, (state, extra))| {
+                object(
+                    vec![
+                        ("name", name),
+                        ("requestId", request_id),
+                        ("progressToken", token),
+                        ("protocolVersion", version),
+                        ("clientInfo", client),
+                        ("_meta", meta),
+                        ("requestState", state),
+                    ],
+                    extra,
+                )
+            },
+        )
 }
 
 fn result() -> BoxedStrategy<Value> {
@@ -160,9 +175,10 @@ fn result() -> BoxedStrategy<Value> {
 fn result_unboxed() -> impl Strategy<Value = Value> {
     let block = (
         member(prop_oneof!["text|image|audio|resource", ".{0,6}"].prop_map(Value::from)),
+        member(text()),
         junk(),
     )
-        .prop_map(|(kind, extra)| object(vec![("type", kind)], extra));
+        .prop_map(|(kind, words, extra)| object(vec![("type", kind), ("text", words)], extra));
     let content =
         prop::collection::vec(prop_oneof![4 => block, 1 => junk()], 0..6).prop_map(Value::Array);
     let meta = (member(info()), junk()).prop_map(|(server, extra)| {
@@ -175,10 +191,10 @@ fn result_unboxed() -> impl Strategy<Value = Value> {
         member(info()),
         member(content),
         member(meta),
-        junk(),
+        (member(text()), junk()),
     )
         .prop_map(
-            |(is_error, result_type, version, server, content, meta, extra)| {
+            |(is_error, result_type, version, server, content, meta, (state, extra))| {
                 object(
                     vec![
                         ("isError", is_error),
@@ -187,6 +203,7 @@ fn result_unboxed() -> impl Strategy<Value = Value> {
                         ("serverInfo", server),
                         ("content", content),
                         ("_meta", meta),
+                        ("requestState", state),
                     ],
                     extra,
                 )
@@ -204,8 +221,8 @@ fn message_unboxed() -> impl Strategy<Value = Value> {
         any::<i64>().prop_map(Value::from),
         (-1.0e6..1.0e6f64).prop_map(Value::from),
     ];
-    let error =
-        (member(code), junk()).prop_map(|(code, extra)| object(vec![("code", code)], extra));
+    let error = (member(code), member(text()), junk())
+        .prop_map(|(code, words, extra)| object(vec![("code", code), ("message", words)], extra));
     (
         member(id()),
         member(text()),
@@ -243,12 +260,26 @@ fn escape_non_ascii(json: &str) -> String {
     out
 }
 
-fn cut(text: &str) -> String {
-    let mut end = text.len().min(512);
+fn cut_at(text: &str, max: usize) -> String {
+    let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     text[..end].to_owned()
+}
+
+fn cut(text: &str) -> String {
+    cut_at(text, 512)
+}
+
+/// The keyed hash of contract 9.6.
+fn state_hash(state: &str) -> [u8; 16] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
+    mac.update(b"crucible.mrtr.v1\0");
+    mac.update(state.as_bytes());
+    let mut hash = [0; 16];
+    hash.copy_from_slice(&mac.finalize().into_bytes()[..16]);
+    hash
 }
 
 /// What a full parse finds, by the rules the scanner documents.
@@ -268,6 +299,21 @@ fn reference(value: &Value, wire_len: usize, is_batch: bool) -> Message {
         "_meta",
         "io.modelcontextprotocol/protocolVersion",
     ]));
+    // Messages are kept up to the scrubbing window of the 2 KiB error message cap.
+    let words = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .map(|text| cut_at(text, 3_072))
+    };
+    let tool_text = match at(&["result", "content"]) {
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .find_map(|block| words(block.get("text"))),
+        _ => None,
+    };
+    let hash = |value: Option<&Value>| value.and_then(Value::as_str).map(state_hash);
     let mut content_blocks = BTreeMap::new();
     if let Some(Value::Array(blocks)) = at(&["result", "content"]) {
         for kind in blocks
@@ -362,6 +408,10 @@ fn reference(value: &Value, wire_len: usize, is_batch: bool) -> Message {
             .filter(|code| code.is_number())
             .and_then(|code| code.to_string().parse().ok()),
         content_blocks,
+        error_message: words(at(&["error", "message"])),
+        tool_text,
+        state_in: hash(at(&["params", "requestState"])),
+        state_out: hash(at(&["result", "requestState"])),
         is_batch,
         bytes: wire_len as u64,
     }
@@ -409,7 +459,7 @@ proptest! {
             wire.extend_from_slice(text.as_bytes());
             wire.push(b'\n');
         }
-        let mut scanner = Scanner::lines();
+        let mut scanner = keyed(Scanner::lines());
         for chunk in chunked(&wire, &cuts) {
             scanner.push(chunk);
         }
@@ -425,7 +475,7 @@ proptest! {
     ) {
         // An HTTP body may be pretty-printed over many lines.
         let pretty = serde_json::to_string_pretty(&value).unwrap();
-        let mut scanner = Scanner::document();
+        let mut scanner = keyed(Scanner::document());
         for chunk in chunked(pretty.as_bytes(), &cuts) {
             scanner.push(chunk);
         }
@@ -436,7 +486,7 @@ proptest! {
         // The same message as the data of an SSE event, between a comment and another field.
         let compact = serde_json::to_string(&value).unwrap();
         let stream = format!(": ping\r\n\r\nid: 7\nevent: message\ndata: {compact}\n\n");
-        let mut reader = SseReader::new();
+        let mut reader = SseReader::new().keyed(StateKey::new(SECRET));
         for chunk in chunked(stream.as_bytes(), &cuts) {
             reader.push(chunk);
         }
