@@ -155,6 +155,10 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/release
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.0/crucible-installer.ps1 | iex"
 ```
 
+The shell installer needs `curl`, and `tar` with xz support (`xz-utils` on Debian and Ubuntu). It installs `crucible`
+into `$HOME/.cargo/bin` and says how to put that directory on your `PATH`. Each archive is also on the release page
+with its SHA-256 checksum.
+
 The write-ahead log's durability, that an acknowledged request survives a crash or a power loss, holds on Linux and
 macOS, where a sync reaches the disk (`fdatasync`, and `F_FULLFSYNC` on macOS). On Windows a directory sync is not a
 durability barrier, so the Windows binary is for development.
