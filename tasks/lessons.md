@@ -41,5 +41,5 @@ Rules learned from corrections and surprises. Read at the start of each session.
     info, remove the volume on merge, and watch free space. Freeing space inside Docker does not shrink the image;
     only an elevated `compact vdisk` does.
 14. Run the project's formatter (`pnpm format` for the UI, `cargo fmt` for Rust) on every file you edit before
-   pushing, even for a one-line copy change. Never assume how it treats long lines: Biome breaks a long property after
-   the colon, and CI's format check fails the PR.
+    pushing, even for a one-line copy change. Never assume how it treats long lines: Biome breaks a long property
+    after the colon, and CI's format check fails the PR.
