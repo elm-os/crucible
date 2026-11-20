@@ -16,6 +16,7 @@ that run them.
 | [Jobs simulation](jobs-simulation.md) | The leader, claimed-work and per-node runners of `crucible-jobs` |
 | [Alerts simulation](alerts-simulation.md) | Alert schedules, series states, evaluation, the outbox and channels |
 | [Lifecycle simulation](lifecycle-simulation.md) | Retention, the mask scheduler and deletion requests |
+| [Media simulation](media-simulation.md) | The media flow and collector under faults, the signing properties and the object store conformance rows |
 | [Control store](control-store.md) | The Postgres adapter against its model, and the lease protocol |
 | [SQL workspace isolation](sqliso.md) | The `sqliso` suite: isolation between projects through ClickHouse access control |
 | [SDK conformance](sdk-conformance.md) | The shared suite the four SDKs pass: the driver, the runner contract, scenarios and goldens |
