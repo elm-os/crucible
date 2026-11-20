@@ -187,16 +187,13 @@ A dashboard's widgets stack in one column in reading order (by row, then by colu
 Editing is for screens at least 768 px wide: the view says so instead of offering Edit, and the editor's page says so
 and requests nothing.
 
-## Not covered yet
+## Not covered
 
-- The alert rule form picks measures and dimensions from a list in the UI that mirrors the span rollup; the
-  dashboard editor reads them from `metrics/schema`. The alert preview shows the current window.
-
-- The span panel's metadata and MCP tabs wait for the payload route's `metadata`, `mcp_args` and `mcp_result`
-  selectors (contract 12.6), which it does not serve yet.
-- A deep link to a span below the loaded levels of a paged trace cannot be revealed until the spans route serves
-  `ancestors_of` (contract 8.8); the panel says how to find it.
-- The account page, password change, organization settings, ownership transfer, project members and the
-  sign-in provider settings have API routes (contract 12.6) but no pages yet.
-- The set-up steps will read data bounds and API keys once those screens land.
-- Brush-to-zoom on charts is planned; the crosshair, the bucket slider and the table view cover reading values.
+- The alert rule form picks measures and dimensions from a fixed list that follows the span rollup; the dashboard
+  editor reads them from `metrics/schema`. The alert preview shows the current window.
+- The span panel has no metadata or MCP tabs.
+- A deep link to a span below the loaded levels of a paged trace is not revealed; the panel says how to find it.
+- The account page, password change, organization settings, ownership transfer, project members and the sign-in
+  provider settings have API routes and no pages.
+- The set-up steps on Home do not read data bounds or API keys.
+- Charts have no brush-to-zoom; the crosshair, the bucket slider and the table view cover reading values.
