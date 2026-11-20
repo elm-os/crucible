@@ -1,8 +1,8 @@
 # REST API
 
 The REST API serves everything the UI shows and does: traces, spans, sessions and users, search and payloads,
-facts, metrics, the SQL workspace, alerts and channels, exports, retention and deletion, and the organization,
-projects, members and keys. This page covers how to call it and lists every route; the OpenAPI document
+facts, metrics, dashboards, MCP analytics, the SQL workspace, alerts and channels, exports, retention and deletion,
+and the organization, projects, members and keys. This page covers how to call it and lists every route; the OpenAPI document
 (`specs/openapi/crucible-v1.json`) has every request and response schema.
 
 The examples use three shell variables: the server's main listener, a project's secret key and that project's id.
@@ -813,6 +813,8 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   `POST sql/export` returns the result as CSV, JSONL or Parquet; saved queries keep a statement with declared
   parameters. Each project's statements run as its own ClickHouse user
   ([SQL workspace](../self-hosting/sql-workspace.md)).
+- **MCP analytics**: servers, tools, errors, clients, users, sessions, operations, deploys and a compare of two
+  deploys, each for one side and capture source; see [MCP analytics](../guides/mcp-analytics.md).
 - **Alerts and channels**: alert rules over the `spans` or `mcp_ops` metrics measures, a preview of what a rule
   would read now, each rule's history, and webhook, Slack and email channels with a test send; see
   [alerts](../guides/alerts.md).
