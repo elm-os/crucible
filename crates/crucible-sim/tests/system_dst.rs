@@ -40,7 +40,7 @@ const MUTANTS: [(Mutant, u64, &str); 19] = [
     (Mutant::DropFactOnRetry, 3001, "I1"),
     (Mutant::FrameQuarantineWithoutCopy, 0, "I1"),
     (Mutant::CountAggregateUsage, 10_000, "I7"),
-    (Mutant::CollectWhatFramesRelyOn, 21_000, "I2"),
+    (Mutant::CollectWhatFramesRelyOn, 30_000, "I2"),
     (Mutant::MisclassifyCallerFault, 2001, "I8"),
     (Mutant::SumCaptureSources, 1, "I7"),
     (Mutant::DropRollupMarker, 0, "I2"),
