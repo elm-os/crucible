@@ -211,7 +211,7 @@ impl Identity {
             status: UserStatus::Active,
             email_verified_at: None,
         };
-        // A first project, so the owner can make a key and send telemetry at once.
+        // A first project, so the owner can make a key and send telemetry at once, with its salt (contract 9.3).
         let project = Project {
             id: ProjectId::from_uuid(self.env.new_id()),
             name: "Default".to_owned(),
@@ -224,6 +224,9 @@ impl Identity {
             version: 1,
             deleted_at: None,
         };
+        let salt = self
+            .sealer
+            .new_project_salt(self.env.rng.as_ref(), project.id);
         let token_hash = token.map(token::hash);
         let user_id = user.id;
         let result = transaction(self.store.as_ref(), move |tx| {
@@ -260,6 +263,7 @@ impl Identity {
                     })
                     .await?;
                 tx.projects().insert(&project).await?;
+                tx.project_salts().insert_if_absent(&salt).await?;
                 Ok(Ok(()))
             })
         })

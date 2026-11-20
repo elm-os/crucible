@@ -285,7 +285,8 @@ impl PgControlStore {
              d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs), \
              d28 AS (DELETE FROM deletion_node_acks), d29 AS (DELETE FROM deletion_requests), \
              d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
-             d32 AS (DELETE FROM nodes), s2 AS (SELECT setval('deletion_seq', 1, false)) \
+             d32 AS (DELETE FROM nodes), d33 AS (DELETE FROM widgets), d34 AS (DELETE FROM dashboards), \
+             s2 AS (SELECT setval('deletion_seq', 1, false)) \
              SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -330,6 +331,20 @@ impl PgControlStore {
             )
             .await?;
         Ok(rows.len() as u64)
+    }
+
+    /// Deletes a project's row, as project deletion will at its end (contract 13.4); no repository does that
+    /// yet. `false` when there is no such row.
+    #[cfg(feature = "test-support")]
+    pub async fn delete_project_row(&self, id: ProjectId) -> Result<bool, TxError> {
+        let deleted = self
+            .handle
+            .write(
+                "DELETE FROM projects WHERE id = $1 RETURNING 1",
+                &[P::Uuid(id.uuid())],
+            )
+            .await?;
+        Ok(deleted == 1)
     }
 
     async fn begin_tx(&self) -> Result<PgTx, TxError> {
@@ -543,6 +558,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn alert_events(&self) -> &dyn AlertEventRepo {
+                $($deref)* self.handle
+            }
+            fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
                 $($deref)* self.handle
             }
             fn leases(&self) -> &dyn Leases {
@@ -1360,14 +1378,17 @@ impl ProjectSaltRepo for Handle {
                 &[P::Uuid(project_id.uuid())],
             )
             .await?;
-        first(&rows, |c| {
-            Ok(SealedProjectSalt {
-                project_id: ProjectId::from_uuid(c.uuid()?),
-                key_id: c.text()?,
-                nonce: c.bytes()?,
-                ciphertext: c.bytes()?,
-            })
-        })
+        first(&rows, project_salt)
+    }
+
+    async fn list(&self) -> Result<Vec<SealedProjectSalt>, TxError> {
+        let rows = self
+            .read(
+                "SELECT project_id, key_id, nonce, ciphertext FROM project_salts ORDER BY project_id",
+                &[],
+            )
+            .await?;
+        every(&rows, project_salt)
     }
 
     async fn insert_if_absent(&self, salt: &SealedProjectSalt) -> Result<bool, TxError> {
@@ -1385,6 +1406,25 @@ impl ProjectSaltRepo for Handle {
             .await?;
         Ok(inserted == 1)
     }
+
+    async fn delete(&self, project_id: ProjectId) -> Result<bool, TxError> {
+        let deleted = self
+            .write(
+                "DELETE FROM project_salts WHERE project_id = $1 RETURNING 1",
+                &[P::Uuid(project_id.uuid())],
+            )
+            .await?;
+        Ok(deleted == 1)
+    }
+}
+
+fn project_salt(c: &mut Cols<'_>) -> Result<SealedProjectSalt, TxError> {
+    Ok(SealedProjectSalt {
+        project_id: ProjectId::from_uuid(c.uuid()?),
+        key_id: c.text()?,
+        nonce: c.bytes()?,
+        ciphertext: c.bytes()?,
+    })
 }
 
 fn lease(c: &mut Cols<'_>) -> Result<Lease, TxError> {

@@ -1093,7 +1093,8 @@ pub(crate) struct Marks {
 /// span is an MCP operation or carries a tool list, which the same pass over its attributes sees.
 ///
 /// The residual `attributes` hold what no source consumed, less the keys that must never be stored
-/// ([`mcp_keys::never_stored`]) and, on an MCP operation, the keys its projector consumes (contract 9.1).
+/// ([`mcp_keys::never_stored`]) and, on an MCP operation, the keys its projector consumes (contract 9.1). The
+/// attributes of `events` and `links` leave out the keys that must never be stored too (contract 3.5).
 pub(crate) fn map_span<'a>(
     index: &Index,
     chosen: &'static DialectTable,

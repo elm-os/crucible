@@ -211,6 +211,29 @@ pub mod registry {
         labels: &[],
     };
 
+    /// Time a blocking job waited for a permit of the CPU budget, by stage (`ingest_prepare`).
+    pub static CPU_PERMIT_WAIT: HistogramDef = HistogramDef {
+        name: "crucible_cpu_permit_wait_microseconds",
+        help: "Time a blocking job waited for a permit of the CPU budget, in microseconds, by stage.",
+        labels: &["stage"],
+        buckets: PERMIT_BUCKETS,
+    };
+
+    /// Time a blocking job held its permit of the CPU budget, from the grant to the end of the job, by stage.
+    pub static CPU_PERMIT_HOLD: HistogramDef = HistogramDef {
+        name: "crucible_cpu_permit_hold_microseconds",
+        help: "Time a blocking job held its permit of the CPU budget, from the grant to the end of the job, in \
+               microseconds, by stage.",
+        labels: &["stage"],
+        buckets: PERMIT_BUCKETS,
+    };
+
+    /// The bounds of the CPU budget's histograms, in microseconds.
+    const PERMIT_BUCKETS: &[u64] = &[
+        10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000,
+        1_000_000, 5_000_000,
+    ];
+
     /// Fact writes answered, by outcome (`accepted`, or the reason for a refusal).
     pub static INGEST_FACT_WRITES: CounterDef = CounterDef {
         name: "crucible_ingest_fact_writes_total",
@@ -375,6 +398,16 @@ pub mod registry {
                 INGEST_INFLIGHT_BYTES.name,
                 INGEST_INFLIGHT_BYTES.labels,
                 &[],
+            ),
+            (
+                CPU_PERMIT_WAIT.name,
+                CPU_PERMIT_WAIT.labels,
+                CPU_PERMIT_WAIT.buckets,
+            ),
+            (
+                CPU_PERMIT_HOLD.name,
+                CPU_PERMIT_HOLD.labels,
+                CPU_PERMIT_HOLD.buckets,
             ),
             (INGEST_FACT_WRITES.name, INGEST_FACT_WRITES.labels, &[]),
             (INGEST_FACTS.name, INGEST_FACTS.labels, &[]),

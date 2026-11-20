@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, ensure};
-use crucible_control::{ControlStore, MigrationKind, Repos};
+use crucible_control::{ControlStore, JsonDoc, MigrationKind, Project, Repos, SealedProjectSalt};
 use crucible_control_pg::{PgConfig, PgControlStore, migrate};
 use crucible_env::Env;
+use crucible_records::{ProjectId, Uuid};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 
 use crate::Outcome;
@@ -106,6 +107,46 @@ async fn reconnect(env: &Env, store: &PgControlStore) -> Result<String> {
     ))
 }
 
+/// Deleting a project's row deletes its salt (contract 13.4, `ON DELETE CASCADE`). No repository deletes a
+/// project's row yet, so the model has nothing to compare here.
+async fn salt_goes_with_its_project(store: &PgControlStore) -> Result<String> {
+    store.reset().await?;
+    let id = ProjectId::from_uuid(Uuid::from_v7_parts(1_800_000_000_900, 900));
+    let project = Project {
+        id,
+        name: "Doomed".to_owned(),
+        slug: "doomed".to_owned(),
+        settings: JsonDoc::empty(),
+        retention_days: None,
+        payload_retention_days: None,
+        mcp_content_retention_days: None,
+        config_version: 1,
+        version: 1,
+        deleted_at: None,
+    };
+    store.projects().insert(&project).await?;
+    let salt = SealedProjectSalt {
+        project_id: id,
+        key_id: "master-0".to_owned(),
+        nonce: vec![1; 24],
+        ciphertext: vec![2; 48],
+    };
+    ensure!(
+        store.project_salts().insert_if_absent(&salt).await?,
+        "the salt was not stored"
+    );
+    ensure!(
+        store.delete_project_row(id).await?,
+        "the project's row was not deleted"
+    );
+    ensure!(
+        store.project_salts().get(id).await?.is_none(),
+        "the salt outlived its project's row"
+    );
+    store.reset().await?;
+    Ok("deleting a project's row deleted its salt".to_owned())
+}
+
 /// Runs the differential and the server-only rows against the Postgres at `url`.
 pub async fn run(env: &Env, url: &str) -> Vec<Outcome> {
     let config = config(url);
@@ -162,6 +203,10 @@ pub async fn run(env: &Env, url: &str) -> Vec<Outcome> {
         "PG3 lost connections are replaced",
         reconnect(env, &store).await,
     );
+    push(
+        "PG4 a project's salt goes with its row",
+        salt_goes_with_its_project(&store).await,
+    );
     store.close();
     outcomes
 }
@@ -182,6 +227,7 @@ fn row_name(script: &str) -> &'static str {
         "lifecycle" => {
             "PgModel differential: lifecycle (nodes, deletion requests, actions, floors)"
         }
+        "dashboards" => "PgModel differential: dashboards (widget sets, versions, cascade)",
         _ => "PgModel differential",
     }
 }

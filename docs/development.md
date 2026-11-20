@@ -146,6 +146,13 @@ password_file = "/run/secrets/postgres"
   `_file` twin. Given both in one layer, the file is used and a warning says so.
 - `sql.statements_per_hour` (default 1,800) is the hourly allowance of each project's SQL workspace identity. A run
   through the API is three statements, two checks and the query. The value is applied to ClickHouse at every start.
+- `cpu.permits` (`CRUCIBLE_CPU_PERMITS`) is the CPU budget: how many blocking jobs (the inflate, transcode, scan
+  and frame compression of ingest requests) run at once. The default is 8 per CPU the process may use, which
+  counts its CPU affinity and cgroup quota. A request beyond it waits its turn without holding a thread, and the
+  runtime keeps 8 blocking threads more for the blocking work that takes no permit (disk reads, name lookups,
+  password hashing). The default is a multiple of the CPUs because the jobs share the CPUs with the runtime's
+  workers, which run the rest of ingest and the shipper: with one permit per CPU, a burst on the perf gate's small
+  rig acknowledged 12 to 26% fewer spans per second than with an unbounded blocking pool.
 - An unknown key in the file is an error that names the nearest known key. An unknown `CRUCIBLE_*` variable is a
   warning.
 - `server.keys_file` is for a server without `[postgres]`; given both, the configuration is refused with what to do.
@@ -167,10 +174,10 @@ Startup, in order:
 
 1. The WAL is opened and recovered, and the listeners start. Ingest answers 503 and `/readyz` answers 503 with the
    reason until step 4 has finished.
-2. With `--migrate`, schema step `0001_schema_base` and access step `0002_access_service` are applied as the admin
-   user. Both are idempotent, so the flag can stay on. Without Postgres nothing records which steps ran and both
-   are applied each time; with Postgres the ledger decides (see above). This preview migrates a single-node
-   server only.
+2. With `--migrate`, the ClickHouse schema and access steps (`0001_schema_base`, `0002_access_service`,
+   `0003_access_workspace`, `0004_span_usage_aggregate`) are applied as the admin user. Each is idempotent, so the
+   flag can stay on. Without Postgres nothing records which steps ran and all are applied each time; with Postgres
+   the ledger decides (see above). Crucible migrates a single-node ClickHouse server.
 3. Startup detection and the self-tests run (ClickHouse 26.3 or newer, every setting and function Crucible uses,
    one block inserted twice with one token leaves one row, every service identity sees a known row). A failure is
    logged and retried with a pause that grows from 1 s to 15 s, so Crucible can start before ClickHouse does.
@@ -185,11 +192,10 @@ The passwords of the four generated ClickHouse users (`crucible_ingest`, `crucib
 `crucible_maint`) are never configured or stored. Each is HKDF-SHA256 of the master key with the info string
 `crucible/clickhouse-identity/v1/<user>/<generation>` (generation 0), as 64 hexadecimal characters; ClickHouse
 receives only its SHA-256. The users are created once, so a ClickHouse that was migrated under one master key
-refuses a server started with another: detection fails and `/readyz` says so. Key rotation will arrive with
-`crucible admin rotate-keys`.
+refuses a server started with another: detection fails and `/readyz` says so.
 
-The key that signs API cursors is derived the same way, with the info string `crucible/cursor-signing/v1/0`, until
-signing keys move to the control plane. Every server started with the same master key opens the cursors of the
+The key that signs API cursors is derived the same way, with the info string `crucible/cursor-signing/v1/0`.
+Every server started with the same master key opens the cursors of the
 others, across restarts. Without ClickHouse no list issues a cursor, and a random key made at startup only lets
 the API refuse the cursors it is sent.
 
