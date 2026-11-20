@@ -1,0 +1,32 @@
+{
+  "schema": "crucible.conformance.scenario/v1",
+  "id": "agent-feedback",
+  "kind": "agent",
+  "title": "Feedback goes to the project's feedback route with the secret key, after the spans that ended before it",
+  "steps": [
+    { "step": "answer", "observe": { "name": "answer", "type": "agent", "context": { "session_id": "conformance-session" } } },
+    {
+      "step": "thumbs-up",
+      "feedback": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "name": "helpful",
+        "value": 1,
+        "comment": "good answer",
+        "idempotency_key": "conformance-feedback-1"
+      }
+    },
+    {
+      "step": "tone",
+      "feedback": {
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "span_id": "00f067aa0ba902b7",
+        "name": "tone",
+        "value": "friendly",
+        "score_id": "reviewer-2",
+        "data_type": "categorical",
+        "metadata": { "source": "thumbs", "rating": 4 }
+      }
+    },
+    { "step": "resolved", "feedback": { "session_id": "conformance-session", "name": "resolved", "value": true } }
+  ]
+}

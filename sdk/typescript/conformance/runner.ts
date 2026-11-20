@@ -7,6 +7,8 @@ import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
+  type Feedback,
+  feedback,
   flush,
   type ObservationType,
   type ObservationUpdate,
@@ -148,6 +150,37 @@ async function observeNode(node: AgentNode): Promise<void> {
   );
 }
 
+/** A `feedback` step: the route's body fields in snake_case, plus the caller's Idempotency-Key. */
+interface FeedbackStep {
+  name: string;
+  value: number | string | boolean;
+  trace_id?: string;
+  span_id?: string;
+  session_id?: string;
+  score_id?: string;
+  data_type?: Feedback["dataType"];
+  comment?: string;
+  metadata?: Record<string, unknown>;
+  retracted?: boolean;
+  idempotency_key?: string;
+}
+
+function feedbackOf(step: FeedbackStep): Feedback {
+  return {
+    name: step.name,
+    value: step.value,
+    ...(step.trace_id !== undefined && { traceId: step.trace_id }),
+    ...(step.span_id !== undefined && { spanId: step.span_id }),
+    ...(step.session_id !== undefined && { sessionId: step.session_id }),
+    ...(step.score_id !== undefined && { scoreId: step.score_id }),
+    ...(step.data_type !== undefined && { dataType: step.data_type }),
+    ...(step.comment !== undefined && { comment: step.comment }),
+    ...(step.metadata !== undefined && { metadata: step.metadata }),
+    ...(step.retracted !== undefined && { retracted: step.retracted }),
+    ...(step.idempotency_key !== undefined && { idempotencyKey: step.idempotency_key }),
+  };
+}
+
 async function runAgent(spec: RunSpec): Promise<void> {
   initFromSpec(spec);
   let shut = false;
@@ -156,6 +189,8 @@ async function runAgent(spec: RunSpec): Promise<void> {
       await observeNode(step.observe as AgentNode);
     } else if ("flush" in step) {
       await flush();
+    } else if ("feedback" in step) {
+      feedback(feedbackOf(step.feedback as FeedbackStep));
     } else if ("checkpoint" in step) {
       const response = await fetch(spec.checkpoint_url, {
         method: "POST",

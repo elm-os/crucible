@@ -57,6 +57,13 @@ func runAgent(spec runSpec) error {
 			if err := checkpoint(spec.CheckpointURL, st.Checkpoint); err != nil {
 				return fmt.Errorf("step %s: %w", st.Step, err)
 			}
+		case st.Feedback != nil:
+			f := st.Feedback
+			crucible.SendFeedback(crucible.Feedback{
+				TraceID: f.TraceID, SpanID: f.SpanID, SessionID: f.SessionID, Name: f.Name, ScoreID: f.ScoreID,
+				Value: f.Value, DataType: f.DataType, Comment: f.Comment, Metadata: f.Metadata,
+				Retracted: f.Retracted, IdempotencyKey: f.IdempotencyKey,
+			})
 		case st.Shutdown != nil:
 			if err := crucible.Shutdown(ctx); err != nil {
 				return fmt.Errorf("step %s: %w", st.Step, err)

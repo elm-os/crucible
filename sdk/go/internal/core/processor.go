@@ -18,13 +18,15 @@ const (
 	KeyRelease   = "crucible.release"
 )
 
-// Stats counts what happened to finished spans.
+// Stats counts what happened to finished spans and to scores.
 type Stats struct {
 	Exported     uint64
 	QueueFull    uint64
 	ExportFailed uint64
 	// QueuedBytes is the estimated size of the queued spans and of the batch being exported (see spanBytes).
 	QueuedBytes int64
+	// FeedbackSent, FeedbackDropped and FeedbackFailed count scores (see FeedbackSender).
+	FeedbackSent, FeedbackDropped, FeedbackFailed uint64
 }
 
 // spanOverheadBytes is what a span costs beyond its strings: ids, times, kind, status code, links and the

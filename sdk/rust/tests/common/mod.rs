@@ -1,10 +1,10 @@
 //! A fake OTLP/HTTP collector on a loopback port: a hyper server that decodes every export and keeps the raw
-//! request, so tests can check spans, headers and that no secret reaches the wire.
+//! request, so tests can check spans, headers and that no secret reaches the wire. It also answers the feedback
+//! route, `POST /api/v1/projects/{id}/feedback`: with the scripted answers while any are left, else with 201.
 
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
-use std::convert::Infallible;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -38,7 +38,15 @@ pub enum Mode {
     Stall,
 }
 
-/// One export request as received.
+/// One scripted answer to a feedback post. Status 0 closes the connection without answering.
+#[derive(Clone, Debug, Default)]
+pub struct FeedbackAnswer {
+    pub status: u16,
+    pub headers: Vec<(&'static str, &'static str)>,
+    pub body: &'static str,
+}
+
+/// One request as received: an export or a feedback post.
 #[derive(Clone, Debug)]
 pub struct Export {
     pub path: String,
@@ -71,6 +79,7 @@ impl Span {
 pub struct Collector {
     pub endpoint: String,
     exports: Arc<Mutex<Vec<Export>>>,
+    answers: Arc<Mutex<VecDeque<FeedbackAnswer>>>,
     task: JoinHandle<()>,
 }
 
@@ -85,11 +94,14 @@ impl Collector {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let exports = Arc::new(Mutex::new(Vec::new()));
-        let recorded = exports.clone();
+        let answers = Arc::new(Mutex::new(VecDeque::new()));
+        let (recorded, scripted) = (exports.clone(), answers.clone());
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let recorded = recorded.clone();
-                let service = service_fn(move |request| answer(request, mode, recorded.clone()));
+                let (recorded, scripted) = (recorded.clone(), scripted.clone());
+                let service = service_fn(move |request| {
+                    answer(request, mode, recorded.clone(), scripted.clone())
+                });
                 tokio::spawn(async move {
                     let _served = http1::Builder::new()
                         .serve_connection(TokioIo::new(stream), service)
@@ -100,8 +112,25 @@ impl Collector {
         Self {
             endpoint: format!("http://{address}"),
             exports,
+            answers,
             task,
         }
+    }
+
+    /// Scripts the answers to the next feedback posts, in order.
+    pub fn answer_feedback(&self, answers: impl IntoIterator<Item = FeedbackAnswer>) {
+        self.answers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(answers);
+    }
+
+    /// The feedback posts, in arrival order.
+    pub fn feedback(&self) -> Vec<Export> {
+        self.exports()
+            .into_iter()
+            .filter(|e| is_feedback(&e.path))
+            .collect()
     }
 
     pub fn exports(&self) -> Vec<Export> {
@@ -122,7 +151,11 @@ impl Collector {
     /// Every span of every export, in arrival order.
     pub fn spans(&self) -> Vec<Span> {
         let mut spans = Vec::new();
-        for export in self.exports() {
+        for export in self
+            .exports()
+            .into_iter()
+            .filter(|e| e.path == "/v1/traces")
+        {
             let request = ExportTraceServiceRequest::decode(export.body.as_slice()).unwrap();
             for resource_spans in request.resource_spans {
                 let resource = resource_spans
@@ -162,11 +195,30 @@ impl Collector {
     }
 }
 
+fn is_feedback(path: &str) -> bool {
+    path.strip_prefix("/api/v1/projects/")
+        .and_then(|rest| rest.strip_suffix("/feedback"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// An error that makes hyper close the connection without an answer.
+#[derive(Debug)]
+struct Hangup;
+
+impl std::fmt::Display for Hangup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("hang up")
+    }
+}
+
+impl std::error::Error for Hangup {}
+
 async fn answer(
     request: Request<Incoming>,
     mode: Mode,
     exports: Arc<Mutex<Vec<Export>>>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+    answers: Arc<Mutex<VecDeque<FeedbackAnswer>>>,
+) -> Result<Response<Full<Bytes>>, Hangup> {
     if mode == Mode::Stall {
         std::future::pending::<()>().await;
     }
@@ -183,10 +235,29 @@ async fn answer(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(Export {
-            path,
+            path: path.clone(),
             headers,
             body,
         });
+    if is_feedback(&path) {
+        let scripted = answers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front();
+        let answer = scripted.unwrap_or(FeedbackAnswer {
+            status: 201,
+            headers: vec![("content-type", "application/json")],
+            body: r#"{"key":"k"}"#,
+        });
+        if answer.status == 0 {
+            return Err(Hangup);
+        }
+        let mut response = Response::builder().status(answer.status);
+        for (name, value) in answer.headers {
+            response = response.header(name, value);
+        }
+        return Ok(response.body(Full::new(Bytes::from(answer.body))).unwrap());
+    }
     Ok(Response::builder()
         .header("content-type", "application/x-protobuf")
         .body(Full::new(Bytes::new()))

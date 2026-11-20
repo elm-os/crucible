@@ -23,6 +23,8 @@ struct RunSpec {
     transport: Option<String>,
     otlp: Otlp,
     checkpoint_url: String,
+    api_url: String,
+    project_id: String,
     keys: Keys,
     sdk: SdkOptions,
     server: Option<ServerInfo>,
@@ -86,6 +88,7 @@ struct Step {
     flush: Option<Value>,
     checkpoint: Option<String>,
     shutdown: Option<Value>,
+    feedback: Option<agent::FeedbackStep>,
 }
 
 fn main() -> ExitCode {
@@ -136,6 +139,8 @@ async fn run() -> Result<(), String> {
 fn init_sdk(spec: &RunSpec) -> Result<(), String> {
     crucible_sdk::init(crucible_sdk::Options {
         endpoint: spec.otlp.endpoint.clone(),
+        api_url: spec.api_url.clone(),
+        project_id: spec.project_id.clone(),
         secret_key: spec.keys.secret_key.clone(),
         service_name: spec.sdk.service_name.clone(),
         environment: spec.sdk.environment.clone(),

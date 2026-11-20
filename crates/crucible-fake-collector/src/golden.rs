@@ -14,7 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::collector::{Event, RecordedSpan};
+use crate::collector::{API_PATH, Event, FeedbackPost, RecordedSpan};
 use crate::hash::{mrtr_hash, session_hash};
 use crate::records::Records;
 use crate::registry::{Registry, Rule, Target};
@@ -286,6 +286,28 @@ pub struct Planted {
     pub value: String,
 }
 
+/// The `Idempotency-Key` an expected feedback post carries.
+#[derive(Clone, Debug)]
+pub enum KeyExpectation {
+    /// This key, which the caller passed.
+    Literal(String),
+    /// A key the SDK made: it matches, and differs from every other key the SDK made in the case.
+    Matches(Regex),
+}
+
+/// One expected post to the feedback route (contract 12.6).
+#[derive(Clone, Debug)]
+pub struct FeedbackExpectation {
+    /// Report name.
+    pub id: String,
+    /// The `Idempotency-Key` header.
+    pub idempotency_key: KeyExpectation,
+    /// The JSON body; numbers compare by value.
+    pub body: Json,
+    /// Expectation ids of spans whose export arrives before this post.
+    pub after: Vec<String>,
+}
+
 /// A scenario's golden.
 #[derive(Clone, Debug)]
 pub struct Golden {
@@ -299,6 +321,8 @@ pub struct Golden {
     pub absent: Vec<Vec<(String, Expected)>>,
     /// Checkpoint name to expectation ids whose spans arrive before it.
     pub checkpoints: BTreeMap<String, Vec<String>>,
+    /// The posts to the feedback route, in the order they must arrive.
+    pub feedback: Vec<FeedbackExpectation>,
 }
 
 /// `goldens/common.json`.
@@ -322,6 +346,18 @@ struct GoldenFile {
     absent: Vec<BTreeMap<String, Json>>,
     #[serde(default)]
     checkpoints: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    feedback: Vec<FeedbackFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeedbackFile {
+    id: String,
+    idempotency_key: Json,
+    body: Json,
+    #[serde(default)]
+    after: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -637,14 +673,65 @@ impl Golden {
         if raw.forbidden_strings.iter().any(|p| p.value.is_empty()) {
             return Err(err("a forbidden string is empty".to_owned()));
         }
+        let feedback = feedback_expectations(raw.feedback, scenario, &ids).map_err(err)?;
         Ok(Self {
             forbidden_strings: raw.forbidden_strings,
             spans,
             every_span: checks(raw.every_span, registry, kind).map_err(err)?,
             absent,
             checkpoints: raw.checkpoints,
+            feedback,
         })
     }
+}
+
+/// Parses the expected feedback posts: one per feedback step of the scenario, in step order.
+fn feedback_expectations(
+    raw: Vec<FeedbackFile>,
+    scenario: &Scenario,
+    span_ids: &[&str],
+) -> Result<Vec<FeedbackExpectation>, String> {
+    let steps = scenario
+        .steps
+        .iter()
+        .filter(|s| s.feedback.is_some())
+        .count();
+    if raw.len() != steps {
+        return Err(format!(
+            "feedback lists {} posts; the scenario has {steps} feedback steps",
+            raw.len()
+        ));
+    }
+    raw.into_iter()
+        .map(|f| {
+            let id = f.id;
+            let err = |e: &str| format!("feedback {id:?}: {e}");
+            let idempotency_key = match &f.idempotency_key {
+                Json::String(key) => KeyExpectation::Literal(key.clone()),
+                Json::Object(o) if o.len() == 1 => match o.get("matches").and_then(Json::as_str) {
+                    Some(pattern) => KeyExpectation::Matches(
+                        Regex::new(pattern).map_err(|e| err(&format!("matches: {e}")))?,
+                    ),
+                    None => {
+                        return Err(err("idempotency_key is a string or {\"matches\": <regex>}"));
+                    }
+                },
+                _ => return Err(err("idempotency_key is a string or {\"matches\": <regex>}")),
+            };
+            if !f.body.is_object() {
+                return Err(err("body is a JSON object"));
+            }
+            if let Some(bad) = f.after.iter().find(|a| !span_ids.contains(&a.as_str())) {
+                return Err(err(&format!("after names unknown span {bad:?}")));
+            }
+            Ok(FeedbackExpectation {
+                idempotency_key,
+                body: f.body,
+                after: f.after,
+                id,
+            })
+        })
+        .collect()
 }
 
 /// One failed check.
@@ -781,7 +868,7 @@ impl<'a> Eval<'a> {
             .enumerate()
             .filter_map(|(i, e)| match e {
                 Event::Export(export) => Some((i, export)),
-                Event::Checkpoint(_) => None,
+                Event::Checkpoint(_) | Event::Feedback(_) => None,
             })
             .flat_map(|(i, export)| export.spans.iter().map(move |s| (i, s)))
             .collect();
@@ -834,6 +921,137 @@ impl<'a> Eval<'a> {
         let bound = self.bind();
         self.rules();
         self.golden_extras(&bound);
+        self.feedback(&bound);
+    }
+
+    /// The posts to the feedback route: as many as the golden expects, in its order, each to the project's route
+    /// with the secret key, a JSON body equal to the expected one and its `Idempotency-Key`.
+    fn feedback(&mut self, bound: &BTreeMap<String, &'a RecordedSpan>) {
+        let expected: &[FeedbackExpectation] = self.golden.map_or(&[], |g| g.feedback.as_slice());
+        let posts: Vec<(usize, &'a FeedbackPost)> = self
+            .input
+            .events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Event::Feedback(post) => Some((i, post)),
+                _ => None,
+            })
+            .collect();
+        self.check(
+            posts.len() == expected.len(),
+            None,
+            "posts to the feedback route",
+            expected.len().to_string(),
+            || posts.len().to_string(),
+            Some("12.6"),
+        );
+        let constants = &self.input.suite.constants;
+        let route = format!("{API_PATH}/projects/{}/feedback", constants.project_id);
+        let bearer = format!("Bearer {}", constants.keys.secret_key);
+        let basic = format!(
+            "Basic {}",
+            STANDARD.encode(format!(
+                "{}:{}",
+                constants.keys.public_key, constants.keys.secret_key
+            ))
+        );
+        let mut made: Vec<&str> = Vec::new();
+        for (e, (at, post)) in expected.iter().zip(posts.iter().copied()) {
+            let id = Some(e.id.as_str());
+            self.check(
+                post.path == route,
+                id,
+                "the project's feedback route",
+                format!("POST {route}"),
+                || format!("POST {}", post.path),
+                Some("12.6"),
+            );
+            let media = post
+                .content_type
+                .as_deref()
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            self.check(
+                media == "application/json",
+                id,
+                "feedback Content-Type",
+                "application/json",
+                || format!("{:?}", post.content_type),
+                Some("12.6"),
+            );
+            let auth = post.authorization.as_deref();
+            self.check(
+                auth == Some(bearer.as_str()) || auth == Some(basic.as_str()),
+                id,
+                "feedback Authorization",
+                "Bearer <secret key> or Basic base64(<public key>:<secret key>) with the run spec's keys",
+                || match auth {
+                    None => "absent".to_owned(),
+                    Some(value) => format!(
+                        "a {} credential that is not the run's key",
+                        value.split(' ').next().unwrap_or("malformed")
+                    ),
+                },
+                Some("11.3"),
+            );
+            let key = post.idempotency_key.as_deref();
+            let (ok, want) = match &e.idempotency_key {
+                KeyExpectation::Literal(literal) => {
+                    (key == Some(literal.as_str()), literal.clone())
+                }
+                KeyExpectation::Matches(regex) => {
+                    let fresh = key.is_some_and(|k| regex.is_match(k) && !made.contains(&k));
+                    if let Some(k) = key {
+                        made.push(k);
+                    }
+                    (
+                        fresh,
+                        format!("a key the SDK made, matching {}, used once", regex.as_str()),
+                    )
+                }
+            };
+            self.check(
+                ok,
+                id,
+                "Idempotency-Key",
+                want,
+                || key.map_or_else(|| "absent".to_owned(), str::to_owned),
+                Some("12.5"),
+            );
+            let body: Option<Json> = serde_json::from_slice(&post.body).ok();
+            self.check(
+                body.as_ref().is_some_and(|b| json_equal(b, &e.body)),
+                id,
+                "feedback body",
+                e.body.to_string(),
+                || String::from_utf8_lossy(&post.body).into_owned(),
+                Some("12.6"),
+            );
+            for span in &e.after {
+                let exported = bound.get(span).and_then(|bound_span| {
+                    self.spans
+                        .iter()
+                        .find(|(_, s)| std::ptr::eq(*s, *bound_span))
+                        .map(|(i, _)| *i)
+                });
+                self.check(
+                    exported.is_some_and(|i| i < at),
+                    id,
+                    format!("posted after the span {span:?} was exported"),
+                    "the span's export first",
+                    || match exported {
+                        None => "the span never arrived".to_owned(),
+                        Some(_) => "the post came first".to_owned(),
+                    },
+                    Some("12.6"),
+                );
+            }
+        }
     }
 
     fn exports(&mut self) {
@@ -852,7 +1070,7 @@ impl<'a> Eval<'a> {
             .iter()
             .filter_map(|e| match e {
                 Event::Export(x) => Some(x),
-                Event::Checkpoint(_) => None,
+                Event::Checkpoint(_) | Event::Feedback(_) => None,
             })
             .collect();
         self.check(
@@ -990,7 +1208,7 @@ impl<'a> Eval<'a> {
                     Event::Export(x) => {
                         memchr::memmem::find(&x.body, value.as_bytes()).map(|_| (i, x))
                     }
-                    Event::Checkpoint(_) => None,
+                    Event::Checkpoint(_) | Event::Feedback(_) => None,
                 });
             let place = found.map(|(_, export)| {
                 export
@@ -1705,6 +1923,22 @@ fn equals(value: Option<&Value>, want: &Json) -> bool {
                     .all(|(item, want)| equals(Some(item), want))
         }
         _ => false,
+    }
+}
+
+/// Equal JSON values, numbers compared by value: an SDK may send the score `1` as `1.0`.
+fn json_equal(a: &Json, b: &Json) -> bool {
+    match (a, b) {
+        (Json::Number(x), Json::Number(y)) => x.as_f64() == y.as_f64(),
+        (Json::Array(x), Json::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| json_equal(x, y))
+        }
+        (Json::Object(x), Json::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| json_equal(v, w)))
+        }
+        _ => a == b,
     }
 }
 
