@@ -30,6 +30,15 @@ fn header<'a>(export: &'a Export, name: &str) -> &'a str {
         .unwrap_or("")
 }
 
+/// Flushes, expects an error that says every one of `parts`, and expects the next flush to be clean.
+async fn flush_fails_saying(parts: &[&str]) {
+    let error = crucible_sdk::flush().await.unwrap_err().to_string();
+    for part in parts {
+        assert!(error.contains(part), "{error:?} does not say {part:?}");
+    }
+    crucible_sdk::flush().await.unwrap();
+}
+
 async fn until(what: &str, condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while !condition() {
@@ -198,7 +207,7 @@ async fn a_409_conflict_is_retried_and_a_reused_key_is_not() {
             ..helpful()
         });
     }
-    crucible_sdk::flush().await.unwrap();
+    flush_fails_saying(&["answered 409 (idempotency_key_reused)"]).await;
     let names: Vec<Value> = collector
         .feedback()
         .iter()
@@ -223,7 +232,12 @@ async fn a_refusal_is_not_retried_and_counts_as_failed() {
         name: "bad#name".to_owned(),
         ..helpful()
     });
-    crucible_sdk::flush().await.unwrap();
+    flush_fails_saying(&[
+        &format!("{ROUTE} answered 422 (validation_failed)"),
+        "Options::api_url",
+        "Options::project_id",
+    ])
+    .await;
     assert_eq!(collector.feedback().len(), 1);
     let stats = crucible_sdk::stats();
     assert_eq!((stats.feedback_sent, stats.feedback_failed), (0, 1));
@@ -332,7 +346,7 @@ async fn without_a_project_id_feedback_is_dropped_and_counted() {
     let collector = Collector::start(Mode::Accept).await;
     init(&collector, |_| {}).await;
     crucible_sdk::feedback(helpful());
-    crucible_sdk::flush().await.unwrap();
+    flush_fails_saying(&["Options::project_id is empty"]).await;
     assert!(collector.feedback().is_empty());
     assert_eq!(crucible_sdk::stats().feedback_dropped, 1);
 }

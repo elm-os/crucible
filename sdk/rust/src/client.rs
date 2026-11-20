@@ -238,21 +238,16 @@ pub fn init(options: Options) -> Result<(), InitError> {
     Ok(())
 }
 
-/// Exports every span that has ended and sends every queued score, and returns the export error if there is one.
-/// Before [`init`] it does nothing. It waits at most `Options::export_timeout` for the spans and as long again for
-/// the scores.
+/// Exports every span that has ended and sends every queued score. It returns the export error, else why the last
+/// score that was not sent since the previous flush was dropped or failed. Before [`init`] it does nothing. It
+/// waits at most `Options::export_timeout` for the spans and as long again for the scores.
 pub async fn flush() -> Result<(), FlushError> {
     let Some(client) = active() else {
         return Ok(());
     };
     let spans = client.pipeline.flush().await;
-    if !client.feedback.flush().await && spans.is_ok() {
-        return Err(FlushError(format!(
-            "the queued scores were not all sent within {:?}; raise Options::export_timeout if the server is slow",
-            client.export_timeout
-        )));
-    }
-    spans
+    let scores = client.feedback.flush().await.map_err(FlushError);
+    spans.and(scores)
 }
 
 /// Exports what has ended, sends the queued scores and stops; [`init`] may be called again afterwards. Spans that

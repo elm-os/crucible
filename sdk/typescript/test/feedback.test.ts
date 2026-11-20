@@ -164,6 +164,53 @@ test("a refusal is not retried and counts as failed", async () => {
   expect(stats().feedbackSent).toBe(before.feedbackSent);
 });
 
+test("the first refusal and the first drop are each reported once, with what to change", async () => {
+  await shutdown();
+  const warnings: string[] = [];
+  const spy = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
+    warnings.push(String(warning));
+  });
+  const saved = process.env.CRUCIBLE_PROJECT_ID;
+  delete process.env.CRUCIBLE_PROJECT_ID;
+  try {
+    init({ endpoint: collector.url, secretKey: collector.key, projectId: PROJECT });
+    const notFound = '{"code":"not_found","detail":"no resource exists at this path"}';
+    collector.feedbackAnswers.push(
+      { status: 404, body: notFound },
+      { status: 404, body: notFound },
+    );
+    feedback({ traceId: TRACE, name: "helpful", value: 1 });
+    feedback({ traceId: TRACE, name: "helpful", value: 2 });
+    await flush();
+    expect(stats().feedbackFailed).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      `${ROUTE} answered 404 (not_found: no resource exists at this path)`,
+    );
+    expect(warnings[0]).toContain("apiUrl (CRUCIBLE_API_URL)");
+    await shutdown();
+    init({ endpoint: collector.url, secretKey: collector.key });
+    feedback({ traceId: TRACE, name: "helpful", value: 1 });
+    feedback({ traceId: TRACE, name: "helpful", value: 2 });
+    expect(stats().feedbackDropped).toBe(2);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toContain("CRUCIBLE_PROJECT_ID");
+  } finally {
+    spy.mockRestore();
+    if (saved !== undefined) {
+      process.env.CRUCIBLE_PROJECT_ID = saved;
+    }
+    await shutdown();
+    init({
+      endpoint: collector.url,
+      secretKey: collector.key,
+      projectId: PROJECT,
+      flushIntervalMs: 60_000,
+      exportTimeoutMs: 5_000,
+    });
+  }
+});
+
 test("a connection that fails never reaches the caller: three attempts, then counted as failed", async () => {
   const before = stats();
   collector.feedbackAnswers.push({ status: 0 }, { status: 0 }, { status: 0 });

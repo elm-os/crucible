@@ -122,7 +122,8 @@ func randomID() string {
 // Tracer returns the client's tracer.
 func (c *Client) Tracer() trace.Tracer { return c.tracer }
 
-// Flush exports every span that has ended and sends every queued score. It returns the export error, if any.
+// Flush exports every span that has ended and sends every queued score. It returns the export error, else the
+// feedback sender's.
 func (c *Client) Flush(ctx context.Context) error {
 	err := c.processor.ForceFlush(ctx)
 	if ferr := c.feedback.Flush(ctx); err == nil {

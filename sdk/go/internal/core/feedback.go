@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -22,7 +23,8 @@ import (
 // it flushes the span queue: the route answers 404 for a trace Crucible has not received, so the spans that ended
 // before the call go first. A failed connection, a timeout, 408, 429, 5xx and a conflict 409 are retried, three
 // attempts in all, after Retry-After (at most 10 s) or else 1 s and 2 s, with the same body and Idempotency-Key, so
-// Crucible writes the score once.
+// Crucible writes the score once. Flush returns why the last score that was not sent since the previous Flush was
+// dropped or failed, with what to change.
 
 const (
 	// feedbackQueue bounds the scores waiting to be sent, the one being sent included.
@@ -34,6 +36,8 @@ const (
 
 // feedbackBackoff is the wait before the second and third attempts when the answer has no Retry-After.
 var feedbackBackoff = [...]time.Duration{time.Second, 2 * time.Second}
+
+const feedbackSettings = "scores go to Options.APIURL, the API listener, under Options.ProjectID, the key's project, with a secret key that has the write scope"
 
 // FeedbackBody is the route's request body.
 type FeedbackBody struct {
@@ -70,6 +74,8 @@ type FeedbackSender struct {
 	mu     sync.Mutex
 	seq    uint64
 	closed bool
+	// failure is why the last score that was not sent since the previous Flush was dropped or failed.
+	failure string
 
 	work     chan work
 	stop     chan struct{}
@@ -107,6 +113,7 @@ func NewFeedbackSender(url, secretKey string, flushSpans func(context.Context) e
 func (s *FeedbackSender) Add(body FeedbackBody, key string) {
 	if s.url == "" {
 		s.dropped.Add(1)
+		s.fail("crucible: a score was dropped because Options.ProjectID is empty; set it to the key's project (crucible admin create-key prints it as project_id)")
 		return
 	}
 	encoded, err := json.Marshal(body)
@@ -132,24 +139,41 @@ func (s *FeedbackSender) Add(body FeedbackBody, key string) {
 	}
 }
 
-// Flush waits until every score queued before the call is handled, or ctx ends.
+// Flush waits until every score queued before the call is handled, or ctx ends. It returns why the last score
+// that was not sent since the previous Flush was dropped or failed.
 func (s *FeedbackSender) Flush(ctx context.Context) error {
 	reply := make(chan struct{})
 	select {
 	case s.work <- work{reply: reply}:
 	case <-s.done:
-		return nil
+		return s.takeFailure()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	select {
 	case <-reply:
-		return nil
 	case <-s.done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	return s.takeFailure()
+}
+
+func (s *FeedbackSender) fail(reason string) {
+	s.mu.Lock()
+	s.failure = reason
+	s.mu.Unlock()
+}
+
+func (s *FeedbackSender) takeFailure() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reason := s.failure
+	s.failure = ""
+	if reason == "" {
+		return nil
+	}
+	return errors.New(reason)
 }
 
 // Shutdown sends what is queued and stops. When ctx ends first, the request in flight is abandoned and the scores
@@ -204,22 +228,25 @@ func (s *FeedbackSender) run() {
 				_ = s.flushSpans(ctx)
 				cancel()
 			}
+			sent, reason := s.post(w.item)
 			switch {
-			case s.post(w.item):
+			case sent:
 				s.sent.Add(1)
 			case s.ctx.Err() != nil:
 				s.dropped.Add(1)
 			default:
 				s.failed.Add(1)
+				s.fail("crucible: a score was not sent: " + reason + "; " + feedbackSettings)
 			}
 		}
 		s.pending.Add(-1)
 	}
 }
 
-// post sends one score, retrying what may succeed later; it reports whether Crucible accepted it.
-func (s *FeedbackSender) post(item *feedbackItem) bool {
+// post sends one score, retrying what may succeed later; it reports whether Crucible accepted it, and why not.
+func (s *FeedbackSender) post(item *feedbackItem) (bool, string) {
 	var wait time.Duration
+	var reason string
 	for attempt := range feedbackAttempts {
 		if attempt > 0 {
 			t := time.NewTimer(wait)
@@ -227,28 +254,29 @@ func (s *FeedbackSender) post(item *feedbackItem) bool {
 			case <-t.C:
 			case <-s.ctx.Done():
 				t.Stop()
-				return false
+				return false, reason
 			}
 		}
-		sent, retry, after := s.request(item)
+		sent, retry, after, why := s.request(item)
 		if sent || !retry {
-			return sent
+			return sent, why
 		}
+		reason = why
 		wait = feedbackBackoff[min(attempt, len(feedbackBackoff)-1)]
 		if after >= 0 {
 			wait = after
 		}
 	}
-	return false
+	return false, reason
 }
 
-// request sends one attempt. after is the answer's Retry-After, or -1 without one.
-func (s *FeedbackSender) request(item *feedbackItem) (sent, retry bool, after time.Duration) {
+// request sends one attempt. after is the answer's Retry-After, or -1 without one; reason says why it was not sent.
+func (s *FeedbackSender) request(item *feedbackItem) (sent, retry bool, after time.Duration, reason string) {
 	ctx, cancel := context.WithTimeout(s.ctx, feedbackTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(item.body))
 	if err != nil {
-		return false, false, -1
+		return false, false, -1, err.Error()
 	}
 	req.Header.Set("Authorization", "Bearer "+s.secretKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -256,17 +284,35 @@ func (s *FeedbackSender) request(item *feedbackItem) (sent, retry bool, after ti
 	req.Header.Set("User-Agent", "crucible-sdk-go/"+Version)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return false, true, -1
+		return false, true, -1, s.url + " could not be reached (" + err.Error() + ")"
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, false, 0
+		return true, false, 0, ""
 	}
+	reason = s.url + " answered " + strconv.Itoa(resp.StatusCode) + detail(body)
 	if !retryable(resp.StatusCode, body) {
-		return false, false, -1
+		return false, false, -1, reason
 	}
-	return false, true, retryAfter(resp.Header.Get("Retry-After"))
+	return false, true, retryAfter(resp.Header.Get("Retry-After")), reason
+}
+
+// problem is the part of a problem body that says what went wrong.
+type problem struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+func detail(body []byte) string {
+	var p problem
+	if json.Unmarshal(body, &p) != nil || (p.Code == "" && p.Detail == "") {
+		return ""
+	}
+	if p.Detail == "" {
+		return " (" + p.Code + ")"
+	}
+	return " (" + p.Code + ": " + p.Detail + ")"
 }
 
 // retryable reports whether an answer may change on a later attempt: a timeout, throttling, a server fault or a key
@@ -278,10 +324,8 @@ func retryable(status int, body []byte) bool {
 	case status != http.StatusConflict:
 		return false
 	}
-	var problem struct {
-		Code string `json:"code"`
-	}
-	return json.Unmarshal(body, &problem) == nil && problem.Code == "conflict"
+	var p problem
+	return json.Unmarshal(body, &p) == nil && p.Code == "conflict"
 }
 
 func retryAfter(header string) time.Duration {

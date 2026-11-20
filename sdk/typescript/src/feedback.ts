@@ -6,7 +6,8 @@
 // received, so the spans that ended before the call go first. A failed connection, a timeout, 408, 429, 5xx and a
 // `conflict` 409 are retried, three attempts in all, after `Retry-After` (at most 10 s) or else 1 s and 2 s, with
 // the same body and Idempotency-Key, so Crucible writes the score once. Nothing is thrown to the caller: a score
-// that cannot be queued counts as dropped, one that Crucible refuses or that fails every attempt as failed.
+// that cannot be queued counts as dropped, one that Crucible refuses or that fails every attempt as failed, and the
+// first of each is reported once as a process warning (code CRUCIBLE_FEEDBACK) that says what to change.
 
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -77,8 +78,14 @@ interface Item {
   key: string;
 }
 
-/** How one request ended: accepted, refused for good, or worth another attempt after an optional wait. */
-type Outcome = "sent" | "refused" | { retryAfterMs: number | undefined };
+const SETTINGS =
+  "scores go to apiUrl (CRUCIBLE_API_URL), the API listener, under projectId (CRUCIBLE_PROJECT_ID), the key's project, with a secret key that has the write scope";
+
+/** How one request ended: accepted, or not and why, and whether another attempt may succeed and after what wait. */
+type Outcome =
+  | { sent: true }
+  | { sent: false; reason: string; retry: false }
+  | { sent: false; reason: string; retry: true; retryAfterMs: number | undefined };
 
 export class FeedbackSender {
   readonly #options: SenderOptions;
@@ -94,6 +101,8 @@ export class FeedbackSender {
   #sent = 0;
   #dropped = 0;
   #failed = 0;
+  #warnedDrop = false;
+  #warnedFailure = false;
 
   constructor(options: SenderOptions) {
     this.#options = options;
@@ -109,16 +118,30 @@ export class FeedbackSender {
 
   /** Queues one score, or drops and counts it. Never throws. */
   add(feedback: Feedback): void {
-    if (this.#closed || this.#options.url === undefined || this.#queue.length >= QUEUE_LIMIT) {
+    if (this.#closed) {
       this.#dropped += 1;
+      return;
+    }
+    if (this.#options.url === undefined) {
+      this.#drop(
+        "Crucible feedback() has no project id, so the score was dropped: pass the projectId option to init() or set CRUCIBLE_PROJECT_ID to the key's project (`crucible admin create-key` prints it as project_id).",
+      );
+      return;
+    }
+    if (this.#queue.length >= QUEUE_LIMIT) {
+      this.#drop(
+        `Crucible feedback() queue is full (${QUEUE_LIMIT} scores), so scores are being dropped; check that ${this.#options.url} answers.`,
+      );
       return;
     }
     let body: string;
     try {
       body = JSON.stringify(wire(feedback));
-    } catch {
+    } catch (error) {
       // Metadata that is not JSON (a cycle, a bigint) cannot be sent.
-      this.#dropped += 1;
+      this.#drop(
+        `Crucible feedback() could not encode the score as JSON (${String(error)}), so it was dropped.`,
+      );
       return;
     }
     this.#seq += 1;
@@ -146,6 +169,14 @@ export class FeedbackSender {
     this.#abort.abort();
   }
 
+  #drop(message: string): void {
+    this.#dropped += 1;
+    if (!this.#warnedDrop) {
+      this.#warnedDrop = true;
+      process.emitWarning(message, { code: "CRUCIBLE_FEEDBACK" });
+    }
+  }
+
   async #drain(): Promise<void> {
     try {
       while (this.#queue.length > 0) {
@@ -159,13 +190,19 @@ export class FeedbackSender {
           this.#flushed = this.#seq;
           await this.#options.flushSpans();
         }
-        const sent = await this.#post(item);
-        if (sent) {
+        const failure = await this.#post(item);
+        if (failure === undefined) {
           this.#sent += 1;
         } else if (this.#stopped) {
           this.#dropped += 1;
         } else {
           this.#failed += 1;
+          if (!this.#warnedFailure) {
+            this.#warnedFailure = true;
+            process.emitWarning(`Crucible feedback() was not sent: ${failure}; ${SETTINGS}.`, {
+              code: "CRUCIBLE_FEEDBACK",
+            });
+          }
         }
         this.#queue.shift();
       }
@@ -175,27 +212,29 @@ export class FeedbackSender {
     }
   }
 
-  /** Sends one score, retrying what may succeed later; true when Crucible accepted it. */
-  async #post(item: Item): Promise<boolean> {
+  /** Sends one score, retrying what may succeed later; `undefined` when Crucible accepted it, else why not. */
+  async #post(item: Item): Promise<string | undefined> {
+    let reason = "";
     let wait = 0;
     for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
       if (attempt > 0) {
         try {
           await sleep(wait, undefined, { signal: this.#abort.signal, ref: false });
         } catch {
-          return false;
+          return reason;
         }
       }
       const outcome = await this.#request(item);
-      if (outcome === "sent") {
-        return true;
+      if (outcome.sent) {
+        return undefined;
       }
-      if (outcome === "refused") {
-        return false;
+      reason = outcome.reason;
+      if (!outcome.retry) {
+        return reason;
       }
       wait = outcome.retryAfterMs ?? BACKOFF_MS[attempt] ?? 0;
     }
-    return false;
+    return reason;
   }
 
   async #request(item: Item): Promise<Outcome> {
@@ -218,14 +257,17 @@ export class FeedbackSender {
       );
       const text = await response.text();
       if (response.ok) {
-        return "sent";
+        return { sent: true };
       }
+      const reason = `${url} answered ${response.status}${detail(text)}`;
       if (!retryable(response.status, text)) {
-        return "refused";
+        return { sent: false, reason, retry: false };
       }
-      return { retryAfterMs: retryAfter(response.headers.get("retry-after")) };
-    } catch {
-      return { retryAfterMs: undefined };
+      const wait = retryAfter(response.headers.get("retry-after"));
+      return { sent: false, reason, retry: true, retryAfterMs: wait };
+    } catch (error) {
+      const reason = `${url} could not be reached (${String(error)})`;
+      return { sent: false, reason, retry: true, retryAfterMs: undefined };
     }
   }
 }
@@ -253,20 +295,29 @@ function wire(feedback: Feedback): Record<string, unknown> {
   return body;
 }
 
+/** The `code` and `detail` of a problem body. */
+function problem(body: string): { code?: unknown; detail?: unknown } {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function detail(body: string): string {
+  const { code, detail: text } = problem(body);
+  const parts = [code, text].filter((part): part is string => typeof part === "string");
+  return parts.length > 0 ? ` (${parts.join(": ")})` : "";
+}
+
 /** Whether an answer may change on a later attempt: a timeout, throttling, a server fault or a key in flight. */
 function retryable(status: number, body: string): boolean {
   if (status === 408 || status === 429 || status >= 500) {
     return true;
   }
-  if (status !== 409) {
-    return false;
-  }
-  try {
-    // `conflict`: a request with this key is still running. `idempotency_key_reused` never changes.
-    return (JSON.parse(body) as { code?: unknown }).code === "conflict";
-  } catch {
-    return false;
-  }
+  // `conflict`: a request with this key is still running. `idempotency_key_reused` never changes.
+  return status === 409 && problem(body).code === "conflict";
 }
 
 function retryAfter(header: string | null): number | undefined {

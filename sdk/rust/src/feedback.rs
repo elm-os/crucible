@@ -8,10 +8,12 @@
 //! spans that ended before the call go first. A failed connection, a timeout, 408, 429, 5xx and a `conflict` 409
 //! are retried, three attempts in all, after `Retry-After` (at most 10 s) or else 1 s and 2 s, with the same body
 //! and `Idempotency-Key`, so Crucible writes the score once. Nothing reaches the caller: a score that cannot be
-//! queued counts as dropped, one that Crucible refuses or that fails every attempt as failed.
+//! queued counts as dropped, one that Crucible refuses or that fails every attempt as failed, and
+//! [`flush`](crate::flush) returns why the last score that was not sent since the previous flush was dropped or
+//! failed, with what to change.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use http::header::{CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
@@ -32,6 +34,7 @@ const ATTEMPTS: usize = 3;
 /// The waits before the second and third attempts when the answer has no `Retry-After`.
 const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(2)];
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(10);
+const SETTINGS: &str = "scores go to Options::api_url, the API listener, under Options::project_id, the key's project, with a secret key that has the write scope";
 
 /// A score on a trace (`trace_id`), a span (`trace_id` and `span_id`) or a session (`session_id`). Empty strings
 /// are left out of the request.
@@ -159,6 +162,21 @@ struct Counters {
     pending: AtomicU64,
     /// The sequence number of the latest queued score.
     seq: AtomicU64,
+    /// Why the last score that was not sent since the previous flush was dropped or failed.
+    failure: Mutex<Option<String>>,
+}
+
+impl Counters {
+    fn fail(&self, reason: String) {
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+    }
+
+    fn take_failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
 }
 
 /// The queue's handle: what [`feedback`], `flush`, `shutdown` and `stats` use.
@@ -228,7 +246,14 @@ impl Sender {
             metadata: feedback.metadata.as_ref(),
             retracted: feedback.retracted,
         });
-        let open = self.url.is_some() && !self.closed.load(Ordering::Acquire);
+        if self.url.is_none() {
+            counters.dropped.fetch_add(1, Ordering::Relaxed);
+            counters.fail(
+                "a score was dropped because Options::project_id is empty; set it to the key's project (crucible admin create-key prints it as project_id)".to_owned(),
+            );
+            return;
+        }
+        let open = !self.closed.load(Ordering::Acquire);
         let body = match body {
             Ok(body) if open && self.reserve() => Bytes::from(body),
             _ => {
@@ -262,10 +287,21 @@ impl Sender {
             .is_ok()
     }
 
-    /// Waits until every score queued before the call is handled, at most the export timeout. Reports whether
-    /// they were.
-    pub(crate) async fn flush(&self) -> bool {
-        self.request(Message::Flush, self.timeout).await
+    /// Waits until every score queued before the call is handled, at most the export timeout. Returns why the
+    /// last score that was not sent since the previous flush was dropped or failed, or that the wait ran out.
+    pub(crate) async fn flush(&self) -> Result<(), String> {
+        let handled = self.request(Message::Flush, self.timeout).await;
+        if let Some(reason) = self.counters.take_failure() {
+            return Err(reason);
+        }
+        if handled {
+            Ok(())
+        } else {
+            Err(format!(
+                "the queued scores were not all sent within {:?}; raise Options::export_timeout if the server is slow",
+                self.timeout
+            ))
+        }
     }
 
     /// Stops taking scores, waits up to `budget` for the queued ones and stops the worker; what is left then is
@@ -296,12 +332,12 @@ impl Sender {
     }
 }
 
-/// How one attempt ended.
+/// How one attempt ended, and why it was not accepted.
 enum Outcome {
     Sent,
-    Refused,
+    Refused(String),
     /// Worth another attempt, after `Retry-After` when the answer had one.
-    Retry(Option<Duration>),
+    Retry(String, Option<Duration>),
 }
 
 struct Worker {
@@ -337,12 +373,13 @@ impl Worker {
                     flushed = counters.seq.load(Ordering::Acquire);
                     let _flushed = tokio::time::timeout(self.timeout, self.pipeline.flush()).await;
                 }
-                if self.post(&item).await {
-                    &counters.sent
-                } else if *self.abandoned.borrow() {
-                    &counters.dropped
-                } else {
-                    &counters.failed
+                match self.post(&item).await {
+                    Ok(()) => &counters.sent,
+                    Err(_) if *self.abandoned.borrow() => &counters.dropped,
+                    Err(reason) => {
+                        counters.fail(format!("a score was not sent: {reason}; {SETTINGS}"));
+                        &counters.failed
+                    }
                 }
             };
             outcome.fetch_add(1, Ordering::Relaxed);
@@ -350,28 +387,31 @@ impl Worker {
         }
     }
 
-    /// Sends one score, retrying what may succeed later; true when Crucible accepted it.
-    async fn post(&mut self, item: &Item) -> bool {
+    /// Sends one score, retrying what may succeed later; `Err` says why Crucible did not accept it.
+    async fn post(&mut self, item: &Item) -> Result<(), String> {
+        let abandoned_reason = || "the shutdown ran out of time".to_owned();
         let mut wait = Duration::ZERO;
+        let mut reason = String::new();
         for attempt in 0..ATTEMPTS {
             if attempt > 0 && !self.pause(wait).await {
-                return false;
+                return Err(abandoned_reason());
             }
             let mut abandoned = self.abandoned.clone();
             let outcome = tokio::select! {
                 biased;
-                _ = abandoned.wait_for(|stop| *stop) => return false,
+                _ = abandoned.wait_for(|stop| *stop) => return Err(abandoned_reason()),
                 outcome = self.request(item) => outcome,
             };
             match outcome {
-                Outcome::Sent => return true,
-                Outcome::Refused => return false,
-                Outcome::Retry(after) => {
+                Outcome::Sent => return Ok(()),
+                Outcome::Refused(why) => return Err(why),
+                Outcome::Retry(why, after) => {
+                    reason = why;
                     wait = after.unwrap_or(BACKOFF[attempt.min(BACKOFF.len() - 1)]);
                 }
             }
         }
-        false
+        Err(reason)
     }
 
     /// Waits `wait`; false when a shutdown abandoned the queue first.
@@ -392,25 +432,39 @@ impl Worker {
             .body(item.body.clone());
         let Ok(request) = request else {
             // An Idempotency-Key that is not a header value can never be sent.
-            return Outcome::Refused;
+            return Outcome::Refused(format!(
+                "the Idempotency-Key {:?} is not a header value",
+                item.key
+            ));
         };
-        let Ok(response) = self.client.send_bytes(request).await else {
-            return Outcome::Retry(None);
+        let response = match self.client.send_bytes(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Outcome::Retry(
+                    format!("{} could not be reached ({error})", self.url),
+                    None,
+                );
+            }
         };
         let status = response.status();
         if status.is_success() {
             return Outcome::Sent;
         }
+        let why = format!(
+            "{} answered {}{}",
+            self.url,
+            status.as_u16(),
+            detail(response.body())
+        );
         if !retryable(status, response.body()) {
-            return Outcome::Refused;
+            return Outcome::Refused(why);
         }
-        Outcome::Retry(
-            response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(retry_after),
-        )
+        let after = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(retry_after);
+        Outcome::Retry(why, after)
     }
 }
 
@@ -427,6 +481,22 @@ fn retryable(status: StatusCode, body: &[u8]) -> bool {
         && serde_json::from_slice::<Value>(body)
             .ok()
             .is_some_and(|problem| problem.get("code") == Some(&Value::from("conflict")))
+}
+
+/// The `code` and `detail` of a problem body, for the failure reason.
+fn detail(body: &[u8]) -> String {
+    let Ok(problem) = serde_json::from_slice::<Value>(body) else {
+        return String::new();
+    };
+    let parts: Vec<&str> = ["code", "detail"]
+        .iter()
+        .filter_map(|key| problem.get(key).and_then(Value::as_str))
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(": "))
+    }
 }
 
 fn retry_after(header: &str) -> Option<Duration> {

@@ -28,10 +28,32 @@ func startFeedback(t *testing.T, c *collectortest.Collector) {
 
 func flushed(t *testing.T) {
 	t.Helper()
+	if err := flushError(t); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}
+
+// flushError flushes and returns Flush's error, which says why the last score that was not sent failed.
+func flushError(t *testing.T) error {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := crucible.Flush(ctx); err != nil {
-		t.Fatalf("Flush: %v", err)
+	return crucible.Flush(ctx)
+}
+
+func wantFlushError(t *testing.T, parts ...string) {
+	t.Helper()
+	err := flushError(t)
+	if err == nil {
+		t.Fatalf("Flush returned no error; want one saying %q", parts)
+	}
+	for _, part := range parts {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("Flush error %q does not say %q", err, part)
+		}
+	}
+	if err := flushError(t); err != nil {
+		t.Errorf("a second Flush returned %v; the reason is reported once", err)
 	}
 }
 
@@ -158,7 +180,7 @@ func TestFeedbackRetriesAConflictButNotAReusedKey(t *testing.T) {
 	)
 	crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "first", Value: 1})
 	crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "second", Value: 1})
-	flushed(t)
+	wantFlushError(t, "answered 409 (idempotency_key_reused)")
 	var names []string
 	for _, r := range c.Feedback() {
 		names = append(names, decoded(t, r)["name"].(string))
@@ -176,7 +198,7 @@ func TestFeedbackCountsARefusalWithoutRetrying(t *testing.T) {
 	startFeedback(t, c)
 	c.AnswerFeedback(collectortest.FeedbackAnswer{Status: 422, Body: `{"code":"validation_failed"}`})
 	crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "bad#name", Value: 1})
-	flushed(t)
+	wantFlushError(t, feedbackURL+" answered 422 (validation_failed)", "Options.APIURL", "Options.ProjectID")
 	if n := len(c.Feedback()); n != 1 {
 		t.Errorf("%d feedback posts, want 1", n)
 	}
@@ -239,7 +261,7 @@ func TestFeedbackWithoutAProjectIDIsDroppedAndCounted(t *testing.T) {
 	c := collectortest.New(t)
 	start(t, c, crucible.Options{})
 	crucible.SendFeedback(crucible.Feedback{TraceID: testTrace, Name: "helpful", Value: 1})
-	flushed(t)
+	wantFlushError(t, "Options.ProjectID is empty")
 	if n := len(c.Feedback()); n != 0 {
 		t.Errorf("%d feedback posts, want 0", n)
 	}

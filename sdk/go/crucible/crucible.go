@@ -128,8 +128,9 @@ func validate(opts Options) (core.Config, error) {
 	return cfg, nil
 }
 
-// Flush exports every span that has ended and sends every queued score. It returns the export error, if any, or
-// ctx's error when ctx ends first. Before Init it does nothing.
+// Flush exports every span that has ended and sends every queued score. It returns the export error, else why the
+// last score that was not sent since the previous Flush was dropped or failed, or ctx's error when ctx ends first.
+// Before Init it does nothing.
 func Flush(ctx context.Context) error {
 	if c := core.Active(); c != nil {
 		return c.Flush(ctx)
