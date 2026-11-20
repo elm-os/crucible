@@ -17,8 +17,15 @@ type Options struct {
 	// Endpoint is the base URL of the Crucible server, for example http://localhost:4318. Spans are sent to
 	// Endpoint + "/v1/traces". Plain http works.
 	Endpoint string
-	// SecretKey is a project secret key (csk_...) with the ingest scope. It is sent as a Bearer token.
+	// SecretKey is a project secret key (csk_...), sent as a Bearer token. The ingest scope sends spans and the
+	// write scope feedback; new keys have both.
 	SecretKey string
+	// ProjectID is the id of the key's project (a UUID), which SendFeedback needs; crucible admin create-key prints
+	// it as project_id. Without it, scores are dropped and counted.
+	ProjectID string
+	// APIURL is the base URL of the Crucible API listener, where SendFeedback posts. When empty it is Endpoint. The
+	// API listener (port 8080) also takes spans; the OTLP listener (port 4318) does not serve the API.
+	APIURL string
 
 	// ServiceName and ServiceVersion become the resource's service.name and service.version. An MCP
 	// server's name and version default to them.
@@ -82,6 +89,10 @@ func validate(opts Options) (core.Config, error) {
 	if !strings.HasPrefix(opts.SecretKey, "csk_") {
 		return core.Config{}, errors.New("crucible: Options.SecretKey does not start with csk_; sending telemetry needs a project secret key, not a public key (cpk_...)")
 	}
+	feedbackURL, err := feedbackRoute(opts)
+	if err != nil {
+		return core.Config{}, err
+	}
 	if opts.QueueSize < 0 {
 		return core.Config{}, errors.New("crucible: Options.QueueSize is negative; set it to 0 for the default of 2048")
 	}
@@ -103,6 +114,7 @@ func validate(opts Options) (core.Config, error) {
 		QueueBytes:     int64(opts.QueueBytes),
 		BatchSize:      defaultBatchSize,
 		FlushInterval:  opts.FlushInterval,
+		FeedbackURL:    feedbackURL,
 	}
 	if cfg.QueueSize == 0 {
 		cfg.QueueSize = defaultQueueSize
@@ -116,8 +128,8 @@ func validate(opts Options) (core.Config, error) {
 	return cfg, nil
 }
 
-// Flush exports every span that has ended. It returns the export error, if any, or ctx's error when ctx
-// ends first. Before Init it does nothing.
+// Flush exports every span that has ended and sends every queued score. It returns the export error, if any, or
+// ctx's error when ctx ends first. Before Init it does nothing.
 func Flush(ctx context.Context) error {
 	if c := core.Active(); c != nil {
 		return c.Flush(ctx)
@@ -125,8 +137,8 @@ func Flush(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown flushes, stops the client and lets Init be called again. When ctx ends first, the spans still
-// queued are dropped.
+// Shutdown flushes, stops the client and lets Init be called again. When ctx ends first, the spans and scores
+// still queued are dropped.
 func Shutdown(ctx context.Context) error {
 	c := core.Active()
 	if c == nil {
@@ -137,7 +149,7 @@ func Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Stats counts what happened to finished spans since Init.
+// Stats counts what happened to finished spans and to scores since Init.
 type Stats struct {
 	// Exported is the number of spans the server accepted.
 	Exported uint64
@@ -147,6 +159,13 @@ type Stats struct {
 	ExportFailed uint64
 	// QueuedBytes is the estimated size of the spans waiting for export and of the batch being exported.
 	QueuedBytes int64
+	// FeedbackSent is the number of scores the server accepted.
+	FeedbackSent uint64
+	// FeedbackDropped is the number of scores never sent: the feedback queue was full, Options.ProjectID is empty,
+	// or Shutdown ran out of time before them.
+	FeedbackDropped uint64
+	// FeedbackFailed is the number of scores the server refused, or that failed on every attempt.
+	FeedbackFailed uint64
 }
 
 // CurrentStats returns the counters of the process-wide client; zero before Init.
@@ -156,7 +175,10 @@ func CurrentStats() Stats {
 		return Stats{}
 	}
 	s := c.Stats()
-	return Stats{Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed, QueuedBytes: s.QueuedBytes}
+	return Stats{
+		Exported: s.Exported, QueueFull: s.QueueFull, ExportFailed: s.ExportFailed, QueuedBytes: s.QueuedBytes,
+		FeedbackSent: s.FeedbackSent, FeedbackDropped: s.FeedbackDropped, FeedbackFailed: s.FeedbackFailed,
+	}
 }
 
 // WithSession returns a context whose spans carry the session id (crucible.session.id).

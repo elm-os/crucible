@@ -1,5 +1,5 @@
-// Package core is the runtime shared by the public packages: the process-wide client, its span processor and
-// the values a context carries to every span.
+// Package core is the runtime shared by the public packages: the process-wide client, its span processor, its
+// feedback sender and the values a context carries to every span.
 package core
 
 import (
@@ -48,13 +48,16 @@ type Config struct {
 	QueueBytes     int64
 	BatchSize      int
 	FlushInterval  time.Duration
+	// FeedbackURL is the project's feedback route; empty without a project id.
+	FeedbackURL string
 }
 
-// Client is one configured exporter, span processor and tracer.
+// Client is one configured exporter, span processor, tracer and feedback sender.
 type Client struct {
 	provider  *sdktrace.TracerProvider
 	tracer    trace.Tracer
 	processor *Processor
+	feedback  *FeedbackSender
 	secretKey []byte
 }
 
@@ -85,6 +88,7 @@ func New(cfg Config) (*Client, error) {
 		provider:  provider,
 		tracer:    provider.Tracer(ScopeName, trace.WithInstrumentationVersion(Version)),
 		processor: processor,
+		feedback:  NewFeedbackSender(cfg.FeedbackURL, cfg.SecretKey, processor.ForceFlush),
 		secretKey: []byte(cfg.SecretKey),
 	}, nil
 }
@@ -118,14 +122,33 @@ func randomID() string {
 // Tracer returns the client's tracer.
 func (c *Client) Tracer() trace.Tracer { return c.tracer }
 
-// Flush exports every span that has ended.
-func (c *Client) Flush(ctx context.Context) error { return c.processor.ForceFlush(ctx) }
+// Flush exports every span that has ended and sends every queued score. It returns the export error, if any.
+func (c *Client) Flush(ctx context.Context) error {
+	err := c.processor.ForceFlush(ctx)
+	if ferr := c.feedback.Flush(ctx); err == nil {
+		err = ferr
+	}
+	return err
+}
 
-// Shutdown flushes and stops the client.
-func (c *Client) Shutdown(ctx context.Context) error { return c.provider.Shutdown(ctx) }
+// Shutdown flushes and stops the client: the spans first, then the scores.
+func (c *Client) Shutdown(ctx context.Context) error {
+	err := c.provider.Shutdown(ctx)
+	if ferr := c.feedback.Shutdown(ctx); err == nil {
+		err = ferr
+	}
+	return err
+}
 
-// Stats returns the processor's counters.
-func (c *Client) Stats() Stats { return c.processor.Stats() }
+// Feedback queues one score for the feedback route.
+func (c *Client) Feedback(body FeedbackBody, key string) { c.feedback.Add(body, key) }
+
+// Stats returns the processor's and the feedback sender's counters.
+func (c *Client) Stats() Stats {
+	s := c.processor.Stats()
+	s.FeedbackSent, s.FeedbackDropped, s.FeedbackFailed = c.feedback.Counts()
+	return s
+}
 
 var active atomic.Pointer[Client]
 
