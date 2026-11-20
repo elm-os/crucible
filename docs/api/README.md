@@ -527,7 +527,7 @@ different parameters must all hold; each takes at most 100 values.
 |---|---|
 | `environment`, `release`, `version`, `level`, `user_id`, `session_id` | The field's value |
 | `observation_type` | A span type, such as `generation` or `tool` |
-| `tags` | A tag the trace (trace list) or the span (span list) was sent with |
+| `tags` | A tag of the trace (trace list) or the span (span list) |
 | `metadata` | A metadata entry, as `key=value` (split at the first `=`) |
 | `name` | A case-insensitive substring of the name, once |
 
