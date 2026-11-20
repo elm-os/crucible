@@ -479,6 +479,29 @@ columns! { McpToolRollup, McpToolRollupCol, MCP_TOOL_ROLLUP, scoped;
     LastSeen "last_seen": MAX_DT64;
 }
 
+columns! { McpToolRollupHourly, McpToolRollupHourlyCol, MCP_TOOL_ROLLUP_HOURLY, scoped;
+    Side "side": e(EnumKind::McpSide);
+    Hour "hour": Ty::DateTime;
+    ServerName "server_name": LC;
+    DeployId "deploy_id": STR;
+    CaptureSource "capture_source": e(EnumKind::CaptureSource);
+    Era "era": e(EnumKind::Era);
+    Method "method": LC;
+    TargetName "target_name": LC;
+    ClientName "client_name": LC;
+    ErrorClass "error_class": e(EnumKind::ErrorClass);
+    CallerFault "caller_fault": U8;
+    MarkerEpoch "marker_epoch": Ty::Uuid;
+    MarkerBatchSeq "marker_batch_seq": U64;
+    MarkerAt "marker_at": MARKER_AT;
+    Count "count": SUM_U64;
+    RequestBytes "request_bytes": SUM_U64;
+    ResponseBytes "response_bytes": SUM_U64;
+    DurHist "dur_hist": HIST;
+    SemconvHist "semconv_hist": SEMCONV_HIST;
+    LastSeen "last_seen": MAX_DT64;
+}
+
 columns! { McpDeploys, McpDeploysCol, MCP_DEPLOYS, scoped;
     ServerName "server_name": LC;
     DeployId "deploy_id": STR;

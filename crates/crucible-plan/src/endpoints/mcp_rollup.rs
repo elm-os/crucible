@@ -1,7 +1,7 @@
 //! The MCP analytics over the aggregating tables (contract 9.9): servers, tools, one tool, the error classes,
 //! clients by name, deploys and compare. These are the reads the 300 ms p95 dashboard target binds, so every
-//! plan here reads `mcp_tool_rollup`, `mcp_deploys` or `mcp_tool_inventory` and nothing else, in class
-//! `analytics`.
+//! plan here reads `mcp_tool_rollup` (with its hourly tier `mcp_tool_rollup_hourly` over a long window),
+//! `mcp_deploys` or `mcp_tool_inventory` and nothing else, in class `analytics`.
 //!
 //! Rollup plans group by `error_class` and `caller_fault`, both key columns: the service folds the groups into
 //! calls, errors and the caller-fault calls it reports apart (contract 9.2), and merges their histograms.
@@ -11,7 +11,7 @@ use crucible_schema::{Column, ColumnRef, McpDeploysCol, McpToolInventoryCol, Mcp
 
 use crate::build::RetentionClamp;
 use crate::class::{Caller, QueryClass};
-use crate::endpoints::mcp::{McpRead, TOOLS_CALL, and};
+use crate::endpoints::mcp::{McpRead, TOOLS_CALL, and, rollup_plan};
 use crate::error::PlanError;
 use crate::literal::Literal;
 use crate::node::{Aggregate, Fill, Measure, Node, Step, TimeSeries};
@@ -50,7 +50,8 @@ fn grouped(
     let mut columns: Vec<ColumnRef> = group.iter().map(|c| c.column_ref()).collect();
     columns.extend([R::ErrorClass.column_ref(), R::CallerFault.column_ref()]);
     let aggregate = Aggregate::new(R::TABLE, and(parts), columns, measures)?;
-    clamp.plan(
+    rollup_plan(
+        clamp,
         scope,
         window,
         caller.class(QueryClass::Analytics),
@@ -141,7 +142,8 @@ pub fn mcp_tool_series(
         ],
     )?;
     let series = TimeSeries::new(aggregate, R::Minute, step, Fill::None)?;
-    clamp.plan(
+    rollup_plan(
+        clamp,
         scope,
         window,
         caller.class(QueryClass::Analytics),

@@ -17,9 +17,11 @@ use crate::mcp::{
 };
 use crate::service::{QueryService, Read};
 
-/// The tables of the rollup reads, for the quarantine rule.
-const ROLLUP: [TableId; 3] = [
+/// The tables of the rollup reads, for the quarantine rule: a read over a long window takes its whole hours from
+/// the hourly tier.
+const ROLLUP: [TableId; 4] = [
     TableId::McpToolRollup,
+    TableId::McpToolRollupHourly,
     TableId::McpDeploys,
     TableId::McpToolInventory,
 ];

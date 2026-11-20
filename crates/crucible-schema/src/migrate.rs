@@ -8,10 +8,13 @@
 //! The base schema always creates the tables as [`TABLES`] describes them now. A later schema step brings a
 //! database that an older base schema created to the same shape, and changes nothing on a new one.
 
-use crucible_records::TableId;
+use crucible_records::{TableId, Uuid};
 
-use crate::access::{AccessParams, service_statements};
-use crate::ddl::{DATABASE, Granularity, SQL_DATABASE, Variant, create_database, create_table};
+use crate::access::{
+    AccessParams, ingest_grant, mask_grant, service_policy, service_statements,
+};
+use crate::ddl::{DATABASE, Granularity, Ident, SQL_DATABASE, Variant, create_database, create_table};
+use crate::table::{PROJECT_ID, TableDef};
 use crate::tables::{TABLES, table};
 
 /// The column that [`schema_span_usage_aggregate`] adds.
@@ -36,12 +39,41 @@ pub const ACCESS_WORKSPACE: &str = "0003_access_workspace";
 /// The stable ledger id of the schema step that adds `span_core.usage_aggregate`.
 pub const SCHEMA_SPAN_USAGE_AGGREGATE: &str = "0004_span_usage_aggregate";
 
+/// The stable ledger id of the schema step that adds `mcp_tool_rollup_hourly` and copies the minute rollup
+/// into it.
+pub const SCHEMA_MCP_TOOL_ROLLUP_HOURLY: &str = "0005_mcp_tool_rollup_hourly";
+
 /// Every step id in ledger order.
-pub const LEDGER_ORDER: [(&str, StepKind); 4] = [
+pub const LEDGER_ORDER: [(&str, StepKind); 5] = [
     (SCHEMA_BASE, StepKind::Schema),
     (ACCESS_SERVICE, StepKind::Access),
     (ACCESS_WORKSPACE, StepKind::Access),
     (SCHEMA_SPAN_USAGE_AGGREGATE, StepKind::Schema),
+    (SCHEMA_MCP_TOOL_ROLLUP_HOURLY, StepKind::Schema),
+];
+
+/// The `marker_epoch` of the row of `mcp_tool_rollup_hourly` that records a finished copy of the minute rollup
+/// ([`schema_mcp_tool_rollup_hourly`]). Like every marker row it has the nil project, so no read sees it. Its
+/// time is the epoch, so it sits in partition `197001`, which holds no project's rows and which retention never
+/// drops. No WAL has this epoch: a WAL epoch carries the time it was made.
+pub const HOURLY_COPY_DONE: Uuid = Uuid::from_bytes([
+    0, 0, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1,
+]);
+
+/// The partition of the row that records a finished copy.
+const COPY_DONE_PARTITION: &str = "197001";
+
+/// The settings of [`schema_mcp_tool_rollup_hourly`] beyond the variant's DDL settings. The copy may run for a
+/// while on a large minute rollup: the server ends it after an hour, and the client waits for that limit. It
+/// spills its grouping to disk past 256 MiB and inserts in blocks of at most 262,144 rows, so it fits the 1.5 GB
+/// that a small ClickHouse server is given. Content deduplication is off, so a copy that an operator started
+/// again after an interrupted one (see the step) lands whole.
+const COPY_SETTINGS: [(&str, &str); 5] = [
+    ("max_execution_time", "3600"),
+    ("max_bytes_before_external_group_by", "268435456"),
+    ("min_insert_block_size_rows", "262144"),
+    ("min_insert_block_size_bytes", "67108864"),
+    ("insert_deduplicate", "0"),
 ];
 
 /// One forward-only, idempotent migration step. `id` is the key of the Postgres `schema_migrations` ledger.
@@ -58,7 +90,7 @@ pub struct MigrationStep {
     pub settings: &'static [(&'static str, &'static str)],
 }
 
-/// The base schema: both databases and the 18 tables.
+/// The base schema: both databases and every table.
 pub fn schema_base(variant: &Variant, granularity: Granularity) -> MigrationStep {
     let mut statements = vec![
         create_database(DATABASE, variant),
@@ -104,6 +136,147 @@ pub fn schema_span_usage_aggregate(variant: &Variant) -> MigrationStep {
         kind: StepKind::Schema,
         statements,
         settings: variant.ddl_settings(),
+    }
+}
+
+/// The settings of the hourly step on a variant: the variant's DDL settings, then [`COPY_SETTINGS`].
+fn hourly_step_settings(variant: &Variant) -> &'static [(&'static str, &'static str)] {
+    const SINGLE: [(&str, &str); 5] = COPY_SETTINGS;
+    const CLUSTERED: [(&str, &str); 8] = [
+        ("alter_sync", "2"),
+        ("wait_end_of_query", "1"),
+        ("distributed_ddl_entry_format_version", "8"),
+        COPY_SETTINGS[0],
+        COPY_SETTINGS[1],
+        COPY_SETTINGS[2],
+        COPY_SETTINGS[3],
+        COPY_SETTINGS[4],
+    ];
+    const CLOUD: [(&str, &str); 7] = [
+        ("alter_sync", "2"),
+        ("wait_end_of_query", "1"),
+        COPY_SETTINGS[0],
+        COPY_SETTINGS[1],
+        COPY_SETTINGS[2],
+        COPY_SETTINGS[3],
+        COPY_SETTINGS[4],
+    ];
+    match variant {
+        Variant::SingleNode => &SINGLE,
+        Variant::Clustered { .. } => &CLUSTERED,
+        Variant::Cloud => &CLOUD,
+    }
+}
+
+/// `toUUID('...')` of a UUID literal.
+fn uuid_sql(id: Uuid) -> String {
+    format!("toUUID('{id}')")
+}
+
+/// The condition that the copy of the minute rollup into its hourly tier has not finished: the tier holds no row
+/// of [`HOURLY_COPY_DONE`].
+fn copy_unfinished(tier: &TableDef) -> String {
+    format!(
+        "(SELECT count() FROM {DATABASE}.{} WHERE {PROJECT_ID} = {} AND marker_epoch = {} AND _partition_id = \
+         '{COPY_DONE_PARTITION}') = 0",
+        tier.name(),
+        uuid_sql(Uuid::NIL),
+        uuid_sql(HOURLY_COPY_DONE)
+    )
+}
+
+/// `INSERT INTO <tier> SELECT ... FROM <minute> GROUP BY ...`: every row of the minute rollup, merged per key with
+/// its minute cut to the hour, so that each hourly row holds what the minute rows of its hour hold. Marker rows
+/// (the nil project) keep their `marker_epoch` and `marker_batch_seq`, so the block of every batch whose minute
+/// pair the copy took reads as present in the tier as well, and the shipper does not send that batch's hourly
+/// rows a second time when it recovers the batch. Data rows get zero marker columns, as the shipper writes them.
+/// Nothing is copied once the copy has finished.
+fn copy_minute_rollup(minute: &TableDef, tier: &TableDef) -> String {
+    let nil = uuid_sql(Uuid::NIL);
+    let tier_time = tier.retention.time_column;
+    let (mut select, mut group) = (Vec::new(), Vec::new());
+    for (from, to) in minute.columns.iter().zip(tier.columns) {
+        let key = match to.ty.agg_fn() {
+            Some(f) => {
+                select.push(format!("{f}({})", from.name));
+                continue;
+            }
+            None => match to.name {
+                name if name == tier_time => format!("toStartOfHour({})", from.name),
+                "marker_epoch" => format!("if({PROJECT_ID} = {nil}, marker_epoch, {nil})"),
+                "marker_batch_seq" => format!("if({PROJECT_ID} = {nil}, marker_batch_seq, 0)"),
+                _ => {
+                    select.push(from.name.to_owned());
+                    group.push(from.name.to_owned());
+                    continue;
+                }
+            },
+        };
+        // An expression is grouped by an alias that names no column of the minute rollup.
+        let alias = format!("copied_{}", to.name);
+        select.push(format!("{key} AS {alias}"));
+        group.push(alias);
+    }
+    let columns: Vec<&str> = tier.columns.iter().map(|c| c.name).collect();
+    format!(
+        "INSERT INTO {DATABASE}.{} ({}) SELECT {} FROM {DATABASE}.{} WHERE {} GROUP BY {}",
+        tier.name(),
+        columns.join(", "),
+        select.join(", "),
+        minute.name(),
+        copy_unfinished(tier),
+        group.join(", ")
+    )
+}
+
+/// Adds `mcp_tool_rollup_hourly`, the hourly tier of `mcp_tool_rollup` (contract 3.10), and copies the minute
+/// rollup into it once:
+///
+/// 1. the table, the grants of `crucible_ingest` and `crucible_maint` on it, and its service policy (contract
+///    7.3), each idempotent;
+/// 2. a refusal when the tier holds rows but no record of a finished copy: an earlier copy stopped part-way, and
+///    the message says how to start it again;
+/// 3. the copy ([`copy_minute_rollup`]), unless it has finished;
+/// 4. the row that records the finished copy ([`HOURLY_COPY_DONE`]), unless it is there.
+///
+/// Steps 3 and 4 do nothing once the copy has finished, so the step can run on every start, as it does without
+/// Postgres. The shipper writes both tiers of every batch from this version on, and the step runs before the
+/// shipper starts, so every operation reaches the tier once: through the copy when its minute row was stored
+/// before the step, and through the shipper otherwise. Operations that a server of an earlier version ships after
+/// the step reach the minute rollup only.
+pub fn schema_mcp_tool_rollup_hourly(variant: &Variant, admin_user: &Ident) -> MigrationStep {
+    let minute = table(TableId::McpToolRollup);
+    let tier = table(TableId::McpToolRollupHourly);
+    let on = variant.on_cluster();
+    let unfinished = copy_unfinished(tier);
+    let refuse = format!(
+        "SELECT throwIf((SELECT count() FROM {DATABASE}.{name}) > 0 AND {unfinished}, 'The copy of \
+         {DATABASE}.{minute} into {DATABASE}.{name} stopped before it finished, so the hourly table is \
+         incomplete. Stop every Crucible server, run TRUNCATE TABLE {DATABASE}.{name} as the ClickHouse admin \
+         user, then migrate again (crucible migrate, or crucible serve --migrate).')",
+        name = tier.name(),
+        minute = minute.name(),
+    );
+    let done = format!(
+        "INSERT INTO {DATABASE}.{} ({PROJECT_ID}, marker_epoch, marker_at) SELECT {}, {}, now() WHERE {unfinished}",
+        tier.name(),
+        uuid_sql(Uuid::NIL),
+        uuid_sql(HOURLY_COPY_DONE)
+    );
+    MigrationStep {
+        id: SCHEMA_MCP_TOOL_ROLLUP_HOURLY,
+        kind: StepKind::Schema,
+        statements: vec![
+            // The tier's partition is monthly, so the granularity option changes nothing.
+            create_table(tier, variant, Granularity::Day),
+            ingest_grant(tier, &on),
+            mask_grant(tier, &on),
+            service_policy(tier.id, variant, admin_user),
+            refuse,
+            copy_minute_rollup(minute, tier),
+            done,
+        ],
+        settings: hourly_step_settings(variant),
     }
 }
 
@@ -219,7 +392,8 @@ mod tests {
                 SCHEMA_BASE,
                 ACCESS_SERVICE,
                 ACCESS_WORKSPACE,
-                SCHEMA_SPAN_USAGE_AGGREGATE
+                SCHEMA_SPAN_USAGE_AGGREGATE,
+                SCHEMA_MCP_TOOL_ROLLUP_HOURLY,
             ]
         );
         let mut sorted = ids.clone();
@@ -244,11 +418,15 @@ mod tests {
             let access = access_service(&variant, &params());
             let column = schema_span_usage_aggregate(&variant);
             assert_eq!(column.statements.len(), 1);
+            let hourly = schema_mcp_tool_rollup_hourly(&variant, &params().admin_user);
+            // The last three statements of the hourly step are the guarded copy (see its own test).
+            let (hourly_ddl, _) = hourly.statements.split_at(4);
             for statement in schema
                 .statements
                 .iter()
                 .chain(&access.statements)
                 .chain(&column.statements)
+                .chain(hourly_ddl)
             {
                 assert!(
                     statement.starts_with("GRANT") || statement.contains(" IF NOT EXISTS "),
@@ -290,6 +468,61 @@ mod tests {
             base.statements
                 .iter()
                 .any(|s| s.contains("`usage_aggregate`"))
+        );
+    }
+
+    /// The hourly step creates the tier with its grants and service policy, then copies the minute rollup once:
+    /// every data statement is guarded by the record of a finished copy, so the step changes nothing when it runs
+    /// again, and a copy that stopped part-way is refused with the fix.
+    #[test]
+    fn the_hourly_step_copies_the_minute_rollup_once() {
+        let admin = params().admin_user;
+        for variant in variants() {
+            let step = schema_mcp_tool_rollup_hourly(&variant, &admin);
+            assert_eq!(
+                (step.id, step.kind),
+                ("0005_mcp_tool_rollup_hourly", StepKind::Schema)
+            );
+            assert!(step.settings.starts_with(variant.ddl_settings()));
+            assert!(step.settings.ends_with(&COPY_SETTINGS));
+            let tier = table(TableId::McpToolRollupHourly);
+            let [create, ingest, maint, policy, refuse, copy, done] = step.statements.as_slice() else {
+                panic!("{:#?}", step.statements);
+            };
+            assert_eq!(*create, create_table(tier, &variant, Granularity::Week));
+            assert_eq!(*create, create_table(tier, &variant, Granularity::Day));
+            assert!(ingest.starts_with("GRANT") && ingest.ends_with("TO crucible_ingest"));
+            assert!(maint.contains("ALTER UPDATE(_row_exists) ON crucible.mcp_tool_rollup_hourly"));
+            assert_eq!(*policy, service_policy(tier.id, &variant, &admin));
+            let unfinished = copy_unfinished(tier);
+            assert!(refuse.starts_with("SELECT throwIf(") && refuse.contains("TRUNCATE TABLE"));
+            for guarded in [refuse, copy, done] {
+                assert!(guarded.contains(&unfinished), "{guarded}");
+                assert!(!guarded.contains(" ON CLUSTER "));
+            }
+            let columns: Vec<&str> = tier.columns.iter().map(|c| c.name).collect();
+            let insert = format!(
+                "INSERT INTO crucible.mcp_tool_rollup_hourly ({}) SELECT ",
+                columns.join(", ")
+            );
+            assert!(copy.starts_with(&insert), "{copy}");
+            for expected in [
+                "toStartOfHour(minute) AS copied_hour",
+                "sum(count)",
+                "sumMap(dur_hist)",
+                "sumMap(semconv_hist)",
+                "max(last_seen)",
+                "max(marker_at)",
+                " FROM crucible.mcp_tool_rollup WHERE ",
+                "GROUP BY project_id, side, copied_hour, server_name, deploy_id, capture_source, era, method,                  target_name, client_name, error_class, caller_fault, copied_marker_epoch, copied_marker_batch_seq",
+            ] {
+                assert!(copy.contains(expected), "{expected} in {copy}");
+            }
+            assert!(done.contains("SELECT toUUID('00000000-0000-0000-0000-000000000000'), toUUID('00000000-0000-7000-8000-000000000001'), now()"));
+        }
+        assert_eq!(
+            HOURLY_COPY_DONE.to_string(),
+            "00000000-0000-7000-8000-000000000001"
         );
     }
 

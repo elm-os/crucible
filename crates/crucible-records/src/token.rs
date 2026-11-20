@@ -431,7 +431,7 @@ mod proofs {
 
     fn any_token() -> BatchToken {
         let table: u8 = kani::any();
-        kani::assume((1..=18).contains(&table));
+        kani::assume((1..=19).contains(&table));
         let year: i32 = kani::any();
         let month: u8 = kani::any();
         let day: u8 = kani::any();

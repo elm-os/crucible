@@ -1,8 +1,8 @@
 //! The rows a span yields (contract sections 3.9, 3.10 and 6.4): `span_core`, `span_payload`, `trace_heads`,
 //! `trace_stats` and the rollup partials `session_rollup`, `user_rollup` and `span_metrics`; the rows an MCP
-//! operation yields (`mcp_ops`, `mcp_content` when content was captured, and the partials `mcp_tool_rollup` and,
-//! on the server side, `mcp_deploys`); the `mcp_tool_inventory` partial of a tool inventory entry; and the row a
-//! fact yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a
+//! operation yields (`mcp_ops`, `mcp_content` when content was captured, the partials `mcp_tool_rollup` and
+//! `mcp_tool_rollup_hourly` and, on the server side, `mcp_deploys`); the `mcp_tool_inventory` partial of a tool
+//! inventory entry; and the row a fact yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a
 //! test checks every row against its table's column types.
 
 use crucible_normalize::{Admission, NormalizedFrame};
@@ -545,6 +545,20 @@ pub fn mcp_tool_rollup_row(row: &McpToolRollupRow) -> Vec<Value> {
     cells
 }
 
+/// The `mcp_tool_rollup_hourly` data row of a partial: the cells of its `mcp_tool_rollup` row, with the minute
+/// cut to the start of its hour. The hourly tier has the minute rollup's columns in the same order
+/// (`crucible_schema::hourly_tier`), so the rows of one hour merge to what its minute rows merge to.
+pub fn mcp_tool_rollup_hourly_row(row: &McpToolRollupRow) -> Vec<Value> {
+    let mut cells = mcp_tool_rollup_row(row);
+    if let Some(time) = cells.get_mut(ROLLUP_TIME_CELL) {
+        *time = Value::U32(row.minute.floor_hour().start_minute());
+    }
+    cells
+}
+
+/// The position of the time column (`minute`, or `hour` in the hourly tier) in a row of the MCP tool rollup.
+const ROLLUP_TIME_CELL: usize = 2;
+
 /// The deploy a server-side MCP operation was seen on (contract 3.7), or `None` for a client-side operation.
 /// The rows of one batch with one key merge when their block is built, so each distinct deploy is one row of
 /// the batch.
@@ -819,9 +833,9 @@ pub struct RoutedRow {
 /// per span, and a `session_rollup` and a `user_rollup` partial per span that names a session or a user. Every
 /// row of a span routes by the span's `start_time`, read verbatim (contract 5.2).
 ///
-/// Then the rows of the frame's MCP operations: one `mcp_ops` row and one `mcp_tool_rollup` partial per
-/// operation, an `mcp_content` row when content was captured and an `mcp_deploys` partial for a server-side
-/// operation, routed by the operation's `start_time`, which is its span's; and one `mcp_tool_inventory` partial
+/// Then the rows of the frame's MCP operations: one `mcp_ops` row, one `mcp_tool_rollup` and one
+/// `mcp_tool_rollup_hourly` partial per operation, an `mcp_content` row when content was captured and an
+/// `mcp_deploys` partial for a server-side operation, routed by the operation's `start_time`, which is its span's; and one `mcp_tool_inventory` partial
 /// per tool inventory entry, routed by the reporting span's `start_time`.
 pub fn derive(
     frame: &NormalizedFrame,
@@ -848,7 +862,7 @@ pub(crate) fn derive_rows(
     defects: Defects,
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
     let count_aggregates = defects.count_aggregates;
-    let mut out = Vec::with_capacity(frame.spans.len() * 7 + frame.mcp_ops.len() * 4);
+    let mut out = Vec::with_capacity(frame.spans.len() * 7 + frame.mcp_ops.len() * 5);
     for (index, span) in frame.spans.iter().enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);
         let start = span.core.start_time;
@@ -924,6 +938,12 @@ pub(crate) fn derive_rows(
             at,
             op.span,
             mcp_tool_rollup_row(&rollup),
+        )?;
+        push(
+            TableId::McpToolRollupHourly,
+            at,
+            op.span,
+            mcp_tool_rollup_hourly_row(&rollup),
         )?;
         if let Some(deploy) = mcp_deploy(record) {
             push(TableId::McpDeploys, at, op.span, mcp_deploys_row(&deploy))?;

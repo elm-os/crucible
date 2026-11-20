@@ -20,6 +20,7 @@ mod pred;
 mod registry;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+mod tier;
 mod value;
 
 pub use build::{
@@ -40,6 +41,7 @@ pub use node::{
 };
 pub use plan::{BatchProbe, DeletePlan, DeleteTarget, ProbeKind, QueryPlan};
 pub use pred::{CmpOp, MAX_LIST, Pred};
+pub use tier::HourSplit;
 pub use registry::{
     Aggregation, DimensionId, DimensionType, MCP_METRICS_MAX_MEASURES, METRICS_MAX_BUCKETS,
     METRICS_MAX_DIMENSIONS, METRICS_MAX_MEASURES, METRICS_MAX_POINTS, METRICS_MAX_SERIES,

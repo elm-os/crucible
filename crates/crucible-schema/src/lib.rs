@@ -22,17 +22,19 @@ pub use access::{
 };
 pub use columns::{
     DedupSelftestCol, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,
-    McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol, SessionRollupCol, SpanCoreCol,
-    SpanMetricsCol, SpanPayloadCol, SqlProbeCol, TraceHeadsCol, TraceStatsCol, UserRollupCol,
+    McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol, McpToolRollupHourlyCol,
+    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, SqlProbeCol, TraceHeadsCol,
+    TraceStatsCol, UserRollupCol,
 };
 pub use ddl::{
     DATABASE, DEDUP_WINDOW, DEDUP_WINDOW_SECONDS, Granularity, Ident, InvalidIdent, SQL_DATABASE,
     Variant, create_database, create_table, partition_by,
 };
 pub use migrate::{
-    ACCESS_SERVICE, ACCESS_WORKSPACE, LEDGER_ORDER, MigrationStep, PolicyForm, SCHEMA_BASE,
-    SCHEMA_SPAN_USAGE_AGGREGATE, StepKind, WorkspaceAction, access_service, access_workspace_shape,
-    schema_base, schema_span_usage_aggregate,
+    ACCESS_SERVICE, ACCESS_WORKSPACE, HOURLY_COPY_DONE, LEDGER_ORDER, MigrationStep, PolicyForm,
+    SCHEMA_BASE, SCHEMA_MCP_TOOL_ROLLUP_HOURLY, SCHEMA_SPAN_USAGE_AGGREGATE, StepKind,
+    WorkspaceAction, access_service, access_workspace_shape, schema_base,
+    schema_mcp_tool_rollup_hourly, schema_span_usage_aggregate,
 };
 pub use partition::{
     CutoffDay, DAY_COUNT, OutOfRange, PartitionFate, PartitionRule, RetentionSettings, clamp_from,
@@ -42,7 +44,7 @@ pub use table::{
     Column, ColumnDef, ColumnRef, IndexKind, PROJECT_ID, PartitionExpr, Retention,
     RetentionBinding, SkipIndex, TEXT_INDEX_GRANULARITY, TableDef, TableKind, Tokenizer,
 };
-pub use tables::{TABLES, table};
+pub use tables::{TABLES, hourly_tier, table};
 pub use types::{AggFn, Codec, EnumKind, Ty, WireTy};
 pub use workspace::{
     CURATED_VIEWS, CuratedView, JOIN_SPILL_SETTINGS, PROBE_PROJECTS, SQL_PROFILE, SQL_QUOTA,
