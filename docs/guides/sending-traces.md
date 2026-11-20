@@ -189,14 +189,13 @@ in a fixed order, `events`, `links`, `resource_attributes`, `attributes`, `tool_
   lists every cap.
 - MCP arguments and results are captured only when an SDK is told to capture them, and the SDKs cut each at
   16 KiB by default before they send it. On the server they become the tool span's `input` and `output`, under the
-  caps above. The 8 MiB cap of [contract 3.5](../architecture/contracts.md#35-mcpoprecord) will apply to them once
-  MCP operations are recorded, which is planned.
+  caps above, and the arguments and result of its MCP operation, cut at 8 MiB each
+  ([contract 3.5](../architecture/contracts.md#35-mcpoprecord)).
 
 In one local run a span with a 9 MiB `crucible.input` was acknowledged with 200 and stored with its first
 8,388,608 bytes, its original size of 9,437,184 bytes and `input` in `truncated_fields`.
 
-The caps are fixed in this preview. Settings to change them per deployment (`ingest.max_field_bytes` and
-`ingest.max_span_bytes`) are planned.
+The caps are fixed; no setting changes them.
 
 The caps per request are separate: a body above 67,043,328 bytes, or with more than 50,000 spans, is refused whole
 with 413, and single spans are rejected through partial success as described above.
@@ -232,15 +231,17 @@ The trace list's `release` and `tags` fill in once the spans reach ClickHouse; u
 The server also reads and stores `crucible.tags` (span tags), `crucible.version`, `crucible.trace.metadata.<key>`,
 `crucible.trace.public`, `crucible.prompt.name`, `crucible.prompt.version`, `crucible.completion_start_time`,
 `crucible.model_parameters.<key>`, the `gen_ai.request.*` parameters, `gen_ai.provider.name` (or the deprecated
-`gen_ai.system`), `gen_ai.tool.name` and `gen_ai.response.finish_reasons`. No route returns them yet; views that show
-them are planned. The full list of keys is in [contract
-10.6](../architecture/contracts.md#106-source-keys-for-fields-without-a-semantic-convention).
+`gen_ai.system`), `gen_ai.tool.name` and `gen_ai.response.finish_reasons`. The SQL workspace's
+`crucible_sql.spans` and `crucible_sql.span_payloads` views and `crucible-jsonl` exports carry them. The full list
+of keys is in [contract 10.6](../architecture/contracts.md#106-source-keys-for-fields-without-a-semantic-convention).
 
-Spans that carry `mcp.method.name`, which the Crucible SDKs send with the keys of
+Spans that carry `mcp.method.name`, which the Crucible SDKs and `crucible proxy` send with the keys of
 [contract 9.1](../architecture/contracts.md#91-wire-attribute-contract), are stored as spans like any other: a
 `tools/call` span is typed `tool`, a tool error that a Crucible SDK reports has status `error`, and the MCP keys stay
-among the span's `attributes`, while captured arguments and results become the span's `input` and `output`.
-Recording them as MCP operations, and the MCP analytics routes and pages that read those, are planned.
+among the span's `attributes`, while captured arguments and results become the span's `input` and `output`. Each
+such span is also recorded as an MCP operation, on the client or the server side, with its method, target, outcome,
+error class, client, session and sizes; the SQL workspace's `crucible_sql.mcp_operations` and
+`crucible_sql.mcp_contents` views read them.
 
 Spans written with other instrumentation libraries' conventions are mapped too, by the dialect tables in
 `crates/crucible-compat`; this page covers the native keys.

@@ -9,9 +9,9 @@ OTLP/HTTP. It has one module that is always built and two optional features:
 | `crucible_sdk::mcp` (feature `mcp`) | `CrucibleService`, a wrapper for MCP servers built on rmcp 3.11 that records one span per operation in both protocol eras, over stdio and streamable HTTP |
 | `crucible_sdk::mcp_client` (feature `mcp-client`) | `TracedClient`, which records the calls of an rmcp client and carries their trace context to the server |
 
-The crate is not published yet. It is planned for crates.io as `crucible-sdk`; until then depend on it by path or
-by git. It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never links
-OpenSSL.
+Depend on it by git, `crucible-sdk = { git = "https://github.com/elm-os/crucible", features = ["mcp"] }`, or by
+path from a checkout. It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never
+links OpenSSL.
 
 ## Send traces from an agent
 
@@ -61,7 +61,7 @@ under an observation's context nest under it.
 | `service_name`, `service_version` | Resource `service.name` and `service.version` |
 | `environment` | Resource `deployment.environment.name` |
 | `release` | `crucible.release` on every span; when empty Crucible uses the service version |
-| `deploy_id` | Resource `crucible.deploy.id`; when empty, Crucible is designed to use the MCP server version (contracts 9.7) |
+| `deploy_id` | Resource `crucible.deploy.id`; when empty, Crucible uses the MCP server version (contracts 9.7) |
 | `queue_size` | Finished spans waiting for export; default 2,048 |
 | `queue_bytes` | Bytes of spans waiting for export or being exported, estimated from their strings; default 8 MiB |
 | `flush_interval` | How often the queue is exported; default one second |
@@ -137,7 +137,7 @@ unobserved.
 
 `Options::identify` is called for every request and notification with the context's extensions (on streamable HTTP
 they hold the request's `http::request::Parts`) and returns what the server knows about the caller: user id, token
-issuer and subject, tenant and handle id. Crucible is designed to hash the subject with a per-project salt and keep
+issuer and subject, tenant and handle id. Crucible hashes the subject with a per-project salt and keeps
 only the hash and the issuer (contracts 9.3). `Options::no_identity` suppresses every identity key.
 
 A handle id groups the operations of one logical session. It comes from `identify`, or from
@@ -148,7 +148,7 @@ Nothing is added to a tool's schema or arguments.
 
 In the modern era a tool can answer `input_required` with a `requestState`, and the client retries with it. The span
 of each round carries keyed hashes of that state (`crucible.mcp.mrtr.state_out` on the answer,
-`crucible.mcp.mrtr.state_in` on the retry), which Crucible is designed to chain; the state itself is never sent.
+`crucible.mcp.mrtr.state_in` on the retry), which Crucible stores with each operation; the state itself is never sent.
 
 ### Content capture and scrubbing
 
@@ -204,7 +204,7 @@ link up.
 
 | Not observed | Why |
 |---|---|
-| Requests rmcp answers before the handler | An unsupported protocol version, missing `_meta` fields, a capability the client did not declare, a malformed message and a ping before `initialize` are answered inside rmcp; the planned `crucible proxy` is designed to see them |
+| Requests rmcp answers before the handler | An unsupported protocol version, missing `_meta` fields, a capability the client did not declare, a malformed message and a ping before `initialize` are answered inside rmcp; `crucible proxy` sees them |
 | HTTP status, response size, client IP prefix, capabilities hash | rmcp does not expose them to handlers, and the contract fixes no algorithm for the capabilities hash |
 | Timeouts | rmcp has no server-side deadline, so `crucible.mcp.timed_out` is never set |
 | A stdio end of input with an operation pending | rmcp cancels the handler the same way as for `notifications/cancelled`, so the operation is recorded as cancelled rather than as a transport error |

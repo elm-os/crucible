@@ -13,6 +13,7 @@ use crucible_records::{ApiKeyId, ExportJobId, ProjectId, Timestamp, UserId, Uuid
 use futures::future::BoxFuture;
 
 use crate::alerts::{AlertEventRepo, AlertRuleRepo, AlertStateRepo, ChannelRepo};
+use crate::dashboards::DashboardRepo;
 use crate::error::TxError;
 use crate::lifecycle::LifecycleRepo;
 use crate::sqlws::{SavedQueryRepo, SqlIdentityRepo, SqlRunRepo};
@@ -443,6 +444,8 @@ pub trait Repos: Send + Sync {
     fn alert_state(&self) -> &dyn AlertStateRepo;
     /// The history of alert rules.
     fn alert_events(&self) -> &dyn AlertEventRepo;
+    /// Dashboards and their widgets.
+    fn dashboards(&self) -> &dyn DashboardRepo;
     /// Leases.
     fn leases(&self) -> &dyn Leases;
     /// Claimed rows.

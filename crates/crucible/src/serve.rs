@@ -764,6 +764,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         .context("reading the quarantine manifests")?;
     hook.restore_quarantined(pairs);
     hook.restore_unshippable(frames);
+    let dashboards = control.as_ref().map(Control::dashboards);
     // The SQL workspace needs the control plane: its identities, saved queries and audit rows live there.
     let sql = match &control {
         Some(control) => {
@@ -864,6 +865,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
                 exports: export_service,
                 alerts,
                 lifecycle: lifecycle.as_ref().map(|l| l.service.clone()),
+                dashboards,
             },
         ),
         None => crucible_api::router(&env, service, keys, settings, cursors, fact_writer),
@@ -1160,6 +1162,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
             exports: export_service.clone(),
             alerts: alerts.as_ref().map(|(api, _)| api.clone()),
             lifecycle: None,
+            dashboards: control.as_ref().map(Control::dashboards),
         },
         control.as_ref(),
         ingest,

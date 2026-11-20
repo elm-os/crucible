@@ -1,4 +1,4 @@
-# Crucible with a bundled ClickHouse 26.8 LTS and Postgres 18. docs/self-hosting/README.md covers the settings.
+# Crucible with a bundled ClickHouse 26.8 LTS and Postgres 18. See docs/self-hosting/README.md.
 #
 # One file beside this one, made once before the first start (docs/self-hosting/quickstart.md):
 #   .env       CLICKHOUSE_PASSWORD, POSTGRES_PASSWORD and CRUCIBLE_MASTER_KEY:

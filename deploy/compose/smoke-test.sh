@@ -134,7 +134,7 @@ read_back() {
 read_back
 echo "ok: the trace came back"
 
-# An upgrade as docs/self-hosting/README.md describes it, to an image with another id: Compose stops the old server,
+# An upgrade as docs/self-hosting/operations.md describes it, to an image with another id: Compose stops the old server,
 # starts the new one and restarts the ready check, and `up --wait` returns once the new server is ready.
 echo "upgrading to a second build of the image"
 printf 'FROM %s\nLABEL org.opencontainers.image.revision=compose-smoke-upgrade\n' "$image" \

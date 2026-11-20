@@ -285,7 +285,8 @@ impl PgControlStore {
              d26 AS (DELETE FROM project_salts), d27 AS (DELETE FROM export_jobs), \
              d28 AS (DELETE FROM deletion_node_acks), d29 AS (DELETE FROM deletion_requests), \
              d30 AS (DELETE FROM lifecycle_actions), d31 AS (DELETE FROM retention_floors), \
-             d32 AS (DELETE FROM nodes), s2 AS (SELECT setval('deletion_seq', 1, false)) \
+             d32 AS (DELETE FROM nodes), d33 AS (DELETE FROM widgets), d34 AS (DELETE FROM dashboards), \
+             s2 AS (SELECT setval('deletion_seq', 1, false)) \
              SELECT * FROM s, s2";
         self.handle.query(Which::Main, true, sql, &[]).await?;
         Ok(())
@@ -557,6 +558,9 @@ macro_rules! repos {
                 $($deref)* self.handle
             }
             fn alert_events(&self) -> &dyn AlertEventRepo {
+                $($deref)* self.handle
+            }
+            fn dashboards(&self) -> &dyn crucible_control::DashboardRepo {
                 $($deref)* self.handle
             }
             fn leases(&self) -> &dyn Leases {

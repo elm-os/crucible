@@ -3,16 +3,16 @@
 `@elm-os/crucible` sends traces from Node.js agents and MCP servers to a self-hosted Crucible. It has three entry
 points:
 
-| Import                        | Contents                                                                                             |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `@elm-os/crucible`            | `init`, `flush`, `shutdown`, `stats`; agent helpers `withContext` and `observe`; `feedback` (a stub) |
-| `@elm-os/crucible/mcp`        | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify`     |
-| `@elm-os/crucible/mcp-client` | `instrumentClient`                                                                                   |
+| Import                        | Contents                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------ |
+| `@elm-os/crucible`            | `init`, `flush`, `shutdown`, `stats`; agent helpers `withContext` and `observe`                  |
+| `@elm-os/crucible/mcp`        | `instrument`, `instrumentHandler`, `annotateError`, `markValidation`, `markNotFound`, `identify` |
+| `@elm-os/crucible/mcp-client` | `instrumentClient`                                                                               |
 
-Status: the package is not published yet. It will be published to npm as `@elm-os/crucible`; until then it builds
-from this directory and is marked private. It requires Node.js 24. The MCP entry points work with the 2.x line of
-the official TypeScript MCP SDK (`@modelcontextprotocol/server` and `@modelcontextprotocol/client` `>=2.0.0 <3`,
-optional peers). Servers on the 1.x line can use the Crucible proxy instead, once it ships.
+The package builds from this directory ([the guide](../../docs/guides/sdk-typescript.md#install) shows how to
+install it). It requires Node.js 24. The MCP entry points work with the 2.x line of the official TypeScript MCP SDK
+(`@modelcontextprotocol/server` and `@modelcontextprotocol/client` `>=2.0.0 <3`, optional peers). Servers on the 1.x
+line can use `crucible proxy` instead ([MCP proxy](../../docs/guides/mcp-proxy.md)).
 
 ## Setup
 
@@ -88,8 +88,6 @@ await withContext(
   `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, the `gen_ai.usage.*` token counts,
   provided cost as `crucible.cost.<usage key>` in USD, and the prompt reference `crucible.prompt.name` and
   `crucible.prompt.version`.
-- `feedback()` is planned: it will post a score to the project's feedback route. The Crucible API has no feedback
-  route yet, so the function rejects without sending anything.
 
 ## MCP servers
 
