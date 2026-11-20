@@ -745,7 +745,8 @@ build `7abc007`, with other tracks' work on the machine. Each run loaded 2,250,0
 through ingest in 177 s; the store held them in 516 MB of active parts, 230 bytes per span, so the 100-million-span
 dataset needs about 23 GB of ClickHouse disk and the billion-span one about 230 GB.
 
-Two runs, each lane 120 reads at 2 per second; latency in ms, p50 / p95 / p99:
+**Before the lanes settled and warmed the store** (`7abc007`'s bench), two runs, each lane 120 reads at 2 per second;
+latency in ms, p50 / p95 / p99:
 
 | Lane | Run 1 | Run 2 | p95 change | Store reads per request |
 |---|---|---|---|---|
@@ -763,19 +764,45 @@ Two runs, each lane 120 reads at 2 per second; latency in ms, p50 / p95 / p99:
 | `search_30d` | 19.4 / 47.1 / 286.2 | 19.9 / 28.0 / 485.6 | -40.5% | 1 |
 | `metrics_30d` | 6.7 / 10.7 / 14.1 | 9.3 / 38.1 / 60.7 | +257.4% | 1 |
 
-- Every lane was valid in both runs: every read answered 2xx and non-empty where it must be, Crucible counted
+**With them** (`b3e4e45`: each attempt waits for the column statistics, prewarms the marks and reads the store into
+the page cache, and an attempt a page-cache drop disturbed runs again), two runs of the same build; latency in ms,
+p50 / p95 / p99, attempts in brackets:
+
+| Lane | Run 1 | Run 2 | p95 change |
+|---|---|---|---|
+| `trace_by_id` | 31.3 / 39.2 / 65.5 (2) | 29.4 / 34.6 / 36.9 (3) | -11.8% |
+| `trace_by_id_hinted` | 34.7 / 40.6 / 48.4 | 41.4 / 71.1 / 74.2 | +75.0% |
+| `trace_list_30d` | 48.4 / 61.0 / 80.3 | 53.3 / 66.5 / 139.6 (2) | +9.0% |
+| `span_list_30d` | 275.7 / 447.5 / 542.7 (2) | 166.9 / 225.3 / 312.3 | -49.7% |
+| `session_list_30d` | 3.6 / 4.7 / 7.4 | 3.6 / 4.7 / 7.4 | +0.8% |
+| `user_list_30d` | 3.3 / 3.9 / 4.3 | 3.4 / 4.3 / 5.6 | +9.9% |
+| `span_children` | 33.1 / 41.0 / 50.3 | 36.0 / 46.4 / 53.2 | +13.1% |
+| `payload` | 7.7 / 10.7 / 12.5 | 7.0 / 9.5 / 12.2 | -11.2% |
+| `facts` | 18.3 / 22.9 / 24.7 | 23.1 / 30.4 / 34.2 | +32.5% |
+| `filter_values_30d` | 6.5 / 8.7 / 10.5 | 6.8 / 7.8 / 15.8 | -10.0% |
+| `data_bounds` | 7.5 / 9.8 / 11.6 | 7.4 / 9.1 / 12.1 | -6.6% |
+| `search_30d` | 19.4 / 22.8 / 25.0 (2) | 17.2 / 22.3 / 27.7 | -2.5% |
+| `metrics_30d` | 6.9 / 9.6 / 12.2 | 7.4 / 8.9 / 9.9 | -8.1% |
+
+- Every lane of the four runs was valid: every read answered 2xx and non-empty where it must be, Crucible counted
   every request under the lane's class, and no lane was saturated. Trace by id waited 0 ms for the read barrier
-  (the index was caught up), and each lane opened at most 2 store connections.
-- **Against the targets, at 2.25 million spans on 2 ClickHouse CPUs:** trace by id without a hint misses 100 ms
-  p95 (137 to 155 ms); with the trace's start as the hint, as the UI sends it, it meets it (38 to 60 ms). The
-  30-day trace list stays far below 500 ms p95 (47 to 55 ms); the billion-span figure needs the full rig and the
-  larger dataset.
-- **Two runs agree within 10% at p95 in 3 of 13 lanes**, not all of them. 120 reads put p95 on the 6th slowest
-  read, so a stall of a second or two on the shared machine moves it; the medians agree better (within 10% in 11 of
-  13 lanes), and run 2 was faster in most lanes, which points at the machine's load rather than the build. A pair of
-  longer runs of the three gate lanes (360 reads each) was stopped when another track's gate started on the same
-  CPUs (the empty-store probe rose to 514 ms p95): two sessions on one rig measure each other. The stability
-  check belongs in the exclusive window: `tools/perf/xtask.sh reads --rig full`, twice, alone on the machine.
+  (the index was caught up), and each lane opened at most 2 store connections. In the second pair every lane
+  settled, its last probe loading no statistics, and six attempts that a page-cache drop disturbed ran again.
+- **Against the targets, at 2.25 million spans on 2 ClickHouse CPUs, on a store no write has changed for a
+  while:** trace by id meets 100 ms p95 with and without a hint (34.6 to 71.1 ms), and the 30-day trace list stays
+  far below 500 ms p95 (61.0 and 66.5 ms); the billion-span figure needs the full rig and the larger dataset. The
+  first pair's 137 to 155 ms for trace by id came from its lane running first after the load, while ClickHouse
+  still loaded every part's statistics for each read. A store under live ingest stays in that state (the caches,
+  above), so these figures leave out a cost of about 75 ms per `span_core` read on this store.
+- **Two runs agree within 10% at p95 in 7 of 13 lanes**, against 3 of 13 before: not all of them. The settle, the
+  warm-up and the reruns removed the cache states that moved whole lanes. What still moves is the machine and the
+  rig between runs: run 1's first six lanes ran with 2.1 to 3.2 other CPUs busy and run 2's with 0.1 to 0.2 (the
+  30-day span list, CPU-bound on ClickHouse, measured half the latency in run 2), and three lanes shifted as a
+  whole in the quieter run 2, both halves alike (trace by id with a hint +75.0%, facts +32.5%, span children +13.1%),
+  which the recorded context does not explain. Each load leaves its own part layout, and on the small rig
+  ClickHouse runs at its 1.5 GB limit with about 1.1 GB of it page cache, so the kernel reclaims the cache under
+  the reads. The check belongs in the exclusive window: `tools/perf/xtask.sh reads --rig full`, twice, alone on the
+  machine, where ClickHouse has 9 GB.
 - An earlier run at 20 reads/s saturated trace by id (about 470 ms per read under that load, with
   requests queued up to 4 s for a connection) and the 30-day span list (about 1.1 s per read): the saturation rule
   and the default rate of 2 per second come from it.
