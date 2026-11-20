@@ -1,13 +1,17 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { createAgent } from "@ui-sdk/react/agent";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { SqlResult } from "@/api/generated/SqlResult";
 import type { SqlSchema } from "@/api/generated/SqlSchema";
 import { createQueryClient } from "@/components/providers";
+import { setAuth } from "@/lib/auth";
+import { loadPage } from "@/lib/navigate";
+import { sessionInfo } from "@/test/session";
 import { SqlWorkspace } from "./sql-workspace";
 
 vi.mock("next/navigation", () => import("@/test/navigation"));
+vi.mock("@/lib/navigate", () => ({ loadPage: vi.fn() }));
 
 const fetchMock = vi.fn<typeof fetch>();
 const agent = createAgent();
@@ -55,13 +59,14 @@ beforeEach(() => {
 
 afterEach(() => {
   fetchMock.mockReset();
+  vi.mocked(loadPage).mockReset();
   vi.unstubAllGlobals();
 });
 
-function renderWorkspace(run: () => Response) {
+function renderWorkspace(run: () => Response, schema = () => json(SCHEMA)) {
   fetchMock.mockImplementation(async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
-    if (path.endsWith("/sql/schema")) return json(SCHEMA);
+    if (path.endsWith("/sql/schema")) return schema();
     if (path.endsWith("/sql/run") && init?.method === "POST") return run();
     return json({ data: [] });
   });
@@ -155,4 +160,38 @@ test("switching the project starts over: the result goes and the new project's s
   await screen.findByDisplayValue(EXAMPLE);
   const paths = fetchMock.mock.calls.map(([input]) => String(input).split("?")[0]);
   expect(paths).toContain("/api/v1/projects/p-2/sql/schema");
+});
+
+const HERE = "/sql/?project=p-1&range=7d";
+const SIGN_IN = `/login/?next=${encodeURIComponent(HERE)}`;
+
+// Where a Sign in link returns to; links render without the trailing slash outside the export.
+function returnsTo(link: HTMLElement): string | null {
+  return new URL(link.getAttribute("href") ?? "", "http://localhost").searchParams.get("next");
+}
+
+test("signed in, a read that answers 401 sends the browser to sign in and back to this page", async () => {
+  setAuth({ mode: "session", session: sessionInfo() });
+  renderWorkspace(
+    () => json(RESULT),
+    () => json({ code: "unauthenticated", status: 401 }, 401, "application/problem+json"),
+  );
+  await waitFor(() => expect(loadPage).toHaveBeenCalledWith(SIGN_IN));
+  const schema = screen.getByRole("region", { name: "Schema" });
+  expect(await within(schema).findByText("You're signed out.")).toBeTruthy();
+  expect(returnsTo(within(schema).getByRole("link", { name: "Sign in" }))).toBe(HERE);
+  expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+});
+
+test("signed in, a run refused by something else's 401 offers sign-in, not Connect", async () => {
+  setAuth({ mode: "session", session: sessionInfo() });
+  renderWorkspace(() => new Response("Unauthorized", { status: 401 }));
+  await screen.findByDisplayValue(EXAMPLE);
+  const result = await agent.act({ steps: [{ ref: "Run", action: "press" }] });
+  expect(result.ok, result.error?.message).toBe(true);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("You're signed out.");
+  expect(returnsTo(within(alert).getByRole("link", { name: "Sign in" }))).toBe(HERE);
+  expect(within(alert).queryByRole("button", { name: "Connect" })).toBeNull();
+  expect(loadPage).not.toHaveBeenCalled();
 });
