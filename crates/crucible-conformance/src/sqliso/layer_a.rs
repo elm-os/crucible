@@ -836,10 +836,10 @@ async fn w7(iso: &Iso) -> Result<String> {
 
 /// W8: quota exhaustion, on an identity of its own, at the real limits.
 ///
-/// The quota's hour follows the clock, and the server starts counting a new hour only when a statement goes over
-/// the limit: in a run that crosses into the next hour, statement 1,801 starts the new count instead of being
-/// refused. Such a run is repeated once on a fresh identity, which has the whole new hour ahead of it, so the row
-/// does not depend on the time of day the suite runs at.
+/// The quota's hour follows the clock, and its count starts again at the hour: in a run that crosses into the next
+/// hour, the statements before it no longer count, and statement 1,801 is not refused. Such a run is repeated once
+/// on a fresh identity, which has the whole new hour ahead of it, so the row does not depend on the time of day the
+/// suite runs at.
 async fn w8(iso: &Iso) -> Result<String> {
     let limit = SQL_QUOTA_QUERIES_PER_HOUR;
     let mut runs = 0;
