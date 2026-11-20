@@ -57,7 +57,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: SpanListQuery,
     ) -> Result<SpanListPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "span_list");
         let limit = page_limit(query.limit)?;
         let (as_of, after) = match &query.cursor {
             Some(cursor) => {
