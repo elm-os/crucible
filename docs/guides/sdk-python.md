@@ -13,8 +13,13 @@ including 3.0.
 
 ## Install
 
-The package is not on PyPI yet; it will be published as `crucible-sdk`. Until then, install it from a checkout of
-the repository into your project's environment:
+Install the package, `crucible-sdk`, from the repository into your project's environment:
+
+```sh
+uv pip install "crucible-sdk[mcp] @ git+https://github.com/elm-os/crucible.git#subdirectory=sdk/python"
+```
+
+or from a checkout:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
@@ -59,7 +64,7 @@ It prints `hello` and then `ExportStats(queued=0, dropped=0, exported=1, failed=
 | `service_name` | The OpenTelemetry resource's | Resource `service.name` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | Resource `service.version` |
-| `deploy_id` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
+| `deploy_id` | | Resource `crucible.deploy.id`; without it, Crucible uses the server version as the deploy id |
 | `sample_rate` | `1.0` | Share of traces exported, decided by trace id, so a trace is kept or dropped whole |
 | `queue_size` | `2048` | Spans waiting for export. A full queue drops new spans and counts them |
 | `queue_bytes` | `8 << 20` | Bytes of spans waiting for export or being exported, estimated from their names, attributes, events and status messages. Beyond it new spans are dropped and counted too |
@@ -223,8 +228,8 @@ Error messages and exception events of MCP spans are cut to 8,192 and 16,384 cha
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
 tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
-the MCP analytics routes and pages that read them, are planned.
+MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
+as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
 
 ### Errors and identity in tool handlers
 
@@ -237,8 +242,8 @@ Inside a tool handler these calls refine the operation being handled; outside on
 | `mark_not_found()` | The tool error, or a -32602 JSON-RPC error, means "not found" |
 | `identify(user_id=, issuer=, subject=, tenant=, handle_id=)` | Sets who made this call; it takes precedence over the `identify` hook |
 
-Crucible is designed to hash the subject with a per-project salt and keep only the hash and the issuer; the MCP
-views that would show identities are planned.
+Crucible hashes the subject with a per-project salt and keeps only the hash and the issuer, in the MCP operation's
+`user_subject_hash` and `user_issuer`.
 
 ### Content capture and scrubbing
 
