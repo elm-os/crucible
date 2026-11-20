@@ -32,18 +32,21 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - A read-only SQL workspace, isolated per project by ClickHouse users, row policies and quotas, with saved queries
   and CSV, JSON lines and Parquet downloads.
 - A metrics query API over spans and traces.
-- Dashboards over the metrics query: built-in starters for an agent overview, cost and tokens, latency and errors,
-  and your own, edited on a 12-column grid by pointer or keyboard, with stat, time series, bar, table and Markdown
+- Dashboards over the metrics query: built-in starters for an agent overview, cost and tokens, latency, errors
+  and MCP servers, and your own, edited on a 12-column grid by pointer or keyboard, with stat, time series, bar, table and Markdown
   widgets.
 
 ### MCP
 
 - Every MCP operation is stored with its method, target, error class, latency and capture source, and an agent's
   tool call links to the server-side span through trace context. Both MCP protocol eras are supported.
+- MCP analytics for the server or the client side: servers, tools, errors, clients, users, sessions, operations,
+  deploys and deploy comparison, with p50, p90 and p99 latency and caller faults counted apart.
+- Alert rules on MCP calls, error rate (caller faults excluded), error count and latency percentiles.
 - `crucible proxy stdio` and `crucible proxy http` record an MCP server's calls with no code changes, forward its
   traffic byte for byte, and keep the session working when Crucible is unreachable.
-- Crucible's own MCP server at `/mcp`, with tools to list and search traces, read spans and payloads, and create
-  exports.
+- Crucible's own MCP server at `/mcp`, with tools to list and search traces, read spans and payloads, create
+  exports, and read MCP analytics (servers, tools, errors and deploy comparison).
 - SDKs for TypeScript, Python, Go and Rust in [`sdk/`](sdk/), with agent helpers and MCP server wrappers. They
   install from the repository.
 
@@ -69,4 +72,5 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 
 - Crucible ingests OTLP traces; OTLP logs and metrics are answered with 404.
 - ClickHouse Cloud and clustered ClickHouse are refused at startup.
+- MCP analytics reads a minute-grain rollup, so windows of a week or more take seconds.
 - Sign-in providers, organization settings and project renames are managed through the REST API, not the UI.
