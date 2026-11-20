@@ -25,6 +25,7 @@ mod body;
 mod control;
 mod convert;
 mod cursor;
+mod dashboards;
 mod filters;
 mod idempotency;
 mod layers;
@@ -82,6 +83,8 @@ pub struct Modules {
     pub alerts: Option<AlertsApi>,
     /// Retention settings and deletion requests.
     pub lifecycle: Option<crucible_lifecycle::Service>,
+    /// The control store that holds dashboards.
+    pub dashboards: Option<Arc<dyn crucible_control::ControlStore>>,
 }
 
 /// The base path of the API (contract 12.1).
@@ -105,10 +108,7 @@ pub fn router(
         settings,
         cursors,
         None,
-        None,
-        None,
-        None,
-        None,
+        Modules::default(),
     )
 }
 
@@ -120,9 +120,7 @@ pub fn router_without_store(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
 ) -> Router {
-    build(
-        env, None, keys, settings, cursors, None, None, None, None, None,
-    )
+    build(env, None, keys, settings, cursors, None, Modules::default())
 }
 
 /// The API of a node with a control plane: sessions, members and keys from Postgres through `identity`, whose
@@ -138,21 +136,9 @@ pub fn platform_router(
     modules: Modules,
 ) -> Router {
     let keys: Arc<dyn KeyVerifier> = Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>;
-    build(
-        env,
-        store,
-        keys,
-        settings,
-        cursors,
-        Some(identity),
-        modules.sql,
-        modules.exports,
-        modules.alerts,
-        modules.lifecycle,
-    )
+    build(env, store, keys, settings, cursors, Some(identity), modules)
 }
 
-#[allow(clippy::too_many_arguments)] // The parts of the shared state, as the public constructors pass them.
 fn build(
     env: &Env,
     store: Option<(QueryService, Arc<dyn FactWriter>)>,
@@ -160,12 +146,16 @@ fn build(
     settings: Arc<dyn ProjectSettingsSource>,
     cursors: Arc<KeyRing>,
     identity: Option<Arc<Identity>>,
-    sql: Option<SqlWorkspace>,
-    exports: Option<Exports>,
-    alerts: Option<AlertsApi>,
-    lifecycle: Option<crucible_lifecycle::Service>,
+    modules: Modules,
 ) -> Router {
     let (service, facts) = store.unzip();
+    let Modules {
+        sql,
+        exports,
+        alerts,
+        lifecycle,
+        dashboards,
+    } = modules;
     let state = ApiState {
         env: env.clone(),
         service,
@@ -179,6 +169,7 @@ fn build(
         exports,
         alerts,
         lifecycle,
+        dashboards,
     };
     let api = routes::router()
         .fallback(unknown_path)

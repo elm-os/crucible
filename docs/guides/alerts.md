@@ -66,19 +66,26 @@ Each delivery is a `POST` with a JSON body and these headers:
 | `X-Crucible-Delivery` | The id of the notification, the same at every retry: use it to drop repeats |
 | `X-Crucible-Event` | `alert.firing`, `alert.renotify`, `alert.resolved`, `alert.no_data`, `alert.evaluation_failing` or `alert.test` |
 
-Compute the HMAC over the timestamp, a dot and the raw body, compare it in constant time, and refuse a timestamp
-that is too old for your tolerance. Redirects are not followed: give the receiver's final URL.
+Compute the HMAC over the timestamp, a dot and the raw body, with the whole signing secret (`whsec_...`) as the key,
+compare it in constant time, and refuse a timestamp that is too old for your tolerance. In Python:
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, header: str, body: bytes, tolerance_s: int = 300) -> bool:
+    parts = dict(item.split("=", 1) for item in header.split(","))
+    t, signature = parts["t"], parts["v1"]
+    expected = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature) and abs(time.time() - int(t)) <= tolerance_s
+```
+
+Redirects are not followed: give the receiver's final URL. The body names the event, the rule, the series, its
+state, value and threshold, and the evaluation time; a test notification (`alert.test`) says that the channel
+works.
 
 ## Server settings
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `egress.mode` | `open` | `open` calls any `http` or `https` target except cloud metadata addresses, which are always refused. `strict` calls public `https` targets only and refuses loopback, private, link-local and carrier-grade NAT ranges and the server's own databases |
-| `egress.allow_cidrs` | none | Ranges that `strict` lets through, comma-separated, for example `10.20.0.0/16`. They never open a metadata address |
-| `smtp.host`, `smtp.from` | none | The mail server and the sender address. Without them email channels cannot be created |
-| `smtp.port` | 587, 465 with `tls`, 25 with `none` | |
-| `smtp.tls` | `starttls` | `starttls`, `tls`, or `none` for a relay on a trusted network |
-| `smtp.username`, `smtp.password` (or `smtp.password_file`) | none | Credentials, when the mail server asks for them |
-
-Each is also an environment variable: `CRUCIBLE_EGRESS_MODE`, `CRUCIBLE_SMTP_HOST` and so on. A refused target
-says which of these settings changes it.
+Outbound calls follow the server's egress policy: by default any address except cloud metadata addresses, private
+networks and plain `http` included; with `egress.mode = strict`, public `https` addresses only, plus the ranges in
+`egress.allow_cidrs`. Email channels need the `smtp.*` settings. Both are described, with every setting, in
+[alerts and egress](../self-hosting/alerts-and-egress.md). A refused target says which setting changes it.

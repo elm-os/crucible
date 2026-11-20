@@ -3,10 +3,10 @@
 Open-source, self-hosted observability and analytics for AI agents and MCP servers.
 
 Crucible is one Rust binary. It ingests OpenTelemetry traces over OTLP (HTTP and gRPC) and serves a REST API, an MCP
-server, an MCP proxy and a web UI. ClickHouse stores the telemetry and Postgres holds the control plane. Use it for
-agents, for MCP servers, or for both: when an agent and the MCP servers it calls report to the same Crucible, the
-agent's tool call and the server's handling of it land in one trace. Crucible is MIT licensed and runs on
-infrastructure you control.
+server, an MCP proxy and a web UI. A single-node ClickHouse (26.3 or newer) stores the telemetry and Postgres (15 or
+newer) holds the control plane. Use it for agents, for MCP servers, or for both: when an agent and the MCP servers it
+calls report to the same Crucible, the agent's tool call and the server's handling of it land in one trace. Crucible
+is MIT licensed and runs on infrastructure you control.
 
 ## Features
 
@@ -36,6 +36,8 @@ infrastructure you control.
 
 - A metrics API over spans and traces: counts, errors, tokens, cost and latency percentiles, by minute to week,
   split by up to two dimensions.
+- Dashboards of charts, numbers, tables and notes over those metrics, laid out on a grid and edited by pointer or
+  keyboard, with built-in starter dashboards to duplicate and change.
 - Threshold alerts on those measures, delivered to webhooks, Slack and email.
 - A read-only SQL workspace for each project, with saved queries. ClickHouse access control keeps each project's
   SQL inside that project's data.
@@ -64,7 +66,10 @@ backups and monitoring are in [docs/self-hosting](docs/self-hosting/README.md).
 
 ## Architecture
 
-Crucible is built in Rust and engineered for speed and throughput.
+Crucible is built in Rust and engineered for speed and throughput. A zero-copy scanner parses OTLP, a group commit
+shares one fsync among concurrent requests, and batches reach ClickHouse as LZ4-compressed inserts in its native
+format. Fixed byte budgets answer 429 or 503 with `Retry-After` under load instead of queueing without bound. Release
+builds use thin LTO and the mimalloc allocator.
 
 ```
  SDKs / OTel exporters / crucible proxy
@@ -84,13 +89,14 @@ Crucible is built in Rust and engineered for speed and throughput.
 
 - **Durable before acknowledged.** A request is acknowledged only after it is written to the write-ahead log and
   synced to disk. A group committer syncs many requests at once.
-- **Exactly-once inserts.** Every insert into ClickHouse carries a deterministic deduplication token, so a crash or
-  a retry never loses or duplicates a span.
+- **Exactly-once inserts.** Each batch reaches ClickHouse with a deterministic deduplication token, so a retry never
+  stores a span twice.
 - **Readable at once.** An in-memory index of recent spans answers reads before the spans reach ClickHouse.
 - **Bounded reads.** Every telemetry read is a typed query plan with explicit resource limits, rendered to
   parameterized SQL.
-- **Verified.** Deterministic simulation and swarm testing run the whole system under seeded disk, network, database
-  and crash faults; a Quint model checks the ingest protocol; Kani proves the pure kernels; conformance suites run
+- **Tested.** Deterministic simulation and swarm testing run the whole system under seeded disk, network, database
+  and crash faults; a formal model (Quint) checks the ingest protocol; Kani proofs cover the log format and the other
+  pure kernels; conformance suites run
   against real ClickHouse and Postgres.
 
 [docs/architecture/overview.md](docs/architecture/overview.md) is the map of the system,
@@ -121,6 +127,12 @@ testing and development.
 against real databases, the SDKs and the pull request process; [docs/development.md](docs/development.md) has the
 details of the dev container and of running the server from source. Commits follow Conventional Commits, and the
 git hooks and CI check every commit message and file against the naming rule and refuse AI attribution trailers.
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Report a vulnerability privately through the repository's Security tab, **Report a vulnerability**, as
+[SECURITY.md](SECURITY.md) describes. Do not open a public issue for it.
 
 ## License
 
