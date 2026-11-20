@@ -539,11 +539,11 @@ significant digits.
    - **Column statistics.** ClickHouse 26.8 keeps automatic statistics on every column (`auto_statistics_types
      = 'basic, uniq_v2'`). It holds one snapshot of a table's statistics, refreshed every
      `refresh_statistics_interval` (300 s), and reuses it only for a read whose parts are exactly the parts the
-     snapshot saw. Any other read that plans with statistics, which is any read with more than one condition,
-     loads them from the files of every part. So until the first refresh after the server starts, and after each
-     insert or merge until the next refresh, every such read pays for every part of the table: under live ingest,
-     every read ([measured below](#column-statistics-under-ingest)). Crucible's reads send `use_statistics = 0`
-     and load none. Before they did, a 300 s trace-by-id lane started right after the load measured 136.6 ms p95
+     snapshot saw. Any other read that plans with statistics loads them from the files of every part. So until the
+     first refresh after the server starts, and after each insert or merge until the next refresh, every such read
+     pays for every part of the table, and under live ingest always: trace by id's span read and its bounds, and
+     the trace list's stats ([measured below](#column-statistics-under-ingest)). Crucible's reads send
+     `use_statistics = 0` and load none. Before they did, a 300 s trace-by-id lane started right after the load measured 136.6 ms p95
      in its first half and 40.8 ms in its second, with no page-cache drop: each `span_core` read spent 74 to 79
      ms loading statistics (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the
      first refresh, about 300 s after the rig started in each of four runs. Each attempt still first waits, up to
@@ -798,9 +798,9 @@ p50 / p95 / p99, attempts in brackets:
   while:** trace by id meets 100 ms p95 with and without a hint (34.6 to 71.1 ms), and the 30-day trace list stays
   far below 500 ms p95 (61.0 and 66.5 ms); the billion-span figure needs the full rig and the larger dataset. The
   first pair's 137 to 155 ms for trace by id came from its lane running first after the load, while ClickHouse
-  still loaded every part's statistics for each read. Whether a store under live ingest stays in that state is
-  not measured (the caches, above); if it does, these figures leave out about 75 ms per `span_core` read on
-  this store.
+  still loaded every part's statistics for each read. A store under live ingest stays in that state on builds that
+  plan reads with statistics, so these figures leave out about 60 to 75 ms per `span_core` read there; reads
+  leave statistics out now ([column statistics under ingest](#column-statistics-under-ingest)).
 - **Two runs agree within 10% at p95 in 7 of 13 lanes**, against 3 of 13 before: not all of them. The settle, the
   warm-up and the reruns removed the cache states that moved whole lanes. What still moves is the machine and the
   rig between runs: run 1's first six lanes ran with 2.1 to 3.2 other CPUs busy and run 2's with 0.1 to 0.2 (the
@@ -864,8 +864,9 @@ selects the one day its trace lies in; the trace list's `trace_stats` reads load
   first half, against 33.6 / 41.4 / 47.3 ms for the next lane, which loaded none.
 - **Why.** ClickHouse 26.8 keeps one snapshot of a table's statistics and reuses it only while the parts a read
   selects are exactly the parts the snapshot saw (`ConditionSelectivityEstimator::isStale` compares the two lists).
-  Otherwise each read with more than one condition loads the statistics of every part of the table to order its
-  conditions, as the one-day reads above show. A bare 26.8 server shows the same: on a 21-part table with merges
+  Otherwise a read that plans with statistics, to order its conditions, loads them for every part of the table, as
+  the one-day reads above show; in these runs the reads of `span_core` and `trace_stats` did, and the trace list's
+  scan of `trace_heads` loaded none. A bare 26.8 server shows the same: on a 21-part table with merges
   stopped and `refresh_statistics_interval = 5`, a read with two conditions loaded nothing once settled, 597 µs and
   43 files after a 10-row insert, 602 µs on the next read, and nothing after the next refresh.
 - **The fix.** Every read class sends `use_statistics = 0`; with it the bare server's read loaded nothing, while

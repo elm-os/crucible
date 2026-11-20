@@ -46,8 +46,8 @@ pub struct ClassLimits {
 ///
 /// `use_statistics = 0` keeps column statistics out of query planning. ClickHouse 26.8 builds statistics on every
 /// column and reuses its snapshot of them only while a table's parts are the ones its last refresh saw (every
-/// 300 s), so under ingest every read with more than one condition would load the statistics of every part of
-/// the table. The plans' keys and skip indexes do not need them.
+/// 300 s), so under ingest a read that plans with them, such as trace by id's span read, loads the statistics of
+/// every part of the table. The plans' keys and skip indexes do not need them.
 pub const CLASS_FIXED_SETTINGS: [(&str, &str); 4] = [
     ("timeout_overflow_mode", "throw"),
     ("read_overflow_mode", "throw"),

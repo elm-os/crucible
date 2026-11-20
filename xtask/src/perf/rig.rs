@@ -1588,9 +1588,9 @@ impl<'r> Session<'r> {
     /// Waits until reads of `span_core` and `trace_heads` load at most [`SETTLED_STATISTICS_US`] of column
     /// statistics each, or until `limit` passes. ClickHouse (26.8, automatic statistics on every column) reuses
     /// its snapshot of a table's statistics, refreshed every `refresh_statistics_interval` (300 s by default),
-    /// only while the table's parts are the ones the snapshot saw; after an insert or a merge every read with more
-    /// than one condition loads every part's statistics until the next refresh. The probe has the shape of trace
-    /// by id's span read and carries none of Crucible's settings.
+    /// only while the table's parts are the ones the snapshot saw; after an insert or a merge a read that plans with
+    /// statistics loads every part's statistics until the next refresh. The probe has the shape of trace by id's
+    /// span read, which does, and carries none of Crucible's settings.
     pub fn settle_statistics(&self, key: &ArmKey, limit: Duration) -> Result<Settle, String> {
         let started = Instant::now();
         let stamp = super::now().1;

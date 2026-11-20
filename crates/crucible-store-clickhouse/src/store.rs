@@ -1269,8 +1269,8 @@ mod tests {
         }
     }
 
-    /// Every read keeps column statistics out of its planning: under ingest, ClickHouse 26.8 would load the
-    /// statistics of every part of the table for each read (`docs/testing/perf.md`).
+    /// Every read keeps column statistics out of its planning: under ingest, ClickHouse 26.8 loads the statistics
+    /// of every part of the table for each read that plans with them (`docs/testing/perf.md`).
     #[test]
     fn every_read_leaves_column_statistics_unused() {
         for class in QueryClass::ALL {
