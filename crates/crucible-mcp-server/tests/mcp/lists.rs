@@ -254,6 +254,20 @@ fn list_arguments_are_checked_and_each_refusal_names_what_to_change() {
                 vec![("/filter/tags", "too_many_values")],
             ),
             (
+                "list_traces",
+                with(days(), "filter", json!({ "tags": vec!["t"; 21] })),
+                vec![("/filter/tags", "too_many_values")],
+            ),
+            (
+                "list_traces",
+                with(
+                    days(),
+                    "filter",
+                    json!({ "metadata": ["plan=pro"], "observation_type": ["tool"] }),
+                ),
+                vec![("/filter/observation_type", "unsupported")],
+            ),
+            (
                 "list_spans",
                 with(days(), "filter", json!({ "colour": ["red"] })),
                 vec![("", "invalid_arguments")],

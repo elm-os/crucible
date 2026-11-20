@@ -8,7 +8,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use crucible_env::{ChaChaRng, Instant};
 use crucible_proxy::scan::StateKey;
-use crucible_proxy::{CoreConfig, ExportResult, Now, Op, ProxyCore, StreamId, Tap};
+use crucible_proxy::{
+    BodyKind, CoreConfig, EndReason, ExportResult, HeaderView, Now, Op, ProxyCore, StreamId, Tap,
+};
 use crucible_records::{CaptureSource, Direction, ErrorClass, McpStatus, ResultType, Timestamp};
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::Sha256;
@@ -216,4 +218,44 @@ fn without_a_key_no_request_state_is_read() {
     let ops = ops(&mut core);
     assert_eq!(ops[0].result_type, ResultType::InputRequired);
     assert_eq!(ops[0].mrtr_state_out, None);
+}
+
+#[test]
+fn http_exchanges_carry_messages_and_state_hashes_from_json_and_event_stream_answers() {
+    let config = CoreConfig {
+        state_key: StateKey::new(SECRET),
+        ..CoreConfig::new(CaptureSource::ProxyHttp)
+    };
+    let mut core = ProxyCore::new(config, Arc::new(ChaChaRng::from_u64(1)));
+    let tap = core.tap();
+    let view = HeaderView {
+        body_readable: true,
+        ..HeaderView::default()
+    };
+    // A JSON answer hands out a state.
+    tap.open(StreamId(1), view.clone(), at(0));
+    tap.forward(StreamId(1), C2S, Bytes::from(call(1, "needs_input")), at(1));
+    tap.head(StreamId(1), 200, BodyKind::Json, None, at(2));
+    let input_required = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"input_required","requestState":"{STATE}"}}}}"#
+    );
+    tap.forward(StreamId(1), S2C, Bytes::from(input_required), at(3));
+    tap.close(StreamId(1), EndReason::Complete, at(4));
+    // The retry carries it back, and an event stream answers with an error.
+    tap.open(StreamId(2), view, at(5));
+    let retry = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"needs_input","requestState":"{STATE}"}}}}"#
+    );
+    tap.forward(StreamId(2), C2S, Bytes::from(retry), at(6));
+    tap.head(StreamId(2), 200, BodyKind::Sse, None, at(7));
+    let event = r#"data: {"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"declined for ada@example.com"}}"#;
+    tap.forward(StreamId(2), S2C, Bytes::from(format!("{event}\n\n")), at(8));
+    tap.close(StreamId(2), EndReason::Complete, at(9));
+    let ops = ops(&mut core);
+    assert_eq!(ops.len(), 2);
+    let hash = state_hash(SECRET, STATE);
+    assert_eq!(ops[0].mrtr_state_out, Some(hash));
+    assert_eq!(ops[1].mrtr_state_in, Some(hash));
+    assert_eq!(ops[1].classification.error_class, ErrorClass::Internal);
+    assert_eq!(ops[1].error_message, "declined for [redacted:email]");
 }

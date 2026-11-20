@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ToolError;
-use crate::filters::ListFilter;
+use crate::filters::{ListFilter, list_error};
 use crate::shape::{Meta, SpanListRow, fit, meta};
 use crate::tools::{Call, Check, Tool, check_window};
 
@@ -83,7 +83,7 @@ impl Tool for ListSpans {
             cursor,
         };
         let page = call.service.span_list(&call.ctx, query).await;
-        let page = page.map_err(|e| ToolError::query(&e, call.request_id))?;
+        let page = page.map_err(|e| list_error(&e, call.request_id))?;
         // A cut page resumes after its last span, with the `as_of` that the first page fixed.
         let as_of = page.meta.as_of;
         let next = |cursor: &SpanListCursor| {

@@ -2,11 +2,13 @@
 //! trace and span lists as one `filter` argument, parsed into the filter AST of `crucible-plan`. Each member is
 //! one condition and all of them must hold; a member with several values holds when any value matches.
 
-use crucible_plan::{Filter, TextField};
-use crucible_records::{Level, ObservationType};
+use crucible_plan::{Filter, FilterField, TRACE_LIST_MAX_TAGS, TextField};
+use crucible_query::QueryServiceError;
+use crucible_records::{Level, ObservationType, RequestId};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::error::{ToolError, field_error};
 use crate::tools::Check;
 
 /// The most values one filter member takes, as on the REST lists.
@@ -55,6 +57,22 @@ fn names<T>(all: &[T], name: impl Fn(&T) -> &'static str) -> String {
 }
 
 impl ListFilter {
+    /// The filter of `list_traces`, which tests at most 20 tags (`TRACE_LIST_MAX_TAGS`).
+    pub(crate) fn parse_for_traces(filter: Option<Self>, check: &mut Check) -> Filter {
+        if filter
+            .as_ref()
+            .is_some_and(|filter| filter.tags.len() > TRACE_LIST_MAX_TAGS)
+        {
+            check.error(
+                "filter/tags",
+                "too_many_values",
+                &format!("list_traces tests at most {TRACE_LIST_MAX_TAGS} tags"),
+            );
+            return Filter::all();
+        }
+        Self::parse(filter, check)
+    }
+
     /// The filter, or [`Filter::all`] without one. Problems are recorded on `check` with the member's pointer.
     pub(crate) fn parse(filter: Option<Self>, check: &mut Check) -> Filter {
         let Some(filter) = filter else {
@@ -138,5 +156,31 @@ impl ListFilter {
             conditions.push(Filter::Name(text));
         }
         Filter::And(conditions)
+    }
+}
+
+/// A failed read of a filtered list. A refusal of one filter member points at that member and says what to
+/// change; any other failure is [`ToolError::query`].
+pub(crate) fn list_error(error: &QueryServiceError, request_id: RequestId) -> ToolError {
+    match error {
+        QueryServiceError::Validation(field)
+            if FilterField::ALL
+                .iter()
+                .any(|known| known.as_str() == *field) =>
+        {
+            let message = match *field {
+                "metadata" | "observation_type" => {
+                    "list_traces cannot combine `metadata` with `observation_type`; drop one of them, or use \
+                     list_spans, which tests both on each span"
+                }
+                _ => "this list cannot test this member; drop it",
+            };
+            ToolError::validation(vec![field_error(
+                &format!("filter/{field}"),
+                "unsupported",
+                message,
+            )])
+        }
+        _ => ToolError::query(error, request_id),
     }
 }

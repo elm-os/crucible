@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ToolError;
-use crate::filters::ListFilter;
+use crate::filters::{ListFilter, list_error};
 use crate::shape::{Meta, TraceRow, fit, meta};
 use crate::tools::{Call, Check, Tool, check_window};
 
@@ -67,7 +67,7 @@ impl Tool for ListTraces {
         let mut check = Check::default();
         let window = check.window(&args.from, &args.to);
         let limit = check.limit(args.limit, MAX_ROWS, MAX_ROWS);
-        let filter = ListFilter::parse(args.filter, &mut check);
+        let filter = ListFilter::parse_for_traces(args.filter, &mut check);
         check.finish()?;
         let Some(window) = window else {
             return Err(ToolError::validation(Vec::new()));
@@ -85,7 +85,7 @@ impl Tool for ListTraces {
             cursor,
         };
         let page = call.service.trace_list(&call.ctx, query).await;
-        let page = page.map_err(|e| ToolError::query(&e, call.request_id))?;
+        let page = page.map_err(|e| list_error(&e, call.request_id))?;
         let rows: Vec<(HeadKey, TraceRow)> = page
             .data
             .iter()
