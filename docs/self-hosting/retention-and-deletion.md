@@ -68,5 +68,5 @@ physical removal follows within 24 hours. A server that is down does not hold a 
 it reads from Postgres every deletion request made after the oldest data in its write-ahead log arrived, before it
 sends ClickHouse the data it had not sent yet, so it does not store again what a request deleted while it was down.
 Older requests are left out, because a deletion selects only data received before the request. Until Postgres
-answers, the server keeps accepting data into its write-ahead log and sends nothing. An export reads the stored rows, so an export made while a request is still
-`pending` or `logged` can include the data it names.
+answers, the server keeps accepting data into its write-ahead log and sends nothing. An export reads the stored
+rows, so an export made while a request is still `pending` or `logged` can include the data it names.
