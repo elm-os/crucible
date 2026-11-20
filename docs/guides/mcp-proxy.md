@@ -1,34 +1,32 @@
 # MCP proxy
 
-Status: planned for the first release. The proxy is implemented in `crates/crucible-proxy` and tested as described
-under "How it is verified", but no release contains it yet, so this page describes what the released
-`crucible proxy` will do.
-
-The proxy will record what an MCP server does without changing the server: no SDK, no code change, any language.
-It will sit between the MCP client and the server, pass every byte through unchanged in both directions, and send
-one span per MCP operation to a Crucible server. Use it for servers you cannot instrument, for servers built on
-the 1.x line of an official MCP SDK, or to get a first look before adding an SDK.
+`crucible proxy` records what an MCP server does without changing the server: no SDK, no code change, any
+language. It sits between the MCP client and the server, passes every byte through unchanged in both directions,
+and sends one span per MCP operation to a Crucible server, which records each as an MCP operation with
+`capture_source` `proxy_stdio` or `proxy_http`. Use it for servers you cannot instrument, for servers built on the
+1.x line of an official MCP SDK, or to get a first look before adding an SDK. It is a subcommand of the `crucible`
+binary and starts no server subsystem.
 
 What an SDK sees and the proxy cannot: error subclasses, the split between validation and not-found errors,
-calls the server makes to other systems, and any user identity on stdio. A server can run with both; the
-analytics endpoints then pick one source per server (SDK first, then proxy), and never add the two.
+calls the server makes to other systems, and any user identity on stdio. A server can run with both: each call is
+then recorded once per capture source, and the rows stay apart by `capture_source`.
 
 ## stdio servers
 
 Put `crucible proxy stdio --` in front of the server command:
 
 ```sh
-crucible proxy stdio -- npx -y @example/mcp-server --root /data
+crucible proxy stdio -- npx -y @modelcontextprotocol/server-everything
 ```
 
-In an MCP client configuration this will look like:
+In an MCP client configuration:
 
 ```json
 {
   "mcpServers": {
-    "example": {
+    "everything": {
       "command": "crucible",
-      "args": ["proxy", "stdio", "--", "npx", "-y", "@example/mcp-server", "--root", "/data"],
+      "args": ["proxy", "stdio", "--", "npx", "-y", "@modelcontextprotocol/server-everything"],
       "env": {
         "CRUCIBLE_ENDPOINT": "http://127.0.0.1:8080",
         "CRUCIBLE_SECRET_KEY": "csk_..."
@@ -40,21 +38,22 @@ In an MCP client configuration this will look like:
 
 Behaviour:
 
-- **Bytes.** Each chunk read from the client will be written to the server at once, and each chunk from the server
-  to the client at once. Nothing will be buffered, re-framed or injected, and there will be no line length limit.
-- **Standard output** will carry only the server's bytes. Everything the proxy says will go to standard error.
-- **Standard error** of the server will be inherited by default. `--capture-stderr` will copy it through the proxy
-  instead.
-- **End of input.** When the client closes its end, the proxy will close the server's standard input.
-- **Exit.** The proxy will exit with the server's exit code, after everything the server wrote has been
-  delivered to the client. On Unix, when a signal ended the server, the proxy will end by the same signal.
-- **Signals (Unix).** `SIGTERM`, `SIGINT` and `SIGHUP` will be forwarded to the server's process group. On Linux
-  the server will also receive `SIGTERM` if the proxy itself is killed.
-- **Windows.** The server will start suspended, join a Job Object with kill-on-close and then resume, so the whole
-  process tree ends with the proxy. Commands will be resolved through `PATH` and `PATHEXT`, so `npx` finds
-  `npx.cmd`.
-- **A command that does not exist** will be refused with a message that names what was searched and how to fix
-  it, and nothing will be written to standard output.
+- **Bytes.** Each chunk read from the client is written to the server at once, and each chunk from the server to
+  the client at once. Nothing is buffered, re-framed or injected, and there is no line length limit.
+- **Standard output** carries only the server's bytes. Everything the proxy says goes to standard error.
+- **Standard error** of the server is inherited by default. `--capture-stderr` copies it through the proxy instead.
+- **End of input.** When the client closes its end, the proxy closes the server's standard input.
+- **Exit.** The proxy exits with the server's exit code, after everything the server wrote has been delivered to
+  the client. On Unix, when a signal ended the server, the proxy ends by the same signal.
+- **Signals (Unix).** `SIGTERM`, `SIGINT` and `SIGHUP` are forwarded to the server's process group. On Linux the
+  server also receives `SIGTERM` if the proxy itself is killed.
+- **Windows.** The server starts suspended, joins a Job Object with kill-on-close and then resumes, so the whole
+  process tree ends with the proxy. Commands are resolved through `PATH` and `PATHEXT`, so `npx` finds `npx.cmd`.
+- **A command that does not exist** is refused with a message that names what was searched and how to fix it, and
+  nothing is written to standard output.
+
+The process tests listed under [how it is verified](#how-it-is-verified) pin the signal, exit and Windows
+behaviour.
 
 The server process inherits the proxy's environment, `CRUCIBLE_SECRET_KEY` included. Use `--secret-key-file` if
 the server must not see the key.
@@ -65,81 +64,102 @@ the server must not see the key.
 crucible proxy http --listen 127.0.0.1:8090 --upstream http://127.0.0.1:3000
 ```
 
-Clients will then use `http://127.0.0.1:8090/mcp` where they used `http://127.0.0.1:3000/mcp`. Both protocol
-eras will work: legacy sessions with `Mcp-Session-Id`, and the stateless requests of the 2026-07-28 revision.
+Clients then use `http://127.0.0.1:8090/mcp` where they used `http://127.0.0.1:3000/mcp`. Both protocol eras work:
+legacy sessions with `Mcp-Session-Id`, and the stateless requests of the 2026-07-28 revision. `--listen` and
+`--upstream` are also read from `CRUCIBLE_PROXY_LISTEN` and `CRUCIBLE_PROXY_UPSTREAM`; a path in the upstream URL is
+put in front of every request path.
 
-- **Requests** will be forwarded with their method, path, query and headers as they came. `Authorization` will be
-  forwarded untouched.
-- **Responses** will come back with the upstream's status and headers. A 401 challenge and the well-known OAuth
-  metadata will pass through unchanged.
-- **Event streams** will be forwarded event by event, keep-alive comments included. The proxy will add no timeout
-  except the connect timeout (10 s).
-- **Bodies** will be byte-identical. HTTP/1.1 framing (where chunk boundaries fall) belongs to the transport and
-  may differ.
-- **`Host`.** By default the upstream will see the `Host` header the client sent, so a token audience bound to the
-  public name stays valid. `--host-header upstream` will send the upstream's own host instead, for upstreams that
-  route by host name.
-- **A client that disconnects** will close the upstream connection of that client, which aborts the request in
-  flight. The operation will be recorded as cancelled with `cancel_source = stream_close`.
-- **An upstream that cannot be reached** will be answered with `502` and a one-line reason. This will be the only
-  response the proxy writes itself.
+- **Requests** are forwarded with their method, path, query and headers as they came. `Authorization` is forwarded
+  untouched.
+- **Responses** come back with the upstream's status and headers. A 401 challenge and the well-known OAuth metadata
+  pass through unchanged.
+- **Event streams** are forwarded event by event, keep-alive comments included. The proxy adds no timeout except
+  the connect timeout (10 s).
+- **Bodies** are byte-identical. HTTP/1.1 framing (where chunk boundaries fall) belongs to the transport and may
+  differ.
+- **`Host`.** By default the upstream sees the `Host` header the client sent, so a token audience bound to the public
+  name stays valid. `--host-header upstream` sends the upstream's own host instead, for upstreams that route by host
+  name.
+- **A client that disconnects** closes the upstream connection of that client, which aborts the request in flight.
+  The operation is recorded as cancelled with `cancel_source = stream_close`.
+- **An upstream that cannot be reached** is answered with `502` and a one-line reason, the only response the proxy
+  writes itself:
 
-The listener will speak plain HTTP/1.1. To serve clients outside the host or the internal network, put the proxy
-behind the TLS terminator that already fronts the MCP server. `https` upstreams will be supported.
+  ```text
+  crucible proxy: the upstream MCP server at 127.0.0.1:3999 could not be reached: Connection refused (os error 111)
+  ```
+
+The listener speaks plain HTTP/1.1. To serve clients outside the host or the internal network, put the proxy behind
+the TLS terminator that already fronts the MCP server. `https` upstreams work.
 
 ### Identity (opt-in)
 
-By default the proxy will record no caller identity. Two modes will be available, both of which leave the token
-itself untouched and never store it:
+By default the proxy records no caller identity. Two modes are available, and both leave the token itself untouched
+and never store it:
 
-| `--identity` | What will be recorded | Label on the row |
+| `--identity` | What is recorded | Label on the row |
 |---|---|---|
 | `off` (default) | Nothing | none |
 | `claims` | Issuer, subject, client id and tenant from the token's payload, without checking the signature | `token_claims` (unverified) |
 | `verified` | The same claims, only from tokens whose signature verifies against `--jwks-url` and that have not expired; `--jwt-audience` and `--jwt-issuer` add those checks | `token_verified` |
 
-A token that is opaque, malformed or fails verification will yield no identity. The request will be forwarded the
-same in every case: the proxy observes, and the MCP server decides. The subject will be sent to the Crucible
-server raw and hashed there with the project's salt (contracts 9.3).
+A token that is opaque, malformed or fails verification yields no identity. The request is forwarded the same in
+every case: the proxy observes, and the MCP server decides. The subject is sent to the Crucible server raw and hashed
+there with the project's salt (contract 9.3). Each of these flags is also read from an environment variable:
+`CRUCIBLE_PROXY_IDENTITY`, `CRUCIBLE_PROXY_JWKS_URL`, `CRUCIBLE_PROXY_JWT_AUDIENCE` and `CRUCIBLE_PROXY_JWT_ISSUER`.
 
 ## Telemetry settings
 
 | Flag | Environment variable | Meaning |
 |---|---|---|
-| `--endpoint <url>` | `CRUCIBLE_ENDPOINT` | The Crucible server, such as `http://127.0.0.1:8080`. Without it the proxy will only forward and will say so on standard error |
+| `--endpoint <url>` | `CRUCIBLE_ENDPOINT` | The Crucible server, such as `http://127.0.0.1:8080`. Without it the proxy only forwards, and says so on standard error |
 | `--secret-key-file <path>` | `CRUCIBLE_SECRET_KEY_FILE`, or the key itself in `CRUCIBLE_SECRET_KEY` | A project secret key with the `ingest` scope |
-| `--server-name <name>` | `CRUCIBLE_SERVER_NAME` | The name the server is reported under. Default: the command's file name (stdio) or the upstream host (http) |
-| `--deploy-id <id>` | `CRUCIBLE_DEPLOY_ID` | The deploy id, for deploy comparison |
+| `--server-name <name>` | `CRUCIBLE_SERVER_NAME` | The `service.name` of the proxy's spans. Default: the command's file name (stdio) or the upstream host (http). Operations carry the name the server gives in its `initialize` answer, and this name until it has given one |
+| `--deploy-id <id>` | `CRUCIBLE_DEPLOY_ID` | The deploy id of the server, recorded on every operation |
 
-An endpoint without a key will be refused at startup, with a message that names both ways to give the key and how
-to run without telemetry.
+An endpoint without a key is refused at startup, with a message that names both ways to give the key and how to
+run without telemetry.
 
-Spans will be sent as OTLP/HTTP protobuf to `/v1/traces` with `capture_source` set to `proxy_stdio` or
-`proxy_http`. They will carry the OTel MCP semantic-convention keys and the `crucible.mcp.*` keys of contracts
-9.1: method, tool or prompt name, JSON-RPC id, direction, era and protocol version, client and server name,
-outcome class, JSON-RPC code, HTTP status, progress count, cancellation, and the exact sizes of the request and
-response messages. When a request carries a `traceparent` in `params._meta`, the span will join that trace; the
-proxy will read trace context and never write it.
+Spans are sent as OTLP/HTTP protobuf to `/v1/traces`. They carry the OTel MCP semantic-convention keys and the
+`crucible.mcp.*` keys of contract 9.1: method, tool or prompt name, JSON-RPC id, direction, era and protocol
+version, client and server name, outcome class, JSON-RPC code, HTTP status, progress count, cancellation, and the
+exact sizes of the request and response messages. When a request carries a `traceparent` in `params._meta`, the
+span joins that trace; the proxy reads trace context and never writes it.
+
+Crucible records each span as an MCP operation on the server side. A session through `crucible proxy stdio` with
+the server above gave one row per message in the SQL workspace's `crucible_sql.mcp_operations`, with
+`capture_source = proxy_stdio`:
+
+| `method` | `target_name` | `status` | `error_class` | `jsonrpc_code` | `request_bytes` | `response_bytes` |
+|---|---|---|---|---|---|---|
+| `initialize` | | `ok` | `none` | | 160 | 4968 |
+| `notifications/initialized` | | `ok` | `none` | | 54 | 0 |
+| `tools/list` | | `ok` | `none` | | 58 | 25755 |
+| `tools/call` | `echo` | `ok` | `none` | | 118 | 99 |
+| `tools/call` | `no_such_tool` | `protocol_error` | `validation` | -32602 | 94 | 88 |
+
+Through `crucible proxy http` the rows carry `capture_source = proxy_http`, the era (`legacy` for a session), the
+hash of the session id, the client's `/24` or `/48` address prefix and its user agent.
 
 Never sent: argument and result content, `Authorization` values, cookies, `Mcp-Param-*` values, raw session ids
 (only their hash), raw IP addresses (only the /24 or /48 prefix) and `requestState`.
 
-Not recorded by the proxy in this release: argument and result capture, error messages, multi-round state hashes,
-and analysis of compressed bodies (such a request will be reported from its `Mcp-Method` and `Mcp-Name` headers
-and the HTTP status only).
+Not recorded by the proxy: argument and result content, error messages, multi-round state hashes, and the contents
+of compressed bodies (such a request is reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status
+only). An SDK wrapper records these ([MCP](mcp.md)).
 
 ## When Crucible is down
 
-The proxy will fail open. Telemetry will run on its own task, on a copy of the traffic:
+The proxy fails open. Telemetry runs on its own task, on a copy of the traffic:
 
-- The copy will go through a bounded queue with a send that never waits. When the queue is full, the copy will be
-  dropped and counted; the bytes will already be on their way.
-- Finished operations will wait in a buffer of at most 8 MiB or 10,000 operations. When it is full, the oldest
-  will be dropped. The number dropped will be logged on standard error at the next export that succeeds.
-- Exports will be retried with a backoff of 1 s doubling to 30 s. A refusal (for example a wrong key) will drop
-  the batch and say what to check.
-- At exit the proxy will wait at most 500 ms for a last export.
-- Requests still waiting for a response when the server exits will be recorded as transport errors.
+- The copy goes through a bounded queue with a send that never waits. When the queue is full, the copy is dropped
+  and counted; the bytes are already on their way.
+- Finished operations wait in a buffer of at most 8 MiB or 10,000 operations. When it is full, the oldest are
+  dropped. The number dropped is logged on standard error at the next export that succeeds.
+- Exports are retried with a backoff of 1 s doubling to 30 s. A refusal (for example a wrong key) drops the batch
+  and says what to check.
+- At exit the proxy waits at most 500 ms for a last export.
+- Requests still waiting for a response when the server exits are recorded as transport errors.
 
 ## How it is verified
 

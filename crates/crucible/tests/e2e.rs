@@ -19,7 +19,7 @@
 //! | `CRUCIBLE_E2E_CHROME` | A Chrome or Chromium binary. When set, the UI check runs; it needs Node 24 and a binary built with `embed-ui` |
 //! | `CRUCIBLE_E2E_NODE` | The Node binary; `node` when unset |
 //! | `CRUCIBLE_E2E_OUT` | A directory for `report.json`, the server logs and the UI screenshot |
-//! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key and reads the trace back with the session |
+//! | `CRUCIBLE_E2E_POSTGRES_URL` | A Postgres 15 or newer, for example `postgres://crucible:e2e@localhost:5432/crucible`. When set, the control-plane path runs: the first owner signs in, creates a project and an API key, ingests with the key, reads the trace back with the session and builds a dashboard over it |
 //!
 //! `docs/development.md` ("The end-to-end test") has the commands.
 
@@ -1598,7 +1598,96 @@ async fn a_signed_in_owner_makes_a_key_that_ingests_and_reads() {
         assert_eq!(spans[0]["traceId"], trace.trace_id.as_str());
     }
 
-    // 8. Revoking the key stops it at once; signing out ends the session.
+    // 8. A dashboard: created with a widget, changed under its version, viewed by running the query its widget
+    //    holds over a window, and a built-in dashboard duplicated into rows.
+    let dashboards = format!("/api/v1/projects/{project_id}/dashboards");
+    let spans_query =
+        json!({"source": "spans", "measures": [{"measure": "count", "aggregation": "sum"}]});
+    let (status, _, made) = as_owner(
+        "POST",
+        &dashboards,
+        json!({"name": "E2E", "widgets": [{
+            "query": spans_query,
+            "display": {"kind": "stat", "title": "Spans"},
+            "layout": {"x": 0, "y": 0, "w": 3, "h": 2},
+        }]}),
+    );
+    assert_eq!(status, 201, "{made}");
+    let one = format!("{dashboards}/{}", made["id"].as_str().unwrap());
+    let versioned = |method: &str, path: &str, body: &Value, version: &str| {
+        let body = body.to_string();
+        let headers = [
+            ("cookie", cookie.as_str()),
+            json_headers[0],
+            json_headers[1],
+            ("x-crucible-csrf", csrf.as_str()),
+            ("if-match", version),
+        ];
+        http_with_cookies(server.api, method, path, &headers, body.as_bytes())
+    };
+    let change = json!({"name": "E2E health", "widgets": [
+        {
+            "id": made["widgets"][0]["id"],
+            "query": spans_query,
+            "display": {"kind": "stat", "title": "Spans"},
+            "layout": {"x": 3, "y": 1, "w": 4, "h": 2},
+        },
+        {
+            "display": {"kind": "markdown", "title": "Notes", "text": "Read **me**"},
+            "layout": {"x": 0, "y": 0, "w": 3, "h": 1},
+        },
+    ]});
+    let (status, _, stale) = versioned("PATCH", &one, &change, "\"9\"");
+    assert_eq!(status, 412, "{stale}");
+    let (status, _, changed) = versioned("PATCH", &one, &change, "\"1\"");
+    assert_eq!(status, 200, "{changed}");
+    assert_eq!(changed["version"], 2);
+    let (status, _, viewed) = as_owner("GET", &one, Value::Null);
+    assert_eq!(status, 200, "{viewed}");
+    assert_eq!(viewed["name"], "E2E health");
+    // Reading order: the note on row 0, then the stat that moved to row 1.
+    assert_eq!(viewed["widgets"][0]["display"]["kind"], "markdown");
+    let stat = &viewed["widgets"][1];
+    assert_eq!(stat["layout"], json!({"x": 3, "y": 1, "w": 4, "h": 2}));
+    let mut query = stat["query"].clone();
+    query["from"] = json!(from.to_string());
+    query["to"] = json!(to.to_string());
+    let metrics = format!("/api/v1/projects/{project_id}/metrics/query");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, _, answer) = as_owner("POST", &metrics, query.clone());
+        assert_eq!(status, 200, "{answer}");
+        let spans: f64 = answer["series"][0]["points"]
+            .as_array()
+            .map(|points| points.iter().filter_map(|p| p["value"].as_f64()).sum())
+            .unwrap_or_default();
+        if spans >= 2.0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the widget's query did not count the trace of step 5: {answer}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let (status, _, copy) = as_owner(
+        "POST",
+        &format!("{dashboards}/overview/duplicate"),
+        json!({}),
+    );
+    assert_eq!(status, 201, "{copy}");
+    assert_eq!(copy["name"], "Agent overview (copy)");
+    let (status, _, listed) = as_owner("GET", &dashboards, Value::Null);
+    assert_eq!(status, 200, "{listed}");
+    let builtin: Vec<&Value> = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d.get("builtin_key").is_some())
+        .collect();
+    assert_eq!(listed["data"].as_array().unwrap().len(), builtin.len() + 2);
+
+    // 9. Revoking the key stops it at once; signing out ends the session.
     let key_id = created["key"]["id"].as_str().unwrap();
     let etag = format!("\"{}\"", created["key"]["version"]);
     let (status, _, body) = {

@@ -12,9 +12,13 @@ It needs Go 1.26 or newer.
 
 ## Install
 
-The module has no release tag yet; tags of the form `sdk/go/vX.Y.Z` are planned, after which
-`go get github.com/elm-os/crucible/sdk/go@vX.Y.Z` will install it. Until then, point your module at a checkout of
-the repository:
+Add the module from the repository's main branch:
+
+```sh
+go get github.com/elm-os/crucible/sdk/go@main
+```
+
+or point your module at a checkout of the repository:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
@@ -78,10 +82,10 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0
 |---|---|
 | `Endpoint` | Required. Base URL of the Crucible server's OTLP listener, `http` or `https` |
 | `SecretKey` | Required. The project's secret key (`csk_...`), sent as a Bearer token |
-| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible is designed to use them as an MCP server's name and version when `cruciblemcp.Options` gives none |
+| `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible uses them as an MCP server's name and version when `cruciblemcp.Options` gives none |
 | `Environment` | Resource `deployment.environment.name` |
 | `Release` | `crucible.release` on every span; when it is empty, Crucible uses the service version |
-| `DeployID` | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
+| `DeployID` | Resource `crucible.deploy.id`; without it, Crucible uses the server version as the deploy id |
 | `QueueSize` | Finished spans waiting for export; 0 means 2,048 |
 | `QueueBytes` | Bytes of spans waiting for export or being exported, estimated from their names, attributes, events and status messages; 0 means 8 MiB |
 | `FlushInterval` | How often the queue is exported; 0 means one second |
@@ -291,8 +295,8 @@ content block counts and, in the legacy era, the session id hashed as `mcp.sessi
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
 tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
-the MCP analytics routes and pages that read them, are planned.
+MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
+as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
 
 The MCP Go SDK does not pass middleware the JSON-RPC id of a request, so `Instrument` returns an `Instrumentation`
 whose `Transport` and `Handler` wrap what the server is connected over. With either, each request's span carries its
@@ -341,7 +345,7 @@ request size from `Content-Length`.
 
 | Option | Meaning |
 |---|---|
-| `ServerName`, `ServerVersion` | The server's name and version. When they are empty, the spans carry none, and Crucible is designed to use the service name and version given to `crucible.Init` |
+| `ServerName`, `ServerVersion` | The server's name and version. When they are empty, the spans carry none, and Crucible uses the service name and version given to `crucible.Init` |
 | `Transport` | The transport reported for requests that did not arrive over streamable HTTP: `stdio` (the default), `sse` or `unknown` |
 | `Capture` | Content capture rules; see below |
 | `HandleParams` | Tool name to one of its arguments whose string value becomes the handle id, scrubbed and cut at 256 bytes. A handle id from `Identify` takes precedence |
@@ -370,14 +374,14 @@ era over HTTP a closed response stream, is recorded as `stream_close`. Error mes
 the only way to set an identity; there is no call inside a tool handler. When it gives no subject and the request
 came over streamable HTTP with a token that your `auth.TokenVerifier` accepted, the token's `UserID` is the subject
 and the `iss` entry of `TokenInfo.Extra` its issuer; the `client_id` entry is sent as the OAuth client id. Crucible
-is designed to hash the subject with a per-project salt and keep only the hash and the issuer; the MCP views that
-would show identities are planned.
+hashes the subject with a per-project salt and keeps only the hash and the issuer, in the MCP operation's
+`user_subject_hash` and `user_issuer`.
 
 ### Multi-round requests
 
 In the modern era a tool can answer `input_required` with a `requestState`, and the client retries with it. The
 span of each round carries keyed hashes of that state (`crucible.mcp.mrtr.state_out` on the answer,
-`crucible.mcp.mrtr.state_in` on the retry), which Crucible is designed to chain; the state itself is never sent. In
+`crucible.mcp.mrtr.state_in` on the retry), which Crucible stores with each operation; the state itself is never sent. In
 the legacy era the MCP SDK completes the exchange inside one request, which is one span.
 
 ### Content capture and scrubbing

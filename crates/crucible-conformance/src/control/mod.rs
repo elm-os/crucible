@@ -1,5 +1,5 @@
 //! The control-store conformance scripts (contract 2.7): repository, transaction, key-feed, lease, claim, job,
-//! identity and alert scripts that run unchanged against any `ControlStore`.
+//! identity, alert and dashboard scripts that run unchanged against any `ControlStore`.
 //!
 //! Each script writes a transcript of what it observed. The differential runs every script against the
 //! simulation's `PgModel` and against real Postgres and compares the transcripts line by line; a script also
@@ -8,6 +8,7 @@
 
 mod alerts;
 mod claims;
+mod dashboards;
 mod exports;
 mod feed;
 mod identity;
@@ -98,6 +99,7 @@ pub const SCRIPTS: &[(&str, Script)] = &[
     ("exports", |c, t| Box::pin(exports::run(c, t))),
     ("alerts", |c, t| Box::pin(alerts::run(c, t))),
     ("lifecycle", |c, t| Box::pin(lifecycle::run(c, t))),
+    ("dashboards", |c, t| Box::pin(dashboards::run(c, t))),
 ];
 
 /// The main pool size the scripts are written for; both stores under test are built with it.

@@ -9,10 +9,13 @@
 - MCP clients: a wrapper that sends the caller's trace context in `params._meta`, so a trace shows the agent's call and
   the server's handling of it together.
 
-> **Status: in development.** The package is not published yet. It will be published to PyPI as `crucible-sdk`.
-> Until then, install it from this repository.
-
 ## Install
+
+```sh
+uv pip install "crucible-sdk[mcp] @ git+https://github.com/elm-os/crucible.git#subdirectory=sdk/python"
+```
+
+or, from a checkout of this repository:
 
 ```sh
 uv pip install "./sdk/python[mcp]"   # or: pip install "./sdk/python[mcp]"

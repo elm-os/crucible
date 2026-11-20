@@ -1,18 +1,14 @@
 # Quickstart
 
-This page runs a development preview of Crucible with Docker Compose: the `crucible` server, ClickHouse 26.8 and
-Postgres 18 on one machine. There is no release yet and no upgrade path, and the data format may change between commits. Do not put
-data you need to keep in it. [README.md](README.md) covers configuration, ports, upgrades and backups.
-
-What works in this preview: OTLP/HTTP trace ingest, the write-ahead log, shipping to ClickHouse, the control plane in
-Postgres (sign-in, the organization, projects, members, API keys and the migrations ledger), the REST API for traces,
-and the UI's traces table and trace page.
+This page runs Crucible with Docker Compose: the `crucible` server, ClickHouse 26.8 and Postgres 18 on one machine,
+from an empty machine to a first trace. [Configuration](configuration.md), [operations](operations.md) (upgrades,
+backups, health and metrics) and the rest of running Crucible are in [self-hosting](README.md).
 
 ## Requirements
 
 - Docker Engine 25 or newer with Docker Compose v2 or newer.
 - `openssl` and a POSIX shell for the first-run commands: Linux, macOS, or WSL or Git Bash on Windows.
-- A checkout of this repository, until the first release publishes the image.
+- A checkout of this repository, to build the image.
 
 ## 1. Build the image
 
@@ -22,8 +18,7 @@ From the repository root:
 docker build -f deploy/docker/Dockerfile -t crucible:dev .
 ```
 
-The build needs only Docker: it compiles the UI and the server inside the build and takes a few minutes. Once
-releases exist, skip this step; Compose pulls `ghcr.io/elm-os/crucible`.
+The build needs only Docker: it compiles the UI and the server inside the build and takes several minutes.
 
 ## 2. Make `.env`
 
@@ -86,7 +81,7 @@ printf '%s\n' "$OWNER_PASSWORD" | docker compose exec -T crucible \
 Then sign in at <http://127.0.0.1:8080/login/>.
 
 Sign-in works over plain HTTP: the session cookie is sent without `Secure`, and the server accepts the address the
-page was opened at. On a network you do not trust, put a TLS proxy in front ([README.md](README.md#security)).
+page was opened at. On a network you do not trust, put a TLS proxy in front ([security](security.md#plain-http-and-tls)).
 
 ## 5. Make an API key
 
@@ -115,7 +110,8 @@ export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <secret>"
 ```
 
-The Compose files publish OTLP over HTTP; OTLP/gRPC on port 4317 is not published.
+The Compose file publishes OTLP over HTTP. To send OTLP/gRPC from outside the Compose network, add `- "4317:4317"`
+to the `ports` of the `crucible` service.
 
 Or by hand:
 
@@ -148,13 +144,14 @@ menu puts it in the address bar as `?project=<project id>`. The trace list takes
 
 ## People and outages
 
-- Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. This version sends no
-  email, so a forgotten password is reset with `docker compose exec crucible crucible admin reset-password <email>`,
-  which prints a one-time link valid for 30 minutes. Without `server.public_url` it prints the path,
+- Invite people from **Settings**, **Members**: the invitation link is shown once, to pass on. Crucible sends no
+  sign-in email, so a forgotten password is reset with
+  `docker compose exec crucible crucible admin reset-password <email>`, which prints a one-time link valid for
+  30 minutes. Without `server.public_url` it prints the path,
   `/reset/?token=...`, to open at the address you reach the server at.
 - Sign-in through GitHub, Google or an OpenID Connect provider needs the address people use, which the provider
-  redirects back to, as `server.public_url` ([README.md](README.md#configuration)). An `https` public URL also makes
-  the session cookie `Secure`.
+  redirects back to, as `server.public_url` ([configuration](configuration.md#server)). An `https` public URL also
+  makes the session cookie `Secure`.
 - If Postgres becomes unreachable, open sessions keep working for `auth.session_outage_grace` (10 minutes by
   default), and keys the server already knows keep working for ingest (`auth.pg_outage_mode = "fail_open"`).
   Shipping to ClickHouse goes on too: the server keeps each project's salt for MCP user subjects in memory, loaded
@@ -172,11 +169,11 @@ docker compose down -v     # removes it
 
 ## Other ways to run it
 
-- Against a ClickHouse and a Postgres you run elsewhere: `deploy/compose/compose.cloud.yaml`, described in
-  [README.md](README.md).
+- Against a ClickHouse and a Postgres you run elsewhere: `deploy/compose/compose.cloud.yaml`
+  ([self-hosting](README.md#your-own-clickhouse-and-postgres)).
 - Without Postgres, with project keys from a file and no sign-in:
-  [README.md](README.md#without-postgres-keys-from-a-file).
-- Without Compose: `crucible serve` runs the same way outside a container. The flags, their environment variables and
-  the two modes (with ClickHouse, or ingest only) are in [development.md](../development.md#running-crucible-serve).
-- With a binary you built in the dev container: `deploy/compose/compose.dev.yaml`, described in
-  [development.md](../development.md#a-local-build-in-compose).
+  [without Postgres](README.md#without-postgres-keys-from-a-file).
+- Without Compose: `crucible serve` runs the same way outside a container ([the binary](README.md#the-binary),
+  [configuration](configuration.md)).
+- With a binary you built in the dev container: `deploy/compose/compose.dev.yaml`
+  ([development.md](../development.md#a-local-build-in-compose)).
