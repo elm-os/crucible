@@ -21,7 +21,9 @@
 //! Shutdown is one signal to every task. The listeners stop accepting and wait for their open requests, whose
 //! appends resolve because the WAL committer outlives every handle to the log. The shipper stops at its next
 //! step and its in-flight inserts are abandoned: they are in doubt, and the next start probes every pair of
-//! every sealed batch before it sends anything (contract 5.5).
+//! every sealed batch before it sends anything (contract 5.5). The jobs let a leader run end and release their
+//! leases, and the loops of the key feed, the SQL workspace and the project salts end at once. The Postgres
+//! pools close once the listeners, the jobs and the store task have stopped, which ends their connection tasks.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -44,7 +46,7 @@ use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
 use crucible_auth::{DbKeys, KeyVerifier, Sealer, StaticKeys};
 use crucible_config::Config;
-use crucible_control::KeyScope;
+use crucible_control::{ControlStore, KeyScope};
 use crucible_cursor::KeyRing;
 use crucible_env::metrics::registry;
 use crucible_env::{
@@ -1164,9 +1166,15 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
     )
     .await?;
     // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
-    let jobs = crate::jobs::start(
+    let mut jobs = crate::jobs::start(
         env,
-        control.as_ref(),
+        control
+            .as_ref()
+            .zip(identity.as_ref())
+            .map(|(control, identity)| {
+                let store: Arc<dyn ControlStore> = Arc::new(control.store.clone());
+                (store, Arc::clone(identity.keys()))
+            }),
         &exports,
         alert_jobs,
         app.lifecycle.as_deref(),
@@ -1210,6 +1218,8 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         calls_per_second: config.mcp.calls_per_second,
         burst: config.mcp.burst,
     };
+    // The pools close last at shutdown, once nothing uses them.
+    let postgres = control.as_ref().map(|control| control.store.clone());
     // Without a store the task is one that never ends, so the wait below has one shape.
     let mut store = match clickhouse {
         Some(config) => {
@@ -1255,7 +1265,6 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         cursor_kid,
         mode,
         control = control_mode,
-        job_tasks = jobs.tasks(),
         memory = ?memory,
         recent_max_bytes,
         cpu_permits,
@@ -1282,21 +1291,42 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
         result = store_stopped => Some(("telemetry-store", result.map(|r| r.map_err(io::Error::other)))),
     };
 
-    let aborted = prod.spawner.close(SHUTDOWN_GRACE).await;
+    // Shutdown, in the order the tasks depend on each other. Every task sees the signal at once. The listeners
+    // finish their open requests, the jobs let a leader run end and release their leases (contract 11.7), and the
+    // telemetry store's task stops the shipper. Each of them may still need Postgres, so its pools close after them,
+    // which ends their connection tasks. The WAL committer stops once no handle to the log is left.
+    prod.spawner.request_shutdown();
+    let asked = env.clock.now();
+    let stopped = env
+        .timeout(SHUTDOWN_GRACE, async {
+            let mut results = vec![
+                ("api", servers.api.join().await),
+                ("ingest", servers.ingest.join().await),
+                ("grpc", servers.grpc.join().await),
+                ("metrics", servers.metrics.join().await),
+            ];
+            if let Some(task) = store.as_mut() {
+                let result = task.join().await.map(|r| r.map_err(io::Error::other));
+                results.push(("telemetry-store", result));
+            }
+            // A cancelled task has ended too.
+            let _ended = jobs.join().await;
+            results
+        })
+        .await;
+    if let Some(postgres) = &postgres {
+        postgres.close();
+    }
+    let left = SHUTDOWN_GRACE.saturating_sub(env.clock.now().saturating_duration_since(asked));
+    let aborted = prod.spawner.close(left).await;
     if let Some((name, result)) = early {
         server_result(name, result)?;
         anyhow::bail!("the {name} server stopped without a shutdown request");
     }
-    if let Some(mut task) = store {
-        server_result(
-            "telemetry-store",
-            task.join().await.map(|r| r.map_err(io::Error::other)),
-        )?;
+    // After the grace period the tasks still running are aborted, and listed below.
+    for (name, result) in stopped.unwrap_or_default() {
+        server_result(name, result)?;
     }
-    server_result("api", servers.api.join().await)?;
-    server_result("ingest", servers.ingest.join().await)?;
-    server_result("grpc", servers.grpc.join().await)?;
-    server_result("metrics", servers.metrics.join().await)?;
     anyhow::ensure!(
         aborted.is_empty(),
         "tasks did not stop within the grace period: {aborted:?}"
@@ -2008,6 +2038,106 @@ mod tests {
         let (status, headers, _) = stream.join().await.unwrap();
         assert_eq!(status, "HTTP/1.1 200 OK");
         assert_eq!(header(&headers, "content-type"), Some("text/event-stream"));
+    }
+
+    /// A stop with every long-lived task of a node with a control plane running, each of them in the middle of its
+    /// loop: the key feed, the `last_used_at` writes, the first-run setup, every job, the SQL workspace's probe and
+    /// reconciler, and the project salts. The scope closes well inside its grace period and aborts nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_with_every_control_plane_task_running_ends_well_inside_the_grace_period() {
+        use crucible_auth::csrf::Origins;
+        use crucible_auth::password::HashCost;
+        use crucible_auth::service::IdentityConfig;
+        use crucible_auth::{LookupKey, OutageMode};
+        use crucible_control::{LeaseName, Repos as _};
+        use crucible_sim::pg_model::{PgFaults, PgModel};
+        use crucible_sim::sql_stub::ScriptedSqlStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let model = PgModel::new(
+            Arc::clone(&env.clock),
+            env.rng.fork("pg").as_ref(),
+            PgFaults::default(),
+        );
+        let store: Arc<dyn ControlStore> = Arc::new(model.clone());
+        let mut config = IdentityConfig::new(Origins::default(), None);
+        config.hash_cost = HashCost {
+            memory_kib: 64,
+            iterations: 1,
+            lanes: 1,
+        };
+        let lookup = LookupKey::new([5; 32]);
+        let keys = Arc::new(DbKeys::new(env, lookup.clone(), OutageMode::default()));
+        let sealer = || Sealer::new("master-0", [9; 32]);
+        let identity = Arc::new(
+            Identity::new(
+                env,
+                Arc::clone(&store),
+                sealer(),
+                lookup,
+                Arc::clone(&keys),
+                config,
+            )
+            .unwrap(),
+        );
+        crate::identity::start_tasks(env, &identity, Arc::clone(&store));
+        let (wal, _) = Wal::open(env, WalConfig::default()).await.unwrap();
+        let lifecycle = Lifecycle::new(env, Arc::clone(&store), wal);
+        let evaluator =
+            crucible_alerts::Evaluator::new(Arc::new(crate::alerts::LateSource::default()));
+        let jobs = crate::jobs::start(
+            env,
+            Some((Arc::clone(&store), Arc::clone(&keys))),
+            &ExportRuntime::new(),
+            Vec::from(crucible_alerts::jobs(evaluator)),
+            Some(&lifecycle),
+        );
+        let workspace = SqlWorkspace::new(
+            env.clone(),
+            ScriptedSqlStore::new(env),
+            Arc::clone(&store),
+            true,
+        );
+        drop(env.spawn("sql-probe", workspace.clone().run_probe_loop()));
+        drop(env.spawn(
+            "sql-reconciler",
+            workspace.clone().run_reconciler("node-a".to_owned()),
+        ));
+        let salts = Arc::new(StoreSalts::new(env, Arc::clone(&store), sealer()));
+        drop(env.spawn("project-salts", Arc::clone(&salts).run(env.clone())));
+        // Every task has started and is waiting in its loop: the snapshot is loaded, the jobs hold their leases.
+        let deadline = env.clock.now().saturating_add(Duration::from_secs(10));
+        loop {
+            let leading = model
+                .leases()
+                .get(LeaseName::Housekeeping)
+                .await
+                .unwrap()
+                .is_some();
+            if keys.is_loaded() && leading {
+                break;
+            }
+            assert!(env.clock.now() < deadline, "the tasks did not start");
+            env.clock.sleep(Duration::from_millis(50)).await;
+        }
+        env.clock.sleep(Duration::from_millis(1500)).await;
+        // In the server the tasks hold these; the WAL committer stops once no handle to the log is left.
+        drop((jobs, lifecycle));
+
+        let asked = env.clock.now();
+        let aborted = prod.spawner.close(SHUTDOWN_GRACE).await;
+        let took = env.clock.now().saturating_duration_since(asked);
+        assert_eq!(
+            aborted,
+            Vec::<&str>::new(),
+            "these tasks ignored the shutdown signal and were aborted after {took:?}"
+        );
+        assert!(
+            took < Duration::from_secs(5),
+            "the stop took {took:?} of its {SHUTDOWN_GRACE:?} grace period"
+        );
     }
 
     /// `crucible serve --ui-dir` over the fixture export: the directory source, read through the production

@@ -7,6 +7,7 @@
 //! fenced by the lease's token, so two nodes that migrate at once never interleave. Without Postgres there is
 //! no ledger and every step is applied each time, which their idempotence allows.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use crucible_control::{
 };
 use crucible_control_pg::{PgConfig, PgControlStore};
 use crucible_env::Env;
-use crucible_schema::{MigrationStep, StepKind};
+use crucible_schema::{MigrationStep, StepKind, without_secrets};
 use sha2::{Digest, Sha256};
 
 /// How long a migration waits for another node's `migrations` lease before it gives up.
@@ -91,10 +92,22 @@ impl Control {
     }
 }
 
-/// The ledger checksum of a step: SHA-256 over its statements.
-fn checksum(step: &MigrationStep) -> String {
+/// The ledger checksum of a step: SHA-256 over its statements with the password digests left out. The digests are
+/// derived from the master key, so a start with another key finds every step a start with the right key recorded
+/// and applies none of them again (contract 6.6).
+pub(crate) fn checksum(step: &MigrationStep) -> String {
+    digest(step.statements.iter().map(|s| without_secrets(s)))
+}
+
+/// The checksum that ledger rows written before the digests were left out hold: over the whole statements. Such a
+/// row still matches under the master key it was recorded with.
+fn checksum_with_digests(step: &MigrationStep) -> String {
+    digest(step.statements.iter().map(|s| Cow::Borrowed(s.as_str())))
+}
+
+fn digest<'a>(statements: impl Iterator<Item = Cow<'a, str>>) -> String {
     let mut hasher = Sha256::new();
-    for statement in &step.statements {
+    for statement in statements {
         hasher.update(
             u64::try_from(statement.len())
                 .unwrap_or(u64::MAX)
@@ -204,14 +217,16 @@ pub(crate) async fn apply_steps(
         for step in steps {
             let checksum = checksum(step);
             match ledger.get(step.id) {
-                Some(recorded) if *recorded == checksum => {
+                Some(recorded)
+                    if *recorded == checksum || *recorded == checksum_with_digests(step) =>
+                {
                     tracing::debug!(step = step.id, "migration step already recorded");
                     continue;
                 }
                 Some(_) => tracing::warn!(
                     step = step.id,
-                    "the ledger records this step with other content (for example another master key); \
-                     applying it again"
+                    "the ledger records this step with other content (for example from an earlier version, or \
+                     with another sql.statements_per_hour); applying it again"
                 ),
                 None => {}
             }
@@ -453,6 +468,46 @@ mod tests {
             }
             model.set_faults(PgFaults::default());
             assert_eq!(ledger(&model).await.len(), 2);
+        });
+    }
+
+    /// The ledger checksum leaves the password digests out: a step recorded under one master key is found under
+    /// another and applied once only. A row from before holds the checksum over the whole statements, and still
+    /// matches under the key it was recorded with.
+    #[test]
+    fn steps_are_recorded_without_their_password_digests() {
+        let user = |digest: char| {
+            step(
+                "0002_access_service",
+                StepKind::Access,
+                &format!(
+                    "CREATE USER IF NOT EXISTS b IDENTIFIED WITH sha256_hash BY '{}' SETTINGS PROFILE 'p'",
+                    digest.to_string().repeat(64)
+                ),
+            )
+        };
+        sim(PgFaults::default(), async move |env, model| {
+            let apply = Fake::default();
+            apply_steps(&env, &model, "node-a", &[user('a')], &apply)
+                .await
+                .unwrap();
+            apply_steps(&env, &model, "node-b", &[user('b')], &apply)
+                .await
+                .unwrap();
+            assert_eq!(apply.applied(), 1);
+            let before = LedgerEntry {
+                id: "0003_access_workspace".to_owned(),
+                kind: MigrationKind::ClickhouseAccess,
+                applied_at: env.clock.wall_now(),
+                checksum: checksum_with_digests(&user('a')),
+            };
+            let mut workspace = user('a');
+            workspace.id = "0003_access_workspace";
+            assert!(model.migrations().apply(&before).await.unwrap());
+            apply_steps(&env, &model, "node-a", &[workspace], &apply)
+                .await
+                .unwrap();
+            assert_eq!(apply.applied(), 1);
         });
     }
 

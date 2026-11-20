@@ -784,3 +784,84 @@ fn a_hang_ends_at_the_callers_deadline_and_a_disconnect_is_reported_as_unavailab
         );
     });
 }
+
+/// The probe loop and the reconciler stop as soon as the node is asked to stop, whether they are between runs or in
+/// one: a stop must not wait out its grace period for them.
+#[test]
+fn the_probe_loop_and_the_reconciler_stop_at_the_shutdown_signal() {
+    crucible_sim::run(8, |sim| async move {
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let env = host.env.clone();
+        let model = PgModel::new(
+            host.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        let stub = ScriptedSqlStore::new(&env);
+        let control: Arc<dyn ControlStore> = Arc::new(model);
+        let workspace = SqlWorkspace::new(env.clone(), stub, control, true);
+        let mut probe = env.spawn("sql-probe", workspace.clone().run_probe_loop());
+        let mut reconciler = env.spawn(
+            "sql-reconciler",
+            workspace.clone().run_reconciler("node-a".to_owned()),
+        );
+        env.clock.sleep(Duration::from_secs(60)).await;
+        assert!(workspace.status().enabled);
+        host.spawner.request_shutdown();
+        let stopped = env
+            .timeout(Duration::from_millis(10), async {
+                (probe.join().await, reconciler.join().await)
+            })
+            .await;
+        assert_eq!(
+            stopped,
+            Ok((Ok(()), Ok(()))),
+            "the probe loop and the reconciler were still running after the shutdown signal"
+        );
+    });
+}
+
+/// A probe identity whose password came from another master key refuses this node's, and the probe cannot run.
+/// While the workspace is not enabled, each reconciler pass provisions both probe identities again with the password
+/// of this node's key, so a deployment repairs itself once the right key is back; after a probe has passed, a pass
+/// leaves them alone.
+#[test]
+fn the_reconciler_repairs_the_probe_identities_while_the_probe_cannot_run() {
+    use crucible_schema::{PROBE_PROJECTS, RetentionSettings};
+
+    sim(async |w| {
+        let probes = || {
+            w.stub
+                .calls()
+                .provisions
+                .into_iter()
+                .filter(|(project, ..)| PROBE_PROJECTS.contains(project))
+                .collect::<Vec<_>>()
+        };
+        // The workspace of `sim` passed its probe: nothing to repair.
+        w.workspace.reconcile_once("node-a").await.unwrap();
+        assert_eq!(probes(), []);
+        // A node whose probe identity refuses the password.
+        w.stub.set_probe(Err(SqlError::Unavailable(
+            "the project's workspace identity is not provisioned".to_owned(),
+        )));
+        let control: Arc<dyn ControlStore> = Arc::new(w.model.clone());
+        let node = SqlWorkspace::new(w.env.clone(), w.stub.clone(), control, true);
+        assert_eq!(node.probe().await.reason, Some("probe_unavailable"));
+        node.reconcile_once("node-a").await.unwrap();
+        let expected: Vec<_> = PROBE_PROJECTS
+            .iter()
+            .map(|project| (*project, 0, RetentionSettings::default()))
+            .collect();
+        assert_eq!(
+            probes(),
+            expected,
+            "the reconciler left the probe identities as they were"
+        );
+        // Repaired: the next probe passes, and a pass after it provisions nothing more.
+        w.stub.set_probe(Ok(Vec::new()));
+        assert!(node.probe().await.enabled);
+        node.reconcile_once("node-a").await.unwrap();
+        assert_eq!(probes(), expected);
+    });
+}
