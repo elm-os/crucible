@@ -50,3 +50,6 @@ specs/tmp/
 /deploy/compose/keys.toml
 /deploy/compose/.env
 /e2e-out/
+
+# Agent skills are installed locally, not committed (skills-lock.json records their sources)
+.claude/skills/
