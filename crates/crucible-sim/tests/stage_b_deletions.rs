@@ -2,7 +2,7 @@
 //! step 3): the frames after a `Tombstone` frame ship nothing the deletion selects that arrived before the
 //! deletion's `requested_at`, and what arrived at or after it is kept; and the deletion requests of the control
 //! store apply before anything ships, also those that completed while the node was down and so left no tombstone
-//! in its log.
+//! in its log. A `Tombstone` frame also evicts what it selects from the recent-span index.
 //!
 //! Each scenario also runs with the seeded defect it guards against, which must let the deleted spans through.
 
@@ -13,15 +13,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crucible_auth::test_support::scope;
 use crucible_env::{StoreFlavour, Stores};
 use crucible_normalize::{Tombstone, TombstoneSelector};
 use crucible_plan::Value;
+use crucible_recent::{
+    RecentConfig, RecentIndex as Index, SpanRead, WalLocator, WalReadError, WalView,
+};
 use crucible_records::{
     DeletionRequestId, DeletionState, Lsn, ProjectId, TableId, Timestamp, TraceId,
 };
 use crucible_schema::{Granularity, table};
 use crucible_shipper::{
-    DeletionRequests, DeletionsUnavailable, Hooks, KnownDeletion, Mutant, Shipper, ShipperConfig,
+    DeletionRequests, DeletionsUnavailable, Hooks, KnownDeletion, Mutant, NoRecent, RecentHook,
+    RecentIndex, Shipper, ShipperConfig,
 };
 use crucible_sim::ch_model::ChModel;
 use crucible_sim::ship_sim::{SpanSpec, request_payload};
@@ -102,6 +107,11 @@ impl Node {
 
     /// Starts the shipper, with a seeded defect when one is given.
     fn start(&self, mutant: Option<Mutant>) {
+        self.start_with(mutant, Arc::new(NoRecent));
+    }
+
+    /// Starts the shipper with the recent-span index `recent` behind stage B.
+    fn start_with(&self, mutant: Option<Mutant>, recent: Arc<dyn RecentIndex>) {
         let config = ShipperConfig {
             linger: Duration::from_millis(10),
             tail_poll: Duration::from_millis(1),
@@ -111,6 +121,7 @@ impl Node {
             ..ShipperConfig::default()
         };
         let hooks = Hooks {
+            recent,
             deletions: Arc::clone(&self.requests) as Arc<dyn DeletionRequests>,
             ..Hooks::default()
         };
@@ -309,4 +320,43 @@ fn nothing_ships_until_the_deletion_requests_can_be_read() {
     assert_eq!(before, (0, 0));
     assert_eq!(after, (0, 2));
     assert_eq!(answered, 1);
+}
+
+/// The node's WAL as the recent-span index sees it; the test reads summaries only, never a span's record.
+#[derive(Debug)]
+struct View(Wal);
+
+impl WalView for View {
+    fn durable_lsn(&self) -> Lsn {
+        self.0.durable_lsn()
+    }
+
+    fn read_span(&self, _project_id: ProjectId, _locator: WalLocator) -> SpanRead {
+        Box::pin(async { Err(WalReadError::Gone) })
+    }
+}
+
+#[test]
+fn a_tombstone_evicts_what_it_selects_from_the_recent_index() {
+    let (before, after) = directed(|node| async move {
+        let clock = node.host.env.clock.clone();
+        let config = RecentConfig::new(64 << 20, StoreFlavour::SingleNode);
+        let view = Arc::new(View(node.wal.clone()));
+        let (index, writer) =
+            Index::rebuild(config, clock.clone(), view, Lsn::ZERO, std::iter::empty());
+        node.start_with(None, Arc::new(RecentHook::new(writer, clock, Lsn::ZERO)));
+        let scope = scope(ProjectId::from_bytes(PROJECT)).unwrap();
+        let held = |tag: u8| index.trace(scope, TraceId::from_bytes([tag; 16])).0.len();
+        node.ingest(8, 0..2).await;
+        node.ingest(9, 0..1).await;
+        // Well inside the 2 s visibility grace, after which the index lets the store serve them.
+        node.sleep(Duration::from_millis(200)).await;
+        let before = (held(8), held(9));
+        node.tombstone(8, node.now().saturating_add_micros(1)).await;
+        node.sleep(Duration::from_millis(200)).await;
+        (before, (held(8), held(9)))
+    });
+    assert_eq!(before, (2, 1));
+    // Trace 8's entries arrived before the deletion and go at its tombstone; trace 9 is not deleted.
+    assert_eq!(after, (0, 1));
 }
