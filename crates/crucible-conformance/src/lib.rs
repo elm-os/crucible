@@ -28,6 +28,7 @@ mod mcp;
 mod mcp_reads;
 mod reads;
 pub mod s3;
+mod slots;
 pub mod sqliso;
 mod startup;
 mod statistics;
@@ -323,6 +324,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     if single {
         row!("C12 stable error codes", codes::c12(&ctx));
         row!("C13 cancel-on-close and kill", cancel::c13(&ctx));
+        row!(
+            "Agent reads wait for a statement slot (7.1)",
+            slots::agent_slots(&ctx)
+        );
     }
     row!(
         "Typed plans on the real server (8.1, 8.3)",

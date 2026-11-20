@@ -20,8 +20,11 @@ use crucible_plan::{
 use crucible_records::{
     BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
 };
-use crucible_schema::{DATABASE, IndexKind, MigrationStep, ServiceIdentity, table};
+use crucible_schema::{
+    AGENT_MAX_CONCURRENT_QUERIES, DATABASE, IndexKind, MigrationStep, ServiceIdentity, table,
+};
 use futures::Stream;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::codes::{self, Failure, parse_code};
 use crate::connect;
@@ -196,6 +199,10 @@ struct Inner {
     /// was built with.
     clients: Mutex<Arc<Clients>>,
     flavour: Mutex<Option<StoreFlavour>>,
+    /// The statements `crucible_read_agent` may run at a time, which its settings profile caps at
+    /// [`AGENT_MAX_CONCURRENT_QUERIES`]: a read of that identity waits here for a slot, so that the server never
+    /// refuses it for running too many, however many reads a request sends together.
+    agent_slots: Arc<Semaphore>,
 }
 
 /// The production `TelemetryStore`: one client per service identity over one connection pool that runs on the
@@ -331,6 +338,11 @@ pub(crate) struct Reading {
     answered: bool,
     deadline: Instant,
     kill: Option<KillOnDrop>,
+    /// Until the first poll: the slots the statement waits for before it is sent, for an identity whose
+    /// concurrent statements the server caps.
+    slots: Option<Arc<Semaphore>>,
+    /// The slot the statement holds until its answer ends.
+    slot: Option<OwnedSemaphorePermit>,
     inner: Arc<Inner>,
 }
 
@@ -342,12 +354,25 @@ impl Reading {
 
     /// [`Reading::next`] with the failure before it is mapped to an error type.
     pub(crate) async fn next_chunk(&mut self) -> Option<Result<Bytes, Failure>> {
+        self.cursor.as_ref()?;
+        let clock = Arc::clone(&self.inner.env.clock);
+        // Nothing is sent until the statement holds a slot; the wait counts against its deadline.
+        if let Some(slots) = self.slots.take() {
+            match clock.timeout_at(self.deadline, slots.acquire_owned()).await {
+                Ok(Ok(slot)) => self.slot = Some(slot),
+                // The semaphore is never closed, and a statement that found no slot by its deadline was never
+                // sent.
+                Ok(Err(_)) | Err(_) => {
+                    self.cursor = None;
+                    return Some(Err(Failure::Timeout));
+                }
+            }
+        }
         let cursor = self.cursor.as_mut()?;
         // The request is sent by the first poll, so from here on the statement may be running.
         if let Some(kill) = &mut self.kill {
             kill.armed = true;
         }
-        let clock = Arc::clone(&self.inner.env.clock);
         let first = clock.timeout_at(self.deadline, cursor.next()).await;
         let outcome = match (first, self.resend.take()) {
             // No byte of the request was sent, so the read changed nothing: it is sent once more, on a new
@@ -368,6 +393,7 @@ impl Reading {
             // Dropping the cursor closes the connection, which cancels the statement on the server
             // (contract 8.5).
             self.cursor = None;
+            self.slot = None;
         }
         match outcome {
             Ok(Ok(Some(chunk))) => {
@@ -424,6 +450,7 @@ impl ClickHouseStore {
                 flavour: Mutex::new(config.flavour),
                 config,
                 clients,
+                agent_slots: Arc::new(Semaphore::new(AGENT_MAX_CONCURRENT_QUERIES as usize)),
             }),
         }
     }
@@ -558,9 +585,12 @@ impl ClickHouseStore {
         kill_on_drop: bool,
     ) -> Result<(Uuid, Reading), QueryError> {
         let (query_id, query) = self.query(identity, statement, settings);
-        let reading = self
+        let mut reading = self
             .reading(query, query_id, format, deadline, kill_on_drop)
             .map_err(Failure::into_query)?;
+        if identity == ServiceIdentity::ReadAgent {
+            reading.slots = Some(Arc::clone(&self.inner.agent_slots));
+        }
         Ok((query_id, reading))
     }
 
@@ -585,6 +615,8 @@ impl ClickHouseStore {
                 query_id,
                 armed: false,
             }),
+            slots: None,
+            slot: None,
             inner: Arc::clone(&self.inner),
         })
     }

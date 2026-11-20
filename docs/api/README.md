@@ -1023,6 +1023,7 @@ never changes. OTLP ingest does not read `Idempotency-Key`; how it handles a ret
 | Channel test sends | 6 per minute per channel | 429 `rate_limited` |
 | SQL runs | 1 at a time per person, 4 per project, 30 per minute per person, and the hourly statement quota | 429 `sql_quota_exceeded` |
 | MCP tool calls | 50 per second per key, bursts of 200 | A tool error with `rate_limited` |
+| Telemetry reads by API keys and the MCP server | 16 ClickHouse statements at once, shared by every key and project; a read waits for a free one | 504 `query_timeout` when the wait outlasts the read's time limit |
 | Password checks | At most 4 run at once; sign-in answers when all are busy | 429 `rate_limited` |
 
 Ingest is not rate limited: when the server cannot take more, it answers 429 or 503 with `Retry-After`, as
