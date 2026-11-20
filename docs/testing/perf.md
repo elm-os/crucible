@@ -538,19 +538,22 @@ significant digits.
    it, so each lane attempt starts by settling and warming it:
    - **Column statistics.** ClickHouse 26.8 keeps automatic statistics on every column (`auto_statistics_types
      = 'basic, uniq_v2'`) and uses them to plan each read. Until its statistics cache refreshes, every
-     `refresh_statistics_interval` (300 s), a read loads every part's statistics from their files, and one new
-     part sends reads back to loading them all: on a 41-part table, a read spent 1.5 ms loading statistics and
-     opened 172 files cold, nothing and 6 files after a refresh, and 1.0 ms and 130 files after one insert. In
-     a 300 s trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and the second
-     40.8 ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
+     `refresh_statistics_interval` (300 s), a read loads every part's statistics from their files. In a 300 s
+     trace-by-id lane started right after the load, the first half measured 136.6 ms p95 and the second 40.8
+     ms, with no page-cache drop: each `span_core` read spent 74 to 79 ms loading statistics
      (`LoadedStatisticsMicroseconds`), opening about 6,300 files of the 81 parts, until the first refresh, about
-     300 s after the rig started in each of four runs, and nothing afterwards, when its median fell from about
-     92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's bounds read on
-     `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s, until a read of
-     `span_core` and one of `trace_heads`, shaped as trace by id's span read, load at most 5 ms of statistics
-     each: after a refresh, the parts that merges made since cost a read about a millisecond. A lane that never
-     settles is marked invalid. A store under live ingest stays in the loading state, so these lanes leave that
-     cost out.
+     300 s after the rig started in each of four runs, and 0 to about 1.5 ms afterwards, when its median fell
+     from about 92 ms to 15 ms. Reads whose conditions stay inside the primary key load none (trace by id's
+     bounds read on `trace_stats` measured 7 to 12 ms throughout). So each attempt first waits, up to 360 s,
+     until a read of `span_core` and one of `trace_heads`, shaped as trace by id's span read, load at most 5 ms
+     of statistics each. A lane that never settles is marked invalid.
+
+     **Not measured: a store under live ingest.** On a 41-part test table, one insert after a refresh sent
+     reads back to loading most parts' statistics (1.5 ms and 172 files cold, nothing and 6 files after the
+     refresh, 1.0 ms and 130 files after the insert). If Crucible's tables behave alike, every read under
+     ingest pays about the 75 ms measured above before the first refresh, and these lanes leave that out. The
+     test: settle, ingest one trace, then read `LoadedStatisticsMicroseconds` of a span read; about 75 ms means
+     every part reloads, about 1 ms only the new one.
    - **Marks.** A part's marks enter ClickHouse's mark cache on its first read, and a load leaves only new
      parts: in the first minute after the load, each `span_core` read missed the mark cache (91 misses at
      first). Each attempt runs `SYSTEM PREWARM MARK CACHE` on every table of the `crucible` database.
@@ -792,8 +795,9 @@ p50 / p95 / p99, attempts in brackets:
   while:** trace by id meets 100 ms p95 with and without a hint (34.6 to 71.1 ms), and the 30-day trace list stays
   far below 500 ms p95 (61.0 and 66.5 ms); the billion-span figure needs the full rig and the larger dataset. The
   first pair's 137 to 155 ms for trace by id came from its lane running first after the load, while ClickHouse
-  still loaded every part's statistics for each read. A store under live ingest stays in that state (the caches,
-  above), so these figures leave out a cost of about 75 ms per `span_core` read on this store.
+  still loaded every part's statistics for each read. Whether a store under live ingest stays in that state is
+  not measured (the caches, above); if it does, these figures leave out about 75 ms per `span_core` read on
+  this store.
 - **Two runs agree within 10% at p95 in 7 of 13 lanes**, against 3 of 13 before: not all of them. The settle, the
   warm-up and the reruns removed the cache states that moved whole lanes. What still moves is the machine and the
   rig between runs: run 1's first six lanes ran with 2.1 to 3.2 other CPUs busy and run 2's with 0.1 to 0.2 (the
