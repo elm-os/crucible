@@ -40,6 +40,7 @@ A request authenticates in one of three ways:
 |---|---|---|
 | A project's secret key | `Authorization: Bearer <secret key>` | Programs, agents and scripts |
 | A project's key pair | `Authorization: Basic base64(<public key>:<secret key>)` | Programs whose exporter sends Basic auth; with Postgres only |
+| A project's public key | `Authorization: Bearer <public key>` | Browsers and other clients that must not hold a secret, for `POST feedback` only |
 | A session | The session cookie, plus `X-Crucible-CSRF` on writes | The UI, and scripts that sign in as a person |
 
 A request with an `Authorization` header is authenticated by the key alone; the cookie is ignored.
@@ -53,6 +54,12 @@ included, answers 404 `not_found`, so a key learns nothing about projects it can
 answers 401 `unauthenticated` with `WWW-Authenticate: Bearer`. Without Postgres the keys come from the server's keys
 file, each with the scopes `ingest`, `read` and `write`, and the API takes them as Bearer only: the key pair as Basic
 answers 401 there.
+
+**A public key on its own** writes feedback and nothing else: `POST projects/{project_id}/feedback` takes it as
+`Authorization: Bearer <public key>`, acting as its key pair, so the pair needs the `write` scope. Its body may hold
+at most 16 KiB, and the route answers cross-origin requests without credentials (a preflight answers 204 with
+`Access-Control-Allow-Origin: *`), so a web page can send scores straight from the browser. Every other route refuses
+a public key with 401 and says to send the secret key.
 
 **Sessions** need the control plane. Sign in with `POST auth/login`; the server sets the session cookie,
 `crucible_session` over plain HTTP or `__Host-crucible_session` with `Secure` when `server.public_url` is an `https`
@@ -573,7 +580,7 @@ different parameters must all hold; each takes at most 100 values.
 |---|---|
 | `environment`, `release`, `version`, `level`, `user_id`, `session_id` | The field's value |
 | `observation_type` | A span type, such as `generation` or `tool` |
-| `tags` | A tag of the trace (trace list) or the span (span list) |
+| `tags` | A tag of the trace (trace list) or the span (span list). On the trace list it tests the effective tags, so a tag added or removed on the trace is matched as its rows show it; at most 20 tags |
 | `metadata` | A metadata entry, as `key=value` (split at the first `=`) |
 | `name` | A case-insensitive substring of the name, once |
 
@@ -921,6 +928,10 @@ Every JSON response of a telemetry read carries `meta`:
 | `as_of` | The instant the response describes; for a list, the one its first page fixed |
 | `partial` | True when rows may be missing, for the reason in `partial_reason`: `store_unavailable`, `deadline` or `quarantined` |
 | `consistency` | `strong`: the response reflects every span this server acknowledged before the request arrived. `lagging`: it may trail |
+
+When ClickHouse does not answer, the trace list and the trace page answer from the recent-span index with
+`partial: true` and `partial_reason: store_unavailable`, so a trace acknowledged a moment ago stays readable; a trace
+that only ClickHouse holds answers 503 `telemetry_store_unavailable` until it is back.
 
 Counts are JSON numbers and stop at 2^53 - 1; an object with a count that stopped there has `saturated: true`. Costs
 are JSON numbers in USD, in fields named `*_usd`.
