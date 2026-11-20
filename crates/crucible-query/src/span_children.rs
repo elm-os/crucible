@@ -42,7 +42,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: SpanChildrenQuery,
     ) -> Result<SpanChildrenPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "span_children");
         let (scope, caller) = (ctx.scope, ctx.caller);
         let SpanChildrenQuery {
             trace_id, parent, ..

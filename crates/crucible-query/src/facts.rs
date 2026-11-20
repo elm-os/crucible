@@ -447,11 +447,13 @@ impl QueryService {
         ctx: &ReadContext,
         target: &FactTarget,
     ) -> Result<TargetBounds, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "fact_target_bounds");
         let scope = ctx.scope;
         let (bounds, consistency, state, from_index, tables) = match target {
             FactTarget::Trace(trace_id) | FactTarget::Span(trace_id, _) => {
+                let waiting = self.clock.now();
                 let consistency = self.index.read_barrier().await;
+                read.barrier_waited(self.clock.now().saturating_duration_since(waiting));
                 let (entries, state) = self.index.trace(scope, *trace_id);
                 let entries = read.retained(entries)?;
                 let stored = read.stored_trace(*trace_id).await?;
@@ -500,7 +502,7 @@ impl QueryService {
         target: &FactTarget,
         window: TimeWindow,
     ) -> Result<TargetFacts, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "facts");
         let consistency = self.consistency();
         let state = self.index.read_state(ctx.scope);
         let facts = read.target_facts(target, window).await?;
