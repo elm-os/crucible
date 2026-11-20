@@ -3,7 +3,10 @@
 //! Request `i` is due at `start + i * 1e9 / rate` nanoseconds, computed from `i` alone: the schedule never
 //! looks at responses. Each of `concurrency` workers owns one HTTP/1.1 connection, which bounds the requests
 //! in flight. A free worker takes the lowest request index nobody has taken, prepares its body (a pool copy,
-//! gzipped in the gzip lane), waits until the request is released and sends it. When every worker is busy,
+//! gzipped in the gzip lane), waits until the request is released and sends it. Gzip runs on the runtime's
+//! blocking threads, at most `gzip_threads` bodies at a time, never on a worker thread: a 1 MiB body takes
+//! milliseconds to compress, and on a worker thread it held up the pacer and the other connections that thread
+//! served, so the generator sent late. When every worker is busy,
 //! released requests wait for a free one, and that wait shows up in their latency, because latency is
 //! measured from the intended send time, not from the moment the request left. Retries are off: a failed
 //! request is counted and never resent, and its connection is replaced.
@@ -26,6 +29,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use crucible_env::{Env, Instant, JoinHandle, NetError};
+use crucible_records::Timestamp;
 use flate2::write::DeflateEncoder;
 use flate2::{Compression, Crc};
 use hdrhistogram::{CreationError, Histogram};
@@ -37,7 +41,7 @@ use hyper_util::rt::TokioIo;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceResponse;
 use prost::Message;
 use serde::Serialize;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::ledger::AckLedger;
 use crate::pool::Pool;
@@ -52,7 +56,7 @@ pub const MAX_REQUESTS: u64 = 1 << 32;
 /// production timer's lateness (up to about 2.5 ms in the accuracy baseline of `docs/testing/perf.md`).
 pub const SPIN_WINDOW: Duration = Duration::from_millis(3);
 /// Histograms track values up to one hour, in microseconds; larger values are recorded as one hour.
-const HISTOGRAM_MAX_US: u64 = 3_600_000_000;
+pub(crate) const HISTOGRAM_MAX_US: u64 = 3_600_000_000;
 
 /// What to send, where and how fast.
 #[derive(Clone, Debug)]
@@ -69,10 +73,49 @@ pub struct RunConfig {
     pub concurrency: usize,
     /// Send `Content-Encoding: gzip` bodies.
     pub gzip: bool,
+    /// With `gzip`, the most bodies compressed at a time, each on a blocking thread of the runtime.
+    pub gzip_threads: usize,
     /// Deadline for connecting and for each request.
     pub timeout: Duration,
     /// Extra headers on every request, such as `Authorization`.
     pub headers: Vec<(HeaderName, HeaderValue)>,
+    /// Zero: span times follow the schedule. Otherwise the requests' span times spread evenly over this much time,
+    /// ending `backdate` before the schedule's start ([`SpanTimes`]), to load a dataset that covers a read window.
+    pub spread: Duration,
+    /// How far before the schedule the span times end (with `spread`) or start (without it): a dataset loaded in
+    /// slices of its window, oldest first, sends each slice's spans in time order, as live traffic does.
+    pub backdate: Duration,
+}
+
+/// When the spans of a run start, from its schedule and its spread and backdate ([`RunConfig`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpanTimes {
+    /// The schedule's start on the wall clock, in Unix nanoseconds.
+    pub wall_start_nanos: u64,
+    /// Requests per second.
+    pub rate: u64,
+    /// Requests in the schedule.
+    pub requests: u64,
+    /// See [`RunConfig::spread`].
+    pub spread_nanos: u64,
+    /// See [`RunConfig::backdate`].
+    pub backdate_nanos: u64,
+}
+
+impl SpanTimes {
+    /// The start time, in Unix nanoseconds, of request `index`'s first span: its intended send time, moved back by
+    /// the backdate; or with a spread, an even share of the spread that ends at the backdated start.
+    pub fn base(&self, index: u64) -> u64 {
+        let start = self.wall_start_nanos.saturating_sub(self.backdate_nanos);
+        if self.spread_nanos == 0 {
+            return start.saturating_add(offset_nanos(index, self.rate));
+        }
+        let share =
+            u128::from(index) * u128::from(self.spread_nanos) / u128::from(self.requests.max(1));
+        start
+            .saturating_sub(self.spread_nanos)
+            .saturating_add(u64::try_from(share).unwrap_or(u64::MAX))
+    }
 }
 
 /// Why a run could not start or finish.
@@ -126,6 +169,9 @@ pub struct RunReport {
     pub seed: u64,
     /// The target as given.
     pub target: String,
+    /// The wall-clock time of the schedule's start, RFC 3339 with microseconds: the clock that stamps
+    /// `received_at` on the same host, for a drain or freshness check against the store.
+    pub started_at: String,
     /// What each request looked like.
     pub lane: Lane,
     /// What was asked for.
@@ -152,8 +198,18 @@ pub struct Lane {
     pub span_bytes: usize,
     /// Spans per request.
     pub spans_per_request: u32,
+    /// Traces per request.
+    pub traces_per_request: u32,
+    /// Whether every trace's first span names a parent that no span carries.
+    pub rootless: bool,
     /// Whether bodies were gzipped.
     pub gzip: bool,
+    /// The most bodies compressed at a time; 0 without gzip.
+    pub gzip_threads: usize,
+    /// 0: span times follow the schedule. Otherwise the seconds that the requests' span times spread over evenly.
+    pub spread_s: f64,
+    /// The seconds before `started_at` at which the span times end (with a spread) or start (without one).
+    pub backdate_s: f64,
     /// Distinct pre-encoded templates.
     pub templates: usize,
     /// Mean protobuf body size of sent requests, before compression.
@@ -231,6 +287,8 @@ pub struct Summary {
     pub p50: u64,
     /// 90th percentile.
     pub p90: u64,
+    /// 95th percentile, which the read-side targets gate on.
+    pub p95: u64,
     /// 99th percentile.
     pub p99: u64,
     /// 99.9th percentile.
@@ -240,7 +298,7 @@ pub struct Summary {
 }
 
 impl Summary {
-    fn of(histogram: &Histogram<u64>) -> Self {
+    pub(crate) fn of(histogram: &Histogram<u64>) -> Self {
         if histogram.is_empty() {
             return Self::default();
         }
@@ -248,6 +306,7 @@ impl Summary {
             count: histogram.len(),
             p50: histogram.value_at_quantile(0.5),
             p90: histogram.value_at_quantile(0.9),
+            p95: histogram.value_at_quantile(0.95),
             p99: histogram.value_at_quantile(0.99),
             p99_9: histogram.value_at_quantile(0.999),
             max: histogram.max(),
@@ -324,6 +383,11 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
     if config.concurrency == 0 {
         return Err(RunError::Config("concurrency must be at least 1"));
     }
+    if config.gzip && config.gzip_threads == 0 {
+        return Err(RunError::Config(
+            "gzip needs at least one compression thread",
+        ));
+    }
     let authority = HeaderValue::from_str(&config.authority)
         .map_err(|_| RunError::Config("the target is not a valid Host header"))?;
     let spans_per_request = pool.config().spans_per_request;
@@ -334,6 +398,7 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         connections.push(Connection::open(env, config.target, config.timeout).await?);
     }
 
+    let wall_start = env.clock.wall_now();
     let plan = Arc::new(Plan {
         target: config.target,
         authority,
@@ -343,14 +408,22 @@ pub async fn run(env: &Env, pool: Arc<Pool>, config: &RunConfig) -> Result<RunOu
         gzip: config.gzip,
         timeout: config.timeout,
         start: env.clock.now(),
-        wall_start_nanos: u64::try_from(env.clock.wall_now().micros())
-            .unwrap_or(0)
-            .saturating_mul(1_000),
+        wall_start,
+        times: SpanTimes {
+            wall_start_nanos: u64::try_from(wall_start.micros())
+                .unwrap_or(0)
+                .saturating_mul(1_000),
+            rate: config.rate,
+            requests,
+            spread_nanos: nanos(config.spread),
+            backdate_nanos: nanos(config.backdate),
+        },
     });
     let shared = Arc::new(Shared {
         next: AtomicU64::new(0),
         released: AtomicU64::new(0),
         slots: (0..config.concurrency).map(|_| Notify::new()).collect(),
+        compressors: config.gzip.then(|| Compressors::new(config.gzip_threads)),
         stats: Mutex::new(stats),
     });
     let mut pacer = env.spawn(
@@ -398,7 +471,8 @@ struct Plan {
     gzip: bool,
     timeout: Duration,
     start: Instant,
-    wall_start_nanos: u64,
+    wall_start: Timestamp,
+    times: SpanTimes,
 }
 
 impl Plan {
@@ -430,6 +504,8 @@ struct Shared {
     released: AtomicU64,
     /// Wakes the worker waiting for request `i` through slot `i % slots.len()`.
     slots: Vec<Notify>,
+    /// The gzip encoders, in the gzip lane.
+    compressors: Option<Compressors>,
     stats: Mutex<Stats>,
 }
 
@@ -469,7 +545,7 @@ async fn pace(env: Env, plan: Arc<Plan>, shared: Arc<Shared>) {
 }
 
 /// One HTTP/1.1 connection; dropping it closes the socket.
-struct Connection {
+pub(crate) struct Connection {
     sender: SendRequest<Full<Bytes>>,
     driver: JoinHandle<()>,
 }
@@ -481,7 +557,11 @@ impl Drop for Connection {
 }
 
 impl Connection {
-    async fn open(env: &Env, target: SocketAddr, timeout: Duration) -> Result<Self, ConnectError> {
+    pub(crate) async fn open(
+        env: &Env,
+        target: SocketAddr,
+        timeout: Duration,
+    ) -> Result<Self, ConnectError> {
         let stream = env
             .net
             .connect(target, env.clock.now().saturating_add(timeout))
@@ -494,7 +574,12 @@ impl Connection {
         Ok(Self { sender, driver })
     }
 
-    async fn exchange(
+    /// Waits until the connection can take a request; an error when the peer closed it.
+    pub(crate) async fn ready(&mut self) -> Result<(), hyper::Error> {
+        self.sender.ready().await
+    }
+
+    pub(crate) async fn exchange(
         &mut self,
         request: Request<Full<Bytes>>,
     ) -> Result<(StatusCode, Bytes), hyper::Error> {
@@ -560,7 +645,6 @@ async fn worker(
     connection: Connection,
 ) -> Result<(), RunError> {
     let mut connection = Some(connection);
-    let mut gzip = plan.gzip.then(Gzip::new);
     loop {
         let index = shared.next.fetch_add(1, Ordering::Relaxed);
         if index >= plan.requests {
@@ -568,10 +652,10 @@ async fn worker(
         }
         let offset = offset_nanos(index, plan.rate);
         let intended = plan.start.saturating_add(Duration::from_nanos(offset));
-        let raw = pool.request(index, plan.wall_start_nanos.saturating_add(offset));
+        let raw = pool.request(index, plan.times.base(index));
         let request_bytes = raw.len();
-        let body = match gzip.as_mut() {
-            Some(gzip) => gzip.compress(&raw)?,
+        let body = match &shared.compressors {
+            Some(compressors) => compressors.compress(&env, raw).await?,
             None => raw,
         };
         let wire_bytes = body.len();
@@ -624,6 +708,55 @@ async fn send(env: &Env, plan: &Plan, connection: &mut Option<Connection>, body:
                 timed_out: failed.is_err(),
             }
         }
+    }
+}
+
+/// The gzip encoders that the workers share: at most one compression per encoder runs at a time, on the
+/// runtime's blocking threads, so the pool holds as many threads as encoders.
+struct Compressors {
+    permits: Semaphore,
+    idle: Mutex<Vec<Gzip>>,
+}
+
+impl std::fmt::Debug for Compressors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compressors")
+            .field("available", &self.permits.available_permits())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Compressors {
+    fn new(threads: usize) -> Self {
+        Self {
+            permits: Semaphore::new(threads),
+            idle: Mutex::new((0..threads).map(|_| Gzip::new()).collect()),
+        }
+    }
+
+    /// One gzip member holding `body`, compressed on a blocking thread once an encoder is free.
+    async fn compress(&self, env: &Env, body: Vec<u8>) -> Result<Vec<u8>, RunError> {
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|_| RunError::Cancelled)?;
+        let mut gzip = self
+            .idle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .unwrap_or_else(Gzip::new);
+        let mut task = env.spawn_blocking("loadgen-gzip", move || {
+            let member = gzip.compress(&body);
+            (gzip, member)
+        });
+        let (gzip, member) = task.join().await.map_err(|_| RunError::Cancelled)?;
+        self.idle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(gzip);
+        Ok(member?)
     }
 }
 
@@ -791,10 +924,16 @@ impl Stats {
             run_id: pool.run_id().to_string(),
             seed: pool_config.seed,
             target: config.authority.clone(),
+            started_at: plan.wall_start.to_string(),
             lane: Lane {
                 span_bytes: pool_config.span_size.bytes(),
                 spans_per_request: pool_config.spans_per_request,
+                traces_per_request: pool_config.traces_per_request,
+                rootless: pool_config.rootless,
                 gzip: config.gzip,
+                gzip_threads: if config.gzip { config.gzip_threads } else { 0 },
+                spread_s: config.spread.as_secs_f64(),
+                backdate_s: config.backdate.as_secs_f64(),
                 templates: pool_config.templates,
                 request_bytes_mean: mean(self.request_bytes),
                 wire_bytes_mean: mean(self.wire_bytes),
@@ -854,6 +993,7 @@ mod tests {
         for (value, expected) in [
             (summary.p50, 500),
             (summary.p90, 900),
+            (summary.p95, 950),
             (summary.p99, 990),
             (summary.p99_9, 999),
         ] {
@@ -914,6 +1054,33 @@ mod tests {
             prop_assert_eq!(offset_nanos(rate * seconds, rate), seconds * 1_000_000_000);
             prop_assert!(offset_nanos(index, rate) <= offset_nanos(index + 1, rate));
             prop_assert_eq!(scheduled_requests(rate, Duration::from_secs(seconds)), rate * seconds);
+        }
+
+        /// Spread span times stay inside the slice that ends at the backdated start, in request order; without a
+        /// spread they are the schedule's, moved back by the backdate.
+        #[test]
+        fn span_times_stay_in_their_slice(
+            requests in 1u64..1_000_000,
+            index_share in 0.0f64..1.0,
+            spread_s in 0u64..3_000_000,
+            backdate_s in 0u64..3_000_000,
+        ) {
+            let times = SpanTimes {
+                wall_start_nanos: 1_794_000_000_000_000_000,
+                rate: 1_000,
+                requests,
+                spread_nanos: spread_s * 1_000_000_000,
+                backdate_nanos: backdate_s * 1_000_000_000,
+            };
+            let index = ((requests - 1) as f64 * index_share) as u64;
+            let end = times.wall_start_nanos - times.backdate_nanos;
+            let base = times.base(index);
+            if spread_s == 0 {
+                prop_assert_eq!(base, end + offset_nanos(index, 1_000));
+            } else {
+                prop_assert!(base >= end - times.spread_nanos && base < end);
+                prop_assert!(times.base(index) <= times.base(index + 1));
+            }
         }
     }
 }
