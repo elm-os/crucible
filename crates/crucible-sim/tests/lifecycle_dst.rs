@@ -65,6 +65,11 @@ fn assert_exercised(total: &Stats) {
     assert!(total.hidden_reads > 0 && total.stalls > 0, "{total:?}");
     // MCP rows that carry their user where no span of the trace does, by `user_id` or by subject hash.
     assert!(total.mcp_identity_frames > 0, "{total:?}");
+    // Deletions by user that name an issuer, and MCP rows they kept because they are hashed under the other.
+    assert!(
+        total.by_user_issuer > 0 && total.mcp_kept_by_issuer > 0,
+        "{total:?}"
+    );
 }
 
 #[test]

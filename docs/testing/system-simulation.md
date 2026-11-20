@@ -21,7 +21,7 @@ One simulated node, on one thread with a paused virtual clock and seeded random 
 | Query service | Real | `crucible_query::QueryService`: trace by id and the trace list, decorated with their facts; the facts of a target; the metrics query |
 | ClickHouse | Model | `ChModel`: inserts, deduplication, probes, the typed-plan interpreter, merges, and seeded faults |
 | Keys | Real | `crucible_auth::StaticKeys`, one secret key per project |
-| Deletion requests | Model | With `deletions`: the requests of a control store behind the shipper's `DeletionRequests` hook, some of whose reads fail; a node timer that appends each open request's `Tombstone` frame to the real WAL and completes the request once the checkpoint passes it; requests that complete while the node is down. Stage B, which applies them, is the real one (contract 13.3, step 3). The production hook (`crucible/src/lifecycle.rs`: the node registers, then reads every request in every state page by page) has its own tests over `PgModel` |
+| Deletion requests | Model | With `deletions`: the requests of a control store behind the shipper's `DeletionRequests` hook, some of whose reads fail; a node timer that appends each open request's `Tombstone` frame to the real WAL and completes the request once the checkpoint passes it; requests that complete while the node is down. Stage B, which applies them, is the real one (contract 13.3, step 3). A read gives the requests made after the arrival it is for, as the production hook does (`crucible/src/lifecycle.rs`: the node registers, then reads every such request in every state page by page), which has its own tests over `PgModel` |
 
 ### The boundary
 
@@ -70,7 +70,7 @@ Configuration seed `c` gives the mask and the run seeds `c * 1000 + s`.
 | Kind | Dimensions |
 |---|---|
 | Workload | `mcp` (MCP operations of both sides, in both eras, over stdio and HTTP, from all four capture sources), `mcp_double_capture` (an SDK and the proxy report one server call), `mcp_errors` (every class of the taxonomy, and annotated classes that the exchange does not warrant), `mcp_mrtr` (multi-round exchanges), `mcp_inventory` (tool lists that change), `mcp_deploys` (versions and deploy ids that change), `mcp_content` (opted-in arguments and results), `mcp_identity` (user subjects, a control store for the salts whose reads sometimes fail; without it the node is ingest-only), `deletions` (one more project, whose data deletion requests select; see "Deletions"), `json`, `large_payloads`, `deep_nesting`, `bad_unicode`, `rootless`, `concurrent_reads`, `client_retries` (whole requests again, and single spans again inside a new request), `multi_project`, `bursts`, `multi_day`, `facts`, `nested_usage` (spans form parent chains within a request, across requests with the child first, and under a span that a request sends again, so some have a descendant that carries usage; a span sent again before its parent arrives is weighted toward an exact repeat whose new child carries usage, see "Mutants") |
-| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize), `dir_sync_errors` (windows in which every directory sync fails) |
+| Faults | `disk_crash_points`, `barrier_crashes`, `crash_loops`, `crash_in_recovery`, `clean_stops`, `disk_write_errors`, `disk_read_faults`, `disk_sync_errors`, `disk_full`, `slow_sync`, `ch_timeouts`, `ch_ack_lost`, `ch_server_errors`, `ch_rejects`, `ch_hang_overload`, `ch_poison`, `ch_probe_errors`, `ch_read_errors`, `window_expiry`, `outages`, `long_outages`, `wall_clock_steps`, `fsync_lie` (stress tier only), `frame_faults` (a seeded share of the durable frames does not normalize), `dir_sync_errors` (windows in which every directory sync fails, while the node runs and while it starts: then a seeded number of the start's directory syncs pass and up to three fail, each ending the recovery attempt it is in with its directory entries pending) |
 | Config | `wal_compression_off`, `small_batches`, `week_partitions`, `tiny_recent`, `small_segments`, `clustered`, `one_connection`, `replay_retention`, `project_rate` (a per-project byte rate), `small_budget` (a `shipper.encoded_bytes` budget of 20 or 200 KiB) |
 
 That is 56 coins. New dimensions take the next bit of the mask and draw their settings after every earlier
@@ -111,8 +111,8 @@ While the workload runs, a marker excuses a missing span, and `consistency: lagg
 the oracle cannot tell from outside whether stage B had a reason to trail. So the suite also requires that live
 reads mostly need no marker: over the smoke budget more than half of the live trace reads return every span,
 whole and strong, and in configurations with the store faults switched off (outages, read faults, insert
-faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 572
-of 580 over 20 configurations; every trace read also reads the trace's facts, so fewer reads fit a run). The
+faults, poison pairs, the tiny index bound, frame faults, the small row budget) more than 90% do (measured: 983
+of 986 over 20 configurations; every trace read also reads the trace's facts, so fewer reads fit a run). The
 smoke ratio leaves out the runs with `frame_faults` or `small_budget`: one quarantined frame marks
 every later read of its project, and a small row budget holds stage B behind the batches in flight.
 
@@ -176,7 +176,10 @@ issuer, by a session, and now and then the whole project. A request is accepted 
 completes once the checkpoint passes its tombstone and the inserts in flight then have landed: an attempt sent
 before stage B knew the request can land later, and the executor's verification deletes it, which is no part of
 stage B. At each start, before the shipper runs, some requests complete as if while the node was down: no
-tombstone of them is in the log, and the shipper must read them before it ships.
+tombstone of them is in the log, and the shipper must read them before it ships. It reads only the requests made
+after the frame it is about to admit arrived, and again for a frame that arrived before every frame it read for
+(wall-clock steps): a request made earlier selects nothing of that frame. Runs in which a read leaves a request out
+reach the target "deletion request made before what the shipper read for", and I9 holds in them.
 
 The oracle knows every span of every admitted frame of the project as stage A made it (trace, `user_id`,
 `session_id`) and when the frame arrived, the identity of every MCP operation as the exchange carried it, and when
@@ -210,7 +213,7 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy (I9 for the deleted project) | 3001 | `0x7fce3d29abb2c7` |
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3, and I9 for the deleted project) | 0 | `0xb04e3dca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 10000 | `0xba10fc4cdc20e` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 21000 | `0xc38b1d5993bffe` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 30000 | `0xd7530d3ce86c33` |
 | `misclassify-caller-fault` | `crucible-normalize` | An invalid-params error on a server-side row is not the caller's fault | I8: an `mcp_ops` row differs from the shared classifier in `caller_fault` | 2001 | `0x21c6206ca7c81b` |
 | `sum-capture-sources` | `crucible-shipper` | Every `mcp_tool_rollup` partial gets one capture source | I7: the rollup differs from the reference over `mcp_ops`, and its counts per capture source are not those of `mcp_ops` | 1 | `0xb04e3dca437a47` |
 | `drop-rollup-marker` | `crucible-shipper` | The blocks of `mcp_tool_rollup` are sent without their marker row | I2: the store model refuses the block | 0 | `0xb04e3dca437a47` |
@@ -220,8 +223,11 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `seed-only-open-requests` | `crucible-shipper` | Before shipping, the shipper applies only the deletion requests that are still open, not those that completed while the node was down | I9: a row that a request completed while the node was down selects landed after the request completed | 2 | `0xb04e3dca437a47` |
 | `skip-flag-reliance` | `crucible-normalize` | A kept span flagged a usage aggregate on an earlier frame's support does not lower `relies_on` | I2: a kept span is flagged on the usage of an earlier frame that the admission does not rely on | 15000 | `0xc1f46c2a19a297` |
 
-Of the 600 runs of the budget, the mutants are caught by 594, 140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48,
-219, 292, 67, 127, 11, 96 and 36 runs, in the order of the table. The check at admission of "Usage aggregates,
+Of the 600 runs of the budget, the mutants are caught by 593, 137, 71, 48, 97, 496, 462, 71, 149, 147, 24, 46,
+215, 291, 72, 130, 12, 95 and 40 runs, in the order of the table. The windows of `dir_sync_errors` while the node
+starts and the shipper's read of only the deletion requests made after what it admits arrived moved them from 594,
+140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48, 219, 292, 67, 127, 11, 96 and 36, and the first catching run of
+`collect-what-frames-rely-on` from seed 21000. The check at admission of "Usage aggregates,
 exactly" raised `mark-after-duplicate-drop` from 41: a stage B that marks after the drop has its flags rely on no
 frame either, so 36 of its runs report I2, and its first catching run still reports I7. The dimension `deletions`
 moved the first catching runs of several mutants: before it, the first fifteen were caught by 593, 137, 62, 46,

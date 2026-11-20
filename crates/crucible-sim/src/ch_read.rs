@@ -207,7 +207,7 @@ fn cell(values: &Values, ty: &Ty, row: usize) -> Option<Value> {
     })
 }
 
-fn rows_of(def: &TableDef, block: &DecodedBlock) -> Option<Vec<Cells>> {
+pub(crate) fn rows_of(def: &TableDef, block: &DecodedBlock) -> Option<Vec<Cells>> {
     if block.columns.len() != def.columns.len() {
         return None;
     }

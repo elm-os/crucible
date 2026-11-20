@@ -259,6 +259,8 @@ pub struct Admission {
     pub duplicates: u32,
     /// Spans dropped because a deletion selects them, with their MCP operations and inventory entries.
     pub deleted: u32,
+    /// MCP operations dropped with the spans that a deletion selects.
+    pub deleted_span_ops: u32,
     /// MCP operations of remaining spans dropped because a deletion by user names them by their own identity.
     pub deleted_ops: u32,
     /// For each remaining span, its position among the spans stage A made of the frame. A re-read of the frame
@@ -514,6 +516,8 @@ impl StageB {
         }
         let mut duplicates = 0u32;
         let mut deleted = 0u32;
+        // With deletions, whether each span of stage A was dropped for one, so that its operations count as deleted.
+        let mut deleted_at: Vec<bool> = Vec::new();
         let window = &mut self.window;
         let mut stage_a_ordinals = Vec::with_capacity(frame.spans.len());
         let mut ordinal = 0u32;
@@ -535,6 +539,9 @@ impl StageB {
             let dropped = !repeat && tombstones.is_some_and(|t| t.selects_span(&span.core));
             duplicates += u32::from(repeat);
             deleted += u32::from(dropped);
+            if tombstones.is_some() {
+                deleted_at.push(dropped);
+            }
             let kept = !repeat && !dropped;
             if kept {
                 stage_a_ordinals.push(ordinal);
@@ -557,6 +564,7 @@ impl StageB {
                 .collect();
             drop(self.mark_usage_aggregates(frame, &kept));
         }
+        let mut deleted_span_ops = 0u32;
         let mut deleted_ops = 0u32;
         if !frame.mcp_ops.is_empty() || !frame.inventory.is_empty() {
             // Where each span of stage A stands among the spans that remain.
@@ -579,6 +587,7 @@ impl StageB {
             };
             frame.mcp_ops.retain_mut(|op| {
                 let Some(at) = now(op.span) else {
+                    deleted_span_ops += u32::from(deleted_at.get(op.span as usize) == Some(&true));
                     return false;
                 };
                 op.span = at;
@@ -617,6 +626,7 @@ impl StageB {
         Ok(Admission {
             duplicates,
             deleted,
+            deleted_span_ops,
             deleted_ops,
             stage_a_ordinals,
             provisional_heads,
@@ -887,7 +897,14 @@ mod tests {
             .with_identity(IdentityCtx::Salted(None))
             .with_tombstones(&deletions);
         let admission = StageB::default().admit_with(&mut f, &ctx).unwrap();
-        assert_eq!((admission.deleted, admission.deleted_ops), (1, 1));
+        assert_eq!(
+            (
+                admission.deleted,
+                admission.deleted_span_ops,
+                admission.deleted_ops
+            ),
+            (1, 1, 1)
+        );
         let spans: Vec<SpanId> = f.spans.iter().map(|s| s.core.span_id).collect();
         assert_eq!(
             spans,

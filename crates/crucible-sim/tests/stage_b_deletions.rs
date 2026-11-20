@@ -2,7 +2,9 @@
 //! step 3): the frames after a `Tombstone` frame ship nothing the deletion selects that arrived before the
 //! deletion's `requested_at`, and what arrived at or after it is kept; and the deletion requests of the control
 //! store apply before anything ships, also those that completed while the node was down and so left no tombstone
-//! in its log. A `Tombstone` frame also evicts what it selects from the recent-span index.
+//! in its log. The shipper reads only the requests made after what it ships arrived, again for a frame that
+//! arrived before every frame it read for. A `Tombstone` frame also evicts what it selects from the recent-span
+//! index, and stage B counts what it drops, by kind.
 //!
 //! Each scenario also runs with the seeded defect it guards against, which must let the deleted spans through.
 
@@ -14,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible_auth::test_support::scope;
+use crucible_env::metrics::registry;
 use crucible_env::{StoreFlavour, Stores};
 use crucible_normalize::{Tombstone, TombstoneSelector};
 use crucible_plan::Value;
@@ -21,7 +24,8 @@ use crucible_recent::{
     RecentConfig, RecentIndex as Index, SpanRead, WalLocator, WalReadError, WalView,
 };
 use crucible_records::{
-    DeletionRequestId, DeletionState, Lsn, ProjectId, TableId, Timestamp, TraceId,
+    ApiKeyId, AuthorKind, DeletionRequestId, DeletionState, FactId, FactTargetKind, Lsn, ProjectId,
+    SpanId, TableId, Timestamp, TraceId, Uuid,
 };
 use crucible_schema::{Granularity, table};
 use crucible_shipper::{
@@ -32,8 +36,14 @@ use crucible_sim::ch_model::ChModel;
 use crucible_sim::ship_sim::{SpanSpec, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
-use crucible_wal_codec::{self as codec, Compression, PreparedFrame, Record, RecordType};
+use crucible_wal_codec::{
+    self as codec, Compression, ContentOrigin, IngestTransport, PreparedFrame, Record, RecordType,
+};
 use futures::future::BoxFuture;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+use prost::Message;
 
 const PROJECT: [u8; 16] = [1; 16];
 
@@ -41,10 +51,12 @@ const PROJECT: [u8; 16] = [1; 16];
 #[derive(Debug, Default)]
 struct Requests {
     known: Mutex<Vec<KnownDeletion>>,
-    /// Reads of every request that fail before one answers.
+    /// Reads that fail before one answers.
     failures: AtomicU32,
-    /// Reads of every request that were answered.
+    /// Reads that were answered.
     answered: AtomicU32,
+    /// For each answered read, the arrival it was for and the requests it gave.
+    reads: Mutex<Vec<(Timestamp, Vec<DeletionRequestId>)>>,
 }
 
 impl DeletionRequests for Requests {
@@ -52,15 +64,28 @@ impl DeletionRequests for Requests {
         true
     }
 
-    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+    fn requested_after(
+        &self,
+        received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
         let failed = self
             .failures
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
+        // As the control store reads them: the requests made after the instant.
+        let known: Vec<KnownDeletion> = self
+            .known
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|known| known.tombstone.requested_at > received_at)
+            .cloned()
+            .collect();
         if !failed {
             self.answered.fetch_add(1, Ordering::SeqCst);
+            let ids = known.iter().map(|k| k.tombstone.request_id).collect();
+            self.reads.lock().unwrap().push((received_at, ids));
         }
-        let known = self.known.lock().unwrap().clone();
         Box::pin(async move {
             if failed {
                 Err(DeletionsUnavailable(
@@ -154,6 +179,99 @@ impl Node {
             .collect();
         let payload = request_payload(PROJECT, &specs, 0).unwrap();
         let frame = PreparedFrame::new(RecordType::IngestRequest, payload, Compression::Lz4);
+        self.wal.append(frame.unwrap()).await.unwrap()
+    }
+
+    /// Appends one request with the spans `spans` of the trace `tag`, each an MCP operation (a server span that
+    /// carries `mcp.method.name`), and returns its LSN once durable.
+    async fn ingest_mcp(&self, tag: u8, spans: Range<u8>) -> Lsn {
+        let wire: Vec<Span> = spans
+            .map(|i| {
+                let start = (SIM_EPOCH_MICROS + i64::from(i)) as u64 * 1_000;
+                Span {
+                    trace_id: vec![tag; 16],
+                    span_id: vec![tag, i, 2, 2, 2, 2, 2, 2],
+                    name: "tools/call search".to_owned(),
+                    kind: 2,
+                    start_time_unix_nano: start,
+                    end_time_unix_nano: start + 1_000_000,
+                    attributes: vec![KeyValue {
+                        key: "mcp.method.name".to_owned(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("tools/call".to_owned())),
+                        }),
+                        ..KeyValue::default()
+                    }],
+                    ..Span::default()
+                }
+            })
+            .collect();
+        let count = wire.len() as u32;
+        let otlp = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: wire,
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        }
+        .encode_to_vec();
+        let record = Record::IngestRequest(codec::IngestRequest {
+            project_id: ProjectId::from_bytes(PROJECT),
+            api_key_id: ApiKeyId::from_bytes([9; 16]),
+            compat_dialect: 0,
+            transport: IngestTransport::Http,
+            content_origin: ContentOrigin::Protobuf,
+            admin_import: false,
+            sdk_name: "sim",
+            sdk_version: "1",
+            idempotency_key: &[],
+            span_count: count,
+            rejected: &[0],
+            otlp: &otlp,
+        });
+        let frame = PreparedFrame::new(
+            record.record_type(),
+            record.encode().unwrap(),
+            Compression::Lz4,
+        );
+        self.wal.append(frame.unwrap()).await.unwrap()
+    }
+
+    /// Appends one `FactBatch` frame with a flag on each trace of `tags`, and returns its LSN once durable.
+    async fn flag(&self, tags: &[u8]) -> Lsn {
+        let at = Timestamp::from_micros(SIM_EPOCH_MICROS);
+        let facts = tags
+            .iter()
+            .zip(1u64..)
+            .map(|(&tag, n)| codec::Fact {
+                fact_id: FactId::from_uuid(Uuid::from_v7_parts(1_800_000_000_000 + n, n.into())),
+                target_kind: FactTargetKind::Trace,
+                trace_id: TraceId::from_bytes([tag; 16]),
+                span_id: SpanId::from_bytes([0; 8]),
+                session_id: "",
+                target_time: at,
+                key: "reviewed",
+                version: n,
+                retracted: false,
+                created_at: at,
+                body: codec::FactBody::Flag { value: true },
+            })
+            .collect();
+        let record = Record::FactBatch(codec::FactBatch {
+            project_id: ProjectId::from_bytes(PROJECT),
+            author_kind: AuthorKind::System,
+            author_id: Uuid::from_v7_parts(1_800_000_000_000, 1),
+            facts,
+        });
+        let frame = PreparedFrame::new(
+            record.record_type(),
+            record.encode().unwrap(),
+            Compression::Lz4,
+        );
         self.wal.append(frame.unwrap()).await.unwrap()
     }
 
@@ -359,4 +477,73 @@ fn a_tombstone_evicts_what_it_selects_from_the_recent_index() {
     assert_eq!(before, (2, 1));
     // Trace 8's entries arrived before the deletion and go at its tombstone; trace 9 is not deleted.
     assert_eq!(after, (0, 1));
+}
+
+const DAY: i64 = 86_400_000_000;
+
+/// The shipper reads only the requests that can select what it ships, those made after it arrived. A request that
+/// completed thirty days ago, whose data is gone, selects none of the frames in the log, which arrived after it, so
+/// the read leaves it out; a request that completed while the node was down is read and applied. Then the node's
+/// wall clock steps back forty days: a frame that arrives now arrived before the old request by the clock, so the
+/// request selects it, and the shipper reads again for that arrival before the frame ships.
+#[test]
+fn the_shipper_reads_only_the_requests_that_can_select_what_it_ships() {
+    let old = DeletionRequestId::from_bytes([10; 16]);
+    let recent = DeletionRequestId::from_bytes([11; 16]);
+    let (started, stepped, reads) = directed(|node| async move {
+        let long_ago = node.now().saturating_add_micros(-30 * DAY);
+        let deletion = Node::deletion(10, long_ago, DeletionState::Completed);
+        node.requests.known.lock().unwrap().push(deletion);
+        // New spans of trace 10, which the old request does not select, and spans of trace 11, which a request
+        // made while the node was down deletes.
+        node.ingest(10, 0..2).await;
+        node.ingest(11, 0..2).await;
+        node.sleep(Duration::from_secs(1)).await;
+        let deletion = Node::deletion(11, node.now(), DeletionState::Completed);
+        node.requests.known.lock().unwrap().push(deletion);
+        node.start(None);
+        node.sleep(Duration::from_secs(2)).await;
+        let started = (node.held(10), node.held(11));
+        node.host.clock.step_wall(-40 * DAY);
+        node.ingest(10, 2..4).await;
+        node.sleep(Duration::from_secs(2)).await;
+        let reads = node.requests.reads.lock().unwrap().clone();
+        (started, node.held(10), reads)
+    });
+    assert_eq!(started, (2, 0));
+    // The spans that arrived before the old request by the clock are deleted; the two before them stay.
+    assert_eq!(stepped, 2);
+    // The first read, for the oldest frame, left the old request out. The frame that arrived before every frame
+    // read for so far read again, down to its own arrival.
+    assert_eq!(reads.len(), 2, "{reads:?}");
+    assert_eq!(reads[0].1, [recent]);
+    assert!(reads[1].0 < reads[0].0, "{reads:?}");
+    assert_eq!(reads[1].1, [old, recent]);
+}
+
+/// Stage B counts what it drops for a deletion, by kind: the spans of the deleted trace, their MCP operations and
+/// the facts on the trace. What no request selects ships and is not counted.
+#[test]
+fn stage_b_counts_what_a_deletion_drops_by_kind() {
+    let (counts, held) = directed(|node| async move {
+        node.ingest_mcp(20, 0..3).await;
+        node.ingest(21, 0..2).await;
+        node.flag(&[20, 20, 21]).await;
+        node.sleep(Duration::from_secs(1)).await;
+        let deletion = Node::deletion(20, node.now(), DeletionState::Completed);
+        node.requests.known.lock().unwrap().push(deletion);
+        node.start(None);
+        node.sleep(Duration::from_secs(2)).await;
+        let drops = |kind| {
+            node.host
+                .recorder
+                .counter_value(&registry::SHIPPER_DELETION_DROPS, &[kind])
+        };
+        (
+            (drops("span"), drops("mcp_operation"), drops("fact")),
+            (node.held(20), node.held(21)),
+        )
+    });
+    assert_eq!(counts, (3, 3, 2));
+    assert_eq!(held, (0, 2));
 }

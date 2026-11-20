@@ -16,6 +16,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   startup and logs the warning at the first refusal.
 - Function-call spans from the Go SDK of a supported evaluation product are recognized by their instrumentation
   scope name, and are mapped as that product's traffic.
+- A server that starts reads from Postgres only the deletion requests made after the oldest data in its write-ahead
+  log arrived, not every request ever made, before it sends that data to ClickHouse.
+- The metric `crucible_shipper_deletion_drops_total{kind}` counts the spans, MCP operations and facts that the
+  shipper dropped before ClickHouse because a deletion request selects them.
 
 ## [0.1.0] - 2026-11-20
 
