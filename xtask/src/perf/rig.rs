@@ -835,9 +835,9 @@ pub struct Context {
     pub others: Vec<String>,
 }
 
-/// The most column statistics a read may load once the store has settled, in microseconds per read. A part that
-/// a merge made after the statistics cache's last refresh costs a read about a millisecond; the small rig's whole
-/// store, 81 parts, cost about 75 ms per read before the first refresh.
+/// The most column statistics a read may load once the store has settled, in microseconds per read. A fresh
+/// snapshot costs a read nothing; a stale one makes it load every part's statistics, which for the small rig's
+/// whole store, 81 parts, cost about 75 ms per read.
 pub const SETTLED_STATISTICS_US: u64 = 5_000;
 
 /// The ClickHouse users of Crucible's reads: the service identities `crucible_read_ui` and `crucible_read_agent`.
@@ -1586,10 +1586,11 @@ impl<'r> Session<'r> {
     }
 
     /// Waits until reads of `span_core` and `trace_heads` load at most [`SETTLED_STATISTICS_US`] of column
-    /// statistics each, or until `limit` passes. ClickHouse (26.8, automatic statistics on every column) loads
-    /// every part's statistics for each read with a condition outside the primary key until its statistics cache
-    /// refreshes, every `refresh_statistics_interval` (300 s by default), and a new part sends reads back to
-    /// loading them, all but those the cache still holds. The probe has the shape of trace by id's span read.
+    /// statistics each, or until `limit` passes. ClickHouse (26.8, automatic statistics on every column) reuses
+    /// its snapshot of a table's statistics, refreshed every `refresh_statistics_interval` (300 s by default),
+    /// only while the table's parts are the ones the snapshot saw; after an insert or a merge every read with more
+    /// than one condition loads every part's statistics until the next refresh. The probe has the shape of trace
+    /// by id's span read and carries none of Crucible's settings.
     pub fn settle_statistics(&self, key: &ArmKey, limit: Duration) -> Result<Settle, String> {
         let started = Instant::now();
         let stamp = super::now().1;

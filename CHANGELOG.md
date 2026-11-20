@@ -2,6 +2,17 @@
 
 Notable changes to Crucible, newest first. Versions follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Telemetry reads leave ClickHouse's column statistics out of their planning (`use_statistics = 0`). On ClickHouse
+  26.8, the version the Compose file ships, every insert or merge made each read with more than one condition load
+  the statistics of every part of the table until the next refresh, five minutes later, so under live ingest every
+  such read paid for them: trace by id measured 124 ms p50 after an insert, and 35 ms without them, on a laptop.
+- Trace by id reads a trace's spans and its facts together, and the trace list reads the facts of a page together,
+  so each waits for fewer ClickHouse round trips.
+- Reads by API keys and the MCP server wait for one of the 16 ClickHouse statements their identity may run at once,
+  instead of answering 503 `telemetry_store_unavailable` when more are asked for at the same time.
+
 ## [0.1.0] - 2026-11-20
 
 The first release of Crucible: open-source, self-hosted observability and analytics for AI agents and MCP
