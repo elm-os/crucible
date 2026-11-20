@@ -73,7 +73,8 @@ func main() {
 }
 ```
 
-It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0}`.
+It prints `hello` and then
+`{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0 FeedbackSent:0 FeedbackDropped:0 FeedbackFailed:0}`.
 
 `Init` configures the process-wide client. Spans go to `Endpoint + "/v1/traces"` as OTLP/HTTP protobuf with
 `Authorization: Bearer <SecretKey>`; plain `http` works.
@@ -81,7 +82,9 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0
 | Option | Meaning |
 |---|---|
 | `Endpoint` | Required. Base URL of the Crucible server's OTLP listener, `http` or `https` |
-| `SecretKey` | Required. The project's secret key (`csk_...`), sent as a Bearer token |
+| `SecretKey` | Required. The project's secret key (`csk_...`), sent as a Bearer token. Spans need the `ingest` scope and feedback the `write` scope; new keys have both |
+| `ProjectID` | The key's project id (a UUID), which `SendFeedback` needs; see [Send feedback](#send-feedback) |
+| `APIURL` | Base URL of the API listener, where `SendFeedback` posts; when empty, `Endpoint` |
 | `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible uses them as an MCP server's name and version when `cruciblemcp.Options` gives none |
 | `Environment` | Resource `deployment.environment.name` |
 | `Release` | `crucible.release` on every span; when it is empty, Crucible uses the service version |
@@ -92,17 +95,19 @@ It prints `hello` and then `{Exported:1 QueueFull:0 ExportFailed:0 QueuedBytes:0
 
 The SDK reads no `CRUCIBLE_*` environment variables: pass every value in `Options`. `Init` returns an error that says
 which option to change when `Endpoint` is empty or not an `http` or `https` URL, when `SecretKey` is empty or does not
-start with `csk_` (a public key `cpk_...` cannot send telemetry), when a size or interval is negative, and when `Init`
-was already called; call `Shutdown` before calling `Init` again.
+start with `csk_` (a public key `cpk_...` cannot send telemetry), when `APIURL` is not an `http` or `https` URL, when
+`ProjectID` is not a UUID, when a size or interval is negative, and when `Init` was already called; call `Shutdown`
+before calling `Init` again.
 
 The SDK keeps its own tracer provider and does not set the global one. Every span is kept: a remote parent that was
 not sampled does not suppress an MCP operation. Each process gets a random `service.instance.id`. Before `Init`,
 `Observe` and the MCP middleware record nothing and cost almost nothing.
 
-- `Flush(ctx)` exports every span that has ended. It returns the export error, if any, or the context's error when
-  the context ends first. Before `Init` it does nothing.
+- `Flush(ctx)` exports every span that has ended and sends every queued score. It returns the export error, else why
+  the last score that was not sent since the previous `Flush` was dropped or failed, or the context's error when the
+  context ends first. Before `Init` it does nothing.
 - `Shutdown(ctx)` flushes, stops the client and lets `Init` be called again. When the context ends first, the spans
-  still queued are dropped. Give it a context with a deadline, as above, so that a collector that does not answer
+  and scores still queued are dropped. Give it a context with a deadline, as above, so that a collector that does not answer
   cannot hold the process.
 
 ## Trace an agent
@@ -197,6 +202,89 @@ func shutdown() {
 [Sending traces](sending-traces.md#attributes-the-trace-views-read) lists which keys the trace views show on main.
 Two notes for agents: the views show the model from `gen_ai.response.model`, so set it on the span as the example
 does; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags of `WithTags`.
+
+## Send feedback
+
+`crucible.SendFeedback(f)` records a score with source `feedback` on a trace, a span or a session: the scores of
+[facts](facts.md), sent by the SDK.
+
+```go
+// feedback/main.go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/elm-os/crucible/sdk/go/crucible"
+)
+
+func main() {
+	err := crucible.Init(crucible.Options{
+		Endpoint:    "http://localhost:8080",          // the API listener, which also takes spans
+		SecretKey:   os.Getenv("CRUCIBLE_SECRET_KEY"), // new keys have the ingest and write scopes
+		ProjectID:   os.Getenv("CRUCIBLE_PROJECT_ID"), // the key's project
+		ServiceName: "support-agent",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, answer := crucible.Observe(ctx, "answer", crucible.Agent)
+	answer.SetOutput("Your refund is on its way.")
+	traceID := answer.Span().SpanContext().TraceID().String()
+	answer.End()
+
+	// Straight after the trace ends: its spans are sent first.
+	crucible.SendFeedback(crucible.Feedback{
+		TraceID: traceID, Name: "helpful", Value: 1, Comment: "solved it", IdempotencyKey: "thumbs-" + traceID,
+	})
+	crucible.SendFeedback(crucible.Feedback{TraceID: traceID, Name: "tone", Value: "friendly", ScoreID: "reviewer-2"})
+
+	if err := crucible.Flush(ctx); err != nil {
+		log.Fatal(err) // says why a score was not sent
+	}
+	s := crucible.CurrentStats()
+	fmt.Println(s.Exported, s.FeedbackSent, s.FeedbackDropped, s.FeedbackFailed)
+	if err := crucible.Shutdown(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Run against a Crucible server, it prints `1 2 0 0`, and the trace list shows both scores on the trace.
+
+Each score goes to `POST <APIURL>/api/v1/projects/<ProjectID>/feedback` as JSON with
+`Authorization: Bearer <SecretKey>`; the key needs the `write` scope.
+
+- **Where it goes.** `APIURL` defaults to `Endpoint`. The API listener (port 8080 by default) serves both
+  `/v1/traces` and the API, so pointing `Endpoint` at it, as above, is enough. The OTLP listener (port 4318) serves
+  only ingest and answers 404 for the feedback route: with `Endpoint` on port 4318, set `APIURL` to the API
+  listener.
+- **The project id** is the key's project: `crucible admin create-key` prints it as `project_id`, a keys file names
+  it with each key, and the UI shows it as `project=` in the address bar. Without it, every score is dropped.
+- **The score.** The target is `TraceID`, `TraceID` with `SpanID`, or `SessionID`. `Name` (without `#`) and `Value`
+  (a number, a bool or a string) are required; `ScoreID`, `DataType` (`numeric`, `boolean`, `categorical` or
+  `text`), `Comment` (4 KiB), `Metadata` (a JSON object, 16 KiB) and `Retracted` are optional, and empty ones are
+  left out. The latest score of a name (and `ScoreID`) on a target wins; `Retracted: true` removes it.
+- **Never in the way.** `SendFeedback` queues the score and returns at once. One goroutine posts the scores in call
+  order, one at a time, each after the spans that ended before the call, so a score on a trace that just ended
+  finds the trace.
+- **Sent once.** Each score carries an `Idempotency-Key`: `IdempotencyKey` when you give one, else a random key. A
+  failed connection, a timeout, 408, 429, a 5xx answer and a `conflict` 409 are retried with the same key and body,
+  three attempts in all, after the answer's `Retry-After` (at most 10 s) or else after 1 s and 2 s, so Crucible
+  writes the score once. Any other refusal is final.
+- **Counted.** Up to 1,024 scores wait to be sent; beyond that a score is dropped. `CurrentStats()` counts
+  `FeedbackSent`, `FeedbackDropped` (queue full, no project id, or `Shutdown` out of time) and `FeedbackFailed`
+  (refused, or failed on every attempt), and `Flush` returns the reason, with the URL, Crucible's answer and the
+  options to check.
+- **Sessions.** Crucible stores a session about ten seconds after its spans and answers 404 for a session it has
+  not stored, which counts as a failure: score a session once its spans are stored.
 
 ## Instrument an MCP server
 
@@ -497,14 +585,17 @@ The OpenTelemetry exporter the SDK uses retries a refused export, such as a 429 
 | `QueueFull` | Spans dropped because the export queue was full |
 | `ExportFailed` | Spans dropped because their export failed |
 | `QueuedBytes` | Estimated bytes of the queued spans and of the batch being exported |
+| `FeedbackSent` | Scores Crucible accepted |
+| `FeedbackDropped` | Scores never sent: the feedback queue was full, `ProjectID` is empty, or `Shutdown` ran out of time |
+| `FeedbackFailed` | Scores Crucible refused, or that failed on every attempt |
 
 ## Configuration
 
 The SDK reads no environment variables of its own: the endpoint, the key and every other setting come from
 `crucible.Options` and `cruciblemcp.Options`, so the examples read `CRUCIBLE_ENDPOINT` and `CRUCIBLE_SECRET_KEY`
 themselves. The resource starts from the OpenTelemetry Go SDK's default resource, so `OTEL_SERVICE_NAME` and
-`OTEL_RESOURCE_ATTRIBUTES` still fill the resource keys that `Options` leave empty. Each export carries
-`User-Agent: crucible-sdk-go/<version>`; `crucible.Version` is the version.
+`OTEL_RESOURCE_ATTRIBUTES` still fill the resource keys that `Options` leave empty. Each export and each feedback
+request carries `User-Agent: crucible-sdk-go/<version>`; `crucible.Version` is the version.
 
 ## What the middleware cannot observe
 

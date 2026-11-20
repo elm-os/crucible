@@ -5,7 +5,7 @@ server over OTLP/HTTP. It has two packages:
 
 | Package | What it does |
 |---|---|
-| `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user, tags and metadata of a trace carried in a `context.Context`, and `Observe` for spans with input, output, model, usage and cost |
+| `crucible` | The process-wide exporter (`Init`, `Flush`, `Shutdown`), the session, user, tags and metadata of a trace carried in a `context.Context`, `Observe` for spans with input, output, model, usage and cost, and `SendFeedback` for scores |
 | `cruciblemcp` | Middleware for the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, tested at v1.8.0) in both protocol eras: one span per MCP operation on the server, and trace context propagation from the client |
 
 It needs Go 1.26 or later. Add it with `go get github.com/elm-os/crucible/sdk/go@main`.
@@ -51,7 +51,9 @@ and it replaces the calculated cost. `Span()` returns the OpenTelemetry span for
 | Option | Meaning |
 |---|---|
 | `Endpoint` | Base URL of the Crucible server. Spans go to `Endpoint + "/v1/traces"` as OTLP protobuf |
-| `SecretKey` | Project secret key, sent as `Authorization: Bearer <key>` |
+| `SecretKey` | Project secret key, sent as `Authorization: Bearer <key>`. Spans need the `ingest` scope and feedback the `write` scope; new keys have both |
+| `ProjectID` | The key's project id (a UUID), which `SendFeedback` needs |
+| `APIURL` | Base URL of the API listener, where `SendFeedback` posts; when empty, `Endpoint` |
 | `ServiceName`, `ServiceVersion` | Resource `service.name` and `service.version`. Crucible uses them as an MCP server's name and version when `cruciblemcp.Options` gives none |
 | `Environment` | Resource `deployment.environment.name` |
 | `Release` | `crucible.release` on every span; when empty Crucible uses the service version |
@@ -67,8 +69,48 @@ nothing and cost almost nothing.
 
 Finished spans go on a bounded queue that one goroutine exports in batches. When the queue is full a span is dropped
 and counted; ending a span never waits for the network. `crucible.CurrentStats()` returns the counters (`Exported`,
-`QueueFull`, `ExportFailed`), `Flush` exports what has ended and returns the export error if there is one, and
-`Shutdown` gives up on spans still queued when its context ends.
+`QueueFull`, `ExportFailed`, `QueuedBytes`, and `FeedbackSent`, `FeedbackDropped`, `FeedbackFailed` for scores),
+`Flush` exports what has ended, sends the queued scores and returns the export error if there is one, else why the
+last score that was not sent failed, and `Shutdown` gives up on spans and scores still queued when its context ends.
+
+## Send feedback
+
+```go
+err := crucible.Init(crucible.Options{
+	Endpoint:    "http://crucible.internal:8080", // the API listener, which also takes spans
+	SecretKey:   secretKey,                       // new keys have the ingest and write scopes
+	ProjectID:   projectID,                       // the key's project
+	ServiceName: "support-agent",
+})
+
+_, answer := crucible.Observe(ctx, "answer", crucible.Agent)
+traceID := answer.Span().SpanContext().TraceID().String()
+answer.End()
+
+crucible.SendFeedback(crucible.Feedback{TraceID: traceID, Name: "helpful", Value: 1, Comment: "solved it"})
+crucible.SendFeedback(crucible.Feedback{SessionID: "conv-42", Name: "resolved", Value: true, IdempotencyKey: "conv-42-resolved"})
+```
+
+`SendFeedback` records a score with source `feedback` on a trace (`TraceID`), a span (`TraceID` and `SpanID`) or a
+session (`SessionID`), and returns at once. It posts to `APIURL + "/api/v1/projects/" + ProjectID + "/feedback"`
+with the secret key, which needs the `write` scope.
+
+- The other fields are the route's: `ScoreID`, `DataType` (`numeric`, `boolean`, `categorical` or `text`), `Comment`
+  (4 KiB), `Metadata` (a JSON object, 16 KiB) and `Retracted`; empty ones are left out. The latest score of a name
+  (and `ScoreID`) on a target wins.
+- One goroutine posts the scores in call order, each after the spans that ended before the call, so a score on a
+  trace that just ended finds the trace.
+- Each score carries an `Idempotency-Key`, `IdempotencyKey` or else a random one. A failed connection, a timeout,
+  408, 429, a 5xx answer and a `conflict` 409 are retried with the same key and body, three attempts in all, after
+  `Retry-After` (at most 10 s) or else 1 s and 2 s, so Crucible writes the score once.
+- `APIURL` defaults to `Endpoint`. The API listener (port 8080) serves both `/v1/traces` and the API; the OTLP
+  listener (port 4318) does not serve the API, so with `Endpoint` on port 4318, set `APIURL`.
+- The project id is the key's project: `crucible admin create-key` prints it as `project_id`, and the UI shows it as
+  `project=` in the address bar. Without it, scores are dropped.
+- Up to 1,024 scores wait to be sent; beyond that a score is dropped. `CurrentStats` counts sent, dropped and failed
+  scores, and `Flush` returns why the last score that was not sent was dropped or failed.
+- Crucible stores a session about ten seconds after its spans and refuses a score on a session it has not stored with
+  404, which counts as failed.
 
 ## Instrument an MCP server
 

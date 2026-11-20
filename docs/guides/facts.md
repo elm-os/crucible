@@ -10,6 +10,26 @@ The trace page has a **Tags, flags and feedback** section. There you add or remo
 switch **Bookmark** and **Public**, and add a score with a name, a value (a number, `true` or `false`, or a word) and
 a comment. Writing facts needs the member role on the project; viewers see them.
 
+## Scores from an SDK
+
+An application that uses a Crucible SDK sends scores with the SDK's feedback call, which posts them to the feedback
+route below with the secret key it was set up with. The call returns at once and never throws: a background sender
+posts the scores in call order, after the spans that ended before the call, and retries a failed connection, a
+timeout and a 408, 429, 5xx or `conflict` answer with the same `Idempotency-Key`.
+
+| SDK | Call |
+|---|---|
+| TypeScript | `feedback({ traceId, name: "helpful", value: 1, comment: "solved it" })` |
+| Python | `crucible_sdk.feedback("helpful", 1, trace_id=trace_id, comment="solved it")` |
+| Go | `crucible.SendFeedback(crucible.Feedback{TraceID: traceID, Name: "helpful", Value: 1, Comment: "solved it"})` |
+| Rust | `crucible_sdk::feedback(Feedback { trace_id, name: "helpful".into(), value: 1.into(), ..Feedback::default() })` |
+
+Each SDK needs the key's project id (`projectId`, `project_id`, `ProjectID`; `crucible admin create-key` prints it
+as `project_id`) and posts to the API listener: point the SDK's endpoint at port 8080, which takes spans too, or
+set its API URL. The guides for [TypeScript](sdk-typescript.md#send-feedback), [Python](sdk-python.md#send-feedback)
+and [Go](sdk-go.md#send-feedback), and the Rust SDK's README (`sdk/rust/README.md`), have complete examples. A
+session is stored about ten seconds after its spans, and a score on a session sent before then is refused with 404.
+
 ## Through the API
 
 Facts are written with a project key that has the `write` scope, or a signed-in session, and read with the `read`

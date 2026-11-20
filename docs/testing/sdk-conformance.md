@@ -2,13 +2,14 @@
 
 The four milestone 3 SDKs (TypeScript, Python, Go, Rust) are tested against one language-neutral suite. The suite
 checks what an SDK puts on the wire: the OTLP spans it exports, their attributes and resource, and the export
-request itself, against the wire contract of contracts 9.1 to 9.10 and the source keys of 10.6.
+request itself, against the wire contract of contracts 9.1 to 9.10 and the source keys of 10.6, and the posts its
+feedback call makes to the feedback route of contract 12.6.
 
 | Piece | Where | What it is |
 |---|---|---|
-| Collector | `crates/crucible-fake-collector` (library) | An OTLP/HTTP receiver on a loopback port that records every request and span |
+| Collector | `crates/crucible-fake-collector` (library) | An OTLP/HTTP receiver on a loopback port that records every request and span, and every post to the feedback route `POST /api/v1/projects/{project_id}/feedback`, which it answers 201 |
 | Driver | `crucible-sdk-driver` (binary of the same crate) | Runs every case through an SDK's runner, diffs the spans against the goldens, writes the matrix report |
-| Suite constants | `conformance/suite.json` | Keys, client and server identity, protocol versions, SDK options |
+| Suite constants | `conformance/suite.json` | Keys and their project id, client and server identity, protocol versions, SDK options |
 | Key registry | `conformance/registry.json` | Every wire key with its type, the derived fields, forbidden keys, hash rules and the rules that apply to every span |
 | Scenarios | `conformance/scenarios/*.json` | What the runner does, one feature per file |
 | Goldens | `conformance/goldens/*.json` | What the driver expects, one file per scenario, plus `common.json` |
@@ -16,8 +17,10 @@ request itself, against the wire contract of contracts 9.1 to 9.10 and the sourc
 | Capability manifest | `conformance/capability-manifest.schema.json`, `conformance/sdks/*.json` | What one SDK declares about itself |
 | Self-test | `crucible-sdk-driver selftest-runner` | A Rust runner that emits the expected spans directly, so the suite runs before any SDK exists |
 
-This page is the runner contract, version 1. SDK runners code against it; a change to it bumps the `schema` strings
-below.
+This page is the runner contract, version 1. SDK runners code against it; a change that breaks a runner bumps the
+`schema` strings below. Additive changes keep version 1: runners ignore run spec fields they do not read, and a
+runner without a newer step fails the cases that use it, naming the step. The feedback step, the run spec's
+`api_url` and `project_id`, and the golden's `feedback` section were added this way.
 
 ## Running the suite
 
@@ -83,6 +86,8 @@ makes the case an `error`; its findings are still reported.
   "protocol_version": "2026-07-28",
   "otlp": { "endpoint": "http://127.0.0.1:41234", "traces_url": "http://127.0.0.1:41234/v1/traces" },
   "checkpoint_url": "http://127.0.0.1:41234/conformance/checkpoint",
+  "api_url": "http://127.0.0.1:41234",
+  "project_id": "01938a2e-7c3d-7e4f-8a5b-6c7d8e9f0a1b",
   "keys": { "public_key": "cpk_conformance...", "secret_key": "csk_conformance..." },
   "sdk": {
     "service_name": "crucible-conformance-server",
@@ -107,6 +112,8 @@ makes the case an `error`; its findings are still reported.
   computed the HTTP headers. The runner adds nothing of its own to a message.
 - `otlp` and `checkpoint_url` point at a collector the driver starts for this case alone, so spans that arrive
   after a case has ended never count toward the next one.
+- `api_url` is the base URL of the API the SDK's feedback posts to, the same collector, and `project_id` is the keys'
+  project (`suite.json`). The SDK's `init` takes both: the API URL and the project id options of each SDK.
 
 ### MCP steps
 
@@ -163,6 +170,7 @@ For agent cases the runner is the agent program: it calls the SDK in process.
 | `{"step": "s", "flush": {}}` | `flush()`, waiting until it returns |
 | `{"step": "s", "checkpoint": "<name>"}` | `POST {"name": "<name>"}` to `checkpoint_url` and wait for its 204. The collector orders checkpoints against exports, so a golden can require that a span arrived before it |
 | `{"step": "s", "shutdown": {}}` | `shutdown()`, waiting until it returns |
+| `{"step": "s", "feedback": {...}}` | The SDK's feedback call with one score. The object holds the feedback route's body fields (contract 12.6): `name` and `value` (a number, boolean or string) and any of `trace_id`, `span_id`, `session_id`, `score_id`, `data_type`, `comment`, `metadata` and `retracted`, plus `idempotency_key`, the `Idempotency-Key` the caller passes. The SDK posts the body fields as given and, without `idempotency_key`, a key of its own |
 
 A node is `{"name", "type", "children"}` plus any of the fields below. Each field maps to the keys of contract 10.6;
 where the contract offers alternatives, the goldens accept any of them.
@@ -283,9 +291,26 @@ equal JSON value), `{"usd": "0.0042"}` (equal in nano-USD after contract 3.4 rou
 step) and `{"optional": <assertion>}` (checked only when the key is present).
 
 A golden may also have `every_span` (assertions applied to every span of the case), `absent` (selectors that must
-match no span), `checkpoints` (checkpoint name to the expectation ids whose spans must arrive before it) and
-`forbidden_strings` (`{"label", "value"}` pairs that must not appear in any export). `common.json` holds the
-expectations the driver adds for the legacy handshake.
+match no span), `checkpoints` (checkpoint name to the expectation ids whose spans must arrive before it),
+`forbidden_strings` (`{"label", "value"}` pairs that must not appear in any export) and `feedback`. `common.json`
+holds the expectations the driver adds for the legacy handshake.
+
+`feedback` lists the posts to the feedback route, one per `feedback` step of the scenario (the loader refuses any
+other count), in the order they must arrive:
+
+```json
+{ "id": "thumbs-up", "idempotency_key": "conformance-feedback-1", "body": { "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "name": "helpful", "value": 1 }, "after": ["answer"] }
+```
+
+| Field | Meaning |
+|---|---|
+| `idempotency_key` | The `Idempotency-Key` the post carries: a string the caller passed, or `{"matches": "<regex>"}` for a key the SDK made, which must also differ from every other key the SDK made in the case |
+| `body` | The JSON body; numbers compare by value, so `1` and `1.0` are equal |
+| `after` | Expectation ids of spans whose export must arrive before the post |
+
+The driver checks that the case made exactly that many posts, and that each went to
+`/api/v1/projects/<project_id>/feedback` with `Content-Type: application/json`, the run's secret key as
+`Authorization: Bearer` (or the Basic pair of contract 12.2), its `Idempotency-Key` and its body.
 
 ### Records
 
@@ -315,9 +340,10 @@ key the projector reads is in `registry.json` with a type the projector takes.
   tool_error` as `isError`, `http.response.status_code`, `crucible.mcp.cancel.source`, `crucible.mcp.timed_out`, a
   non-numeric `error.type` other than `tool_error` as an unhandled exception, and `crucible.mcp.error.class` and
   `.error.subclass` as the SDK's annotations.
-- **Export.** Every request goes to `/v1/traces` as `application/x-protobuf` (gzip allowed) with
-  `Authorization: Bearer <secret key>` or `Basic base64(public:secret)` (contracts 9.10 and 12.2), and decodes.
-  Spans with all-zero ids are failures.
+- **Export.** Every request other than a feedback post goes to `/v1/traces` as `application/x-protobuf` (gzip
+  allowed) with `Authorization: Bearer <secret key>` or `Basic base64(public:secret)` (contracts 9.10 and 12.2), and
+  decodes. Spans with all-zero ids are failures.
+- **Feedback.** The case made as many posts to the feedback route as its golden lists, none when it lists none.
 - **Taint.** No export body (decompressed, canonical protobuf) contains the secret key, the Basic credential, a
   planted secret, a raw session id or a raw `requestState`.
 - **Every span.** No span, resource or event attribute is a forbidden key, and every key the registry knows has its
@@ -457,5 +483,8 @@ and adding an entry to the workflow's matrix.
   would carry the raw client address on a server span.
 - The suite configures no `identify` hook, so identity keys must be absent and `identity_source` must derive to
   `none`.
+- 9.10 names no SDK feedback surface. The suite's reading: a feedback call posts the route's body (contract 12.6)
+  with the secret key, the caller's `Idempotency-Key` or one the SDK makes, after the spans that ended before the
+  call. The collector answers every post 201, so retries and refusals are tested in each SDK's own tests.
 - Each SDK's runner plays these transcripts against its reference server, and `.github/workflows/sdk-conformance.yml`
   runs all four.

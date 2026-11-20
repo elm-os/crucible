@@ -5,7 +5,7 @@ points:
 
 | Import | Contents |
 |---|---|
-| `@elm-os/crucible` | `init`, `flush`, `shutdown` and `stats`; the agent helpers `withContext` and `observe` |
+| `@elm-os/crucible` | `init`, `flush`, `shutdown` and `stats`; the agent helpers `withContext` and `observe`; `feedback` |
 | `@elm-os/crucible/mcp` | `instrument` and `instrumentHandler` for MCP servers; `annotateError`, `markValidation`, `markNotFound` and `identify` for tool handlers |
 | `@elm-os/crucible/mcp-client` | `instrumentClient` for MCP clients |
 
@@ -57,7 +57,7 @@ console.log(stats());
 await shutdown();
 ```
 
-It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
+It prints `hello` and then the counters, among them `exported: 1`.
 
 `init` starts the exporter. Spans go to `POST <endpoint>/v1/traces` as OTLP/HTTP protobuf with
 `Authorization: Bearer <secretKey>`.
@@ -65,7 +65,9 @@ It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
 | Option | Default | Effect |
 |---|---|---|
 | `endpoint` | `CRUCIBLE_ENDPOINT`, else `http://localhost:4318` | Base URL of an OTLP listener; `/v1/traces` is added unless the URL ends with it |
-| `secretKey` | `CRUCIBLE_SECRET_KEY` | Required. The project's secret key, sent as a Bearer token |
+| `secretKey` | `CRUCIBLE_SECRET_KEY` | Required. The project's secret key, sent as a Bearer token. Spans need the `ingest` scope and feedback the `write` scope; new keys have both |
+| `projectId` | `CRUCIBLE_PROJECT_ID` | The key's project id (a UUID), which `feedback` needs; see [Send feedback](#send-feedback) |
+| `apiUrl` | `CRUCIBLE_API_URL`, else `endpoint` | Base URL of the API listener, where `feedback` posts |
 | `serviceName`, `serviceVersion` | | Resource `service.name` and `service.version` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | `crucible.release` on every span |
@@ -76,7 +78,8 @@ It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
 | `exportTimeoutMs` | 10,000 | Bound on one export, and on `flush` and `shutdown` |
 
 `init` throws, with a message that names the option or variable to set, when the key is missing, when the endpoint
-is not an `http` or `https` URL, when a number option is not a positive integer, and when it was already called;
+or the API URL is not an `http` or `https` URL, when the project id is not a UUID, when a number option is not a
+positive integer, and when it was already called;
 call `shutdown` before calling `init` again. Each `init` gives the process a new random `service.instance.id`.
 
 The SDK uses its own tracer provider and never registers it globally, so an application's own OpenTelemetry setup
@@ -84,10 +87,10 @@ is left alone. When the application has a context manager registered, Crucible s
 the application's spans nest under Crucible spans. `OTEL_*` variables cannot redirect the export, replace its key
 or turn its sampling off: sampling is always on.
 
-- `flush()` exports every queued span. It resolves within `exportTimeoutMs`, whether or not the collector answers,
-  and never rejects.
-- `shutdown()` flushes and then stops the exporter. Spans that end after it are dropped and counted. Call it before
-  the process exits, for example on `SIGTERM`:
+- `flush()` exports every queued span and sends every queued score. It resolves within `exportTimeoutMs`, whether
+  or not Crucible answers, and never rejects.
+- `shutdown()` flushes and then stops, within `exportTimeoutMs`. Spans that end and scores queued after it are
+  dropped and counted. Call it before the process exits, for example on `SIGTERM`:
 
 ```ts
 // shutdown.ts
@@ -173,8 +176,66 @@ on main. Two notes for agents: the views show the model from `responseModel`, wh
 is not shown; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that `withContext`
 sets.
 
-To attach a score to a trace, a span or a session, post it to the REST API's feedback route
-([facts](facts.md)).
+## Send feedback
+
+`feedback(score)` records a score with source `feedback` on a trace, a span or a session: the scores of
+[facts](facts.md), sent by the SDK.
+
+```ts
+// feedback.ts
+import { feedback, flush, init, observe, shutdown, stats } from "@elm-os/crucible";
+
+init({
+  endpoint: "http://localhost:8080", // the API listener, which also takes spans
+  secretKey: process.env.CRUCIBLE_SECRET_KEY, // new keys have the ingest and write scopes
+  projectId: process.env.CRUCIBLE_PROJECT_ID, // the key's project
+  serviceName: "support-agent",
+});
+
+const traceId = await observe("answer", { type: "agent" }, async (agent) => {
+  agent.update({ output: "Your refund is on its way." });
+  return agent.span.spanContext().traceId;
+});
+
+// Straight after the trace ends: its spans are sent first.
+feedback({ traceId, name: "helpful", value: 1, comment: "solved it", idempotencyKey: `thumbs-${traceId}` });
+feedback({ traceId, name: "tone", value: "friendly", scoreId: "reviewer-2" });
+
+await flush();
+const { exported, feedbackSent, feedbackDropped, feedbackFailed } = stats();
+console.log({ exported, feedbackSent, feedbackDropped, feedbackFailed });
+await shutdown();
+```
+
+Run against a Crucible server, it prints `{ exported: 1, feedbackSent: 2, feedbackDropped: 0, feedbackFailed: 0 }`,
+and the trace list shows both scores on the trace.
+
+Each score goes to `POST <apiUrl>/api/v1/projects/<projectId>/feedback` as JSON with
+`Authorization: Bearer <secretKey>`; the key needs the `write` scope.
+
+- **Where it goes.** `apiUrl` defaults to `endpoint`. The API listener (port 8080 by default) serves both
+  `/v1/traces` and the API, so pointing `endpoint` at it, as above, is enough. The OTLP listener (port 4318) serves
+  only ingest and answers 404 for the feedback route: with `endpoint` on port 4318, set `apiUrl` to the API
+  listener.
+- **The project id** is the key's project: `crucible admin create-key` prints it as `project_id`, a keys file names
+  it with each key, and the UI shows it as `project=` in the address bar. Without it, every score is dropped.
+- **The score.** The target is `traceId`, `traceId` with `spanId`, or `sessionId`. `name` (without `#`) and `value`
+  (a number, a boolean or a string) are required; `scoreId`, `dataType` (`numeric`, `boolean`, `categorical` or
+  `text`), `comment` (4 KiB), `metadata` (a JSON object, 16 KiB) and `retracted` are optional. The latest score of a
+  name (and `scoreId`) on a target wins; `retracted: true` removes it.
+- **Never in the way.** `feedback` queues the score and returns at once; it never throws. One background sender posts
+  the scores in call order, one at a time, each after the spans that ended before the call, so a score on a trace
+  that just ended finds the trace.
+- **Sent once.** Each score carries an `Idempotency-Key`: `idempotencyKey` when you give one, else a random key. A
+  failed connection, a timeout, 408, 429, a 5xx answer and a `conflict` 409 are retried with the same key and body,
+  three attempts in all, after the answer's `Retry-After` (at most 10 s) or else after 1 s and 2 s, so Crucible
+  writes the score once. Any other refusal is final.
+- **Counted.** Up to 1,024 scores wait to be sent; beyond that a score is dropped. `stats()` counts `feedbackSent`,
+  `feedbackDropped` (queue full, no project id, or `shutdown` out of time) and `feedbackFailed` (refused, or failed
+  on every attempt). The first drop and the first failure each raise one process warning, code `CRUCIBLE_FEEDBACK`,
+  that names the URL, Crucible's answer and the settings to check.
+- **Sessions.** Crucible stores a session about ten seconds after its spans and answers 404 for a session it has
+  not stored, which counts as a failure: score a session once its spans are stored.
 
 ## Instrument an MCP server
 
@@ -395,6 +456,9 @@ time, counts as failed and is not sent again.
 | `dropped` | Spans dropped because the queue was full, or because they ended after `shutdown` |
 | `exported` | Spans the collector accepted |
 | `failed` | Spans in batches whose export failed or timed out |
+| `feedbackSent` | Scores Crucible accepted |
+| `feedbackDropped` | Scores never sent: the feedback queue was full, no project id is set, or `shutdown` ran out of time |
+| `feedbackFailed` | Scores Crucible refused, or that failed on every attempt |
 
 ## Configuration
 
@@ -402,8 +466,10 @@ time, counts as failed and is not sent again.
 |---|---|
 | `CRUCIBLE_ENDPOINT` | `endpoint` when the option is not given |
 | `CRUCIBLE_SECRET_KEY` | `secretKey` when the option is not given |
+| `CRUCIBLE_PROJECT_ID` | `projectId` when the option is not given |
+| `CRUCIBLE_API_URL` | `apiUrl` when the option is not given |
 
-Every other setting is an option of `init` or `instrument`. Each export carries
+Every other setting is an option of `init` or `instrument`. Each export and each feedback request carries
 `User-Agent: crucible-sdk-typescript/<version>`.
 
 ## Known limits
