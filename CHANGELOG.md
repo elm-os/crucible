@@ -58,7 +58,8 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - A project settings page with the project's name, slug and id, and renaming for project admins.
 - Alert rules on span and trace measures, delivered to Slack, email and signed webhooks under an egress policy.
 - Exports in `crucible-jsonl` and `otlp-json` through the API, the UI, the MCP server and `crucible export`.
-- Per-project retention settings and deletion requests by trace, user or session.
+- Per-project retention settings and deletion requests by trace, user or session. A deletion also applies to data
+  still in the write-ahead log, so a replay after a restart never inserts what it deleted.
 - Optional media on S3-compatible object storage: presigned uploads and downloads, deduplication by content, the
   compatible media endpoint, and hourly collection of unused objects. Without a store, media stay inline in payloads.
 
