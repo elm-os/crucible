@@ -293,7 +293,7 @@ pub(crate) fn parse_request(
 
 /// The side, capture source and caller-fault rule of an `mcp_ops` query (contract 9.5): the side is required
 /// there, and the three apply to no other source.
-fn mcp_options(
+pub(crate) fn mcp_options(
     rid: crucible_records::RequestId,
     request: &MetricsQueryRequest,
     source: Source,

@@ -180,7 +180,7 @@ impl QueryService {
         };
         let (measure, aggregation) = (*measure, *aggregation);
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_metrics");
         let selection = read
             .mcp_selection(&McpQuery {
                 window,
@@ -311,7 +311,7 @@ impl QueryService {
         };
         let (measure, aggregation) = (*measure, *aggregation);
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_metrics_totals");
         let selection = read
             .mcp_selection_in(
                 &McpQuery {

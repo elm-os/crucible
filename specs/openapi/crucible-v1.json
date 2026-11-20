@@ -14781,7 +14781,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of the values: `count`, `tokens`, `usd` or `us`."
+            "description": "The unit of the values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate)."
           }
         }
       },
@@ -15861,7 +15861,7 @@
           },
           "unit": {
             "type": "string",
-            "description": "The unit of its values: `count`, `tokens`, `usd` or `us`."
+            "description": "The unit of its values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate)."
           }
         }
       },

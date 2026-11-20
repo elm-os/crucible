@@ -149,7 +149,7 @@ pub struct MetricsSeries {
     pub measure: String,
     /// The aggregation.
     pub aggregation: String,
-    /// The unit of the values: `count`, `tokens`, `usd` or `us`.
+    /// The unit of the values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
     pub unit: String,
     /// The dimension values of the key; empty without dimensions and for the `other` series.
     pub key: Vec<SeriesKey>,
@@ -188,7 +188,7 @@ pub struct SchemaMeasure {
     pub id: String,
     /// The label.
     pub label: String,
-    /// The unit of its values: `count`, `tokens`, `usd` or `us`.
+    /// The unit of its values: `count`, `tokens`, `usd`, `us` or `ppm` (parts per million, a rate).
     pub unit: String,
     /// The aggregations it allows.
     pub aggregations: Vec<String>,

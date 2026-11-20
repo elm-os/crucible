@@ -375,7 +375,7 @@ impl QueryService {
         query: &McpQuery,
     ) -> Result<McpServers, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_servers");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_servers(
             ctx.scope,
@@ -442,7 +442,7 @@ impl QueryService {
         query: &McpQuery,
     ) -> Result<McpTools, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_tools");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_tools(
             ctx.scope,
@@ -528,7 +528,7 @@ impl QueryService {
         tool_name: &str,
     ) -> Result<McpToolDetail, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_tool");
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
         let (step, buckets) = series_buckets(query.window);
@@ -643,7 +643,7 @@ impl QueryService {
         query: &McpQuery,
     ) -> Result<McpErrorClasses, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_error_classes");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_error_classes(
             ctx.scope,
@@ -707,7 +707,7 @@ impl QueryService {
         query: &McpQuery,
     ) -> Result<McpClients, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_clients");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_clients(
             ctx.scope,
@@ -754,7 +754,7 @@ impl QueryService {
         query: &McpQuery,
     ) -> Result<McpDeploys, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_deploys");
         let (mut deploys, selection) = read.deploys_of(query, query.window).await?;
         deploys.reverse();
         let meta = read.mcp_meta(consistency, &[TableId::McpDeploys])?;
@@ -778,7 +778,7 @@ impl QueryService {
             return Err(QueryServiceError::Validation("server"));
         };
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_compare");
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
         let layout = GroupLayout {

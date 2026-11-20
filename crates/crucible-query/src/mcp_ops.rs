@@ -401,7 +401,7 @@ impl QueryService {
         limit: u32,
     ) -> Result<McpErrorBreakdown, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_error_breakdown");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_error_breakdown(
             ctx.scope,
@@ -446,7 +446,7 @@ impl QueryService {
         limit: u32,
     ) -> Result<McpClientVersions, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_client_versions");
         let selection = read.mcp_selection(query).await?;
         let plan = mcp_client_versions(
             ctx.scope,
@@ -486,7 +486,7 @@ impl QueryService {
         limit: u32,
     ) -> Result<McpUsers, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_users");
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
         let plan = mcp_users(
@@ -559,7 +559,7 @@ impl QueryService {
         limit: u32,
     ) -> Result<McpSessions, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_sessions");
         let selection = read.mcp_selection(query).await?;
         let mcp = read_for(query, &selection);
         let plan = mcp_sessions(
@@ -622,7 +622,7 @@ impl QueryService {
     ) -> Result<McpOperationsPage, QueryServiceError> {
         let query = &page.query;
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_operations");
         let as_of = page.cursor.map_or(read.now, |cursor| cursor.as_of);
         let selection = read.mcp_selection(query).await?;
         let request = McpOperationsRequest {
@@ -675,7 +675,7 @@ impl QueryService {
         (trace_id, span_id): (TraceId, SpanId),
     ) -> Result<McpOperationDetail, QueryServiceError> {
         let consistency = self.consistency();
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "mcp_operation");
         let (scope, caller, window) = (ctx.scope, ctx.caller, query.window);
         let plan = mcp_operation(
             scope,

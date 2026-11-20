@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crucible_api_types::{ChartForm, MeasureRequest, WidgetInput};
+use crucible_api_types::{ChartForm, McpSideParam, MeasureRequest, WidgetInput};
 use crucible_plan::{MeasureId, Source, SourceSchema};
 use crucible_records::DashboardId;
 use proptest::prelude::*;
@@ -185,6 +185,31 @@ fn a_query_the_registry_refuses_points_into_the_widget() {
         vec![
             pair("/widgets/0/query/measures/0/measure", "invalid"),
             pair("/widgets/1/query/measures", "invalid"),
+        ]
+    );
+}
+
+#[test]
+fn a_widget_saves_only_when_it_reads_one_side_of_mcp_ops() {
+    let mcp = |side: Option<McpSideParam>| WidgetQuery {
+        source: "mcp_ops".to_owned(),
+        side,
+        ..spans_query(&[("mcp.calls", "sum")], &[], None)
+    };
+    let mut no_side = valid(WidgetKind::Timeseries, at(0, 0, 6, 3));
+    no_side.query = Some(mcp(None));
+    let mut spans_with_side = valid(WidgetKind::Timeseries, at(6, 0, 6, 3));
+    spans_with_side.query = Some(WidgetQuery {
+        side: Some(McpSideParam::Server),
+        ..spans_query(&[("count", "sum")], &[], None)
+    });
+    let mut server = valid(WidgetKind::Timeseries, at(0, 3, 6, 3));
+    server.query = Some(mcp(Some(McpSideParam::Server)));
+    assert_eq!(
+        check(&[no_side, spans_with_side, server]),
+        vec![
+            pair("/widgets/0/query/side", "required"),
+            pair("/widgets/1/query/side", "invalid"),
         ]
     );
 }
