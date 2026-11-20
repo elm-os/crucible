@@ -172,7 +172,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: UserListQuery,
     ) -> Result<UserListPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "user_list");
         let limit = page_limit(query.limit)?;
         let cursor = match &query.cursor {
             Some(cursor) => Some(cursor.check(ctx.scope, query.window)?),
@@ -228,7 +228,7 @@ impl QueryService {
         window: TimeWindow,
         user_id: &str,
     ) -> Result<UserDetail, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "user");
         let base = self.consistency();
         let (unconfirmed, state) = read.unconfirmed()?;
         let left_out = unconfirmed.iter().any(|span| {
@@ -262,7 +262,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: UserSessionsQuery,
     ) -> Result<UserSessionsPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "user_sessions");
         let limit = page_limit(query.limit)?;
         let cursor = match &query.cursor {
             Some(cursor) => Some(cursor.check(ctx.scope, query.window)?),
