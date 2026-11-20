@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crucible_env::Clock;
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_recent::{
-    Frame, QuarantineReach, QuarantinedPair, RecentWriter, SpanEntry, SpanSummary, WalLocator,
+    DeletionSelector, Frame, QuarantineReach, QuarantinedPair, RecentWriter, SpanEntry,
+    SpanSummary, WalLocator,
 };
 use crucible_records::{HeadKind, Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
-use crucible_wal_codec::{Record, RecordType};
+use crucible_wal_codec::{Record, RecordType, TombstoneSelector};
 
 use crate::hooks::RecentIndex;
 
@@ -25,11 +26,11 @@ use crate::hooks::RecentIndex;
 /// - a `Checkpoint` frame moves the index's watermark, which makes entries evictable after the grace and closes
 ///   gaps;
 /// - a `Quarantine` frame marks its pairs. The frame does not name projects, so the mark reaches every project;
+/// - a `Tombstone` frame removes the entries its deletion selects that arrived before the deletion (contract
+///   13.3, step 3);
 /// - a frame that does not normalize and is quarantined as a frame marks every table its rows would have
 ///   reached, for its project when the envelope names one;
 /// - every frame moves the applied LSN that the read barrier waits for.
-///
-/// Milestone 1 writes no `Tombstone` frames; they pass like any other control frame until deletion lands.
 #[derive(Debug)]
 pub struct RecentHook {
     writer: Mutex<RecentWriter>,
@@ -131,7 +132,10 @@ fn frame_marks(lsn: Lsn, project: Option<ProjectId>, facts: bool) -> Vec<Quarant
 fn control(source: &WalFrame) -> Frame {
     let lsn = source.lsn();
     let record_type = source.record_type();
-    let wanted = matches!(record_type, RecordType::Checkpoint | RecordType::Quarantine);
+    let wanted = matches!(
+        record_type,
+        RecordType::Checkpoint | RecordType::Quarantine | RecordType::Tombstone
+    );
     let payload = match source.payload() {
         Ok(payload) if wanted => payload,
         _ => return Frame::Other { lsn },
@@ -154,8 +158,21 @@ fn control(source: &WalFrame) -> Frame {
                 })
                 .collect(),
         },
-        // The shipper wrote these frames and recovery validated them; a frame that does not decode still
-        // moves the applied LSN.
+        Ok(Record::Tombstone(tombstone)) => Frame::Tombstone {
+            lsn,
+            project_id: tombstone.project_id,
+            requested_at: tombstone.requested_at,
+            selector: match tombstone.selector {
+                TombstoneSelector::Traces(ids) => DeletionSelector::Traces(ids),
+                TombstoneSelector::User(user_id) => DeletionSelector::User(user_id.into()),
+                TombstoneSelector::Session(session_id) => {
+                    DeletionSelector::Session(session_id.into())
+                }
+                TombstoneSelector::Project => DeletionSelector::Project,
+            },
+        },
+        // The node wrote these frames and recovery validated them; a frame that does not decode still moves
+        // the applied LSN.
         _ => Frame::Other { lsn },
     }
 }

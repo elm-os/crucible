@@ -214,6 +214,20 @@ impl LifecycleRepo for Handle {
         every(&self.read(&sql, &[]).await?, request)
     }
 
+    async fn requests_after(
+        &self,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<DeletionRequest>, TxError> {
+        let sql = format!(
+            "SELECT {REQUEST} FROM deletion_requests WHERE deletion_seq > $1 ORDER BY deletion_seq LIMIT $2"
+        );
+        let rows = self
+            .read(&sql, &[int(after)?, P::Int(i64::from(limit))])
+            .await?;
+        every(&rows, request)
+    }
+
     async fn update_request(&self, request: &DeletionRequest) -> Result<bool, TxError> {
         let changed = self
             .write(

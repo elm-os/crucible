@@ -20,10 +20,14 @@ list one: [("{\"session_id\":\"s-1\"}", Pending)]
 list below the newest: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
 list below the second: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
 open, by sequence: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+every project's, by sequence: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+every project's, one page: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Pending)]
+every project's after the first: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
 update: true
 updated: Some(("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Completed, "{\"planned\":true}", 2, Some("why")))
 update a request that does not exist: false
 a completed request is no longer open: [("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
+a completed request is still among every project's: [("{\"trace_ids\":[\"07070707070707070707070707070707\"]}", Completed), ("{\"user_id\":\"ada\",\"issuer\":\"https://issuer.example\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending), ("{\"session_id\":\"s-1\"}", Pending)]
 record: true
 record of another node: true
 record again keeps the first: false

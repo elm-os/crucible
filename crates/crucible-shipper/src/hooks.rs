@@ -1,10 +1,10 @@
 //! What the shipper takes from its surroundings besides `Env` and `Stores`: crash barriers (contract 5.9), the
-//! recent-span index (contract 8.6) and the project salts (contract 9.3).
+//! recent-span index (contract 8.6), the project salts (contract 9.3) and the deletion requests (contract 13.3).
 
 use std::fmt;
 
-use crucible_normalize::{Admission, NormalizedFrame, ProjectSalt};
-use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
+use crucible_normalize::{Admission, NormalizedFrame, ProjectSalt, Tombstone};
+use crucible_records::{DeletionRequestId, DeletionState, Lsn, PartitionId, ProjectId, TableId};
 use crucible_wal::WalFrame;
 use futures::future::{self, BoxFuture};
 
@@ -105,6 +105,65 @@ pub trait ProjectSalts: fmt::Debug + Send + Sync {
         &self,
         project: ProjectId,
     ) -> BoxFuture<'_, Result<Option<ProjectSalt>, SaltUnavailable>>;
+}
+
+/// A deletion request of the control store, as the shipper applies it (contract 13.3).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct KnownDeletion {
+    /// What the request deletes, with the issuer of a deletion by user.
+    pub tombstone: Tombstone,
+    /// Where the request stands.
+    pub state: DeletionState,
+}
+
+/// Why the deletion requests cannot be read now. The shipper waits and asks again.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+#[error("the deletion requests are not available: {0}")]
+pub struct DeletionsUnavailable(pub String);
+
+/// Where the deletion requests come from (contract 13.3): the control store's `deletion_requests`.
+///
+/// Stage B drops what a deletion selects from the frames after the deletion's `Tombstone` frame. A request can
+/// also complete while this node is down, and then this node appends no tombstone for it, so before it ships the
+/// shipper reads every request in every state, after the node has registered in the node registry: a request made
+/// after the read waits for this node's tombstone, because the node is live. The issuer of a deletion by user is
+/// not in its tombstone (contract 13.6), so the shipper reads it here too. The hook is a trait the shipper takes,
+/// as the salts are, so that the shipper does not depend on the control plane.
+pub trait DeletionRequests: fmt::Debug + Send + Sync {
+    /// Whether a control store holds deletion requests. Without one there are none, and the shipper reads none.
+    fn configured(&self) -> bool;
+
+    /// Registers the node, then reads every deletion request of the deployment, in every state.
+    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>>;
+
+    /// The request with this id in `project`; `None` when there is none.
+    fn request(
+        &self,
+        project: ProjectId,
+        id: DeletionRequestId,
+    ) -> BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>>;
+}
+
+/// No control store: no deletion requests.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoDeletions;
+
+impl DeletionRequests for NoDeletions {
+    fn configured(&self) -> bool {
+        false
+    }
+
+    fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+        Box::pin(future::ready(Ok(Vec::new())))
+    }
+
+    fn request(
+        &self,
+        _project: ProjectId,
+        _id: DeletionRequestId,
+    ) -> BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>> {
+        Box::pin(future::ready(Ok(None)))
+    }
 }
 
 /// No control store: ingest-only mode.

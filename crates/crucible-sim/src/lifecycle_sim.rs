@@ -295,12 +295,17 @@ impl Spans {
             }
     }
 
-    /// Whether a deletion by user selects the frame's MCP rows by their own `user_id` or subject hash.
+    /// Whether a deletion by user selects the frame's MCP rows by their own `user_id`, or by their subject hash
+    /// under the issuer the request names, or under any issuer when it names none (contract 13.3).
     fn mcp_selected_by(&self, request: &DeletionRequest) -> bool {
         request.project_id == self.project
             && self.received_at < request.requested_at
-            && matches!(&request.selector, DeletionSelector::User { user_id, .. }
-                if *user_id == self.user && (self.identity.mcp_user || self.identity.issuer.is_some()))
+            && matches!(&request.selector, DeletionSelector::User { user_id, issuer }
+            if *user_id == self.user
+                && (self.identity.mcp_user
+                    || self.identity.issuer.is_some_and(|own| {
+                        issuer.as_deref().is_none_or(|named| named == own)
+                    })))
     }
 }
 
@@ -1317,15 +1322,20 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
         DeletionSelector::Traces(ids) => {
             by_trace && row.trace().is_some_and(|trace| ids.contains(&trace))
         }
-        DeletionSelector::User { user_id, .. } => {
+        DeletionSelector::User { user_id, issuer } => {
             let own = SPAN_TABLES.contains(&row.table_id) || row.table_id == TableId::UserRollup;
-            // An MCP row also goes by its own user: its `user_id`, or the hash of the user under any issuer
-            // (contract 13.3), whether or not a span of its trace names the user.
+            // An MCP row also goes by its own user: its `user_id`, or the hash of the user under the issuer the
+            // request names, or under any issuer when it names none (contract 13.3), whether or not a span of its
+            // trace names the user.
             let salt = salt(request.project_id);
+            let issuers: Vec<&str> = match issuer {
+                Some(named) => vec![named.as_str()],
+                None => ISSUERS.to_vec(),
+            };
             let by_identity = MCP_TABLES.contains(&row.table_id)
                 && (row.text("user_id") == Some(user_id.as_str())
                     || row.bytes("user_subject_hash").is_some_and(|hash| {
-                        ISSUERS
+                        issuers
                             .iter()
                             .any(|issuer| salt.subject_hash(issuer, user_id).as_slice() == hash)
                     }));
@@ -1587,4 +1597,59 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
 /// Runs the lifecycle simulation for one seed.
 pub fn run_lifecycle_sim(seed: u64, options: Options) -> Outcome {
     run(seed, |sim| simulate(sim, options))
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_records::DeletionRequestId;
+
+    use super::*;
+
+    /// A frame whose MCP rows carry the hash of `ada` under the first issuer and no `user_id`.
+    fn hashed() -> Spans {
+        Spans {
+            project: ProjectId::from_bytes([1; 16]),
+            trace: TraceId::from_bytes([2; 16]),
+            user: "ada".to_owned(),
+            identity: Identity {
+                spans: false,
+                mcp_user: false,
+                issuer: Some(ISSUERS[0]),
+            },
+            session: "s-1".to_owned(),
+            start: Timestamp::from_micros(0),
+            received_at: Timestamp::from_micros(5),
+            span_ids: vec![[3; 8]],
+        }
+    }
+
+    fn by_user(issuer: Option<&str>) -> DeletionRequest {
+        DeletionRequest {
+            id: DeletionRequestId::from_bytes([4; 16]),
+            project_id: ProjectId::from_bytes([1; 16]),
+            selector: DeletionSelector::User {
+                user_id: "ada".to_owned(),
+                issuer: issuer.map(str::to_owned),
+            },
+            state: DeletionState::Pending,
+            requested_at: Timestamp::from_micros(9),
+            deletion_seq: 1,
+            requested_by: "user:test".to_owned(),
+            idempotency_key: None,
+            request_hash: String::new(),
+            places: "{}".to_owned(),
+            attempts: 0,
+            error: None,
+            updated_at: Timestamp::from_micros(9),
+        }
+    }
+
+    #[test]
+    fn a_deletion_by_user_selects_mcp_rows_hashed_under_the_issuer_it_names_or_any() {
+        let frame = hashed();
+        assert!(frame.mcp_selected_by(&by_user(None)));
+        assert!(frame.mcp_selected_by(&by_user(Some(ISSUERS[0]))));
+        // Hashed under another issuer: another identity, which the request keeps.
+        assert!(!frame.mcp_selected_by(&by_user(Some(ISSUERS[1]))));
+    }
 }
