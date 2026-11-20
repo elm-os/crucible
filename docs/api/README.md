@@ -525,10 +525,16 @@ different parameters must all hold; each takes at most 100 values.
 
 | Filter | Matches |
 |---|---|
-| `environment`, `release`, `version`, `level`, `observation_type`, `user_id`, `session_id` | The field's value |
-| `tags` | A tag of the trace (trace list) or the span (span list) |
+| `environment`, `release`, `version`, `level`, `user_id`, `session_id` | The field's value |
+| `observation_type` | A span type, such as `generation` or `tool` |
+| `tags` | A tag the trace (trace list) or the span (span list) was sent with |
 | `metadata` | A metadata entry, as `key=value` (split at the first `=`) |
 | `name` | A case-insensitive substring of the name, once |
+
+On the trace list, `observation_type` and `metadata` keep the traces that have a matching span, and every other
+filter tests the trace's head span: `level=error` finds traces whose head span is an error, and
+`observation_type=tool` finds traces with a tool span anywhere. The trace list refuses `observation_type` together
+with `metadata` (422 `validation_failed`, code `conflict`); the span list takes both.
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
