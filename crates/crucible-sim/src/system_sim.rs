@@ -2822,7 +2822,12 @@ impl StageBHook for Observed {
             ledger.stats.spans_deleted += u64::from(admission.deleted);
             ledger.stats.ops_deleted += u64::from(admission.deleted_ops);
             if lsn > self.watermark.get() {
-                ledger.admitted.admissions.insert((lsn, floor));
+                ledger
+                    .admitted
+                    .admissions
+                    .entry((lsn, floor))
+                    .or_default()
+                    .extend(admission.stage_a_ordinals.iter().copied());
                 if let Some(relied) = admission.relies_on {
                     ledger.admitted.relying.insert(lsn, relied.get());
                 }
@@ -4187,7 +4192,7 @@ impl Run<'_> {
             let admitted = &mut self.shared.ledger().admitted;
             admitted
                 .admissions
-                .retain(|(lsn, _)| *lsn <= sealed_through);
+                .retain(|(lsn, _), _| *lsn <= sealed_through);
             admitted.kept.retain(|lsn, _| *lsn <= sealed_through);
             admitted.relying.retain(|lsn, _| *lsn <= sealed_through);
         }

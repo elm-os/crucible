@@ -323,13 +323,14 @@ impl FrameSpan {
 
 /// What stage B was given, as the simulation saw it through the shipper's hook: every span of every frame it
 /// admitted, the exact repeats it then dropped included, and for each admission whose rows could ship the first
-/// LSN the WAL retained at that moment.
+/// LSN the WAL retained at that moment and the spans it kept.
 #[derive(Debug, Default)]
 pub(crate) struct Admitted {
     /// The spans of each `IngestRequest` frame that stage A made records of, in wire order, by LSN.
     pub(crate) frames: BTreeMap<u64, Vec<FrameSpan>>,
-    /// (LSN, first retained LSN) of every admission above the watermark of its incarnation.
-    pub(crate) admissions: BTreeSet<(u64, u64)>,
+    /// Every admission above the watermark of its incarnation, by (LSN, first retained LSN): the stage A ordinals
+    /// of the spans it kept, over every admission with that key.
+    pub(crate) admissions: BTreeMap<(u64, u64), BTreeSet<u32>>,
     /// What the first admission of each frame above the watermark kept: the stage A ordinal of each remaining
     /// span and whether it was flagged a usage aggregate.
     pub(crate) kept: BTreeMap<u64, Vec<(u32, bool)>>,
@@ -378,39 +379,62 @@ fn usage_aggregates(
     out
 }
 
+/// The rule's usage aggregates of each frame that stage B admitted above the watermark, at the lowest first
+/// retained LSN it was admitted at, and the frames with a span to which two admissions that both kept it give
+/// different flags.
+fn usage_rule(admitted: &Admitted) -> (BTreeMap<u64, BTreeSet<Vec<u8>>>, BTreeSet<u64>) {
+    let mut by_floor: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for &(lsn, floor) in admitted.admissions.keys() {
+        by_floor.entry(floor).or_default().insert(lsn);
+    }
+    let mut expected: BTreeMap<u64, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    // The flags the rule gives each span, by (LSN, stage A ordinal), at the admissions that kept it.
+    let mut kept_flags: BTreeMap<(u64, u32), BTreeSet<bool>> = BTreeMap::new();
+    for (floor, targets) in &by_floor {
+        for (lsn, flagged) in usage_aggregates(&admitted.frames, *floor, targets) {
+            let spans = admitted.frames.get(&lsn).map_or(&[][..], Vec::as_slice);
+            for &ordinal in admitted
+                .admissions
+                .get(&(lsn, *floor))
+                .into_iter()
+                .flatten()
+            {
+                if let Some(span) = spans.get(ordinal as usize) {
+                    kept_flags
+                        .entry((lsn, ordinal))
+                        .or_default()
+                        .insert(flagged.contains(&span.key));
+                }
+            }
+            expected.entry(lsn).or_insert(flagged);
+        }
+    }
+    let split = kept_flags
+        .into_iter()
+        .filter(|(_, flags)| flags.len() > 1)
+        .map(|((lsn, _), _)| lsn)
+        .collect();
+    (expected, split)
+}
+
 /// I7 for `usage_aggregate`, exactly. The flag is stage B state, and stage B holds what the retained prefix of
 /// the WAL holds (contract 5.3). The simulation knows every span of every frame that stage B admitted, the
 /// dropped repeats included, and the first retained LSN at each admission, so it runs the rule itself:
 ///
 /// - every `span_core` row carries the flag that the rule gives its span, over all the spans of its frame and
 ///   of the frames from the first retained LSN on, before any repeat is dropped;
-/// - two admissions of one frame above the watermark (before and after a restart) give the same aggregates,
-///   whatever garbage collection removed in between, because the WAL keeps what an unchecked frame relied on.
+/// - two admissions of one frame above the watermark (before and after a restart) give each span that both
+///   kept the same flag, whatever garbage collection removed in between, because the WAL keeps what the flag of
+///   a kept span relied on. A span that an admission dropped (an exact repeat, or what a deletion selects) has
+///   no row from it, and its flag relies on nothing (contract 5.3): the frame that marked it may be collected,
+///   and a restart then flags it otherwise.
 fn check_usage_flags(model: &ChModel, admitted: &Admitted) -> Option<Vec<String>> {
-    let mut by_floor: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    for &(lsn, floor) in &admitted.admissions {
-        by_floor.entry(floor).or_default().insert(lsn);
-    }
+    let (expected, split) = usage_rule(admitted);
     let mut wrong = Vec::new();
-    let mut expected: BTreeMap<u64, BTreeSet<Vec<u8>>> = BTreeMap::new();
-    let mut split: BTreeSet<u64> = BTreeSet::new();
-    for (floor, targets) in &by_floor {
-        for (lsn, flagged) in usage_aggregates(&admitted.frames, *floor, targets) {
-            match expected.get(&lsn) {
-                Some(earlier) if *earlier != flagged => {
-                    split.insert(lsn);
-                }
-                Some(_) => {}
-                None => {
-                    expected.insert(lsn, flagged);
-                }
-            }
-        }
-    }
     for lsn in split {
         wrong.push(format!(
-            "two admissions of frame {lsn} give different usage aggregates: the retained prefix lost a \
-             frame that the first admission relied on"
+            "two admissions of frame {lsn} give a span that both kept different usage aggregates: the \
+             retained prefix lost a frame that the first admission relied on"
         ));
     }
     for part in model.parts(TableId::SpanCore) {
@@ -1289,4 +1313,51 @@ pub(crate) fn resolve<'a>(
         };
         ((row.table, target), version, row.fact_id)
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A span of one trace: `id` under `parent`, and whether it carries usage.
+    fn span(id: u8, parent: Option<u8>, carries: bool) -> FrameSpan {
+        let parent = parent.map(|p| [p; 8]);
+        FrameSpan::new(
+            &[1; 16],
+            &[2; 16],
+            &[id; 8],
+            parent.as_ref().map(|p| &p[..]),
+            carries,
+        )
+    }
+
+    /// The frames of the run at seed 44676373797002 (config `0x42f855108b2dfb`), shortened: D carries usage and
+    /// names P as its parent (frame 1); P arrives and is flagged on frame 1 (frame 2); a client sends the
+    /// request of frame 2 again (frame 3), and stage B drops its P as an exact repeat, for which it relies on
+    /// frame 2. Frame 3 is admitted with frame 1 retained, and again after a restart, once garbage collection
+    /// removed frame 1: the rule flags P in frame 3 the first time and not the second.
+    fn split(kept_before: &[u32], kept_after: &[u32]) -> BTreeSet<u64> {
+        let mut admitted = Admitted::default();
+        admitted.frames.insert(1, vec![span(4, Some(3), true)]);
+        admitted.frames.insert(2, vec![span(3, None, false)]);
+        admitted.frames.insert(3, vec![span(3, None, false)]);
+        admitted
+            .admissions
+            .insert((3, 1), kept_before.iter().copied().collect());
+        admitted
+            .admissions
+            .insert((3, 2), kept_after.iter().copied().collect());
+        usage_rule(&admitted).1
+    }
+
+    #[test]
+    fn two_admissions_must_flag_alike_only_the_spans_both_kept() {
+        // Both dropped P: no row of either carries its flag, and nothing they kept relied on frame 1.
+        assert_eq!(split(&[], &[]), BTreeSet::new());
+        // Both kept P (a changed repeat): its flag relied on frame 1, which the WAL keeps until frame 3 is
+        // checkpointed, so a restart that lost frame 1 is a violation.
+        assert_eq!(split(&[0], &[0]), BTreeSet::from([3]));
+        // The restart learned a deletion that drops P: only the first admission has rows of it.
+        assert_eq!(split(&[0], &[]), BTreeSet::new());
+    }
 }
