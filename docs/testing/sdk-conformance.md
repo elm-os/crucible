@@ -417,6 +417,33 @@ dropped counter is above zero; the call count is below the 2,048-span bound, so 
 
 The sdk-conformance workflow runs it with the capture-overhead test.
 
+## A collector that is slow or down
+
+`conformance/export-latency.json` is the export-latency scenario: a collector that never answers, or a port where
+nothing listens, adds no latency to the caller (contract 9.10). Each SDK serves a captured tool returning 1 KiB of
+text and runs the same 600 calls against three collectors in turn: one that answers, one that accepts connections
+and never answers, and a closed port. 600 calls fill a batch of 512, so an export is stuck or failing while the
+later calls run.
+
+- Every call of the stalled and refused runs finishes within 1,000 ms. A call that waited for an export would take
+  an export timeout: 3,000 ms where the SDK's init takes one (TypeScript, Rust), 10 s otherwise.
+- `flush` and then `shutdown`, each given 3,000 ms (Python's timeout, Go's context; the export timeout in TypeScript
+  and Rust), return within that time plus 1,000 ms.
+- Every run prints p50 and p99 per collector and the added p99 of the stalled and refused runs over the answering
+  one. `CRUCIBLE_CAPTURE_GATE=1` fails an added p99 above 1 ms; CI never gates on timing.
+
+The check fails on a seeded blocking enqueue (an export run while holding the queue's lock): a call then waits
+for the whole export timeout.
+
+| SDK | Test |
+|---|---|
+| TypeScript | `sdk/typescript/test/export-latency.test.ts` |
+| Python | `sdk/python/tests/test_export_latency.py` |
+| Go | `sdk/go/cruciblemcp/export_latency_test.go` (`TestAStalledOrRefusingCollectorAddsNoLatencyToCalls`) |
+| Rust | `sdk/rust/tests/export_latency.rs` (feature `mcp`) |
+
+The sdk-conformance workflow runs it with the capture-overhead and stalled-collector tests.
+
 ## Capability manifest
 
 Each SDK commits one manifest (schema in `conformance/capability-manifest.schema.json`):

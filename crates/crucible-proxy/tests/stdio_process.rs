@@ -243,6 +243,92 @@ async fn bytes_are_identical_with_and_without_the_proxy_in_every_collector_state
     }
 }
 
+/// The keyed hash of contract 9.6, as an SDK computes it with the same secret key: HMAC-SHA256 written out
+/// from its definition, so the check does not rest on the HMAC code the proxy uses.
+fn state_hash(state: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut key = [0u8; 64];
+    key[..common::SECRET.len()].copy_from_slice(common::SECRET.as_bytes());
+    let pad = |byte: u8| key.map(|k| k ^ byte);
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(b"crucible.mrtr.v1\0")
+        .chain_update(state)
+        .finalize();
+    let outer = Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize();
+    outer[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_operations_carry_scrubbed_messages_and_rounds_carry_state_hashes() {
+    // What the rig's `needs_input` hands out as its requestState.
+    const STATE: &str = "rig-request-state-7f3a";
+    let env = prod_env();
+    let mut proxy = start(&env, server(&[]), Sink::Healthy).await;
+    let requests = [
+        r#"{"id":1,"method":"leak","params":{}}"#.to_owned(),
+        r#"{"id":2,"method":"unknown","params":{}}"#.to_owned(),
+        r#"{"id":3,"method":"tools/call","params":{"name":"needs_input"}}"#.to_owned(),
+        format!(
+            r#"{{"id":4,"method":"tools/call","params":{{"name":"needs_input","requestState":"{STATE}"}}}}"#
+        ),
+        r#"{"id":5,"method":"ping","params":{}}"#.to_owned(),
+    ];
+    for request in &requests {
+        proxy.send(format!("{request}\n").as_bytes()).await;
+        proxy.line().await;
+    }
+    let (_, status, spans) = proxy.finish().await;
+    assert_eq!(status, ExitStatus::Code(0));
+    check_wire_contract(&spans, "proxy_stdio");
+    assert_eq!(spans.len(), 5);
+
+    // The server's words, scrubbed with the shared rules before they leave the proxy.
+    let leak = by_id(&spans, "1");
+    assert_eq!(text(leak, "crucible.mcp.error.class"), Some("internal"));
+    assert_eq!(
+        leak.status_message,
+        "lookup failed for [redacted:email] with key [redacted:secret_key]"
+    );
+    assert_eq!(by_id(&spans, "2").status_message, "no such method");
+    // A successful operation has no message.
+    assert_eq!(by_id(&spans, "5").status_message, "");
+
+    // The rounds of one exchange chain through the hashes of the state, which itself is never sent.
+    let first = by_id(&spans, "3");
+    assert_eq!(
+        text(first, "crucible.mcp.result_type"),
+        Some("input_required")
+    );
+    let hash = state_hash(STATE);
+    assert_eq!(
+        text(first, "crucible.mcp.mrtr.state_out"),
+        Some(hash.as_str())
+    );
+    assert_eq!(text(first, "crucible.mcp.mrtr.state_in"), None);
+    let retry = by_id(&spans, "4");
+    assert_eq!(
+        text(retry, "crucible.mcp.mrtr.state_in"),
+        Some(hash.as_str())
+    );
+    assert_eq!(text(retry, "crucible.mcp.mrtr.state_out"), None);
+    let exported = format!("{spans:?}");
+    assert!(
+        !exported.contains(STATE),
+        "the raw requestState was exported"
+    );
+    assert!(
+        !exported.contains("ada.lovelace"),
+        "an unscrubbed message was exported"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_codes_and_a_crash_in_mid_answer_pass_through() {
     let env = prod_env();

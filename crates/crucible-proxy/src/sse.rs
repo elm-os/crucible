@@ -4,7 +4,7 @@
 //! (keep-alives), `event`, `id` and `retry` fields are skipped. The bytes themselves are forwarded elsewhere,
 //! untouched; this reader only looks at a copy.
 
-use crate::scan::{Message, Scanner};
+use crate::scan::{Message, Scanner, StateKey};
 
 /// The longest field name compared (`data`).
 const NAME_CAP: usize = 8;
@@ -49,6 +49,12 @@ impl SseReader {
             after_cr: false,
             has_data: false,
         }
+    }
+
+    /// The reader, hashing every `requestState` with `key` (see [`Scanner::keyed`]).
+    pub fn keyed(mut self, key: Option<StateKey>) -> Self {
+        self.scanner = self.scanner.keyed(key);
+        self
     }
 
     /// Takes the messages completed so far.

@@ -1,0 +1,21 @@
+{
+  "schema": "crucible.conformance.export-latency/v1",
+  "contract": "9.10",
+  "semantics": [
+    "Each SDK serves one tool, shape, from a server it instruments with capture on for the tool at max_bytes. The tool returns one text block of result_bytes characters of the capture-overhead scenario's prose fill.",
+    "The test runs once per collector state in collectors: healthy answers every export, stalled accepts connections and reads requests but never answers, and refused is a port where nothing listens. Each run starts the SDK with its default queue, its export timeout set to export_timeout_ms where its init takes one (TypeScript, Rust; Go and Python keep their default of 10 s), makes warmup calls, then times calls calls one after another. calls is above the default batch size of 512 spans, so an export starts while the calls run, and it is stuck or failing in the stalled and refused runs.",
+    "Every call of the stalled and refused runs finishes within call_ceiling_ms. A call that waited for an export would take an export timeout, at least export_timeout_ms.",
+    "After the calls, flush and then shutdown, each given export_timeout_ms (Python's timeout, Go's context deadline; the export timeout in TypeScript and Rust), return within that time plus slack_ms in every run.",
+    "Every run reports the p50 and p99 call latency per collector state and the added p99 of the stalled and refused runs over the healthy run. Only a run with CRUCIBLE_CAPTURE_GATE=1 (the laptop rig) fails when an added p99 exceeds gate_added_p99_ms, because timing on shared CI runners is too noisy to gate."
+  ],
+  "tool": "shape",
+  "max_bytes": 16384,
+  "result_bytes": 1024,
+  "collectors": ["healthy", "stalled", "refused"],
+  "warmup": 20,
+  "calls": 600,
+  "export_timeout_ms": 3000,
+  "call_ceiling_ms": 1000,
+  "slack_ms": 1000,
+  "gate_added_p99_ms": 1.0
+}

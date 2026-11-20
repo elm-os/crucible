@@ -7,6 +7,7 @@
 //!
 //! - [`core`]: [`ProxyCore`], the state machine with no IO, and its forwarding face [`Tap`].
 //! - [`scan`] and [`sse`]: the bounded streaming readers that find JSON-RPC fields in the copy.
+//! - [`scrub`]: the shared scrubbing rules, applied to the error messages the proxy records.
 //! - [`encode`]: operations to OTLP spans.
 //! - [`live`]: the telemetry task and the exporter, off the forwarding path.
 //! - [`stdio`]: the pumps of `crucible proxy stdio`.
@@ -19,6 +20,7 @@ pub mod identity;
 pub mod live;
 pub mod net;
 pub mod scan;
+pub mod scrub;
 pub mod sse;
 pub mod stdio;
 

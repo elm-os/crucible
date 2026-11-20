@@ -9,13 +9,28 @@
 //! needs string and nesting structure to be right to find its fields. In line mode (stdio framing: one message
 //! per line) a newline inside an unfinished message, or text that is not JSON, drops that line and resumes at
 //! the next one.
+//!
+//! A `requestState` is never kept: with a [`StateKey`], the scanner feeds its decoded bytes to a keyed hash as
+//! they stream past and keeps only the hash (contract 9.6).
 
 use std::collections::BTreeMap;
+use std::fmt;
+
+use hmac::{Hmac, KeyInit as _, Mac as _};
+use sha2::Sha256;
+
+use crate::core::MAX_ERROR_MESSAGE;
+use crate::scrub;
 
 /// The longest key the scanner compares; a longer key is no key it knows.
 const KEY_CAP: usize = 48;
 /// The most bytes kept of a captured string value.
 const VALUE_CAP: usize = 512;
+/// The most bytes kept of an error message or of the text an error message is taken from: what scrubbing reads
+/// for the error message cap.
+const MESSAGE_CAP: usize = scrub::window(MAX_ERROR_MESSAGE);
+/// The label in front of every `requestState` in its keyed hash (contract 9.6).
+const STATE_LABEL: &[u8] = b"crucible.mrtr.v1\0";
 /// The most bytes kept of a number or literal.
 const LITERAL_CAP: usize = 40;
 /// Nesting levels inside a message whose keys are tracked. Deeper values are skipped.
@@ -38,6 +53,27 @@ impl JsonId {
         match self {
             Self::Number(text) | Self::String(text) => text,
         }
+    }
+}
+
+/// The key of the multi-round state hashes (contract 9.6): HMAC-SHA256 keyed with the sender's secret key and
+/// already fed the label, so each `requestState` is hashed while it streams past and never kept.
+#[derive(Clone)]
+pub struct StateKey(Hmac<Sha256>);
+
+impl StateKey {
+    /// The key for a project secret key. HMAC takes keys of any length, so this is `None` only in theory.
+    pub fn new(secret_key: &str) -> Option<Self> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).ok()?;
+        mac.update(STATE_LABEL);
+        Some(Self(mac))
+    }
+}
+
+impl fmt::Debug for StateKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The key never reaches a log.
+        f.write_str("StateKey(..)")
     }
 }
 
@@ -83,6 +119,15 @@ pub struct Message {
     pub error_code: Option<i32>,
     /// `result.content[*].type`, counted per type.
     pub content_blocks: BTreeMap<String, u32>,
+    /// `error.message`, its first bytes: as much as scrubbing reads for the error message cap.
+    pub error_message: Option<String>,
+    /// The `text` of the first `result.content` block of type `text`, kept like `error_message`: the error
+    /// message of a result with `isError: true`.
+    pub tool_text: Option<String>,
+    /// The keyed hash of `params.requestState`, with a [`StateKey`].
+    pub state_in: Option<[u8; 16]>,
+    /// The keyed hash of `result.requestState`, with a [`StateKey`].
+    pub state_out: Option<[u8; 16]>,
     /// The message was an element of a batch array.
     pub is_batch: bool,
     /// The size of the message in bytes, from its opening brace to its closing brace.
@@ -115,6 +160,9 @@ enum Key {
     Code,
     Content,
     Type,
+    Text,
+    ErrorMessage,
+    RequestState,
 }
 
 fn key_of(text: &[u8]) -> Key {
@@ -141,6 +189,9 @@ fn key_of(text: &[u8]) -> Key {
         b"code" => Key::Code,
         b"content" => Key::Content,
         b"type" => Key::Type,
+        b"text" => Key::Text,
+        b"message" => Key::ErrorMessage,
+        b"requestState" => Key::RequestState,
         _ => Key::Other,
     }
 }
@@ -165,6 +216,10 @@ enum Field {
     ResultType,
     ErrorCode,
     ContentType,
+    ContentText,
+    ErrorMessage,
+    StateIn,
+    StateOut,
 }
 
 fn field_of(path: &[Key]) -> Option<Field> {
@@ -193,6 +248,10 @@ fn field_of(path: &[Key]) -> Option<Field> {
         [K::Result, K::ResultType] => Field::ResultType,
         [K::Error, K::Code] => Field::ErrorCode,
         [K::Result, K::Content, K::Elem, K::Type] => Field::ContentType,
+        [K::Result, K::Content, K::Elem, K::Text] => Field::ContentText,
+        [K::Error, K::ErrorMessage] => Field::ErrorMessage,
+        [K::Params, K::RequestState] => Field::StateIn,
+        [K::Result, K::RequestState] => Field::StateOut,
         _ => return None,
     })
 }
@@ -218,6 +277,17 @@ enum Capture {
     Key,
     /// A value for this field.
     Value(Field),
+    /// A value whose keyed hash fills this field.
+    Hash(Field),
+}
+
+/// What the scanner learned of the `result.content` block it is in.
+#[derive(Clone, Debug, Default)]
+struct Block {
+    /// Its `type` is `text`, once the type was read.
+    is_text: Option<bool>,
+    /// Its `text`.
+    text: Option<String>,
 }
 
 /// The escape state inside a captured string.
@@ -253,6 +323,11 @@ pub struct Scanner {
     message: Message,
     malformed: u64,
     out: Vec<Message>,
+    state_key: Option<StateKey>,
+    /// The keyed hash of the `requestState` being read.
+    state_mac: Option<Hmac<Sha256>>,
+    /// The `result.content` block being read.
+    block: Block,
 }
 
 impl Scanner {
@@ -284,7 +359,16 @@ impl Scanner {
             message: Message::default(),
             malformed: 0,
             out: Vec::new(),
+            state_key: None,
+            state_mac: None,
+            block: Block::default(),
         }
+    }
+
+    /// The scanner, hashing every `requestState` with `key` (contract 9.6); without a key none is read.
+    pub fn keyed(mut self, key: Option<StateKey>) -> Self {
+        self.state_key = key;
+        self
     }
 
     /// Lines or documents dropped because they were not JSON-RPC, or were cut short.
@@ -327,6 +411,8 @@ impl Scanner {
         self.high_surrogate = None;
         self.in_literal = false;
         self.message = Message::default();
+        self.state_mac = None;
+        self.block = Block::default();
     }
 
     fn fail(&mut self) {
@@ -430,7 +516,7 @@ impl Scanner {
                     }
                     _ => {
                         self.value_starts();
-                        self.field().map_or(Capture::None, Capture::Value)
+                        self.capture_for(self.field())
                     }
                 };
             }
@@ -461,6 +547,32 @@ impl Scanner {
                 }
             }
         }
+    }
+
+    /// How a string value for `field` is read: a `requestState` is hashed, with a key, and never kept.
+    fn capture_for(&mut self, field: Option<Field>) -> Capture {
+        match field {
+            Some(field @ (Field::StateIn | Field::StateOut)) => {
+                self.state_mac = self.state_key.as_ref().map(|key| key.0.clone());
+                if self.state_mac.is_some() {
+                    Capture::Hash(field)
+                } else {
+                    Capture::None
+                }
+            }
+            Some(field) => Capture::Value(field),
+            None => Capture::None,
+        }
+    }
+
+    /// Whether the innermost open container is a block of `result.content`.
+    fn in_block(&self) -> bool {
+        self.level() == Some(3)
+            && self.levels[3].object
+            && matches!(
+                [self.levels[0].key, self.levels[1].key, self.levels[2].key],
+                [Key::Result, Key::Content, Key::Elem]
+            )
     }
 
     fn open(&mut self, object: bool) {
@@ -497,6 +609,9 @@ impl Scanner {
                 key: if object { Key::Other } else { Key::Elem },
             };
         }
+        if self.in_block() {
+            self.block = Block::default();
+        }
     }
 
     fn close(&mut self) {
@@ -504,6 +619,13 @@ impl Scanner {
         if self.depth == 0 {
             self.fail();
             return;
+        }
+        if self.in_block() {
+            // The first block of type `text` with a text gives the text of an error result.
+            let block = std::mem::take(&mut self.block);
+            if self.message.tool_text.is_none() && block.is_text == Some(true) {
+                self.message.tool_text = block.text;
+            }
         }
         self.depth -= 1;
         if self.message_depth > 0 && self.depth < self.message_depth {
@@ -611,15 +733,30 @@ impl Scanner {
     }
 
     fn keep(&mut self, bytes: &[u8]) {
-        let cap = if self.capture == Capture::Key {
+        let cap = match self.capture {
             // One past the cap marks a key as too long to be a known one.
-            KEY_CAP + 1
-        } else {
-            VALUE_CAP
+            Capture::Key => KEY_CAP + 1,
+            Capture::Value(Field::ErrorMessage | Field::ContentText) => MESSAGE_CAP,
+            Capture::Hash(_) => {
+                if let Some(mac) = &mut self.state_mac {
+                    mac.update(bytes);
+                }
+                return;
+            }
+            Capture::Value(_) | Capture::None => VALUE_CAP,
         };
         let room = cap.saturating_sub(self.buffer.len());
         self.buffer
             .extend_from_slice(&bytes[..bytes.len().min(room)]);
+        if cap == MESSAGE_CAP
+            && self.buffer.len() >= MESSAGE_CAP
+            && let Capture::Value(field) = self.capture
+        {
+            // The rest of a long message is never read: keep what is held and skip to the end of the string.
+            self.capture = Capture::None;
+            let text = String::from_utf8_lossy(&self.buffer).into_owned();
+            self.set_text(field, text);
+        }
     }
 
     fn end_string(&mut self) {
@@ -637,6 +774,17 @@ impl Scanner {
             Capture::Value(field) => {
                 let text = String::from_utf8_lossy(&self.buffer).into_owned();
                 self.set_text(field, text);
+            }
+            Capture::Hash(field) => {
+                let Some(mac) = self.state_mac.take() else {
+                    return;
+                };
+                let mut hash = [0u8; 16];
+                hash.copy_from_slice(&mac.finalize().into_bytes()[..16]);
+                match field {
+                    Field::StateIn => self.message.state_in = Some(hash),
+                    _ => self.message.state_out = Some(hash),
+                }
             }
         }
     }
@@ -668,6 +816,7 @@ impl Scanner {
             Field::ServerVersion => message.server_version = Some(text),
             Field::ResultType => message.result_type = Some(text),
             Field::ContentType => {
+                self.block.is_text = Some(text == "text");
                 let known = message.content_blocks.len();
                 if let Some(count) = message.content_blocks.get_mut(&text) {
                     *count = count.saturating_add(1);
@@ -675,7 +824,9 @@ impl Scanner {
                     message.content_blocks.insert(text, 1);
                 }
             }
-            Field::IsError | Field::ErrorCode => {}
+            Field::ContentText => self.block.text = Some(text),
+            Field::ErrorMessage => message.error_message = Some(text),
+            Field::IsError | Field::ErrorCode | Field::StateIn | Field::StateOut => {}
         }
     }
 

@@ -30,7 +30,12 @@ pub(crate) fn hostile(id: u64) -> String {
     name
 }
 
-fn named(trace_n: u64, id: u64, parent: u64, start: crucible_records::Timestamp) -> SpanEntry {
+pub(crate) fn named(
+    trace_n: u64,
+    id: u64,
+    parent: u64,
+    start: crucible_records::Timestamp,
+) -> SpanEntry {
     let mut entry = span(trace_n, id, parent, start);
     entry.summary.name = Arc::from(hostile(id));
     entry
@@ -42,7 +47,7 @@ fn day() -> Value {
 
 /// Calls `tool` from `arguments` on, then with each `next_cursor`, until none is left; returns every row and
 /// the number of calls. Each call's result is checked against the 64 KiB cap by `Client::output`.
-async fn read_all(
+pub(crate) async fn read_all(
     client: &mut Client,
     tool: &str,
     arguments: Value,
@@ -75,13 +80,13 @@ async fn read_all(
     }
 }
 
-fn ids<'a>(rows: &'a [Value], field: &str) -> Vec<&'a str> {
+pub(crate) fn ids<'a>(rows: &'a [Value], field: &str) -> Vec<&'a str> {
     rows.iter()
         .map(|row| row[field].as_str().unwrap())
         .collect()
 }
 
-fn assert_once(ids: &[&str], expected: usize) {
+pub(crate) fn assert_once(ids: &[&str], expected: usize) {
     let distinct: BTreeSet<&str> = ids.iter().copied().collect();
     assert_eq!(distinct.len(), ids.len(), "a row came back twice");
     assert_eq!(ids.len(), expected);

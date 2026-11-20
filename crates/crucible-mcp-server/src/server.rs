@@ -30,7 +30,8 @@ const INSTRUCTIONS: &str = "Crucible holds the traces of AI agents and MCP serve
     of the key you connected with; create_export is the one tool that starts work, an export of the project's \
     spans to a file, which get_export follows. Start with get_data_bounds to see where the data lies, list \
     traces in a window with list_traces or find spans by their text with search_spans, then read one trace with \
-    get_trace and, for large traces, get_span_children. Results carry previews of inputs and outputs and stay \
+    get_trace and, for large traces, get_span_children. list_spans, list_sessions, list_users and \
+    list_user_sessions list the window's spans, sessions and users. Results carry previews of inputs and outputs and stay \
     under 64 KiB: when one is cut, pass its `next_cursor` back as `cursor`. get_span_payload reads a whole input, \
     output or other payload field, 32 KiB at a time.";
 

@@ -26,11 +26,15 @@ use crucible_records::{
     Transport, classify_mcp_error,
 };
 
-use crate::scan::{JsonId, Message, Scanner};
+use crate::scan::{JsonId, Message, Scanner, StateKey};
+use crate::scrub;
 use crate::sse::SseReader;
 
 /// The first protocol version of the modern era (contract 9.1).
 pub const MODERN_VERSION: &str = "2026-07-28";
+
+/// The most bytes of an operation's error message (contract 3.5), after scrubbing.
+pub const MAX_ERROR_MESSAGE: usize = 2 * 1024;
 
 /// The size charged to the analysis queue for an item that carries no bytes.
 const CONTROL_ITEM_BYTES: usize = 64;
@@ -155,6 +159,9 @@ pub struct CoreConfig {
     pub flush_interval: Duration,
     /// The longest wait between export attempts while the collector fails.
     pub max_backoff: Duration,
+    /// The key of the multi-round state hashes (contract 9.6): the export's secret key. Without one no
+    /// `requestState` is read.
+    pub state_key: Option<StateKey>,
     /// The seeded defect.
     #[cfg(feature = "test-mutants")]
     pub mutant: Option<Mutant>,
@@ -173,6 +180,7 @@ impl CoreConfig {
             batch_ops: 512,
             flush_interval: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
+            state_key: None,
             #[cfg(feature = "test-mutants")]
             mutant: None,
         }
@@ -220,8 +228,14 @@ pub struct Op {
     pub http_status: Option<u16>,
     /// How the operation was cancelled.
     pub cancel_source: CancelSource,
+    /// What went wrong, scrubbed and cut at [`MAX_ERROR_MESSAGE`]; empty for an operation that succeeded.
+    pub error_message: String,
     /// The kind of result.
     pub result_type: ResultType,
+    /// The keyed hash of the `requestState` the request carried (contract 9.6).
+    pub mrtr_state_in: Option<[u8; 16]>,
+    /// The keyed hash of the `requestState` an `input_required` result returned.
+    pub mrtr_state_out: Option<[u8; 16]>,
     /// Progress notifications seen for the request.
     pub progress_count: u32,
     /// The size of the request message.
@@ -264,9 +278,10 @@ impl Op {
             + self.identity.issuer.len()
             + self.identity.subject.len()
             + self.identity.client_id.len()
-            + self.identity.tenant.len();
+            + self.identity.tenant.len()
+            + self.error_message.len();
         let blocks: usize = self.content_blocks.keys().map(|key| key.len() + 48).sum();
-        320 + strings + blocks
+        352 + strings + blocks
     }
 }
 
@@ -584,6 +599,10 @@ struct Outcome {
     content_blocks: BTreeMap<String, u32>,
     protocol_version: Option<String>,
     has_result: bool,
+    /// The server's own words: the JSON-RPC error's message, or the text of an error result.
+    message: Option<String>,
+    /// The keyed hash of the `requestState` of the result.
+    state_out: Option<[u8; 16]>,
 }
 
 /// See the module documentation.
@@ -652,8 +671,10 @@ impl ProxyCore {
                 StreamId::STDIO,
                 StreamState {
                     scope: Scope::Stdio,
-                    request: Scanner::lines(),
-                    response: ResponseReader::Lines(Scanner::lines()),
+                    request: Scanner::lines().keyed(config.state_key.clone()),
+                    response: ResponseReader::Lines(
+                        Scanner::lines().keyed(config.state_key.clone()),
+                    ),
                     view: HeaderView::default(),
                     status: None,
                     assigned_session: None,
@@ -765,9 +786,10 @@ impl ProxyCore {
                 if let Some(state) = self.streams.get_mut(&stream) {
                     state.status = Some(status);
                     state.assigned_session = session_key;
+                    let key = self.config.state_key.clone();
                     state.response = match body {
-                        BodyKind::Json => ResponseReader::Json(Scanner::document()),
-                        BodyKind::Sse => ResponseReader::Sse(SseReader::new()),
+                        BodyKind::Json => ResponseReader::Json(Scanner::document().keyed(key)),
+                        BodyKind::Sse => ResponseReader::Sse(SseReader::new().keyed(key)),
                         BodyKind::Opaque => ResponseReader::Opaque,
                     };
                 }
@@ -830,7 +852,7 @@ impl ProxyCore {
             id,
             StreamState {
                 scope,
-                request: Scanner::document(),
+                request: Scanner::document().keyed(self.config.state_key.clone()),
                 response: ResponseReader::Opaque,
                 view,
                 status: None,
@@ -876,6 +898,13 @@ impl ProxyCore {
                     id: response_id,
                 };
                 let http_status = self.streams.get(&id).and_then(|stream| stream.status);
+                let words = if message.has_error {
+                    message.error_message
+                } else if message.is_error {
+                    message.tool_text
+                } else {
+                    None
+                };
                 let outcome = Outcome {
                     jsonrpc_code: message.has_error.then(|| message.error_code.unwrap_or(0)),
                     is_error: message.is_error,
@@ -885,6 +914,8 @@ impl ProxyCore {
                     content_blocks: message.content_blocks,
                     protocol_version: message.protocol_version,
                     has_result: message.has_result,
+                    message: words,
+                    state_out: message.state_out,
                     ..Outcome::default()
                 };
                 self.finish(&key, outcome, now);
@@ -964,7 +995,10 @@ impl ProxyCore {
             is_error: false,
             http_status: None,
             cancel_source: CancelSource::None,
+            error_message: String::new(),
             result_type: ResultType::None,
+            mrtr_state_in: message.state_in,
+            mrtr_state_out: None,
             progress_count: 0,
             request_bytes: message.bytes,
             response_bytes: 0,
@@ -1120,6 +1154,7 @@ impl ProxyCore {
             }
         }
         op.classification = classify_mcp_error(&error_input(&outcome, op.era));
+        op.error_message = error_message(&outcome, op.classification.status);
         op.jsonrpc_code = outcome.jsonrpc_code;
         op.is_error = outcome.is_error;
         op.http_status = outcome.http_status;
@@ -1135,6 +1170,9 @@ impl ProxyCore {
         } else {
             ResultType::None
         };
+        if op.result_type == ResultType::InputRequired {
+            op.mrtr_state_out = outcome.state_out;
+        }
         self.emit(op, now);
     }
 
@@ -1224,6 +1262,7 @@ impl ProxyCore {
             op.classification = classify_mcp_error(&error_input(&outcome, op.era));
             op.http_status = status;
             op.cancel_source = outcome.cancel_source.unwrap_or(CancelSource::None);
+            op.error_message = error_message(&outcome, op.classification.status);
             self.emit(op, now);
         }
     }
@@ -1330,6 +1369,26 @@ impl ProxyCore {
                 0
             }
         }
+    }
+}
+
+/// The error message of an operation (contract 9.1): empty when it succeeded; else the server's own words,
+/// scrubbed with the shared rules (contract 9.10) and cut at [`MAX_ERROR_MESSAGE`]; else what the proxy saw.
+fn error_message(outcome: &Outcome, status: McpStatus) -> String {
+    if status == McpStatus::Ok {
+        return String::new();
+    }
+    if let Some(words) = &outcome.message {
+        return scrub::capped(words, MAX_ERROR_MESSAGE);
+    }
+    if outcome.cancel_source.is_some() {
+        "cancelled".to_owned()
+    } else if outcome.transport_failure {
+        "the connection ended before the server answered".to_owned()
+    } else if let Some(http) = outcome.http_status.filter(|http| *http >= 400) {
+        format!("the server answered HTTP {http}")
+    } else {
+        String::new()
     }
 }
 

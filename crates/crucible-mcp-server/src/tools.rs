@@ -18,7 +18,11 @@ mod get_trace;
 mod list_mcp_errors;
 mod list_mcp_servers;
 mod list_mcp_tools;
+mod list_sessions;
+mod list_spans;
 mod list_traces;
+mod list_user_sessions;
+mod list_users;
 mod search_spans;
 
 use std::future::Future;
@@ -52,7 +56,11 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<list_mcp_errors::ListMcpErrors>(),
     entry::<list_mcp_servers::ListMcpServers>(),
     entry::<list_mcp_tools::ListMcpTools>(),
+    entry::<list_sessions::ListSessions>(),
+    entry::<list_spans::ListSpans>(),
     entry::<list_traces::ListTraces>(),
+    entry::<list_user_sessions::ListUserSessions>(),
+    entry::<list_users::ListUsers>(),
     entry::<search_spans::SearchSpans>(),
 ];
 
