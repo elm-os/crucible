@@ -1353,7 +1353,7 @@ ORDER BY. Kind P is plain, A is aggregating.
 | id | Table | Kind | PARTITION BY | ORDER BY (**PRIMARY KEY**) | Skip indexes | Table settings | Retention binding |
 |---|---|---|---|---|---|---|---|
 | 1 | `span_core` | P | `toDate(start_time)` | **project_id, start_minute, trace_hash**, start_time, span_id | bloom(trace_id) granularity 1; bloom(user_id), bloom(session_id) granularity 2; set(100) on observation_type and on level, granularity 4; text(name, `ngrams(3)`, lower); minmax(batch_seq); minmax(received_at) | `index_granularity = 8192` | `retention_days` |
-| 2 | `span_payload` | P | `toDate(start_time)` | **project_id, start_minute, trace_hash**, span_id | text(input), text(output) with `splitByNonAlpha` and lower; text(metadata_kv) with `array`; bloom(trace_id) granularity 1; minmax(batch_seq) | `index_granularity = 1024`, `index_granularity_bytes = 16777216` (both to be benchmarked) | `payload_retention_days` |
+| 2 | `span_payload` | P | `toDate(start_time)` | **project_id, start_minute, trace_hash**, span_id | text(input), text(output) with `splitByNonAlpha` and lower; text(metadata_kv) with `array`; bloom(trace_id) granularity 1; minmax(batch_seq) | `index_granularity = 1024`, `index_granularity_bytes = 16777216` (default; revisit) | `payload_retention_days` |
 | 3 | `mcp_ops` | P | `toDate(start_time)` | **project_id, side, start_minute, trace_hash**, span_id | bloom(trace_id), bloom(group_key), bloom(user_subject_hash), bloom(user_id); set(100) on error_class; minmax(batch_seq) | 8192 | `retention_days` |
 | 4 | `mcp_content` | P | `toDate(start_time)` | **project_id, side, start_minute, trace_hash**, span_id | text(args), text(result) with `splitByNonAlpha` and lower; minmax(batch_seq) | as `span_payload` | `mcp_content_retention_days` |
 | 5 | `mcp_tool_inventory` | A | none | **project_id, server_name, deploy_id, tool_name, schema_hash**, marker_epoch, marker_batch_seq | none | 8192 | `retention_days` on `last_seen` |
@@ -2142,15 +2142,17 @@ never stored. `session_key` is never required.
 An SDK wrapper and a proxy in front of one server both produce `side = server` rows for one call.
 
 - `capture_source` is part of the `mcp_tool_rollup` key and of `mcp_deploys`.
-- Every MCP analytics endpoint and every `mcp_ops` metrics source takes a `source` query parameter:
-  `auto` (default), `sdk`, `proxy` (both proxy sources) or `otlp`.
+- Every MCP analytics endpoint takes a `source` query parameter: `auto` (default), `sdk`, `proxy` (both proxy
+  sources) or `otlp`. A metrics query or a widget of the `mcp_ops` source takes the same values in its
+  `capture_source` member, because `source` there names the metrics source (section 8.8).
 - `auto` selects one source per `(server_name, side)` for the request window by preference **SDK, then proxy, then
   OTLP**: the best-ranked source that has at least one row in the window. A presence read over the rollup finds the
   sources each server has rows of, and the main read takes the choice as a predicate, so the rows of a source not
   chosen are never aggregated. The response names, per server, the classes it has rows of and the one read
   (`capture_sources`).
 - Rows from different capture sources are never summed.
-- Alert rules store an explicit `source`; `auto` is resolved per evaluation.
+- An alert rule on `mcp_ops` stores its `capture_source` (default `auto`), and `auto` is resolved for each
+  evaluation's window (section 9.11).
 
 ### 9.6 Multi-round (MRTR) correlation
 
@@ -2635,7 +2637,7 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 | SQL runs | 1 concurrent per user, 4 per project, 30 per minute per user |
 | Exports | 5 per hour per project |
 | Channel test-send | 6 per minute per channel |
-| Ingest | Not rate-limited; backpressure governs (section 4.8). Optional per-key byte rate |
+| Ingest | Not rate-limited; backpressure governs (section 4.8). An optional per-project byte rate exists in `crucible-ingest`, and the binary sets none (section 4.8) |
 
 ### 11.10 Settled in code
 
@@ -3197,7 +3199,7 @@ Media (#99), in the crate `crucible-media`:
 
 | Topic | Rule |
 |---|---|
-| Without an object store | Media stay inline in payloads, and the media routes and the compat media endpoint answer `501 media_not_supported` with the settings that turn media on. At startup a configured bucket is checked with the configured credentials |
+| Object store or none | Without an object store, media stay inline in payloads, and the media routes and the compat media endpoint answer `501 media_not_supported` with the settings that turn media on. With one, `crucible serve` checks once at startup, in the background, that the bucket answers with the configured credentials, and the log says which settings to fix when it does not |
 | Rows | Migration `V10__media`. `media_objects.state` holds only `pending` and `uploaded`: the collector deletes a collected object's row instead of marking it, and a new upload of the same bytes gets a new id and a new key. A `media_refs` row references its object without a cascade, so an object row can be deleted only once no use refers to it, and a use recorded while its object is collected makes one of the two transactions fail and keeps the object |
 | Object key | The `<yyyy>/<mm>` of the key is that of the media id's own time, so an id's key never changes |
 | Collector | The `media-gc` leader job, with fenced writes, in order: uses whose target time is before their project's payload cut-off go (`payload_retention_days`, capped by `retention_days`, aligned to UTC days); pending objects asked for more than 24 h ago lose their row and uses, then the stored object; uploaded objects that no use refers to lose their row, then the stored object; once a week, the orphan scan pages through the deployment's prefix (its position is the job cursor) and deletes objects older than 48 h whose media id has no row. A row is deleted before its object; a crash in between leaves an orphan for the next scan |
