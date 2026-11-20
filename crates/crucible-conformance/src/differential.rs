@@ -302,7 +302,10 @@ async fn load(ctx: &Ctx) -> Result<Extra> {
     // first and by their second half, so the server's `UUID` order picks the latest.
     let n = next();
     let sent: [&[&str]; 4] = [&["beta"], &["beta"], &[], &[]];
-    let heads = plain_rows(TableId::TraceHeads, project, epoch, n, T0, 4, SALT)
+    let heads = Rows::new(TableId::TraceHeads, 4)
+        .all("project_id", uuid(project.uuid()))
+        .all("received_at", Value::Time(T0))
+        .each("span_id", |row| id8(SALT, row))
         .each("start_time", |row| Value::Time(at(row as i64 * 1_000)))
         .each("trace_id", |row| Value::Bytes(vec![0xd0 + row as u8; 16]))
         .each("trace_hash", |row| Value::UInt(row as u64))

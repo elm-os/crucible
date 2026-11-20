@@ -8,7 +8,10 @@
 //! - **[`Scoped<P>`]** is the only producer of `ProjectScope` in the API: it resolves the principal, parses
 //!   `{project_id}`, and checks permission `P` (404 when the project is not visible, 403 when the role or scope
 //!   is too low). [`OrgScoped<P>`] checks an org permission for sessions; [`Signed`] is any session;
-//!   [`Prelogin`] guards the pre-session POSTs.
+//!   [`Prelogin`] guards the pre-session POSTs. [`FeedbackWrite`] also takes a project's public key alone, which
+//!   the feedback route alone accepts (contract 11.3).
+//! - **Path parameters** are read by name ([`PathParams`]), so a router that mounts the API under a route with
+//!   parameters of its own changes nothing.
 
 use std::collections::BTreeMap;
 use std::marker::PhantomData;

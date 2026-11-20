@@ -598,6 +598,10 @@ fn m2_lists() {
         },
     ]);
     insta::assert_snapshot!("m2_trace_list_metadata", rendered(&filtered(&metadata)));
+    // The trace list's tags are the effective tags: the traces whose latest tag edit added or removed the tag are
+    // resolved over `fact_tags` in the window, then semi-joined (contract 3.8).
+    let tags = Filter::Tags(vec!["reviewed".to_owned()]);
+    insta::assert_snapshot!("trace_list_effective_tags", rendered(&filtered(&tags)));
     let sessions = live(user_sessions(
         project(),
         window(),
