@@ -282,6 +282,20 @@ fn invalid_filters_and_ids_are_validation_problems_with_pointers() {
         let many = "&tags=t".repeat(101);
         let reply = get(&api, &uri("/spans", &many)).await;
         assert_eq!(reply.field_errors(), [("/tags", "too_many_values")]);
+        // The trace list resolves each tag over the traces' tag edits, so it takes at most 20.
+        let tags = |n: usize| (0..n).map(|i| format!("&tags=t{i}")).collect::<String>();
+        let reply = get(&api, &uri("/traces", &tags(21))).await;
+        reply.assert_problem(422, "validation_failed");
+        assert_eq!(reply.field_errors(), [("/tags", "too_many_values")]);
+        assert!(
+            reply.body.to_string().contains("at most 20 tags"),
+            "{:#}",
+            reply.body
+        );
+        assert_eq!(
+            get(&api, &uri("/traces", &tags(20))).await.status.as_u16(),
+            200
+        );
         let long = "x".repeat(513);
         let reply = get(&api, &uri(&format!("/users/{long}"), "")).await;
         assert_eq!(reply.field_errors(), [("/user_id", "invalid_id")]);

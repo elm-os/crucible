@@ -43,6 +43,6 @@ pub use crucible_admission::BucketConfig;
 pub use facts::{AcceptedFact, FactAuthor, FactWriteError, NewFact};
 pub use grpc::grpc_unavailable;
 pub use service::{
-    CompatRoute, DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, DEFAULT_PREPARE_PERMITS, Ingest,
-    IngestConfig, Mutant, RoutingHeader,
+    CompatRoute, DEFAULT_INFLIGHT_BYTES, DEFAULT_MAX_EVENT_AGE, DEFAULT_PREPARE_PERMITS,
+    EventHorizon, Ingest, IngestConfig, Mutant, RoutingHeader,
 };

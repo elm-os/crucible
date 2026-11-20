@@ -19,7 +19,7 @@ use crucible_records::{AlertRuleId, TimeWindow, Timestamp, Uuid};
 use crucible_sim::pg_model::PgModel;
 use serde_json::{Value, json};
 
-use crate::identity::{As, PASSWORD, call, platform_with, session};
+use crate::identity::{As, PASSWORD, call, platform_of, platform_with, session};
 use crate::world::{World, project};
 use crate::{Reply, run};
 
@@ -42,9 +42,11 @@ impl SeriesSource for TwoSeries {
     }
 }
 
-/// A receiver that answers 500 with a body the API must never show.
+/// A receiver that answers 500 with a body the API must never show. With `mail`, the server has a mail server.
 #[derive(Debug)]
-struct FailingReceiver;
+struct FailingReceiver {
+    mail: bool,
+}
 
 #[async_trait]
 impl Transport for FailingReceiver {
@@ -58,12 +60,13 @@ impl Transport for FailingReceiver {
     }
 
     fn has_mailer(&self) -> bool {
-        false
+        self.mail
     }
 }
 
-/// Alerting over the model, with the scripted read and receiver above and the default egress policy.
-pub(crate) fn api(env: &Env, model: &PgModel) -> AlertsApi {
+/// Alerting over the model, with the scripted read and receiver above and the default egress policy. With
+/// `mail`, the server has a mail server (`smtp.host` is set).
+pub(crate) fn api(env: &Env, model: &PgModel, mail: bool) -> AlertsApi {
     let store: Arc<dyn ControlStore> = Arc::new(model.clone());
     AlertsApi {
         alerts: Alerts::new(env, Arc::clone(&store), Some(Arc::new(TwoSeries))),
@@ -71,7 +74,7 @@ pub(crate) fn api(env: &Env, model: &PgModel) -> AlertsApi {
             env,
             store,
             Arc::new(Sealer::new("master-0", [2; 32])),
-            Arc::new(FailingReceiver),
+            Arc::new(FailingReceiver { mail }),
             EgressPolicy::default(),
         ),
     }
@@ -95,6 +98,29 @@ fn rule_body() -> Value {
 
 fn etag(reply: &Reply) -> String {
     reply.header("etag").expect("an ETag").to_owned()
+}
+
+/// `features.smtp` in the session DTO says whether the server sends email: whether the channels' transport has
+/// the mail server of `smtp.*`, which email channels need (contract 12.7).
+#[test]
+fn the_session_reports_whether_the_server_sends_email() {
+    run(|env| async move {
+        let world = World::new(10);
+        for mail in [false, true] {
+            let p = platform_of(&env, &world, false, mail).await;
+            let info = call(
+                &p.router,
+                Method::GET,
+                "/api/v1/auth/session",
+                &p.owner,
+                None,
+                &[],
+            )
+            .await;
+            assert_eq!(info.status.as_u16(), 200, "{:#}", info.body);
+            assert_eq!(info.body["features"]["smtp"], mail, "{:#}", info.body);
+        }
+    });
 }
 
 #[test]

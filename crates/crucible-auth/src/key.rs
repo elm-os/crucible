@@ -131,6 +131,14 @@ pub trait KeyVerifier: fmt::Debug + Send + Sync {
         let _ = secret;
         None
     }
+
+    /// The principal of a public key presented alone as a Bearer token, which only `POST
+    /// projects/{project_id}/feedback` accepts (contract 11.3). `None` by default: a verifier that ingest or the
+    /// MCP server uses never accepts a public key alone.
+    fn verify_public(&self, public: &str) -> Option<KeyPrincipal> {
+        let _ = public;
+        None
+    }
 }
 
 /// A project key from configuration.
@@ -287,6 +295,17 @@ impl KeyVerifier for StaticKeys {
         }
         principal(key).ok_or(PairError::Secret)
     }
+
+    fn verify_public(&self, public: &str) -> Option<KeyPrincipal> {
+        if !well_formed(public, PUBLIC_PREFIX) {
+            return None;
+        }
+        principal(
+            self.keys
+                .iter()
+                .find(|key| key.public_key.as_slice() == public.as_bytes())?,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +451,16 @@ mod tests {
         );
         let keys = StaticKeys::new(&rng, vec![key(1, 1, 1, 1), key(2, 1, 2, 2)]).unwrap();
         assert_eq!(keys.len(), 2);
+        // A public key alone names its key (contract 11.3); a secret or an unknown public key names none.
+        let named = |p| {
+            keys.verify_public(&public([0, 0, 0, p]).0)
+                .map(|k| k.api_key_id)
+        };
+        assert_eq!(
+            (named(1), named(2), named(3)),
+            (Some(key_id(1)), Some(key_id(2)), None)
+        );
+        assert_eq!(keys.verify_public(&secret([0, 0, 0, 1]).0), None);
         // Debug output names keys and projects and nothing derived from a key.
         assert_eq!(
             format!("{keys:?}"),

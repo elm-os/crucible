@@ -19,17 +19,17 @@ use crucible_auth::test_support::scope;
 use crucible_env::{InsertSettings, MutationId, MutationStatus, QueryError, TelemetryStore};
 use crucible_plan::test_support::{batch_probe, query_plan};
 use crucible_plan::{
-    AggOutput, Aggregate, CmpOp, DeletePlan, Direction, FieldRange, Fill, Literal, Measure, Node,
-    Order, Pred, QueryClass, QueryPlan, Row, Scan, SemiJoin, Step, TextSearch, TimeSeries,
-    TokenMode, Value,
+    AggOutput, Aggregate, CmpOp, DeletePlan, Direction, FieldRange, Fill, Filter, FilterTarget,
+    Literal, Measure, Node, Order, Pred, QueryClass, QueryPlan, Row, Scan, SemiJoin, Step,
+    TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{
-    BatchToken, Lsn, ProjectId, ProjectScope, TableId, TimeWindow, Timestamp, TraceId, Uuid,
-    WalEpoch,
+    BatchToken, FactTargetKind, HeadKind, Lsn, ProjectId, ProjectScope, TableId, TagOp, TimeWindow,
+    Timestamp, TraceId, Uuid, WalEpoch,
 };
 use crucible_schema::{
     Column, FactTagsCol, Granularity, McpOpsCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol,
-    TableKind, route,
+    TableKind, TraceHeadsCol, route,
 };
 use crucible_sim::ch_model::Answer;
 
@@ -296,6 +296,102 @@ async fn load(ctx: &Ctx) -> Result<Extra> {
     )
     .await?;
 
+    // The trace list's tags over tag edits (contract 3.8). Four heads: two sent with `beta`. Trace 0xd0 was
+    // tagged `reviewed` and untagged `beta`; 0xd1 lost `beta` and got it back; 0xd2's latest `reviewed` row is a
+    // retraction; 0xd3 has an addition and a removal of `x` of one version whose ids order differently by their
+    // first and by their second half, so the server's `UUID` order picks the latest.
+    let n = next();
+    let sent: [&[&str]; 4] = [&["beta"], &["beta"], &[], &[]];
+    let heads = Rows::new(TableId::TraceHeads, 4)
+        .all("project_id", uuid(project.uuid()))
+        .all("received_at", Value::Time(T0))
+        .each("span_id", |row| id8(SALT, row))
+        .each("start_time", |row| Value::Time(at(row as i64 * 1_000)))
+        .each("trace_id", |row| Value::Bytes(vec![0xd0 + row as u8; 16]))
+        .each("trace_hash", |row| Value::UInt(row as u64))
+        .all("head_kind", Value::Enum(HeadKind::Root.value()))
+        .each("tags", |row| {
+            Value::Array(sent[row].iter().map(|tag| text(tag)).collect())
+        });
+    insert(
+        ctx,
+        stamp(heads, n),
+        ctx.token(epoch, n, TableId::TraceHeads, T0)?,
+    )
+    .await?;
+    let n = next();
+    let edits = [
+        (
+            0,
+            "reviewed",
+            TagOp::Add,
+            1,
+            false,
+            Uuid::from_bytes([0x11; 16]),
+        ),
+        (
+            0,
+            "beta",
+            TagOp::Remove,
+            2,
+            false,
+            Uuid::from_bytes([0x12; 16]),
+        ),
+        (
+            1,
+            "beta",
+            TagOp::Remove,
+            3,
+            false,
+            Uuid::from_bytes([0x13; 16]),
+        ),
+        (
+            1,
+            "beta",
+            TagOp::Add,
+            4,
+            false,
+            Uuid::from_bytes([0x14; 16]),
+        ),
+        (
+            2,
+            "reviewed",
+            TagOp::Add,
+            5,
+            false,
+            Uuid::from_bytes([0x15; 16]),
+        ),
+        (
+            2,
+            "reviewed",
+            TagOp::Add,
+            6,
+            true,
+            Uuid::from_bytes([0x16; 16]),
+        ),
+        (3, "x", TagOp::Remove, 7, false, low_second_half),
+        (3, "x", TagOp::Add, 7, false, high_second_half),
+    ];
+    let tags = Rows::new(TableId::FactTags, edits.len())
+        .all("project_id", uuid(project.uuid()))
+        .all("target_day", Value::Date(T0.date()))
+        .all("target_time", Value::Time(T0))
+        .all("target_kind", Value::Enum(FactTargetKind::Trace.value()))
+        .each("trace_id", |row| {
+            Value::Bytes(vec![0xd0 + edits[row].0; 16])
+        })
+        .each("key", |row| text(edits[row].1))
+        .each("op", |row| Value::Enum(edits[row].2.value()))
+        .each("version", |row| Value::UInt(edits[row].3))
+        .each("retracted", |row| Value::UInt(u64::from(edits[row].4)))
+        .each("fact_id", |row| uuid(edits[row].5));
+    insert(
+        ctx,
+        stamp(tags, n),
+        ctx.token(epoch, n, TableId::FactTags, T0)?,
+    )
+    .await?;
+
     // Two partial rows of one rollup key in two blocks; their histograms cancel to zero in two buckets.
     let histogram = |keys: &[u64], counts: &[u64]| {
         let array = |v: &[u64]| Value::Array(v.iter().map(|x| Value::UInt(*x)).collect());
@@ -330,6 +426,72 @@ fn plans(f: &Extra) -> Result<Vec<(&'static str, QueryPlan, usize)>> {
     let scan = |scan: Scan| plan(QueryClass::List, Node::Scan(scan));
     let completed = SpanCoreCol::CompletionStartTime;
     let mut out = Vec::new();
+
+    // The trace list's tags filter: the traces whose latest tag edits are resolved over `fact_tags` first, then
+    // semi-joined into the heads, negated and combined with the heads' own tags.
+    let tagged = |tags: &[&str]| Filter::Tags(tags.iter().map(|tag| (*tag).to_owned()).collect());
+    for (name, filter, least) in [
+        (
+            "the effective tags: an addition, and a removal of a sent tag",
+            tagged(&["reviewed"]),
+            1,
+        ),
+        (
+            "the effective tags: a removal undone, and an addition retracted",
+            tagged(&["beta", "reviewed"]),
+            2,
+        ),
+        (
+            "the effective tags: two edits of one version, by the order of ids",
+            tagged(&["x"]),
+            1,
+        ),
+        (
+            "the effective tags, negated",
+            Filter::Not(Box::new(tagged(&["reviewed"]))),
+            3,
+        ),
+    ] {
+        let heads = Scan::new(
+            TableId::TraceHeads,
+            [TraceHeadsCol::TraceId, TraceHeadsCol::StartTime],
+            filter.pred(FilterTarget::TraceHeads)?,
+        )?;
+        out.push((name, plan(QueryClass::List, Node::Scan(heads)), least));
+    }
+    // The most tags the trace list takes, in one statement the server accepts.
+    let most: Vec<String> = (1..crucible_plan::TRACE_LIST_MAX_TAGS)
+        .map(|n| format!("unused-{n}"))
+        .chain(["reviewed".to_owned()])
+        .collect();
+    let heads = Scan::new(
+        TableId::TraceHeads,
+        [TraceHeadsCol::TraceId],
+        Filter::Tags(most).pred(FilterTarget::TraceHeads)?,
+    )?;
+    out.push((
+        "the effective tags, as many as the trace list takes",
+        plan(QueryClass::List, Node::Scan(heads)),
+        1,
+    ));
+    // Sets inside a semi-join's left scan: one cap for every set of the statement.
+    let heads = Scan::new(
+        TableId::TraceHeads,
+        [TraceHeadsCol::TraceId],
+        tagged(&["beta"]).pred(FilterTarget::TraceHeads)?,
+    )?;
+    let all = Scan::new(TableId::TraceHeads, [TraceHeadsCol::TraceId], Pred::all())?;
+    let join = SemiJoin::new(
+        heads,
+        TraceHeadsCol::TraceId,
+        Node::Scan(all),
+        crucible_plan::DEFAULT_MAX_IDS,
+    )?;
+    out.push((
+        "the effective tags inside a semi-join",
+        plan(QueryClass::List, Node::SemiJoin(join)),
+        1,
+    ));
 
     out.push((
         "the window keeps its first instant and not its end",

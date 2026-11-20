@@ -49,6 +49,38 @@ fn valid(verdict: KeyVerdict) -> Option<KeyGrant> {
     }
 }
 
+/// A public key alone finds its pair's grant until the key is revoked (contract 11.3); ingest and the MCP server's
+/// verifiers never take it.
+#[test]
+fn a_public_key_alone_finds_its_pair_until_the_key_is_revoked() {
+    crate::testing::sim(1, async |env| {
+        let rng = ChaChaRng::from_u64(2);
+        let lookup = LookupKey::new(LOOKUP);
+        let a = mint(&rng, &lookup);
+        let keys = DbKeys::new(&env, lookup, OutageMode::default());
+        assert!(matches!(
+            keys.check_public(&a.public_key),
+            KeyVerdict::Unavailable { .. }
+        ));
+        let mut key = row(1, &a, &[KeyScope::Write]);
+        keys.load(&snapshot(core::slice::from_ref(&key)));
+        let grant = valid(keys.check_public(&a.public_key)).unwrap();
+        assert_eq!(grant.principal.api_key_id, key.id);
+        assert!(grant.scopes.has(KeyScope::Write));
+        assert_eq!(keys.check_public(&a.secret), KeyVerdict::Invalid);
+        let keys = Arc::new(keys);
+        assert_eq!(keys.verify_public(&a.public_key), None);
+        assert_eq!(
+            keys.with_scope(KeyScope::Read).verify_public(&a.public_key),
+            None
+        );
+        key.revoked_at = Some(Timestamp::from_micros(1));
+        key.version = 2;
+        keys.apply_local(&key);
+        assert_eq!(keys.check_public(&a.public_key), KeyVerdict::Invalid);
+    });
+}
+
 #[test]
 fn keys_verify_by_secret_and_by_pair_with_their_scopes() {
     crate::testing::sim(1, async |env| {

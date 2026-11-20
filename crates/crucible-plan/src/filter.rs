@@ -21,15 +21,16 @@
 //! bytes tag every node and prefix every list and string with its length, so no two canonical forms share their
 //! bytes. The filter that keeps every row has the empty byte string.
 
-use crucible_records::{Level, ObservationType};
+use crucible_records::{FactTargetKind, Level, ObservationType, TableId, TagOp};
 use crucible_schema::{
-    Column, ColumnRef, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol,
+    Column, ColumnRef, FactTagsCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol,
 };
 use sha2::{Digest, Sha256};
 
 use crate::error::PlanError;
 use crate::literal::Literal;
-use crate::pred::Pred;
+use crate::node::{Aggregate, Having, Measure};
+use crate::pred::{CmpOp, Pred};
 
 /// A string field a filter tests for membership in a list of values.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -125,7 +126,8 @@ impl FilterField {
 /// What a filter is compiled for: the table of a read, which decides the fields it can evaluate.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FilterTarget {
-    /// `trace_heads` (the trace list): every field but `observation_type` and `metadata`.
+    /// `trace_heads` (the trace list): every field but `observation_type` and `metadata`. `tags` tests the
+    /// trace's effective tags, its tag edits applied (contract 3.8).
     TraceHeads,
     /// `span_core` (the span list): every field but `metadata`.
     SpanCore,
@@ -221,6 +223,70 @@ pub enum Filter {
     },
     /// A name that contains the text, without regard to ASCII case.
     Name(String),
+}
+
+/// The most tags a trace list filter tests. Each is resolved over the traces' tag edits with two sets of its own,
+/// about twenty bound values of the statement, and a ClickHouse request holds at most 1,000 values and settings.
+pub const TRACE_LIST_MAX_TAGS: usize = 20;
+
+/// `tags` on the trace list: the trace's effective tags have one of `values` (contract 3.8). Effective tags are the
+/// head's ingest tags, plus the tags whose latest edit added them, minus those whose latest edit removed them. Per
+/// tag, the traces whose latest trace-level edit in the window is an `add` or a `remove` are resolved over
+/// `fact_tags` first (an edit whose latest row is a retraction counts as none), then semi-joined:
+/// `(tags has the tag AND trace_id NOT IN removed) OR trace_id IN added`. More than [`TRACE_LIST_MAX_TAGS`] tags
+/// are refused.
+fn effective_tags(values: &[String]) -> Result<Pred, PlanError> {
+    if values.len() > TRACE_LIST_MAX_TAGS {
+        return Err(PlanError::ListLength("tags"));
+    }
+    let edited = |tag: &str, op: TagOp| -> Result<Pred, PlanError> {
+        let latest = Aggregate::new(
+            TableId::FactTags,
+            Pred::And(vec![
+                Pred::eq(
+                    FactTagsCol::TargetKind,
+                    Literal::Enum(FactTargetKind::Trace.value()),
+                ),
+                Pred::eq(FactTagsCol::Key, tag),
+            ]),
+            [FactTagsCol::TraceId],
+            vec![
+                Measure::LatestByVersion(FactTagsCol::Op.column_ref()),
+                Measure::LatestByVersion(FactTagsCol::Retracted.column_ref()),
+            ],
+        )?
+        .having(vec![
+            Having {
+                measure: 0,
+                op: CmpOp::Eq,
+                value: Literal::Enum(op.value()),
+            },
+            Having {
+                measure: 1,
+                op: CmpOp::Eq,
+                value: Literal::UInt(0),
+            },
+        ])?;
+        Ok(Pred::InSet(
+            TraceHeadsCol::TraceId.column_ref(),
+            Box::new(latest),
+        ))
+    };
+    let mut any = Vec::with_capacity(values.len());
+    for tag in values {
+        let ingest = Pred::HasAny(
+            TraceHeadsCol::Tags.column_ref(),
+            vec![Literal::String(tag.clone())],
+        );
+        any.push(Pred::Or(vec![
+            Pred::And(vec![
+                ingest,
+                Pred::Not(Box::new(edited(tag, TagOp::Remove)?)),
+            ]),
+            edited(tag, TagOp::Add)?,
+        ]));
+    }
+    Ok(Pred::Or(any))
 }
 
 fn put_str(out: &mut Vec<u8>, text: &str) {
@@ -405,6 +471,7 @@ impl Filter {
                 column(FilterField::ObservationType)?,
                 values.iter().map(|v| Literal::Enum(v.value())).collect(),
             ),
+            Self::Tags(values) if target == FilterTarget::TraceHeads => effective_tags(values)?,
             Self::Tags(values) => Pred::HasAny(
                 column(FilterField::Tags)?,
                 values.iter().map(|v| Literal::String(v.clone())).collect(),

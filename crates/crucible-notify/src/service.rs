@@ -141,6 +141,11 @@ impl Channels {
         }
     }
 
+    /// Whether email channels can deliver: the server has the mail server of `smtp.*`.
+    pub fn sends_email(&self) -> bool {
+        self.transport.has_mailer()
+    }
+
     /// Counts a test of `id` now, or says how long to wait.
     fn admit_test(&self, id: ChannelId) -> Result<(), ChannelError> {
         const MINUTE: Duration = Duration::from_secs(60);

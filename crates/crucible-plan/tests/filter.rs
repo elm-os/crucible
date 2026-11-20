@@ -154,13 +154,17 @@ proptest! {
 
     /// A filter compiles for a target exactly when the target evaluates every field it names; the refusal
     /// names the first field it does not. No condition is dropped: the predicate holds one leaf per condition
-    /// of the canonical form.
+    /// of the canonical form, and on the trace list one per tag of a tags condition, which tests the trace's
+    /// effective tags (its sets of edited traces are not leaves of the filtered table).
     #[test]
     fn a_filter_compiles_only_where_every_field_is_evaluated(filter in filter()) {
-        fn conditions(filter: &Filter) -> usize {
+        fn conditions(filter: &Filter, target: FilterTarget) -> usize {
             match filter {
-                Filter::And(operands) | Filter::Or(operands) => operands.iter().map(conditions).sum(),
-                Filter::Not(operand) => conditions(operand),
+                Filter::And(operands) | Filter::Or(operands) => {
+                    operands.iter().map(|operand| conditions(operand, target)).sum()
+                }
+                Filter::Not(operand) => conditions(operand, target),
+                Filter::Tags(values) if target == FilterTarget::TraceHeads => values.len(),
                 _ => 1,
             }
         }
@@ -168,12 +172,15 @@ proptest! {
             match pred {
                 Pred::And(operands) | Pred::Or(operands) => operands.iter().map(leaves).sum(),
                 Pred::Not(operand) => leaves(operand),
+                Pred::InSet(..) => 0,
                 _ => 1,
             }
         }
         for target in TARGETS {
             match (filter.pred(target), filter.canonical().unsupported(target)) {
-                (Ok(pred), None) => prop_assert_eq!(leaves(&pred), conditions(&filter.canonical())),
+                (Ok(pred), None) => {
+                    prop_assert_eq!(leaves(&pred), conditions(&filter.canonical(), target));
+                }
                 (Err(PlanError::UnsupportedFilter { field, target: named }), Some(unsupported)) => {
                     prop_assert_eq!(field, unsupported.as_str());
                     prop_assert_eq!(named, target.as_str());

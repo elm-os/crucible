@@ -38,9 +38,9 @@
 use std::fmt::{self, Write as _};
 
 use crucible_plan::{
-    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DeletePlan, DeleteTarget, Direction,
-    FieldRange, Fill, Literal, Measure, Node, Order, PointLookup, Pred, ProbeKind, QueryPlan, Scan,
-    SemiJoin, Step, TextSearch, TimeSeries, TokenMode, pad_in_list,
+    AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DEFAULT_MAX_IDS, DeletePlan,
+    DeleteTarget, Direction, FieldRange, Fill, Literal, Measure, Node, Order, PointLookup, Pred,
+    ProbeKind, QueryPlan, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode, pad_in_list,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str};
 use crucible_schema::{ColumnRef, DATABASE, PROJECT_ID, TableDef, Ty, table};
@@ -92,6 +92,9 @@ pub enum RenderError {
     /// A table whose time column the window cannot bound.
     #[error("table {0} has no window predicate")]
     Window(&'static str),
+    /// A set membership outside a query plan, which has no project and window for the set's table.
+    #[error("a set membership needs a query plan's project and window")]
+    Set,
 }
 
 /// Collects the bound values of one statement.
@@ -101,6 +104,10 @@ pub(crate) struct Binder {
     settings: Vec<(&'static str, String)>,
     /// The length of the longest literal `In` list bound so far.
     longest_in: usize,
+    /// The project and window of the plan being rendered, which a set membership's table reference carries.
+    scope: Option<Scope>,
+    /// The most ids a set of the statement may hold, when it has a set.
+    set_cap: Option<u64>,
 }
 
 pub(crate) fn escape(text: &str) -> String {
@@ -153,12 +160,26 @@ fn micros(t: Timestamp) -> String {
 }
 
 impl Binder {
-    pub(crate) fn finish(self, sql: String) -> Statement {
+    pub(crate) fn finish(mut self, sql: String) -> Statement {
+        // More ids than the cap fails the statement with the set-size code, which is `query_too_broad`. The server
+        // applies the limit to every set of the statement, so it must also admit the longest literal list: the cap
+        // is exact unless a filter lists more values than the sets may hold.
+        if let Some(cap) = self.set_cap {
+            let cap = cap.max(self.longest_in as u64);
+            self.settings.push(("max_rows_in_set", cap.to_string()));
+            self.settings
+                .push(("set_overflow_mode", "throw".to_owned()));
+        }
         Statement {
             sql,
             params: self.params,
             settings: self.settings,
         }
+    }
+
+    /// Notes a set of the statement that may hold at most `cap` ids.
+    fn cap_sets(&mut self, cap: u64) {
+        self.set_cap = Some(self.set_cap.map_or(cap, |held| held.max(cap)));
     }
 
     fn bind(&mut self, ty: impl fmt::Display, value: String) -> String {
@@ -311,6 +332,14 @@ fn pred(b: &mut Binder, p: &Pred) -> Result<String, RenderError> {
                 b.string(truncate_str(&item, METADATA_KV_CAP))
             )
         }
+        // A semi-join inside the predicate: the set's table reference carries the plan's project and window.
+        Pred::InSet(column, set) => {
+            let scope = b.scope.ok_or(RenderError::Set)?;
+            b.cap_sets(u64::from(DEFAULT_MAX_IDS));
+            let id = set.group().first().map_or("", ColumnRef::name);
+            let ids = aggregate(b, &scope, set, None)?;
+            format!("{} IN (SELECT {id} FROM ({ids}))", column.name())
+        }
         // A case-insensitive substring match. The text index of `name` (3-grams over the lowered value) serves the
         // token test; a needle shorter than one gram has no token, so only the exact test applies to it.
         Pred::TextMatch(needle) => {
@@ -369,6 +398,7 @@ fn window(
 }
 
 /// What every table reference carries.
+#[derive(Clone, Copy, Debug)]
 struct Scope {
     project: ProjectId,
     window: TimeWindow,
@@ -710,12 +740,7 @@ fn semi_join(b: &mut Binder, scope: &Scope, n: &SemiJoin) -> Result<String, Rend
     };
     let restriction = format!("{} IN ({ids})", n.on().name());
     let sql = scan(b, scope, n.left(), Some(&restriction))?;
-    // More ids than the cap fails the statement with the set-size code, which is `query_too_broad`. The server
-    // applies the limit to every set of the statement, so it must also admit the longest literal list: the cap
-    // is exact unless a filter lists more values than `max_ids`.
-    let cap = u64::from(n.max_ids()).max(b.longest_in as u64);
-    b.settings.push(("max_rows_in_set", cap.to_string()));
-    b.settings.push(("set_overflow_mode", "throw".to_owned()));
+    b.cap_sets(u64::from(n.max_ids()));
     Ok(sql)
 }
 
@@ -842,10 +867,13 @@ fn node(b: &mut Binder, scope: &Scope, n: &Node) -> Result<String, RenderError> 
 
 /// Renders a plan. The statement returns the columns of `plan.output()`, in order.
 pub fn plan(plan: &QueryPlan) -> Result<Statement, RenderError> {
-    let mut b = Binder::default();
     let scope = Scope {
         project: plan.scope().project_id(),
         window: plan.window(),
+    };
+    let mut b = Binder {
+        scope: Some(scope),
+        ..Binder::default()
     };
     let sql = node(&mut b, &scope, plan.root())?;
     Ok(b.finish(sql))

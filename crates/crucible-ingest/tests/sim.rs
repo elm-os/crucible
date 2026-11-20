@@ -475,6 +475,60 @@ fn the_event_age_cutoff_follows_the_setting() {
     });
 }
 
+/// A retention of 90 days for [`PROJECT`].
+#[derive(Debug)]
+struct NinetyDays;
+
+impl crucible_ingest::EventHorizon for NinetyDays {
+    fn horizon(
+        &self,
+        project: crucible_records::ProjectId,
+        now: crucible_records::Timestamp,
+    ) -> Option<crucible_records::Timestamp> {
+        let days = i64::try_from(90 * DAY_NANOS / 1_000).unwrap();
+        (project == PROJECT).then(|| now.saturating_add_micros(-days))
+    }
+}
+
+/// A span older than its project's retention horizon is rejected through partial success like one older than
+/// `ingest.max_event_age` (contract 1.2), over HTTP and gRPC: with 90 days of retention, a span from 100 days ago
+/// is rejected and one from 80 days ago taken. A project without a horizon keeps the age limit alone.
+#[test]
+fn spans_older_than_the_projects_retention_horizon_are_rejected() {
+    let config = IngestConfig {
+        horizon: Some(std::sync::Arc::new(NinetyDays)),
+        ..IngestConfig::default()
+    };
+    with_node(4, wal_config(), config, |node, _| async move {
+        let spans = || {
+            vec![
+                good_span(1, NOW_NANOS - 100 * DAY_NANOS),
+                good_span(2, NOW_NANOS - 80 * DAY_NANOS),
+            ]
+        };
+        let reply = send(&node.router, Req::protobuf(&export(spans()))).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.rejected_spans(), 1);
+        let response = grpc_export(&node.grpc, export(spans())).await.unwrap();
+        let partial = response.partial_success.unwrap();
+        assert_eq!(partial.rejected_spans, 1);
+        assert!(
+            partial
+                .error_message
+                .contains("older than the accepted event age"),
+            "{}",
+            partial.error_message
+        );
+        let written = payloads(&node.wal).await;
+        assert_eq!(rejected_ordinals(envelope(&written[0]).rejected), [0]);
+        assert_eq!(rejected_ordinals(envelope(&written[1]).rejected), [0]);
+        // The other project's spans meet only the 400-day limit.
+        let other = Req::protobuf(&export(spans()))
+            .with("authorization", &format!("Bearer {}", other_secret()));
+        assert_eq!(send(&node.router, other).await.rejected_spans(), 0);
+    });
+}
+
 #[test]
 fn an_exhausted_inflight_budget_answers_429_with_retry_after() {
     let config = IngestConfig {

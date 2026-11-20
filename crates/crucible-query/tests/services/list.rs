@@ -9,10 +9,12 @@ use crucible_query::{
     TraceListItem, TraceListPage, TraceListQuery, TraceTail, TraceTailQuery,
 };
 use crucible_recent::SpanEntry;
-use crucible_records::{HeadKind, Lsn, TableId, TimeWindow, Timestamp, TraceId, WalEpoch};
+use crucible_records::{
+    FactTargetKind, HeadKind, Lsn, TableId, TagOp, TimeWindow, Timestamp, TraceId, Uuid, WalEpoch,
+};
 
 use crate::store::stored_row;
-use crate::world::{DAY, EPOCH, NOW, World, ctx, project, run, span, trace};
+use crate::world::{DAY, EPOCH, NOW, World, ctx, project, run, span, tagged_head_row, trace};
 
 const MS: i64 = 1_000;
 
@@ -65,6 +67,77 @@ fn named(mut entry: SpanEntry, trace_name: &str, user: &str) -> SpanEntry {
     entry.summary.trace_name = Arc::from(trace_name);
     entry.summary.user_id = Arc::from(user);
     entry
+}
+
+/// A trace-level tag edit of trace `trace_n` in the store: `op` of `tag` at `version`.
+fn tag_edit(trace_n: u64, tag: &str, op: TagOp, version: u64, retracted: bool) -> Vec<Value> {
+    stored_row(
+        TableId::FactTags,
+        &[
+            ("project_id", Value::Uuid(project(1).uuid())),
+            ("key", Value::String(tag.to_owned())),
+            ("target_day", Value::Date(NOW.date())),
+            ("target_time", Value::Time(NOW)),
+            ("trace_id", Value::Bytes(trace(trace_n).to_bytes().to_vec())),
+            ("version", Value::UInt(version)),
+            (
+                "fact_id",
+                Value::Uuid(Uuid::from_v7_parts(1_794_907_800_000, u128::from(version))),
+            ),
+            ("target_kind", Value::Enum(FactTargetKind::Trace.value())),
+            ("retracted", Value::UInt(u64::from(retracted))),
+            ("op", Value::Enum(op.value())),
+        ],
+    )
+}
+
+/// The trace list's `tags` filter tests each trace's effective tags, its ingest tags with its latest tag edits
+/// applied (contract 3.8), as its rows show them. Trace 1, sent with `beta`, then tagged `reviewed` and untagged
+/// `beta`, is found by `reviewed` and not by `beta`. Trace 2 lost `beta` and got it back. Trace 3's latest edit of
+/// `reviewed` is a retraction, which counts as no edit.
+#[test]
+fn the_tags_filter_matches_the_effective_tags() {
+    let world = World::new(100);
+    for (n, tags) in [(1, &["beta"][..]), (2, &["beta"][..]), (3, &[][..])] {
+        let root = span(n, 10 * n, 0, at(-(n as i64)));
+        let head = tagged_head_row(&root, tags, Lsn::new(n), NOW);
+        world.store.insert(TableId::TraceHeads, head);
+    }
+    for edit in [
+        tag_edit(1, "reviewed", TagOp::Add, 1, false),
+        tag_edit(1, "beta", TagOp::Remove, 2, false),
+        tag_edit(2, "beta", TagOp::Remove, 3, false),
+        tag_edit(2, "beta", TagOp::Add, 4, false),
+        tag_edit(3, "reviewed", TagOp::Add, 5, false),
+        tag_edit(3, "reviewed", TagOp::Add, 6, true),
+    ] {
+        world.store.insert(TableId::FactTags, edit);
+    }
+    let filtered = |tags: &[&str]| {
+        let query = TraceListQuery {
+            window: window(),
+            filter: Filter::Tags(tags.iter().map(|tag| (*tag).to_owned()).collect()),
+            limit: Some(10),
+            cursor: None,
+        };
+        run(world.service.trace_list(&ctx(1), query)).unwrap()
+    };
+    let reviewed = filtered(&["reviewed"]);
+    assert_eq!(traces(&reviewed.data), [trace(1)]);
+    assert_eq!(reviewed.data[0].facts.tags, [Arc::from("reviewed")]);
+    assert_eq!(traces(&filtered(&["beta"]).data), [trace(2)]);
+    assert_eq!(
+        traces(&filtered(&["reviewed", "beta"]).data),
+        [trace(1), trace(2)]
+    );
+    let not_reviewed = TraceListQuery {
+        window: window(),
+        filter: Filter::Not(Box::new(Filter::Tags(vec!["reviewed".to_owned()]))),
+        limit: Some(10),
+        cursor: None,
+    };
+    let page = run(world.service.trace_list(&ctx(1), not_reviewed)).unwrap();
+    assert_eq!(traces(&page.data), [trace(2), trace(3)]);
 }
 
 /// The sums rule of contract 3.1 on the list: a usage aggregate is counted as a span and left out of the token

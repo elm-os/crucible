@@ -1,5 +1,6 @@
 //! The ingest service: `POST /v1/traces` and the compat ingest routes.
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,14 +81,25 @@ pub struct RoutingHeader {
     pub dialect: u8,
 }
 
+/// The retention horizon of each project (contract 1.2): a span that starts before it is rejected through partial
+/// success, like one older than `ingest.max_event_age`. The binary answers from the node's snapshot of every
+/// project's retention, which the lifecycle node job keeps current.
+pub trait EventHorizon: fmt::Debug + Send + Sync {
+    /// The first instant `project` keeps at `now`; `None` when it keeps its spans forever.
+    fn horizon(&self, project: ProjectId, now: Timestamp) -> Option<Timestamp>;
+}
+
 #[derive(Clone, Debug)]
 pub struct IngestConfig {
     /// `ingest.inflight_bytes`: the budget for the request bytes that handlers hold, from the first body byte
     /// until the request's frame is durable.
     pub inflight_bytes: u64,
     /// `ingest.max_event_age`: a span that starts more than this long before the request arrives is rejected
-    /// through partial success. Milestone 1 has no per-project retention, which may only shorten it.
+    /// through partial success. A project's retention horizon ([`IngestConfig::horizon`]) may only shorten it.
     pub max_event_age: Duration,
+    /// The retention horizon of each project; `None` (the default, and the mode without a control plane) keeps
+    /// the age limit alone.
+    pub horizon: Option<Arc<dyn EventHorizon>>,
     /// `wal.compression` for the frames that ingest prepares.
     pub compression: Compression,
     /// The ingest-prepare share of the CPU budget (`cpu.permits`): the most blocking jobs that inflate, transcode,
@@ -121,6 +133,7 @@ impl Default for IngestConfig {
         Self {
             inflight_bytes: DEFAULT_INFLIGHT_BYTES,
             max_event_age: DEFAULT_MAX_EVENT_AGE,
+            horizon: None,
             compression: Compression::Lz4,
             prepare_permits: DEFAULT_PREPARE_PERMITS,
             project_rate: None,
@@ -145,6 +158,7 @@ pub(crate) struct Inner {
     /// The CPU budget's ingest-prepare share.
     permits: Arc<PermitPool>,
     max_event_age_micros: i64,
+    horizon: Option<Arc<dyn EventHorizon>>,
     pub(crate) compression: Compression,
     acks_before_append: bool,
     compat_routes: Vec<CompatRoute>,
@@ -351,6 +365,7 @@ impl Ingest {
                 admission: Arc::new(admission),
                 permits: Arc::new(PermitPool::new(config.prepare_permits.max(1))),
                 max_event_age_micros: max_age,
+                horizon: config.horizon,
                 compression: config.compression,
                 acks_before_append,
                 compat_routes: config.compat_routes,
@@ -430,12 +445,20 @@ impl Inner {
         })
     }
 
-    /// The earliest start time a span of a request arriving now may have.
-    pub(crate) fn min_start(&self) -> Timestamp {
-        self.env
-            .clock
-            .wall_now()
-            .saturating_add_micros(self.max_event_age_micros.saturating_neg())
+    /// The earliest start time a span of `project` arriving now may have: the later of `ingest.max_event_age` ago
+    /// and the project's retention horizon (contract 1.2). Computed once per request; the scan compares each span
+    /// with it as it validates the span.
+    pub(crate) fn min_start(&self, project: ProjectId) -> Timestamp {
+        let now = self.env.clock.wall_now();
+        let by_age = now.saturating_add_micros(self.max_event_age_micros.saturating_neg());
+        match self
+            .horizon
+            .as_ref()
+            .and_then(|horizon| horizon.horizon(project, now))
+        {
+            Some(horizon) => by_age.max(horizon),
+            None => by_age,
+        }
     }
 
     /// Charges `bytes` that a request sent beyond what it declared to the project's rate.
@@ -489,7 +512,7 @@ impl Inner {
             transport: IngestTransport::Http,
             principal,
             origin,
-            min_start: self.min_start(),
+            min_start: self.min_start(project),
         };
         self.commit(job, held).await
     }

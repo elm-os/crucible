@@ -103,6 +103,8 @@ pub(crate) struct Platform {
     pub(crate) model: PgModel,
     pub(crate) owner: As,
     pub(crate) key: As,
+    /// The public key of `key`'s pair, as a Bearer token.
+    pub(crate) public: As,
     /// The object store behind the media routes.
     pub(crate) objects: Arc<SimObjectStore>,
 }
@@ -157,6 +159,11 @@ async fn platform(env: &Env, world: &World) -> Platform {
 /// The platform over `PgModel`: an owner, the viewer `vic@example.com`, project 1 and a key with the scopes of
 /// a new key. With `sql`, the SQL workspace runs over the simulation's scripted store, its probe clean.
 pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platform {
+    platform_of(env, world, sql, false).await
+}
+
+/// [`platform_with`], whose alert channels have a mail server when `mail` is set.
+pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool) -> Platform {
     let model = PgModel::new(
         Arc::clone(&env.clock),
         env.rng.fork("pg").as_ref(),
@@ -262,7 +269,7 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
         crucible_api::Modules {
             sql: workspace,
             exports: Some(exports),
-            alerts: Some(crate::alerts::api(env, &model)),
+            alerts: Some(crate::alerts::api(env, &model, mail)),
             lifecycle: Some(lifecycle(env, &model)),
             dashboards: Some(Arc::new(model.clone())),
             media: Some(media),
@@ -271,11 +278,106 @@ pub(crate) async fn platform_with(env: &Env, world: &World, sql: bool) -> Platfo
     Platform {
         router,
         owner: session(&owner),
+        public: As::Key(created.key.public_key.clone()),
         key: As::Key(created.secret),
         identity,
         model,
         objects,
     }
+}
+
+/// The API behind a wildcard route, as `crucible serve` mounts it: the request reaches the API's router with the
+/// outer route's own path parameter already captured.
+fn mounted(api: Router) -> Router {
+    let forward = move |request: axum::extract::Request| {
+        let api = api.clone();
+        async move {
+            match api.oneshot(request).await {
+                Ok(response) => response,
+                Err(never) => match never {},
+            }
+        }
+    };
+    Router::new().route("/api/v1/{*rest}", axum::routing::any(forward))
+}
+
+/// Whether a response is a success or a redirect, or else a problem document.
+fn answered(reply: &Reply) -> bool {
+    reply.status.as_u16() < 400 || reply.header("content-type") == Some("application/problem+json")
+}
+
+/// A provider sign-in is never refused for its query string: providers add parameters of their own and one may
+/// repeat, so the first value of each is read, and what the flow lacks redirects to the sign-in page with the
+/// reason. A repeated `next` or `state` once answered 400 with the query extractor's text.
+#[test]
+fn provider_sign_in_reads_any_query_string() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform(&env, &world).await;
+        let provider = "/api/v1/auth/oauth/05050505-0505-0505-0505-050505050505";
+        for (uri, error) in [
+            (
+                format!("{provider}/start?next=/a&next=/b&prompt=consent"),
+                "provider_disabled",
+            ),
+            // Without the flow cookie the state check fails first.
+            (
+                format!("{provider}/callback?state=a&state=b&code=c&code=d&iss=x"),
+                "oauth_state_invalid",
+            ),
+        ] {
+            let reply = call(&p.router, Method::GET, &uri, &As::Nobody, None, &[]).await;
+            assert_eq!(
+                reply.status,
+                StatusCode::SEE_OTHER,
+                "{uri}: {:#}",
+                reply.body
+            );
+            let location = format!("/login/?error={error}");
+            assert_eq!(reply.header("location"), Some(location.as_str()), "{uri}");
+        }
+    });
+}
+
+/// No route answers raw extractor text (contract 12.3): every error is a problem document, with the API mounted
+/// the way the server mounts it, for anyone, a session and a key, with well-formed path parameters and with
+/// ones that are not even UTF-8.
+#[test]
+fn every_route_answers_its_errors_as_problem_documents() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform(&env, &world).await;
+        let router = mounted(p.router.clone());
+        let project_1 = project(1).to_string();
+        for (method, path) in operations() {
+            let well_formed =
+                concrete(&path).replace("01010101-0101-0101-0101-010101010101", &project_1);
+            let mut malformed = path.clone();
+            while let (Some(open), Some(close)) = (malformed.find('{'), malformed.find('}')) {
+                malformed.replace_range(open..=close, "%FF%FE");
+            }
+            let body = (method != Method::GET).then(|| json!({}));
+            for uri in [&well_formed, &malformed] {
+                // A fresh owner session per call: some routes (sign-out) end it.
+                let owner = session(
+                    &p.identity
+                        .login("owner@example.com", PASSWORD)
+                        .await
+                        .unwrap(),
+                );
+                for who in [&As::Nobody, &owner, &p.key] {
+                    let reply = call(&router, method.clone(), uri, who, body.clone(), &[]).await;
+                    assert!(
+                        answered(&reply),
+                        "{method} {uri} as {who:?}: {} {:?} {:#}",
+                        reply.status,
+                        reply.header("content-type"),
+                        reply.body
+                    );
+                }
+            }
+        }
+    });
 }
 
 /// A response from the route's handler, not from the fallback.

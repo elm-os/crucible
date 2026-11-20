@@ -1,16 +1,15 @@
 //! The organization, its members, invitations and sign-in providers (contracts 11.5, 11.6 and 12.6).
 
-use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::Problem;
 use crucible_auth::service::{OrgChange, ProviderChange, ProviderInput};
-use crucible_records::{ProjectId, RequestId, UserId, Uuid};
+use crucible_records::{ProjectId, UserId, Uuid};
 use utoipa::OpenApi;
 
-use crate::access::{ApiState, OrgMembers, OrgOwner, OrgRead, OrgScoped, OrgSettings};
+use crate::access::{ApiState, OrgMembers, OrgOwner, OrgRead, OrgScoped, OrgSettings, PathParams};
 use crate::control::{
     self as c, ApiJson, auth, etag, if_match, invitation, org_role, org_role_in, project_role_in,
 };
@@ -62,12 +61,6 @@ pub(super) fn routes() -> Router<ApiState> {
     delete_provider
 ))]
 pub(super) struct Paths;
-
-fn id<T>(rid: RequestId, text: &str, wrap: impl Fn(Uuid) -> T) -> Result<T, ApiError> {
-    text.parse::<Uuid>()
-        .map(wrap)
-        .map_err(|_| ApiError::not_found(rid))
-}
 
 /// Get the organization
 #[utoipa::path(
@@ -178,11 +171,11 @@ pub(crate) async fn list_members(
 )]
 pub(crate) async fn patch_member(
     org: OrgScoped<OrgMembers>,
-    Path(user_id): Path<String>,
+    path: PathParams,
     ApiJson(body): ApiJson<wire::OrgMemberPatch>,
 ) -> Result<Json<wire::OrgMember>, ApiError> {
     let rid = org.request_id;
-    let user_id = id(rid, &user_id, UserId::from_uuid)?;
+    let user_id = path.id("user_id", UserId::from_uuid)?;
     let (user, role) = org
         .identity
         .set_org_role(&org.principal, user_id, org_role_in(body.role))
@@ -209,10 +202,10 @@ pub(crate) async fn patch_member(
 )]
 pub(crate) async fn delete_member(
     org: OrgScoped<OrgMembers>,
-    Path(user_id): Path<String>,
+    path: PathParams,
 ) -> Result<StatusCode, ApiError> {
     let rid = org.request_id;
-    let user_id = id(rid, &user_id, UserId::from_uuid)?;
+    let user_id = path.id("user_id", UserId::from_uuid)?;
     org.identity
         .remove_member(&org.principal, user_id)
         .await
@@ -346,10 +339,10 @@ pub(crate) async fn create_invitation(
 )]
 pub(crate) async fn revoke_invitation(
     org: OrgScoped<OrgMembers>,
-    Path(invitation_id): Path<String>,
+    path: PathParams,
 ) -> Result<StatusCode, ApiError> {
     let rid = org.request_id;
-    let id = id(rid, &invitation_id, |u| u)?;
+    let id = path.id("invitation_id", |u| u)?;
     org.identity
         .revoke_invitation(id)
         .await
@@ -436,11 +429,11 @@ pub(crate) async fn create_provider(
 )]
 pub(crate) async fn patch_provider(
     org: OrgScoped<OrgSettings>,
-    Path(provider_id): Path<String>,
+    path: PathParams,
     ApiJson(body): ApiJson<wire::AuthProviderPatch>,
 ) -> Result<Json<wire::AuthProvider>, ApiError> {
     let rid = org.request_id;
-    let id = id(rid, &provider_id, |u| u)?;
+    let id = path.id("provider_id", |u| u)?;
     let change = ProviderChange {
         display_name: body.display_name,
         client_secret: body.client_secret,
@@ -471,10 +464,10 @@ pub(crate) async fn patch_provider(
 )]
 pub(crate) async fn delete_provider(
     org: OrgScoped<OrgSettings>,
-    Path(provider_id): Path<String>,
+    path: PathParams,
 ) -> Result<StatusCode, ApiError> {
     let rid = org.request_id;
-    let id = id(rid, &provider_id, |u| u)?;
+    let id = path.id("provider_id", |u| u)?;
     org.identity.delete_provider(id).await.map_err(auth(rid))?;
     Ok(StatusCode::NO_CONTENT)
 }
