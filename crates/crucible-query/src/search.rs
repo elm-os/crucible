@@ -446,7 +446,7 @@ impl QueryService {
         ctx: &ReadContext,
         query: SearchQuery,
     ) -> Result<SearchPage, QueryServiceError> {
-        let mut read = self.read(ctx);
+        let mut read = self.read(ctx, "search");
         let scope = ctx.scope;
         let limit = query.limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
         if limit == 0 || limit > SEARCH_MAX_LIMIT {

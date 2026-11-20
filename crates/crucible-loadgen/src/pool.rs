@@ -8,19 +8,24 @@
 //! patching it must give byte for byte what prost encodes for the same values.
 //!
 //! Content (span names, kinds, durations and payload text) is a function of the seed alone. Identity is a
-//! function of the run id and the request index; request `index` uses template `index % templates`:
+//! function of the run id and the request index; request `index` uses template `index % templates`.
+//!
+//! A request holds `traces_per_request` traces: its spans split into runs of consecutive positions, one per
+//! trace, whose lengths differ by at most one. The first span of each run is that trace's root:
 //!
 //! | Field | Value |
 //! |---|---|
-//! | `trace_id` | the run tag (8 bytes) then `mix64(index + 1)` (8 bytes), big-endian; one trace per request |
+//! | `trace_id` | the run tag (8 bytes) then `mix64(index * traces_per_request + trace + 1)` (8 bytes), big-endian |
 //! | `span_id` | `mix64(seq + 1)`, big-endian |
-//! | `parent_span_id` | the request's first span, for every other span of the request |
+//! | `parent_span_id` | the trace's first span, for every other span of the trace. With `rootless`, the first span names `mix64(!seq)` (bitwise not), which no span of the run carries, so no trace has a root |
 //! | `start_time_unix_nano` | the request's start time plus the span's offset in the template |
 //! | `loadgen.run_id` | the run id, canonical form |
 //! | `loadgen.seq` | `seq = index * spans_per_request + position`, as 20 zero-padded decimal digits |
 //!
 //! `mix64` is a bijection on `u64` that maps only 0 to 0, so no id is ever zero and no trace id repeats
-//! within a run. The run tag is the two halves of the run id XORed together.
+//! within a run. A sequence number stays below 2^48 (at most 2^32 requests of 50,000 spans), so `!seq` is never
+//! `seq' + 1` for another span and a missing parent never names a span of the run. The run tag is the two
+//! halves of the run id XORed together.
 
 use std::fmt;
 use std::str::FromStr;
@@ -121,6 +126,10 @@ pub struct PoolConfig {
     pub span_size: SpanSize,
     /// Spans in each request, at most [`MAX_SPANS_PER_REQUEST`].
     pub spans_per_request: u32,
+    /// Traces in each request, from 1 to `spans_per_request`.
+    pub traces_per_request: u32,
+    /// The first span of every trace names a parent that no span carries, so no trace has a root.
+    pub rootless: bool,
     /// Distinct template requests; memory use is about `templates * spans_per_request * span bytes`.
     pub templates: usize,
     /// Fixes the content of every template.
@@ -133,6 +142,9 @@ pub enum PoolError {
     /// Spans per request outside `1..=MAX_SPANS_PER_REQUEST`.
     #[error("spans per request must be between 1 and {MAX_SPANS_PER_REQUEST}, got {0}")]
     SpansPerRequest(u32),
+    /// Traces per request outside `1..=spans_per_request`.
+    #[error("traces per request must be between 1 and the spans per request, got {0}")]
+    TracesPerRequest(u32),
     /// A pool needs at least one template.
     #[error("a pool needs at least one template")]
     NoTemplates,
@@ -152,7 +164,7 @@ pub enum PoolError {
     PatchMismatch(usize),
 }
 
-/// The byte offsets of one span's patched fields in a template, and the span's timing.
+/// The byte offsets of one span's patched fields in a template, the span's place in its trace and its timing.
 #[derive(Clone, Copy, Debug)]
 struct Slots {
     trace_id: usize,
@@ -161,6 +173,10 @@ struct Slots {
     start: usize,
     end: usize,
     seq: usize,
+    /// The trace of the span within its request, from 0.
+    trace: u32,
+    /// The position of the trace's first span; the span's own position when it is that span.
+    root: usize,
     offset_nanos: u64,
     duration_nanos: u64,
 }
@@ -207,12 +223,74 @@ impl Markers {
     }
 }
 
+/// The identity scheme of one run (the module documentation's table): trace ids, span ids and sequence numbers
+/// from the run id and the request shape alone, so that a reader can name every span of a loaded run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Identity {
+    run_tag: [u8; 8],
+    spans_per_request: u32,
+    traces_per_request: u32,
+}
+
+impl Identity {
+    /// The identities of run `run_id`, whose requests hold `spans_per_request` spans in `traces_per_request`
+    /// traces (both at least 1).
+    pub fn new(run_id: Uuid, spans_per_request: u32, traces_per_request: u32) -> Self {
+        let halves = u128::from_be_bytes(run_id.to_bytes());
+        Self {
+            run_tag: (((halves >> 64) as u64) ^ (halves as u64)).to_be_bytes(),
+            spans_per_request: spans_per_request.max(1),
+            traces_per_request: traces_per_request.max(1),
+        }
+    }
+
+    /// The trace id of trace `trace` (from 0) of request `index`.
+    pub fn trace_id(&self, index: u64, trace: u32) -> TraceId {
+        let number = index
+            .wrapping_mul(u64::from(self.traces_per_request))
+            .wrapping_add(u64::from(trace));
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&self.run_tag);
+        bytes[8..].copy_from_slice(&mix64(number.wrapping_add(1)).to_be_bytes());
+        TraceId::from_bytes(bytes)
+    }
+
+    /// The trace, from 0, of the span at `position` in a request.
+    pub fn trace_of(&self, position: usize) -> u32 {
+        let trace = position as u64 * u64::from(self.traces_per_request)
+            / u64::from(self.spans_per_request);
+        u32::try_from(trace).unwrap_or(u32::MAX)
+    }
+
+    /// The positions of trace `trace`'s spans in a request: its first span (the root) up to the next trace's.
+    pub fn positions(&self, trace: u32) -> std::ops::Range<usize> {
+        let first = |trace: u64| {
+            (trace * u64::from(self.spans_per_request)).div_ceil(u64::from(self.traces_per_request))
+                as usize
+        };
+        let end = first(u64::from(trace) + 1).min(self.spans_per_request as usize);
+        first(u64::from(trace)).min(end)..end
+    }
+
+    /// The sequence number of the span at `position` in request `index`.
+    pub fn seq(&self, index: u64, position: usize) -> u64 {
+        index
+            .saturating_mul(u64::from(self.spans_per_request))
+            .saturating_add(position as u64)
+    }
+}
+
+/// How far after its request's start time the span at `position` starts.
+pub const fn span_offset_nanos(position: usize) -> u64 {
+    position as u64 * CHILD_STAGGER_NANOS
+}
+
 /// Pre-encoded request templates for one run; see the module documentation.
 #[derive(Debug)]
 pub struct Pool {
     config: PoolConfig,
     run_id: Uuid,
-    run_tag: [u8; 8],
+    identity: Identity,
     templates: Vec<Template>,
 }
 
@@ -221,6 +299,9 @@ impl Pool {
     pub fn build(config: PoolConfig, run_id: Uuid) -> Result<Self, PoolError> {
         if config.spans_per_request == 0 || config.spans_per_request > MAX_SPANS_PER_REQUEST {
             return Err(PoolError::SpansPerRequest(config.spans_per_request));
+        }
+        if config.traces_per_request == 0 || config.traces_per_request > config.spans_per_request {
+            return Err(PoolError::TracesPerRequest(config.traces_per_request));
         }
         if config.templates == 0 {
             return Err(PoolError::NoTemplates);
@@ -232,11 +313,10 @@ impl Pool {
         if estimate > MAX_BODY_BYTES {
             return Err(PoolError::TooLarge(estimate));
         }
-        let halves = u128::from_be_bytes(run_id.to_bytes());
         let mut pool = Self {
             config,
             run_id,
-            run_tag: (((halves >> 64) as u64) ^ (halves as u64)).to_be_bytes(),
+            identity: Identity::new(run_id, config.spans_per_request, config.traces_per_request),
             templates: Vec::with_capacity(config.templates),
         };
         let content = ChaChaRng::from_u64(config.seed);
@@ -271,24 +351,44 @@ impl Pool {
         body
     }
 
-    /// The trace id of request `index`.
-    pub fn trace_id(&self, index: u64) -> TraceId {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&self.run_tag);
-        bytes[8..].copy_from_slice(&mix64(index.wrapping_add(1)).to_be_bytes());
-        TraceId::from_bytes(bytes)
+    /// The identity scheme of the pool's run.
+    pub fn identity(&self) -> Identity {
+        self.identity
+    }
+
+    /// The trace id of trace `trace` (from 0) of request `index`.
+    pub fn trace_id(&self, index: u64, trace: u32) -> TraceId {
+        self.identity.trace_id(index, trace)
+    }
+
+    /// The trace, from 0, of the span at `position` in a request.
+    pub fn trace_of(&self, position: usize) -> u32 {
+        self.identity.trace_of(position)
     }
 
     /// The sequence number of the span at `position` in request `index`.
     pub fn seq(&self, index: u64, position: usize) -> u64 {
-        index
-            .saturating_mul(u64::from(self.config.spans_per_request))
-            .saturating_add(position as u64)
+        self.identity.seq(index, position)
     }
 
     /// The span id of the span with sequence number `seq`.
     pub fn span_id(seq: u64) -> SpanId {
         SpanId::from_bytes(mix64(seq.wrapping_add(1)).to_be_bytes())
+    }
+
+    /// The parent that the first span of a trace names in a rootless pool: a span id that no span of the run
+    /// carries.
+    pub fn missing_parent(seq: u64) -> SpanId {
+        SpanId::from_bytes(mix64(!seq).to_be_bytes())
+    }
+
+    /// The parent of the span at `position` of request `index`, whose trace starts at `root`.
+    fn parent(&self, index: u64, position: usize, root: usize) -> SpanId {
+        if position == root {
+            Self::missing_parent(self.seq(index, position))
+        } else {
+            Self::span_id(self.seq(index, root))
+        }
     }
 
     fn template(
@@ -298,32 +398,40 @@ impl Pool {
         marker_rng: &dyn Rng,
     ) -> Result<Template, PoolError> {
         let spans_per_request = self.config.spans_per_request as usize;
-        let root_duration = spans_per_request as u64 * CHILD_STAGGER_NANOS + 60_000_000;
         let mut spans = Vec::with_capacity(spans_per_request);
         let mut markers = Vec::with_capacity(spans_per_request);
-        let mut timing = Vec::with_capacity(spans_per_request);
+        let mut places = Vec::with_capacity(spans_per_request);
+        let mut root = 0;
         for position in 0..spans_per_request {
             let marker = Markers::draw(marker_rng);
-            let (offset, duration) = if position == 0 {
-                (0, root_duration)
+            let trace = self.trace_of(position);
+            let is_root = position == 0 || self.trace_of(position - 1) != trace;
+            if is_root {
+                root = position;
+            }
+            let offset = span_offset_nanos(position);
+            let duration = if is_root {
+                // The root lasts past every span of its trace.
+                let length = (position..spans_per_request)
+                    .take_while(|p| self.trace_of(*p) == trace)
+                    .count();
+                length as u64 * CHILD_STAGGER_NANOS + 60_000_000
             } else {
-                (
-                    position as u64 * CHILD_STAGGER_NANOS,
-                    1_000_000 + content.next_u64() % 49_000_000,
-                )
+                1_000_000 + content.next_u64() % 49_000_000
             };
-            let kind = if position == 0 {
+            let kind = if is_root {
                 SpanKind::Server
             } else {
                 SpanKind::Internal
             };
+            let has_parent = !is_root || self.config.rootless;
             let mut span = Span {
                 trace_id: marker.trace_id.to_vec(),
                 span_id: marker.span_id.to_vec(),
-                parent_span_id: if position == 0 {
-                    Vec::new()
-                } else {
+                parent_span_id: if has_parent {
                     marker.parent_span_id.to_vec()
+                } else {
+                    Vec::new()
                 },
                 name: pick(content, &SPAN_NAMES).to_owned(),
                 kind: kind as i32,
@@ -339,7 +447,7 @@ impl Pool {
             fill_payload(&mut span, self.config.span_size.bytes(), content);
             spans.push(span);
             markers.push(marker);
-            timing.push((offset, duration));
+            places.push((trace, root, has_parent, offset, duration));
         }
         let message = request_message(spans);
         let body = message.encode_to_vec();
@@ -350,8 +458,8 @@ impl Pool {
         // Prost writes a span's fields in tag order, so the markers appear in this order in every span.
         let mut slots = Vec::with_capacity(spans_per_request);
         let mut cursor = 0;
-        for (position, (marker, (offset_nanos, duration_nanos))) in
-            markers.iter().zip(timing).enumerate()
+        for (marker, (trace, root, has_parent, offset_nanos, duration_nanos)) in
+            markers.iter().zip(places)
         {
             let found = |from: usize, needle: &[u8], field: &'static str| {
                 find(&body, from, needle).ok_or(PoolError::SlotNotFound {
@@ -362,12 +470,12 @@ impl Pool {
             let trace_id = found(cursor, &marker.trace_id, "trace_id")?;
             let span_id = found(trace_id + 16, &marker.span_id, "span_id")?;
             let mut next = span_id + 8;
-            let parent_span_id = if position == 0 {
-                None
-            } else {
+            let parent_span_id = if has_parent {
                 let at = found(next, &marker.parent_span_id, "parent_span_id")?;
                 next = at + 8;
                 Some(at)
+            } else {
+                None
             };
             let start = found(next, &marker.start, "start_time_unix_nano")?;
             let end = found(start + 8, &marker.end, "end_time_unix_nano")?;
@@ -380,6 +488,8 @@ impl Pool {
                 start,
                 end,
                 seq,
+                trace,
+                root,
                 offset_nanos,
                 duration_nanos,
             });
@@ -397,14 +507,17 @@ impl Pool {
 
     /// Overwrites the patched fields of a template body for request `index`.
     fn patch(&self, body: &mut [u8], slots: &[Slots], index: u64, start_unix_nanos: u64) {
-        let trace_id = self.trace_id(index);
-        let root = Self::span_id(self.seq(index, 0));
+        let mut trace = (u32::MAX, TraceId::from_bytes([0; 16]));
         for (position, slot) in slots.iter().enumerate() {
             let seq = self.seq(index, position);
-            body[slot.trace_id..slot.trace_id + 16].copy_from_slice(trace_id.as_bytes());
+            if trace.0 != slot.trace {
+                trace = (slot.trace, self.trace_id(index, slot.trace));
+            }
+            body[slot.trace_id..slot.trace_id + 16].copy_from_slice(trace.1.as_bytes());
             body[slot.span_id..slot.span_id + 8].copy_from_slice(Self::span_id(seq).as_bytes());
             if let Some(at) = slot.parent_span_id {
-                body[at..at + 8].copy_from_slice(root.as_bytes());
+                let parent = self.parent(index, position, slot.root);
+                body[at..at + 8].copy_from_slice(parent.as_bytes());
             }
             let start = start_unix_nanos.saturating_add(slot.offset_nanos);
             body[slot.start..slot.start + 8].copy_from_slice(&start.to_le_bytes());
@@ -422,8 +535,6 @@ impl Pool {
         index: u64,
         start_unix_nanos: u64,
     ) -> ExportTraceServiceRequest {
-        let trace_id = self.trace_id(index);
-        let root = Self::span_id(self.seq(index, 0));
         let spans = message
             .resource_spans
             .iter_mut()
@@ -431,10 +542,10 @@ impl Pool {
             .flat_map(|s| s.spans.iter_mut());
         for (position, (span, slot)) in spans.zip(slots).enumerate() {
             let seq = self.seq(index, position);
-            span.trace_id = trace_id.as_bytes().to_vec();
+            span.trace_id = self.trace_id(index, slot.trace).as_bytes().to_vec();
             span.span_id = Self::span_id(seq).as_bytes().to_vec();
-            if position > 0 {
-                span.parent_span_id = root.as_bytes().to_vec();
+            if !span.parent_span_id.is_empty() {
+                span.parent_span_id = self.parent(index, position, slot.root).as_bytes().to_vec();
             }
             span.start_time_unix_nano = start_unix_nanos.saturating_add(slot.offset_nanos);
             span.end_time_unix_nano = span
@@ -547,6 +658,8 @@ mod tests {
         PoolConfig {
             span_size,
             spans_per_request,
+            traces_per_request: 1,
+            rootless: false,
             templates,
             seed,
         }
@@ -610,7 +723,7 @@ mod tests {
     #[test]
     fn trace_ids_never_repeat_within_a_run() {
         let pool = Pool::build(config(SpanSize::Kib1, 1, 1, 1), RUN).unwrap();
-        let ids: BTreeSet<_> = (0..100_000u64).map(|i| pool.trace_id(i)).collect();
+        let ids: BTreeSet<_> = (0..100_000u64).map(|i| pool.trace_id(i, 0)).collect();
         assert_eq!(ids.len(), 100_000);
         let span_ids: BTreeSet<_> = (0..100_000u64).map(Pool::span_id).collect();
         assert_eq!(span_ids.len(), 100_000);
@@ -636,6 +749,27 @@ mod tests {
             build(7_000, 1, SpanSize::Kib10).unwrap_err(),
             PoolError::TooLarge(_)
         ));
+    }
+
+    #[test]
+    fn traces_per_request_must_fit_the_spans() {
+        let build = |spans, traces| {
+            let config = PoolConfig {
+                traces_per_request: traces,
+                ..config(SpanSize::Kib1, spans, 1, 1)
+            };
+            Pool::build(config, RUN)
+        };
+        assert_eq!(build(4, 0).unwrap_err(), PoolError::TracesPerRequest(0));
+        assert_eq!(build(4, 5).unwrap_err(), PoolError::TracesPerRequest(5));
+        assert!(build(4, 4).is_ok() && build(1, 1).is_ok());
+        // Every (request, trace) pair of a run gets its own trace id.
+        let pool = build(9, 3).unwrap();
+        let ids: BTreeSet<_> = (0..10_000u64)
+            .flat_map(|index| (0..3).map(move |trace| (index, trace)))
+            .map(|(index, trace)| pool.trace_id(index, trace))
+            .collect();
+        assert_eq!(ids.len(), 30_000);
     }
 
     #[test]
@@ -674,7 +808,7 @@ mod tests {
             let root = Pool::span_id(pool.seq(index, 0));
             for (position, span) in decoded.iter().enumerate() {
                 let seq = index * u64::from(spans_per_request) + position as u64;
-                prop_assert_eq!(&span.trace_id, &pool.trace_id(index).as_bytes().to_vec());
+                prop_assert_eq!(&span.trace_id, &pool.trace_id(index, 0).as_bytes().to_vec());
                 prop_assert_eq!(&span.span_id, &Pool::span_id(seq).as_bytes().to_vec());
                 let parent = if position == 0 { Vec::new() } else { root.as_bytes().to_vec() };
                 prop_assert_eq!(&span.parent_span_id, &parent);
@@ -685,12 +819,81 @@ mod tests {
             }
         }
 
+        /// A request of any shape decodes to `traces_per_request` traces of consecutive spans whose lengths differ
+        /// by at most one. Each trace's first span is its root, or with `rootless` names a parent that no span of
+        /// the request carries; every other span's parent is its trace's first span.
+        #[test]
+        fn patched_requests_follow_their_shape(
+            seed: u64,
+            (spans_per_request, traces) in (1u32..12).prop_flat_map(|s| (Just(s), 1..=s)),
+            rootless: bool,
+            index in 0u64..1_000_000_000,
+        ) {
+            let config = PoolConfig {
+                traces_per_request: traces,
+                rootless,
+                ..config(SpanSize::Kib1, spans_per_request, 2, seed)
+            };
+            let pool = Pool::build(config, RUN).unwrap();
+            let decoded = spans(&pool.request(index, CHECK_NANOS));
+            prop_assert_eq!(decoded.len(), spans_per_request as usize);
+            let ids: BTreeSet<&Vec<u8>> = decoded.iter().map(|span| &span.span_id).collect();
+            let mut lengths = std::collections::BTreeMap::new();
+            for (position, span) in decoded.iter().enumerate() {
+                let trace = pool.trace_of(position);
+                *lengths.entry(trace).or_insert(0usize) += 1;
+                prop_assert_eq!(&span.trace_id, &pool.trace_id(index, trace).as_bytes().to_vec());
+                let first = (0..=position).find(|p| pool.trace_of(*p) == trace).unwrap();
+                if position != first {
+                    let root = Pool::span_id(pool.seq(index, first));
+                    prop_assert_eq!(&span.parent_span_id, &root.as_bytes().to_vec());
+                } else if rootless {
+                    let missing = Pool::missing_parent(pool.seq(index, position));
+                    prop_assert_eq!(&span.parent_span_id, &missing.as_bytes().to_vec());
+                    prop_assert!(!ids.contains(&span.parent_span_id));
+                } else {
+                    prop_assert!(span.parent_span_id.is_empty());
+                }
+            }
+            prop_assert_eq!(lengths.len(), traces as usize);
+            let longest = lengths.values().max().copied().unwrap_or(0);
+            let shortest = lengths.values().min().copied().unwrap_or(0);
+            prop_assert!(longest - shortest <= 1);
+        }
+
+        /// The positions of a trace are exactly the positions `trace_of` assigns to it, and every position
+        /// belongs to one trace.
+        #[test]
+        fn trace_positions_invert_trace_of(
+            (spans, traces) in (1u32..300).prop_flat_map(|s| (Just(s), 1..=s)),
+        ) {
+            let identity = Identity::new(RUN, spans, traces);
+            let mut covered = 0;
+            for trace in 0..traces {
+                let positions = identity.positions(trace);
+                prop_assert!(!positions.is_empty());
+                prop_assert_eq!(positions.start, covered);
+                for position in positions.clone() {
+                    prop_assert_eq!(identity.trace_of(position), trace);
+                }
+                covered = positions.end;
+            }
+            prop_assert_eq!(covered, spans as usize);
+        }
+
+        /// A missing parent never names a span of a run: sequence numbers stay below 2^48.
+        #[test]
+        fn missing_parents_name_no_span(a in 0u64..1 << 48, b in 0u64..1 << 48) {
+            prop_assert_ne!(Pool::missing_parent(a), Pool::span_id(b));
+            prop_assert!(!Pool::missing_parent(a).is_zero());
+        }
+
         #[test]
         fn distinct_requests_get_distinct_trace_ids(a: u64, b: u64) {
             prop_assume!(a != b && a != u64::MAX && b != u64::MAX);
             let pool = Pool::build(config(SpanSize::Kib1, 1, 1, 1), RUN).unwrap();
-            prop_assert_ne!(pool.trace_id(a), pool.trace_id(b));
-            prop_assert!(!pool.trace_id(a).is_zero());
+            prop_assert_ne!(pool.trace_id(a, 0), pool.trace_id(b, 0));
+            prop_assert!(!pool.trace_id(a, 0).is_zero());
         }
     }
 }

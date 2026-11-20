@@ -187,6 +187,21 @@ sends, so the 10 KiB gzip burst numbers above measure the client, not Crucible. 
 accurate at the gate rate, and its 10 KiB plain lane with 100 spans per request spends about half the latency
 budget itself at 30,400 spans/s.
 
+**Re-run on 2026-11-19 with the generator that compresses off its runtime's workers** (on 2 blocking threads, its
+runtime on the other 2 of the client's 4 vCPUs), against the generator of `main` at that time, 10 KiB gzip spans,
+100 per request, 15 s each, with `tools/perf/baseline.sh stub`, on a laptop, not reference hardware, with other
+jobs on the machine. `main`'s generator ran twice at each rate:
+
+| Generator | Spans/s | Send lag p50 / p99 / p99.9 ms | Latency p50 / p99 / p99.9 ms |
+|---|---|---|---|
+| `main`, gzip on the runtime's workers | 25,600 | 0.47 / 98.7 / 138.2 (second run: p99 73.7) | 3.7 / 165.0 / 272.9 |
+| `main`, gzip on the runtime's workers | 16,300 | 0.01 / 74.1 / 208.8 (second run: p99 26.7) | 2.6 / 108.0 / 232.2 |
+| gzip on 2 blocking threads | 25,600 | 0.008 / 0.060 / 24.4 | 2.3 / 3.5 / 28.8 |
+| gzip on 2 blocking threads | 16,300 | 0.008 / 0.058 / 31.0 | 2.4 / 3.6 / 44.7 |
+
+Send lag p99 fell below 0.1 ms at both rates. The generator spent about 5.3 ms of CPU per request, against 4.1 to
+4.3 ms before, the cost of handing bodies to the blocking threads.
+
 ### Sustained, 1 KiB spans
 
 | Run | Seconds | Spans/s | Freshness p50 / p95 / p99 s | Last 30 s p95 s | Ack p50 / p99 ms | Shipper busy | ClickHouse cores | Load (1 min) after | Verdict |
@@ -288,8 +303,9 @@ keeps up by definition and shows idle time.
 - Sustained 1 KiB: no rate is confirmed. The next step was three 120 s runs at 57,600 spans/s, then 10% lower until
   three pass, preferably with no other jobs on the machine.
 - Sustained 10 KiB: not run. The search was to start at 8,000 spans/s.
-- Burst 10 KiB gzip with 100 spans per request needs a client that gzips off its runtime's workers or has more
-  vCPUs; only the 10-span gate runs measure Crucible in that lane.
+- Burst 10 KiB gzip with 100 spans per request: the generator now gzips off its runtime's workers and stays
+  accurate at 25,600 spans/s (above), but the burst searches of that lane are still to repeat; only the 10-span
+  gate runs measure Crucible in it.
 - Burst searches for 10 KiB spans with 10 spans per request: only the gate runs were done.
 - The companion branch `feat/shipper-phase-metrics` (the three metrics above, a directed simulation test, and an
   assertion in the group-commit test) passed `cargo fmt`, `cargo clippy --workspace --all-targets` and the tests of

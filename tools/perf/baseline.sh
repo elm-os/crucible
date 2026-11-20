@@ -13,12 +13,15 @@
 #   tools/perf/baseline.sh burst <1k|10k> <plain|gzip> <start spans/s> [searches]
 #   tools/perf/baseline.sh gate <1k|10k> <plain|gzip> <spans/s> [runs]
 #   tools/perf/baseline.sh sustained <1k|10k> <start spans/s> [confirmations]
+#   tools/perf/baseline.sh stub <1k|10k> <plain|gzip> <spans/s> [seconds]
+#                                                      the load generator alone, against its stub server
 #   tools/perf/baseline.sh summarize                   results.json and results.md from every run
 #   tools/perf/baseline.sh down                        stop and remove what this script started
 #
 # Inputs: release builds of `crucible` and `crucible-loadgen` in the cargo target volume $TARGET_VOLUME, each
 # built on its own (`cargo build --locked -p crucible --release`, then `-p crucible-loadgen`), and the images
-# $IMAGE and $CH_IMAGE.
+# $IMAGE and $CH_IMAGE. `stub` needs the stub server instead of `crucible` (`cargo build --locked --release
+# -p crucible-loadgen --example stub_server`).
 set -euo pipefail
 # Git Bash on Windows: pass container paths through unchanged.
 export MSYS_NO_PATHCONV=1
@@ -45,6 +48,16 @@ CLIENT_MEM=${CLIENT_MEM:-1g}
 # RECENT_MAX_BYTES to bound it by hand instead.
 RECENT_MAX_BYTES=${RECENT_MAX_BYTES:-}
 SPANS_PER_REQUEST=${SPANS_PER_REQUEST:-100}
+# The request shape: traces per request, and ROOTLESS=1 for traces whose first span names a missing parent.
+TRACES_PER_REQUEST=${TRACES_PER_REQUEST:-1}
+ROOTLESS=${ROOTLESS:-}
+# The generator's runtime threads and, in the gzip lanes, compression threads; empty keeps its defaults (half the
+# client's CPUs compress, the rest run the runtime).
+CLIENT_THREADS=${CLIENT_THREADS:-}
+GZIP_THREADS=${GZIP_THREADS:-}
+TARGET=${TARGET:-perf-crucible:4318}
+# The stub server needs only the C library of the image that built it.
+STUB_IMAGE=${STUB_IMAGE:-debian:bookworm-slim}
 # The connection cap is at least CONCURRENCY and holds 100 ms of arrivals, so that it binds only after a stall
 # far longer than the 20 ms latency limit: below that the generator stays open loop.
 CONCURRENCY=${CONCURRENCY:-128}
@@ -139,7 +152,7 @@ up() {
 
 down() {
   save_crucible_log
-  docker rm -f perf-clickhouse perf-client >/dev/null 2>&1 || true
+  docker rm -f perf-clickhouse perf-client perf-stub >/dev/null 2>&1 || true
   docker volume rm -f "$WAL" "$CHDATA" "$BIN" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   log "rig down"
@@ -181,9 +194,13 @@ loadgen() {
   local dir; dir=$(rel "$1")
   local gzip="" connections=$(( $3 / 10 > CONCURRENCY ? $3 / 10 : CONCURRENCY ))
   [ "$6" = gzip ] && gzip=--gzip
+  if [ "$6" = gzip ] && [ -n "$GZIP_THREADS" ]; then gzip+=" --gzip-threads $GZIP_THREADS"; fi
+  if [ -n "$CLIENT_THREADS" ]; then gzip+=" --threads $CLIENT_THREADS"; fi
+  if [ -n "$ROOTLESS" ]; then gzip+=" --rootless"; fi
+  if [ "$TRACES_PER_REQUEST" -ne 1 ]; then gzip+=" --traces-per-request $TRACES_PER_REQUEST"; fi
   docker exec -e "SECRET=$(tr -d '\n' < "$OUT/rig/secret")" perf-client sh -c "
     date +%s%N > /out/$dir/$2-start.ns
-    /opt/crucible/crucible-loadgen run --target perf-crucible:4318 --rate $3 --duration-secs $4 --span-size $5 \
+    /opt/crucible/crucible-loadgen run --target $TARGET --rate $3 --duration-secs $4 --span-size $5 \
       --spans-per-request $SPANS_PER_REQUEST --concurrency $connections $gzip \
       --header \"Authorization: Bearer \$SECRET\" --out /out/$dir/$2.json
     rc=\$?
@@ -233,8 +250,43 @@ search() {  # step-function size encoding start dir
   SEARCH_LO=$lo
 }
 
-# The request shape, in result directory names when it is not the default of 100 spans per request.
-shape() { [ "$SPANS_PER_REQUEST" -eq 100 ] || echo "-spr$SPANS_PER_REQUEST"; }
+# The request shape, in result directory names when it is not the default of 100 spans in one rooted trace.
+shape() {
+  local out=""
+  [ "$SPANS_PER_REQUEST" -eq 100 ] || out+="-spr$SPANS_PER_REQUEST"
+  [ "$TRACES_PER_REQUEST" -eq 1 ] || out+="-tpr$TRACES_PER_REQUEST"
+  [ -z "$ROOTLESS" ] || out+="-rootless"
+  echo "$out"
+}
+
+# The generator alone against its stub server, which runs on Crucible's cpuset, inflates and decodes every body and
+# answers 200 at once: how accurately the client sends a lane (send lag), with no Crucible in the way.
+stub() {  # size encoding spans/s [seconds]
+  local rps=$(( $3 / SPANS_PER_REQUEST )) dir
+  dir="$OUT/runs/stub-$1-$2$(shape)/rate-$3"
+  [ -d "$dir" ] && dir="$dir-$(date -u +%H%M%S)"
+  mkdir -p "$dir"
+  docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
+  docker volume create "$BIN" >/dev/null
+  docker run --rm -v "$TARGET_VOLUME:/target:ro" -v "$BIN:/bin-out" "$IMAGE" sh -c \
+    'cp /target/release/crucible-loadgen /target/release/examples/stub_server /bin-out/'
+  docker inspect perf-client >/dev/null 2>&1 || start_client
+  [ -f "$OUT/rig/keys.toml" ] || py keys
+  docker rm -f perf-stub >/dev/null 2>&1 || true
+  docker run -d --name perf-stub --network "$NET" --cpuset-cpus "$CRUCIBLE_CPUS" --cpus "$(cpus "$CRUCIBLE_CPUS")" \
+    --memory "$CRUCIBLE_MEM" -v "$BIN:/opt/crucible:ro" "$STUB_IMAGE" \
+    /opt/crucible/stub_server --listen 0.0.0.0:4318 >/dev/null
+  for _ in $(seq 1 30); do
+    if docker exec perf-client curl -sf -X POST -o /dev/null http://perf-stub:4318/v1/traces; then break; fi
+    sleep 1
+  done
+  docker stats --no-stream --format '{{json .}}' > "$dir/before-docker-stats.jsonl" 2>&1 || true
+  docker exec perf-client cat /proc/loadavg > "$dir/before-loadavg.txt"
+  TARGET=perf-stub:4318 loadgen "$dir" loadgen "$rps" "${4:-$BURST_SECS}" "$1" "$2" || true
+  docker exec perf-client cat /proc/loadavg > "$dir/after-loadavg.txt"
+  docker rm -f perf-stub >/dev/null
+  log "stub $1 $2 $3 spans/s: $(docker exec perf-client jq -r '"send lag p50/p99/max \(.send_lag_us.p50)/\(.send_lag_us.p99)/\(.send_lag_us.max) us, latency p99 \(.latency_us.p99) us, \(.outcome.acked) of \(.schedule.requests) acked"' "/out/$(rel "$dir")/loadgen.json")"
+}
 
 burst() {  # size encoding start [searches]
   local start=$3
@@ -330,8 +382,9 @@ case "$command" in
   sustained) sustained "$@" ;;
   sustained-step) sustained_step "$1" "$2" "$3" "$OUT/runs/manual" "${4:-$SUSTAIN_SECS}" ;;
   burst-step) burst_step "$1" "$2" "$3" "$OUT/runs/manual" ;;
+  stub) stub "$@" ;;
   start-crucible) start_crucible "$1" ;;
   summarize) py summarize ;;
   down) down ;;
-  *) sed -n '2,21p' "$0"; exit 2 ;;
+  *) sed -n '2,25p' "$0"; exit 2 ;;
 esac
