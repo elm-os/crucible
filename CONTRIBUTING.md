@@ -221,3 +221,8 @@ Open the pull request against `main` and say in its body what changed and how it
 ran and what they showed. The required checks are `policy`, `linux`, `windows`, `ui`, `bans`, `kani` and `drift`.
 The `swarm` simulation jobs run on every pull request, and the SDK, conformance, SQL isolation, end-to-end, image
 and proxy workflows run when the files they cover change. Pull requests are squash-merged once every check passes.
+
+## Releasing
+
+A release is a version bump and an annotated tag on `main`; the tag builds the binaries, the installers and the
+image. [docs/releasing.md](docs/releasing.md) has the steps and the checks after the tag.

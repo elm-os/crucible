@@ -29,7 +29,7 @@ const BUDGET: (u64, u64) = (200, 3);
 const SMOKE_CONFIGS: u64 = 40;
 
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports.
-const MUTANTS: [(Mutant, u64, &str); 18] = [
+const MUTANTS: [(Mutant, u64, &str); 19] = [
     (Mutant::SkipWalSync, 0, "I3"),
     (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 0, "liveness"),
@@ -48,6 +48,7 @@ const MUTANTS: [(Mutant, u64, &str); 18] = [
     (Mutant::SkipTombstoneFilter, 2, "I9"),
     (Mutant::IgnoreTombstoneIssuer, 6000, "I9"),
     (Mutant::SeedOnlyOpenRequests, 2, "I9"),
+    (Mutant::SkipFlagReliance, 15_000, "I2"),
 ];
 
 fn replay(outcome: &Outcome) -> String {
