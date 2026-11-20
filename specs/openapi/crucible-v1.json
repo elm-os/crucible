@@ -3674,7 +3674,7 @@
           "facts"
         ],
         "summary": "Record feedback",
-        "description": "Writes a score with `source = feedback` about a trace, a span or a session. A score with the same name\n(and `score_id`) replaces the earlier one; `retracted: true` removes it.",
+        "description": "Writes a score with `source = feedback` about a trace, a span or a session. A score with the same name\n(and `score_id`) replaces the earlier one; `retracted: true` removes it. This route alone also accepts the\nproject's public key as Bearer, with a body of at most 16 KiB, and answers cross-origin requests without\ncredentials, so a web page can send feedback.",
         "operationId": "post_feedback",
         "parameters": [
           {

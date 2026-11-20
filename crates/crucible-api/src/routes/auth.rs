@@ -1,8 +1,10 @@
 //! Sign-in, sessions and the user's own account (contracts 11.4, 11.5, 12.6 and 12.7).
 
-use axum::extract::{Path, Query, State};
+use std::collections::BTreeMap;
+
+use axum::extract::{Query, State};
 use axum::http::header::{COOKIE, LOCATION};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -13,10 +15,9 @@ use crucible_auth::service::{
     CallbackQuery, FLOW_TTL, FlowFailure, Identity, NewSession, SESSION_ABSOLUTE,
 };
 use crucible_records::Uuid;
-use serde::Deserialize;
 use utoipa::{IntoParams, OpenApi};
 
-use crate::access::{ApiState, Prelogin, Public, Signed};
+use crate::access::{ApiState, PathParams, Prelogin, Public, Signed};
 use crate::control::{ApiJson, auth, session_info, set_cookies};
 use crate::problem::ApiError;
 
@@ -63,7 +64,7 @@ async fn signed_in(
     rid: crucible_records::RequestId,
     new: NewSession,
 ) -> Result<Response, ApiError> {
-    let info = session_info(identity, &new.principal, state.sql.as_ref())
+    let info = session_info(identity, &new.principal, state)
         .await
         .map_err(auth(rid))?;
     let cookies = identity.config().cookies();
@@ -180,18 +181,40 @@ pub(crate) async fn get_session(
     State(state): State<ApiState>,
     signed: Signed,
 ) -> Result<Json<SessionInfo>, ApiError> {
-    let info = session_info(&signed.identity, &signed.principal, state.sql.as_ref())
+    let info = session_info(&signed.identity, &signed.principal, &state)
         .await
         .map_err(auth(signed.request_id))?;
     Ok(Json(info))
 }
 
 /// The query of a sign-in start.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct StartQuery {
     /// Where to go after sign-in: a path on this server.
     next: Option<String>,
+}
+
+impl StartQuery {
+    fn of(uri: &Uri) -> Self {
+        let mut query = first_values(uri);
+        Self {
+            next: query.remove("next"),
+        }
+    }
+}
+
+/// The first value of each query parameter of a sign-in redirect. Providers add parameters of their own and a
+/// parameter may repeat, so the query string never refuses a sign-in: what it lacks fails the flow instead, which
+/// redirects to the sign-in page with the reason.
+fn first_values(uri: &Uri) -> BTreeMap<String, String> {
+    let pairs = Query::<Vec<(String, String)>>::try_from_uri(uri)
+        .map_or_else(|_| Vec::new(), |Query(pairs)| pairs);
+    let mut first = BTreeMap::new();
+    for (name, value) in pairs {
+        first.entry(name).or_insert(value);
+    }
+    first
 }
 
 fn redirect(location: &str, cookies: &[String]) -> Response {
@@ -227,13 +250,10 @@ fn provider_id(text: &str) -> Result<Uuid, FlowFailure> {
     responses((status = 303, description = "To the provider, or to `/login/?error=<code>`.")),
     security(()),
 )]
-pub(crate) async fn oauth_start(
-    public: Public,
-    Path(id): Path<String>,
-    Query(query): Query<StartQuery>,
-) -> Response {
+pub(crate) async fn oauth_start(public: Public, path: PathParams, uri: Uri) -> Response {
     let identity = &public.identity;
-    let started = match provider_id(&id) {
+    let query = StartQuery::of(&uri);
+    let started = match provider_id(path.text("provider_id")) {
         Ok(id) => identity.start_flow(id, query.next.as_deref()).await,
         Err(failure) => Err(failure),
     };
@@ -250,7 +270,7 @@ pub(crate) async fn oauth_start(
 }
 
 /// The query of a provider callback.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct CallbackParams {
     /// The authorization code.
@@ -259,6 +279,17 @@ pub(crate) struct CallbackParams {
     state: Option<String>,
     /// The provider's error.
     error: Option<String>,
+}
+
+impl CallbackParams {
+    fn of(uri: &Uri) -> Self {
+        let mut query = first_values(uri);
+        Self {
+            code: query.remove("code"),
+            state: query.remove("state"),
+            error: query.remove("error"),
+        }
+    }
 }
 
 /// Finish a provider sign-in
@@ -276,11 +307,12 @@ pub(crate) struct CallbackParams {
 )]
 pub(crate) async fn oauth_callback(
     public: Public,
-    Path(id): Path<String>,
-    Query(params): Query<CallbackParams>,
+    path: PathParams,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Response {
     let identity = &public.identity;
+    let params = CallbackParams::of(&uri);
     let cookies = identity.config().cookies();
     let flow_cookie = cookie::find(
         headers
@@ -294,7 +326,7 @@ pub(crate) async fn oauth_callback(
         state: params.state,
         error: params.error,
     };
-    let finished = match provider_id(&id) {
+    let finished = match provider_id(path.text("provider_id")) {
         Ok(id) => identity.finish_flow(id, &query, flow_cookie).await,
         Err(failure) => Err(failure),
     };

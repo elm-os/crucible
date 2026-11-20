@@ -927,7 +927,7 @@ fn default_recent_max_bytes(memory: Option<Memory>) -> u64 {
 }
 
 /// One memory budget of the node: its setting, its size, and the flag and variable that change it (`None` for a
-/// budget that has no setting yet).
+/// budget whose size is fixed in the build).
 #[derive(Clone, Copy, Debug)]
 struct Budget {
     setting: &'static str,
@@ -987,8 +987,13 @@ fn budget_warning(memory: Memory, budgets: &[Budget]) -> Option<String> {
     }
     if !fixed.is_empty() {
         let names: Vec<&str> = fixed.iter().map(|budget| budget.setting).collect();
-        let verb = if fixed.len() > 1 { "have" } else { "has" };
-        advice.push_str(&format!("; {} {verb} no setting yet", names.join(" and ")));
+        let sizes: Vec<String> = fixed.iter().map(|budget| mib(budget.bytes)).collect();
+        let verb = if fixed.len() > 1 { "are" } else { "is" };
+        advice.push_str(&format!(
+            "; {} {verb} fixed at {} in this build",
+            names.join(" and "),
+            sizes.join(" and "),
+        ));
     }
     Some(format!(
         "the memory budgets add up to {}, more than {BUDGET_SHARE_PERCENT}% of the {} this process may use \
@@ -1647,7 +1652,7 @@ mod tests {
              container's memory limit): recent.max_bytes 180 MiB, ingest.inflight_bytes 512 MiB, \
              shipper.encoded_bytes 1024 MiB. Give the process at least 1906 MiB of memory, or lower \
              recent.max_bytes (--recent-max-bytes or CRUCIBLE_RECENT_MAX_BYTES) to at most 76 MiB; \
-             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
+             ingest.inflight_bytes and shipper.encoded_bytes are fixed at 512 MiB and 1024 MiB in this build"
         );
         assert_eq!(budget_warning(roomy, &budgets(76 << 20)), None);
         assert!(budget_warning(Memory::Container(1906 << 20), &budgets(187_904_819)).is_none());
@@ -1661,7 +1666,7 @@ mod tests {
             "the memory budgets add up to 1690 MiB, more than 90% of the 1536 MiB this process may use (the \
              container's memory limit): recent.max_bytes 154 MiB, ingest.inflight_bytes 512 MiB, \
              shipper.encoded_bytes 1024 MiB. Give the process at least 1878 MiB of memory; \
-             ingest.inflight_bytes and shipper.encoded_bytes have no setting yet"
+             ingest.inflight_bytes and shipper.encoded_bytes are fixed at 512 MiB and 1024 MiB in this build"
         );
         assert!(budget_warning(limited, &budgets(0)).is_some());
         // Without a telemetry store only ingest holds a budget.
@@ -1670,7 +1675,8 @@ mod tests {
             budget_warning(Memory::Host(512 << 20), &ingest_only)
                 .unwrap()
                 .ends_with(
-                    "Give the process at least 569 MiB of memory; ingest.inflight_bytes has no setting yet"
+                    "Give the process at least 569 MiB of memory; ingest.inflight_bytes is fixed at 512 MiB in \
+                     this build"
                 )
         );
     }
@@ -1796,6 +1802,134 @@ mod tests {
         let (_, headers, _) = http_get(env, addr, "/healthz").await;
         assert!(header(&headers, "x-request-id").is_some());
 
+        shut_down(&prod, servers).await;
+    }
+
+    /// Identity over an empty `PgModel` with a first owner and the project [`PROJECT`]; the owner's session token.
+    async fn test_identity(env: &Env) -> (Arc<Identity>, String) {
+        use crucible_auth::csrf::Origins;
+        use crucible_auth::password::HashCost;
+        use crucible_auth::service::IdentityConfig;
+        use crucible_auth::{LookupKey, OutageMode};
+        use crucible_control::{JsonDoc, Project, Repos as _};
+        use crucible_sim::pg_model::{PgFaults, PgModel};
+
+        let model = PgModel::new(
+            Arc::clone(&env.clock),
+            env.rng.fork("pg").as_ref(),
+            PgFaults::default(),
+        );
+        let lookup = LookupKey::new([1; 32]);
+        let keys = Arc::new(DbKeys::new(env, lookup.clone(), OutageMode::default()));
+        keys.load(&model.key_feed().snapshot().await.unwrap());
+        let mut config = IdentityConfig::new(Origins::default(), None);
+        config.hash_cost = HashCost {
+            memory_kib: 64,
+            iterations: 1,
+            lanes: 1,
+        };
+        let identity = Identity::new(
+            env,
+            Arc::new(model.clone()),
+            Sealer::new("master-0", [2; 32]),
+            lookup,
+            keys,
+            config,
+        )
+        .unwrap();
+        let link = identity.issue_setup_token().await.unwrap().unwrap();
+        let owner = identity
+            .setup(
+                link.token.as_str(),
+                "Acme",
+                "owner@example.com",
+                "Olivia",
+                "correct horse battery",
+            )
+            .await
+            .unwrap();
+        model
+            .projects()
+            .insert(&Project {
+                id: ProjectId::parse(PROJECT).unwrap(),
+                name: "One".to_owned(),
+                slug: "one".to_owned(),
+                settings: JsonDoc::empty(),
+                retention_days: None,
+                payload_retention_days: None,
+                mcp_content_retention_days: None,
+                config_version: 1,
+                version: 1,
+                deleted_at: None,
+            })
+            .await
+            .unwrap();
+        identity.forget_sessions();
+        (Arc::new(identity), owner.token.as_str().to_owned())
+    }
+
+    /// The main listener hands `/api/v1` requests to the API router through its own wildcard route, and a handler
+    /// still sees exactly its route's path parameters: `GET /api/v1/projects/{project_id}` with a session is the
+    /// project, and a provider sign-in with an unknown provider redirects to the sign-in page. Both once answered
+    /// 500 with axum's text, because the wildcard's parameter reached the handlers too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn routes_with_path_parameters_answer_through_the_main_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let prod = prod_with(data_roots(dir.path()));
+        let env = &prod.env;
+        let (identity, token) = test_identity(env).await;
+        let cursors = Arc::new(crate::cursor_keys::random(env).unwrap());
+        let config = WalConfig {
+            segment_bytes: 1 << 20,
+            ..WalConfig::default()
+        };
+        let (app, _) = open_app(
+            env,
+            no_keys(env),
+            cursors,
+            config,
+            Some(identity),
+            None,
+            crucible_api::Modules::default(),
+            None,
+            test_ingest(),
+        )
+        .await
+        .unwrap();
+        let ui = Arc::new(Catalog::default());
+        let servers = start(env, Arc::clone(&prod.recorder), ui, LISTEN, app)
+            .await
+            .unwrap();
+        let addr = servers.addrs.api;
+        let cookie = format!("crucible_session={token}");
+        let (status, headers, body) = http(
+            env,
+            addr,
+            "GET",
+            &format!("/api/v1/projects/{PROJECT}"),
+            &[("cookie", &cookie)],
+        )
+        .await;
+        assert_eq!(
+            status,
+            "HTTP/1.1 200 OK",
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let project: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(project["id"], PROJECT);
+        assert_eq!(header(&headers, "etag"), Some("\"1\""));
+        let (status, headers, _) = http_get(
+            env,
+            addr,
+            "/api/v1/auth/oauth/05050505-0505-0505-0505-050505050505/start",
+        )
+        .await;
+        assert_eq!(status, "HTTP/1.1 303 See Other");
+        assert_eq!(
+            header(&headers, "location"),
+            Some("/login/?error=provider_disabled")
+        );
         shut_down(&prod, servers).await;
     }
 

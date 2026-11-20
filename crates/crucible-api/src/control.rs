@@ -300,14 +300,14 @@ pub(crate) fn api_key(key: &control::ApiKey) -> wire::ApiKey {
     }
 }
 
-/// The session DTO (contract 12.7).
+/// The session DTO (contract 12.7), with the features of this server's modules in `state`.
 pub(crate) async fn session_info(
     identity: &Identity,
     principal: &SessionPrincipal,
-    sql: Option<&SqlWorkspace>,
+    state: &ApiState,
 ) -> Result<wire::SessionInfo, AuthError> {
     // The reasons are those of `GET sql/schema`: `not_configured`, or what the self-probe said.
-    let sql_workspace = match sql.map(SqlWorkspace::status) {
+    let sql_workspace = match state.sql.as_ref().map(SqlWorkspace::status) {
         Some(status) => wire::FeatureState {
             enabled: status.enabled,
             reason: status.reason.map(str::to_owned),
@@ -360,7 +360,11 @@ pub(crate) async fn session_info(
                 enabled: false,
                 max_bytes: 0,
             },
-            smtp: false,
+            // Email channels deliver through the mail server of `smtp.*`, which alerting holds.
+            smtp: state
+                .alerts
+                .as_ref()
+                .is_some_and(|alerts| alerts.channels.sends_email()),
             signup_mode: principal.org.settings.signup_mode.as_str().to_owned(),
         },
         server: wire::ServerInfo {

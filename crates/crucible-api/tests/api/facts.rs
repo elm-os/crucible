@@ -4,12 +4,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use crucible_api::{AcceptedFact, FactAppend, FactAuthor, FactRefusal, FactWriter, NewFact};
 use crucible_plan::Value;
 use crucible_records::{FactBody, FactId, ProjectScope, TableId, Uuid};
 use serde_json::json;
 
+use crate::identity::{As, call, platform_with};
 use crate::store::stored_row;
 use crate::world::{NOW, World, span, trace};
 use crate::{api, api_writing, get, path, post, run};
@@ -206,6 +207,107 @@ fn facts_are_written_and_read_back() {
         );
         let detail = get(&api, &path(1, &format!("/traces/{t}"))).await;
         assert_eq!(detail.body["facts"]["tags"], json!([]));
+    });
+}
+
+/// A project's public key as Bearer writes feedback and nothing else (contracts 11.3 and 12.2). The feedback route
+/// answers cross-origin requests without credentials and takes at most 16 KiB from a public key; every other route
+/// refuses the public key with 401 and says which key to send, and another project's feedback route does not see
+/// it.
+#[test]
+fn a_public_key_writes_feedback_and_nothing_else() {
+    run(|env| async move {
+        let world = one_trace();
+        let p = platform_with(&env, &world, false).await;
+        let t = trace(1).to_string();
+        let feedback = json!({"trace_id": t, "name": "helpful", "value": true});
+        let site = [("origin", "https://shop.example")];
+        let written = call(
+            &p.router,
+            Method::POST,
+            &path(1, "/feedback"),
+            &p.public,
+            Some(feedback.clone()),
+            &site,
+        )
+        .await;
+        assert_eq!(written.status, StatusCode::CREATED, "{:#}", written.body);
+        assert_eq!(written.body["key"], "helpful");
+        assert_eq!(written.header("access-control-allow-origin"), Some("*"));
+        assert_eq!(written.header("access-control-allow-credentials"), None);
+
+        // The browser's preflight for that request.
+        let preflight = call(
+            &p.router,
+            Method::OPTIONS,
+            &path(1, "/feedback"),
+            &As::Nobody,
+            None,
+            &[
+                ("origin", "https://shop.example"),
+                ("access-control-request-method", "POST"),
+                (
+                    "access-control-request-headers",
+                    "authorization, content-type",
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(preflight.status, StatusCode::NO_CONTENT);
+        assert_eq!(preflight.header("access-control-allow-origin"), Some("*"));
+        assert_eq!(
+            preflight.header("access-control-allow-methods"),
+            Some("POST")
+        );
+        let allowed = preflight.header("access-control-allow-headers").unwrap();
+        assert!(
+            allowed.contains("authorization") && allowed.contains("content-type"),
+            "{allowed}"
+        );
+
+        // A public-key body above 16 KiB is refused before it is read as JSON.
+        let large =
+            json!({"trace_id": t, "name": "helpful", "value": true, "comment": "x".repeat(16_400)});
+        call(
+            &p.router,
+            Method::POST,
+            &path(1, "/feedback"),
+            &p.public,
+            Some(large),
+            &site,
+        )
+        .await
+        .assert_problem(413, "payload_too_large");
+
+        // Another project's route does not see the key; every other route refuses it.
+        call(
+            &p.router,
+            Method::POST,
+            &path(2, "/feedback"),
+            &p.public,
+            Some(feedback),
+            &[],
+        )
+        .await
+        .assert_problem(404, "not_found");
+        let window = format!("?from={}&to={}", ago(3_600), NOW.saturating_add_micros(1));
+        let tag = json!({"trace_id": t, "tag": "urgent", "op": "add"});
+        for (method, rest, body) in [
+            (Method::POST, "/tags".to_owned(), Some(tag)),
+            (Method::GET, format!("/traces{window}"), None),
+            (Method::GET, format!("/facts?trace_id={t}"), None),
+        ] {
+            let refused = call(&p.router, method, &path(1, &rest), &p.public, body, &[]).await;
+            refused.assert_problem(401, "unauthenticated");
+            assert!(
+                refused.body["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("secret key"),
+                "{rest}: {:#}",
+                refused.body
+            );
+        }
     });
 }
 

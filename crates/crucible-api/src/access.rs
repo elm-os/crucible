@@ -145,6 +145,33 @@ fn header(headers: &HeaderMap, name: impl axum::http::header::AsHeaderName) -> O
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
+/// The prefix of a public key (contract 11.3).
+const PUBLIC_KEY_PREFIX: &str = "cpk_";
+
+/// The public key presented alone as `Bearer`, which only the feedback route accepts.
+fn public_bearer(headers: &HeaderMap) -> Option<&str> {
+    match presented(header(headers, AUTHORIZATION)?)? {
+        Presented::Bearer(credential) if credential.starts_with(PUBLIC_KEY_PREFIX) => {
+            Some(credential)
+        }
+        Presented::Bearer(_) | Presented::Basic(..) => None,
+    }
+}
+
+/// The principal of a key the control plane's snapshot judged.
+fn key_principal(verdict: KeyVerdict, request_id: RequestId) -> Result<Principal, ApiError> {
+    match verdict {
+        KeyVerdict::Valid(grant) => Ok(Principal::Key(grant)),
+        KeyVerdict::Invalid => Err(ApiError::unauthenticated(request_id)),
+        KeyVerdict::Unavailable { retry_after } => Err(ApiError::new(
+            request_id,
+            ProblemCode::ControlPlaneUnavailable,
+            "the server cannot check this key while Postgres is unreachable; try again",
+        )
+        .with_retry_after(u32::try_from(retry_after.as_secs().max(1)).unwrap_or(u32::MAX))),
+    }
+}
+
 /// The session cookie's value.
 fn session_cookie<'a>(headers: &'a HeaderMap, identity: &Identity) -> Option<&'a str> {
     let name = identity.config().cookies().session();
@@ -193,6 +220,14 @@ pub(crate) async fn resolve(
     request_id: RequestId,
 ) -> Result<Principal, ApiError> {
     if let Some(value) = header(&parts.headers, AUTHORIZATION) {
+        if public_bearer(&parts.headers).is_some() {
+            return Err(ApiError::new(
+                request_id,
+                ProblemCode::Unauthenticated,
+                "a public key alone authorizes only `POST projects/{project_id}/feedback`; send the secret key \
+                 (csk_) as `Authorization: Bearer <key>`",
+            ));
+        }
         let presented = presented(value).ok_or_else(|| ApiError::unauthenticated(request_id))?;
         return match &state.identity {
             Some(identity) => {
@@ -200,18 +235,7 @@ pub(crate) async fn resolve(
                     Presented::Bearer(secret) => identity.keys().check_secret(secret),
                     Presented::Basic(public, secret) => identity.keys().check_pair(public, secret),
                 };
-                match verdict {
-                    KeyVerdict::Valid(grant) => Ok(Principal::Key(grant)),
-                    KeyVerdict::Invalid => Err(ApiError::unauthenticated(request_id)),
-                    KeyVerdict::Unavailable { retry_after } => Err(ApiError::new(
-                        request_id,
-                        ProblemCode::ControlPlaneUnavailable,
-                        "the server cannot check this key while Postgres is unreachable; try again",
-                    )
-                    .with_retry_after(
-                        u32::try_from(retry_after.as_secs().max(1)).unwrap_or(u32::MAX),
-                    )),
-                }
+                key_principal(verdict, request_id)
             }
             None => {
                 let principal = match presented {
@@ -308,6 +332,18 @@ impl<P: Permission> FromRequestParts<ApiState> for Scoped<P> {
     async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
         let request_id = request_id(&parts.extensions, &state.env);
         let principal = resolve(parts, state, request_id).await?;
+        Self::authorize(parts, state, request_id, principal).await
+    }
+}
+
+impl<P: Permission> Scoped<P> {
+    /// Checks permission `P` of `principal` on the project of the request's path.
+    async fn authorize(
+        parts: &mut Parts,
+        state: &ApiState,
+        request_id: RequestId,
+        principal: Principal,
+    ) -> Result<Self, ApiError> {
         let Path(path) = Path::<BTreeMap<String, String>>::from_request_parts(parts, state)
             .await
             .map_err(|_| ApiError::not_found(request_id))?;
@@ -340,6 +376,47 @@ impl<P: Permission> FromRequestParts<ApiState> for Scoped<P> {
     }
 }
 
+/// The path parameters of a request, by name. Handlers read their parameters by name, never by position, so
+/// the API answers the same when a router mounts it under a route with parameters of its own (the server's
+/// `/api/v1/{*rest}`), whose values the request carries too. A parameter that is not UTF-8 names no resource.
+#[derive(Debug)]
+pub(crate) struct PathParams {
+    request_id: RequestId,
+    params: BTreeMap<String, String>,
+}
+
+impl PathParams {
+    /// The parameter `name` as a UUID wrapped by `wrap`; `not_found` when it is missing or not a UUID.
+    pub(crate) fn id<T>(
+        &self,
+        name: &str,
+        wrap: impl Fn(crucible_records::Uuid) -> T,
+    ) -> Result<T, ApiError> {
+        self.params
+            .get(name)
+            .and_then(|text| text.parse().ok())
+            .map(wrap)
+            .ok_or_else(|| ApiError::not_found(self.request_id))
+    }
+
+    /// The parameter `name`, as text; empty when it is missing.
+    pub(crate) fn text(&self, name: &str) -> &str {
+        self.params.get(name).map_or("", String::as_str)
+    }
+}
+
+impl FromRequestParts<ApiState> for PathParams {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
+        let request_id = request_id(&parts.extensions, &state.env);
+        let Path(params) = Path::<BTreeMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| ApiError::not_found(request_id))?;
+        Ok(Self { request_id, params })
+    }
+}
+
 /// A read of one project's telemetry: [`Scoped`] with [`Read`], in the read class of its caller.
 #[derive(Debug)]
 pub(crate) struct Project {
@@ -358,6 +435,11 @@ impl Project {
         state: &ApiState,
     ) -> Result<Self, ApiError> {
         let scoped = Scoped::<P>::from_request_parts(parts, state).await?;
+        Ok(Self::of(state, scoped))
+    }
+
+    /// The read of the project a request is authorized for.
+    fn of<P>(state: &ApiState, scoped: Scoped<P>) -> Self {
         let settings = state.settings.settings(scoped.scope.project_id());
         let (caller, author) = match &scoped.principal {
             Principal::Key(grant) => (
@@ -375,14 +457,14 @@ impl Project {
                 },
             ),
         };
-        Ok(Self {
+        Self {
             request_id: scoped.request_id,
             author,
             ctx: ReadContext::new(scoped.scope, settings.retention, caller)
                 .with_floors(settings.floors),
             settings,
             path: scoped.path,
-        })
+        }
     }
 }
 
@@ -391,6 +473,60 @@ impl FromRequestParts<ApiState> for Project {
 
     async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
         Self::authorized::<Read>(parts, state).await
+    }
+}
+
+/// The largest body of a feedback request authorized by a public key (contract 11.3).
+pub(crate) const PUBLIC_FEEDBACK_BODY: usize = 16 << 10;
+
+/// A feedback write (contract 11.3): [`ProjectWrite`], or a project's public key alone as `Bearer`, which this
+/// route alone accepts. The public key acts as its key pair, so it needs the `write` scope.
+#[derive(Debug)]
+pub(crate) struct FeedbackWrite {
+    pub(crate) project: Project,
+    /// Whether a public key authorized the request: its body is at most [`PUBLIC_FEEDBACK_BODY`] bytes.
+    pub(crate) by_public_key: bool,
+}
+
+impl FromRequestParts<ApiState> for FeedbackWrite {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &ApiState) -> Result<Self, ApiError> {
+        let Some(public) = public_bearer(&parts.headers) else {
+            let project = Project::authorized::<WriteFacts>(parts, state).await?;
+            return Ok(Self {
+                project,
+                by_public_key: false,
+            });
+        };
+        let request_id = request_id(&parts.extensions, &state.env);
+        let invalid = || {
+            ApiError::new(
+                request_id,
+                ProblemCode::Unauthenticated,
+                "the public key is unknown, revoked or expired; use the public key of an active key pair from \
+                 the project's settings",
+            )
+        };
+        let principal = match &state.identity {
+            Some(identity) => match identity.keys().check_public(public) {
+                KeyVerdict::Invalid => return Err(invalid()),
+                verdict => key_principal(verdict, request_id)?,
+            },
+            None => {
+                let principal = state.keys.verify_public(public).ok_or_else(invalid)?;
+                Principal::Key(KeyGrant {
+                    principal,
+                    scopes: Scopes::DEFAULT,
+                    import: false,
+                })
+            }
+        };
+        let scoped = Scoped::<WriteFacts>::authorize(parts, state, request_id, principal).await?;
+        Ok(Self {
+            project: Project::of(state, scoped),
+            by_public_key: true,
+        })
     }
 }
 

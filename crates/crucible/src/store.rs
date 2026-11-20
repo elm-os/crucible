@@ -301,7 +301,8 @@ fn refusal(facts: &StoreFacts) -> Option<String> {
     }
     if facts.flavour != StoreFlavour::SingleNode {
         return Some(format!(
-            "this development preview supports a single-node ClickHouse only, and the server is {:?}",
+            "Crucible stores telemetry on a single-node ClickHouse server, and this server is {:?}; point \
+             clickhouse.url (--clickhouse-url or CRUCIBLE_CLICKHOUSE_URL) at a single-node server",
             facts.flavour
         ));
     }
@@ -508,7 +509,14 @@ mod tests {
             refusal(&facts).unwrap()
         };
         assert!(refused(|f| f.version.minor = 2).contains("older than the minimum"));
-        assert!(refused(|f| f.flavour = StoreFlavour::Clustered).contains("single-node"));
+        // The refusal states the limit and the setting that fixes it (contract 1.7).
+        let clustered = refused(|f| f.flavour = StoreFlavour::Clustered);
+        assert!(
+            clustered.contains("single-node")
+                && clustered.contains("clickhouse.url")
+                && !clustered.contains("preview"),
+            "{clustered}"
+        );
         assert!(refused(|f| f.engines.clear()).contains("--migrate"));
         assert!(refused(|f| f.missing_settings.push("x".to_owned())).contains("settings x"));
         assert!(refused(|f| f.text_index = false).contains("text index"));
