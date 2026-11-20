@@ -55,6 +55,7 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - Sign-in with email and password, and with GitHub, Google or any OpenID Connect provider added through the API.
   The first owner is created through a one-time setup link or `crucible admin init`.
 - Organizations, projects, organization and project roles, invitations, and project API keys with scopes.
+- A project settings page with the project's name, slug and id, and renaming for project admins.
 - Alert rules on span and trace measures, delivered to Slack, email and signed webhooks under an egress policy.
 - Exports in `crucible-jsonl` and `otlp-json` through the API, the UI, the MCP server and `crucible export`.
 - Per-project retention settings and deletion requests by trace, user or session.
@@ -73,4 +74,4 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - Crucible ingests OTLP traces; OTLP logs and metrics are answered with 404.
 - ClickHouse Cloud and clustered ClickHouse are refused at startup.
 - MCP analytics reads a minute-grain rollup, so windows of a week or more take seconds.
-- Sign-in providers, organization settings and project renames are managed through the REST API, not the UI.
+- Sign-in providers and organization settings are managed through the REST API, not the UI.
