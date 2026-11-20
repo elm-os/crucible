@@ -51,5 +51,6 @@ specs/tmp/
 /deploy/compose/.env
 /e2e-out/
 
-# Local Claude Code configuration and installed skills are not committed (skills-lock.json records the skills' sources)
+# Local agent configuration and installed skills are not committed (skills-lock.json records the skills' sources)
 .claude/
+.agents/
