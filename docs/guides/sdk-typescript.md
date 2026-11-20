@@ -5,7 +5,7 @@ points:
 
 | Import | Contents |
 |---|---|
-| `@elm-os/crucible` | `init`, `flush`, `shutdown` and `stats`; the agent helpers `withContext` and `observe`; `feedback`, which is planned |
+| `@elm-os/crucible` | `init`, `flush`, `shutdown` and `stats`; the agent helpers `withContext` and `observe` |
 | `@elm-os/crucible/mcp` | `instrument` and `instrumentHandler` for MCP servers; `annotateError`, `markValidation`, `markNotFound` and `identify` for tool handlers |
 | `@elm-os/crucible/mcp-client` | `instrumentClient` for MCP clients |
 
@@ -15,8 +15,8 @@ Servers on the 1.x line can use `crucible proxy` instead; see [MCP proxy](mcp-pr
 
 ## Install
 
-The package is not on npm yet; it will be published as `@elm-os/crucible`. Until then, build it from a checkout of
-the repository and install the packed file. The build needs Node.js 24 and pnpm 11:
+Build the package from a checkout of the repository and install the packed file. The build needs Node.js 24 and
+pnpm 11:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
@@ -69,7 +69,7 @@ It prints `hello` and then `{ queued: 0, dropped: 0, exported: 1, failed: 0 }`.
 | `serviceName`, `serviceVersion` | | Resource `service.name` and `service.version` |
 | `environment` | | Resource `deployment.environment.name` |
 | `release` | | `crucible.release` on every span |
-| `deployId` | | Resource `crucible.deploy.id`; without it, Crucible is designed to use the server version as the deploy id |
+| `deployId` | | Resource `crucible.deploy.id`; without it, Crucible uses the server version as the deploy id |
 | `queueSize` | 2,048 | Spans the export queue holds, the batch being sent included |
 | `queueBytes` | 8 MiB | Bytes of spans the export queue holds, the batch being sent included, estimated from each span's strings |
 | `flushIntervalMs` | 1,000 | Longest wait before a partial batch is sent |
@@ -173,8 +173,8 @@ on main. Two notes for agents: the views show the model from `responseModel`, wh
 is not shown; and the trace list shows the trace tags, `crucible.trace.tags`, not the span tags that `withContext`
 sets.
 
-`feedback()` is planned: it will post a score to the project's feedback route. The API has no feedback route yet,
-so in this release the function rejects without sending anything.
+To attach a score to a trace, a span or a session, post it to the REST API's feedback route
+([facts](facts.md)).
 
 ## Instrument an MCP server
 
@@ -272,8 +272,8 @@ type. A `traceparent` in `params._meta` makes the span a child of the caller's s
 
 On main, Crucible stores these spans as spans: the trace view shows a `tools/call` span as a `tool` span and a
 tool error with status `error`, captured arguments and results become the span's input and output, and the other
-MCP keys stay among its attributes (the payload route's `attributes` field). Recording them as MCP operations, and
-the MCP analytics routes and pages that read them, are planned.
+MCP keys stay among its attributes (the payload route's `attributes` field). Crucible also records each such span
+as an MCP operation on the server side, which the SQL workspace's `crucible_sql.mcp_operations` view reads.
 
 | Option of `instrument` | Effect |
 |---|---|
@@ -296,8 +296,8 @@ Inside a tool handler these calls refine the operation being handled; outside on
 
 An identity from the `identify` option or call is sent with `crucible.mcp.identity.source = identify_hook`. Without
 one, a request whose transport carries `authInfo`, from a token the hosting server verified, is sent with
-`token_verified` and the token's client id. Crucible is designed to hash the subject with a per-project salt and
-keep only the hash and the issuer; the MCP views that would show identities are planned.
+`token_verified` and the token's client id. Crucible hashes the subject with a per-project salt and keeps only
+the hash and the issuer, in the MCP operation's `user_subject_hash` and `user_issuer`.
 
 A tool handler that throws and one that returns `isError: true` look the same on the wire: both are tool errors
 unless the handler calls `annotateError` or a mark.
@@ -411,7 +411,7 @@ Every other setting is an option of `init` or `instrument`. Each export carries
 - Stateless legacy HTTP builds a fresh server per request, so tool calls there carry no client info. Server info is
   remembered per `instrument` call, so it reaches every operation after the first result.
 - Exchanges that `instrumentHandler` records run no handler, so `annotateError` and `identify` cannot reach them,
-  and they carry no server name; Crucible is designed to use the resource `service.name` instead.
+  and they carry no server name; Crucible uses the resource `service.name` instead.
 - Headers named in `OTEL_EXPORTER_OTLP_HEADERS`, other than `Authorization`, are still sent with each export.
 - `serveStdio` answers its `server/discover` probe and a few errors before any server instance exists; those are
   not recorded.
