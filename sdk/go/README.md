@@ -206,7 +206,9 @@ IP addresses and phone numbers. The rules are data: `internal/scrub/rules.json` 
 `conformance/scrub-rules.json`, which every Crucible SDK uses, and a test keeps the two identical. The SDK scrubs 1 KiB
 past the cap before cutting, so a secret that straddles the cap leaves no prefix behind. `Scrub` runs after the rules on
 every captured field, error message and handle id from `HandleParams`, and is the place for anything the shared rules
-do not cover, such as values of fields named like passwords; returning false sends nothing.
+do not cover, such as values of fields named like passwords; returning false sends nothing. Scrubbing and `Scrub` run
+off the request path, on the SDK's export goroutines, so `Scrub` must be safe for concurrent use; a call only copies
+the part of each field that scrubbing reads.
 
 Authorization headers, cookies, `requestState`, raw session ids, client IP addresses and baggage are never sent.
 

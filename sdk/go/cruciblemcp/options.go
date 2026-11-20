@@ -75,7 +75,8 @@ type Options struct {
 	// NoIdentity suppresses every user identity key: Identify is not called and tokens are not read.
 	NoIdentity bool
 	// Scrub, when set, runs after the built-in scrubbing rules on every captured argument and result, error
-	// message and handle id from HandleParams. It returns the value to send, or false to send nothing.
+	// message and handle id from HandleParams. It returns the value to send, or false to send nothing. It runs
+	// off the request path, on the SDK's export goroutines, so it must be safe for concurrent use.
 	Scrub func(field, value string) (string, bool)
 }
 

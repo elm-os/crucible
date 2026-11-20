@@ -2,6 +2,13 @@
 
 Notable changes to Crucible, newest first. Versions follow [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+- The MCP server's `list_spans`, `list_sessions`, `list_users` and `list_user_sessions` tools list a window's spans, sessions and users, and `list_traces` and `list_spans` take the filters of the REST trace and span lists.
+- `crucible proxy` records the error message of a failed operation, scrubbed with the shared rules and cut at 2 KiB, and the keyed hashes of a multi-round exchange's `requestState`, as the SDKs do.
+- The Go SDK scrubs captured arguments and results, error messages and handle ids off the request path, on its export goroutines, so capture no longer adds the scrubbing time to a call.
+- The Rust SDK's `flush` and `shutdown` keep to the export timeout when an export to a stalled collector is already in flight.
+
 ## [0.1.0] - 2026-11-20
 
 The first release of Crucible: open-source, self-hosted observability and analytics for AI agents and MCP

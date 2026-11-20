@@ -441,7 +441,7 @@ request size from `Content-Length`.
 | `HandleParams` | Tool name to one of its arguments whose string value becomes the handle id, scrubbed and cut at 256 bytes. A handle id from `Identify` takes precedence |
 | `Identify` | Called for every request and notification; returns what your server knows about the caller |
 | `NoIdentity` | Sends no user identity keys: `Identify` is not called and tokens are not read |
-| `Scrub` | Runs after the built-in rules on every captured argument and result, error message and handle id from `HandleParams`; returns the value to send, or false to send nothing |
+| `Scrub` | Runs after the built-in rules on every captured argument and result, error message and handle id from `HandleParams`, off the request path; returns the value to send, or false to send nothing |
 
 ### Errors
 
@@ -488,6 +488,12 @@ a marker such as `[redacted:card]`, and then cut at `MaxBytes` on a character bo
 keeps the two identical. The SDK scrubs 1 KiB past the cap before cutting, so a secret that straddles the cap
 leaves no prefix behind. `Scrub` runs after the rules and is the place for anything they do not cover, such as
 values of fields named like passwords.
+
+Scrubbing runs off the request path. While the call runs, the SDK takes only the part of each field that scrubbing
+reads, a copy of at most the cap plus 1 KiB. The rules, `Scrub` and the scrubbing of error messages and handle ids
+run on the SDK's export goroutines when the span's batch is exported, so a slow `Scrub` never delays a call. `Scrub`
+must therefore be safe to call from several goroutines at once. What a field holds until then counts toward the
+export queue's 8 MiB.
 
 Authorization headers, cookies, `requestState`, raw session ids, client IP addresses and baggage are never sent.
 
