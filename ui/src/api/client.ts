@@ -146,18 +146,22 @@ async function call(path: string, sender: Sender, init: Init = {}): Promise<Resp
 
   const error = await failure(response);
   const withSession = sender === "session" || (sender === "telemetry" && auth.mode === "session");
+  throw withSession ? sessionFailure(error) : error;
+}
+
+// The failure of a request sent with the session. A 401 means the session ended, and the server's own
+// 401 sends the browser to sign in with this page as `next`.
+export function sessionFailure(error: UiError): UiError {
   // A wrong current password is a 401 too, and doesn't end the session.
-  if (withSession && error.kind === "unauthenticated" && error.code !== "invalid_credentials") {
-    // Only the server's own answer moves the page; another 401, like a proxy's, offers sign-in.
-    if (error.code === "unauthenticated") loadPage(loginHref(currentPath()));
-    throw new UiError({
-      kind: "signed_out",
-      status: error.status,
-      code: error.code,
-      requestId: error.requestId,
-    });
-  }
-  throw error;
+  if (error.kind !== "unauthenticated" || error.code === "invalid_credentials") return error;
+  // Only the server's own answer moves the page; another 401, like a proxy's, offers sign-in.
+  if (error.code === "unauthenticated") loadPage(loginHref(currentPath()));
+  return new UiError({
+    kind: "signed_out",
+    status: error.status,
+    code: error.code,
+    requestId: error.requestId,
+  });
 }
 
 function search(query: Query = {}): string {

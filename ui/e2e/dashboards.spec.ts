@@ -88,6 +88,27 @@ const SCHEMA: MetricsSchema = {
   ],
 };
 
+const MCP_SCHEMA: MetricsSchema = {
+  sources: [
+    ...SCHEMA.sources,
+    {
+      ...(SCHEMA.sources[0] as MetricsSchema["sources"][number]),
+      source: "mcp_ops",
+      measures: [
+        {
+          id: "mcp.calls",
+          label: "MCP calls",
+          unit: "count",
+          aggregations: ["sum"],
+          additive: true,
+          tier: "rollup",
+        },
+      ],
+      dimensions: [{ id: "server_name", type: "string", high_cardinality: false }],
+    },
+  ],
+};
+
 function widget(id: string, fields: Partial<Widget> & Pick<Widget, "display" | "layout">): Widget {
   return { id, ...fields };
 }
@@ -558,6 +579,122 @@ test.describe("dashboard: editor", () => {
     expect(body.widgets[0]).toMatchObject({ id: "w-spans" });
     expect(body.widgets[1]?.id).toBeUndefined();
     expect(body.widgets[1]?.layout).toEqual({ x: 3, y: 0, w: 6, h: 3 });
+  });
+
+  test("an MCP widget reads the side and capture source chosen in the sheet, offered only for MCP operations", async ({
+    page,
+    api,
+  }) => {
+    editor(api);
+    api.on(SCHEMA_PATH, json(MCP_SCHEMA));
+    const previews: Record<string, unknown>[] = [];
+    metricsByQuery(api, (body) => previews.push(body));
+    const patches: Request[] = [];
+    api.on(ONE_PATH, (route) => {
+      if (route.request().method() === "PATCH") {
+        patches.push(route.request());
+        return route.fulfill(json(dashboard({ version: 2, widgets: [WIDGETS[0] as Widget] })));
+      }
+      return route.fulfill(json(dashboard({ widgets: [WIDGETS[0] as Widget] })));
+    });
+    await page.goto(EDIT_URL);
+    await page.getByRole("button", { name: "Add widget" }).click();
+    const drawer = page.getByRole("dialog", { name: "Add a widget" });
+    const side = drawer.getByRole("combobox", { name: "Side", exact: true });
+    const captureSource = drawer.getByRole("combobox", { name: "Capture source", exact: true });
+    const faults = drawer.getByRole("switch", { name: "Include caller faults" });
+    const data = drawer.getByRole("combobox", { name: "Data", exact: true });
+    await expect(data).toHaveText("Agent spans");
+    await expect(side).toHaveCount(0);
+    await expect(captureSource).toHaveCount(0);
+    await expect(faults).toHaveCount(0);
+
+    await drawer.getByLabel("Title").fill("Tool calls");
+    await data.click();
+    await page.getByRole("option", { name: "MCP operations" }).click();
+    await expect(side).toHaveText("Server side");
+    await expect(captureSource).toHaveText("Automatic");
+    await expect(faults).not.toBeChecked();
+    await expect(drawer.getByText("Automatic reads each server from its SDK")).toBeVisible();
+    await expect.poll(() => previews.at(-1)).toMatchObject({ source: "mcp_ops", side: "server" });
+    expect(previews.at(-1)).not.toHaveProperty("capture_source");
+    expect(previews.at(-1)).not.toHaveProperty("include_caller_faults");
+    await expectAccessible(page, "widget form for MCP operations");
+
+    await side.click();
+    await page.getByRole("option", { name: "Client side" }).click();
+    await captureSource.click();
+    await page.getByRole("option", { name: "Proxy" }).click();
+    await faults.click();
+    await expect(faults).toBeChecked();
+    await expect
+      .poll(() => previews.at(-1))
+      .toMatchObject({
+        source: "mcp_ops",
+        side: "client",
+        capture_source: "proxy",
+        include_caller_faults: true,
+      });
+
+    // Agent spans have no side; the choices come back with MCP operations.
+    await data.click();
+    await page.getByRole("option", { name: "Agent spans" }).click();
+    await expect(side).toHaveCount(0);
+    await data.click();
+    await page.getByRole("option", { name: "MCP operations" }).click();
+    await expect(side).toHaveText("Client side");
+    await expect(captureSource).toHaveText("Proxy");
+    await expect(faults).toBeChecked();
+
+    await drawer.getByRole("button", { name: "Apply" }).click();
+    await expect(drawer).toBeHidden();
+    await expect(page.locator("[inert]")).toHaveCount(0);
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible();
+    const body = patches[0]?.postDataJSON() as { widgets: { id?: string; query?: unknown }[] };
+    expect(body.widgets.find((w) => w.id === undefined)?.query).toEqual({
+      source: "mcp_ops",
+      measures: [{ measure: "mcp.calls", aggregation: "sum" }],
+      side: "client",
+      capture_source: "proxy",
+      include_caller_faults: true,
+    });
+  });
+
+  test("configure an MCP widget: the sheet shows its side and capture source, and Apply keeps them", async ({
+    page,
+    api,
+  }) => {
+    editor(api);
+    api.on(SCHEMA_PATH, json(MCP_SCHEMA));
+    metricsByQuery(api);
+    const clientCalls = widget("w-client", {
+      query: {
+        source: "mcp_ops",
+        measures: [{ measure: "mcp.calls", aggregation: "sum" }],
+        side: "client",
+        capture_source: "otlp",
+      },
+      display: { kind: "stat", title: "Client calls" },
+      layout: { x: 0, y: 0, w: 3, h: 2 },
+    });
+    api.on(ONE_PATH, json(dashboard({ widgets: [clientCalls] })));
+    await page.goto(EDIT_URL);
+    await page.getByRole("button", { name: "Configure Client calls" }).click();
+    const drawer = page.getByRole("dialog", { name: "Configure the widget" });
+    await expect(drawer.getByRole("combobox", { name: "Data", exact: true })).toHaveText(
+      "MCP operations",
+    );
+    await expect(drawer.getByRole("combobox", { name: "Side", exact: true })).toHaveText(
+      "Client side",
+    );
+    await expect(drawer.getByRole("combobox", { name: "Capture source", exact: true })).toHaveText(
+      "OTLP",
+    );
+    await expect(drawer.getByRole("switch", { name: "Include caller faults" })).not.toBeChecked();
+    await drawer.getByRole("button", { name: "Apply" }).click();
+    await expect(drawer).toBeHidden();
+    await expect(page.getByText("No changes.")).toBeVisible();
   });
 
   test("move and resize by keyboard; a move onto another widget is refused aloud", async ({
