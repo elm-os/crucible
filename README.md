@@ -63,9 +63,19 @@ Crucible export to validate cheaper or newer models against the outputs you acce
 ## Quickstart
 
 [docs/self-hosting/quickstart.md](docs/self-hosting/quickstart.md) runs Crucible with Docker Compose next to
-ClickHouse and Postgres: build the image from this repository, start the stack, create the owner from the setup
-link, make an API key and send a first trace. Running against your own ClickHouse and Postgres, every setting,
-backups and monitoring are in [docs/self-hosting](docs/self-hosting/README.md).
+ClickHouse and Postgres, with no clone and no build:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.yaml
+printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
+docker compose up -d --wait
+```
+
+Then create the owner from the setup link, make an API key and send a first trace. The image is
+`ghcr.io/elm-os/crucible` for linux/amd64 and linux/arm64; binaries for Linux and macOS, and Windows for development,
+install with a shell or PowerShell one-liner ([the binary](docs/self-hosting/README.md#the-binary)). Running against
+your own ClickHouse and Postgres, every setting, upgrades, backups and monitoring are in
+[docs/self-hosting](docs/self-hosting/README.md).
 
 ## Architecture
 

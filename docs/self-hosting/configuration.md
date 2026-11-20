@@ -214,7 +214,7 @@ The Compose files in `deploy/compose/` read these from `.env` beside them and pa
 | `CRUCIBLE_CLICKHOUSE_USER` | `crucible_admin` | The admin user in `compose.cloud.yaml` |
 | `CRUCIBLE_CLICKHOUSE_PASSWORD` | none, required by `compose.cloud.yaml` | That user's password |
 | `CRUCIBLE_POSTGRES_URL` | none, required by `compose.cloud.yaml` | Your Postgres, `postgres://<user>:<password>@<host>:5432/<database>`, with `?sslmode=require` for TLS |
-| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image. Set it to the tag of the image you built |
+| `CRUCIBLE_IMAGE` | `ghcr.io/elm-os/crucible:latest` | The Crucible image: a release tag such as `0.1` or `0.1.0`, or the tag of an image you built |
 | `CRUCIBLE_BIND_ADDRESS` | `0.0.0.0` | The host address the ports are published on. `127.0.0.1` keeps them on this machine |
 | `CRUCIBLE_HTTP_PORT` | `8080` | The host port of the main listener |
 | `CRUCIBLE_OTLP_HTTP_PORT` | `4318` | The host port of OTLP/HTTP ingest |
