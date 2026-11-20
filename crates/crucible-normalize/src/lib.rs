@@ -116,9 +116,8 @@ impl IngestFrame<'_> {
 /// What stage A's output is pinned to (contract 3.2). Equal frames normalized with equal contexts give
 /// byte-identical records.
 ///
-/// The project snapshot contributes the caps, the salt that stage B hashes user subjects with, the deletions that
-/// stage B applies and, from milestone 4, the project's price overrides; capture settings join with the stage that
-/// uses them.
+/// The project snapshot contributes the caps, the salt that stage B hashes user subjects with and the deletions
+/// that stage B applies.
 #[derive(Clone, Copy, Debug)]
 pub struct NormCtx<'a> {
     /// The normalizer version recorded in every record.
