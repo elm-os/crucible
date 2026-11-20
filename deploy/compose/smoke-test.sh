@@ -2,7 +2,9 @@
 # Compose smoke test, run by the compose-smoke job of .github/workflows/docker.yml: starts compose.yaml with the
 # given image, checks that the migrations are recorded in Postgres, creates the organization and its owner with
 # `crucible admin init`, signs in, makes an API key with `crucible admin create-key`, sends one trace over OTLP/HTTP
-# with curl and reads it back through the REST API. It asks nothing: every step runs from this script.
+# with curl and reads it back through the REST API. Then it upgrades the stack to a second build of the image with
+# `docker compose up -d --wait`, which must return once the new server is ready, and reads the trace again. It asks
+# nothing: every step runs from this script.
 #
 #   deploy/compose/smoke-test.sh <image> [http port] [otlp port]
 #
@@ -16,6 +18,8 @@ otlp_port=${3:-14318}
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 project="crucible-smoke-$$"
+# The second build of the image that the upgrade step starts: the same files under another image id.
+upgrade="$project-upgrade:latest"
 
 compose() {
   docker compose --project-directory "$work" -f "$work/compose.yaml" -f "$work/compose.smoke.yaml" -p "$project" "$@"
@@ -28,6 +32,7 @@ finish() {
     compose logs --no-color || true
   fi
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  docker image rm "$upgrade" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$status"
 }
@@ -45,9 +50,13 @@ services:
     mem_limit: 1g
 EOF
 cd "$work"
-printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)" > .env
-printf 'CRUCIBLE_IMAGE=%s\nCRUCIBLE_BIND_ADDRESS=127.0.0.1\nCRUCIBLE_HTTP_PORT=%s\nCRUCIBLE_OTLP_HTTP_PORT=%s\n' \
-  "$image" "$http_port" "$otlp_port" >> .env
+secrets=$(printf 'CLICKHOUSE_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nCRUCIBLE_MASTER_KEY=%s' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 32)")
+# .env: the secrets of this run and the image to start.
+write_env() {
+  printf '%s\nCRUCIBLE_IMAGE=%s\nCRUCIBLE_BIND_ADDRESS=127.0.0.1\nCRUCIBLE_HTTP_PORT=%s\nCRUCIBLE_OTLP_HTTP_PORT=%s\n' \
+    "$secrets" "$1" "$http_port" "$otlp_port" > .env
+}
+write_env "$image"
 
 echo "starting $image"
 compose up --detach --wait --wait-timeout 240
@@ -111,15 +120,32 @@ done
 
 echo "reading it back through the API"
 url="http://127.0.0.1:$http_port/api/v1/projects/$project_id/traces/$trace_id"
-for _ in $(seq 1 60); do
-  body=$(curl --silent --header "Authorization: Bearer $secret" "$url" || true)
-  case "$body" in
-    *'"name":"compose smoke span"'*)
-      echo "ok: the trace came back"
-      exit 0
-      ;;
-  esac
-  sleep 1
-done
-echo "the trace did not come back within 60 s; last response: $body" >&2
-exit 1
+read_back() {
+  for _ in $(seq 1 60); do
+    body=$(curl --silent --header "Authorization: Bearer $secret" "$url" || true)
+    case "$body" in
+      *'"name":"compose smoke span"'*) return 0 ;;
+    esac
+    sleep 1
+  done
+  echo "the trace did not come back within 60 s; last response: $body" >&2
+  return 1
+}
+read_back
+echo "ok: the trace came back"
+
+# An upgrade as docs/self-hosting/operations.md describes it, to an image with another id: Compose stops the old
+# server, starts the new one and restarts the ready check, and `up --wait` returns once the new server is ready.
+echo "upgrading to a second build of the image"
+printf 'FROM %s\nLABEL org.opencontainers.image.revision=compose-smoke-upgrade\n' "$image" \
+  | docker build --quiet --tag "$upgrade" - >/dev/null
+write_env "$upgrade"
+started=$(date +%s)
+compose up --detach --wait --wait-timeout 240
+running=$(docker inspect --format '{{.Config.Image}}' "$(compose ps --quiet crucible)")
+[ "$running" = "$upgrade" ] || { echo "after the upgrade the server runs $running, expected $upgrade" >&2; exit 1; }
+ready=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$http_port/readyz" || true)
+[ "$ready" = 200 ] || { echo "up --wait returned before the new server was ready: /readyz answered $ready" >&2; exit 1; }
+echo "the upgraded stack was ready after $(( $(date +%s) - started )) s"
+read_back
+echo "ok: the trace came back after the upgrade"

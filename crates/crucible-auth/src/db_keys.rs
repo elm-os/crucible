@@ -24,6 +24,7 @@ use crucible_control::{
 };
 use crucible_env::{Clock, Env, Instant};
 use crucible_records::{ApiKeyId, ProjectId, Timestamp};
+use futures::{FutureExt as _, select_biased};
 use subtle::ConstantTimeEq;
 
 use crate::key::{KeyPrincipal, KeyVerifier, PairError};
@@ -605,28 +606,38 @@ async fn feed_loop(env: Env, keys: Arc<DbKeys>, feed: Arc<dyn KeyFeed>, overlap:
     let age = env
         .metrics
         .gauge(&crucible_env::metrics::registry::AUTH_KEY_SNAPSHOT_AGE, &[]);
+    let mut shutdown = env.shutdown().fuse();
     let mut since_reload = Duration::ZERO;
     let mut loaded = keys.is_loaded();
     loop {
-        if !loaded {
-            match reload(&env, &keys, feed.as_ref()).await {
-                Ok(()) => {
-                    loaded = true;
-                    since_reload = Duration::ZERO;
-                    tracing::info!("the key snapshot is loaded");
+        // A poll or a reload is a read: the shutdown signal may drop it at any point.
+        let step = async {
+            if !loaded {
+                match reload(&env, &keys, feed.as_ref()).await {
+                    Ok(()) => {
+                        loaded = true;
+                        since_reload = Duration::ZERO;
+                        tracing::info!("the key snapshot is loaded");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "loading the key snapshot failed; retrying");
+                    }
                 }
-                Err(error) => tracing::warn!(%error, "loading the key snapshot failed; retrying"),
+            } else if since_reload >= RECONCILE_EVERY {
+                if let Err(error) = reload(&env, &keys, feed.as_ref()).await {
+                    tracing::warn!(%error, "reloading the key snapshot failed");
+                } else {
+                    since_reload = Duration::ZERO;
+                }
+            } else if let Err(first) = poll_once(&env, &keys, feed.as_ref(), overlap).await
+                && let Err(error) = poll_once(&env, &keys, feed.as_ref(), overlap).await
+            {
+                tracing::warn!(first = %first, %error, "polling the key feed failed twice");
             }
-        } else if since_reload >= RECONCILE_EVERY {
-            if let Err(error) = reload(&env, &keys, feed.as_ref()).await {
-                tracing::warn!(%error, "reloading the key snapshot failed");
-            } else {
-                since_reload = Duration::ZERO;
-            }
-        } else if let Err(first) = poll_once(&env, &keys, feed.as_ref(), overlap).await
-            && let Err(error) = poll_once(&env, &keys, feed.as_ref(), overlap).await
-        {
-            tracing::warn!(first = %first, %error, "polling the key feed failed twice");
+        };
+        select_biased! {
+            () = shutdown => return,
+            () = step.fuse() => {}
         }
         age.set(
             keys.age()
@@ -634,22 +645,37 @@ async fn feed_loop(env: Env, keys: Arc<DbKeys>, feed: Arc<dyn KeyFeed>, overlap:
         );
         let jitter = Duration::from_micros(rng.next_u64() % JITTER_MICROS);
         let pause = POLL_EVERY + jitter;
-        env.clock.sleep(pause).await;
+        select_biased! {
+            () = shutdown => return,
+            () = env.clock.sleep(pause).fuse() => {}
+        }
         since_reload += pause;
     }
 }
 
-/// Writes `last_used_at` every 60 s for the keys used since, skipping the write during an outage.
+/// Writes `last_used_at` every 60 s for the keys used since, skipping the write during an outage, until shutdown.
+/// The uses of the last minute before a stop are not written; the column is a batch of at most a minute anyway
+/// (contract 11.3).
 pub async fn run_last_used(env: Env, keys: Arc<DbKeys>, store: Arc<dyn ControlStore>) {
+    let mut shutdown = env.shutdown().fuse();
     loop {
-        env.clock.sleep(LAST_USED_EVERY).await;
+        select_biased! {
+            () = shutdown => return,
+            () = env.clock.sleep(LAST_USED_EVERY).fuse() => {}
+        }
         if keys.outage().is_some() {
             continue;
         }
-        for (id, at) in keys.take_uses() {
-            if let Err(error) = store.api_keys().set_last_used(id, at).await {
-                tracing::debug!(%error, "recording a key's last use");
+        let write = async {
+            for (id, at) in keys.take_uses() {
+                if let Err(error) = store.api_keys().set_last_used(id, at).await {
+                    tracing::debug!(%error, "recording a key's last use");
+                }
             }
+        };
+        select_biased! {
+            () = shutdown => return,
+            () = write.fuse() => {}
         }
     }
 }
