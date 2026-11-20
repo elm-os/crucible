@@ -148,7 +148,7 @@ soon as its request is acknowledged. In one local run the export and a read of i
 | Answer (HTTP; gRPC) | When | What to do |
 |---|---|---|
 | 200 with an empty body, `{}` in JSON; `OK` | Every span was accepted | Nothing |
-| 200 with `partialSuccess`; `OK` with partial success | Some spans were rejected, the rest accepted. A span is rejected when its trace or span id is missing or all zero, or when it started more than 400 days ago | Nothing: a retry would be rejected the same way |
+| 200 with `partialSuccess`; `OK` with partial success | Some spans were rejected, the rest accepted. A span is rejected when its trace or span id is missing or all zero, when it started more than 400 days ago, or when it started before its project's retention cut-off (`retention_days`) | Nothing: a retry would be rejected the same way |
 | 400; `INVALID_ARGUMENT` | The body is not valid OTLP | Fix the sender |
 | 401; `UNAUTHENTICATED` | No usable key | Fix the key |
 | 413; `INVALID_ARGUMENT` | The body is above 67,043,328 bytes, measured after gzip is inflated, or it holds more than 50,000 spans | Send smaller batches |
