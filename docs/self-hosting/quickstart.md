@@ -138,9 +138,10 @@ curl -s -H "Authorization: Bearer <secret>" \
   "http://127.0.0.1:8080/api/v1/projects/<project id>/traces/5b8efff798038103d269b633813fc60c"
 ```
 
-`crucible admin create-key` prints the project id as `project_id`; in the UI, choosing the project in the header's
-menu puts it in the address bar as `?project=<project id>`. The trace list takes a time window of at most 30 days:
-`.../traces?from=<RFC 3339>&to=<RFC 3339>`.
+`crucible admin create-key` prints the project id as `project_id`. In the UI, **Settings**, **Project** shows the
+project's name, slug and id, with **Copy id**, and project admins rename the project there; choosing a project in
+the header's menu also puts its id in the address bar as `?project=<project id>`. The trace list takes a time window
+of at most 30 days: `.../traces?from=<RFC 3339>&to=<RFC 3339>`.
 
 ## People and outages
 
