@@ -26,7 +26,7 @@
 | [Crucible's MCP server](guides/mcp-server.md) | Connecting a coding agent to `/mcp` |
 | [Exploring traces](guides/exploring-traces.md) | Home, traces, the trace page, spans, sessions and users |
 | [Search](guides/search.md) | Full-text and metadata search, and payloads |
-| [Tags, flags, scores and corrections](guides/facts.md) | Facts in the UI and the API |
+| [Tags, flags, scores and corrections](guides/facts.md) | Facts in the UI, the SDKs and the API |
 | [Dashboards](guides/dashboards.md) | Starter dashboards, your own, the editor and the widget kinds |
 | [Alerts](guides/alerts.md) | Alert rules, channels and webhook verification |
 | [Exports](guides/exports.md) | Exports and the rightmodeler workflow |
