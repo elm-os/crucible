@@ -15,9 +15,14 @@ use opentelemetry_sdk::resource::TelemetryResourceDetector;
 use opentelemetry_sdk::trace::{
     IdGenerator as _, RandomIdGenerator, Sampler, SdkTracer, SpanLimits,
 };
+use tokio::time::Instant;
 
 use crate::export::{self, Pipeline};
-use crate::keys;
+use crate::{feedback, keys};
+
+/// The HTTP connector of the exporter and the feedback sender: rustls with the ring provider, plain HTTP allowed.
+pub(crate) type Connector =
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
 /// The SDK version, sent in the `User-Agent` of every export and as the instrumentation scope version.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,8 +41,16 @@ pub struct Options {
     /// Base URL of the Crucible server, for example `http://localhost:4318`. Spans are sent to
     /// `endpoint + "/v1/traces"` as OTLP protobuf. Plain HTTP works.
     pub endpoint: String,
-    /// A project secret key (`csk_...`) with the ingest scope, sent as `Authorization: Bearer <key>`.
+    /// A project secret key (`csk_...`), sent as `Authorization: Bearer <key>`. The `ingest` scope sends spans and
+    /// the `write` scope feedback; new keys have both.
     pub secret_key: String,
+    /// The id of the key's project (a UUID), which [`feedback`](crate::feedback) needs; `crucible admin create-key`
+    /// prints it as `project_id`. When empty, scores are dropped and counted.
+    pub project_id: String,
+    /// Base URL of the Crucible API listener, where [`feedback`](crate::feedback) posts. When empty it is
+    /// `endpoint`. The API listener (port 8080) also takes spans; the OTLP listener (port 4318) does not serve the
+    /// API.
+    pub api_url: String,
     /// Resource `service.name`. An MCP server's name defaults to the name its handler declares.
     pub service_name: String,
     /// Resource `service.version`.
@@ -65,6 +78,8 @@ impl fmt::Debug for Options {
         f.debug_struct("Options")
             .field("endpoint", &self.endpoint)
             .field("secret_key", &"<redacted>")
+            .field("project_id", &self.project_id)
+            .field("api_url", &self.api_url)
             .field("service_name", &self.service_name)
             .field("service_version", &self.service_version)
             .field("environment", &self.environment)
@@ -90,6 +105,10 @@ pub enum InitError {
     MissingSecretKey,
     /// `secret_key` is not a project secret key.
     NotASecretKey,
+    /// `project_id` is not a UUID.
+    InvalidProjectId(String),
+    /// `api_url` is not an `http` or `https` URL.
+    InvalidApiUrl(String),
     /// [`init`] was already called.
     AlreadyInitialized,
     /// The exporter could not start.
@@ -111,6 +130,14 @@ impl fmt::Display for InitError {
             ),
             Self::NotASecretKey => f.write_str(
                 "crucible: Options::secret_key is not a project secret key; sending telemetry needs a secret key (csk_...) with the ingest scope, not a public key (cpk_...)",
+            ),
+            Self::InvalidProjectId(id) => write!(
+                f,
+                "crucible: Options::project_id {id:?} is not a project id; set it to the project's UUID, not its slug (crucible admin create-key prints it as project_id)"
+            ),
+            Self::InvalidApiUrl(url) => write!(
+                f,
+                "crucible: Options::api_url {url:?} is not an http or https URL; set it to the API listener of your Crucible server, for example http://localhost:8080"
             ),
             Self::AlreadyInitialized => f.write_str(
                 "crucible: init was already called; call crucible_sdk::shutdown before calling init again",
@@ -134,7 +161,7 @@ impl fmt::Display for FlushError {
 
 impl std::error::Error for FlushError {}
 
-/// What happened to finished spans since [`init`].
+/// What happened to finished spans and to scores since [`init`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Stats {
@@ -146,6 +173,13 @@ pub struct Stats {
     pub failed: u64,
     /// The estimated bytes of the spans waiting for export and of the batch being exported.
     pub queued_bytes: u64,
+    /// Scores the server accepted.
+    pub feedback_sent: u64,
+    /// Scores never sent: the feedback queue was full, `Options::project_id` is empty, or [`shutdown`] ran out of
+    /// time before them.
+    pub feedback_dropped: u64,
+    /// Scores the server refused, or that failed on every attempt.
+    pub feedback_failed: u64,
 }
 
 /// A validated configuration.
@@ -159,6 +193,8 @@ pub(crate) struct Config {
     pub(crate) flush_interval: Duration,
     pub(crate) export_timeout: Duration,
     pub(crate) resource: Resource,
+    /// The project's feedback route; `None` without a project id.
+    pub(crate) feedback_url: Option<String>,
 }
 
 /// One started exporter and the tracer whose spans it exports.
@@ -169,6 +205,8 @@ pub(crate) struct Client {
     #[cfg(any(feature = "mcp", feature = "mcp-client"))]
     pub(crate) secret_key: String,
     pipeline: Pipeline,
+    pub(crate) feedback: feedback::Sender,
+    export_timeout: Duration,
 }
 
 static ACTIVE: RwLock<Option<Arc<Client>>> = RwLock::new(None);
@@ -200,28 +238,50 @@ pub fn init(options: Options) -> Result<(), InitError> {
     Ok(())
 }
 
-/// Exports every span that has ended, and returns the export error if there is one. Before [`init`] it does
-/// nothing. It waits at most `Options::export_timeout`.
+/// Exports every span that has ended and sends every queued score, and returns the export error if there is one.
+/// Before [`init`] it does nothing. It waits at most `Options::export_timeout` for the spans and as long again for
+/// the scores.
 pub async fn flush() -> Result<(), FlushError> {
-    match active() {
-        Some(client) => client.pipeline.flush().await,
-        None => Ok(()),
+    let Some(client) = active() else {
+        return Ok(());
+    };
+    let spans = client.pipeline.flush().await;
+    if !client.feedback.flush().await && spans.is_ok() {
+        return Err(FlushError(format!(
+            "the queued scores were not all sent within {:?}; raise Options::export_timeout if the server is slow",
+            client.export_timeout
+        )));
     }
+    spans
 }
 
-/// Exports what has ended and stops the exporter; [`init`] may be called again afterwards. Spans that end
-/// after `shutdown` are not exported. It waits at most `Options::export_timeout`.
+/// Exports what has ended, sends the queued scores and stops; [`init`] may be called again afterwards. Spans that
+/// end and scores queued after `shutdown` are not sent. It waits at most `Options::export_timeout` in all.
 pub async fn shutdown() -> Result<(), FlushError> {
     let client = active_mut().take();
-    match client {
-        Some(client) => client.pipeline.shutdown().await,
-        None => Ok(()),
-    }
+    let Some(client) = client else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + client.export_timeout;
+    let spans = client.pipeline.shutdown().await;
+    client
+        .feedback
+        .shutdown(deadline.saturating_duration_since(Instant::now()))
+        .await;
+    spans
 }
 
-/// The counters of the process-wide exporter; zero before [`init`] and after [`shutdown`].
+/// The counters of the process-wide exporter and feedback sender; zero before [`init`] and after [`shutdown`].
 pub fn stats() -> Stats {
-    active().map_or_else(Stats::default, |client| client.pipeline.stats())
+    active().map_or_else(Stats::default, |client| {
+        let (feedback_sent, feedback_dropped, feedback_failed) = client.feedback.counts();
+        Stats {
+            feedback_sent,
+            feedback_dropped,
+            feedback_failed,
+            ..client.pipeline.stats()
+        }
+    })
 }
 
 fn validate(options: Options) -> Result<Config, InitError> {
@@ -254,6 +314,7 @@ fn validate(options: Options) -> Result<Config, InitError> {
             attributes.push(KeyValue::new(key, value.clone()));
         }
     }
+    let feedback_url = feedback_route(&options.api_url, base, &options.project_id)?;
     // An empty builder: OTEL_* environment variables do not relabel the export.
     let resource = Resource::builder_empty()
         .with_detector(Box::new(TelemetryResourceDetector))
@@ -269,7 +330,43 @@ fn validate(options: Options) -> Result<Config, InitError> {
         flush_interval: nonzero(options.flush_interval, DEFAULT_FLUSH_INTERVAL),
         export_timeout: nonzero(options.export_timeout, DEFAULT_EXPORT_TIMEOUT),
         resource,
+        feedback_url,
     })
+}
+
+/// The project's feedback route under `api_url` (else under the endpoint `base`), or `None` without a project id.
+fn feedback_route(
+    api_url: &str,
+    base: &str,
+    project_id: &str,
+) -> Result<Option<String>, InitError> {
+    let api = if api_url.is_empty() {
+        base
+    } else {
+        let api = api_url.trim_end_matches('/');
+        let uri: Option<Uri> = api.parse().ok();
+        if !uri.is_some_and(|u| {
+            matches!(u.scheme_str(), Some("http" | "https")) && u.authority().is_some()
+        }) {
+            return Err(InitError::InvalidApiUrl(api_url.to_owned()));
+        }
+        api
+    };
+    if project_id.is_empty() {
+        return Ok(None);
+    }
+    let is_uuid = project_id.len() == 36
+        && project_id.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if !is_uuid {
+        return Err(InitError::InvalidProjectId(project_id.to_owned()));
+    }
+    Ok(Some(format!(
+        "{api}/api/v1/projects/{}/feedback",
+        project_id.to_ascii_lowercase()
+    )))
 }
 
 fn nonzero<T: Default + PartialEq>(value: T, default: T) -> T {
@@ -298,8 +395,20 @@ fn instance_id() -> String {
 
 impl Client {
     fn start(config: Config) -> Result<Self, InitError> {
-        let exporter = exporter(&config)?;
+        let connector = connector()?;
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.secret_key))
+            .map_err(|_| InitError::NotASecretKey)?;
+        authorization.set_sensitive(true);
+        let exporter = exporter(&config, connector.clone(), authorization.clone())?;
         let (processor, pipeline) = export::start(exporter, &config).map_err(InitError::Start)?;
+        let feedback = feedback::start(
+            config.feedback_url.clone(),
+            connector,
+            authorization,
+            pipeline.clone(),
+            config.export_timeout,
+        )
+        .map_err(InitError::Start)?;
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
             // Every span is kept: an unsampled remote parent must not suppress an MCP operation, and
             // OTEL_TRACES_SAMPLER cannot turn sampling off.
@@ -319,13 +428,14 @@ impl Client {
             #[cfg(any(feature = "mcp", feature = "mcp-client"))]
             secret_key: config.secret_key,
             pipeline,
+            feedback,
+            export_timeout: config.export_timeout,
         })
     }
 }
 
-/// The OTLP/HTTP protobuf exporter, on a hyper client with a rustls connector that uses the ring provider.
-fn exporter(config: &Config) -> Result<opentelemetry_otlp::SpanExporter, InitError> {
-    let start = |e: &dyn fmt::Display| InitError::Start(e.to_string());
+/// A rustls connector that uses the ring provider and allows plain HTTP.
+fn connector() -> Result<Connector, InitError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let tls = match hyper_rustls::HttpsConnectorBuilder::new()
         .with_provider_and_native_roots(provider.clone())
@@ -334,12 +444,18 @@ fn exporter(config: &Config) -> Result<opentelemetry_otlp::SpanExporter, InitErr
         // No usable system certificates (a minimal container): trust the bundled Mozilla roots.
         Err(_) => hyper_rustls::HttpsConnectorBuilder::new()
             .with_provider_and_webpki_roots(provider)
-            .map_err(|e| start(&e))?,
+            .map_err(|e| InitError::Start(e.to_string()))?,
     };
-    let connector = tls.https_or_http().enable_http1().build();
-    let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.secret_key))
-        .map_err(|_| InitError::NotASecretKey)?;
-    authorization.set_sensitive(true);
+    Ok(tls.https_or_http().enable_http1().build())
+}
+
+/// The OTLP/HTTP protobuf exporter, on a hyper client with `connector`.
+fn exporter(
+    config: &Config,
+    connector: Connector,
+    authorization: HeaderValue,
+) -> Result<opentelemetry_otlp::SpanExporter, InitError> {
+    let start = |e: &dyn fmt::Display| InitError::Start(e.to_string());
     // The client sets Authorization on every request, so no OTEL_* header variable can replace the key.
     let client = HyperClient::new(connector, config.export_timeout, Some(authorization));
     opentelemetry_otlp::SpanExporter::builder()
