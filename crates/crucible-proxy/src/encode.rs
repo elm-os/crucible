@@ -56,6 +56,15 @@ fn flag(key: &str, flag: bool) -> KeyValue {
     }
 }
 
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    bytes
+        .iter()
+        .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0x0f)]])
+        .map(char::from)
+        .collect()
+}
+
 fn nanos(micros: i64) -> u64 {
     u64::try_from(micros).unwrap_or(0).saturating_mul(1_000)
 }
@@ -130,6 +139,15 @@ fn attributes(op: &Op, capture_source: CaptureSource) -> Vec<KeyValue> {
     if op.result_type != ResultType::None {
         out.push(text("crucible.mcp.result_type", op.result_type.as_str()));
     }
+    // The keyed hashes of contract 9.6, so that readers can chain the rounds of one exchange.
+    for (key, hash) in [
+        ("crucible.mcp.mrtr.state_in", op.mrtr_state_in),
+        ("crucible.mcp.mrtr.state_out", op.mrtr_state_out),
+    ] {
+        if let Some(hash) = hash {
+            out.push(text(key, hex(&hash)));
+        }
+    }
     if let Some(status) = op.http_status {
         out.push(int("http.response.status_code", i64::from(status)));
     }
@@ -183,7 +201,7 @@ fn span(op: &Op, capture_source: CaptureSource) -> Span {
         end_time_unix_nano: start.saturating_add(duration),
         attributes: attributes(op, capture_source),
         status: failed.then(|| Status {
-            message: String::new(),
+            message: op.error_message.clone(),
             code: StatusCode::Error as i32,
         }),
         ..Span::default()

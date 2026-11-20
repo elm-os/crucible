@@ -12,6 +12,8 @@
 //! | `sleep` | Waits `"ms":N` milliseconds, then answers |
 //! | `port` | Answers with the port of a listener this process keeps open (`--listen`) |
 //! | `fail`, `unknown` | Answers with `isError: true`, or with the JSON-RPC error -32601 |
+//! | `leak` | Answers with the JSON-RPC error -32603, whose message holds an email address and a secret key |
+//! | a call of the tool `needs_input` | Without `requestState`: answers `input_required` with the request state of `REQUEST_STATE`. With it: answers as below |
 //! | anything else | Answers with the length and the FNV-1a hash of the request line; a message without an id gets no answer |
 //!
 //! Flags: `--eof-exit N` (exit code at end of input, default 0), `--stderr` (write `ready` to standard error
@@ -23,6 +25,9 @@ use std::io::{BufRead as _, Read as _, Write as _};
 use std::net::TcpListener;
 use std::process::{Command, Stdio, exit};
 use std::time::Duration;
+
+/// The `requestState` that `needs_input` hands out.
+const REQUEST_STATE: &str = "rig-request-state-7f3a";
 
 fn number_after(line: &str, key: &str) -> Option<i64> {
     let rest = &line[line.find(key)? + key.len()..];
@@ -134,6 +139,14 @@ pub fn run(args: &[String]) -> ! {
             format!("{{\"port\":{}}}", port.unwrap_or(0))
         } else if method("fail") {
             "{\"content\":[],\"isError\":true}".to_owned()
+        } else if text.contains("\"name\":\"needs_input\"") && !text.contains("\"requestState\"") {
+            format!(
+                "{{\"resultType\":\"input_required\",\"requestState\":\"{REQUEST_STATE}\",\"inputRequests\":{{}}}}"
+            )
+        } else if method("leak") {
+            writeln!(stdout, "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32603,\"message\":\"lookup failed for ada.lovelace@example.com with key csk_7Hq2mXr9TzP4vLw8NcB1dKf6YsA3eJu5RgQ0hVt2iWo\"}}}}").expect("write");
+            stdout.flush().expect("flush");
+            continue;
         } else if method("unknown") {
             writeln!(stdout, "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32601,\"message\":\"no such method\"}}}}").expect("write");
             stdout.flush().expect("flush");

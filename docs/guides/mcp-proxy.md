@@ -122,9 +122,20 @@ run without telemetry.
 
 Spans are sent as OTLP/HTTP protobuf to `/v1/traces`. They carry the OTel MCP semantic-convention keys and the
 `crucible.mcp.*` keys of contract 9.1: method, tool or prompt name, JSON-RPC id, direction, era and protocol
-version, client and server name, outcome class, JSON-RPC code, HTTP status, progress count, cancellation, and the
-exact sizes of the request and response messages. When a request carries a `traceparent` in `params._meta`, the
-span joins that trace; the proxy reads trace context and never writes it.
+version, client and server name, outcome class, JSON-RPC code, HTTP status, progress count, cancellation, the
+error message of a failed operation, the keyed hashes of a multi-round exchange, and the exact sizes of the request
+and response messages. When a request carries a `traceparent` in `params._meta`, the span joins that trace; the
+proxy reads trace context and never writes it.
+
+- **Error messages.** A failed operation carries the server's own words: the `message` of a JSON-RPC error, or the
+  text of the first text block of a result with `isError: true`. They are scrubbed with the rules the SDKs apply
+  (`conformance/scrub-rules.json`: email addresses, phone numbers, IP addresses, card numbers, keys, tokens and
+  private keys become `[redacted:<kind>]`) and cut at 2 KiB. When the server gave no words, the message says what
+  the proxy saw: `cancelled`, a connection that ended before the answer, or the HTTP status.
+- **Multi-round exchanges.** Each operation whose request carries a `requestState`, and each `input_required`
+  result that returns one, carries the keyed hash of that state (contract 9.6): the first 16 bytes of HMAC-SHA256
+  keyed with the proxy's secret key, as an SDK computes it. Crucible chains the rounds of an exchange by these
+  hashes. The state itself is hashed as it streams past and is never kept or sent.
 
 Crucible records each span as an MCP operation on the server side. A session through `crucible proxy stdio` with
 the server above gave one row per message in the SQL workspace's `crucible_sql.mcp_operations`, with
@@ -142,11 +153,12 @@ Through `crucible proxy http` the rows carry `capture_source = proxy_http`, the 
 hash of the session id, the client's `/24` or `/48` address prefix and its user agent.
 
 Never sent: argument and result content, `Authorization` values, cookies, `Mcp-Param-*` values, raw session ids
-(only their hash), raw IP addresses (only the /24 or /48 prefix) and `requestState`.
+(only their hash), raw IP addresses (only the /24 or /48 prefix), raw `requestState` values (only their keyed hash)
+and unscrubbed error messages.
 
-Not recorded by the proxy: argument and result content, error messages, multi-round state hashes, and the contents
-of compressed bodies (such a request is reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status
-only). An SDK wrapper records these ([MCP](mcp.md)).
+Not recorded by the proxy: argument and result content, and the contents of compressed bodies (such a request is
+reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status only). An SDK wrapper records content
+([MCP](mcp.md)).
 
 ## When Crucible is down
 
@@ -174,6 +186,7 @@ are identical to a run with no telemetry, for every chunking, and added latency 
 | The pumps against a scripted server task behind the `ChildProcess` trait, 150 seeds: chunk splits on both sides, stalls, pipes of every size, crashes in mid line, exit codes, and a client that starts reading three seconds after the server exited | `crates/crucible-proxy/tests/stdio_scripted.rs` |
 | Real processes on Linux and Windows: collector healthy, refused, stalled and absent; lines over 1 MiB; exit codes; a crash in mid answer; signals; end of input; the process tree; a `.cmd` shim | `crates/crucible-proxy/tests/stdio_process.rs` |
 | Real sockets: the same requests with and without the proxy, event streams, the 401 challenge, a legacy session, client disconnect, identity modes, and a planted token that must appear in no export | `crates/crucible-proxy/tests/http_process.rs` |
+| Error messages scrubbed with the shared rules and cut at 2 KiB, the multi-round state hashes, and a raw `requestState` that never leaves the proxy: in the core, through a real child process, and against a full JSON parse of the scanner's input | `crates/crucible-proxy/tests/core_parity.rs`, `crates/crucible-proxy/tests/stdio_process.rs`, `crates/crucible-proxy/tests/scan_diff.rs` |
 | The `crucible` binary itself: exit code, dying of the child's signal, the parent-death signal, a clean standard output; on Windows, the server's process tree ending when the proxy process is killed | `crates/crucible/tests/proxy.rs`, `crates/crucible/tests/proxy_windows.rs` |
 | Every exported attribute against the key registry of the SDK conformance suite | the process tests, with `conformance/registry.json` |
 

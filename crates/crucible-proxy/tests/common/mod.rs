@@ -13,6 +13,7 @@ use crucible_fake_collector::{Collector, Event, RecordedSpan};
 use crucible_proxy::encode::ResourceInfo;
 use crucible_proxy::live::{ExportConfig, Telemetry};
 use crucible_proxy::net::Target;
+use crucible_proxy::scan::StateKey;
 use crucible_proxy::{CoreConfig, ProxyCore};
 use crucible_records::CaptureSource;
 
@@ -79,7 +80,13 @@ pub async fn start_sink(env: &Env, sink: Sink, capture_source: CaptureSource) ->
     let telemetry = match endpoint {
         Some(endpoint) => Telemetry::start(
             env,
-            ProxyCore::new(CoreConfig::new(capture_source), env.rng.fork("proxy")),
+            ProxyCore::new(
+                CoreConfig {
+                    state_key: StateKey::new(SECRET),
+                    ..CoreConfig::new(capture_source)
+                },
+                env.rng.fork("proxy"),
+            ),
             ExportConfig {
                 endpoint: Target::parse(&endpoint).unwrap(),
                 secret_key: SECRET.to_owned(),
