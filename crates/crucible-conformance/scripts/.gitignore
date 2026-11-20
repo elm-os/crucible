@@ -1,2 +1,3 @@
-# The server configuration that sqliso.sh writes for a run and removes after it.
+# The server configurations that sqliso.sh and conformance.sh write for a run and remove after it.
 .sqliso-config.xml
+.server-config.xml
