@@ -1,15 +1,14 @@
 import type { Metadata } from "next";
-import { EmptyState } from "@/components/empty-state";
+import { Suspense } from "react";
 import { SectionFrame } from "@/components/section";
+import { ProjectSettings } from "@/features/settings/project";
 
 export const metadata: Metadata = { title: "Project settings" };
 
-export default function Page() {
+export default function ProjectSettingsPage() {
   return (
-    <SectionFrame title="About project settings">
-      <EmptyState kind="planned" title="Project settings are not built yet.">
-        Project settings will manage the project&apos;s name, retention and model prices.
-      </EmptyState>
-    </SectionFrame>
+    <Suspense fallback={<SectionFrame title="Project details">{null}</SectionFrame>}>
+      <ProjectSettings />
+    </Suspense>
   );
 }
