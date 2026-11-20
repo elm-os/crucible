@@ -392,7 +392,6 @@ async fn open_app(
         Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
         None => Arc::new(keys),
     };
-    let ingest = Ingest::new(env, wal.clone(), &config, Arc::clone(&keys), ingest);
     // Retention and deletion need the control plane and the WAL of this node.
     let lifecycle = control.map(|control| {
         Arc::new(Lifecycle::new(
@@ -401,6 +400,12 @@ async fn open_app(
             wal.clone(),
         ))
     });
+    // Ingest rejects spans older than their project's retention horizon (contract 1.2).
+    let ingest = IngestConfig {
+        horizon: lifecycle.as_ref().map(|lifecycle| lifecycle.horizon()),
+        ..ingest
+    };
+    let ingest = Ingest::new(env, wal.clone(), &config, Arc::clone(&keys), ingest);
     let settings = settings_source(lifecycle.as_ref());
     let gate = Arc::new(Gate {
         closed: RwLock::new(closed.map(str::to_owned)),

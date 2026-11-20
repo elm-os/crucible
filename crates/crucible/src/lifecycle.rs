@@ -11,13 +11,15 @@ use std::sync::{Arc, OnceLock};
 use crucible_api::{ProjectSettings, ProjectSettingsSource};
 use crucible_control::ControlStore;
 use crucible_env::{Env, TelemetryStore};
+use crucible_ingest::EventHorizon;
 use crucible_jobs::Job;
 use crucible_lifecycle::{
-    LeaderSource, LeaderStores, LifecycleConfig, NodeState, Service, Subjects, WalLog, leader_jobs,
-    node_job,
+    LeaderSource, LeaderStores, LifecycleConfig, NodeState, RetentionSnapshot, Service, Subjects,
+    WalLog, leader_jobs, node_job,
 };
+use crucible_plan::RetentionClamp;
 use crucible_query::{Hidden, HiddenSource};
-use crucible_records::ProjectId;
+use crucible_records::{ProjectId, TableId, Timestamp};
 use crucible_wal::Wal;
 
 /// The lifecycle of this node. It exists when the node has a control plane.
@@ -84,5 +86,71 @@ impl ProjectSettingsSource for Lifecycle {
 impl HiddenSource for Lifecycle {
     fn hidden(&self, project_id: ProjectId) -> Vec<Hidden> {
         self.node.pending().hidden(project_id)
+    }
+}
+
+impl Lifecycle {
+    /// The retention horizon that ingest rejects older spans by (contract 1.2).
+    pub(crate) fn horizon(&self) -> Arc<dyn EventHorizon> {
+        Arc::new(Horizon(Arc::clone(self.node.retention())))
+    }
+}
+
+/// A project's retention horizon: the first instant of `span_core` that reads do not hide, from the node's
+/// snapshot of every project's retention and floors. A span older than it would be hidden at once, so ingest
+/// rejects it instead of acknowledging it.
+#[derive(Debug)]
+struct Horizon(Arc<RetentionSnapshot>);
+
+impl EventHorizon for Horizon {
+    fn horizon(&self, project: ProjectId, now: Timestamp) -> Option<Timestamp> {
+        let (retention, floors) = self.0.get(project);
+        RetentionClamp::new(retention, now)
+            .with_floors(floors)
+            .cutoff(TableId::SpanCore)
+            .ok()
+            .flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_query::RetentionFloors;
+    use crucible_schema::RetentionSettings;
+
+    use super::*;
+
+    /// The horizon is the read cut-off of `span_core`: the start of the UTC day `retention_days` back, never
+    /// below a floor that an earlier, shorter retention set, and none for a project that keeps everything.
+    #[test]
+    fn the_horizon_is_the_read_cut_off_of_spans() {
+        let snapshot = Arc::new(RetentionSnapshot::default());
+        let horizon = Horizon(Arc::clone(&snapshot));
+        let (kept, ninety, floored) = (
+            ProjectId::from_bytes([1; 16]),
+            ProjectId::from_bytes([2; 16]),
+            ProjectId::from_bytes([3; 16]),
+        );
+        let now = Timestamp::parse_rfc3339("2026-11-19T18:30:00Z").unwrap();
+        let days = |n| RetentionSettings {
+            retention_days: Some(n),
+            ..RetentionSettings::default()
+        };
+        snapshot.set(ninety, days(90), RetentionFloors::default());
+        let floor = Timestamp::parse_rfc3339("2026-10-01T00:00:00Z").unwrap();
+        snapshot.set(
+            floored,
+            days(90),
+            RetentionFloors {
+                retention: Some(floor),
+                ..RetentionFloors::default()
+            },
+        );
+        assert_eq!(horizon.horizon(kept, now), None);
+        assert_eq!(
+            horizon.horizon(ninety, now),
+            Some(Timestamp::parse_rfc3339("2026-08-21T00:00:00Z").unwrap())
+        );
+        assert_eq!(horizon.horizon(floored, now), Some(floor));
     }
 }

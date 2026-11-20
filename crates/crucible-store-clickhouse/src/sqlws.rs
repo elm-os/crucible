@@ -152,7 +152,8 @@ fn sql_error(failure: Failure) -> SqlError {
     match failure {
         Failure::Server { code, message } => classify_sql(code, &message),
         Failure::NotSent(message) | Failure::Network(message) => SqlError::Unavailable(message),
-        Failure::Timeout => SqlError::Timeout,
+        // A workspace statement may run as long as its profile allows, so the deadline stays a timeout.
+        Failure::Timeout | Failure::NoAnswer => SqlError::Timeout,
         Failure::Client(message) => SqlError::Internal(message),
     }
 }
