@@ -168,18 +168,17 @@ pub(crate) fn list_error(error: &QueryServiceError, request_id: RequestId) -> To
                 .iter()
                 .any(|known| known.as_str() == *field) =>
         {
-            let message = match *field {
-                "metadata" | "observation_type" => {
+            // The trace list refuses `metadata` with `observation_type` as the REST list does: code `conflict`
+            // (contract 12.5).
+            let (code, message) = match *field {
+                "metadata" | "observation_type" => (
+                    "conflict",
                     "list_traces cannot combine `metadata` with `observation_type`; drop one of them, or use \
-                     list_spans, which tests both on each span"
-                }
-                _ => "this list cannot test this member; drop it",
+                     list_spans, which tests both on each span",
+                ),
+                _ => ("unsupported", "this list cannot test this member; drop it"),
             };
-            ToolError::validation(vec![field_error(
-                &format!("filter/{field}"),
-                "unsupported",
-                message,
-            )])
+            ToolError::validation(vec![field_error(&format!("filter/{field}"), code, message)])
         }
         _ => ToolError::query(error, request_id),
     }
