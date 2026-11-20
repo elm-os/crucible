@@ -40,10 +40,10 @@ The editor needs a screen at least 768 px wide; on a narrower one the dashboard 
 
 - **Add a widget** opens a sheet: the title, the kind, the data it reads (agent spans, traces or MCP operations), the
   measures, up to two group-by dimensions, how many keys to show, the bucket width, and for a time series lines or
-  bars. A widget over MCP operations also reads one side (the server side unless you choose the client side) from
-  one capture source (Automatic picks each server's SDK, else its proxy, else OTLP), and counts calls that failed
-  because of what the caller sent only when **Include caller faults** is on. A preview draws the widget as soon as
-  it is complete. A text widget takes its text instead of a query.
+  bars. A widget over MCP operations reads one measure, from one side (the server side unless you choose the client
+  side) and one capture source (Automatic picks each server's SDK, else its proxy, else OTLP), and counts calls that
+  failed because of what the caller sent only when **Include caller faults** is on; a second measure is refused when
+  you save. A preview draws the widget as soon as it is complete. A text widget takes its text instead of a query.
 - **Layout**: drag a widget by its move handle and resize it by its corner, or focus a handle and use the arrow keys.
   A move that would overlap another widget is refused and announced.
 - **Save** stores the name, the description and every widget in one change, so a layout that moves several widgets
