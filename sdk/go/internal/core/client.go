@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +85,7 @@ func New(cfg Config) (*Client, error) {
 		sdktrace.WithResource(res),
 		sdktrace.WithSpanProcessor(processor),
 	)
+	processors.Store(trace.TracerProvider(provider), processor)
 	return &Client{
 		provider:  provider,
 		tracer:    provider.Tracer(ScopeName, trace.WithInstrumentationVersion(Version)),
@@ -135,6 +137,7 @@ func (c *Client) Flush(ctx context.Context) error {
 // Shutdown flushes and stops the client: the spans first, then the scores.
 func (c *Client) Shutdown(ctx context.Context) error {
 	err := c.provider.Shutdown(ctx)
+	processors.Delete(trace.TracerProvider(c.provider))
 	if ferr := c.feedback.Shutdown(ctx); err == nil {
 		err = ferr
 	}
@@ -152,6 +155,18 @@ func (c *Client) Stats() Stats {
 }
 
 var active atomic.Pointer[Client]
+
+// processors maps each client's tracer provider to its processor, so that the work a span defers reaches the
+// processor that exports the span, even when another client was installed while the span ran.
+var processors sync.Map
+
+// Defer attaches work to span, to run on the export path once span has ended (see Deferred). Without a client the
+// span records nothing, and the work is dropped.
+func Defer(span trace.Span, work Deferred) {
+	if p, ok := processors.Load(span.TracerProvider()); ok {
+		p.(*Processor).Defer(span.SpanContext().SpanID(), work)
+	}
+}
 
 // Install makes c the process-wide client. It reports false when another client is installed.
 func Install(c *Client) bool { return active.CompareAndSwap(nil, c) }

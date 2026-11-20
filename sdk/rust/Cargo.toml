@@ -87,3 +87,7 @@ required-features = ["mcp", "test-support"]
 [[test]]
 name = "export_stall"
 required-features = ["mcp"]
+
+[[test]]
+name = "export_latency"
+required-features = ["mcp"]
