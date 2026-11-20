@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Crucible does not work as its docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report a security vulnerability here: use the Security tab's "Report a vulnerability" instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Include the exact error or refusal text.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, requests or spans that show the problem, with secrets removed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `crucible --version` and the commit you built from.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server (ingest, API, MCP server)
+        - UI
+        - MCP proxy
+        - TypeScript SDK
+        - Python SDK
+        - Go SDK
+        - Rust SDK
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: How you run it (Compose file, binary), the ClickHouse and Postgres versions, and the operating system.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The answer of `/readyz` and the relevant lines of `docker compose logs crucible`, with secrets removed.
+      render: text
