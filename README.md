@@ -75,24 +75,23 @@ everything else (users, projects, keys, alerts) in Postgres.
 ```mermaid
 flowchart TB
     apps["Your agents and MCP servers"]
-    subgraph crucible["Crucible: one Rust program"]
-        receive["1. Receive traces"]
-        log[("2. Save to a log on disk, then reply OK")]
-        memory["Newest traces, kept in memory"]
-        copy["3. Copy to ClickHouse in batches, never twice"]
-        read["4. Web UI, REST API and MCP server"]
-    end
+    receive["1. Crucible receives the traces"]
+    log[("2. Crucible saves them to a log on disk, then replies OK")]
     clickhouse[("ClickHouse: your traces")]
+    memory["The newest traces, kept in memory"]
     postgres[("Postgres: users, projects, API keys, alerts, dashboards")]
+    read["4. Crucible's web UI, REST API and MCP server"]
+    you["You and your coding agents"]
 
     apps -->|OpenTelemetry| receive
     receive --> log
+    log -->|"3. copied in batches, never twice"| clickhouse
     log --> memory
-    log --> copy
-    copy --> clickhouse
+    log ~~~ postgres
     clickhouse --> read
     memory --> read
-    postgres --- read
+    postgres <--> read
+    read --> you
 ```
 
 ### What happens to a trace
