@@ -1,21 +1,18 @@
 # REST API
 
-The REST API reads back what Crucible stored: traces, their spans and payloads, and full-text search over them. This
-page covers those reads. Sign-in, the organization, projects and API keys are in the OpenAPI document
-(`specs/openapi/crucible-v1.json`) and the [authorization matrix](../architecture/authz-matrix.md). The rest of the
-API that [contract 12](../architecture/contracts.md#12-api) describes, from dashboards to alerts and exports, is
-planned.
+The REST API serves everything the UI shows and does: traces, spans, sessions and users, search and payloads,
+facts, metrics, the SQL workspace, alerts and channels, exports, retention and deletion, and the organization,
+projects, members and keys. This page covers how to call it and lists every route; the OpenAPI document
+(`specs/openapi/crucible-v1.json`) has every request and response schema.
 
-The examples use four shell variables: the server's main listener, a project's secret and public keys, and that
-project's id.
-Every example on this page was run against a `crucible serve` binary with ClickHouse, and the responses are the
-ones it gave.
+The examples use three shell variables: the server's main listener, a project's secret key and that project's id.
+Every example on this page was run against a `crucible serve` binary with ClickHouse and Postgres, and the
+responses are the ones it gave; long ones are cut where they repeat.
 
 ```sh
 export CRUCIBLE_URL=http://127.0.0.1:8080
 export CRUCIBLE_SECRET_KEY=csk_...
-export CRUCIBLE_PUBLIC_KEY=cpk_...
-export PROJECT_ID=0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
+export PROJECT_ID=01a1f633-d59a-7014-8007-ae2dcfb94996
 ```
 
 ## Base path and versioning
@@ -24,73 +21,262 @@ The API lives under `/api/v1` on the main listener (`server.listen`, default `0.
 never fall back to the UI: an unknown path answers a problem 404, and a method a route does not take answers 405
 with an `Allow` header. The read routes answer `HEAD` as well as `GET`.
 
-Changes to `/api/v1` will be additive: responses may gain fields, so a client should ignore fields it does not
-know. A breaking change would get a new base path. The `Deprecation` and `Sunset` headers that would announce a
-retirement are planned.
+Changes to `/api/v1` are additive: responses may gain fields, so a client should ignore fields it does not know. A
+breaking change gets a new base path.
 
-Requests, in turn, are checked strictly: an unknown query parameter, a repeated one or an unknown member of a JSON
-body is refused with `validation_failed`. A request body may hold at most 1 MiB, and a request that has not
-finished after 30 s answers `request_timeout`. Every response carries an `X-Request-Id` header, a UUIDv7 that
-problem documents repeat as `request_id`; an `X-Request-Id` sent by the client is ignored.
+Requests are checked strictly: an unknown query parameter, a repeated one or an unknown member of a JSON body is
+refused with `validation_failed`. A request body may hold at most 1 MiB, and a request that has not finished after
+30 s answers `request_timeout` (SQL runs have their own limit). Every response carries an `X-Request-Id` header, a
+UUIDv7 that problem documents repeat as `request_id`; an `X-Request-Id` sent by the client is ignored.
 
-A server started without ClickHouse only ingests. Its API still checks the key and the parameters of every request,
-then answers 503 `telemetry_store_unavailable`.
-
-## Routes
-
-All paths are under `/api/v1`, and `{project_id}` is the project's id.
-
-| Method and path | Returns |
-|---|---|
-| `GET projects/{project_id}/data-bounds` | Where the project's data begins and ends, its retention horizon, the widest window a request may ask for and the server's clock |
-| `GET projects/{project_id}/traces` | One page of traces whose head span started in the window, newest first; with `since`, the traces that arrived after a head cursor (live tail) |
-| `GET projects/{project_id}/traces/{trace_id}` | One trace with its spans: every span up to 5,000 spans; above that the root spans and their direct children, at most 1,000, with `paged: true` |
-| `GET projects/{project_id}/traces/{trace_id}/spans` | One page of the direct children of `parent_span_id`, in start order |
-| `GET projects/{project_id}/spans/{trace_id}/{span_id}/payload` | One payload field of a span as raw bytes, whole or as a byte range |
-| `POST projects/{project_id}/search` | One page of spans whose input, output or metadata hold a query, newest first, with the matching snippets |
-| `GET projects/{project_id}/retention` | The project's retention settings and what earlier settings keep hidden; `ETag` is the project's version |
-| `PUT projects/{project_id}/retention` | Replaces the three retention settings; needs `If-Match` and the project admin role |
-| `GET projects/{project_id}/deletion-requests` | One page of the project's deletion requests, newest first |
-| `POST projects/{project_id}/deletion-requests` | Requests the deletion of traces, or of everything of one user or session; honours `Idempotency-Key` |
-| `GET projects/{project_id}/deletion-requests/{request_id}` | One deletion request with its state and the status of each place it reaches |
-
-The head span of a trace is its root span, or the earliest span while the root has not arrived. Ids are lowercase
-hex in responses; uppercase hex in a path is accepted.
+A server started without ClickHouse only ingests. Its API still checks the credential and the parameters of every
+request, then answers 503 `telemetry_store_unavailable` for telemetry reads.
 
 ## Authentication
 
-Send the project's secret key as a Bearer token:
+A request authenticates in one of three ways:
 
-```text
-Authorization: Bearer <secret key>
-```
+| Form | Header | Who uses it |
+|---|---|---|
+| A project's secret key | `Authorization: Bearer <secret key>` | Programs, agents and scripts |
+| A project's key pair | `Authorization: Basic base64(<public key>:<secret key>)` | Programs whose exporter sends Basic auth; with Postgres only |
+| A session | The session cookie, plus `X-Crucible-CSRF` on writes | The UI, and scripts that sign in as a person |
 
-With Postgres the key is made in Settings or with `crucible admin create-key`; without Postgres it comes from the
-server's keys file (`server.keys_file`, described in [sending traces](../guides/sending-traces.md#authentication)).
-Either way it can read only its own project.
-`{project_id}` must be that project: any other id, a malformed one included, answers 404 `not_found`, so a key
-learns nothing about projects it cannot read. A missing or unknown key answers 401 `unauthenticated` with
-`WWW-Authenticate: Bearer`.
+A request with an `Authorization` header is authenticated by the key alone; the cookie is ignored.
 
-With Postgres the API also takes the key pair as Basic auth, a key needs the scope of the call (`read` for every
-read on this page), and a signed-in browser sends its session cookie instead, with the `X-Crucible-CSRF` header on
-writes. Without Postgres a key in the file has the scopes of a new key (`ingest`, `read` and `write`), and the key
-pair as Basic auth works on ingest but not on the API, where it answers 401:
+**Keys** are made in **Settings**, **API keys**, through `POST projects/{project_id}/api-keys`, or with
+`crucible admin create-key`. A key belongs to one project and acts as a project principal with the permissions its
+scopes grant: `ingest` (send telemetry), `read` (every read, exports and the MCP server), `write` (facts), `delete`
+(deletion requests) and `sql` (SQL runs). A new key has `ingest`, `read` and `write`. A key never manages keys,
+members, channels, alert rules or settings. `{project_id}` must be the key's project: any other id, a malformed one
+included, answers 404 `not_found`, so a key learns nothing about projects it cannot read. A missing or unknown key
+answers 401 `unauthenticated` with `WWW-Authenticate: Bearer`. Without Postgres the keys come from the server's keys
+file, each with the scopes `ingest`, `read` and `write`, and the API takes them as Bearer only: the key pair as Basic
+answers 401 there.
+
+**Sessions** need the control plane. Sign in with `POST auth/login`; the server sets the session cookie,
+`crucible_session` over plain HTTP or `__Host-crucible_session` with `Secure` when `server.public_url` is an `https`
+address, valid for 7 days idle and 30 days at most. A cookie-authenticated request other than `GET` and `HEAD`
+(`POST` reads such as `search` and `metrics/query` included) must carry the session's CSRF token, the `csrf_token`
+of the sign-in answer or of `GET auth/session`, as `X-Crucible-CSRF`, and must come from the server's own origin:
+`server.public_url` when set, otherwise the request's `Host`, or one of `server.allowed_origins`. The requests made
+before a session exists (sign-in, first-owner setup, password reset, accepting an invitation) send
+`X-Crucible-CSRF: prelogin` and pass the same origin check.
 
 ```sh
-curl -s -u "$CRUCIBLE_PUBLIC_KEY:$CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/data-bounds"
+curl -s -c cookies.txt -X POST "$CRUCIBLE_URL/api/v1/auth/login" \
+  -H 'Content-Type: application/json' -H 'X-Crucible-CSRF: prelogin' -H "Origin: $CRUCIBLE_URL" \
+  -d '{"email": "owner@example.com", "password": "<password>"}'
 ```
+
+The answer is the session: the user, the organization and the user's role in it, each project the user may see
+with the user's role and permissions there, the sign-in options, `csrf_token`, the session's expiry, and the
+server's features:
 
 ```json
 {
-  "type": "urn:crucible:problem:unauthenticated",
-  "title": "Unauthenticated",
-  "status": 401,
-  "detail": "a valid secret key is required as `Authorization: Bearer <key>`",
-  "code": "unauthenticated",
-  "request_id": "01a1f0b2-6d5a-7c3c-b1f4-b755386a1d75"
+  "user": {"id": "01a1f633-d59a-7014-8007-ae2dcfb94995", "email": "owner@example.com", "name": "Owner"},
+  "org": {"id": "01a1f633-d59a-7014-8007-ae2dcfb94994", "name": "Acme", "role": "owner"},
+  "projects": [
+    {
+      "id": "01a1f633-d59a-7014-8007-ae2dcfb94996",
+      "name": "Default",
+      "slug": "default",
+      "role": "admin",
+      "permissions": ["read", "write_facts", "edit_content", "run_sql", "export", "run_saved_query", "channels", "manage", "delete_traces", "delete_by_user"]
+    }
+  ],
+  "providers": [],
+  "password_login_enabled": true,
+  "csrf_token": "<token>",
+  "session": {"expires_at": "2026-12-20T00:11:32.825262Z", "idle_expires_at": "2026-11-27T00:38:46.795830Z", "auth_method": "password"},
+  "features": {"sql_workspace": {"enabled": true}, "media": {"enabled": false, "max_bytes": 0}, "smtp": false, "signup_mode": "invite_only"},
+  "server": {"version": "0.0.0"}
 }
 ```
+
+A write with the cookie then sends the token:
+
+```sh
+curl -s -b cookies.txt -X POST "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/api-keys" \
+  -H 'Content-Type: application/json' -H "X-Crucible-CSRF: <csrf_token>" -H "Origin: $CRUCIBLE_URL" \
+  -d '{"note": "exporter", "scopes": ["ingest"]}'
+```
+
+**Permissions.** Every route needs a permission. People get project permissions from their project role (`admin`,
+`member`, `viewer`) and organization permissions from their organization role (`owner`, `admin`, `member`,
+`viewer`); keys get project permissions from their scopes. A caller who may not see the project gets 404
+`not_found`; one who sees it without the permission gets 403 `forbidden`, with a message that names the permission.
+[The authorization matrix](../architecture/authz-matrix.md) lists the permission of every route and which roles and
+scopes grant it; the tables below repeat it.
+
+## Routes
+
+All paths are under `/api/v1`. The permission column names the project permission a route needs, and the key scope
+that grants it ("no key" means that only a signed-in person may call it); `org` permissions and `session` need a
+signed-in person, and `none` needs no credential.
+
+### Traces, spans and payloads
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/data-bounds` | Get data bounds | `read`; key `read` |
+| `GET projects/{project_id}/spans` | List spans | `read`; key `read` |
+| `GET projects/{project_id}/spans/{trace_id}/{span_id}/payload` | Read a span's payload field | `read`; key `read` |
+| `GET projects/{project_id}/traces` | List traces | `read`; key `read` |
+| `GET projects/{project_id}/traces/{trace_id}` | Get a trace | `read`; key `read` |
+| `GET projects/{project_id}/traces/{trace_id}/spans` | List the children of a span | `read`; key `read` |
+
+### Sessions
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/sessions` | List sessions | `read`; key `read` |
+| `GET projects/{project_id}/sessions/{session_id}` | Get a session | `read`; key `read` |
+
+### Users
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/users` | List users | `read`; key `read` |
+| `GET projects/{project_id}/users/{user_id}` | Get a user | `read`; key `read` |
+| `GET projects/{project_id}/users/{user_id}/sessions` | List the sessions of a user | `read`; key `read` |
+
+### Search
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `POST projects/{project_id}/search` | Search span payloads | `read`; key `read` |
+
+### Metrics and filter values
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/filter-values` | Get filter values | `read`; key `read` |
+| `POST projects/{project_id}/metrics/query` | Query metrics | `read`; key `read` |
+| `GET projects/{project_id}/metrics/schema` | Get the metrics schema | `read`; key `read` |
+
+### Facts
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `POST projects/{project_id}/corrections` | Correct an output | `write_facts`; key `write` |
+| `GET projects/{project_id}/facts` | Get the facts of a target | `read`; key `read` |
+| `POST projects/{project_id}/feedback` | Record feedback | `write_facts`; key `write` |
+| `POST projects/{project_id}/flags` | Set a flag | `write_facts`; key `write` |
+| `POST projects/{project_id}/tags` | Edit a tag | `write_facts`; key `write` |
+
+### SQL workspace
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `POST projects/{project_id}/sql/export` | Export SQL | `run_sql`; key `sql` |
+| `POST projects/{project_id}/sql/run` | Run SQL | `run_sql`; key `sql` |
+| `GET projects/{project_id}/sql/runs` | List SQL runs | `read`; key `read` |
+| `DELETE projects/{project_id}/sql/runs/{run_id}` | Cancel a SQL run | `run_saved_query`; key `sql` |
+| `GET projects/{project_id}/sql/saved-queries` | List saved queries | `read`; key `read` |
+| `POST projects/{project_id}/sql/saved-queries` | Create a saved query | `edit_content`; no key |
+| `GET projects/{project_id}/sql/saved-queries/{query_id}` | Get a saved query | `read`; key `read` |
+| `DELETE projects/{project_id}/sql/saved-queries/{query_id}` | Delete a saved query | `edit_content`; no key |
+| `PATCH projects/{project_id}/sql/saved-queries/{query_id}` | Update a saved query | `edit_content`; no key |
+| `POST projects/{project_id}/sql/saved-queries/{query_id}/run` | Run a saved query | `run_saved_query`; key `sql` |
+| `GET projects/{project_id}/sql/schema` | Get the SQL schema | `read`; key `read` |
+
+### Alerts
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/alerts` | List alert rules | `read`; key `read` |
+| `POST projects/{project_id}/alerts` | Create an alert rule | `edit_content`; no key |
+| `POST projects/{project_id}/alerts/preview` | Preview an alert rule | `read`; key `read` |
+| `GET projects/{project_id}/alerts/{alert_id}` | Get an alert rule | `read`; key `read` |
+| `DELETE projects/{project_id}/alerts/{alert_id}` | Delete an alert rule | `edit_content`; no key |
+| `PATCH projects/{project_id}/alerts/{alert_id}` | Change an alert rule | `edit_content`; no key |
+| `GET projects/{project_id}/alerts/{alert_id}/history` | Get the history of an alert rule | `read`; key `read` |
+
+### Channels
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/channels` | List channels | `edit_content`; no key |
+| `POST projects/{project_id}/channels` | Create a channel | `channels`; no key |
+| `GET projects/{project_id}/channels/{channel_id}` | Get a channel | `channels`; no key |
+| `DELETE projects/{project_id}/channels/{channel_id}` | Delete a channel | `channels`; no key |
+| `PATCH projects/{project_id}/channels/{channel_id}` | Change a channel | `channels`; no key |
+| `POST projects/{project_id}/channels/{channel_id}/test` | Send a test notification | `channels`; no key |
+
+### Exports
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/exports` | List exports | `read`; key `read` |
+| `POST projects/{project_id}/exports` | Create an export | `export`; key `read` |
+| `GET projects/{project_id}/exports/{export_id}` | Get an export | `read`; key `read` |
+| `GET projects/{project_id}/exports/{export_id}/download` | Download an export | `read`; key `read` |
+
+### Retention and deletion
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects/{project_id}/deletion-requests` | List deletion requests | `read`; key `read` |
+| `POST projects/{project_id}/deletion-requests` | Request a deletion | `delete_traces`; key `delete` |
+| `GET projects/{project_id}/deletion-requests/{request_id}` | Get a deletion request | `read`; key `read` |
+| `GET projects/{project_id}/retention` | Get retention | `read`; key `read` |
+| `PUT projects/{project_id}/retention` | Set retention | `manage`; no key |
+
+### Sign-in and account
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET account` | Get the account | session |
+| `PATCH account` | Update the account | session |
+| `POST auth/invitations/accept` | Accept an invitation | none |
+| `POST auth/login` | Sign in | none |
+| `POST auth/logout` | Sign out | session |
+| `GET auth/oauth/{provider_id}/callback` | Finish a provider sign-in | none |
+| `GET auth/oauth/{provider_id}/start` | Start a provider sign-in | none |
+| `POST auth/password/change` | Change the password | session |
+| `POST auth/password/reset-confirm` | Reset the password | none |
+| `POST auth/password/reset-request` | Ask for a password reset | none |
+| `GET auth/providers` | List sign-in options | none |
+| `GET auth/session` | Get the session | session |
+| `POST auth/setup` | Set up the first owner | none |
+
+### Organization
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET org` | Get the organization | org `org_read` |
+| `PATCH org` | Update the organization | org `org_settings` |
+| `GET org/auth-providers` | List sign-in providers | org `org_settings` |
+| `POST org/auth-providers` | Add a sign-in provider | org `org_settings` |
+| `DELETE org/auth-providers/{provider_id}` | Delete a sign-in provider | org `org_settings` |
+| `PATCH org/auth-providers/{provider_id}` | Change a sign-in provider | org `org_settings` |
+| `GET org/invitations` | List invitations | org `org_read` |
+| `POST org/invitations` | Invite someone | org `org_members` |
+| `DELETE org/invitations/{invitation_id}` | Revoke an invitation | org `org_members` |
+| `GET org/members` | List members | org `org_read` |
+| `DELETE org/members/{user_id}` | Remove a member | org `org_members` |
+| `PATCH org/members/{user_id}` | Change a member's role | org `org_members` |
+| `POST org/transfer-ownership` | Transfer ownership | org `org_transfer_ownership` |
+
+### Projects, members and keys
+
+| Method and path | What it does | Permission |
+|---|---|---|
+| `GET projects` | List projects | session |
+| `POST projects` | Create a project | org `org_projects` |
+| `GET projects/{project_id}` | Get a project | session |
+| `DELETE projects/{project_id}` | Delete a project | org `org_projects` |
+| `PATCH projects/{project_id}` | Rename a project | `manage`; no key |
+| `GET projects/{project_id}/api-keys` | List API keys | `manage`; no key |
+| `POST projects/{project_id}/api-keys` | Create an API key | `manage`; no key |
+| `DELETE projects/{project_id}/api-keys/{key_id}` | Revoke an API key | `manage`; no key |
+| `PATCH projects/{project_id}/api-keys/{key_id}` | Change an API key | `manage`; no key |
+| `GET projects/{project_id}/members` | List project members | `manage`; no key |
+| `POST projects/{project_id}/members` | Add a project member | `manage`; no key |
+| `DELETE projects/{project_id}/members/{user_id}` | Remove a project member | `manage`; no key |
+| `PATCH projects/{project_id}/members/{user_id}` | Change a project member's role | `manage`; no key |
 
 ## Reading traces
 
@@ -103,85 +289,39 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/pr
 ```json
 {
   "spans": {
-    "first": "2026-11-18T22:01:00.000000Z",
-    "last": "2026-11-18T22:02:00.000000Z"
+    "first": "2026-11-19T23:45:00.000000Z",
+    "last": "2026-11-20T00:42:00.000000Z"
   },
   "mcp": {
     "client": {
-      "first": null,
-      "last": null
+      "first": "2026-11-19T23:45:00.000000Z",
+      "last": "2026-11-19T23:45:00.000000Z"
     },
     "server": {
-      "first": null,
-      "last": null
+      "first": "2026-11-20T00:14:00.000000Z",
+      "last": "2026-11-20T00:24:00.000000Z"
     }
   },
-  "retention_horizon": null,
+  "retention_horizon": "2026-08-22T00:00:00.000000Z",
   "max_window_days": 30,
-  "server_time": "2026-11-18T22:06:27.719510Z",
+  "server_time": "2026-11-20T00:45:39.660331Z",
   "meta": {
-    "as_of": "2026-11-18T22:06:27.719510Z",
+    "as_of": "2026-11-20T00:45:39.660331Z",
     "partial": false,
     "consistency": "strong"
   }
 }
 ```
 
-`spans` and `mcp` give the first and last minute with data; the server does not record MCP operations yet, which is
-planned, so `mcp` stays null. `retention_horizon` is null while the project keeps its data forever, which is the default;
-`PUT projects/{project_id}/retention` sets a retention in days. `max_window_days` is the widest window a list or search may
-ask for.
+`spans` and `mcp` give the first and last minute with spans and with MCP operations on each side.
+`retention_horizon` is where the project's retention cuts off, null while it keeps its data forever (the default).
+`max_window_days` is the widest window a list or search may ask for.
 
-The newest trace in a window:
+The traces of a window, newest first:
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-11-18T00:00:00Z&to=2026-11-19T00:00:00Z&limit=1"
-```
-
-```json
-{
-  "data": [
-    {
-      "trace_id": "5b8efff798038103d269b633813fc60c",
-      "name": "hello crucible",
-      "trace_name": "",
-      "head_kind": "root",
-      "start_time": "2026-11-18T22:02:33.790201Z",
-      "duration_us": 250000,
-      "status_code": "unset",
-      "level": "default",
-      "span_count": 1,
-      "error_count": 0,
-      "total_cost_usd": 0.0,
-      "input_tokens": 0,
-      "output_tokens": 0,
-      "total_tokens": 0,
-      "user_id": "",
-      "session_id": "",
-      "environment": "default",
-      "release": "",
-      "tags": [],
-      "saturated": false
-    }
-  ],
-  "next_cursor": "v1.master-0.AQEBAbkdQK_7Mk1UoLw52o1sWfjjsMRCmPwcFJr79MiZb7kkAAZglDj9LiEABmCoVtSOIQAGYIGxL6AAAAZglc8HAAAABmCUOP0uJAAGYJQrCl7598RE8FuO__eYA4ED0mm2M4E_xgw.7MPKMiRa1-vysBtkVV7Llw",
-  "has_more": true,
-  "head_cursor": "v1.master-0.AQIBAbkdQK_7Mk1UoLw52o1sWfjjsMRCmPwcFJr79MiZb7kkAAZglDj9LiEABmCoVtSOIQAGYIGxL6AAAAZglc8HAAAABmCUOP0uJAGh8Ko1nHyxhbf71s-RpDcAAAAAAAAACA.xTmbPXFonVh-dAzrmAH4Hw",
-  "meta": {
-    "as_of": "2026-11-18T22:06:27.806756Z",
-    "partial": false,
-    "consistency": "strong"
-  }
-}
-```
-
-The next page, with the same window and the `next_cursor` of the page before:
-
-```sh
-CURSOR='<next_cursor of the previous page>'
-curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-11-18T00:00:00Z&to=2026-11-19T00:00:00Z&limit=1&cursor=$CURSOR"
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-11-19T00:00:00Z&to=2026-11-21T00:00:00Z&environment=staging"
 ```
 
 ```json
@@ -192,7 +332,7 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "name": "plan trip",
       "trace_name": "trip planner",
       "head_kind": "root",
-      "start_time": "2026-11-18T22:01:33.790201Z",
+      "start_time": "2026-11-19T23:45:01.000000Z",
       "duration_us": 1200000,
       "status_code": "unset",
       "level": "default",
@@ -207,23 +347,55 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "environment": "staging",
       "release": "1.4.0",
       "tags": [
-        "beta"
+        "reviewed",
+        "triaged"
       ],
+      "facts": {
+        "tags": [
+          "reviewed",
+          "triaged"
+        ],
+        "bookmarked": true,
+        "public": null,
+        "scores": [
+          {
+            "name": "helpful",
+            "score_id": null,
+            "data_type": "numeric",
+            "value": 1.0,
+            "source": "feedback",
+            "comment": "",
+            "metadata": null,
+            "fact": {
+              "fact_id": "01a1f65b-b4a4-70eb-83eb-6dc856127f2d",
+              "version": 1795134567588787,
+              "created_at": "2026-11-20T00:29:27.588787Z",
+              "author_kind": "api_key",
+              "author_id": "01a1f633-d84d-7d84-9ab9-d78f6df778d4"
+            }
+          }
+        ],
+        "correction": null
+      },
       "saturated": false
     }
   ],
   "next_cursor": null,
   "has_more": false,
-  "head_cursor": null,
+  "head_cursor": "v1.master-0.AQIBAQGh9jPVmnAUgAeuLc-5SZZiEnetaS6enWK0uoaxn6T-AAZgqpAq5ZEABmC-rgJFkQAGYJXPBwAAAAZgvgq1wAAABmCqkCrlkwGh9jO66XwQgPYQVILJB_EAAAAAAAAAIg.uKM66evQQvDJjEsaAbe2KQ",
   "meta": {
-    "as_of": "2026-11-18T22:06:27.806756Z",
+    "as_of": "2026-11-20T00:45:39.701139Z",
     "partial": false,
     "consistency": "strong"
   }
 }
 ```
 
-One trace:
+The head span of a trace is its root span, or the earliest span while the root has not arrived. `tags` and
+`facts` show the trace's effective tags, flags, scores and correction ([facts](../guides/facts.md)). Ids are
+lowercase hex in responses; uppercase hex in a path is accepted.
+
+One trace, with its spans:
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
@@ -241,8 +413,8 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "parent_span_id": null,
       "name": "plan trip",
       "observation_type": "agent",
-      "start_time": "2026-11-18T22:01:33.790201Z",
-      "end_time": "2026-11-18T22:01:34.990201Z",
+      "start_time": "2026-11-19T23:45:01.000000Z",
+      "end_time": "2026-11-19T23:45:02.200000Z",
       "duration_us": 1200000,
       "status_code": "unset",
       "level": "default",
@@ -260,8 +432,8 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "parent_span_id": "00f067aa0ba902b7",
       "name": "chat",
       "observation_type": "generation",
-      "start_time": "2026-11-18T22:01:33.890201Z",
-      "end_time": "2026-11-18T22:01:34.590201Z",
+      "start_time": "2026-11-19T23:45:01.100000Z",
+      "end_time": "2026-11-19T23:45:01.800000Z",
       "duration_us": 700000,
       "status_code": "unset",
       "level": "default",
@@ -271,16 +443,16 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "output_tokens": 300,
       "total_tokens": 1500,
       "child_count": null,
-      "io_shape": "raw",
+      "io_shape": "genai_messages",
       "saturated": false
     },
     {
       "span_id": "e457b5a2e4d86bd1",
       "parent_span_id": "00f067aa0ba902b7",
-      "name": "lookup_order",
+      "name": "tools/call lookup_order",
       "observation_type": "tool",
-      "start_time": "2026-11-18T22:01:34.690201Z",
-      "end_time": "2026-11-18T22:01:34.890201Z",
+      "start_time": "2026-11-19T23:45:01.900000Z",
+      "end_time": "2026-11-19T23:45:02.100000Z",
       "duration_us": 200000,
       "status_code": "error",
       "level": "error",
@@ -294,8 +466,35 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
       "saturated": false
     }
   ],
+  "facts": {
+    "tags": [
+      "reviewed",
+      "triaged"
+    ],
+    "bookmarked": true,
+    "public": null,
+    "scores": [
+      {
+        "name": "helpful",
+        "score_id": null,
+        "data_type": "numeric",
+        "value": 1.0,
+        "source": "feedback",
+        "comment": "good answer",
+        "metadata": null,
+        "fact": {
+          "fact_id": "01a1f65b-b4a4-70eb-83eb-6dc856127f2d",
+          "version": 1795134567588787,
+          "created_at": "2026-11-20T00:29:27.588787Z",
+          "author_kind": "api_key",
+          "author_id": "01a1f633-d84d-7d84-9ab9-d78f6df778d4"
+        }
+      }
+    ],
+    "correction": null
+  },
   "meta": {
-    "as_of": "2026-11-18T22:06:27.922435Z",
+    "as_of": "2026-11-20T00:45:39.757459Z",
     "partial": false,
     "consistency": "strong"
   },
@@ -303,108 +502,59 @@ curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
 }
 ```
 
-The trace detail takes no window: it finds the trace's time bounds itself. It accepts `hint_time`, the trace's
-start from the list, and checks it, but does not need it yet. A trace with more than 5,000 spans comes back with
-`paged: true`, its root spans and their direct children, each with `child_count`; read the levels below with the
-children route:
+The trace detail takes no window: it finds the trace's time bounds itself. It accepts `hint_time`, the trace's start
+from the list. A trace with more than 5,000 spans comes back with `paged: true`, its root spans and their direct
+children, each with `child_count`; read the levels below with the children route,
+`GET projects/{project_id}/traces/{trace_id}/spans?parent_span_id=<span id>`, which pages through the direct
+children of one span in start order.
+
+## Lists and filters
+
+| List | Rows | Takes |
+|---|---|---|
+| `GET projects/{project_id}/traces` | One per trace whose head span started in the window, newest first | `from`, `to`, `limit` (1 to 200, default 50), `cursor`, `since`, and the filters below |
+| `GET projects/{project_id}/spans` | One per span that started in the window, newest first, with its trace id, environment, user and session | `from`, `to`, `limit`, `cursor`, and the filters below |
+| `GET projects/{project_id}/sessions` | One per session with traces in the window: first and last sighting, trace, span and error counts, tokens, cost and its users | `from`, `to`, `limit`, `cursor` |
+| `GET projects/{project_id}/users` | One per user with traces in the window, with the same sums and a session count | `from`, `to`, `limit`, `cursor` |
+| `GET projects/{project_id}/users/{user_id}/sessions` | The sessions of one user | `from`, `to`, `limit`, `cursor` |
+
+`GET .../sessions/{session_id}` and `GET .../users/{user_id}` return one session or user over a window.
+
+The trace and span lists take these filters as query parameters. Repeating a parameter matches any of its values;
+different parameters must all hold; each takes at most 100 values.
+
+| Filter | Matches |
+|---|---|
+| `environment`, `release`, `version`, `level`, `observation_type`, `user_id`, `session_id` | The field's value |
+| `tags` | A tag of the trace (trace list) or the span (span list) |
+| `metadata` | A metadata entry, as `key=value` (split at the first `=`) |
+| `name` | A case-insensitive substring of the name, once |
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces/4bf92f3577b34da6a3ce929d0e0e4736/spans?parent_span_id=00f067aa0ba902b7"
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-11-19T00:00:00Z&to=2026-11-21T00:00:00Z&environment=staging&environment=production&metadata=plan=pro"
 ```
+
+`GET projects/{project_id}/filter-values?source=spans&field=environment&from=...&to=...` lists the values a filter
+field takes in a window, with counts, for building a picker:
 
 ```json
-{
-  "data": [
-    {
-      "span_id": "b7ad6b7169203331",
-      "parent_span_id": "00f067aa0ba902b7",
-      "name": "chat",
-      "observation_type": "generation",
-      "start_time": "2026-11-18T22:01:33.890201Z",
-      "end_time": "2026-11-18T22:01:34.590201Z",
-      "duration_us": 700000,
-      "status_code": "unset",
-      "level": "default",
-      "model": "model-large-2026-05",
-      "total_cost_usd": 0.0042,
-      "input_tokens": 1200,
-      "output_tokens": 300,
-      "total_tokens": 1500,
-      "child_count": 0,
-      "io_shape": "raw",
-      "saturated": false
-    },
-    {
-      "span_id": "e457b5a2e4d86bd1",
-      "parent_span_id": "00f067aa0ba902b7",
-      "name": "lookup_order",
-      "observation_type": "tool",
-      "start_time": "2026-11-18T22:01:34.690201Z",
-      "end_time": "2026-11-18T22:01:34.890201Z",
-      "duration_us": 200000,
-      "status_code": "error",
-      "level": "error",
-      "model": "",
-      "total_cost_usd": 0.0,
-      "input_tokens": 0,
-      "output_tokens": 0,
-      "total_tokens": 0,
-      "child_count": 0,
-      "io_shape": "raw",
-      "saturated": false
-    }
-  ],
-  "next_cursor": null,
-  "has_more": false,
-  "meta": {
-    "as_of": "2026-11-18T22:06:27.986906Z",
-    "partial": false,
-    "consistency": "strong"
-  }
-}
+{"data":[{"value":"default","count":10},{"value":"staging","count":3},{"value":"production","count":1}],"truncated":false,"saturated":false,"meta":{"as_of":"2026-11-20T00:45:39.871662Z","partial":false,"consistency":"strong"}}
 ```
 
-A payload field of one span: `field` is one of `input`, `output`, `system_instructions`, `attributes`,
-`resource_attributes`, `events`, `links`, `tool_definitions` and `tool_calls`, and `start_time` is the span's
-`start_time` as the API returned it, which locates the payload.
+Filtered lists read ClickHouse only, so a trace acknowledged a moment ago may be missing; the page then says
+`consistency: lagging`.
 
-```sh
-START='<start_time of the span>'
-curl -s -i -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/spans/4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7/payload?field=input&start_time=$START"
-```
-
-```text
-HTTP/1.1 200 OK
-content-type: text/plain; charset=utf-8
-accept-ranges: bytes
-etag: "4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1795039293790201-input-25"
-cache-control: private, max-age=31536000, immutable
-content-security-policy: default-src 'none'; frame-ancestors 'none'
-x-content-type-options: nosniff
-referrer-policy: same-origin
-cross-origin-opener-policy: same-origin
-cross-origin-resource-policy: same-origin
-content-length: 25
-x-request-id: 01a1f0b2-6ed1-7c95-a142-c9c8d80f385d
-
-Where should I go in May?
-```
-
-The body is the field's bytes as stored, always as `text/plain`, so a browser never renders it. A field that the
-span lists in `truncated_fields` was cut at the size cap and may no longer be valid JSON (see
-[size caps](../guides/sending-traces.md#size-caps)). A `Range: bytes=<first>-[<last>]` header asks for part of the
-field and gets 206 with `Content-Range`; a range that starts past the end gets 416 with
-`Content-Range: bytes */<length>`. `download=1` adds `Content-Disposition: attachment`. A missing payload answers
-404.
+**Live tail.** A first page of the trace list also carries `head_cursor`. Send it as `since`, with the same window and
+filters and without `cursor`, to get the traces that arrived after it, with `new_count` (how many arrived, counted
+up to 100) and a fresh `head_cursor` for the next poll. The UI's traces page polls this way.
 
 ## Search
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type: application/json' \
   "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/search" \
-  -d '{"query": "lisbon", "from": "2026-11-18T00:00:00Z", "to": "2026-11-19T00:00:00Z"}'
+  -d '{"query": "lisbon", "from": "2026-11-19T00:00:00Z", "to": "2026-11-21T00:00:00Z"}'
 ```
 
 ```json
@@ -413,32 +563,31 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
     {
       "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
       "span": {
-        "span_id": "00f067aa0ba902b7",
-        "parent_span_id": null,
-        "name": "plan trip",
-        "observation_type": "agent",
-        "start_time": "2026-11-18T22:01:33.790201Z",
-        "end_time": "2026-11-18T22:01:34.990201Z",
-        "duration_us": 1200000,
+        "span_id": "b7ad6b7169203331",
+        "parent_span_id": "00f067aa0ba902b7",
+        "name": "chat",
+        "observation_type": "generation",
+        "start_time": "2026-11-19T23:45:01.100000Z",
+        "end_time": "2026-11-19T23:45:01.800000Z",
+        "duration_us": 700000,
         "status_code": "unset",
         "level": "default",
-        "model": "",
-        "total_cost_usd": 0.0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
+        "model": "model-large-2026-05",
+        "total_cost_usd": 0.0042,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "total_tokens": 1500,
         "child_count": null,
-        "io_shape": "raw",
+        "io_shape": "genai_messages",
         "saturated": false
       },
       "matches": [
         {
           "field": "output",
           "fragments": [
-            {
-              "text": "Lisbon",
-              "highlighted": true
-            }
+            {"text": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"", "highlighted": false},
+            {"text": "Lisbon", "highlighted": true},
+            {"text": "\"}], \"finish_reason\": \"stop\"}]", "highlighted": false}
           ],
           "cut_before": false,
           "cut_after": false
@@ -448,13 +597,11 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
   ],
   "next_cursor": null,
   "has_more": false,
-  "meta": {
-    "as_of": "2026-11-18T22:06:28.102395Z",
-    "partial": false,
-    "consistency": "strong"
-  }
+  "meta": {"as_of": "2026-11-20T00:45:39.906382Z", "partial": false, "consistency": "strong"}
 }
 ```
+
+The answer is cut to its first hit; the second is the agent span, whose output holds the same word.
 
 | Member | Meaning |
 |---|---|
@@ -468,84 +615,186 @@ curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type
 Search reads ClickHouse only, so a span acknowledged a moment ago may be missing; the page then says
 `consistency: lagging`.
 
-## Time windows
+## Payloads
 
-The trace list and search require `from` and `to`. The window is half open, `[from, to)`, over the start time of
-each trace's head span (for search, of each span). It may be at most the project's maximum, 30 days by default; a
-window of exactly the maximum passes. In this preview the maximum cannot be changed, and `data-bounds` reports it as
-`max_window_days`. The trace detail, the children route and `data-bounds` take no window, and the payload route
-takes the span's `start_time` instead.
-
-Times are RFC 3339. Inputs may use any offset and precision and must fall between 1970 and 2100; responses are
-always UTC with six fractional digits, such as `2026-11-18T09:30:00.000000Z`.
-
-A window wider than the maximum:
+`GET projects/{project_id}/spans/{trace_id}/{span_id}/payload?field=<field>&start_time=<start>` returns one payload
+field of a span as raw bytes. `field` is one of `input`, `output`, `system_instructions`, `attributes`,
+`resource_attributes`, `events`, `links`, `tool_definitions` and `tool_calls`, and `start_time` is the span's
+`start_time` as the API returned it, which locates the payload.
 
 ```sh
-curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-10-01T00:00:00Z&to=2026-11-19T00:00:00Z"
+curl -s -i -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/spans/4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7/payload?field=input&start_time=2026-11-19T23:45:01.000000Z"
+```
+
+```text
+HTTP/1.1 200 OK
+content-type: text/plain; charset=utf-8
+accept-ranges: bytes
+etag: "4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1795131901000000-input-25"
+cache-control: private, max-age=31536000, immutable
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+x-content-type-options: nosniff
+referrer-policy: same-origin
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+content-length: 25
+x-request-id: 01a1f665-4622-7f7e-99bc-7aa2c15748cf
+
+Where should I go in May?
+```
+
+The body is the field's bytes as stored, always as `text/plain`, so a browser never renders it. A field that the span
+lists in `truncated_fields` was cut at the size cap and may no longer be valid JSON
+([size caps](../guides/sending-traces.md#size-caps)). A `Range: bytes=<first>-[<last>]` header asks for part of the
+field and gets 206 with `Content-Range`; a range that starts past the end gets 416 with
+`Content-Range: bytes */<length>`. `download=1` adds `Content-Disposition: attachment`. A missing payload answers 404.
+
+## Metrics
+
+`GET projects/{project_id}/metrics/schema` lists the sources, their measures (with units and aggregations),
+dimensions, filter fields, granularities and limits. `POST projects/{project_id}/metrics/query` returns time series:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type: application/json' \
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/metrics/query" \
+  -d '{"source": "spans", "measures": [{"measure": "count", "aggregation": "sum"}, {"measure": "duration", "aggregation": "p99"}],
+       "dimensions": ["environment"], "granularity": "hour", "from": "2026-11-19T21:30:00Z", "to": "2026-11-20T01:30:00Z"}'
 ```
 
 ```json
 {
-  "type": "urn:crucible:problem:query_too_broad",
-  "title": "Query too broad",
-  "status": 422,
-  "detail": "the window is longer than the project's maximum of 30 days",
-  "code": "query_too_broad",
-  "request_id": "01a1f0b2-6f4c-7ebb-8341-aa3ba7c09c71",
-  "limit": {
-    "name": "max_window_days",
-    "value": 30
-  }
+  "series": [
+    {
+      "measure": "count",
+      "aggregation": "sum",
+      "unit": "count",
+      "key": [{"dimension": "environment", "value": "default"}],
+      "other": false,
+      "points": [
+        {"bucket": "2026-11-19T21:00:00.000000Z", "value": 0.0},
+        {"bucket": "2026-11-19T22:00:00.000000Z", "value": 0.0},
+        {"bucket": "2026-11-19T23:00:00.000000Z", "value": 0.0},
+        {"bucket": "2026-11-20T00:00:00.000000Z", "value": 10.0},
+        {"bucket": "2026-11-20T01:00:00.000000Z", "value": 0.0}
+      ]
+    }
+  ],
+  "granularity": "hour",
+  "truncated": false,
+  "source_tier": "rollup",
+  "as_of": "2026-11-20T00:45:39.973996Z",
+  "partial_last_bucket": true,
+  "saturated": false,
+  "meta": {"as_of": "2026-11-20T00:45:39.973996Z", "partial": false, "consistency": "strong"}
 }
+```
+
+| Member | Meaning |
+|---|---|
+| `source` | `spans`, or `traces` (which has the one measure `traces`) |
+| `measures` | One to four, each a measure id and an aggregation it allows: `sum`, or a percentile `p50`, `p90`, `p95`, `p99`. The `spans` measures are `count`, `error_count`, `input_tokens`, `output_tokens`, `total_tokens`, `total_cost` (USD), `duration` and `ttft` (time to first token, microseconds) |
+| `dimensions` | Up to two of `environment`, `observation_type`, `model`, `level` and `release`; each combination of values is one series |
+| `filter` | Conditions over the filter fields, combined with `and`, `or` and `not` |
+| `granularity` | `auto` (default), `minute`, `five_minutes`, `fifteen_minutes`, `hour`, `day` or `week` |
+| `from`, `to` | The window, at most the project's maximum |
+| `top_n` | With dimensions, how many keys to return, 1 to 20 (default 20); the rest of an additive measure is summed into an `other` series |
+| `fill` | `zero` (default): every bucket is returned, 0 for a sum and null for a percentile. `none`: empty buckets are left out |
+
+The answer above is cut to its first series; the query returns one series per measure and environment. It also says
+which granularity it used, whether the last bucket may still grow (`partial_last_bucket`), and where the measures
+were read (`source_tier`: the minute rollup or the span table).
+
+## The rest of the API
+
+- **Facts**: tags, flags, scores and corrections, written with `POST feedback`, `tags`, `flags` and `corrections`
+  and read with `GET facts`; see [facts](../guides/facts.md).
+- **SQL workspace**: `GET sql/schema` lists the `crucible_sql.*` relations; `POST sql/run` runs one read-only
+  statement over a window (`{from:DateTime64(6)}` and `{to:DateTime64(6)}`) and returns at most 10,000 rows;
+  `POST sql/export` returns the result as CSV, JSONL or Parquet; saved queries keep a statement with declared
+  parameters. Each project's statements run as its own ClickHouse user
+  ([SQL workspace](../self-hosting/sql-workspace.md)).
+- **Alerts and channels**: alert rules over the `spans` metrics measures, a preview of what a rule would read now,
+  each rule's history, and webhook, Slack and email channels with a test send; see [alerts](../guides/alerts.md).
+- **Exports**: `POST exports` starts a job that writes a project's spans of a window as `crucible-jsonl` or
+  `otlp-json`, optionally gzip-compressed; poll `GET exports/{export_id}` until `state` is `ready`, then download it
+  from `download_path`. Files are kept 7 days, and a project may start 5 exports an hour.
+- **Retention and deletion**: `GET` and `PUT retention`, and deletion requests for traces, a user or a session; see
+  [retention and deletion](../self-hosting/retention-and-deletion.md).
+- **Identity**: sign-in, sessions, password reset, invitations, the organization, its members and sign-in providers,
+  projects, project members and API keys, as listed under [routes](#routes).
+
+An export, from request to file:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: nightly-2026-11-19' "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/exports" \
+  -d '{"format": "crucible-jsonl", "from": "2026-11-19T00:00:00Z", "to": "2026-11-21T00:00:00Z", "gzip": true}'
+```
+
+```json
+{"id":"01a1f668-4f9c-7741-be70-1a9b12fd18c5","format":"crucible-jsonl","state":"queued","from":"2026-11-19T00:00:00.000000Z","to":"2026-11-21T00:00:00.000000Z","trace_count":0,"gzip":true,"keep_truncated":false,"created_at":"2026-11-20T00:43:13.691811Z","as_of":"2026-11-20T00:43:13.691811Z","spans":0,"skipped":0,"bytes":0,"saturated":false}
+```
+
+```sh
+curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/exports/01a1f668-4f9c-7741-be70-1a9b12fd18c5"
+```
+
+```json
+{"id":"01a1f668-4f9c-7741-be70-1a9b12fd18c5","format":"crucible-jsonl","state":"ready","from":"2026-11-19T00:00:00.000000Z","to":"2026-11-21T00:00:00.000000Z","trace_count":0,"gzip":true,"keep_truncated":false,"created_at":"2026-11-20T00:43:13.691811Z","as_of":"2026-11-20T00:43:13.691811Z","spans":14,"skipped":0,"bytes":4538,"checksum":"689f31c869b3f49243e0ec4c3ca27bd0359bea86c4c9153871d505f6c708fb37","expires_at":"2026-11-27T00:43:15.920434Z","download_path":"/api/v1/projects/01a1f633-d59a-7014-8007-ae2dcfb94996/exports/01a1f668-4f9c-7741-be70-1a9b12fd18c5/download","saturated":false}
+```
+
+```sh
+curl -s -o spans.jsonl.gz -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/exports/01a1f668-4f9c-7741-be70-1a9b12fd18c5/download"
+```
+
+The download is `application/gzip` (or `application/x-ndjson` without gzip) with
+`Content-Disposition: attachment`, and its SHA-256 is the export's `checksum`.
+
+## Time windows
+
+Lists, search, metrics, exports and SQL runs take `from` and `to`. The window is half open, `[from, to)`, over the
+start time of each trace's head span (for spans, search and exports, of each span). It may be at most the project's
+maximum, 30 days, which `data-bounds` reports as `max_window_days`; a window of exactly the maximum passes. The trace
+detail, the children route and `data-bounds` take no window, and the payload route takes the span's `start_time`
+instead.
+
+Times are RFC 3339. Inputs may use any offset and precision and must fall between 1970 and 2100; responses are always
+UTC with six fractional digits, such as `2026-11-18T09:30:00.000000Z`.
+
+```sh
+curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
+  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-09-01T00:00:00Z&to=2026-11-19T00:00:00Z"
+```
+
+```json
+{"type":"urn:crucible:problem:query_too_broad","title":"Query too broad","status":422,"detail":"the window is longer than the project's maximum of 30 days","code":"query_too_broad","request_id":"01a1f66a-8b41-7bca-8685-3021012f2fc9","limit":{"name":"max_window_days","value":30}}
 ```
 
 ## Pagination and cursors
 
-A list answers `{ data, next_cursor, has_more, meta }`, with no total count. `next_cursor` is null on the last
-page. To read the next page, send the same request with `cursor` set to `next_cursor`.
+A list answers `{ data, next_cursor, has_more, meta }`, with no total count. `next_cursor` is null on the last page.
+To read the next page, send the same request with `cursor` set to `next_cursor`.
 
 | List | `limit` |
 |---|---|
-| Trace list | 1 to 200, default 50 |
+| Trace list, span list, search | 1 to 200, default 50 |
 | Children of a span | 1 to 2,000, default 500 |
-| Search | 1 to 200, default 50 |
 
-- **Cursors are signed.** A cursor reads `v1.<key id>.<payload>.<mac>`: the payload holds the position, and the MAC
-  is an HMAC-SHA256 over the rest. Treat it as an opaque string. It is bound to the project, the route, the
-  filters, the sort and the window of the request that issued it, and it expires 24 hours after it was issued. Any
-  other cursor answers 400 `cursor_invalid`; start again from the first page.
+- **Cursors are signed.** A cursor reads `v1.<key id>.<payload>.<mac>`, with an HMAC-SHA256 over the rest. Treat it
+  as an opaque string. It is bound to the project, the route, the filters, the sort and the window of the request
+  that issued it, and it expires 24 hours after it was issued. Any other cursor answers 400 `cursor_invalid`; start
+  again from the first page.
 - **Pages do not shift.** The first page fixes `meta.as_of`, and later pages show only traces that arrived at or
   before it, so new traces never push rows onto a page you have not read yet.
-- **Cursors survive restarts.** The signing key is derived from the master key, which every server with ClickHouse
-  has, so a cursor still opens after a restart, and every server started with the same master key opens the
-  cursors of the others.
-- **Live tail.** A first page of the trace list also carries `head_cursor`. Send it as `since`, with the same
-  window and without `cursor`, to get the traces that arrived after it, with `new_count` (how many arrived, counted
-  up to 100) and a fresh `head_cursor` for the next poll.
-
-A cursor that does not open:
-
-```sh
-curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \
-  "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?from=2026-11-18T00:00:00Z&to=2026-11-19T00:00:00Z&cursor=v1.master-0.AAAA.AAAA"
-```
-
-```json
-{
-  "type": "urn:crucible:problem:cursor_invalid",
-  "title": "Cursor invalid",
-  "status": 400,
-  "detail": "the cursor is malformed; restart from the first page",
-  "code": "cursor_invalid",
-  "request_id": "01a1f0b2-6f79-77e8-a390-f068770f900c"
-}
-```
+- **Cursors survive restarts.** The signing key is derived from the master key, so a cursor still opens after a
+  restart, and every server started with the same master key opens the cursors of the others.
 
 ## Response metadata
 
-Every JSON response of the routes above carries `meta`:
+Every JSON response of a telemetry read carries `meta`:
 
 | Member | Meaning |
 |---|---|
@@ -553,96 +802,103 @@ Every JSON response of the routes above carries `meta`:
 | `partial` | True when rows may be missing, for the reason in `partial_reason`: `store_unavailable`, `deadline` or `quarantined` |
 | `consistency` | `strong`: the response reflects every span this server acknowledged before the request arrived. `lagging`: it may trail |
 
-Counts are JSON numbers and stop at 2^53 - 1; an object with a count that stopped there has `saturated: true`.
-Costs are JSON numbers in USD, in fields named `*_usd`.
+Counts are JSON numbers and stop at 2^53 - 1; an object with a count that stopped there has `saturated: true`. Costs
+are JSON numbers in USD, in fields named `*_usd`.
 
 ## Errors
 
 Every error is a problem document (RFC 9457) with the media type `application/problem+json`:
 
-```sh
-curl -s -i -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" "$CRUCIBLE_URL/api/v1/projects/$PROJECT_ID/traces?limit=500&sort=name"
-```
-
 ```text
 HTTP/1.1 422 Unprocessable Entity
 content-type: application/problem+json
-content-security-policy: default-src 'none'; frame-ancestors 'none'
-x-content-type-options: nosniff
-referrer-policy: same-origin
-cross-origin-opener-policy: same-origin
-cross-origin-resource-policy: same-origin
-content-length: 561
-x-request-id: 01a1f0b2-6fa6-71e3-93eb-24eef63afd76
 
-{"type":"urn:crucible:problem:validation_failed","title":"Validation failed","status":422,"detail":"the request is invalid; see `errors`","code":"validation_failed","request_id":"01a1f0b2-6fa6-71e3-93eb-24eef63afd76","errors":[{"pointer":"/from","code":"required","message":"the parameter is required"},{"pointer":"/to","code":"required","message":"the parameter is required"},{"pointer":"/limit","code":"out_of_range","message":"expected an integer from 1 to 200"},{"pointer":"/sort","code":"unknown_parameter","message":"the endpoint has no such parameter"}]}
+{"type":"urn:crucible:problem:validation_failed","title":"Validation failed","status":422,"detail":"the request is invalid; see `errors`","code":"validation_failed","request_id":"01a1f66a-8b5e-7f50-9a5f-a2e5800fdb67","errors":[{"pointer":"/from","code":"required","message":"the parameter is required"},{"pointer":"/to","code":"required","message":"the parameter is required"},{"pointer":"/limit","code":"out_of_range","message":"expected an integer from 1 to 200"},{"pointer":"/sort","code":"unknown_parameter","message":"the endpoint has no such parameter"}]}
 ```
 
 | Member | Meaning |
 |---|---|
 | `type` | `urn:crucible:problem:<code>` |
-| `title`, `detail` | For logs and developers; show your own text to users |
+| `title`, `detail` | For logs and developers; show your own text to users. `detail` says what to change |
 | `status` | The HTTP status |
 | `code` | The stable code: branch on this |
 | `request_id` | The same value as the `X-Request-Id` header |
 | `errors` | For `validation_failed`: one entry per invalid part, with a JSON `pointer` (`/from` for the query parameter `from`), a `code` and a `message` |
 | `limit` | For `query_too_broad`: the limit that was exceeded, such as `{"name": "max_window_days", "value": 30}` |
-
-The codes the routes on main answer:
+| `retry_after_s` | For `rate_limited`, `control_plane_unavailable` and the SQL limits: seconds to wait, also sent as `Retry-After` |
+| `line`, `column` | For SQL errors: where in the statement |
+| `reason` | For `sql_workspace_unavailable`: why the workspace is off |
 
 | Code | Status | When |
 |---|---|---|
 | `cursor_invalid` | 400 | The cursor is tampered, expired, from another project, or bound to other filters, sort or window |
-| `unauthenticated` | 401 | No secret key, or one the server does not accept |
-| `not_found` | 404 | An unknown path, a project the key cannot read, an unknown trace, or a payload that is not there |
+| `unauthenticated` | 401 | No credential, or one the server does not accept |
+| `invalid_credentials` | 401 | Sign-in with a wrong email or password |
+| `forbidden` | 403 | The role or scope does not grant the route's permission |
+| `csrf_invalid` | 403 | A cookie-authenticated write without the session's `X-Crucible-CSRF` token |
+| `origin_invalid` | 403 | A cookie-authenticated write from another origin |
+| `sql_forbidden` | 403 | SQL that is not read-only, or that ClickHouse refused for the workspace user |
+| `not_found` | 404 | An unknown path, a project the caller cannot see, or an unknown or deleted resource |
+| `feature_disabled` | 404 | The route needs a module this server does not run, such as the control plane |
 | `method_not_allowed` | 405 | The route does not take the method; see `Allow` |
-| `request_timeout` | 408 | The request did not finish within 30 s |
+| `request_timeout` | 408 | The request did not finish in time |
+| `conflict` | 409 | A unique or state conflict |
+| `idempotency_key_reused` | 409 | An `Idempotency-Key` sent again with a different request |
+| `export_expired` | 410 | The export file expired, or a deletion request expired it |
+| `precondition_failed` | 412 | `If-Match` does not match the resource's version |
 | `payload_too_large` | 413 | The body is above 1 MiB |
+| `unsupported_media_type` | 415 | The body's media type is not accepted |
 | `validation_failed` | 422 | A path, query or body value is invalid; see `errors` |
+| `token_invalid` | 422 | A setup, invitation or reset link that is invalid, expired or used |
 | `query_too_broad` | 422 | The window is above the maximum, or the read would cover too much; see `limit` |
 | `query_memory_exceeded` | 422 | The read hit its memory limit |
-| `telemetry_store_unavailable` | 503 | ClickHouse is not configured, or it is unreachable and the recent-span index cannot answer |
-| `query_timeout` | 504 | The read hit its time limit |
+| `ssrf_blocked` | 422 | A channel URL the egress policy refuses |
+| `sql_invalid` | 422 | SQL that is not one read-only statement, or that ClickHouse rejected |
+| `sql_time_window_required` | 422 | SQL that does not filter on the window |
+| `precondition_required` | 428 | A change to a versioned resource without `If-Match` |
+| `rate_limited` | 429 | Too many requests of a limited kind; see `Retry-After` |
+| `sql_quota_exceeded` | 429 | The project used its SQL statements for the hour, or a run limit |
 | `internal_error` | 500 | Anything else |
+| `control_plane_unavailable` | 503 | Postgres is unreachable |
+| `telemetry_store_unavailable` | 503 | ClickHouse is not configured, or it is unreachable and the recent-span index cannot answer |
+| `ingest_unavailable` | 503 | The write-ahead log cannot take a fact or deletion write now; see `Retry-After` |
+| `sql_workspace_unavailable` | 503 | The SQL workspace is off; see `reason` |
+| `query_timeout` | 504 | The read hit its time limit |
 
-The codes in `errors[].code` are stable too: `required`, `repeated`, `unknown_parameter`, `invalid_timestamp`,
-`out_of_range`, `invalid_window`, `invalid_id`, `invalid_query`, `conflict` (`since` with `cursor`), `invalid`,
-`too_long`, `too_many_tokens` and `no_tokens`.
-
-The API's code list already holds the codes of planned features, and the OpenAPI document lists them all:
-`invalid_credentials`, `forbidden`, `csrf_invalid`, `origin_invalid`, `conflict`, `idempotency_key_reused`,
-`precondition_failed`, `unsupported_media_type`, `token_invalid`, `precondition_required`, `rate_limited`,
-`control_plane_unavailable`, `ingest_unavailable`, `feature_disabled`, `ssrf_blocked`, `media_not_supported`,
-`media_too_large`, `media_hash_mismatch`, `sql_invalid`, `sql_forbidden`, `sql_time_window_required`,
-`sql_quota_exceeded`, `sql_workspace_unavailable` and `export_expired`. No route on main answers them yet.
+The codes in `errors[].code` are stable too, such as `required`, `repeated`, `unknown_parameter`,
+`invalid_timestamp`, `out_of_range`, `invalid_window`, `invalid_id`, `conflict` (`since` with `cursor`), `invalid`,
+`too_long` and `unknown_field`.
 
 ## Concurrency and idempotency
 
-Every route on main reads: `GET` and `HEAD`, and `POST` for search, which changes nothing. So no route needs
-`If-Match` or `Idempotency-Key`, and none reads them. Both are planned for the routes that will change data:
+- **Versions.** Retention, alert rules, channels, saved queries, projects and other mutable resources carry a
+  `version`, also sent as `ETag`. A `PATCH`, `PUT` or `DELETE` of them requires `If-Match` with that value: without it
+  the answer is 428 `precondition_required`, and with a stale one 412 `precondition_failed`, with the current version
+  in the message.
+- **Idempotency.** The fact writes (`feedback`, `tags`, `flags`, `corrections`), `POST exports` and
+  `POST deletion-requests` honour an `Idempotency-Key` header of 1 to 128 characters of `[A-Za-z0-9_-]`: a replay
+  returns the first answer (an export, its current state), and the same key with a different request answers 409
+  `idempotency_key_reused`.
 
-- Mutable resources such as dashboards and settings will carry a `version`, also sent as `ETag`. `PATCH`, `PUT` and
-  `DELETE` will require `If-Match`, answering `precondition_required` without it and `precondition_failed` when
-  it does not match.
-- Creates of exports, deletion requests, media and fact writes will honour `Idempotency-Key` (1 to 128 characters
-  of `[A-Za-z0-9_-]`) for 24 hours: a replay returns the first response, and a different request under the same key
-  answers `idempotency_key_reused`.
-
-The payload route already sends an `ETag` and `Cache-Control: private, max-age=31536000, immutable`, because a
-stored payload never changes. OTLP ingest does not read `Idempotency-Key`; how it handles a retried export is
-described under [retries and duplicates](../guides/sending-traces.md#what-an-acknowledgement-means).
+The payload route sends an `ETag` and `Cache-Control: private, max-age=31536000, immutable`, because a stored payload
+never changes. OTLP ingest does not read `Idempotency-Key`; how it handles a retried export is described under
+[retries and duplicates](../guides/sending-traces.md#what-an-acknowledgement-means).
 
 ## Rate limits
 
-The API has no rate limits in this preview. Limits per key and per session, which will answer 429 `rate_limited`
-with `Retry-After` and `retry_after_s`, are planned
-([contract 11.9](../architecture/contracts.md#119-rate-limits)). Ingest is not rate limited either: when the server
-cannot take more, it answers 429 or 503 with `Retry-After`, as
+| What | Limit | Answer |
+|---|---|---|
+| Exports | 5 per hour per project | 429 `rate_limited` |
+| Channel test sends | 6 per minute per channel | 429 `rate_limited` |
+| SQL runs | 1 at a time per person, 4 per project, 30 per minute per person, and the hourly statement quota | 429 `sql_quota_exceeded` |
+| MCP tool calls | 50 per second per key, bursts of 200 | A tool error with `rate_limited` |
+| Password checks | At most 4 run at once; sign-in answers when all are busy | 429 `rate_limited` |
+
+Ingest is not rate limited: when the server cannot take more, it answers 429 or 503 with `Retry-After`, as
 [sending traces](../guides/sending-traces.md#what-an-acknowledgement-means) describes.
 
 ## OpenAPI document
 
-The OpenAPI 3.1 document of the API is committed at `specs/openapi/crucible-v1.json`. It is generated from the
-route handlers, and `crucible openapi` prints the same document from the binary; CI fails when the committed file
-no longer matches the handlers. Its `info.version` is the binary's version. The server does not serve the document
-over HTTP yet; that is planned.
+The OpenAPI 3.1 document of the API is committed at `specs/openapi/crucible-v1.json`, generated from the route
+handlers; `crucible openapi` prints the same document from the binary, and CI fails when the committed file no
+longer matches the handlers. Its `info.version` is the binary's version.
