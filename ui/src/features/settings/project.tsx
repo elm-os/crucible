@@ -73,10 +73,15 @@ export function ProjectSettings() {
 }
 
 // The session lists names, roles and permissions; only this list carries the version that If-Match needs.
+// Its names are the newer ones, such as a rename made in another session.
 function DetailsSection({ access }: { access: SessionProject }) {
   const query = useQuery({
     queryKey: PROJECTS_KEY,
-    queryFn: ({ signal }) => listProjects(signal),
+    queryFn: async ({ signal }) => {
+      const list = await listProjects(signal);
+      showNames(list.data);
+      return list;
+    },
     select: (list) => list.data.find((row) => row.id === access.id) ?? null,
   });
   return (
@@ -158,14 +163,13 @@ function Details({ project, canRename }: { project: Project; canRename: boolean 
 }
 
 // The project menu reads the session's copy of each name.
-function showName(project: Project) {
+function showNames(read: Project[]) {
   const auth = currentAuth();
   if (auth.mode !== "session") return;
   const { session } = auth;
-  if (!session.projects.some((row) => row.id === project.id && row.name !== project.name)) return;
-  const projects = session.projects.map((row) =>
-    row.id === project.id ? { ...row, name: project.name } : row,
-  );
+  const nameOf = (row: SessionProject) => read.find((project) => project.id === row.id)?.name;
+  if (!session.projects.some((row) => (nameOf(row) ?? row.name) !== row.name)) return;
+  const projects = session.projects.map((row) => ({ ...row, name: nameOf(row) ?? row.name }));
   setAuth({ mode: "session", session: { ...session, projects } });
 }
 
@@ -194,17 +198,13 @@ function RenameForm({ project }: { project: Project }) {
       queryClient.setQueryData<ProjectList>(PROJECTS_KEY, (list) =>
         list ? { data: list.data.map((row) => (row.id === renamed.id ? renamed : row)) } : list,
       );
-      showName(renamed);
+      showNames([renamed]);
       setDraft(null);
     },
     onError: async (error) => {
       // A rename needs the version it replaces: read the stored project again.
       if (asUiError(error).code !== "precondition_failed") return;
       await queryClient.invalidateQueries({ queryKey: PROJECTS_KEY });
-      const stored = queryClient
-        .getQueryData<ProjectList>(PROJECTS_KEY)
-        ?.data.find((row) => row.id === project.id);
-      if (stored) showName(stored);
       setDraft(null);
     },
   });

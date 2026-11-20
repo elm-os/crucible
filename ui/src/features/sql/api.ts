@@ -1,3 +1,4 @@
+import { sessionFailure } from "@/api/client";
 import { networkError } from "@/api/errors";
 import type { SavedQuery } from "@/api/generated/SavedQuery";
 import type { SavedQueryInput } from "@/api/generated/SavedQueryInput";
@@ -65,8 +66,9 @@ async function send(path: string, options: Options = {}): Promise<Response> {
     if (options.signal?.aborted) throw error;
     throw networkError();
   }
-  if (!response.ok) throw await failure(response);
-  return response;
+  if (response.ok) return response;
+  const error = await failure(response);
+  throw auth.mode === "session" ? sessionFailure(error) : error;
 }
 
 async function json<T>(path: string, options: Options = {}): Promise<T> {

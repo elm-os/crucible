@@ -135,6 +135,26 @@ test.describe("settings: project", () => {
     await expectAccessible(page, "project renamed elsewhere");
   });
 
+  test("a rename made in another session reaches the project menu once the page reads it", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    const release = api.hold(
+      PROJECTS_PATH,
+      json({ data: [project({ name: "Checkout EU", version: 4 }), SEARCH] }),
+    );
+    await page.goto(URL);
+    await expect(projectMenu(page)).toHaveText("Checkout");
+    release();
+    await expect(details(page).getByLabel("Project name")).toHaveValue("Checkout EU");
+    await expect(projectMenu(page)).toHaveText("Checkout EU");
+    await projectMenu(page).click();
+    await expect(page.getByRole("option")).toHaveText(["Checkout EU", "Search"]);
+    await page.keyboard.press("Escape");
+    await expectAccessible(page, "project renamed in another session");
+  });
+
   test("a blank name is refused before sending, and a name the server refuses is marked", async ({
     page,
     api,

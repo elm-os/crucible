@@ -6,7 +6,7 @@ import type { DeletionRequest } from "@/api/generated/DeletionRequest";
 import type { Retention } from "@/api/generated/Retention";
 import { createQueryClient } from "@/components/providers";
 import { setAuth } from "@/lib/auth";
-import { PROJECT_A, sessionInfo, sessionProject } from "@/test/session";
+import { PROJECT_A, PROJECT_B, sessionInfo, sessionProject } from "@/test/session";
 import { parseTraceIds } from "./deletion-requests";
 import { RetentionSettings } from "./retention";
 
@@ -200,6 +200,72 @@ describe("retention", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Keep data for")).toHaveProperty("value", "60"),
     );
+    // The reloaded settings start a new form, and the reason it reloaded stays with it.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("These settings changed since the page loaded.");
+    expect(alert.textContent).toContain("req-9");
+
+    await act(() => fill("Keep data for", "90"));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  test("a shortening that meets a version that moved on closes the question and says why", async () => {
+    signIn();
+    let stored = retention({ retention_days: 30 });
+    serve({
+      [`GET ${RETENTION}`]: () => json(stored)(),
+      [`PUT ${RETENTION}`]: () => {
+        stored = retention({ retention_days: 60, version: 9 });
+        return problem(412, "precondition_failed")();
+      },
+      [`GET ${REQUESTS}`]: json({ data: [], next_cursor: null }),
+    });
+    renderPage();
+    await screen.findByLabelText("Keep data for");
+    await act(() => fill("Keep data for", "14"));
+    await act(() => press("Save retention"));
+    await screen.findByRole("alertdialog", { name: "Shorten retention?" });
+    approve = true;
+    await act(() => pressIn("Shorten retention?", "Shorten retention"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Keep data for")).toHaveProperty("value", "60"),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("These settings changed since the page loaded.");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  test("the reason for a reload stays with its project", async () => {
+    const session = sessionInfo({ csrf_token: "csrf-5" });
+    const search = sessionProject({ id: PROJECT_B, name: "Search", permissions: FULL });
+    setAuth({
+      mode: "session",
+      session: { ...session, projects: [sessionProject({ permissions: FULL }), search] },
+    });
+    let stored = retention({ retention_days: 30 });
+    serve({
+      [`GET ${RETENTION}`]: () => json(stored)(),
+      [`PUT ${RETENTION}`]: () => {
+        stored = retention({ retention_days: 60, version: 9 });
+        return problem(412, "precondition_failed")();
+      },
+      [`GET ${REQUESTS}`]: json({ data: [], next_cursor: null }),
+      [`GET /api/v1/projects/${PROJECT_B}/retention`]: json(retention({ version: 2 })),
+      [`GET /api/v1/projects/${PROJECT_B}/deletion-requests`]: json({
+        data: [],
+        next_cursor: null,
+      }),
+    });
+    renderPage();
+    await screen.findByLabelText("Keep data for");
+    await act(() => fill("Keep data for", "90"));
+    await act(() => press("Save retention"));
+    await screen.findByRole("alert");
+
+    act(() => window.history.replaceState(null, "", `/settings/retention/?project=${PROJECT_B}`));
+    await screen.findByRole("region", { name: "Retention for Search" });
+    await screen.findByLabelText("Keep data for");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   test("error: the section says so with a retry, and the deletion requests still load", async () => {
