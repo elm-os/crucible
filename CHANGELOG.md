@@ -15,6 +15,8 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
   Each batch reaches ClickHouse with a deduplication token derived from its log position, so a retry never stores
   a span twice. A batch ClickHouse rejects is quarantined on disk, not dropped.
 - Fixed byte budgets for memory, with 429 or 503 and Retry-After under load instead of dropped data.
+- Ingest's blocking work (decompression, scanning and frame compression) runs under one CPU budget of first-come
+  permits, so a burst of large requests queues instead of oversubscribing the machine.
 - Recent spans are served from memory, so a trace can be read as soon as it is acknowledged.
 - Mappings for the OpenTelemetry GenAI and MCP semantic conventions and for popular instrumentation libraries,
   with compatible ingest paths for other platforms' OTLP exporters ([integrations](docs/integrations/)).
@@ -30,6 +32,9 @@ the web UI, the REST API and an MCP server. ClickHouse stores the telemetry and 
 - A read-only SQL workspace, isolated per project by ClickHouse users, row policies and quotas, with saved queries
   and CSV, JSON lines and Parquet downloads.
 - A metrics query API over spans and traces.
+- Dashboards over the metrics query: built-in starters for an agent overview, cost and tokens, latency and errors,
+  and your own, edited on a 12-column grid by pointer or keyboard, with stat, time series, bar, table and Markdown
+  widgets.
 
 ### MCP
 
