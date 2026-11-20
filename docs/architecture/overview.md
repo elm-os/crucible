@@ -68,7 +68,8 @@ spans are turned into records, made readable from memory, and copied to ClickHou
 4. **Normalize.** A versioned pure function maps each span to a `SpanRecord` and, for spans with
    `mcp.method.name`, an `McpOpRecord`, through the dialect tables of `crucible-compat` for other instrumentation
    conventions. It computes cost from a versioned price table ([`price-table.md`](price-table.md)) and never
-   estimates tokens. Stage B hashes MCP user subjects with each project's salt.
+   estimates tokens. Stage B hashes MCP user subjects with each project's salt and drops the rows that a deletion
+   request selects.
 5. **Index.** The in-memory recent-span index makes a span readable as soon as it is acknowledged.
 6. **Seal and ship.** The shipper seals a batch (`BatchSeal` in the WAL), encodes one Native block per table and
    partition, and inserts it with a deterministic deduplication token. Unknown outcomes are probed before any retry.

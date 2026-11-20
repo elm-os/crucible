@@ -35,6 +35,11 @@
 //!   fields of the wire contract as the exchange had them. At quiescence `mcp_tool_rollup`, `mcp_deploys` and
 //!   `mcp_tool_inventory` equal the reference over `mcp_ops` per capture source (I7), and `mcp_ops` and
 //!   `mcp_content` hold one row per operation (I2).
+//! - **I9** with `deletions`, one more project gets traffic and deletion requests: by trace, by user (with and
+//!   without a token issuer) and by session, their tombstones appended to the WAL as the node timer appends them,
+//!   and requests that complete while the node is down, which leave no tombstone. No row that a completed
+//!   request selects lands after the request completed, and every span, MCP operation and fact of that project
+//!   that no request selects is still there (I1 for that project).
 //! - **I12** the recovered log equals the uninterrupted reference recovery, and a restart after quiescence
 //!   ships nothing and changes nothing.
 //! - **I13** at quiescence no segment wholly at or below the watermark is left and the index is empty.
@@ -52,7 +57,8 @@ use crucible_chfmt::Compression;
 use crucible_env::{DiskPath, Env, QueryError, Rng, Root, StoreFlavour, Stores};
 use crucible_ingest::{AcceptedFact, BucketConfig, FactAuthor, Ingest, IngestConfig, NewFact};
 use crucible_normalize::{
-    Admission, IngestFrame, NormCtx, NormalizedFrame, PriceTable, ProjectSalt, normalize,
+    Admission, IngestFrame, NormCtx, NormalizedFrame, PriceTable, ProjectSalt, Tombstone,
+    TombstoneSelector, normalize,
 };
 use crucible_plan::{Caller, Filter};
 use crucible_query::{
@@ -61,16 +67,18 @@ use crucible_query::{
 };
 use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadError, WalView};
 use crucible_records::{
-    ApiKeyId, AuthorKind, CancelSource, CaptureSource, CorrectionBody, Era, ErrorClass,
-    ErrorSubclass, FactBody, FactTargetKind, FlagBody, Lsn, McpErrorAnnotations, McpErrorInput,
-    McpSide, McpStatus, PayloadCaps, ProjectId, ScoreBody, ScoreDataType, ScoreSource, SpanId,
-    TableId, TagBody, TagOp, TimeWindow, Timestamp, TraceId, Transport, Uuid, classify_mcp_error,
+    ApiKeyId, AuthorKind, CancelSource, CaptureSource, CorrectionBody, DeletionRequestId,
+    DeletionState, Era, ErrorClass, ErrorSubclass, FactBody, FactTargetKind, FlagBody, Lsn,
+    McpErrorAnnotations, McpErrorInput, McpSide, McpStatus, PayloadCaps, ProjectId, ScoreBody,
+    ScoreDataType, ScoreSource, SpanId, TableId, TagBody, TagOp, TimeWindow, Timestamp, TraceId,
+    Transport, Uuid, classify_mcp_error,
 };
 use crucible_schema::{Granularity, RetentionSettings};
 use crucible_shipper::{
-    FRAMES_FILE, FrameFault, FrameManifest, Hooks, MANIFEST_FILE, NoSalts, ProjectSalts,
-    RecentHook, RecentIndex as StageBHook, SaltUnavailable, ShipError, Shipper, ShipperConfig,
-    ShipperStats, StatsSnapshot,
+    DeletionRequests, DeletionsUnavailable, FRAMES_FILE, FrameFault, FrameManifest, Hooks,
+    KnownDeletion, MANIFEST_FILE, NoDeletions, NoSalts, ProjectSalts, RecentHook,
+    RecentIndex as StageBHook, SaltUnavailable, ShipError, Shipper, ShipperConfig, ShipperStats,
+    StatsSnapshot,
 };
 use crucible_wal::{RecoveryReport, Wal, WalConfig, WalFrame};
 use crucible_wal_codec::{Record, RecordType};
@@ -87,7 +95,9 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use crate::boot::{BootCounts, Booted, Recovery, recover};
-use crate::ch_model::{ChFaults, ChModel, ChStats, bytes_at, i8_at, u8_at, u64_at, uuid_at};
+use crate::ch_model::{
+    ChFaults, ChModel, ChStats, bytes_at, i8_at, i64_at, u8_at, u64_at, uuid_at,
+};
 use crate::disk::{DiskFaults, SimDisk};
 use crate::runtime::{Host, SIM_EPOCH_MICROS, Sim, run};
 use crate::ship_sim::{
@@ -164,11 +174,19 @@ pub enum Mutant {
     DropRollupMarker,
     /// `crucible-normalize` flags the usage aggregates of a frame after its exact repeats were dropped.
     MarkAfterDuplicateDrop,
+    /// `crucible-shipper` applies no deletion: neither a tombstone of the log nor a request read before
+    /// shipping drops anything.
+    SkipTombstoneFilter,
+    /// `crucible-normalize` matches the subject hash of an MCP operation under its own issuer for a deletion by
+    /// user that names another issuer.
+    IgnoreTombstoneIssuer,
+    /// `crucible-shipper` applies, before shipping, only the deletion requests that are still open.
+    SeedOnlyOpenRequests,
 }
 
 impl Mutant {
     /// Every mutant.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::SkipWalSync,
         Self::DropToken,
         Self::GcAboveCheckpoint,
@@ -184,6 +202,9 @@ impl Mutant {
         Self::SumCaptureSources,
         Self::DropRollupMarker,
         Self::MarkAfterDuplicateDrop,
+        Self::SkipTombstoneFilter,
+        Self::IgnoreTombstoneIssuer,
+        Self::SeedOnlyOpenRequests,
     ];
 
     /// The name used on the command line.
@@ -204,6 +225,9 @@ impl Mutant {
             Self::SumCaptureSources => "sum-capture-sources",
             Self::DropRollupMarker => "drop-rollup-marker",
             Self::MarkAfterDuplicateDrop => "mark-after-duplicate-drop",
+            Self::SkipTombstoneFilter => "skip-tombstone-filter",
+            Self::IgnoreTombstoneIssuer => "ignore-tombstone-issuer",
+            Self::SeedOnlyOpenRequests => "seed-only-open-requests",
         }
     }
 
@@ -356,6 +380,10 @@ pub enum Violation {
     /// 3.5, 9.3 and 9.4). The catalogue has no invariant of its own for it; it is reported under I7, beside the
     /// other checks that a row carries what the wire contract says of its span.
     NeverStored(String),
+    /// I9: a row that a completed deletion request selects landed after the request completed, or a span, an
+    /// MCP operation or a fact of the deleted project that no request selects is in no table, frame or
+    /// quarantine.
+    Deletion(String),
 }
 
 impl Violation {
@@ -370,6 +398,7 @@ impl Violation {
             Self::FactResolution(_) => "I4",
             Self::Aggregate(_) | Self::NeverStored(_) => "I7",
             Self::Classification(_) => "I8",
+            Self::Deletion(_) => "I9",
             Self::Backpressure(_) => "I5",
             Self::Locator { .. } => "I3",
             Self::Store(_)
@@ -472,6 +501,20 @@ pub struct Stats {
     pub salt_waits: u64,
     /// Windows in which directory syncs failed.
     pub dir_sync_windows: u64,
+    /// Deletion requests made, those that completed while the node was down included.
+    pub deletions: u64,
+    /// Of those, requests that completed while the node was down, which left no tombstone in its log.
+    pub deletions_while_down: u64,
+    /// Tombstones appended to the WAL.
+    pub tombstones: u64,
+    /// Deletion requests that completed once the checkpoint passed their tombstone.
+    pub deletions_completed: u64,
+    /// Spans that stage B dropped because a deletion selects them, over every admission.
+    pub spans_deleted: u64,
+    /// MCP operations that stage B dropped because a deletion by user names them by their own identity.
+    pub ops_deleted: u64,
+    /// Reads of the deletion requests that the simulated control store did not answer.
+    pub deletion_waits: u64,
     /// The shipper's counters, summed over its incarnations.
     pub shipper: StatsSnapshot,
     /// The store's counters.
@@ -525,6 +568,18 @@ impl Stats {
             (self.mcp_keys, "mcp aggregates compared with the reference"),
             (self.salt_waits, "frame waited for its project salt"),
             (self.dir_sync_windows, "directory syncs failed"),
+            (self.tombstones, "tombstone appended"),
+            (
+                self.deletions_while_down,
+                "deletion completed while the node was down",
+            ),
+            (self.deletions_completed, "deletion completed"),
+            (self.spans_deleted, "span dropped by a deletion"),
+            (
+                self.ops_deleted,
+                "mcp operation dropped by its user identity",
+            ),
+            (self.deletion_waits, "read of the deletion requests failed"),
             (
                 self.shipper.quarantined_frames,
                 "shipper quarantined a frame",
@@ -625,6 +680,8 @@ struct Plan {
     mutant: Option<Mutant>,
     /// The share of project salt reads that fail; `None` for a node without a control store.
     salt_fail_ppm: Option<u32>,
+    /// With `deletions`, the share of reads of the deletion requests that fail.
+    deletion_fail_ppm: Option<u32>,
 }
 
 /// The first instant of the span start times: a few days before the simulated wall clock, as real spans are.
@@ -781,6 +838,15 @@ impl Plan {
                 Some(Mutant::MarkAfterDuplicateDrop) => {
                     Some(crucible_shipper::Mutant::MarkAfterDuplicateDrop)
                 }
+                Some(Mutant::SkipTombstoneFilter) => {
+                    Some(crucible_shipper::Mutant::SkipTombstoneFilter)
+                }
+                Some(Mutant::IgnoreTombstoneIssuer) => {
+                    Some(crucible_shipper::Mutant::IgnoreTombstoneIssuer)
+                }
+                Some(Mutant::SeedOnlyOpenRequests) => {
+                    Some(crucible_shipper::Mutant::SeedOnlyOpenRequests)
+                }
                 _ => None,
             },
             ..ShipperConfig::default()
@@ -843,7 +909,7 @@ impl Plan {
                 burst: 128 << 10,
             });
         }
-        Self {
+        let mut plan = Self {
             mask,
             wal,
             ship,
@@ -857,7 +923,28 @@ impl Plan {
             // With an identity the node has a control store, whose reads sometimes fail; without one it runs
             // in ingest-only mode and drops the identity keys.
             salt_fail_ppm: has(Dim::McpIdentity).then(|| choose(&[0, 150_000]) as u32),
+            deletion_fail_ppm: None,
+        };
+        // Drawn last, so that a mask without the dimension draws what it drew before. Deletion requests live in
+        // a control store, which also holds the project salts.
+        if has(Dim::Deletions) {
+            plan.deletion_fail_ppm = Some(choose(&[0, 150_000]) as u32);
+            plan.salt_fail_ppm = plan.salt_fail_ppm.or(Some(0));
         }
+        plan
+    }
+
+    /// The project whose data the run deletes: with `deletions`, the one after the workload's projects.
+    const fn deleted(&self) -> Option<usize> {
+        match self.deletion_fail_ppm {
+            Some(_) => Some(self.projects),
+            None => None,
+        }
+    }
+
+    /// Every project that gets traffic, the deleted one included.
+    const fn all_projects(&self) -> usize {
+        self.projects + self.deletion_fail_ppm.is_some() as usize
     }
 }
 
@@ -916,6 +1003,33 @@ struct Request {
     mcp: Arc<SentOps>,
 }
 
+/// A deletion request of the simulated control store.
+#[derive(Clone, Debug)]
+struct SimDeletion {
+    /// What it deletes and where it stands, as the shipper reads it.
+    known: KnownDeletion,
+    /// The LSN of its durable `Tombstone` frame in the node's log; `None` while it has none.
+    tombstone_lsn: Option<u64>,
+    /// The virtual microsecond from which the deletion executor has deleted what the request selects: once the
+    /// node's checkpoint passed the tombstone, or at once while the node is down (after the inserts it left in
+    /// flight). A row the request selects that lands later stays, which I9 forbids.
+    completed_at: Option<u64>,
+}
+
+/// A span as I9's model reads it: its trace, span id, `user_id` and `session_id` as stage A made them.
+type DeletableSpan = ([u8; 16], [u8; 8], Box<str>, Box<str>);
+
+/// One admitted frame of the deleted project, as I9's model reads it: when it arrived, and each span stage A made
+/// of it.
+#[derive(Clone, Debug)]
+struct FrameSpans {
+    received_at: i64,
+    spans: Vec<DeletableSpan>,
+}
+
+/// The token issuers of the simulated MCP identities.
+const ISSUERS: [&str; 2] = ["https://issuer-0.example", "https://issuer-1.example"];
+
 /// The oracle ledger.
 #[derive(Debug, Default)]
 struct Ledger {
@@ -934,6 +1048,14 @@ struct Ledger {
     mcp: BTreeMap<McpKey, McpSent>,
     /// What stage B was given: every span of every frame it admitted, and where the WAL started then.
     admitted: Admitted,
+    /// The deletion requests of the simulated control store, in the order they were made.
+    deletions: Vec<SimDeletion>,
+    /// Each admitted `IngestRequest` frame of the deleted project, by LSN.
+    deletable: BTreeMap<u64, FrameSpans>,
+    /// The frames of `deletable` that hold each (trace, span id).
+    copies: BTreeMap<([u8; 16], [u8; 8]), BTreeSet<u64>>,
+    /// When each fact of the deleted project arrived, as stage B passed its frame.
+    fact_arrivals: BTreeMap<[u8; 16], i64>,
     repeats: u64,
     violations: Vec<Violation>,
     stats: Stats,
@@ -959,6 +1081,81 @@ impl Ledger {
             self.mcp.insert((project, *trace, *span), sent.clone());
         }
         self.stats.sent += 1;
+    }
+
+    /// Whether a deletion selects a copy of the span `key`: a frame that holds it, arrived before the deletion
+    /// and is of the deleted project, the only one that has deletions.
+    fn deleted_span(&self, key: &SpanKey) -> bool {
+        let project = project_id(key.0).to_bytes();
+        self.copies.get(&(key.1, key.2)).is_some_and(|lsns| {
+            lsns.iter().any(|lsn| {
+                let Some(frame) = self.deletable.get(lsn) else {
+                    return false;
+                };
+                frame
+                    .spans
+                    .iter()
+                    .filter(|(trace, span, ..)| *trace == key.1 && *span == key.2)
+                    .any(|(trace, _, user, session)| {
+                        self.deletions.iter().any(|d| {
+                            system_oracle::deletion_selects_span(
+                                &d.known.tombstone,
+                                &project,
+                                frame.received_at,
+                                trace,
+                                user,
+                                session,
+                            )
+                        })
+                    })
+            })
+        })
+    }
+
+    /// Whether a deletion selects a copy of the MCP operation `key`: with its span, or by its own identity.
+    fn deleted_op(&self, key: &SpanKey) -> bool {
+        let project = project_id(key.0).to_bytes();
+        let Some(op) = self.mcp.get(&(project, key.1, key.2)) else {
+            return false;
+        };
+        self.deleted_span(key)
+            || self.copies.get(&(key.1, key.2)).is_some_and(|lsns| {
+                lsns.iter()
+                    .filter_map(|lsn| self.deletable.get(lsn))
+                    .any(|frame| {
+                        self.deletions.iter().any(|d| {
+                            system_oracle::deletion_names_op(
+                                &d.known.tombstone,
+                                &project,
+                                frame.received_at,
+                                op,
+                            )
+                        })
+                    })
+            })
+    }
+
+    /// Whether a deletion selects the fact `id` of `project`, whose target is `trace` and `session`.
+    fn deleted_fact(
+        &self,
+        project: usize,
+        id: &[u8; 16],
+        trace: &[u8; 16],
+        session: &[u8],
+    ) -> bool {
+        let Some(&received_at) = self.fact_arrivals.get(id) else {
+            return false;
+        };
+        let project = project_id(project).to_bytes();
+        self.deletions.iter().any(|d| {
+            system_oracle::deletion_selects_fact(
+                &d.known.tombstone,
+                &project,
+                received_at,
+                trace,
+                session,
+            )
+        })
     }
 
     fn violate(&mut self, violation: Violation) {
@@ -1032,6 +1229,8 @@ struct ClientState {
     spans: Vec<SentSpan>,
     /// Parent ids that sent spans name and no request has sent yet, as (project, trace, span id).
     awaited: Vec<(usize, [u8; 16], [u8; 8])>,
+    /// The users that deletions of the deleted project name, with the issuer each names.
+    named: Vec<(String, Option<String>)>,
 }
 
 /// Builds one request: a few spans, mostly of one new or recent trace. Spans report a session, a user, an
@@ -1040,7 +1239,7 @@ struct ClientState {
 fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Request> {
     let traces = &mut state.traces;
     let has = |dim| plan.mask.has(dim);
-    let project = pick(rng, plan.projects as u64) as usize;
+    let project = pick(rng, plan.all_projects() as u64) as usize;
     let json = has(Dim::Json) && coin(rng);
     let bad = has(Dim::BadUnicode) && coin(rng);
     let count = 1 + pick(rng, 4);
@@ -1323,7 +1522,7 @@ fn generate(plan: &Plan, rng: &dyn Rng, state: &mut ClientState) -> Option<Reque
     let mut mcp = McpTraffic::default();
     if has(Dim::Mcp) && pick(rng, 3) > 0 {
         for _ in 0..1 + pick(rng, 2) {
-            generate_mcp(plan, rng, project, &mut mcp);
+            generate_mcp(plan, rng, project, &state.named, &mut mcp);
         }
     }
     spans.append(&mut mcp.spans);
@@ -1795,7 +1994,17 @@ struct McpTraffic {
 /// the agent's client-side span above it, the proxy's row of the same call beside the SDK's (double capture),
 /// every error class, a multi-round exchange, a tool list, a deploy that changes, captured content and a user
 /// identity.
-fn generate_mcp(plan: &Plan, rng: &dyn Rng, project: usize, out: &mut McpTraffic) {
+///
+/// In the deleted project, an operation that carries a subject carries, three times in four, a user that a
+/// deletion names, under the issuer it does not name: that deletion keeps the operation, which a deletion that
+/// ignored its issuer would drop.
+fn generate_mcp(
+    plan: &Plan,
+    rng: &dyn Rng,
+    project: usize,
+    named: &[(String, Option<String>)],
+    out: &mut McpTraffic,
+) {
     let has = |dim| plan.mask.has(dim);
     let of = |items: &[&'static str]| items[pick(rng, items.len() as u64) as usize];
     let era = if coin(rng) { Era::Legacy } else { Era::Modern };
@@ -1958,10 +2167,22 @@ fn generate_mcp(plan: &Plan, rng: &dyn Rng, project: usize, out: &mut McpTraffic
         main.handle = format!("ord_{}", pick(rng, 3));
     }
     if identified {
-        main.subject = Some((
-            format!("https://issuer-{}.example", pick(rng, 2)),
-            format!("subject-{}", pick(rng, 3)),
-        ));
+        let weighted = (Some(project) == plan.deleted() && !named.is_empty() && pick(rng, 4) > 0)
+            .then(|| {
+                let (user, issuer) = &named[pick(rng, named.len() as u64) as usize];
+                let other = match issuer {
+                    Some(issuer) => ISSUERS.iter().find(|i| **i != issuer.as_str()).copied(),
+                    None => Some(ISSUERS[pick(rng, 2) as usize]),
+                };
+                other.map(|other| (other.to_owned(), user.clone()))
+            })
+            .flatten();
+        main.subject = Some(weighted.unwrap_or_else(|| {
+            (
+                format!("https://issuer-{}.example", pick(rng, 2)),
+                format!("subject-{}", pick(rng, 3)),
+            )
+        }));
     }
     // The identify hook's user id needs no salt; without a control store it is dropped all the same.
     if sdk && pick(rng, 3) == 0 {
@@ -2109,6 +2330,305 @@ impl ProjectSalts for SimSalts {
     }
 }
 
+/// The deletion requests of the simulated control store: what the ledger holds, and a share of the reads fail,
+/// as a store that does not answer does.
+struct SimDeletions {
+    fail_ppm: u32,
+    rng: Arc<dyn Rng>,
+    shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for SimDeletions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimDeletions")
+            .field("fail_ppm", &self.fail_ppm)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SimDeletions {
+    fn fails(&self) -> bool {
+        let failed = self.rng.next_u64() % 1_000_000 < u64::from(self.fail_ppm);
+        if failed {
+            self.shared.ledger().stats.deletion_waits += 1;
+        }
+        failed
+    }
+}
+
+impl DeletionRequests for SimDeletions {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn all(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+        let answer = if self.fails() {
+            Err(DeletionsUnavailable("the store did not answer".to_owned()))
+        } else {
+            let ledger = self.shared.ledger();
+            Ok(ledger.deletions.iter().map(|d| d.known.clone()).collect())
+        };
+        Box::pin(futures::future::ready(answer))
+    }
+
+    fn request(
+        &self,
+        project: ProjectId,
+        id: DeletionRequestId,
+    ) -> futures::future::BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>> {
+        let answer = if self.fails() {
+            Err(DeletionsUnavailable("the store did not answer".to_owned()))
+        } else {
+            let ledger = self.shared.ledger();
+            Ok(ledger
+                .deletions
+                .iter()
+                .map(|d| &d.known)
+                .find(|known| {
+                    known.tombstone.project_id == project && known.tombstone.request_id == id
+                })
+                .cloned())
+        };
+        Box::pin(futures::future::ready(answer))
+    }
+}
+
+/// Appends the `Tombstone` frame of a deletion, as the node timer does through `crucible_lifecycle::WalLog`, and
+/// returns its LSN once the frame is durable. The frame carries no issuer.
+async fn append_tombstone(wal: &Wal, tombstone: &Tombstone) -> Option<u64> {
+    use crucible_wal_codec::TombstoneSelector as Codec;
+    let record = Record::Tombstone(crucible_wal_codec::Tombstone {
+        deletion_request_id: tombstone.request_id,
+        project_id: tombstone.project_id,
+        requested_at: tombstone.requested_at,
+        deletion_seq: tombstone.deletion_seq,
+        selector: match &tombstone.selector {
+            TombstoneSelector::Traces(ids) => Codec::Traces(ids.clone()),
+            TombstoneSelector::User { user_id, .. } => Codec::User(user_id),
+            TombstoneSelector::Session(id) => Codec::Session(id),
+            TombstoneSelector::Project => Codec::Project,
+        },
+    });
+    let payload = record.encode().ok()?;
+    let frame = crucible_wal_codec::PreparedFrame::new(
+        record.record_type(),
+        payload,
+        crucible_wal_codec::Compression::Lz4,
+    )
+    .ok()?;
+    wal.append(frame).await.ok().map(Lsn::get)
+}
+
+/// The node timer's part of a deletion (contract 13.3, steps 2 and 4): an open request without a tombstone in
+/// this node's log gets one, and a request whose tombstone the checkpoint has passed is complete.
+async fn node_timer(shared: &Shared, wal: &Wal, model: &ChModel, now: u64) {
+    let pending: Vec<(usize, Tombstone)> = shared
+        .ledger()
+        .deletions
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.completed_at.is_none() && d.tombstone_lsn.is_none())
+        .map(|(at, d)| (at, d.known.tombstone.clone()))
+        .collect();
+    for (at, tombstone) in pending {
+        if let Some(lsn) = append_tombstone(wal, &tombstone).await {
+            let mut ledger = shared.ledger();
+            ledger.stats.tombstones += 1;
+            if let Some(deletion) = ledger.deletions.get_mut(at) {
+                deletion.tombstone_lsn = Some(lsn);
+                deletion.known.state = DeletionState::Logged;
+            }
+            drop(ledger);
+            shared.trace.event("deletion.tombstone", &[at as u64, lsn]);
+        }
+    }
+    complete_passed(
+        shared,
+        model,
+        wal.watermark().map_or(0, |w| w.last_lsn().get()),
+        now,
+    );
+}
+
+/// Completes every open request whose tombstone is at or below `watermark`. The executor deletes what it
+/// selects from `now` on, or from when the last insert in flight lands: an attempt sent before stage B knew the
+/// request (a probe read absent while it was still committing, contract 5.5) can land after the delete, and
+/// the executor's verification finds and deletes it, which stage B has no part in.
+fn complete_passed(shared: &Shared, model: &ChModel, watermark: u64, now: u64) {
+    let now = now.max(model.in_flight_until());
+    let mut ledger = shared.ledger();
+    let mut completed = Vec::new();
+    for (at, deletion) in ledger.deletions.iter_mut().enumerate() {
+        if deletion.completed_at.is_none()
+            && deletion.tombstone_lsn.is_some_and(|lsn| lsn <= watermark)
+        {
+            deletion.completed_at = Some(now);
+            deletion.known.state = DeletionState::Completed;
+            completed.push(at as u64);
+        }
+    }
+    ledger.stats.deletions_completed += completed.len() as u64;
+    drop(ledger);
+    for at in completed {
+        shared.trace.event("deletion.completed", &[at, now]);
+    }
+}
+
+/// Makes a deletion request of the deleted project, about what it has sent lately: one or two of its traces, a
+/// user (of its spans or MCP operations, or an MCP subject) with or without an issuer, a session, or now and then
+/// the whole project. An MCP subject is one that an operation in `unshipped` carries, when that is given (the
+/// operations of the frames above the watermark, which a request read before shipping applies to). `false` when
+/// the project has nothing acknowledged yet.
+fn make_request(
+    shared: &Shared,
+    rng: &dyn Rng,
+    requested_at: Timestamp,
+    completed_at: Option<u64>,
+    unshipped: Option<&BTreeSet<McpKey>>,
+) -> bool {
+    let Some(deleted) = shared.plan.deleted() else {
+        return false;
+    };
+    let mut ledger = shared.ledger();
+    let traces: Vec<[u8; 16]> = ledger
+        .acked
+        .iter()
+        .rev()
+        .map(|&index| &ledger.requests[index])
+        .filter(|request| request.project == deleted)
+        .take(8)
+        .flat_map(|request| request.spans.iter().map(|span| span.trace))
+        .collect();
+    if traces.is_empty() {
+        return false;
+    }
+    let trace =
+        |rng: &dyn Rng| TraceId::from_bytes(traces[pick(rng, traces.len() as u64) as usize]);
+    let project = project_id(deleted).to_bytes();
+    let subjects: Vec<(String, String)> = ledger
+        .mcp
+        .iter()
+        .filter(|(key, _)| key.0 == project && unshipped.is_none_or(|keys| keys.contains(*key)))
+        .filter_map(|(_, sent)| sent.subject.clone())
+        .collect();
+    // A request read before shipping applies to every frame above the watermark: three times in four it names a
+    // subject that an operation there carries. A deletion of the whole project, which selects everything that
+    // arrived before it, is rare.
+    let kind = if unshipped.is_some() && !subjects.is_empty() && pick(rng, 4) > 0 {
+        12
+    } else {
+        pick(rng, 34)
+    };
+    let (kind, selector) = match kind {
+        0..=11 => {
+            let mut ids = vec![trace(rng)];
+            if coin(rng) {
+                ids.push(trace(rng));
+            }
+            (0, TombstoneSelector::Traces(ids))
+        }
+        12..=23 => {
+            // Three times in four an MCP subject that the project's operations carry, under the other issuer
+            // (half of the time), its own or any: a deletion that names the other issuer keeps those operations.
+            let (user, issuer) = if !subjects.is_empty() && pick(rng, 4) > 0 {
+                let (own, subject) = subjects[pick(rng, subjects.len() as u64) as usize].clone();
+                let other = ISSUERS.iter().find(|issuer| **issuer != own).copied();
+                let issuer = match pick(rng, 4) {
+                    0 => None,
+                    1 => Some(own),
+                    _ => other.map(str::to_owned),
+                };
+                (subject, issuer)
+            } else {
+                let user = if shared.plan.mask.has(Dim::McpIdentity) && coin(rng) {
+                    format!("subject-{}", pick(rng, 3))
+                } else {
+                    format!("user-{}", pick(rng, 3))
+                };
+                (
+                    user,
+                    coin(rng).then(|| ISSUERS[pick(rng, 2) as usize].to_owned()),
+                )
+            };
+            (
+                1,
+                TombstoneSelector::User {
+                    user_id: user.into(),
+                    issuer: issuer.map(Into::into),
+                },
+            )
+        }
+        24..=32 => (
+            2,
+            TombstoneSelector::Session(format!("session-{}", pick(rng, 3)).into()),
+        ),
+        _ => (3, TombstoneSelector::Project),
+    };
+    let n = ledger.deletions.len() as u64 + 1;
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&n.to_be_bytes());
+    let known = KnownDeletion {
+        tombstone: Tombstone {
+            request_id: DeletionRequestId::from_bytes(id),
+            project_id: project_id(deleted),
+            requested_at,
+            deletion_seq: n,
+            selector,
+        },
+        state: if completed_at.is_some() {
+            DeletionState::Completed
+        } else {
+            DeletionState::Pending
+        },
+    };
+    ledger.deletions.push(SimDeletion {
+        known,
+        tombstone_lsn: None,
+        completed_at,
+    });
+    ledger.stats.deletions += 1;
+    ledger.stats.deletions_while_down += u64::from(completed_at.is_some());
+    drop(ledger);
+    shared
+        .trace
+        .event("deletion.request", &[n, kind, requested_at.micros() as u64]);
+    true
+}
+
+/// What the deletion workload of one incarnation takes.
+struct DeleterCtx {
+    shared: Arc<Shared>,
+    wal: Wal,
+    model: ChModel,
+    env: Env,
+    rng: Arc<dyn Rng>,
+}
+
+/// The deletion workload of one incarnation: a few requests while the clients send (paced as they are, so that
+/// traffic follows each), each accepted on a node whose clock is up to 2 s off this one's, and the node timer,
+/// which appends their tombstones and completes them.
+async fn deleter(ctx: DeleterCtx) {
+    let rng = ctx.rng.as_ref();
+    let mut quota = 1 + pick(rng, 3);
+    loop {
+        ctx.env
+            .clock
+            .sleep(Duration::from_micros(200 + pick(rng, 3_000)))
+            .await;
+        if quota > 0 && pick(rng, 3) == 0 {
+            let skew = pick(rng, 4_000_001) as i64 - 2_000_000;
+            let requested_at = ctx.env.clock.wall_now().saturating_add_micros(skew);
+            if make_request(&ctx.shared, rng, requested_at, None, None) {
+                quota -= 1;
+            }
+        }
+        let now = ctx.env.clock.now().nanos() / 1_000;
+        node_timer(&ctx.shared, &ctx.wal, &ctx.model, now).await;
+    }
+}
+
 /// The recent-span index's hook, with the oracle listening: every frame that stage B admits is recorded with
 /// all the spans stage A made of it, the exact repeats that stage B then drops included, and with the first
 /// LSN the WAL retains at that moment. The usage-aggregate rule is checked against exactly that.
@@ -2121,6 +2641,10 @@ struct Observed {
     /// The last LSN of the sealed batches this incarnation recovered: pairs of those batches may have landed
     /// before the restart.
     sealed_through: u64,
+    /// Stage A's context, to make the records of a frame of the deleted project again for I9's model.
+    ctx: NormCtx<'static>,
+    /// The deleted project.
+    deleted: Option<usize>,
 }
 
 impl std::fmt::Debug for Observed {
@@ -2141,7 +2665,7 @@ impl Observed {
             return None;
         };
         let project =
-            (0..self.shared.plan.projects).find(|&p| project_id(p) == request.project_id)?;
+            (0..self.shared.plan.all_projects()).find(|&p| project_id(p) == request.project_id)?;
         let scanned = crucible_otlp::TraceRequest::scan(request.otlp, None).ok()?;
         let ledger = self.shared.ledger();
         let rejected = |ordinal: u32| {
@@ -2174,6 +2698,74 @@ impl Observed {
 }
 
 impl Observed {
+    /// The project of an `IngestRequest` or `FactBatch` frame.
+    fn project_of(&self, source: &WalFrame) -> Option<usize> {
+        let payload = source.payload().ok()?;
+        let id = match Record::decode(source.record_type(), &payload).ok()? {
+            Record::IngestRequest(request) => request.project_id,
+            Record::FactBatch(batch) => batch.project_id,
+            _ => return None,
+        };
+        (0..self.shared.plan.all_projects()).find(|&p| project_id(p) == id)
+    }
+
+    /// The spans of a frame as stage A makes them, with what a deletion selects them by.
+    fn deletable(&self, source: &WalFrame) -> Option<FrameSpans> {
+        let payload = source.payload().ok()?;
+        let Ok(Record::IngestRequest(request)) =
+            Record::decode(RecordType::IngestRequest, &payload)
+        else {
+            return None;
+        };
+        let ingest = IngestFrame {
+            wal_epoch: self.wal.epoch(),
+            lsn: source.lsn(),
+            received_at: source.received_at(),
+            project_id: request.project_id,
+            api_key_id: request.api_key_id,
+            compat_dialect: request.compat_dialect,
+            sdk_name: request.sdk_name,
+            sdk_version: request.sdk_version,
+            rejected: request.rejected,
+            otlp: request.otlp,
+        };
+        let normalized = normalize(&ingest, &self.ctx).ok()?;
+        Some(FrameSpans {
+            received_at: source.received_at().micros(),
+            spans: normalized
+                .spans
+                .iter()
+                .map(|span| {
+                    (
+                        *span.core.trace_id.as_bytes(),
+                        *span.core.span_id.as_bytes(),
+                        span.core.user_id.clone(),
+                        span.core.session_id.clone(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    /// When the facts of a `FactBatch` frame of the deleted project arrived.
+    fn record_facts(&self, source: &WalFrame) {
+        let Ok(payload) = source.payload() else {
+            return;
+        };
+        let Ok(Record::FactBatch(batch)) = Record::decode(RecordType::FactBatch, &payload) else {
+            return;
+        };
+        if Some(batch.project_id) != self.deleted.map(project_id) {
+            return;
+        }
+        let mut ledger = self.shared.ledger();
+        for fact in &batch.facts {
+            ledger
+                .fact_arrivals
+                .insert(fact.fact_id.to_bytes(), source.received_at().micros());
+        }
+    }
+
     /// Contract 5.3 and 4.7: the WAL keeps the frame that an admission relied on until the deciding frame is
     /// checkpointed, so that a restart decides as this process did.
     fn check_retained(&self) {
@@ -2201,8 +2793,12 @@ impl Observed {
 impl StageBHook for Observed {
     fn applied(&self, source: &WalFrame, frame: &NormalizedFrame, admission: &Admission) {
         let lsn = source.lsn().get();
+        let of_deleted = self.deleted.is_some() && self.project_of(source) == self.deleted;
         let known = self.shared.ledger().admitted.frames.contains_key(&lsn);
         let spans = if known { None } else { self.spans(source) };
+        let deletable = (of_deleted && !self.shared.ledger().deletable.contains_key(&lsn))
+            .then(|| self.deletable(source))
+            .flatten();
         let floor = self
             .wal
             .segments()
@@ -2213,13 +2809,26 @@ impl StageBHook for Observed {
             if let Some(spans) = spans {
                 ledger.admitted.frames.insert(lsn, spans);
             }
+            if let Some(frame) = deletable {
+                for (trace, span, ..) in &frame.spans {
+                    ledger
+                        .copies
+                        .entry((*trace, *span))
+                        .or_default()
+                        .insert(lsn);
+                }
+                ledger.deletable.insert(lsn, frame);
+            }
+            ledger.stats.spans_deleted += u64::from(admission.deleted);
+            ledger.stats.ops_deleted += u64::from(admission.deleted_ops);
             if lsn > self.watermark.get() {
                 ledger.admitted.admissions.insert((lsn, floor));
                 if let Some(relied) = admission.relies_on {
                     ledger.admitted.relying.insert(lsn, relied.get());
                 }
                 // I2: the pairs of a sealed batch hold the same spans whether they land before or after a
-                // restart, so this admission keeps and flags what the process before it did.
+                // restart, so this admission keeps and flags what the process before it did. A restart that
+                // knows more deletions drops more of the deleted project (contract 5.3), which I9 checks.
                 let kept: Vec<(u32, bool)> = admission
                     .stage_a_ordinals
                     .iter()
@@ -2227,6 +2836,7 @@ impl StageBHook for Observed {
                     .zip(frame.spans.iter().map(|span| span.core.usage_aggregate))
                     .collect();
                 match ledger.admitted.kept.get(&lsn) {
+                    _ if of_deleted => {}
                     Some(before) if lsn <= self.sealed_through && *before != kept => {
                         ledger.violate(Violation::DerivedMismatch(format!(
                             "after a restart stage B keeps or flags other spans of frame {lsn}, which a                              sealed batch holds, than the process before it did"
@@ -2244,6 +2854,9 @@ impl StageBHook for Observed {
     }
 
     fn passed(&self, source: &WalFrame) {
+        if self.deleted.is_some() && source.record_type() == RecordType::FactBatch {
+            self.record_facts(source);
+        }
         self.check_retained();
         self.inner.passed(source);
     }
@@ -2571,10 +3184,14 @@ async fn read_back(shared: &Shared, node: &Node, index: usize, permitted: Permit
                     if foreign {
                         ledger.violate(Violation::ForeignData("trace"));
                     }
-                    let missing = request
-                        .spans
-                        .iter()
-                        .any(|span| span.trace == trace && !returned.contains(&span.span));
+                    // A span of the deleted project that a deletion selects may be gone.
+                    let deleted = Some(request.project) == shared.plan.deleted();
+                    let missing = request.spans.iter().any(|span| {
+                        span.trace == trace
+                            && !returned.contains(&span.span)
+                            && !(deleted
+                                && ledger.deleted_span(&(request.project, span.trace, span.span)))
+                    });
                     if missing && whole {
                         ledger.violate(Violation::SilentMiss {
                             read: permitted.read,
@@ -2623,10 +3240,20 @@ async fn read_back(shared: &Shared, node: &Node, index: usize, permitted: Permit
                 );
             }
             Err(QueryServiceError::NotFound) => {
-                shared.ledger().violate(Violation::SilentMiss {
-                    read: "not_found",
-                    request: index,
-                });
+                let mut ledger = shared.ledger();
+                let deleted = Some(request.project) == shared.plan.deleted()
+                    && request
+                        .spans
+                        .iter()
+                        .filter(|span| span.trace == trace)
+                        .all(|span| ledger.deleted_span(&(request.project, span.trace, span.span)));
+                if !deleted {
+                    ledger.violate(Violation::SilentMiss {
+                        read: "not_found",
+                        request: index,
+                    });
+                }
+                drop(ledger);
                 shared.trace.event("read.trace.not_found", &[index as u64]);
             }
             Err(error) => {
@@ -2765,7 +3392,7 @@ async fn exchange(ctx: &ClientCtx, index: usize, repeat: bool) -> bool {
 /// Writes facts to a project through the entry point the fact routes will call, and records what the server
 /// assigned once the write is acknowledged.
 async fn write_facts(ctx: &ClientCtx, facts: Vec<NewFact>) {
-    let project = pick(ctx.rng.as_ref(), ctx.shared.plan.projects as u64) as usize;
+    let project = pick(ctx.rng.as_ref(), ctx.shared.plan.all_projects() as u64) as usize;
     let Ok(scope) = crucible_auth::test_support::scope(project_id(project)) else {
         return;
     };
@@ -2835,6 +3462,20 @@ async fn client(ctx: ClientCtx, budget: u64) {
                 ctx.shared.ledger().repeats += 1;
                 pick(rng, earlier) as usize
             } else {
+                if plan.deleted().is_some() {
+                    state.named = ctx
+                        .shared
+                        .ledger()
+                        .deletions
+                        .iter()
+                        .filter_map(|d| match &d.known.tombstone.selector {
+                            TombstoneSelector::User { user_id, issuer } => {
+                                Some((user_id.to_string(), issuer.as_deref().map(str::to_owned)))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                }
                 let Some(request) = generate(plan, rng, &mut state) else {
                     continue;
                 };
@@ -3004,6 +3645,8 @@ struct Run<'a> {
     rng: Arc<dyn Rng>,
     boots: u64,
     stopped: bool,
+    /// The span keys of the frames above the watermark that the last recovery found.
+    unshipped: BTreeSet<McpKey>,
 }
 
 impl Run<'_> {
@@ -3069,6 +3712,7 @@ impl Run<'_> {
                     self.violate(Violation::RecoveryDiverged);
                 }
                 self.check_store(watermark, &log, false);
+                self.unshipped = keys_above(&log, watermark);
             }
             Err(e) => self.violate(Violation::LogUnreadable(e)),
         }
@@ -3119,8 +3763,13 @@ impl Run<'_> {
             })
             .chain(broken_copies.into_iter().map(Violation::QuarantineCopy))
             .collect();
-        let project_of =
-            |id: [u8; 16]| (0..self.plan().projects).find(|&p| project_id(p).to_bytes() == id);
+        let project_of = |id: [u8; 16]| {
+            (0..self.plan().all_projects()).find(|&p| project_id(p).to_bytes() == id)
+        };
+        // A restart that knows more deletions drops more of the deleted project's rows (contract 5.3), so its
+        // tables do not agree exactly; I9 checks it instead.
+        let deleted = self.plan().deleted();
+        let skip = deleted.map(|p| project_id(p).to_bytes());
         let mut core_rows = 0u64;
         let mut core_roots: BTreeSet<(u64, [u8; 8])> = BTreeSet::new();
         let mut core_root_keys: BTreeSet<SpanKey> = BTreeSet::new();
@@ -3234,7 +3883,7 @@ impl Run<'_> {
                     if *rows > sent && sent > 0 {
                         found.push(Violation::TooManyRows { table: name });
                     }
-                    if table == TableId::SpanCore {
+                    if table == TableId::SpanCore && Some(key.0) != deleted {
                         core_rows += 1;
                         if u8_at(block, "is_root", row) == Some(1) {
                             core_roots.insert((lsn, key.2));
@@ -3245,6 +3894,7 @@ impl Run<'_> {
             }
             for &index in &ledger.acked {
                 let request = &ledger.requests[index];
+                let of_deleted = Some(request.project) == deleted;
                 for span in request.spans.iter() {
                     let key = (request.project, span.trace, span.span);
                     if of_mcp && !expects(&ledger, &key) {
@@ -3265,11 +3915,27 @@ impl Run<'_> {
                                     && holds(&copy.payload, &span.span)
                             })
                     };
-                    if !by_key.contains_key(&key) && !durable && !parked() {
+                    if by_key.contains_key(&key) || durable || parked() {
+                        continue;
+                    }
+                    if !of_deleted {
                         found.push(Violation::AckedSpanLost {
                             table: name,
                             request: index,
                         });
+                        continue;
+                    }
+                    // I9: of the deleted project only what a deletion selects is gone.
+                    let selected = if of_mcp {
+                        ledger.deleted_op(&key)
+                    } else {
+                        ledger.deleted_span(&key)
+                    };
+                    if !selected {
+                        found.push(Violation::Deletion(format!(
+                            "a span of request {index} that no deletion selects is in no row of {name}, no \
+                             durable frame above the watermark and no quarantine"
+                        )));
                     }
                 }
             }
@@ -3340,11 +4006,21 @@ impl Run<'_> {
                                 .iter()
                                 .any(|copy| copy.manifest.facts && holds(&copy.payload, id))
                     };
-                    if !seen.contains(id) && !facts_in_log.contains(id) && !parked() {
+                    if seen.contains(id) || facts_in_log.contains(id) || parked() {
+                        continue;
+                    }
+                    let project = ledger.fact_writes[*write].project;
+                    if Some(project) != deleted {
                         found.push(Violation::AckedFactLost {
                             table: row.table.name(),
                             write: *write,
                         });
+                    } else if !ledger.deleted_fact(project, id, &row.trace, &row.session) {
+                        found.push(Violation::Deletion(format!(
+                            "a fact of write {write} that no deletion selects is in no row of {}, no durable \
+                             frame above the watermark and no quarantine",
+                            row.table.name()
+                        )));
                     }
                 }
                 let resolved = system_oracle::resolve(&rows);
@@ -3373,10 +4049,10 @@ impl Run<'_> {
         // I7: once everything has landed, every rollup equals the reference aggregation over `span_core`, and
         // the MCP aggregating tables equal the reference over `mcp_ops`, per capture source.
         if quiescent && pair_directories == 0 {
-            let (keys, wrong) = system_oracle::check_aggregates(model, &ledger.admitted);
+            let (keys, wrong) = system_oracle::check_aggregates(model, &ledger.admitted, skip);
             ledger.stats.rollup_keys = keys;
             found.extend(wrong.into_iter().map(Violation::Aggregate));
-            let (keys, wrong) = system_oracle::check_mcp(model, &ledger.mcp);
+            let (keys, wrong) = system_oracle::check_mcp(model, &ledger.mcp, skip);
             ledger.stats.mcp_keys = keys;
             found.extend(wrong.into_iter().map(Violation::Aggregate));
         }
@@ -3403,7 +4079,9 @@ impl Run<'_> {
             for part in model.parts(TableId::TraceStats) {
                 let block = &part.block;
                 for row in 0..block.rows {
-                    stats_spans += u64_at(block, "span_count", row).unwrap_or(0);
+                    if uuid_at(block, "project_id", row) != skip {
+                        stats_spans += u64_at(block, "span_count", row).unwrap_or(0);
+                    }
                 }
             }
             // A quarantined pair is missing from its table alone; without one the tables must agree exactly,
@@ -3419,6 +4097,9 @@ impl Run<'_> {
                 }
                 for &index in &ledger.acked {
                     let request = &ledger.requests[index];
+                    if Some(request.project) == deleted {
+                        continue;
+                    }
                     for span in request.spans.iter().filter(|span| span.root) {
                         if !core_root_keys.contains(&(request.project, span.trace, span.span)) {
                             found.push(Violation::DerivedMismatch(format!(
@@ -3434,6 +4115,7 @@ impl Run<'_> {
                 }
             }
         }
+        found.extend(deletions_after_completion(model, &ledger, deleted));
         for violation in found {
             ledger.violate(violation);
         }
@@ -3517,6 +4199,16 @@ impl Run<'_> {
             }),
             None => Arc::new(NoSalts),
         };
+        let deletions: Arc<dyn DeletionRequests> = match plan.deletion_fail_ppm {
+            Some(fail_ppm) => Arc::new(SimDeletions {
+                fail_ppm,
+                rng: self
+                    .sim
+                    .rng(&format!("system-sim/deletion-reads-{}", self.boots)),
+                shared: Arc::clone(&self.shared),
+            }),
+            None => Arc::new(NoDeletions),
+        };
         let hooks = Hooks {
             barriers: barriers.clone(),
             recent: Arc::new(Observed {
@@ -3525,8 +4217,11 @@ impl Run<'_> {
                 shared: Arc::clone(&self.shared),
                 watermark,
                 sealed_through,
+                ctx: NormCtx::new(prices, PayloadCaps::DEFAULT),
+                deleted: plan.deleted(),
             }),
             salts,
+            deletions,
         };
         let stores = Stores::new(Arc::new(self.model.clone()));
         let shipper = match Shipper::new(
@@ -3617,6 +4312,37 @@ impl Run<'_> {
     async fn incarnation(&mut self) -> Option<()> {
         let (host, wal, report) = self.boot().await?;
         self.shared.ledger().stats.incarnations += 1;
+        if self.plan().deleted().is_some() {
+            // Requests that completed while the node was down: the executor ran without it, after the inserts
+            // it had in flight, so no tombstone of them is in its log, and the node must read them before it
+            // ships what it never shipped.
+            let deletions = self
+                .sim
+                .rng(&format!("system-sim/while-down-{}", self.boots));
+            let deletions = deletions.as_ref();
+            // Always when a frame the node never shipped holds an operation of the project that carries a
+            // subject, so that such a request can name it.
+            let subjects = self.plan().deleted().is_some_and(|deleted| {
+                let project = project_id(deleted).to_bytes();
+                self.shared.ledger().mcp.iter().any(|(key, sent)| {
+                    key.0 == project && self.unshipped.contains(key) && sent.subject.is_some()
+                })
+            });
+            if subjects || coin(deletions) {
+                let done =
+                    (self.sim.elapsed().as_micros() as u64).max(self.model.in_flight_until());
+                let at = host.env.clock.wall_now();
+                for _ in 0..1 + pick(deletions, 2) {
+                    make_request(
+                        &self.shared,
+                        deletions,
+                        at,
+                        Some(done),
+                        Some(&self.unshipped),
+                    );
+                }
+            }
+        }
         let rng = Arc::clone(&self.rng);
         let rng = rng.as_ref();
         let has = |dim| self.plan().mask.has(dim);
@@ -3640,6 +4366,16 @@ impl Run<'_> {
                 let ctx = task(format!("system-sim/reader-{}-{index}", self.boots));
                 drop(host.env.spawn("reader", reader(ctx)));
             }
+        }
+        if self.plan().deleted().is_some() {
+            let ctx = DeleterCtx {
+                shared: Arc::clone(&self.shared),
+                wal: wal.clone(),
+                model: self.model.clone(),
+                env: host.env.clone(),
+                rng: self.sim.rng(&format!("system-sim/deleter-{}", self.boots)),
+            };
+            drop(host.env.spawn("deleter", deleter(ctx)));
         }
         drop(node);
 
@@ -3761,6 +4497,11 @@ impl Run<'_> {
         self.model.end_outage();
         let (host, wal, report) = self.boot().await?;
         let first_retained = report.first_retained_lsn();
+        if self.plan().deleted().is_some() {
+            // The node timer appends the tombstone of every open request before the drain.
+            let now = self.sim.elapsed().as_micros() as u64;
+            node_timer(&self.shared, &wal, &self.model, now).await;
+        }
         // The last frame that warrants a seal: the shipper's own control frames after it stay unsealed.
         let target = match read_log(&wal, first_retained).await {
             Ok(log) => log
@@ -3794,6 +4535,12 @@ impl Run<'_> {
                 shipper: shipping.stats.snapshot(),
             });
         }
+        complete_passed(
+            &self.shared,
+            &self.model,
+            watermark(&wal),
+            self.sim.elapsed().as_micros() as u64,
+        );
         // Past replay retention, however the wall clock was stepped, past the visibility grace and the last
         // garbage collection, and past the last insert in flight.
         let retention = self.plan().wal.config.replay_retention;
@@ -3879,6 +4626,128 @@ impl Run<'_> {
     }
 }
 
+/// I9 on the write path: no row of the deleted project that a completed deletion request selects lands after the
+/// request completed. Before that the executor deletes it; a row that lands later stays, and only stage B keeps
+/// it out: by the tombstone of the frames after it, and by the requests it reads before it ships.
+fn deletions_after_completion(
+    model: &ChModel,
+    ledger: &Ledger,
+    deleted: Option<usize>,
+) -> Vec<Violation> {
+    let mut found = Vec::new();
+    let completed: Vec<(u64, &Tombstone)> = ledger
+        .deletions
+        .iter()
+        .filter_map(|d| d.completed_at.map(|at| (at, &d.known.tombstone)))
+        .collect();
+    let (Some(deleted), Some(earliest)) = (deleted, completed.iter().map(|(at, _)| *at).min())
+    else {
+        return found;
+    };
+    let project = project_id(deleted).to_bytes();
+    for table in [
+        TableId::SpanCore,
+        TableId::SpanPayload,
+        TableId::TraceHeads,
+        TableId::McpOps,
+        TableId::McpContent,
+    ] {
+        let of_mcp = matches!(table, TableId::McpOps | TableId::McpContent);
+        for part in model.parts(table) {
+            if part.landed_at <= earliest {
+                continue;
+            }
+            let block = &part.block;
+            for row in 0..block.rows {
+                let cells = (|| {
+                    let lsn = u64_at(block, "lsn", row)?;
+                    let trace: [u8; 16] = bytes_at(block, "trace_id", row)?.try_into().ok()?;
+                    let span: [u8; 8] = bytes_at(block, "span_id", row)?.try_into().ok()?;
+                    (uuid_at(block, "project_id", row)? == project).then_some((lsn, trace, span))
+                })();
+                let Some((lsn, trace, span)) = cells else {
+                    continue;
+                };
+                let Some(frame) = ledger.deletable.get(&lsn) else {
+                    continue;
+                };
+                let Some((_, _, user, session)) = frame
+                    .spans
+                    .iter()
+                    .find(|(t, s, ..)| *t == trace && *s == span)
+                else {
+                    continue;
+                };
+                let op = of_mcp
+                    .then(|| ledger.mcp.get(&(project, trace, span)))
+                    .flatten();
+                let selected = completed.iter().any(|(at, deletion)| {
+                    part.landed_at > *at
+                        && (system_oracle::deletion_selects_span(
+                            deletion,
+                            &project,
+                            frame.received_at,
+                            &trace,
+                            user,
+                            session,
+                        ) || op.is_some_and(|op| {
+                            system_oracle::deletion_names_op(
+                                deletion,
+                                &project,
+                                frame.received_at,
+                                op,
+                            )
+                        }))
+                });
+                if selected {
+                    found.push(Violation::Deletion(format!(
+                        "a row of {} of frame {lsn} that a completed deletion request selects landed after the \
+                         request completed",
+                        table.name()
+                    )));
+                }
+            }
+        }
+    }
+    for table in system_oracle::FACT_TABLES {
+        for part in model.parts(table) {
+            if part.landed_at <= earliest {
+                continue;
+            }
+            let block = &part.block;
+            for row in 0..block.rows {
+                let cells = (|| {
+                    (uuid_at(block, "project_id", row)? == project).then_some(())?;
+                    let trace: [u8; 16] = bytes_at(block, "trace_id", row)?.try_into().ok()?;
+                    let session = bytes_at(block, "session_id", row)?;
+                    Some((trace, session, i64_at(block, "received_at", row)?))
+                })();
+                let Some((trace, session, received_at)) = cells else {
+                    continue;
+                };
+                let selected = completed.iter().any(|(at, deletion)| {
+                    part.landed_at > *at
+                        && system_oracle::deletion_selects_fact(
+                            deletion,
+                            &project,
+                            received_at,
+                            &trace,
+                            session,
+                        )
+                });
+                if selected {
+                    found.push(Violation::Deletion(format!(
+                        "a row of {} that a completed deletion request selects landed after the request \
+                         completed",
+                        table.name()
+                    )));
+                }
+            }
+        }
+    }
+    found
+}
+
 /// The virtual time one run may take.
 const DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -3895,7 +4764,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
         plan.ship.probe_valid_for,
     );
     model.set_faults(plan.faults.clone());
-    let keys = (0..plan.projects)
+    let keys = (0..plan.all_projects())
         .filter_map(|project| {
             Some(StaticKey {
                 id: ApiKeyId::from_bytes([project as u8 + 0x40; 16]),
@@ -3922,6 +4791,7 @@ async fn simulate(sim: Sim, options: Options) -> Outcome {
                 rng: sim.rng("system-sim/driver"),
                 boots: 0,
                 stopped: false,
+                unshipped: BTreeSet::new(),
             };
             let body = async {
                 for _ in 0..incarnations {

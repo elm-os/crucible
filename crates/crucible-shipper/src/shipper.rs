@@ -1,5 +1,7 @@
 //! The shipper task: tail the durable WAL, normalize, fill and seal batches, ship their pairs, checkpoint, and
-//! drive garbage collection (contract sections 4.6, 5.1, 5.7 and 5.9).
+//! drive garbage collection (contract sections 4.6, 5.1, 5.7 and 5.9). Stage B drops what the deletion requests
+//! select (contract 13.3, step 3): those of the `Tombstone` frames it has passed, and every request the control
+//! store holds when the shipper starts, which it reads before it ships anything.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,11 +12,16 @@ use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
 use crucible_normalize::{
     Admission, IdentityCtx, NORMALIZER_VERSION, NormCtx, NormalizedFrame, PriceTable, ProjectSalt,
-    StageB,
+    StageB, Tombstone, TombstoneSelector, Tombstones,
 };
-use crucible_records::{DetMap, Fact, Lsn, PartitionId, ProjectId, TableId, Timestamp, det_map};
+use crucible_records::{
+    DeletionRequestId, DeletionState, DetMap, Fact, Lsn, PartitionId, ProjectId, TableId,
+    Timestamp, det_map,
+};
 use crucible_wal::{AppendError, RecoveryReport, Replay, ReplayError, Wal, WalFrame};
-use crucible_wal_codec::{BatchSeal, Checkpoint, Compression, PreparedFrame, Record, RecordType};
+use crucible_wal_codec::{
+    self as codec, BatchSeal, Checkpoint, Compression, PreparedFrame, Record, RecordType,
+};
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::{FutureExt, select_biased};
 use tokio::sync::mpsc;
@@ -23,7 +30,10 @@ use crate::batch::{BatchId, OpenBatch, block, pair_token};
 use crate::config::ShipperConfig;
 use crate::error::ShipError;
 use crate::frames::{Content, read_frame};
-use crate::hooks::{Barrier, Barriers, NoBarriers, NoRecent, NoSalts, ProjectSalts, RecentIndex};
+use crate::hooks::{
+    Barrier, Barriers, DeletionRequests, NoBarriers, NoDeletions, NoRecent, NoSalts, ProjectSalts,
+    RecentIndex,
+};
 use crate::limits::{DrainRate, Gate, SealLimits, backoff};
 use crate::pair::{PairEnd, PairJob, ship_pair};
 use crate::quarantine::quarantine_frame;
@@ -38,6 +48,8 @@ pub struct Hooks {
     pub recent: Arc<dyn RecentIndex>,
     /// The project salts, for the user subjects of MCP operations; [`NoSalts`] without a control store.
     pub salts: Arc<dyn ProjectSalts>,
+    /// The deletion requests, which stage B applies; [`NoDeletions`] without a control store.
+    pub deletions: Arc<dyn DeletionRequests>,
 }
 
 impl Default for Hooks {
@@ -46,6 +58,7 @@ impl Default for Hooks {
             barriers: Arc::new(NoBarriers),
             recent: Arc::new(NoRecent),
             salts: Arc::new(NoSalts),
+            deletions: Arc::new(NoDeletions),
         }
     }
 }
@@ -222,6 +235,7 @@ pub(crate) struct Ctx {
     pub(crate) barriers: Arc<dyn Barriers>,
     pub(crate) recent: Arc<dyn RecentIndex>,
     salts: Arc<dyn ProjectSalts>,
+    deletions: Arc<dyn DeletionRequests>,
     pub(crate) gate: Gate,
     pub(crate) rng: Arc<dyn Rng>,
     pub(crate) stats: Arc<ShipperStats>,
@@ -376,7 +390,68 @@ pub struct Shipper {
     salt_failures: u32,
     /// Whether the drop of identity keys without a control store was logged.
     identity_drop_logged: bool,
+    /// The deletions stage B applies (contract 13.3, step 3): every request the control store held at start, and
+    /// those of the `Tombstone` frames stage B has passed since.
+    tombstones: Tombstones,
+    /// The issuer of each deletion by user that is known, by request: a `Tombstone` frame does not carry it.
+    issuers: DetMap<DeletionRequestId, Option<Box<str>>>,
+    /// Consecutive failures to read the deletion requests, for the backoff of what waits for them.
+    deletion_failures: u32,
     drain: DrainRate,
+}
+
+/// The stage B context of a frame: what is known of its project's identity and, unless the seeded defect skips
+/// them, the deletions.
+fn stage_b_ctx<'a>(
+    ctx: &'a Ctx,
+    tombstones: &'a Tombstones,
+    identity: IdentityCtx<'a>,
+) -> NormCtx<'a> {
+    let mut norm = NormCtx::new(ctx.prices, ctx.config.caps).with_identity(identity);
+    norm.mutant = ctx.config.normalizer_mutant();
+    if ctx.config.skips_tombstone_filter() {
+        norm
+    } else {
+        norm.with_tombstones(tombstones)
+    }
+}
+
+/// The deletion of a `Tombstone` record, without the issuer of a deletion by user, which the record does not carry.
+fn tombstone(record: &codec::Tombstone<'_>) -> Tombstone {
+    Tombstone {
+        request_id: record.deletion_request_id,
+        project_id: record.project_id,
+        requested_at: record.requested_at,
+        deletion_seq: record.deletion_seq,
+        selector: match &record.selector {
+            codec::TombstoneSelector::Traces(ids) => TombstoneSelector::Traces(ids.clone()),
+            codec::TombstoneSelector::User(user_id) => TombstoneSelector::User {
+                user_id: (*user_id).into(),
+                issuer: None,
+            },
+            codec::TombstoneSelector::Session(session_id) => {
+                TombstoneSelector::Session((*session_id).into())
+            }
+            codec::TombstoneSelector::Project => TombstoneSelector::Project,
+        },
+    }
+}
+
+/// The issuer a deletion by user names.
+fn issuer_of(tombstone: &Tombstone) -> Option<Box<str>> {
+    match &tombstone.selector {
+        TombstoneSelector::User { issuer, .. } => issuer.clone(),
+        _ => None,
+    }
+}
+
+/// What reading a `Tombstone` frame gave.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Learned {
+    /// Stage B applies the deletion from here on.
+    Applied,
+    /// The control store did not give the issuer of the deletion: the frame is read again after a backoff.
+    Waits,
 }
 
 /// What stage B is told about the identity of one frame's project: no control store, or the project's salt
@@ -464,6 +539,7 @@ impl Shipper {
             barriers: hooks.barriers,
             recent: hooks.recent,
             salts: hooks.salts,
+            deletions: hooks.deletions,
             wal,
             config,
         });
@@ -492,6 +568,9 @@ impl Shipper {
             salts: det_map(),
             salt_failures: 0,
             identity_drop_logged: false,
+            tombstones: Tombstones::new(),
+            issuers: det_map(),
+            deletion_failures: 0,
             drain: DrainRate::new(ctx.env.clock.now()),
             ctx,
         })
@@ -552,6 +631,107 @@ impl Shipper {
         }
     }
 
+    /// Reads every deletion request of the control store, in every state, before anything is shipped (contract
+    /// 13.3): a request can complete while this node is down, and then no tombstone of it is in this node's log,
+    /// yet the frames this node never shipped may hold what it deleted. The hook registers the node first, so a
+    /// request made after the read waits for this node's tombstone. A read that fails is tried again; nothing is
+    /// shipped meanwhile. `false` when the host shut down first.
+    async fn seed_deletions(&mut self) -> bool {
+        if !self.ctx.deletions.configured() {
+            return true;
+        }
+        let shutdown = self.ctx.env.shutdown();
+        loop {
+            if shutdown.is_shutdown() {
+                return false;
+            }
+            match self.ctx.deletions.all().await {
+                Ok(requests) => {
+                    let count = requests.len();
+                    for known in requests {
+                        let done = matches!(
+                            known.state,
+                            DeletionState::Completed | DeletionState::Failed
+                        );
+                        if done && self.ctx.config.seeds_only_open_requests() {
+                            continue;
+                        }
+                        self.learn(known.tombstone);
+                    }
+                    self.deletion_failures = 0;
+                    tracing::info!(
+                        requests = count,
+                        "stage B applies the deletion requests of the control store"
+                    );
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "nothing ships until the deletion requests can be read");
+                    self.ctx.pause(self.deletion_failures).await;
+                    self.deletion_failures = self.deletion_failures.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// Stage B applies `tombstone` from here on, and remembers the issuer of a deletion by user.
+    fn learn(&mut self, tombstone: Tombstone) {
+        if matches!(tombstone.selector, TombstoneSelector::User { .. }) {
+            self.issuers
+                .insert(tombstone.request_id, issuer_of(&tombstone));
+        }
+        self.tombstones.insert(&tombstone);
+    }
+
+    /// Reads a `Tombstone` frame (contract 13.3, step 3): stage B applies its deletion to the frames after it. The
+    /// issuer of a deletion by user comes from the control store, which the frame waits for. A frame that does not
+    /// decode applies nothing; the requests read from the control store at start still apply.
+    async fn on_tombstone(&mut self, frame: &WalFrame) -> Learned {
+        let lsn = frame.lsn();
+        let decoded = frame.payload().ok().and_then(|payload| {
+            match Record::decode(RecordType::Tombstone, &payload) {
+                Ok(Record::Tombstone(record)) => Some(tombstone(&record)),
+                _ => None,
+            }
+        });
+        let Some(mut tombstone) = decoded else {
+            tracing::warn!(lsn = %lsn, "a tombstone frame does not decode, so stage B does not apply it");
+            return Learned::Applied;
+        };
+        if let TombstoneSelector::User { issuer, .. } = &mut tombstone.selector {
+            match self.issuers.get(&tombstone.request_id) {
+                Some(known) => issuer.clone_from(known),
+                None if self.ctx.deletions.configured() => {
+                    let read = self
+                        .ctx
+                        .deletions
+                        .request(tombstone.project_id, tombstone.request_id)
+                        .await;
+                    match read {
+                        // A request that is not there names no issuer.
+                        Ok(found) => *issuer = found.and_then(|known| issuer_of(&known.tombstone)),
+                        Err(e) => {
+                            tracing::warn!(lsn = %lsn, error = %e, "a tombstone waits for the issuer of its deletion");
+                            return Learned::Waits;
+                        }
+                    }
+                }
+                // Without a control store no MCP operation keeps an identity, so the issuer changes nothing.
+                None => {}
+            }
+        }
+        self.deletion_failures = 0;
+        self.learn(tombstone);
+        Learned::Applied
+    }
+
+    /// Reads a frame again after a backoff, because what it needs from the control store did not come.
+    async fn wait_for_deletions(&mut self, lsn: Lsn) {
+        self.replay = self.ctx.wal.replay(lsn);
+        self.ctx.pause(self.deletion_failures).await;
+        self.deletion_failures = self.deletion_failures.saturating_add(1);
+    }
+
     /// The next durable frame, or `None` when there is none yet or the read failed. A failed read is tried
     /// again from the same position: the cursor never moves past a frame it did not return.
     async fn next_frame(&mut self) -> Result<Option<WalFrame>, ShipError> {
@@ -580,6 +760,12 @@ impl Shipper {
             let Some(frame) = self.next_frame().await? else {
                 continue;
             };
+            if frame.record_type() == RecordType::Tombstone
+                && self.on_tombstone(&frame).await == Learned::Waits
+            {
+                self.wait_for_deletions(frame.lsn()).await;
+                continue;
+            }
             if !matches!(
                 frame.record_type(),
                 RecordType::IngestRequest | RecordType::FactBatch
@@ -589,10 +775,12 @@ impl Shipper {
             }
             match read_frame(&self.ctx.wal, &frame, &self.norm_ctx(), &self.ctx.config) {
                 Ok(Content::Spans(mut normalized)) => {
-                    // The rows are not shipped again, and no salt changes what stage B remembers.
+                    // The rows are not shipped again, and no salt changes what stage B remembers. What a deletion
+                    // selects stays out of the recent index.
+                    let ctx = stage_b_ctx(&self.ctx, &self.tombstones, IdentityCtx::Salted(None));
                     let admission = self
                         .stage_b
-                        .admit(&mut normalized, &IdentityCtx::Salted(None))
+                        .admit_with(&mut normalized, &ctx)
                         .map_err(|e| frame_error(frame.lsn(), e))?;
                     self.ctx.recent.applied(&frame, &normalized, &admission);
                 }
@@ -675,6 +863,11 @@ impl Shipper {
         let lsn = frame.lsn();
         let raw_bytes = frame.end_offset().saturating_sub(frame.offset());
         let record_type = frame.record_type();
+        if record_type == RecordType::Tombstone && self.on_tombstone(frame).await == Learned::Waits
+        {
+            self.wait_for_deletions(lsn).await;
+            return Ok(());
+        }
         if !matches!(
             record_type,
             RecordType::IngestRequest | RecordType::FactBatch
@@ -700,10 +893,10 @@ impl Shipper {
                     self.salt_failures = self.salt_failures.saturating_add(1);
                     return Ok(());
                 };
-                let ctx = self.norm_ctx().with_identity(identity.ctx());
+                let ctx = stage_b_ctx(&self.ctx, &self.tombstones, identity.ctx());
                 let admission = self
                     .stage_b
-                    .admit(&mut normalized, &ctx.identity)
+                    .admit_with(&mut normalized, &ctx)
                     .map_err(|e| frame_error(lsn, e))?;
                 if normalized.summary.inventory_dropped > 0 {
                     self.ctx
@@ -717,7 +910,10 @@ impl Shipper {
                 }
                 Unplaced::Spans(normalized, admission)
             }
-            Ok(Content::Facts(facts)) => {
+            Ok(Content::Facts(mut facts)) => {
+                if !self.ctx.config.skips_tombstone_filter() && !self.tombstones.is_empty() {
+                    facts.retain(|fact| !self.tombstones.selects_fact(fact));
+                }
                 self.ctx.recent.passed(frame);
                 Unplaced::Facts(facts)
             }
@@ -806,8 +1002,9 @@ impl Shipper {
                     .unwrap_or(u32::MAX),
                 normalizer_version: NORMALIZER_VERSION,
                 price_table_version: ctx.prices.version(),
-                // Milestone 1 applies no tombstones while normalizing.
-                deletion_seq: 0,
+                // The deletions stage B applied to the range are those it knew when it read the range's last
+                // frame.
+                deletion_seq: self.tombstones.highest_seq(),
             };
             ctx.barriers.reached(Barrier::BeforeSealAppend).await;
             let record = Record::BatchSeal(seal);
@@ -960,11 +1157,14 @@ impl Shipper {
 
     /// Runs the shipper until the host shuts down.
     ///
-    /// On start it rebuilds stage B from the retained prefix, ships the sealed batches recovery found (every
-    /// pair probed first, because everything before a restart is in doubt), then normalizes and seals the tail
-    /// with fresh boundaries and keeps tailing the log.
+    /// On start it reads the deletion requests of the control store, rebuilds stage B from the retained prefix,
+    /// ships the sealed batches recovery found (every pair probed first, because everything before a restart is
+    /// in doubt), then normalizes and seals the tail with fresh boundaries and keeps tailing the log.
     pub async fn run(mut self) -> Result<(), ShipError> {
         let mut shutdown = self.ctx.env.shutdown();
+        if !self.seed_deletions().await {
+            return Ok(());
+        }
         self.rebuild().await?;
         loop {
             if shutdown.is_shutdown() {

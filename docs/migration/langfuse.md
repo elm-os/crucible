@@ -39,6 +39,9 @@ Everything the SDK records on spans:
 - **Generations**: model, model parameters, token usage, cost, completion start time, and the prompt's name and
   version.
 - **Sessions and users**: Crucible's sessions and users pages are built from the spans' session and user.
+- **Media**: with object storage configured, the SDK's media uploads go to Crucible's `/api/public/media`. Without
+  it, set `LANGFUSE_MEDIA_UPLOAD_ENABLED=false`, or the uploads fail and the payload keeps only the media reference
+  ([media](../integrations/langfuse.md#media)).
 
 [The Langfuse integration page](../integrations/langfuse.md) maps each attribute to its Crucible field.
 

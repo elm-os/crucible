@@ -5,11 +5,16 @@
 //! against the exchange the generator simulated (invariant I8 and the wire contract of 9.1), and the MCP
 //! aggregating tables against the reference over `mcp_ops`, per capture source (invariants I2 and I7).
 //! The store's side is read from the parts of [`ChModel`], as the store holds them.
+//!
+//! It also holds the oracle's model of what a deletion request selects (invariant I9, contract 13.3): a linear
+//! reading of the rule for one request, which shares nothing with stage B's index of deletions. Pairs of one batch
+//! may land before and after a restart that knows more deletions (a replay drops more, never fewer, contract 5.3),
+//! so the exact comparisons leave out the project whose data the run deletes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_chfmt::{DecodedBlock, Values};
-use crucible_normalize::ProjectSalt;
+use crucible_normalize::{ProjectSalt, Tombstone, TombstoneSelector};
 use crucible_records::{
     Bucket, CaptureSource, Era, FactId, FactVersion, GroupKeyKind, McpClassification, McpSide,
     TableId, Transport, fold_facts, semconv_bucket,
@@ -126,13 +131,17 @@ const ROLLUPS: [TableId; 4] = [
     TableId::SpanMetrics,
 ];
 
-/// The reference aggregation: what each rollup must hold, folded from the rows of `span_core`.
-fn reference(model: &ChModel) -> Option<BTreeMap<TableId, Aggs>> {
+/// The reference aggregation: what each rollup must hold, folded from the rows of `span_core`, without the
+/// rows of the project `skip`.
+fn reference(model: &ChModel, skip: Option<[u8; 16]>) -> Option<BTreeMap<TableId, Aggs>> {
     let mut out: BTreeMap<TableId, Aggs> = ROLLUPS.iter().map(|&t| (t, Aggs::new())).collect();
     for part in model.parts(TableId::SpanCore) {
         let block = &part.block;
         for row in 0..block.rows {
             let project = uuid_at(block, "project_id", row)?;
+            if Some(project) == skip {
+                continue;
+            }
             let start = i64_at(block, "start_time", row)?;
             let end = i64_at(block, "end_time", row)?;
             let error = i8_at(block, "status_code", row)? == STATUS_ERROR
@@ -214,15 +223,16 @@ fn reference(model: &ChModel) -> Option<BTreeMap<TableId, Aggs>> {
     Some(out)
 }
 
-/// What a rollup table holds: its data rows merged by key, as a reader aggregates them.
-fn stored(model: &ChModel, table: TableId) -> Option<Aggs> {
+/// What a rollup table holds: its data rows merged by key, as a reader aggregates them, without the rows of the
+/// project `skip`.
+fn stored(model: &ChModel, table: TableId, skip: Option<[u8; 16]>) -> Option<Aggs> {
     let mut out = Aggs::new();
     for part in model.parts(table) {
         let block = &part.block;
         for row in 0..block.rows {
             let project = uuid_at(block, "project_id", row)?;
-            if project == [0; 16] {
-                // The marker row of the block.
+            if project == [0; 16] || Some(project) == skip {
+                // The marker row of the block, or the project left out.
                 continue;
             }
             let count = if table == TableId::SpanMetrics {
@@ -839,9 +849,17 @@ fn differing<K: Ord + core::fmt::Debug, V: PartialEq + core::fmt::Debug>(
 /// - `mcp_deploys`, merged by its key, equals the deploys of the server-side rows of `mcp_ops`.
 /// - `mcp_tool_inventory`, merged by its key, equals the tools that the operations in `mcp_ops` listed, as
 ///   the generator sent them.
-pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u64, Vec<String>) {
+///
+/// The rows of the project `skip` are left out of every table.
+pub(crate) fn check_mcp(
+    model: &ChModel,
+    sent: &BTreeMap<McpKey, McpSent>,
+    skip: Option<[u8; 16]>,
+) -> (u64, Vec<String>) {
     let unread = |table: TableId| (0, vec![format!("a row of {} does not read", table.name())]);
     let mut wrong = Vec::new();
+    let skipped =
+        |block: &DecodedBlock, row: usize| Some(Some(uuid_at(block, "project_id", row)?) == skip);
 
     // The rows of a plain table by (LSN, span id).
     let rows_of = |table: TableId, only: &dyn Fn(&DecodedBlock, usize) -> Option<bool>| {
@@ -849,7 +867,7 @@ pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u
         for part in model.parts(table) {
             let block = &part.block;
             for row in 0..block.rows {
-                if only(block, row)? {
+                if !skipped(block, row)? && only(block, row)? {
                     rows.insert((
                         u64_at(block, "lsn", row)?,
                         bytes_at(block, "span_id", row)?.to_vec(),
@@ -901,6 +919,9 @@ pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u
             let block = &part.block;
             for row in 0..block.rows {
                 let project = uuid_at(block, "project_id", row)?;
+                if Some(project) == skip {
+                    continue;
+                }
                 let side = i8_at(block, "side", row)? as u8;
                 let source = i8_at(block, "capture_source", row)? as u8;
                 let start = i64_at(block, "start_time", row)?;
@@ -981,7 +1002,7 @@ pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u
             let block = &part.block;
             for row in 0..block.rows {
                 let project = uuid_at(block, "project_id", row)?;
-                if project == [0; 16] {
+                if project == [0; 16] || Some(project) == skip {
                     continue;
                 }
                 let source = i8_at(block, "capture_source", row)? as u8;
@@ -1028,7 +1049,7 @@ pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u
             let block = &part.block;
             for row in 0..block.rows {
                 let project = uuid_at(block, "project_id", row)?;
-                if project == [0; 16] {
+                if project == [0; 16] || Some(project) == skip {
                     continue;
                 }
                 let mut parts: Vec<Vec<u8>> = vec![project.to_vec()];
@@ -1096,9 +1117,14 @@ pub(crate) fn check_mcp(model: &ChModel, sent: &BTreeMap<McpKey, McpSent>) -> (u
 
 /// I7: compares every rollup with the reference aggregation over `span_core`, and the usage-aggregate flags
 /// with the rule over the frames that stage B was given. Returns the number of keys
-/// compared and what differs. Valid once every pair of every batch has landed.
-pub(crate) fn check_aggregates(model: &ChModel, admitted: &Admitted) -> (u64, Vec<String>) {
-    let Some(reference) = reference(model) else {
+/// compared and what differs. Valid once every pair of every batch has landed. The rollups leave out the
+/// project `skip`; the flags are checked for every project, because a deletion does not change them.
+pub(crate) fn check_aggregates(
+    model: &ChModel,
+    admitted: &Admitted,
+    skip: Option<[u8; 16]>,
+) -> (u64, Vec<String>) {
+    let Some(reference) = reference(model, skip) else {
         return (0, vec!["a span_core row does not read".to_owned()]);
     };
     let mut keys = 0;
@@ -1106,7 +1132,7 @@ pub(crate) fn check_aggregates(model: &ChModel, admitted: &Admitted) -> (u64, Ve
         return (0, vec!["a span_core row does not read".to_owned()]);
     };
     for (table, expected) in reference {
-        let Some(found) = stored(model, table) else {
+        let Some(found) = stored(model, table, skip) else {
             wrong.push(format!("a row of {} does not read", table.name()));
             continue;
         };
@@ -1136,6 +1162,71 @@ pub(crate) fn check_aggregates(model: &ChModel, admitted: &Admitted) -> (u64, Ve
         ));
     }
     (keys, wrong)
+}
+
+/// Whether a deletion selects data of `project` that arrived at `received_at` (contract 13.3): its project's,
+/// received before the deletion.
+fn before(deletion: &Tombstone, project: &[u8; 16], received_at: i64) -> bool {
+    deletion.project_id.to_bytes() == *project && received_at < deletion.requested_at.micros()
+}
+
+/// I9's model: whether a deletion selects a span of `project` that arrived at `received_at`, by the span's trace,
+/// `user_id` and `session_id`. An empty user or session names nothing.
+pub(crate) fn deletion_selects_span(
+    deletion: &Tombstone,
+    project: &[u8; 16],
+    received_at: i64,
+    trace: &[u8; 16],
+    user: &str,
+    session: &str,
+) -> bool {
+    before(deletion, project, received_at)
+        && match &deletion.selector {
+            TombstoneSelector::Traces(ids) => ids.iter().any(|id| id.as_bytes() == trace),
+            TombstoneSelector::User { user_id, .. } => !user.is_empty() && **user_id == *user,
+            TombstoneSelector::Session(id) => !session.is_empty() && **id == *session,
+            TombstoneSelector::Project => true,
+        }
+}
+
+/// I9's model: whether a deletion by user names an MCP operation by its own identity: its `user_id`, or the
+/// subject it was hashed from, under the issuer the deletion names or under any when it names none.
+pub(crate) fn deletion_names_op(
+    deletion: &Tombstone,
+    project: &[u8; 16],
+    received_at: i64,
+    op: &McpSent,
+) -> bool {
+    before(deletion, project, received_at)
+        && match &deletion.selector {
+            TombstoneSelector::User { user_id, issuer } => {
+                (!op.user_id.is_empty() && **user_id == *op.user_id)
+                    || op.subject.as_ref().is_some_and(|(own, subject)| {
+                        **user_id == **subject && issuer.as_deref().is_none_or(|named| named == own)
+                    })
+            }
+            _ => false,
+        }
+}
+
+/// I9's model: whether a deletion selects a fact of `project` that arrived at `received_at`, by its target's
+/// trace or session. A fact names no user.
+pub(crate) fn deletion_selects_fact(
+    deletion: &Tombstone,
+    project: &[u8; 16],
+    received_at: i64,
+    trace: &[u8; 16],
+    session: &[u8],
+) -> bool {
+    before(deletion, project, received_at)
+        && match &deletion.selector {
+            TombstoneSelector::Traces(ids) => {
+                *trace != [0; 16] && ids.iter().any(|id| id.as_bytes() == trace)
+            }
+            TombstoneSelector::User { .. } => false,
+            TombstoneSelector::Session(id) => !session.is_empty() && id.as_bytes() == session,
+            TombstoneSelector::Project => true,
+        }
 }
 
 /// The fact tables.

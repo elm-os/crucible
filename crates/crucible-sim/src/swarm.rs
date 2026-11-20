@@ -121,6 +121,7 @@ dimensions! {
     McpContent, "mcp_content", Workload, "Opted-in arguments and results on tool calls.";
     McpIdentity, "mcp_identity", Workload, "MCP operations carry a user subject, and the node has a control store for the project salts, whose reads sometimes fail. Without it the node is ingest-only and drops the identity keys.";
     DirSyncErrors, "dir_sync_errors", Fault, "Windows in which every directory sync fails, so a created or removed segment is not durably so.";
+    Deletions, "deletions", Workload, "One more project, whose data is deleted: requests by trace, by user (with and without a token issuer) and by session, with their tombstones in the WAL, requests that complete while the node is down, and a control store whose reads of them sometimes fail.";
 }
 
 /// A configuration: one bit per [`Dim`].
@@ -489,7 +490,7 @@ mod tests {
             .filter(|mask| *mask == mask.collection_under_repeats())
             .count();
         assert!((70..=140).contains(&profiled), "{profiled} of 400");
-        assert_eq!(Dim::ALL.len(), 55);
+        assert_eq!(Dim::ALL.len(), 56);
     }
 
     #[test]

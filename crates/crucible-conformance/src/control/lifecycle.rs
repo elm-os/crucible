@@ -256,6 +256,18 @@ async fn requests(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         "open, by sequence",
         repo.open_requests().await.map(|r| shapes(&r)),
     );
+    t.outcome(
+        "every project's, by sequence",
+        repo.requests_after(0, 10).await.map(|r| shapes(&r)),
+    );
+    t.outcome(
+        "every project's, one page",
+        repo.requests_after(0, 1).await.map(|r| shapes(&r)),
+    );
+    t.outcome(
+        "every project's after the first",
+        repo.requests_after(one, 10).await.map(|r| shapes(&r)),
+    );
 
     let mut stored = DeletionRequest {
         deletion_seq: one,
@@ -281,6 +293,10 @@ async fn requests(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome(
         "a completed request is no longer open",
         repo.open_requests().await.map(|r| shapes(&r)),
+    );
+    t.outcome(
+        "a completed request is still among every project's",
+        repo.requests_after(0, 10).await.map(|r| shapes(&r)),
     );
 
     // Acknowledgements.

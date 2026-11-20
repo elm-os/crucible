@@ -29,22 +29,25 @@ const BUDGET: (u64, u64) = (200, 3);
 const SMOKE_CONFIGS: u64 = 40;
 
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports.
-const MUTANTS: [(Mutant, u64, &str); 15] = [
-    (Mutant::SkipWalSync, 0, "liveness"),
+const MUTANTS: [(Mutant, u64, &str); 18] = [
+    (Mutant::SkipWalSync, 0, "I3"),
     (Mutant::DropToken, 1000, "I2"),
-    (Mutant::GcAboveCheckpoint, 1, "I12"),
+    (Mutant::GcAboveCheckpoint, 0, "liveness"),
     (Mutant::SilentEviction, 1, "I3"),
     (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
-    (Mutant::AckBeforeAppend, 0, "I1"),
+    (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 1, "I7"),
     (Mutant::DropFactOnRetry, 3001, "I1"),
     (Mutant::FrameQuarantineWithoutCopy, 0, "I1"),
     (Mutant::CountAggregateUsage, 10_000, "I7"),
-    (Mutant::CollectWhatFramesRelyOn, 14_000, "I2"),
+    (Mutant::CollectWhatFramesRelyOn, 21_000, "I2"),
     (Mutant::MisclassifyCallerFault, 2001, "I8"),
     (Mutant::SumCaptureSources, 1, "I7"),
     (Mutant::DropRollupMarker, 0, "I2"),
     (Mutant::MarkAfterDuplicateDrop, 14_000, "I7"),
+    (Mutant::SkipTombstoneFilter, 2, "I9"),
+    (Mutant::IgnoreTombstoneIssuer, 6000, "I9"),
+    (Mutant::SeedOnlyOpenRequests, 2, "I9"),
 ];
 
 fn replay(outcome: &Outcome) -> String {
@@ -109,6 +112,11 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
         "mcp aggregates compared with the reference",
         "frame waited for its project salt",
         "directory syncs failed",
+        "tombstone appended",
+        "deletion completed",
+        "deletion completed while the node was down",
+        "span dropped by a deletion",
+        "read of the deletion requests failed",
         "json request acknowledged",
         "repeated request acknowledged",
         "request refused",

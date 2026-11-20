@@ -69,42 +69,62 @@ backups and monitoring are in [docs/self-hosting](docs/self-hosting/README.md).
 
 ## Architecture
 
-Crucible is built in Rust and engineered for speed and throughput. A zero-copy scanner parses OTLP, a group commit
-shares one fsync among concurrent requests, and batches reach ClickHouse as LZ4-compressed inserts in its native
-format. Fixed byte budgets answer 429 or 503 with `Retry-After` under load instead of queueing without bound. Release
-builds use thin LTO and the mimalloc allocator.
+Crucible is one program. Your agents and MCP servers send it traces, it stores them in ClickHouse, and it keeps
+everything else (users, projects, keys, alerts) in Postgres.
 
+```mermaid
+flowchart TB
+    apps["Your agents and MCP servers"]
+    receive["1. Crucible receives the traces"]
+    log[("2. Crucible saves them to a log on disk, then replies OK")]
+    clickhouse[("3. ClickHouse: your traces, copied in batches, never twice")]
+    memory["The newest traces, kept in memory"]
+    postgres[("Postgres: users, projects, API keys, alerts, dashboards")]
+    read["4. Crucible's web UI, REST API and MCP server"]
+    you["You and your coding agents"]
+
+    apps -->|OpenTelemetry| receive
+    receive --> log
+    log --> clickhouse
+    log --> memory
+    log ~~~ postgres
+    clickhouse --> read
+    memory --> read
+    postgres <--> read
+    read --> you
 ```
- SDKs / OTel exporters / crucible proxy
-            |  OTLP (HTTP, gRPC)
-            v
- +-------------------------- crucible (one binary) --------------------------+
- |  ingest -> write-ahead log (fsync, then ack) -> normalizer -> shipper      |
- |                     |                                   |                  |
- |              recent-span index                one sealed batch per         |
- |                     |                         table and partition          |
- |  REST API + MCP server + UI  <- typed query plans <------+                 |
- +----------------------------------------------------------------------------+
-            |                                   |
-         Postgres                           ClickHouse
-   (org, users, keys, alerts)       (spans, MCP operations, rollups)
-```
 
-- **Durable before acknowledged.** A request is acknowledged only after it is written to the write-ahead log and
-  synced to disk. A group committer syncs many requests at once.
-- **Exactly-once inserts.** Each batch reaches ClickHouse with a deterministic deduplication token, so a retry never
-  stores a span twice.
-- **Readable at once.** An in-memory index of recent spans answers reads before the spans reach ClickHouse.
-- **Bounded reads.** Every telemetry read is a typed query plan with explicit resource limits, rendered to
-  parameterized SQL.
-- **Tested.** Deterministic simulation and swarm testing run the whole system under seeded disk, network, database
-  and crash faults; a formal model (Quint) checks the ingest protocol; Kani proofs cover the log format and the other
-  pure kernels; conformance suites run
-  against real ClickHouse and Postgres.
+### What happens to a trace
 
-[docs/architecture/overview.md](docs/architecture/overview.md) is the map of the system,
-[contracts.md](docs/architecture/contracts.md) the binding contract and [decisions.md](docs/architecture/decisions.md)
-the reasons behind it. [docs/testing/methodology.md](docs/testing/methodology.md) describes the verification.
+1. **Receive.** Your agents and MCP servers send traces in OpenTelemetry, the standard tracing format: from
+   Crucible's SDKs, from any OpenTelemetry exporter, or through the MCP proxy, which needs no code changes.
+2. **Save, then reply.** Crucible writes each request to a log on its local disk and replies OK only after the disk
+   confirms the write. If Crucible crashes, nothing it said OK to is lost.
+3. **Copy once.** In the background, Crucible copies saved traces into ClickHouse in batches. Each batch carries a
+   unique token, so when a copy is retried after a timeout or a crash, ClickHouse keeps one copy, never two.
+4. **Read.** The web UI, the REST API and the MCP server read your traces from ClickHouse. The newest traces are also
+   kept in memory, so you can see a trace the moment Crucible has replied OK to it.
+
+### Why it's fast
+
+Crucible is written in Rust and does as little work per trace as it can:
+
+- It reads each incoming request once, without copying it.
+- Requests that arrive together share one disk sync instead of waiting for one each.
+- It writes to ClickHouse in large compressed batches, in ClickHouse's own storage format.
+- It caps the memory it uses. When it is full, it asks senders to retry shortly instead of slowing down or crashing.
+- Every read has a time limit and a memory limit, so one heavy query cannot slow down everything else.
+
+### How we test it
+
+We run the whole system in a simulator that injects disk errors, network failures, database outages and crashes,
+thousands of times with different settings, and check that no trace Crucible replied OK to is lost or stored twice.
+A formal model checks the protocol for saving and copying traces, machine-checked proofs cover the log's file format,
+and conformance tests run against real ClickHouse and Postgres.
+
+For the details, read the [architecture overview](docs/architecture/overview.md), the
+[contracts](docs/architecture/contracts.md), the [design decisions](docs/architecture/decisions.md) and the
+[testing methodology](docs/testing/methodology.md).
 
 ## Sending data
 

@@ -176,6 +176,8 @@ Minute rollups keep their counts by contract.
 |---|---|
 | Hidden-on-read after every accepted request | Continuous |
 | Completeness across the reach list, including the media model, after replay and restart | Quiescence |
+| The write path: no row that a completed request selects lands after the request completed, whether the request's tombstone is in the node's log or it completed while the node was down; nothing that no request selects goes (system simulation, dimension `deletions`) | Continuous and quiescence |
+| What stage B drops for a deletion, against a linear model; dropping leaves stage B's state alone | Property |
 | C9 delete visibility; "mask application" (`APPLY DELETED MASK`, `DELETE ... IN PARTITION`); no masked parts within the cycle | Conformance |
 | W11 lifecycle races (retention change, policy rewrite) | Conformance (`sqliso`) |
 | Retention boundary arithmetic | Proof (Kani) |
