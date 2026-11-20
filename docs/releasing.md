@@ -51,6 +51,16 @@ docker pull ghcr.io/elm-os/crucible:X.Y.Z
 
 The image package on GHCR is public, so the pull works without signing in.
 
+Then confirm that each archive holds `crucible` (`crucible.exe` on Windows), `README.md`, `LICENSE`, `CHANGELOG.md`
+and `THIRD_PARTY_NOTICES`. cargo-dist adds the README, the license and the changelog by itself, and `include` in
+`dist-workspace.toml` adds `THIRD_PARTY_NOTICES`; every archive of v0.1.0 holds all five.
+
+```sh
+curl -fsSL -o crucible.tar.xz \
+  https://github.com/elm-os/crucible/releases/download/vX.Y.Z/crucible-x86_64-unknown-linux-gnu.tar.xz
+tar tf crucible.tar.xz
+```
+
 ## 4. Point the docs at the new release
 
 - The quickstart, the README and the self-hosting pages download the Compose files from the release tag
