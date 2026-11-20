@@ -100,6 +100,43 @@ const DASHBOARD: Dashboard = {
   updated_at: "2026-11-18T09:00:00.000000Z",
 };
 
+const MCP_SCHEMA: MetricsSchema = {
+  sources: [
+    ...SCHEMA.sources,
+    {
+      ...SCHEMA.sources[0],
+      source: "mcp_ops",
+      measures: [
+        {
+          id: "mcp.calls",
+          label: "MCP calls",
+          unit: "count",
+          aggregations: ["sum"],
+          additive: true,
+          tier: "rollup",
+        },
+      ],
+      dimensions: [{ id: "server_name", type: "string", high_cardinality: false }],
+    },
+  ],
+};
+
+const EMPTY_METRICS = {
+  series: [],
+  granularity: "hour",
+  truncated: false,
+  source_tier: "rollup",
+  as_of: "2026-11-18T10:00:00.000000Z",
+  partial_last_bucket: false,
+  saturated: false,
+  meta: { as_of: "2026-11-18T10:00:00.000000Z", partial: false, consistency: "strong" },
+};
+
+const MCP_LABELS = ["Side", "Capture source", "Include caller faults"];
+
+const bodyOf = (init: RequestInit | undefined): unknown => JSON.parse(String(init?.body));
+const lastQuery = () => bodyOf(requests(`POST ${BASE}/metrics/query`).at(-1));
+
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("matchMedia", () => ({
@@ -252,6 +289,97 @@ describe("dashboards for agents", () => {
     expect(latency?.query).toMatchObject({
       measures: [{ measure: "duration", aggregation: "p95" }],
     });
+  });
+});
+
+describe("an MCP widget in the editor", () => {
+  test("reads the side and capture source chosen in the sheet, which shows them only for MCP calls", async () => {
+    navigation.search = `project=${PROJECT_A}&id=${ID}`;
+    serve({
+      [`GET ${BASE}/dashboards/${ID}`]: json(DASHBOARD),
+      [`GET ${BASE}/metrics/schema`]: json(MCP_SCHEMA),
+      [`POST ${BASE}/metrics/query`]: json(EMPTY_METRICS),
+      [`PATCH ${BASE}/dashboards/${ID}`]: json({ ...DASHBOARD, version: 2 }),
+    });
+    renderPage(<DashboardEditor />);
+    expect(await screen.findByText("Stat of Spans")).toBeTruthy();
+    const opened = await agent.act({ steps: [{ ref: "Add widget", action: "press" }] });
+    expect(opened.ok, opened.error?.message).toBe(true);
+    await screen.findByRole("dialog", { name: "Add a widget" });
+    await screen.findByText("Group by");
+    for (const label of MCP_LABELS) {
+      expect(labels(), `${label} shows for agent spans`).not.toContain(label);
+    }
+
+    const chosen = await agent.act({
+      steps: [
+        { ref: "Title", action: "setValue", args: ["Tool errors"] },
+        { ref: "Data", action: "setValue", args: ["MCP operations"] },
+      ],
+    });
+    expect(chosen.ok, chosen.error?.message).toBe(true);
+    await screen.findByText("Capture source");
+    const sheet = labels();
+    for (const label of MCP_LABELS) {
+      expect(sheet, `${label} is missing from the sheet`).toContain(label);
+    }
+    const scoped = await agent.act({
+      steps: [
+        { ref: "Side", action: "setValue", args: ["Client side"] },
+        { ref: "Capture source", action: "setValue", args: ["Proxy"] },
+        { ref: "Include caller faults", action: "setChecked", args: [true] },
+      ],
+    });
+    expect(scoped.ok, scoped.error?.message).toBe(true);
+    await waitFor(() =>
+      expect(lastQuery()).toMatchObject({
+        source: "mcp_ops",
+        side: "client",
+        capture_source: "proxy",
+        include_caller_faults: true,
+      }),
+    );
+
+    // Agent spans take none of the three, and the sheet keeps the choices for MCP calls meanwhile.
+    const spans = await agent.act({
+      steps: [
+        { ref: "Data", action: "setValue", args: ["Agent spans"] },
+        { ref: "Measure", action: "setValue", args: ["Duration p95"] },
+      ],
+    });
+    expect(spans.ok, spans.error?.message).toBe(true);
+    await waitFor(() => expect(screen.queryByText("Capture source")).toBeNull());
+    await waitFor(() =>
+      expect(lastQuery()).toMatchObject({
+        source: "spans",
+        measures: [{ measure: "duration", aggregation: "p95" }],
+      }),
+    );
+    for (const member of ["side", "capture_source", "include_caller_faults"]) {
+      expect(lastQuery()).not.toHaveProperty(member);
+    }
+
+    const saved = await agent.act({
+      steps: [
+        { ref: "Data", action: "setValue", args: ["MCP operations"] },
+        { ref: "Apply", action: "press" },
+        { ref: "Save", action: "press" },
+      ],
+    });
+    expect(saved.ok, saved.error?.message).toBe(true);
+    await waitFor(() => expect(requests(`PATCH ${BASE}/dashboards/${ID}`)).toHaveLength(1));
+    const [patch] = requests(`PATCH ${BASE}/dashboards/${ID}`);
+    const body = bodyOf(patch) as { widgets: { id?: string; query?: unknown }[] };
+    expect(body.widgets.find((w) => w.id === undefined)?.query).toEqual({
+      source: "mcp_ops",
+      measures: [{ measure: "mcp.calls", aggregation: "sum" }],
+      side: "client",
+      capture_source: "proxy",
+      include_caller_faults: true,
+    });
+    expect(body.widgets.find((w) => w.id === "w-spans")?.query).toEqual(
+      DASHBOARD.widgets[0]?.query,
+    );
   });
 });
 

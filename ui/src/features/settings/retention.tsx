@@ -7,7 +7,7 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@ui-sdk/react/f
 import { Input } from "@ui-sdk/react/input";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { getRetention, setRetention } from "@/api/client";
-import { asUiError } from "@/api/errors";
+import { asUiError, type UiError } from "@/api/errors";
 import type { Retention } from "@/api/generated/Retention";
 import type { RetentionUpdate } from "@/api/generated/RetentionUpdate";
 import type { SessionProject } from "@/api/generated/SessionProject";
@@ -64,10 +64,15 @@ export function RetentionSettings() {
   if (!isProject(project)) return project;
   return (
     <div className="flex flex-col gap-6">
-      <RetentionSection project={project} />
+      <RetentionSection key={project.id} project={project} />
       <DeletionRequests project={project} />
     </div>
   );
+}
+
+interface Refusal {
+  version: number;
+  error: UiError;
 }
 
 function RetentionSection({ project }: { project: SessionProject }) {
@@ -77,6 +82,8 @@ function RetentionSection({ project }: { project: SessionProject }) {
   });
   // The version a save produced: the form of that version says so until it is edited.
   const [savedVersion, setSavedVersion] = useState<number | null>(null);
+  // A save refused because the stored version moved on: the reloaded form says so until it is edited.
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
   return (
     <Section
       title={`Retention for ${project.name}`}
@@ -94,6 +101,8 @@ function RetentionSection({ project }: { project: SessionProject }) {
           retention={retention}
           saved={savedVersion === retention.version}
           onSaved={setSavedVersion}
+          refused={refusal !== null && refusal.version !== retention.version ? refusal.error : null}
+          onRefused={setRefusal}
         />
       )}
     </Section>
@@ -149,11 +158,15 @@ function RetentionForm({
   retention,
   saved,
   onSaved,
+  refused,
+  onRefused,
 }: {
   project: SessionProject;
   retention: Retention;
   saved: boolean;
   onSaved: (version: number | null) => void;
+  refused: UiError | null;
+  onRefused: (refusal: Refusal | null) => void;
 }) {
   const queryClient = useQueryClient();
   const canManage = project.permissions.includes("manage");
@@ -172,14 +185,16 @@ function RetentionForm({
       queryClient.setQueryData(retentionKey(project.id), stored);
     } catch (error) {
       // The stored version is what the next attempt must build on.
-      if (asUiError(error).code === "precondition_failed") {
+      const failed = asUiError(error);
+      if (failed.code === "precondition_failed") {
+        onRefused({ version: retention.version, error: failed });
         await queryClient.invalidateQueries({ queryKey: retentionKey(project.id) });
       }
       throw error;
     }
   };
   const save = useMutation({ mutationFn: store });
-  const failure = save.isError ? asUiError(save.error) : null;
+  const failure = save.isError ? asUiError(save.error) : refused;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -241,6 +256,7 @@ function RetentionForm({
         onSubmit={submit}
         onInput={() => {
           if (saved) onSaved(null);
+          if (refused) onRefused(null);
           if (failure) save.reset();
         }}
       >

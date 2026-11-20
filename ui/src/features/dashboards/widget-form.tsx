@@ -16,18 +16,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@ui-sdk/react/select";
+import { Switch, SwitchThumb } from "@ui-sdk/react/switch";
 import { Textarea } from "@ui-sdk/react/textarea";
 import { useEffect, useId, useState } from "react";
 import type { ChartForm } from "@/api/generated/ChartForm";
 import type { Granularity } from "@/api/generated/Granularity";
+import type { McpSideParam } from "@/api/generated/McpSideParam";
 import type { MeasureRequest } from "@/api/generated/MeasureRequest";
 import type { MetricsSchema } from "@/api/generated/MetricsSchema";
+import type { SourceParam } from "@/api/generated/SourceParam";
 import type { Widget } from "@/api/generated/Widget";
 import type { WidgetKind } from "@/api/generated/WidgetKind";
 import type { WidgetQuery } from "@/api/generated/WidgetQuery";
 import { asUiError } from "@/api/errors";
 import { FormAlert } from "@/components/form-alert";
 import { AlertIcon } from "@/components/icons";
+import { CAPTURE_SOURCES, SIDES } from "@/features/alerts/format";
 import type { Range } from "@/lib/time-range";
 import {
   KIND_LABEL,
@@ -119,13 +123,16 @@ export function WidgetForm({
   const [dimensions, setDimensions] = useState<string[]>(initial.query?.dimensions ?? []);
   const [topN, setTopN] = useState<number | null>(initial.query?.top_n ?? null);
   const [granularity, setGranularity] = useState<Granularity>(initial.query?.granularity ?? "auto");
+  const [side, setSide] = useState<McpSideParam>(initial.query?.side ?? "server");
+  const [capture, setCapture] = useState<SourceParam>(initial.query?.capture_source ?? "auto");
+  const [callerFaults, setCallerFaults] = useState(initial.query?.include_caller_faults ?? false);
   const markdown = kind === "markdown";
   const shape = kindShape(kind);
   const maxKeys = kind === "timeseries" ? maxChartKeys(measures, catalog) : MAX_SERIES_KEYS;
   const keys = dimensions.length === 0 ? null : Math.min(topN ?? maxKeys, maxKeys);
 
-  // An `mcp_ops` query reads one side: the widget's own, else the server side. No other source takes the side,
-  // the capture source or the caller-fault rule.
+  // An `mcp_ops` query reads one side under a capture source, with or without the calls the caller caused;
+  // no other source takes these. The automatic source and leaving caller faults out stay off the wire.
   const mcp = source === "mcp_ops";
   const query: WidgetQuery | undefined = markdown
     ? undefined
@@ -136,9 +143,9 @@ export function WidgetForm({
         dimensions: dimensions.length > 0 ? dimensions : undefined,
         top_n: keys ?? undefined,
         granularity: granularity === "auto" ? undefined : granularity,
-        side: mcp ? (initial.query?.side ?? "server") : undefined,
-        capture_source: mcp ? initial.query?.capture_source : undefined,
-        include_caller_faults: mcp ? initial.query?.include_caller_faults : undefined,
+        side: mcp ? side : undefined,
+        capture_source: mcp && capture !== "auto" ? capture : undefined,
+        include_caller_faults: (mcp && callerFaults) || undefined,
       };
   const display: Widget["display"] = {
     kind,
@@ -238,7 +245,8 @@ export function WidgetForm({
           <legend className="mb-2 text-label font-medium text-ink-soft">Query</legend>
           {sources.length > 1 ? (
             <Field>
-              <FieldLabel>Source</FieldLabel>
+              {/* Not "Source": an agent's step by that name would also find Capture source. */}
+              <FieldLabel>Data</FieldLabel>
               <Select
                 items={sources.map((s) => ({
                   value: s.source,
@@ -259,6 +267,66 @@ export function WidgetForm({
                 </SelectContent>
               </Select>
             </Field>
+          ) : null}
+          {mcp ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field>
+                  <FieldLabel>Side</FieldLabel>
+                  <Select
+                    items={SIDES}
+                    value={side}
+                    onValueChange={(next) => setSide(next === "client" ? "client" : "server")}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SIDES.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>
+                          {s.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel>Capture source</FieldLabel>
+                  <Select
+                    items={CAPTURE_SOURCES}
+                    value={capture}
+                    onValueChange={(next) => {
+                      const found = CAPTURE_SOURCES.find((c) => c.value === next);
+                      if (found) setCapture(found.value);
+                    }}
+                  >
+                    <SelectTrigger className="text-data">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CAPTURE_SOURCES.map((c) => (
+                        <SelectItem key={c.value} value={c.value}>
+                          {c.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Automatic reads each server from its SDK, else its proxy, else OTLP.
+                  </FieldDescription>
+                </Field>
+              </div>
+              <Field className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
+                <Switch checked={callerFaults} onCheckedChange={setCallerFaults}>
+                  <SwitchThumb />
+                </Switch>
+                <FieldLabel className="text-data">Include caller faults</FieldLabel>
+                <FieldDescription className="col-span-2">
+                  Calls that failed because of what the caller sent, such as invalid arguments,
+                  count only when this is on.
+                </FieldDescription>
+              </Field>
+            </>
           ) : null}
           {measures.map((m, i) => (
             <div key={`${measureKey(m)}-${i}`} className="flex items-end gap-2">

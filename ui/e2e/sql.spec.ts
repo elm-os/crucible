@@ -1,6 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 import {
   type Api,
+  capture,
   expect,
   expectAccessible,
   expectNoPageScrollX,
@@ -17,6 +18,8 @@ import {
   SQL_SAVED_RUN_PATH,
   SQL_SCHEMA_PATH,
   savedQuery,
+  sessionInfo,
+  signedIn,
   sqlProblem,
   sqlResult,
   sqlRun,
@@ -25,6 +28,7 @@ import {
 } from "./fixtures";
 
 const SQL_URL = `/sql/?project=${PROJECT}`;
+const LOGIN_PATH = /\/api\/v1\/auth\/login$/;
 
 // Every test starts from a workspace that answers: a schema, no saved queries and no runs.
 function healthy(api: Api): void {
@@ -1041,6 +1045,39 @@ test.describe("sql: history", () => {
     api.on(SQL_RUNS_PATH, json({ data: [sqlRun()] }));
     await runButton(page).click();
     await expect(history.locator("tbody tr")).toHaveCount(1);
+  });
+});
+
+test.describe("sql: an ended session", () => {
+  const SIGN_IN_URL = `/login/?next=${encodeURIComponent(SQL_URL)}`;
+
+  test("a read that answers 401 sends the browser to sign in, and signing in returns here", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    healthy(api);
+    api.on(SQL_SCHEMA_PATH, problem(401, "unauthenticated"));
+    await page.goto(SQL_URL);
+    await expect(page).toHaveURL(SIGN_IN_URL);
+
+    api.on(SQL_SCHEMA_PATH, json(sqlSchema()));
+    const logins = capture(api, LOGIN_PATH, json(sessionInfo()));
+    await page.getByLabel("Email").fill("ada@example.com");
+    await page.getByLabel("Password", { exact: true }).fill("correct horse battery staple");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page).toHaveURL(SQL_URL);
+    await expect(editor(page)).toHaveValue(SQL_EXAMPLE);
+    expect(logins).toHaveLength(1);
+  });
+
+  test("a run that answers 401 sends the browser to sign in too", async ({ page, api }) => {
+    signedIn(api);
+    healthy(api);
+    api.on(SQL_RUN_PATH, problem(401, "unauthenticated"));
+    await open(page);
+    await runButton(page).click();
+    await expect(page).toHaveURL(SIGN_IN_URL);
   });
 });
 
