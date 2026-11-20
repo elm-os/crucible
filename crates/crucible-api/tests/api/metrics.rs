@@ -124,7 +124,7 @@ fn queries_outside_the_registry_and_the_caps_are_refused() {
                 "/measures",
             ),
             (json!({"dimensions": ["user"]}), "/dimensions/0"),
-            (json!({"source": "mcp_ops"}), "/source"),
+            (json!({"source": "logs"}), "/source"),
             (json!({"timezone": "Europe/Paris"}), "/timezone"),
             (
                 json!({"filter": {"in": {"field": "user_id", "values": ["u"]}}}),

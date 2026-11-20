@@ -33,6 +33,8 @@ macro_rules! mirror {
     };
 }
 
+pub(crate) use mirror;
+
 mirror! {
     /// The OTel status of a span.
     StatusCode {

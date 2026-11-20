@@ -88,6 +88,13 @@ fn position() -> impl Strategy<Value = Position> {
                 last: (start, SpanId::from_bytes(span)),
             }
         ),
+        (window(), any_time(), any_time(), any::<[u8; 8]>()).prop_map(
+            |(window, as_of, start, span)| Position::McpOperationPage {
+                window,
+                as_of,
+                last: (start, SpanId::from_bytes(span)),
+            }
+        ),
         (
             prop_oneof![
                 Just(IdList::Sessions),
@@ -106,7 +113,7 @@ fn position() -> impl Strategy<Value = Position> {
     ]
 }
 
-const ROUTES: [Route; 7] = [
+const ROUTES: [Route; 8] = [
     Route::TraceList,
     Route::SpanChildren,
     Route::Search,
@@ -114,6 +121,7 @@ const ROUTES: [Route; 7] = [
     Route::SessionList,
     Route::UserList,
     Route::UserSessions,
+    Route::McpOperations,
 ];
 
 fn sort() -> impl Strategy<Value = Sort> {
@@ -547,7 +555,7 @@ fn decoding_refuses_what_encoding_cannot_produce() {
         );
     }
     // Only the trace list has a head.
-    for route in 2..=7 {
+    for route in 2..=8 {
         assert_eq!(with(&head, 2, route), Err(DecodeError::Value), "{route}");
     }
     // A page of span children or of search read as a trace page runs out of bytes; the reverse has bytes left

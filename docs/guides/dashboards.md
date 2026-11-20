@@ -7,7 +7,7 @@ editor, the widget kinds and their limits, and who can change what.
 
 ## Starter dashboards
 
-Every project has four built-in dashboards. They are read-only and are served with or without a control plane.
+Every project has five built-in dashboards. They are read-only and are served with or without a control plane.
 
 | Starter | What it shows |
 |---|---|
@@ -15,6 +15,7 @@ Every project has four built-in dashboards. They are read-only and are served wi
 | Cost and tokens | What the models cost, and the tokens behind it |
 | Latency | How long spans take, and how long models take to answer |
 | Errors | Where spans fail: by type, model and environment |
+| MCP servers | Calls, errors, error rate and latency of the MCP servers, by server and tool, on the server side |
 
 To change a starter, duplicate it: the copy is one of your dashboards, named after the starter with " (copy)".
 
@@ -37,8 +38,9 @@ in reading order.
 
 The editor needs a screen at least 768 px wide; on a narrower one the dashboard says so instead of offering Edit.
 
-- **Add a widget** opens a sheet: the title, the kind, the source (agent spans or traces), the measures, up to two
-  group-by dimensions, how many keys to show, the bucket width, and for a time series lines or bars. A preview draws
+- **Add a widget** opens a sheet: the title, the kind, the source (agent spans, traces, or MCP calls, which a widget
+  reads on the server side), the measures, up to two group-by dimensions, how many keys to show, the bucket width,
+  and for a time series lines or bars. A preview draws
   the widget as soon as it is complete. A text widget takes its text instead of a query.
 - **Layout**: drag a widget by its move handle and resize it by its corner, or focus a handle and use the arrow keys.
   A move that would overlap another widget is refused and announced.

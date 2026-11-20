@@ -1,13 +1,16 @@
 //! Where an evaluation reads its series from: the metrics registry, through a typed plan of class `alert`
-//! over the minute rollup.
+//! over the minute rollup of its source: `span_metrics`, or `mcp_tool_rollup` under the rule's side and capture
+//! source, without the calls the caller caused (contract 9.2).
 
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use crucible_control::Project;
-use crucible_plan::Caller;
-use crucible_query::{MetricValue, QueryService, ReadContext, RetentionSettings};
+use crucible_plan::{Caller, Source};
+use crucible_query::{
+    McpMetricsRequest, MetricValue, QueryService, ReadContext, RetentionSettings,
+};
 use crucible_records::TimeWindow;
 
 use crate::spec::{MAX_SERIES, RuleSpec};
@@ -82,17 +85,30 @@ impl SeriesSource for QuerySource {
             mcp_content_retention_days: project.mcp_content_retention_days,
         };
         let ctx = ReadContext::new(scope, retention, Caller::Session);
-        let totals = self
-            .service
-            .metrics_totals(
-                &ctx,
-                window,
-                &spec.query(),
-                spec.comparison.upward(),
-                MAX_SERIES,
-            )
-            .await
-            .map_err(|error| ReadFailure(error.to_string()))?;
+        let upward = spec.comparison.upward();
+        let totals = match (spec.source, spec.mcp) {
+            (Source::McpOps, Some(mcp)) => {
+                let request = McpMetricsRequest {
+                    window,
+                    query: spec.query(),
+                    side: mcp.side,
+                    source: mcp.source,
+                    include_caller_faults: false,
+                };
+                self.service
+                    .mcp_metrics_totals(&ctx, request, upward, MAX_SERIES)
+                    .await
+            }
+            (Source::McpOps, None) => {
+                return Err(ReadFailure("the MCP rule names no side".to_owned()));
+            }
+            _ => {
+                self.service
+                    .metrics_totals(&ctx, window, &spec.query(), upward, MAX_SERIES)
+                    .await
+            }
+        }
+        .map_err(|error| ReadFailure(error.to_string()))?;
         Ok(Observed {
             series: totals
                 .series

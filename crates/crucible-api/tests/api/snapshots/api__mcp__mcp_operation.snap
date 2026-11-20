@@ -1,0 +1,59 @@
+---
+source: crates/crucible-api/tests/api/mcp.rs
+expression: one.pretty()
+---
+{
+  "meta": {
+    "as_of": "2026-11-17T09:30:00.000000Z",
+    "consistency": "strong",
+    "partial": false
+  },
+  "operation": {
+    "args": null,
+    "chain": [],
+    "http_status": null,
+    "instance_id": "",
+    "jsonrpc_id": "",
+    "oauth_client_id": "",
+    "operation": {
+      "caller_fault": false,
+      "capture_source": "sdk",
+      "client_name": "agent",
+      "client_version": "2.0",
+      "content_captured": false,
+      "deploy_id": "",
+      "duration_us": 1000,
+      "era": "legacy",
+      "error_class": "none",
+      "error_message": "",
+      "error_subclass": "none",
+      "error_type": "",
+      "group_key": "g1",
+      "group_key_kind": "trace",
+      "identity_source": "none",
+      "jsonrpc_code": null,
+      "method": "tools/call",
+      "parent_span_id": null,
+      "request_bytes": 0,
+      "response_bytes": 0,
+      "result_type": "none",
+      "saturated": false,
+      "server_name": "files",
+      "server_version": "",
+      "span_id": "0000000000000001",
+      "start_time": "2026-11-17T09:20:00.000001Z",
+      "status": "ok",
+      "target_kind": "none",
+      "target_name": "read",
+      "trace_id": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "transport": "unknown",
+      "user_id": "alice",
+      "user_subject_hash": null
+    },
+    "other_side": null,
+    "protocol_version": "",
+    "result": null,
+    "side": "server",
+    "tenant": ""
+  }
+}

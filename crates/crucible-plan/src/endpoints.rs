@@ -7,6 +7,10 @@ mod export;
 mod facts;
 mod filter_values;
 mod lifecycle;
+mod mcp;
+mod mcp_metrics;
+mod mcp_ops;
+mod mcp_rollup;
 mod metrics;
 mod payload;
 mod search;
@@ -29,6 +33,24 @@ pub use lifecycle::{
     DELETION_TRACES_PAGE, TRACE_ID_LIST_CHUNK, TraceSelector, deletion_issuers, deletion_traces,
     expired_before, lifecycle_column, lifecycle_oldest, lifecycle_time_column, mcp_user,
     trace_id_in,
+};
+pub use mcp::{
+    CaptureClass, McpRead, McpSelection, ServerSources, SourceChoice, TOOLS_CALL, mcp_presence,
+    mcp_series_step,
+};
+pub use mcp_metrics::{
+    mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_metrics_totals,
+};
+pub use mcp_ops::{
+    MCP_CHAIN_COLUMNS, MCP_CHAIN_LIMIT, MCP_LIST_MAX_LIMIT, MCP_OPERATION_COLUMNS, MCP_PEER_LIMIT,
+    McpContentField, McpOperationsRequest, McpOpsFilter, McpUserKey, mcp_client_versions,
+    mcp_error_breakdown, mcp_operation, mcp_operation_chain, mcp_operation_content,
+    mcp_operation_peers, mcp_operations, mcp_session_errors, mcp_sessions, mcp_user_errors,
+    mcp_users, subject_hash,
+};
+pub use mcp_rollup::{
+    mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_classes, mcp_inventory, mcp_servers,
+    mcp_tool_clients, mcp_tool_series, mcp_tools,
 };
 pub use metrics::{
     Granularity, MetricsError, MetricsQuery, MetricsShape, metrics_keys, metrics_other,

@@ -27,7 +27,15 @@ import { scopedHref } from "@/components/shell/nav";
 import { ConfirmDialog } from "@/features/settings/confirm-dialog";
 import { RowsSkeleton } from "@/features/settings/rows-skeleton";
 import { formatTime } from "@/lib/format";
-import { conditionText, formatSpan, formatValue, seriesLabel, STATUS_LABEL } from "./format";
+import {
+  conditionText,
+  formatSpan,
+  formatValue,
+  mcpReadText,
+  type RuleSource,
+  STATUS_LABEL,
+  seriesLabel,
+} from "./format";
 import { PreviewResult, RuleFormDialog } from "./rule-form";
 import { AlertStatusLabel, AlertsAccess, alertKeys } from "./shared";
 
@@ -169,9 +177,14 @@ function RuleActions({ project, rule }: { project: SessionProject; rule: AlertRu
   );
 }
 
+function sourceOf(rule: AlertRule): RuleSource {
+  return rule.source === "mcp_ops" ? "mcp_ops" : "spans";
+}
+
 function RuleSummary({ rule }: { rule: AlertRule }) {
   const facts: [string, string][] = [
     ["Condition", conditionText(rule)],
+    ...(sourceOf(rule) === "mcp_ops" ? [["Reads", mcpReadText(rule)] as [string, string]] : []),
     ["Grouped by", rule.dimensions.length === 0 ? "Nothing" : rule.dimensions.join(", ")],
     ["Checked", `every ${formatSpan(rule.interval_secs)}`],
     ["Fires after", rule.for_secs === 0 ? "the first breach" : formatSpan(rule.for_secs)],
@@ -248,8 +261,11 @@ function SeriesSection({ rule }: { rule: AlertRule }) {
             </thead>
             <tbody>
               {rule.series.map((series) => (
-                <tr key={seriesLabel(series.key)} className="h-10 border-t border-ash-border">
-                  <td className="pe-4">{seriesLabel(series.key)}</td>
+                <tr
+                  key={seriesLabel(series.key, rule.source)}
+                  className="h-10 border-t border-ash-border"
+                >
+                  <td className="pe-4">{seriesLabel(series.key, rule.source)}</td>
                   <td className="pe-4">
                     <AlertStatusLabel status={series.status} />
                   </td>
@@ -277,6 +293,10 @@ function PreviewSection({ project, rule }: { project: string; rule: AlertRule })
         project,
         {
           name: rule.name,
+          // An MCP rule is previewed on its own side and capture source.
+          ...(sourceOf(rule) === "mcp_ops"
+            ? { source: rule.source, side: rule.side, capture_source: rule.capture_source }
+            : {}),
           measure: rule.measure,
           aggregation: rule.aggregation,
           dimensions: rule.dimensions,
@@ -296,7 +316,7 @@ function PreviewSection({ project, rule }: { project: string; rule: AlertRule })
       isEmpty={() => false}
       empty={null}
     >
-      {(preview) => <PreviewResult preview={preview} />}
+      {(preview) => <PreviewResult preview={preview} source={sourceOf(rule)} />}
     </Section>
   );
 }
