@@ -50,7 +50,7 @@ impl DeletionRequests for Requests {
     fn all(&self) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
         let failed = self
             .failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
         if !failed {
             self.answered.fetch_add(1, Ordering::SeqCst);

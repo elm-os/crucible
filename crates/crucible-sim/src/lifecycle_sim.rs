@@ -295,12 +295,17 @@ impl Spans {
             }
     }
 
-    /// Whether a deletion by user selects the frame's MCP rows by their own `user_id` or subject hash.
+    /// Whether a deletion by user selects the frame's MCP rows by their own `user_id`, or by their subject hash
+    /// under the issuer the request names, or under any issuer when it names none (contract 13.3).
     fn mcp_selected_by(&self, request: &DeletionRequest) -> bool {
         request.project_id == self.project
             && self.received_at < request.requested_at
-            && matches!(&request.selector, DeletionSelector::User { user_id, .. }
-                if *user_id == self.user && (self.identity.mcp_user || self.identity.issuer.is_some()))
+            && matches!(&request.selector, DeletionSelector::User { user_id, issuer }
+            if *user_id == self.user
+                && (self.identity.mcp_user
+                    || self.identity.issuer.is_some_and(|own| {
+                        issuer.as_deref().is_none_or(|named| named == own)
+                    })))
     }
 }
 
@@ -1317,15 +1322,20 @@ fn selected(request: &DeletionRequest, row: &Held<'_>, spans: &[(Spans, Fate)]) 
         DeletionSelector::Traces(ids) => {
             by_trace && row.trace().is_some_and(|trace| ids.contains(&trace))
         }
-        DeletionSelector::User { user_id, .. } => {
+        DeletionSelector::User { user_id, issuer } => {
             let own = SPAN_TABLES.contains(&row.table_id) || row.table_id == TableId::UserRollup;
-            // An MCP row also goes by its own user: its `user_id`, or the hash of the user under any issuer
-            // (contract 13.3), whether or not a span of its trace names the user.
+            // An MCP row also goes by its own user: its `user_id`, or the hash of the user under the issuer the
+            // request names, or under any issuer when it names none (contract 13.3), whether or not a span of its
+            // trace names the user.
             let salt = salt(request.project_id);
+            let issuers: Vec<&str> = match issuer {
+                Some(named) => vec![named.as_str()],
+                None => ISSUERS.to_vec(),
+            };
             let by_identity = MCP_TABLES.contains(&row.table_id)
                 && (row.text("user_id") == Some(user_id.as_str())
                     || row.bytes("user_subject_hash").is_some_and(|hash| {
-                        ISSUERS
+                        issuers
                             .iter()
                             .any(|issuer| salt.subject_hash(issuer, user_id).as_slice() == hash)
                     }));

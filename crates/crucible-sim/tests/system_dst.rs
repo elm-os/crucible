@@ -29,7 +29,7 @@ const BUDGET: (u64, u64) = (200, 3);
 const SMOKE_CONFIGS: u64 = 40;
 
 /// Each mutant with the first run of the budget that catches it and the invariant that run reports.
-const MUTANTS: [(Mutant, u64, &str); 15] = [
+const MUTANTS: [(Mutant, u64, &str); 18] = [
     (Mutant::SkipWalSync, 0, "liveness"),
     (Mutant::DropToken, 1000, "I2"),
     (Mutant::GcAboveCheckpoint, 1, "I12"),
@@ -45,6 +45,9 @@ const MUTANTS: [(Mutant, u64, &str); 15] = [
     (Mutant::SumCaptureSources, 1, "I7"),
     (Mutant::DropRollupMarker, 0, "I2"),
     (Mutant::MarkAfterDuplicateDrop, 14_000, "I7"),
+    (Mutant::SkipTombstoneFilter, 1, "I9"),
+    (Mutant::IgnoreTombstoneIssuer, 6000, "I9"),
+    (Mutant::SeedOnlyOpenRequests, 4000, "I9"),
 ];
 
 fn replay(outcome: &Outcome) -> String {
@@ -109,6 +112,11 @@ fn the_smoke_budget_holds_and_reaches_its_targets() {
         "mcp aggregates compared with the reference",
         "frame waited for its project salt",
         "directory syncs failed",
+        "tombstone appended",
+        "deletion completed",
+        "deletion completed while the node was down",
+        "span dropped by a deletion",
+        "read of the deletion requests failed",
         "json request acknowledged",
         "repeated request acknowledged",
         "request refused",

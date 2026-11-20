@@ -13,6 +13,8 @@ is in [`methodology.md`](methodology.md); the job runners below the executors ar
 | Unit and property tests | `crates/crucible-lifecycle/src`, `crates/crucible-plan/src/hidden.rs` | The drop-or-delete decision, the partitions of a span of time, the reach list as data, the predicates of a delete, the pending-deletion set, the predicate a pending deletion adds to a plan |
 | Simulation | `crucible_sim::lifecycle_sim`, `crates/crucible-sim/tests/lifecycle_dst.rs` | The real jobs and the real service on several nodes over `ChModel` and `PgModel` under faults, with the oracle and the mutants |
 | Directed scenarios | `crates/crucible-sim/tests/lifecycle_directed.rs` | One node with the real WAL and the real shipper: the tombstone is a durable frame that reads back as the request, the checkpoint passes it on a node that receives nothing else, and a deletion by trace runs to `completed` |
+| Stage B | `crates/crucible-normalize/src/tombstone.rs`, `crates/crucible-normalize/src/stage_b.rs`, `crates/crucible-sim/tests/stage_b_deletions.rs` | What a deletion selects of spans, MCP operations and facts, against a linear model; that dropping leaves stage B's state alone; the frames after a tombstone, a request that completed while the node was down, and a shipper that ships nothing until it has read the requests, each also with the defect it guards against |
+| Write path | The dimension `deletions` of the system simulation ([`system-simulation.md`](system-simulation.md)) | The real WAL, stage B and shipper with deletion requests, tombstones and requests that complete while the node is down, under the system simulation's faults, with invariant I9 and three mutants |
 | Read services | `crates/crucible-query/tests/services/hidden.rs` | Trace detail, the trace list, the payload route, the session, user and span lists and the pages of an export in progress under a pending-deletion set, from the recent index and from the store |
 | Project salts | `crates/crucible/src/salts.rs` | A deletion by user hashes the user with the stored salt as stage B did, never creates a salt, and says how to fix one that does not open |
 | Differential, ClickHouse | The row "ChModel differential: retention and deletion" of `crucible-conformance` | The reads and maintenance calls the executors issue, on the model and on ClickHouse 26.3, 26.8 and latest, among them the issuers of the MCP operations, the MCP traces of a user and the delete of a user's operations with a full chunk of subject hashes |
@@ -31,7 +33,8 @@ hold the real `Service`. What the simulation models is a node's log and its stag
   `session_rollup` and `user_rollup`, then raises the checkpoint watermark to the frame;
 - stage B keeps two rules. A tombstone applies to the frames after it in the log: their spans that the request
   selects and that were received before it are dropped, and for a deletion by user also the MCP rows that carry
-  the user by `user_id` or subject hash, while the rest of the frame ships. A node that starts registers first
+  the user by `user_id`, or by the hash of the user's subject under the issuer the request names (under any
+  issuer when it names none), while the rest of the frame ships. A node that starts registers first
   (its heartbeat is in Postgres), then reads the deletion requests, and only then ships.
 
 A workload appends a frame about once a second to a node that is up. Two projects get traces of five users and
@@ -94,10 +97,9 @@ without it and must hold.
 
 ## What the simulation does not cover
 
-- The two rules of stage B in the real normalizer and shipper. The real shipper seals a `Tombstone` frame, so
-  its checkpoint passes it (the directed scenarios run that path), and it applies no tombstone to the frames after
-  it. The simulation's stage B is a model of the two rules above, so invariant I9 holds end to end in the binary
-  only once the normalizer and the shipper implement them.
+- The two rules of stage B in the real normalizer and shipper: here stage B is a model of them. The system
+  simulation runs the real ones under its faults (dimension `deletions`), and the stage B directed scenarios run
+  each rule on its own.
 - Replay of retained segments, requeue from quarantine and `crucible wal drain`.
 - The size of a statement. A ClickHouse server takes at most 1,000 parameters in a request, and every trace id of
   a list is one. The executor resolves and deletes a list of traces 500 ids at a time, which the conformance row
