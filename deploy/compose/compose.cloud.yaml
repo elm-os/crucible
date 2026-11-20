@@ -1,11 +1,10 @@
-# Crucible alone, against a ClickHouse and a Postgres that run elsewhere: ClickHouse Cloud and a managed Postgres, or
-# servers that you operate. Development preview: see docs/self-hosting/README.md.
+# Crucible alone, against a ClickHouse and a Postgres that run elsewhere. See docs/self-hosting/README.md.
 #
-# This preview supports a single-node ClickHouse only. It refuses a ClickHouse Cloud service at startup and /readyz
-# names the reason; Cloud support is planned.
+# Crucible needs a single-node ClickHouse server; it refuses a clustered or ClickHouse Cloud service at startup and
+# /readyz names the reason.
 #
 # Settings in .env beside this file:
-#   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS (Cloud), or http://<host>:8123; ClickHouse 26.3 or newer
+#   CRUCIBLE_CLICKHOUSE_URL       https://<host>:8443 for TLS, or http://<host>:8123; ClickHouse 26.3 or newer
 #   CRUCIBLE_CLICKHOUSE_USER      an admin user with access management (default crucible_admin)
 #   CRUCIBLE_CLICKHOUSE_PASSWORD  that user's password
 #   CRUCIBLE_MASTER_KEY           64 hexadecimal characters, made once: openssl rand -hex 32

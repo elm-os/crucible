@@ -1,13 +1,21 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/coming-soon";
+import { Suspense } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SectionFrame } from "@/components/section";
+import { DashboardList } from "@/features/dashboards/dashboard-list";
 
 export const metadata: Metadata = { title: "Dashboards" };
 
-export default function Page() {
+export default function DashboardsPage() {
   return (
-    <ComingSoon
-      title="Dashboards"
-      description="Dashboards will hold charts built from metrics queries, with starter dashboards to clone."
-    />
+    <>
+      <PageHeader
+        title="Dashboards"
+        description="Charts, numbers and notes over this project's metrics, for the time range above."
+      />
+      <Suspense fallback={<SectionFrame title="Dashboards">{null}</SectionFrame>}>
+        <DashboardList />
+      </Suspense>
+    </>
   );
 }

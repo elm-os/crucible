@@ -7,13 +7,14 @@
 mod alerts;
 mod auth;
 mod channels;
+mod dashboards;
 mod data_bounds;
 pub(crate) mod exports;
 mod facts;
 mod filter_values;
 mod lifecycle;
 mod mcp;
-mod metrics;
+pub(crate) mod metrics;
 mod org;
 mod payload;
 mod projects;
@@ -47,6 +48,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .merge(alerts::routes())
         .merge(auth::routes())
         .merge(channels::routes())
+        .merge(dashboards::routes())
         .merge(data_bounds::routes())
         .merge(exports::routes())
         .merge(facts::routes())
@@ -73,6 +75,7 @@ pub(crate) fn document(mut doc: OpenApi) -> OpenApi {
     doc.merge(alerts::Paths::openapi());
     doc.merge(auth::Paths::openapi());
     doc.merge(channels::Paths::openapi());
+    doc.merge(dashboards::Paths::openapi());
     doc.merge(data_bounds::Paths::openapi());
     doc.merge(exports::Paths::openapi());
     doc.merge(facts::Paths::openapi());

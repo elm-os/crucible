@@ -151,12 +151,24 @@ fn filter(
     }
 }
 
-/// Checks the request and builds the query the compiler takes.
 fn parse(
     project: &Project,
     request: &MetricsQueryRequest,
 ) -> Result<(TimeWindow, MetricsQuery), ApiError> {
-    let rid = project.request_id;
+    parse_request(
+        project.request_id,
+        project.settings.max_window_days,
+        request,
+    )
+}
+
+/// Checks the request against the registry, its caps and the project's longest window, and builds the query
+/// the compiler takes. Dashboards check their widgets' queries with it too.
+pub(crate) fn parse_request(
+    rid: crucible_records::RequestId,
+    max_window_days: u32,
+    request: &MetricsQueryRequest,
+) -> Result<(TimeWindow, MetricsQuery), ApiError> {
     let mut errors = Vec::new();
     let (from, to) = (
         time("from", &request.from, &mut errors),
@@ -244,7 +256,7 @@ fn parse(
     else {
         return Err(ApiError::validation(rid, errors));
     };
-    check_window(rid, window, project.settings.max_window_days)?;
+    check_window(rid, window, max_window_days)?;
     let query = MetricsQuery {
         source,
         measures,
