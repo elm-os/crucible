@@ -457,4 +457,5 @@ and adding an entry to the workflow's matrix.
   would carry the raw client address on a server span.
 - The suite configures no `identify` hook, so identity keys must be absent and `identity_source` must derive to
   `none`.
-- Nothing has yet played these transcripts against a real MCP server; the first SDK runner is that check.
+- Each SDK's runner plays these transcripts against its reference server, and `.github/workflows/sdk-conformance.yml`
+  runs all four.

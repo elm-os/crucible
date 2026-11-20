@@ -9,7 +9,7 @@ method is in [`methodology.md`](methodology.md).
 |---|---|---|
 | Continuous | `crucible-sim`, after every simulation step | Cheap checks against the oracle ledger (every request sent, every ack with its virtual time, every delete, every revocation, a reference aggregation) |
 | Quiescence | `crucible-sim`, at the end of a run | All faults healed, the system drained, one final restart, then full comparison with the oracle |
-| Conformance | `crucible-conformance`, against the models and real ClickHouse (26.3 LTS, 26.8 LTS, latest stable, Cloud) and Postgres (15, 18) | The assumption an invariant rests on holds on the real system. A mismatch means the model is fixed first |
+| Conformance | `crucible-conformance`, against the models and real ClickHouse (26.3 LTS, 26.8 LTS, latest stable) and Postgres (15, 18) | The assumption an invariant rests on holds on the real system. A mismatch means the model is fixed first |
 | Proof | Kani (pure kernels) and the Quint model `specs/ingest.qnt` | Holds for all inputs within the stated bounds, or for all interleavings of the model |
 
 A violation blocks a merge when it is new on the change and reachable inside the realism envelope (realistic
