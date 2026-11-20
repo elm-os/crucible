@@ -138,10 +138,10 @@ export class FeedbackSender {
     return within(this.#done, this.#options.timeoutMs);
   }
 
-  /** Sends what is queued within `timeoutMs`, then stops; the scores still queued count as dropped. */
-  async shutdown(): Promise<void> {
+  /** Sends what is queued within `budgetMs`, then stops; the scores still queued count as dropped. */
+  async shutdown(budgetMs: number): Promise<void> {
     this.#closed = true;
-    await this.flush();
+    await within(this.#done, budgetMs);
     this.#stopped = true;
     this.#abort.abort();
   }

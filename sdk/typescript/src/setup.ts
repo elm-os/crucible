@@ -66,6 +66,7 @@ interface State {
   queue: QueueSpanProcessor;
   feedback: FeedbackSender;
   secretKey: string;
+  timeoutMs: number;
 }
 
 /** Counters since `init`: the span export queue and feedback. */
@@ -142,6 +143,7 @@ export function init(options: InitOptions = {}): void {
     queue,
     feedback: sender,
     secretKey: key,
+    timeoutMs,
   };
 }
 
@@ -164,12 +166,19 @@ export async function flush(): Promise<void> {
   await Promise.all([current?.provider.forceFlush(), current?.feedback.flush()]);
 }
 
-/** Flushes, then stops exporting. Spans that end and scores queued afterwards are dropped. */
+/**
+ * Flushes, then stops exporting, within `exportTimeoutMs`. Spans that end and scores queued afterwards are dropped.
+ */
 export async function shutdown(): Promise<void> {
   const current = state;
   state = undefined;
-  await current?.feedback.shutdown();
-  await current?.provider.shutdown();
+  if (current === undefined) {
+    return;
+  }
+  // The spans first, then the scores, within one `exportTimeoutMs` in all.
+  const deadline = performance.now() + current.timeoutMs;
+  await current.provider.shutdown();
+  await current.feedback.shutdown(Math.max(0, deadline - performance.now()));
 }
 
 /** Counters since `init`; all zero before `init`. */

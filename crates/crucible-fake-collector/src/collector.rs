@@ -4,6 +4,8 @@
 //! gzip-compressed, runs every body through the same scanner as ingest (`crucible-otlp`, after transcoding JSON),
 //! and records each request with its spans in one ordered log. `POST /conformance/checkpoint` with
 //! `{"name": "<name>"}` adds a checkpoint to the same log, so a reader can tell which exports arrived before it.
+//! `POST /api/v1/projects/{project_id}/feedback`, the API's feedback route (contract 12.6), is recorded as a
+//! [`FeedbackPost`] in the same log and answered 201; the golden decides whether the post was right.
 //! Requests the collector refuses (wrong path, method, media type or encoding, malformed body) are recorded too,
 //! with the status they were answered and the reason.
 
@@ -17,7 +19,7 @@ use crucible_env::{Env, JoinHandle, Listener, NetError};
 use crucible_otlp::{MAX_BODY_BYTES, Rejection, TraceRequest, transcode_json};
 use crucible_records::{SpanId, SpanKind, StatusCode, Timestamp, TraceId};
 use flate2::read::GzDecoder;
-use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE};
+use http::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderName};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode as HttpStatus};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
@@ -33,16 +35,44 @@ use crate::value::{Attributes, owned};
 
 /// The OTLP traces path.
 pub const TRACES_PATH: &str = "/v1/traces";
+const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 /// The checkpoint path.
 pub const CHECKPOINT_PATH: &str = "/conformance/checkpoint";
+/// The API base path; the feedback route is `/api/v1/projects/{project_id}/feedback` under it.
+pub const API_PATH: &str = "/api/v1";
 
 /// One entry of the collector's log, in arrival order.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// A request to any path other than the checkpoint path.
+    /// A request to any path other than the checkpoint path and the feedback route.
     Export(Export),
     /// A checkpoint posted by a runner.
     Checkpoint(String),
+    /// A post to the feedback route.
+    Feedback(FeedbackPost),
+}
+
+/// One post to the feedback route, as received.
+#[derive(Clone, Debug)]
+pub struct FeedbackPost {
+    /// The request path.
+    pub path: String,
+    /// The `Content-Type` header.
+    pub content_type: Option<String>,
+    /// The `Authorization` header.
+    pub authorization: Option<String>,
+    /// The `Idempotency-Key` header.
+    pub idempotency_key: Option<String>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+/// Whether `path` is the feedback route of some project.
+pub fn is_feedback_path(path: &str) -> bool {
+    path.strip_prefix(API_PATH)
+        .and_then(|rest| rest.strip_prefix("/projects/"))
+        .and_then(|rest| rest.strip_suffix("/feedback"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// One recorded request.
@@ -247,6 +277,19 @@ async fn respond(
     if parts.method == Method::POST && path == CHECKPOINT_PATH {
         return Ok(checkpoint(&log, &raw));
     }
+    if parts.method == Method::POST && is_feedback_path(&path) {
+        let post = FeedbackPost {
+            path,
+            content_type: header(&parts.headers, CONTENT_TYPE),
+            authorization: header(&parts.headers, AUTHORIZATION),
+            idempotency_key: header(&parts.headers, IDEMPOTENCY_KEY),
+            body: raw.to_vec(),
+        };
+        log.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Event::Feedback(post));
+        return Ok(fact_written());
+    }
     let mut export = Export {
         method: parts.method.to_string(),
         path,
@@ -396,6 +439,23 @@ fn checkpoint(log: &Log, raw: &[u8]) -> Response<Full<Bytes>> {
             "a checkpoint body is {\"name\": \"<non-empty name>\"}".to_owned(),
         ),
     }
+}
+
+/// The feedback route's 201 answer: the shape of the API's `FactWritten`, with fixed values.
+fn fact_written() -> Response<Full<Bytes>> {
+    let body = serde_json::json!({
+        "fact_id": "01938a2e-0000-7000-8000-000000000001",
+        "key": "conformance",
+        "version": 1,
+        "created_at": "2026-11-17T09:30:00.000000Z",
+        "target_time": "2026-11-17T09:30:00.000000Z",
+    });
+    let mut response = Response::new(Full::new(Bytes::from(body.to_string())));
+    *response.status_mut() = HttpStatus::CREATED;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
 }
 
 fn ok(json: bool, rejected: u32) -> Response<Full<Bytes>> {

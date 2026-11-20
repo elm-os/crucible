@@ -206,6 +206,7 @@ pub async fn run_suite(
             endpoint: collector.endpoint(),
             traces_url: collector.traces_url(),
             checkpoint_url: collector.checkpoint_url(),
+            api_url: collector.endpoint(),
         };
         let spec =
             run_spec(&suite.constants, case, &endpoints).map_err(|message| DriverError::Case {

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 use crate::suite::{
-    Action, Constants, Empty, Era, Keys, Kind, Node, Scenario, SdkOptions, ServerInfo, Step,
-    Transport, Variant, schema,
+    Action, Constants, Empty, Era, FeedbackStep, Keys, Kind, Node, Scenario, SdkOptions,
+    ServerInfo, Step, Transport, Variant, schema,
 };
 
 /// The step id of the legacy `initialize` request.
@@ -121,6 +121,10 @@ pub struct RunSpec {
     pub otlp: Otlp,
     /// Where `checkpoint` steps post.
     pub checkpoint_url: String,
+    /// The base URL of the API the SDK's feedback posts to (the collector).
+    pub api_url: String,
+    /// The keys' project, which the feedback route's path names.
+    pub project_id: String,
     /// The project keys.
     pub keys: Keys,
     /// The SDK's `init` options.
@@ -144,6 +148,8 @@ pub struct Endpoints {
     pub traces_url: String,
     /// Checkpoint URL.
     pub checkpoint_url: String,
+    /// The API base URL.
+    pub api_url: String,
 }
 
 /// Builds the run spec of `case`.
@@ -167,6 +173,8 @@ pub fn run_spec(
             traces_url: endpoints.traces_url.clone(),
         },
         checkpoint_url: endpoints.checkpoint_url.clone(),
+        api_url: endpoints.api_url.clone(),
+        project_id: constants.project_id.clone(),
         keys: constants.keys.clone(),
         sdk: if mcp {
             constants.mcp.sdk.clone()
@@ -199,10 +207,11 @@ fn resolve_agent(steps: &[Step]) -> Result<Vec<Step>, String> {
             | Action::Flush
             | Action::Checkpoint(_)
             | Action::Shutdown
-            | Action::Sleep(_) => out.push(step.clone()),
+            | Action::Sleep(_)
+            | Action::Feedback(_) => out.push(step.clone()),
             _ => {
                 return Err(format!(
-                    "step {:?}: agent scenarios use observe, flush, checkpoint, shutdown and sleep_ms",
+                    "step {:?}: agent scenarios use observe, flush, checkpoint, shutdown, sleep_ms and feedback",
                     step.step
                 ));
             }
@@ -748,12 +757,63 @@ fn check_agent(steps: &[Step]) -> Result<(), String> {
                 checkpoints.push(name);
             }
             Action::Shutdown => shutdowns += 1,
+            Action::Feedback(score) => check_feedback(&step.step, score)?,
             Action::Flush | Action::Sleep(_) => {}
             _ => return Err(format!("step {:?} is not an agent step", step.step)),
         }
     }
     if shutdowns != 1 {
         return Err("an agent case shuts the SDK down exactly once".to_owned());
+    }
+    Ok(())
+}
+
+fn hex_id(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && text.bytes().any(|b| b != b'0')
+}
+
+/// A score the feedback route takes (contract 12.6): a name without `#`, one target, a scalar value that fits the
+/// data type, an object of metadata and a well-formed `Idempotency-Key`.
+fn check_feedback(step: &str, score: &FeedbackStep) -> Result<(), String> {
+    let refuse = |why: &str| Err(format!("step {step:?}: feedback {why}"));
+    if score.name.is_empty() || score.name.contains('#') {
+        return refuse("needs a name without '#'");
+    }
+    let target = match (&score.trace_id, &score.span_id, &score.session_id) {
+        (Some(trace), None, None) => hex_id(trace, 32),
+        (Some(trace), Some(span), None) => hex_id(trace, 32) && hex_id(span, 16),
+        (None, None, Some(session)) => !session.is_empty(),
+        _ => false,
+    };
+    if !target {
+        return refuse(
+            "names one target: trace_id (32 hex), trace_id and span_id (16 hex), or session_id",
+        );
+    }
+    let fits = matches!(
+        (score.data_type.as_deref(), &score.value),
+        (None | Some("numeric"), Json::Number(_))
+            | (None | Some("boolean"), Json::Bool(_))
+            | (None | Some("categorical" | "text"), Json::String(_))
+    );
+    if !fits {
+        return refuse(
+            "takes a number (numeric), a boolean (boolean) or a string (categorical or text)",
+        );
+    }
+    if score.metadata.as_ref().is_some_and(|m| !m.is_object()) {
+        return refuse("metadata is a JSON object");
+    }
+    let key_ok = |key: &str| {
+        (1..=128).contains(&key.len())
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if score.idempotency_key.as_deref().is_some_and(|k| !key_ok(k)) {
+        return refuse("idempotency_key is 1 to 128 characters of A-Z, a-z, 0-9, '_' and '-'");
     }
     Ok(())
 }
