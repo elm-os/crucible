@@ -8,7 +8,7 @@ server gives and the fix.
 | Message | Fix |
 |---|---|
 | `required variable CLICKHOUSE_PASSWORD is missing a value: set CLICKHOUSE_PASSWORD in .env` (or `POSTGRES_PASSWORD`, `CRUCIBLE_MASTER_KEY`, `CRUCIBLE_CLICKHOUSE_URL`) | Make `.env` beside the Compose file, as in step 2 of the [quickstart](quickstart.md#2-make-env) |
-| `container crucible-ready-1 is unhealthy` right after an upgrade or a restart | The `ready` service saw the server restarting. Check `curl -s http://127.0.0.1:8080/readyz`: once it answers `ready`, the `ready` service turns healthy at its next check, within 10 seconds |
+| `container crucible-ready-1 is unhealthy` | The server has not answered `/readyz` with `ready` for a minute: it is down, or its startup checks fail. `curl -s http://127.0.0.1:8080/readyz` and `docker compose logs crucible` give the reason; once it answers `ready`, the `ready` service turns healthy at its next check, within 10 seconds |
 | `error from registry: denied` while pulling `ghcr.io/elm-os/crucible` | Build the image and set `CRUCIBLE_IMAGE` to its tag in `.env` ([quickstart](quickstart.md#1-build-the-image)) |
 
 ## The configuration is refused

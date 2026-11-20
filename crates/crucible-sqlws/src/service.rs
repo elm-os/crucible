@@ -18,6 +18,7 @@ use crucible_env::{
 };
 use crucible_records::{ProjectId, ProjectScope, SavedQueryId, SqlRunId, Timestamp};
 use crucible_schema::{CURATED_VIEWS, RetentionSettings, SQL_DATABASE, table};
+use futures::{FutureExt as _, select_biased};
 
 use crate::access::{SqlAction, SqlRole, allowed};
 use crate::csv::to_csv;
@@ -368,16 +369,25 @@ impl SqlWorkspace {
     }
 
     /// Probes at startup and then every five minutes, sooner while no probe has completed. Each probe reports
-    /// the server version, so a version change is probed within one period. Runs until the host shuts down.
+    /// the server version, so a version change is probed within one period. Runs until the host shuts down: the
+    /// shutdown signal ends it at once, in a probe or between two.
     pub async fn run_probe_loop(self) {
+        let env = self.inner.env.clone();
+        let mut shutdown = env.shutdown().fuse();
         loop {
-            let status = self.probe().await;
+            let status = select_biased! {
+                () = shutdown => return,
+                status = self.probe().fuse() => status,
+            };
             let wait = if status.last_probe.is_some() {
                 PROBE_EVERY
             } else {
                 PROBE_RETRY
             };
-            self.inner.env.clock.sleep(wait).await;
+            select_biased! {
+                () = shutdown => return,
+                () = env.clock.sleep(wait).fuse() => {}
+            }
         }
     }
 

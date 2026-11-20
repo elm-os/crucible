@@ -16,6 +16,7 @@ identity. The method is in [`methodology.md`](methodology.md).
 | Service | `crates/crucible-sqlws` | The lexical check, parameters, limits, saved queries, exports, audit rows, the probe gate and the identity reconciler |
 | Layers A, B, D | `crates/crucible-conformance/src/sqliso`, binary `crucible-sqliso` | Direct attacks, grammar fuzzing, broken deployments |
 | Layer C | `crates/crucible/tests/sqliso_api.rs` | The real binary with a real ClickHouse and Postgres, through the REST API |
+| Master key | `crates/crucible/tests/sqlws_master_key.rs` | The real binary started with the right master key, then once with a wrong one, then with the right one again: the workspace must still run queries |
 | Fuzz targets | `crates/crucible-sqlws/fuzz` (`lexer`), `crates/crucible-store-clickhouse/fuzz` (`grid`) | The lexical check and the result decoder under libFuzzer |
 | CI | `.github/workflows/sqliso.yml` | Every layer on 26.3, 26.8 and latest, under both values of the server switch |
 
@@ -131,6 +132,14 @@ What the suite found on real servers, and what was done about each.
   TABLE`, and `readonly = 1` refuses it even then. D3 is caught by W0, which reads the grants.
 - **Inside a definer-rights view `currentUser()` is the caller, and the row policies are the definer's.** A
   view-only grant set would have to filter by `currentUser()` itself. v0 keeps base-table grants (contract 7.4).
+- **A start with a wrong master key once broke the workspace until a manual repair.** The ledger's checksum of
+  access step A2 covered the probe identities' password digests, which come from the master key, so a start with
+  a wrong key under `--migrate` applied A2 again and gave the probe identities that key's passwords; back on the
+  right key the checksum matched again and the probe could not sign in. The checksum now leaves the digests out,
+  `crucible migrate` and `serve --migrate` provision the probe identities again with the current key, and the
+  identity reconciler does so on every pass while the probe has not passed. The suite's row "A start with a wrong
+  master key" applies A2 under another key, shows that the probe can no longer sign in and that provisioning the
+  probe identities again repairs it, and checks that A2's ledger form is the same under both keys.
 - **Documented residual:** `system.tables`, `system.columns` and `EXPLAIN ESTIMATE` show whole-table totals for
   the base tables a project may read. They show volume, never rows.
 
@@ -239,11 +248,13 @@ SQLISO_FUZZ=500000 SQLISO_IDENTITIES=2000 crates/crucible-conformance/scripts/sq
 cargo run -p crucible-conformance --bin crucible-sqliso -- --url http://localhost:8123 \
   --user crucible_admin --password ... --switch permissive --layers a,b,d --fuzz 5000 --seed 7
 
-# Layer C: needs a ClickHouse, an empty Postgres database and the server binary built on its own.
+# Layer C, then the master-key test: a ClickHouse, an empty Postgres database and the server binary built on its
+# own. The master-key test starts the server with the key layer C migrated with.
 cargo build -p crucible && cp target/debug/crucible /tmp/crucible
-CRUCIBLE_SQLISO_CLICKHOUSE_URL=http://localhost:8123 CRUCIBLE_SQLISO_CLICKHOUSE_PASSWORD=... \
-CRUCIBLE_SQLISO_POSTGRES_URL=postgres://crucible:...@localhost:5432/crucible CRUCIBLE_SQLISO_BIN=/tmp/crucible \
-  cargo test -p crucible --test sqliso_api -- --nocapture
+export CRUCIBLE_SQLISO_CLICKHOUSE_URL=http://localhost:8123 CRUCIBLE_SQLISO_CLICKHOUSE_PASSWORD=... \
+  CRUCIBLE_SQLISO_POSTGRES_URL=postgres://crucible:...@localhost:5432/crucible CRUCIBLE_SQLISO_BIN=/tmp/crucible
+cargo test -p crucible --test sqliso_api -- --nocapture
+cargo test -p crucible --test sqlws_master_key -- --nocapture
 
 # The fuzz targets.
 (cd crates/crucible-sqlws && cargo +nightly fuzz run lexer -- -max_total_time=60)

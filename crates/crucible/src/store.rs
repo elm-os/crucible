@@ -10,7 +10,8 @@
 //!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
 //!   policies, views and probe identities) and schema step `0004_span_usage_aggregate` for a single-node
 //!   server ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the
-//!   ledger of contract 6.6 and applied once; without it there is no ledger and all are applied each time.
+//!   ledger of contract 6.6 and applied once, and the probe identities are provisioned again at every run with
+//!   the passwords of the current master key; without Postgres there is no ledger and all are applied each time.
 //! - [`bring_up`] is everything that must hold before ingest is accepted.
 
 use std::sync::Arc;
@@ -18,13 +19,14 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_env::{
-    Env, StoreError, StoreFacts, StoreFlavour, StoreVersion, TelemetryStore, TlsRoots,
+    Env, SqlWorkspaceStore as _, StoreError, StoreFacts, StoreFlavour, StoreHealth, StoreVersion,
+    TelemetryStore, TlsRoots,
 };
 use crucible_plan::profile_caps;
 use crucible_schema::{
-    AccessParams, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PasswordHash, ServiceIdentity,
-    SqlProfile, TABLES, Variant, WorkspaceParams, access_service, access_workspace, schema_base,
-    schema_span_usage_aggregate, workspace_user,
+    AccessParams, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PasswordHash,
+    RetentionSettings, ServiceIdentity, SqlProfile, TABLES, Variant, WorkspaceParams,
+    access_service, access_workspace, schema_base, schema_span_usage_aggregate, workspace_user,
 };
 
 use crate::control::{ApplyStep, Applying, Control};
@@ -265,22 +267,26 @@ impl ApplyStep for ClickHouseStore {
 pub(crate) struct Migrate<'a>(pub(crate) Option<&'a Control>);
 
 /// Applies the ClickHouse schema and access steps. With a control plane, the Postgres migrations run first and
-/// the ledger of contract 6.6 (`schema_migrations`) decides which steps are still to apply. Without one there
-/// is no ledger: every step is applied each time, which their idempotence allows.
+/// the ledger of contract 6.6 (`schema_migrations`) decides which steps are still to apply, and then the probe
+/// identities are provisioned again ([`provision_probes`]). Without one there is no ledger: every step is applied
+/// each time, which their idempotence allows.
 pub(crate) async fn apply_migrations(
     env: &Env,
     config: &ClickHouse,
     store: &ClickHouseStore,
     control: Option<&Control>,
 ) -> anyhow::Result<()> {
-    let profile = config
-        .sql_store(store)?
+    let sql = config.sql_store(store)?;
+    let profile = sql
         .server_profile(SqlProfile::default())
         .await
         .context("reading which settings the server knows")?;
     let steps = config.steps(profile)?;
     match control {
-        Some(control) => control.migrate(env, &steps, store).await,
+        Some(control) => {
+            control.migrate(env, &steps, store).await?;
+            provision_probes(store, &sql).await
+        }
         None => {
             for step in &steps {
                 store.apply(step).await?;
@@ -289,6 +295,29 @@ pub(crate) async fn apply_migrations(
             Ok(())
         }
     }
+}
+
+/// Provisions the SQL workspace's two probe identities (contract 7.5) with the passwords of this node's master key.
+/// The ledger applies access step A2, which creates them, only once, so a deployment whose probe identities hold
+/// another key's passwords (an earlier version applied A2 again at a start with a wrong key) is repaired here, and
+/// by the identity reconciler. A node whose key the service identities refuse leaves them as they are.
+async fn provision_probes(store: &ClickHouseStore, sql: &ClickHouseSqlStore) -> anyhow::Result<()> {
+    if let StoreHealth::Unavailable { reason } = store.health().await {
+        tracing::warn!(
+            reason,
+            "the service identities refuse this master key, so the SQL workspace's probe identities keep their \
+             passwords; start with the master key this deployment was migrated with"
+        );
+        return Ok(());
+    }
+    for project in PROBE_PROJECTS {
+        sql.provision(project, 0, &RetentionSettings::default())
+            .await
+            .with_context(|| {
+                format!("provisioning the SQL workspace's probe identity {project}")
+            })?;
+    }
+    Ok(())
 }
 
 /// Why a server cannot take ingest although detection ran (contract 5.8); `None` when it can.
@@ -341,7 +370,8 @@ pub(crate) async fn bring_up(
         let hint = match &error {
             // AUTHENTICATION_FAILED for a generated identity.
             StoreError::Rejected { code: 516, .. } => {
-                " (the service users are missing, or were created under a different master key;                  see --migrate and --master-key-file)"
+                " (the service users are missing, or were created under a different master key; see --migrate \
+                 and --master-key-file)"
             }
             _ => "",
         };
@@ -585,6 +615,38 @@ mod tests {
         assert!(!sql.contains("admin-secret"));
         assert!(format!("{config:?}").contains("MasterKey(..)"));
         assert!(!format!("{config:?}").contains("admin-secret"));
+    }
+
+    /// One start with a wrong master key under `--migrate` must find every step a start with the right key
+    /// recorded, or it applies access step A2 again and gives the probe identities the wrong key's passwords. The
+    /// steps differ only in their password digests, which the ledger checksum leaves out (contract 6.6).
+    #[test]
+    fn the_ledger_checksum_does_not_depend_on_the_master_key() {
+        let config = |key: &str| ClickHouse {
+            url: "http://localhost:8123".to_owned(),
+            admin: Credentials {
+                user: "crucible_admin".to_owned(),
+                password: "admin-secret".to_owned(),
+            },
+            master_key: MasterKey::parse(key).unwrap(),
+            sql_statements_per_hour: 1_800,
+            idle_timeout: None,
+        };
+        let right = config(KEY).steps(SqlProfile::default()).unwrap();
+        let wrong = config(&KEY.replace("00", "ff"))
+            .steps(SqlProfile::default())
+            .unwrap();
+        // The access steps carry the digests of the derived passwords, so they differ under another key.
+        assert_ne!(right[1].statements, wrong[1].statements);
+        assert_ne!(right[2].statements, wrong[2].statements);
+        for (right, wrong) in right.iter().zip(&wrong) {
+            assert_eq!(
+                crate::control::checksum(right),
+                crate::control::checksum(wrong),
+                "the ledger checksum of step {} depends on the master key",
+                right.id
+            );
+        }
     }
 
     #[test]

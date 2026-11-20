@@ -554,3 +554,49 @@ fn the_mutant_without_an_overlap_window_is_caught() {
         "no seed caught the missing overlap window"
     );
 }
+
+/// The feed and the `last_used_at` writer stop as soon as the node is asked to stop, whatever they were waiting for:
+/// a stop must not wait out its grace period for them.
+#[test]
+fn the_feed_and_the_use_writer_stop_at_the_shutdown_signal() {
+    crucible_sim::run(5, |sim| async move {
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let env = host.env.clone();
+        let model = PgModel::new(
+            host.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        let store: Arc<dyn ControlStore> = Arc::new(model);
+        let keys = Arc::new(DbKeys::new(
+            &env,
+            LookupKey::new(LOOKUP),
+            OutageMode::default(),
+        ));
+        let mut feed = env.spawn(
+            "key-feed",
+            run_feed(
+                env.clone(),
+                Arc::clone(&keys),
+                Arc::new(StoreFeed(Arc::clone(&store))),
+            ),
+        );
+        let mut uses = env.spawn(
+            "key-last-used",
+            run_last_used(env.clone(), Arc::clone(&keys), store),
+        );
+        env.clock.sleep(Duration::from_millis(90_500)).await;
+        assert!(keys.is_loaded());
+        host.spawner.request_shutdown();
+        let stopped = env
+            .timeout(Duration::from_millis(10), async {
+                (feed.join().await, uses.join().await)
+            })
+            .await;
+        assert_eq!(
+            stopped,
+            Ok((Ok(()), Ok(()))),
+            "the key feed and the use writer were still running after the shutdown signal"
+        );
+    });
+}

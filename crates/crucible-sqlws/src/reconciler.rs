@@ -11,6 +11,10 @@
 //! - `active` and `target_generation` is ahead: provision with the new generation's password (rotation);
 //! - `active` and not confirmed for an hour: provision again, which repairs drift.
 //!
+//! While this node's self-probe cannot sign in, or has not run yet, the pass also provisions the two probe
+//! identities again (contract 7.5), with the passwords of this node's master key: a start with another key can have
+//! left them with that key's passwords. A probe that found a breach is left as it is: the breach stays reported.
+//!
 //! Every ClickHouse statement is idempotent and every row change is a compare-and-set on the state and the
 //! generation, so a leader that lost its lease mid-run, or a first use on another node, cannot leave an
 //! identity that reads more than its project. Passwords are never stored: the store derives them from the
@@ -25,6 +29,8 @@ use crucible_control::{
 };
 use crucible_env::SqlError;
 use crucible_records::Timestamp;
+use crucible_schema::{PROBE_PROJECTS, RetentionSettings};
+use futures::{FutureExt as _, select_biased};
 
 use crate::service::{SqlWorkspace, retention_settings};
 
@@ -52,6 +58,8 @@ pub struct ReconcileReport {
     pub confirmed: u32,
     /// Identities removed.
     pub dropped: u32,
+    /// Probe identities provisioned again because this node's self-probe could not sign in or had not run yet.
+    pub probes: u32,
     /// Identities whose step failed and will be tried again next pass.
     pub failed: u32,
     /// Old `sql_runs` rows deleted.
@@ -187,6 +195,24 @@ impl SqlWorkspace {
         report.leader = true;
         let mut held = HeldLease::new(lease, asked.nanos(), LEASE_TTL);
         let mut renewed = asked;
+        if matches!(
+            self.status().reason,
+            Some("probe_pending" | "probe_unavailable")
+        ) {
+            for project in PROBE_PROJECTS {
+                match self
+                    .store()
+                    .provision(project, 0, &RetentionSettings::default())
+                    .await
+                {
+                    Ok(()) => report.probes += 1,
+                    Err(error) => {
+                        report.failed += 1;
+                        tracing::warn!(project_id = %project, %error, "provisioning a probe identity failed");
+                    }
+                }
+            }
+        }
         let identities = control.sql_identities().list().await?;
         for identity in &identities {
             // The holder acts only inside its local window, and renews well before it ends.
@@ -224,17 +250,28 @@ impl SqlWorkspace {
     }
 
     /// Runs a pass at startup and then every five minutes, until the host shuts down. A first use never waits
-    /// for it: the workspace provisions on demand, and this job repairs, rotates and removes.
+    /// for it: the workspace provisions on demand, and this job repairs, rotates and removes. The shutdown signal
+    /// ends it at once; a pass it cuts leaves its lease to expire (contract 11.7), and every step of a pass is
+    /// idempotent.
     pub async fn run_reconciler(self, holder: String) {
+        let env = self.env().clone();
+        let mut shutdown = env.shutdown().fuse();
         loop {
-            match self.reconcile_once(&holder).await {
+            let pass = select_biased! {
+                () = shutdown => return,
+                pass = self.reconcile_once(&holder).fuse() => pass,
+            };
+            match pass {
                 Ok(report) if report.leader => {
                     tracing::debug!(?report, "SQL identity reconciler pass")
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "SQL identity reconciler pass failed"),
             }
-            self.env().clock.sleep(RECONCILE_EVERY).await;
+            select_biased! {
+                () = shutdown => return,
+                () = env.clock.sleep(RECONCILE_EVERY).fuse() => {}
+            }
         }
     }
 }
