@@ -101,6 +101,27 @@ test("an agent moves and resizes only into free room", () => {
   }
 });
 
+test("right to left, the corner handle and a pointer move follow the screen", async () => {
+  // The page's direction, as `checkDirection` sets it. Box A stands at the right; its corner handle at its
+  // bottom left.
+  document.documentElement.setAttribute("dir", "rtl");
+  const view = mount(dashboardGrid, options, MARKUP);
+  try {
+    await view.keys("Tab", "Tab", "ArrowLeft");
+    expect(view.state.value.a).toEqual({ x: 0, y: 0, width: 5, height: 2 });
+    await view.keys("ArrowRight", "ArrowRight");
+    expect(view.state.value.a).toEqual({ x: 0, y: 0, width: 3, height: 2 });
+    await view.drag(view.part("handle", "a-se") as Element, { by: { x: -80, y: 0 } });
+    expect(view.state.value.a).toEqual({ x: 0, y: 0, width: 4, height: 2 });
+    // One cell to the left is one column toward the inline end.
+    await view.drag(view.part("handle", "a-move") as Element, { by: { x: -80, y: 0 } });
+    expect(view.state.value.a).toEqual({ x: 1, y: 0, width: 4, height: 2 });
+  } finally {
+    view.unmount();
+    document.documentElement.removeAttribute("dir");
+  }
+});
+
 test("renders on the server and works in both directions", async () => {
   checkServer(dashboardGrid, options, MARKUP);
   await checkDirection(dashboardGrid, options, MARKUP);
