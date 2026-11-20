@@ -213,7 +213,7 @@ export class QueueSpanProcessor implements SpanProcessor {
 }
 
 /** Resolves when `work` settles or after `ms`, whichever is first. Never rejects. */
-async function within(work: Promise<void>, ms: number): Promise<void> {
+export async function within(work: Promise<void>, ms: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, ms);

@@ -1,4 +1,5 @@
-// SDK setup: one private tracer provider that exports OTLP/HTTP protobuf to Crucible's `/v1/traces`.
+// SDK setup: one private tracer provider that exports OTLP/HTTP protobuf to Crucible's `/v1/traces`, and the
+// feedback sender that posts scores to the project's feedback route.
 // The provider is never registered globally, so an application's own OpenTelemetry setup is left alone.
 // Every option is passed explicitly, so `OTEL_*` variables cannot redirect the export, replace its Bearer key or
 // turn sampling off; the OTLP exporter still adds any other headers named in `OTEL_EXPORTER_OTLP_HEADERS`.
@@ -12,16 +13,33 @@ import {
   BasicTracerProvider,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { type Feedback, FeedbackSender, type FeedbackStats } from "./feedback.ts";
 import { QueueSpanProcessor, type QueueStats } from "./queue.ts";
 
 export const SDK_NAME = "@elm-os/crucible";
 export const SDK_VERSION = "0.0.0";
+const USER_AGENT = `crucible-sdk-typescript/${SDK_VERSION}`;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface InitOptions {
   /** Base URL of a Crucible OTLP listener. Default: `CRUCIBLE_ENDPOINT`, else `http://localhost:4318`. */
   endpoint?: string;
-  /** Project secret key with the `ingest` scope, sent as a Bearer token. Default: `CRUCIBLE_SECRET_KEY`. */
+  /**
+   * Project secret key, sent as a Bearer token: the `ingest` scope sends spans, the `write` scope feedback. New keys
+   * have both. Default: `CRUCIBLE_SECRET_KEY`.
+   */
   secretKey?: string;
+  /**
+   * The id of the key's project (a UUID), which `feedback` needs: `crucible admin create-key` prints it as
+   * `project_id`, and the UI shows it as `project=` in the address bar. Default: `CRUCIBLE_PROJECT_ID`.
+   */
+  projectId?: string;
+  /**
+   * Base URL of the Crucible API listener, where `feedback` posts. Default: `CRUCIBLE_API_URL`, else `endpoint`
+   * without `/v1/traces`. The API listener (port 8080) also takes spans; the OTLP listener (port 4318) does not
+   * serve the API.
+   */
+  apiUrl?: string;
   /** Resource `service.name`. */
   serviceName?: string;
   /** Resource `service.version`. */
@@ -46,12 +64,19 @@ interface State {
   provider: BasicTracerProvider;
   tracer: Tracer;
   queue: QueueSpanProcessor;
+  feedback: FeedbackSender;
   secretKey: string;
 }
 
+/** Counters since `init`: the span export queue and feedback. */
+export interface Stats extends QueueStats, FeedbackStats {}
+
 let state: State | undefined;
 
-/** Starts exporting to Crucible. Throws on a missing key or a malformed endpoint, naming the setting to fix. */
+/**
+ * Starts exporting to Crucible. Throws on a missing key, a malformed endpoint or API URL, or a project id that is
+ * not a UUID, naming the setting to fix.
+ */
 export function init(options: InitOptions = {}): void {
   if (state !== undefined) {
     throw new Error(
@@ -67,13 +92,18 @@ export function init(options: InitOptions = {}): void {
   const url = tracesUrl(
     options.endpoint ?? process.env.CRUCIBLE_ENDPOINT ?? "http://localhost:4318",
   );
+  const feedbackUrl = feedbackRoute(
+    options.apiUrl ?? process.env.CRUCIBLE_API_URL,
+    url,
+    options.projectId ?? process.env.CRUCIBLE_PROJECT_ID,
+  );
   const timeoutMs = positive(options.exportTimeoutMs, 10_000, "exportTimeoutMs");
   const queue = new QueueSpanProcessor(
     new OTLPTraceExporter({
       url,
       headers: { Authorization: `Bearer ${key}` },
       timeoutMillis: timeoutMs,
-      userAgent: `crucible-sdk-typescript/${SDK_VERSION}`,
+      userAgent: USER_AGENT,
     }),
     {
       maxQueueSize: positive(options.queueSize, 2_048, "queueSize"),
@@ -99,24 +129,64 @@ export function init(options: InitOptions = {}): void {
     spanLimits: { attributeCountLimit: 128, attributeValueLengthLimit: Number.POSITIVE_INFINITY },
     spanProcessors,
   });
-  state = { provider, tracer: provider.getTracer(SDK_NAME, SDK_VERSION), queue, secretKey: key };
+  const sender = new FeedbackSender({
+    url: feedbackUrl,
+    secretKey: key,
+    userAgent: USER_AGENT,
+    timeoutMs,
+    flushSpans: () => provider.forceFlush().catch(() => undefined),
+  });
+  state = {
+    provider,
+    tracer: provider.getTracer(SDK_NAME, SDK_VERSION),
+    queue,
+    feedback: sender,
+    secretKey: key,
+  };
 }
 
-/** Exports every queued span. Resolves within `exportTimeoutMs`, whether or not the collector answers. */
+/**
+ * Queues one score for the project's feedback route and returns at once; it never throws. Scores are sent in call
+ * order, each after the spans that ended before it. Without a project id, or when 1,024 scores are already
+ * waiting, the score is dropped and counted in `stats().feedbackDropped`. Before `init` and after `shutdown` it
+ * does nothing.
+ */
+export function feedback(score: Feedback): void {
+  state?.feedback.add(score);
+}
+
+/**
+ * Exports every queued span and sends every queued score. Resolves within `exportTimeoutMs`, whether or not Crucible
+ * answers.
+ */
 export async function flush(): Promise<void> {
-  await state?.provider.forceFlush();
+  const current = state;
+  await Promise.all([current?.provider.forceFlush(), current?.feedback.flush()]);
 }
 
-/** Flushes, then stops exporting. Spans that end afterwards are dropped. */
+/** Flushes, then stops exporting. Spans that end and scores queued afterwards are dropped. */
 export async function shutdown(): Promise<void> {
   const current = state;
   state = undefined;
+  await current?.feedback.shutdown();
   await current?.provider.shutdown();
 }
 
-/** Export queue counters since `init`; all zero before `init`. */
-export function stats(): QueueStats {
-  return state?.queue.stats() ?? { queued: 0, queuedBytes: 0, dropped: 0, exported: 0, failed: 0 };
+/** Counters since `init`; all zero before `init`. */
+export function stats(): Stats {
+  const queue = state?.queue.stats() ?? {
+    queued: 0,
+    queuedBytes: 0,
+    dropped: 0,
+    exported: 0,
+    failed: 0,
+  };
+  const scores = state?.feedback.stats() ?? {
+    feedbackSent: 0,
+    feedbackDropped: 0,
+    feedbackFailed: 0,
+  };
+  return { ...queue, ...scores };
 }
 
 /** The tracer for Crucible spans: the SDK's own after `init`, else the global one (a no-op without a provider). */
@@ -147,6 +217,43 @@ function tracesUrl(endpoint: string): string {
     url.pathname = `${url.pathname.replace(/\/+$/, "")}/v1/traces`;
   }
   return url.href;
+}
+
+/** The project's feedback route, or `undefined` without a project id. */
+function feedbackRoute(
+  apiUrl: string | undefined,
+  traces: string,
+  projectId: string | undefined,
+): string | undefined {
+  let base: URL;
+  if (apiUrl === undefined || apiUrl === "") {
+    base = new URL(traces);
+    base.pathname = base.pathname.replace(/\/v1\/traces$/, "");
+  } else {
+    try {
+      base = new URL(apiUrl);
+    } catch {
+      throw new Error(
+        `Crucible API URL "${apiUrl}" is not a URL: pass the apiUrl option or set CRUCIBLE_API_URL to the API listener, for example http://localhost:8080.`,
+      );
+    }
+    if (base.protocol !== "http:" && base.protocol !== "https:") {
+      throw new Error(
+        `Crucible API URL "${apiUrl}" must use http or https: pass the apiUrl option or set CRUCIBLE_API_URL.`,
+      );
+    }
+  }
+  if (projectId === undefined || projectId === "") {
+    return undefined;
+  }
+  if (!UUID.test(projectId)) {
+    throw new Error(
+      `Crucible init() option projectId "${projectId}" is not a project id: pass the project's UUID, not its slug, or set CRUCIBLE_PROJECT_ID; \`crucible admin create-key\` prints it as project_id.`,
+    );
+  }
+  base.search = "";
+  base.hash = "";
+  return `${base.href.replace(/\/+$/, "")}/api/v1/projects/${projectId.toLowerCase()}/feedback`;
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {

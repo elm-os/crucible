@@ -1,8 +1,8 @@
-// Agent helpers: context values on every span, typed observations, generation fields, and the feedback stub.
+// Agent helpers: context values on every span, typed observations and generation fields.
 
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { feedback, flush, init, observe, shutdown, withContext } from "../src/index.ts";
+import { flush, init, observe, shutdown, withContext } from "../src/index.ts";
 import { type Collector, startCollector } from "./support/collector.ts";
 import type { DecodedSpan } from "./support/otlp.ts";
 
@@ -172,12 +172,4 @@ describe("withContext", () => {
       expect(recorded.get(`span ${id}`)?.attributes["crucible.session.id"]).toBe(id);
     }
   });
-});
-
-test("feedback is a stub that sends nothing and says why", async () => {
-  const before = collector.requests.length;
-  await expect(feedback({ name: "helpful", value: 1, traceId: "0".repeat(32) })).rejects.toThrow(
-    /planned and not available in this release.*nothing was sent/,
-  );
-  expect(collector.requests.length).toBe(before);
 });
