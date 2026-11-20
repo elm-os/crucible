@@ -252,7 +252,11 @@ traces table must show the traces after connecting through the dialog. Without `
 test passes as skipped, which is what the ordinary CI jobs see; `.github/workflows/e2e.yml` runs it for real. With
 `CRUCIBLE_E2E_POSTGRES_URL` as well, naming an empty database, a second test runs the control-plane path:
 `crucible admin init`, sign-in, a project and an API key made through the API, a key from
-`crucible admin create-key`, ingest and read-back with each key, revocation and sign-out.
+`crucible admin create-key`, ingest and read-back with each key, revocation and sign-out. With
+`CRUCIBLE_E2E_S3_ENDPOINT` too (an S3-compatible endpoint the server and the test both reach, with
+`CRUCIBLE_E2E_S3_BUCKET`, default `media`, which must exist, `CRUCIBLE_E2E_S3_ACCESS_KEY` and
+`CRUCIBLE_E2E_S3_SECRET_KEY`), it uploads media through the compat media endpoint, confirms them and reads them
+back; without it, it checks that the endpoint answers `media_not_supported`.
 
 ```sh
 docker network create crucible-e2e
