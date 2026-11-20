@@ -30,6 +30,7 @@ mod reads;
 pub mod s3;
 pub mod sqliso;
 mod startup;
+mod statistics;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -326,6 +327,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
     row!(
         "Typed plans on the real server (8.1, 8.3)",
         reads::reads(&ctx)
+    );
+    row!(
+        "Reads leave column statistics unused (8.4)",
+        statistics::statistics(&ctx)
     );
     row!("Maintenance calls (2.6)", maintenance::maintenance(&ctx));
     row!("ChModel differential: typed plans (2.6, 8.1)", async {

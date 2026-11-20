@@ -46,7 +46,7 @@ pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 16] = [
+pub const QUERY_SETTINGS: [&str; 17] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
@@ -55,6 +55,7 @@ pub const QUERY_SETTINGS: [&str; 16] = [
     "timeout_overflow_mode",
     "read_overflow_mode",
     "cancel_http_readonly_queries_on_client_close",
+    "use_statistics",
     "max_rows_in_set",
     "set_overflow_mode",
     "use_with_fill_by_sorting_prefix",
@@ -1232,6 +1233,18 @@ mod tests {
             assert!(
                 QUERY_SETTINGS.contains(&name) || name == "wait_end_of_query",
                 "{name} is sent and not checked by detect"
+            );
+        }
+    }
+
+    /// Every read keeps column statistics out of its planning: under ingest, ClickHouse 26.8 would load the
+    /// statistics of every part of the table for each read (`docs/testing/perf.md`).
+    #[test]
+    fn every_read_leaves_column_statistics_unused() {
+        for class in QueryClass::ALL {
+            assert!(
+                class_settings(class.limits()).contains(&("use_statistics", "0".to_owned())),
+                "{class:?} reads use column statistics"
             );
         }
     }
