@@ -25,6 +25,8 @@ crucible-records = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+# The keyed multi-round state hashes (contract 9.6).
+hmac = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "server", "http1"] }
@@ -32,6 +34,8 @@ hyper-util = { workspace = true, features = ["tokio"] }
 memchr = { workspace = true }
 opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace"] }
 prost = { workspace = true }
+# The shared scrubbing rules (contract 9.10), whose patterns this crate matches in linear time.
+regex = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
@@ -50,6 +54,7 @@ crucible-proxy = { path = ".", features = ["test-mutants"] }
 crucible-env-prod = { workspace = true }
 crucible-fake-collector = { path = "../crucible-fake-collector" }
 proptest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "macros", "sync"] }

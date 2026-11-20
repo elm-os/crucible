@@ -150,14 +150,15 @@ func TestCaptureOverhead(t *testing.T) {
 	if gated {
 		run = s.Runs["laptop"]
 	}
-	// Registered first so it runs last: the stalled collector is released before the SDK shuts down.
+	// Registered first so it runs last: the collector is still up while the SDK shuts down.
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = crucible.Shutdown(ctx)
 	})
-	// The collector never answers, so the export queue fills and drops instead of exporting during the rounds.
-	c := collectortest.NewStalled(t)
+	// A collector that answers, as in production: the scrubbing that captured calls leave for the export path
+	// runs on the export goroutine while the rounds run, and its cost to the calls is part of what is timed.
+	c := collectortest.New(t)
 	if err := crucible.Init(crucible.Options{Endpoint: c.URL, SecretKey: testKey, FlushInterval: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +180,18 @@ func TestCaptureOverhead(t *testing.T) {
 				}
 				return float64(time.Since(start).Microseconds()) / 1000
 			}
+			flush := func() {
+				if err := crucible.Flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			for range run.Warmup {
 				call(off)
 				call(on)
 			}
-			// The work of one captured call, with the hooks installed; the timed rounds run without them.
+			flush()
+			// The work of one captured call, with the hooks installed; the timed rounds run without them. The
+			// scrubbing runs on the export goroutine, and the second flush waits for it while the hooks are in.
 			var mu sync.Mutex
 			serialized, scrubbed, scrubbedInCall, steps := 0, 0, 0, 0
 			cruciblemcp.SetWorkHook(func(sz, sc int) {
@@ -197,8 +205,12 @@ func TestCaptureOverhead(t *testing.T) {
 				steps += n
 			})
 			call(on)
+			flush()
 			cruciblemcp.SetWorkHook(nil)
 			scrub.SetMatcherHook(nil)
+			if steps == 0 {
+				t.Fatalf("the scrubber's matcher took no steps for the captured call: its scrubbing did not run")
+			}
 			stepsPerChar := float64(steps) / float64(max(scrubbedInCall, 1))
 			var without, with []float64
 			for round := range run.Rounds {

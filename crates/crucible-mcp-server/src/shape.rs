@@ -315,6 +315,212 @@ impl TraceRow {
     }
 }
 
+/// One span of the span list. A row at the field caps of contract 3.1 fits a result on its own.
+#[derive(Clone, PartialEq, Debug, Serialize, JsonSchema)]
+pub(crate) struct SpanListRow {
+    /// The trace id, 32 hex characters.
+    trace_id: String,
+    /// The span id, 16 hex characters.
+    span_id: String,
+    /// The parent span id; null for a root span.
+    parent_span_id: Option<String>,
+    /// The span name.
+    name: String,
+    /// `span`, `generation`, `event`, `embedding`, `agent`, `tool`, `chain`, `retriever`, `evaluator` or
+    /// `guardrail`.
+    observation_type: &'static str,
+    /// The start, RFC 3339: the list's sort key.
+    start_time: String,
+    /// The duration in microseconds.
+    duration_us: u64,
+    /// `unset`, `ok` or `error`.
+    status_code: &'static str,
+    /// `debug`, `default`, `warning` or `error`.
+    level: &'static str,
+    /// The model that answered, for a generation.
+    model: String,
+    /// The span's environment.
+    environment: String,
+    /// The user the span names; empty when none.
+    user_id: String,
+    /// The session the span names; empty when none.
+    session_id: String,
+    /// The cost in USD.
+    total_cost_usd: f64,
+    /// Total tokens.
+    total_tokens: u64,
+    /// True when a count above 2^53 - 1 was clamped there.
+    saturated: bool,
+}
+
+impl SpanListRow {
+    /// The rows of a page, each with the sort tuple that a cursor after it resumes from.
+    pub(crate) fn rows(page: &query::SpanListPage) -> Vec<((Timestamp, SpanId), Self)> {
+        page.data
+            .iter()
+            .map(|span| {
+                let mut s = Saturation::default();
+                let row = Self {
+                    trace_id: span.trace_id.to_string(),
+                    span_id: span.span_id.to_string(),
+                    parent_span_id: (span.parent_span_id != SpanId::ZERO)
+                        .then(|| span.parent_span_id.to_string()),
+                    name: span.name.to_string(),
+                    observation_type: span.observation_type.as_str(),
+                    start_time: span.start_time.to_string(),
+                    duration_us: s.u64(micros_between(span.start_time, span.end_time)).get(),
+                    status_code: span.status_code.as_str(),
+                    level: span.level.as_str(),
+                    model: span.model.to_string(),
+                    environment: span.environment.to_string(),
+                    user_id: span.user_id.to_string(),
+                    session_id: span.session_id.to_string(),
+                    total_cost_usd: usd_from_nanos(span.total_cost_nusd.nanos()),
+                    total_tokens: s.u64(span.total_tokens).get(),
+                    saturated: s.saturated(),
+                };
+                ((span.start_time, span.span_id), row)
+            })
+            .collect()
+    }
+}
+
+/// One session of the session list.
+#[derive(Clone, PartialEq, Debug, Serialize, JsonSchema)]
+pub(crate) struct SessionRow {
+    /// The session id, as the spans name it.
+    session_id: String,
+    /// The earliest span start, RFC 3339.
+    first_seen: String,
+    /// The latest span end, RFC 3339: the list's sort key.
+    last_seen: String,
+    /// Traces: the session's root spans.
+    trace_count: u64,
+    /// Spans.
+    span_count: u64,
+    /// Spans with an error.
+    error_count: u64,
+    /// The cost in USD.
+    total_cost_usd: f64,
+    /// Input tokens.
+    input_tokens: u64,
+    /// Output tokens.
+    output_tokens: u64,
+    /// Total tokens.
+    total_tokens: u64,
+    /// The users the session's spans name, ascending; at most 8 are kept.
+    user_ids: Vec<String>,
+    /// True when the user ids were left out because the session alone came near the result cap.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    trimmed: bool,
+    /// True when a count above 2^53 - 1 was clamped there.
+    saturated: bool,
+}
+
+impl SessionRow {
+    pub(crate) fn new(session: &query::SessionSummary) -> Self {
+        let mut s = Saturation::default();
+        Self {
+            session_id: session.session_id.to_string(),
+            first_seen: session.first_seen.to_string(),
+            last_seen: session.last_seen.to_string(),
+            trace_count: s.u64(session.trace_count).get(),
+            span_count: s.u64(session.span_count).get(),
+            error_count: s.u64(session.error_count).get(),
+            total_cost_usd: usd_from_nanos(session.total_cost_nusd.nanos()),
+            input_tokens: s.u64(session.input_tokens).get(),
+            output_tokens: s.u64(session.output_tokens).get(),
+            total_tokens: s.u64(session.total_tokens).get(),
+            user_ids: session.user_ids.iter().map(ToString::to_string).collect(),
+            trimmed: false,
+            saturated: s.saturated(),
+        }
+    }
+
+    /// Leaves the user ids out: 8 ids of 512 bytes are the one part of a session that can outgrow a result.
+    pub(crate) fn lighten(&mut self) {
+        self.user_ids = Vec::new();
+        self.trimmed = true;
+    }
+}
+
+/// One user of the user list.
+#[derive(Clone, PartialEq, Debug, Serialize, JsonSchema)]
+pub(crate) struct UserRow {
+    /// The user id, as the spans name it.
+    user_id: String,
+    /// The earliest span start, RFC 3339.
+    first_seen: String,
+    /// The latest span end, RFC 3339: the list's sort key.
+    last_seen: String,
+    /// Traces: the user's root spans.
+    trace_count: u64,
+    /// The distinct sessions that the user's traces in the window name.
+    session_count: u64,
+    /// Spans.
+    span_count: u64,
+    /// Spans with an error.
+    error_count: u64,
+    /// The cost in USD.
+    total_cost_usd: f64,
+    /// Input tokens.
+    input_tokens: u64,
+    /// Output tokens.
+    output_tokens: u64,
+    /// Total tokens.
+    total_tokens: u64,
+    /// True when a count above 2^53 - 1 was clamped there.
+    saturated: bool,
+}
+
+impl UserRow {
+    pub(crate) fn new(user: &query::UserSummary) -> Self {
+        let mut s = Saturation::default();
+        Self {
+            user_id: user.user_id.to_string(),
+            first_seen: user.first_seen.to_string(),
+            last_seen: user.last_seen.to_string(),
+            trace_count: s.u64(user.trace_count).get(),
+            session_count: s.u64(user.session_count).get(),
+            span_count: s.u64(user.span_count).get(),
+            error_count: s.u64(user.error_count).get(),
+            total_cost_usd: usd_from_nanos(user.total_cost_nusd.nanos()),
+            input_tokens: s.u64(user.input_tokens).get(),
+            output_tokens: s.u64(user.output_tokens).get(),
+            total_tokens: s.u64(user.total_tokens).get(),
+            saturated: s.saturated(),
+        }
+    }
+}
+
+/// One session of a user.
+#[derive(Clone, PartialEq, Debug, Serialize, JsonSchema)]
+pub(crate) struct UserSessionRow {
+    /// The session id.
+    session_id: String,
+    /// The start of the session's earliest trace of the user in the window, RFC 3339.
+    first_trace_at: String,
+    /// The start of the latest one, RFC 3339: the list's sort key.
+    last_trace_at: String,
+    /// The user's traces in the session.
+    trace_count: u64,
+    /// True when a count above 2^53 - 1 was clamped there.
+    saturated: bool,
+}
+
+impl UserSessionRow {
+    pub(crate) fn new(session: &query::UserSession) -> Self {
+        let mut s = Saturation::default();
+        Self {
+            session_id: session.session_id.to_string(),
+            first_trace_at: session.first_trace_at.to_string(),
+            last_trace_at: session.last_trace_at.to_string(),
+            trace_count: s.u64(session.trace_count).get(),
+            saturated: s.saturated(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

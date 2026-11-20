@@ -103,8 +103,13 @@ func (c *client) send(next mcp.MethodHandler) mcp.MethodHandler {
 		kv = append(kv, okv...)
 		span.SetAttributes(kv...)
 		if class != "none" {
-			msg, _ := scrub.Capped(out.message, maxErrorMessage)
-			span.SetStatus(codes.Error, msg)
+			// The message is scrubbed on the export path, off the request path.
+			message := messageWindow(out.message)
+			span.SetStatus(codes.Error, "")
+			core.Defer(span, core.Deferred{Bytes: int64(len(message)), Finish: func() ([]attribute.KeyValue, string) {
+				status, _ := scrub.Capped(message, maxErrorMessage)
+				return nil, status
+			}})
 		}
 		return res, err
 	}

@@ -18,6 +18,7 @@ mod auth;
 mod caps;
 mod eras;
 mod exports;
+mod lists;
 mod text;
 mod tools;
 

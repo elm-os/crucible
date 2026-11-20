@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/elm-os/crucible/sdk/go/internal/core"
@@ -144,8 +145,11 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		if p, ok := params.(*mcp.CallToolParamsRaw); ok && p != nil {
 			tool, args = p.Name, p.Arguments
 		}
+		// What the capture work scrubs later, off the request path: each a copy no longer than the window the
+		// scrubber reads.
+		var c capture
 		if handle == "" && tool != "" {
-			handle = s.handleParam(tool, args)
+			c.handle = s.handleParam(tool, args)
 		}
 		if handle != "" {
 			kv = append(kv, attribute.String(keyHandleID, handle))
@@ -156,16 +160,11 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 			}
 		}
 
-		rule := s.rule(tool)
-		truncated := false
-		if rule != nil && rule.Args {
-			window, cut := scrub.Window(args, rule.MaxBytes)
-			noteWork(len(window), len(window))
-			truncated = cut
-			if text, cut, ok := s.captured(FieldArguments, window, rule.MaxBytes); ok {
-				kv = append(kv, attribute.String(keyToolArguments, text))
-				truncated = truncated || cut
-			}
+		c.rule = s.rule(tool)
+		if c.rule != nil && c.rule.Args {
+			c.args, c.truncated = scrub.Window(args, c.rule.MaxBytes)
+			c.hasArgs = true
+			noteWork(len(c.args), len(c.args))
 		}
 		span.SetAttributes(kv...)
 
@@ -187,27 +186,93 @@ func (s *server) receive(next mcp.MethodHandler) mcp.MethodHandler {
 		}
 		okv, class := outcomeAttrs(out, o, notification, true)
 		kv = append(kv, okv...)
-		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && rule != nil && rule.Result {
-			if text, cut, ok := s.capturedResult(r, rule.MaxBytes); ok {
-				kv = append(kv, attribute.String(keyToolResult, text))
-				truncated = truncated || cut
+		if r, ok := res.(*mcp.CallToolResult); ok && r != nil && c.rule != nil && c.rule.Result {
+			var more bool
+			if c.result, more, c.hasResult = resultCapture(r, c.rule.MaxBytes); c.hasResult {
+				c.truncated = c.truncated || more
 			}
-		}
-		if rule != nil {
-			kv = append(kv, attribute.Bool(keyContentCaptured, true), attribute.Float64(keyContentSampleRate, rule.SampleRate))
-			truncation := "none"
-			if truncated {
-				truncation = "cap_exceeded"
-			}
-			kv = append(kv, attribute.String(keyContentTruncation, truncation))
 		}
 		span.SetAttributes(kv...)
 		if class != "none" {
-			msg, _, _ := s.captured(FieldErrorMessage, out.message, maxErrorMessage)
-			span.SetStatus(codes.Error, msg)
+			c.failed, c.message = true, messageWindow(out.message)
+			span.SetStatus(codes.Error, "")
+		}
+		if c.rule != nil || c.handle != "" || c.failed {
+			core.Defer(span, core.Deferred{Bytes: c.bytes(), Finish: func() ([]attribute.KeyValue, string) { return s.finish(&c) }})
 		}
 		return res, err
 	}
+}
+
+// capture is what one server span's capture work scrubs on the export path (see core.Deferred).
+type capture struct {
+	rule         *CaptureRule
+	args, result string
+	hasArgs      bool
+	hasResult    bool
+	truncated    bool // a window was cut before scrubbing
+	handle       string
+	failed       bool
+	message      string
+}
+
+func (c *capture) bytes() int64 {
+	return int64(len(c.args) + len(c.result) + len(c.handle) + len(c.message))
+}
+
+// finish scrubs what c holds and returns the attributes and the status description of the span.
+func (s *server) finish(c *capture) (kv []attribute.KeyValue, status string) {
+	if c.handle != "" {
+		if h, _, ok := s.captured(FieldHandleID, c.handle, maxHandleID); ok {
+			kv = append(kv, attribute.String(keyHandleID, h))
+		}
+	}
+	truncated := c.truncated
+	if c.hasArgs {
+		if text, cut, ok := s.captured(FieldArguments, c.args, c.rule.MaxBytes); ok {
+			kv = append(kv, attribute.String(keyToolArguments, text))
+			truncated = truncated || cut
+		}
+	}
+	if c.hasResult {
+		if text, cut, ok := s.captured(FieldResult, c.result, c.rule.MaxBytes); ok {
+			kv = append(kv, attribute.String(keyToolResult, text))
+			truncated = truncated || cut
+		}
+	}
+	if c.rule != nil {
+		truncation := "none"
+		if truncated {
+			truncation = "cap_exceeded"
+		}
+		kv = append(kv,
+			attribute.Bool(keyContentCaptured, true),
+			attribute.Float64(keyContentSampleRate, c.rule.SampleRate),
+			attribute.String(keyContentTruncation, truncation))
+	}
+	if c.failed {
+		status, _, _ = s.captured(FieldErrorMessage, c.message, maxErrorMessage)
+	}
+	return kv, status
+}
+
+// resultCapture is the window of a tool result's captured form (its content, structured content and error flag,
+// never the request state or input requests of a multi-round exchange) that its scrubbing reads, and whether the
+// whole form is longer. Only that window is serialized.
+func resultCapture(r *mcp.CallToolResult, max int) (text string, more, ok bool) {
+	w := resultWindow(r, scrub.WindowSize(max))
+	noteWork(w.produced, len(w.buf))
+	if w.err != nil {
+		return "", false, false
+	}
+	return string(w.buf), w.more, true
+}
+
+// messageWindow is a copy of the part of an error message that its scrubbing reads, so that a long message is
+// neither kept whole nor kept alive by a slice of it.
+func messageWindow(message string) string {
+	window, _ := scrub.Prefix(message, scrub.WindowSize(maxErrorMessage))
+	return strings.Clone(window)
 }
 
 // send counts the progress notifications a handler sends for its request.
@@ -267,7 +332,8 @@ func claim(t *auth.TokenInfo, name string) string {
 	return v
 }
 
-// handleParam returns the scrubbed string value of the tool's handle argument (contract 9.8), or "".
+// handleParam returns the string value of the tool's handle argument (contract 9.8), cut to the window its
+// scrubbing reads, or "". It is scrubbed on the export path.
 func (s *server) handleParam(tool string, args json.RawMessage) string {
 	name := s.handleParams[tool]
 	if name == "" {
@@ -281,8 +347,8 @@ func (s *server) handleParam(tool string, args json.RawMessage) string {
 	if json.Unmarshal(top[name], &v) != nil {
 		return ""
 	}
-	h, _, _ := s.captured(FieldHandleID, v, maxHandleID)
-	return h
+	window, _ := scrub.Prefix(v, scrub.WindowSize(maxHandleID))
+	return strings.Clone(window)
 }
 
 // rule returns the capture rule of a sampled tool call, or nil when nothing is captured. The sampling decision
@@ -325,17 +391,4 @@ func (s *server) captured(field, value string, max int) (text string, truncated,
 		text, _ = scrub.Prefix(text, max)
 	}
 	return text, truncated, text != ""
-}
-
-// capturedResult is the captured form of a tool result (its content, structured content and error flag, never
-// the request state or input requests of a multi-round exchange), scrubbed and capped as captured does it. Only
-// the window the scrubber reads is serialized.
-func (s *server) capturedResult(r *mcp.CallToolResult, max int) (text string, truncated, ok bool) {
-	w := resultWindow(r, scrub.WindowSize(max))
-	noteWork(w.produced, len(w.buf))
-	if w.err != nil {
-		return "", false, false
-	}
-	text, truncated, ok = s.captured(FieldResult, string(w.buf), max)
-	return text, truncated || w.more, ok
 }

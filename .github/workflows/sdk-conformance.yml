@@ -108,22 +108,24 @@ jobs:
           target/debug/crucible-sdk-driver run --manifest "$MANIFEST" --out target/sdk-conformance || status=$?
           if [ -f "target/sdk-conformance/$SDK.md" ]; then cat "target/sdk-conformance/$SDK.md" >> "$GITHUB_STEP_SUMMARY"; fi
           exit "$status"
-      - name: Capture overhead and a stalled collector
+      - name: Capture overhead, a stalled collector and export latency
         # The capture-overhead scenario (conformance/capture-overhead.json): per result shape, the work the SDK's
         # capture path does is bounded and the added p99 is reported; the latency gate runs only on the laptop rig.
         # The stalled-collector scenario (conformance/export-stall.json): the export queue stays under its byte
-        # ceiling and drops.
+        # ceiling and drops. The export-latency scenario (conformance/export-latency.json): a collector that never
+        # answers or refuses connections adds no latency to calls, and flush and shutdown keep to their deadline.
         if: matrix.sdk != 'selftest'
         env:
           SDK: ${{ matrix.sdk }}
         run: |
           case "$SDK" in
-            typescript) pnpm --filter @elm-os/crucible exec vitest run test/capture-overhead.test.ts test/export-stall.test.ts ;;
-            python) cd sdk/python && uv run --locked pytest -q -s tests/test_capture_overhead.py tests/test_export_stall.py ;;
-            go) go -C sdk/go test -count=1 -run 'TestCaptureOverhead|TestAStalledCollector' -v ./cruciblemcp ;;
+            typescript) pnpm --filter @elm-os/crucible exec vitest run test/capture-overhead.test.ts test/export-stall.test.ts test/export-latency.test.ts ;;
+            python) cd sdk/python && uv run --locked pytest -q -s tests/test_capture_overhead.py tests/test_export_stall.py tests/test_export_latency.py ;;
+            go) go -C sdk/go test -count=1 -run 'TestCaptureOverhead|TestAStalledCollector|TestAStalledOrRefusingCollector' -v ./cruciblemcp ;;
             rust)
               cargo test --locked --manifest-path sdk/rust/Cargo.toml --features mcp,test-support --test capture_overhead -- --nocapture
-              cargo test --locked --manifest-path sdk/rust/Cargo.toml --features mcp --test export_stall -- --nocapture ;;
+              cargo test --locked --manifest-path sdk/rust/Cargo.toml --features mcp --test export_stall -- --nocapture
+              cargo test --locked --manifest-path sdk/rust/Cargo.toml --features mcp --test export_latency -- --nocapture ;;
           esac
       - name: The driver flags the seeded mutant
         if: matrix.sdk == 'selftest'

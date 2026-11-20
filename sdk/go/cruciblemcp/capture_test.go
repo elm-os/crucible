@@ -140,9 +140,8 @@ func TestALargeResultIsSerializedNoFurtherThanTheCapNeeds(t *testing.T) {
 	serialized := 0
 	SetWorkHook(func(sz, _ int) { serialized = max(serialized, sz) })
 	defer SetWorkHook(nil)
-	s := &server{}
 	for _, r := range results {
-		s.capturedResult(r, 16384)
+		resultCapture(r, 16384)
 	}
 	if bound := 16384 + 8192; serialized > bound {
 		t.Fatalf("serialized %d bytes for one result, more than %d", serialized, bound)

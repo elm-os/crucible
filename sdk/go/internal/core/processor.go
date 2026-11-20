@@ -2,12 +2,15 @@ package core
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Span keys the processor sets on every span at start (contract 10.6).
@@ -61,16 +64,51 @@ func attributeBytes(kvs []attribute.KeyValue) int {
 	return n
 }
 
-// queued is a span on the queue with its estimated size.
+// Deferred is the capture work of a span that runs on the export path instead of in the request (contract
+// 9.10): the scrubbing of captured content and of an error message. Finish returns the attributes to add and,
+// for a span whose status is an error, its description. Bytes is what the work holds until it runs, counted
+// against the queue's byte bound.
+type Deferred struct {
+	Bytes  int64
+	Finish func() (attrs []attribute.KeyValue, status string)
+}
+
+// queued is a span on the queue with its estimated size and the capture work it still carries.
 type queued struct {
-	span sdktrace.ReadOnlySpan
-	size int64
+	span     sdktrace.ReadOnlySpan
+	size     int64
+	deferred *Deferred
+}
+
+// finished is a span with the attributes and status its deferred work produced.
+type finished struct {
+	sdktrace.ReadOnlySpan
+	attrs  []attribute.KeyValue
+	status sdktrace.Status
+}
+
+func (f finished) Attributes() []attribute.KeyValue { return f.attrs }
+
+func (f finished) Status() sdktrace.Status { return f.status }
+
+// complete returns s with what its deferred work produced. A panic in the work, such as in a Scrub option,
+// costs the span its captured content and never the exporter.
+func complete(s sdktrace.ReadOnlySpan, work *Deferred) (out sdktrace.ReadOnlySpan) {
+	out = s
+	defer func() { _ = recover() }()
+	attrs, description := work.Finish()
+	status := s.Status()
+	if status.Code == codes.Error {
+		status.Description = description
+	}
+	return finished{ReadOnlySpan: s, attrs: append(slices.Clip(s.Attributes()), attrs...), status: status}
 }
 
 // Processor is the SDK's span processor. At span start it copies the session, user, tags and metadata carried in the
 // context onto the span. At span end it puts the span on a queue bounded by spans and by estimated bytes, without
 // blocking: when either bound is reached the span is dropped and counted. One goroutine drains the queue in
-// batches to the exporter.
+// batches to the exporter. It runs the capture work a span deferred (see Deferred) as it takes the span off the
+// queue, one span at a time, so that the work never comes in bursts and leaves the other processors to requests.
 type Processor struct {
 	exporter   sdktrace.SpanExporter
 	release    string
@@ -90,6 +128,9 @@ type Processor struct {
 
 	exported, queueFull, exportFailed atomic.Uint64
 	queuedBytes                       atomic.Int64
+
+	// deferred holds the work spans defer, by span id, until they end.
+	deferred sync.Map
 }
 
 var _ sdktrace.SpanProcessor = (*Processor)(nil)
@@ -133,10 +174,19 @@ func (p *Processor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	}
 }
 
+// Defer attaches work to the span with this id, to run on the export path once the span has ended.
+func (p *Processor) Defer(id trace.SpanID, work Deferred) { p.deferred.Store(id, work) }
+
 // OnEnd queues the span, or drops and counts it when the queue holds queueSize spans or would pass queueBytes. It
 // never blocks.
 func (p *Processor) OnEnd(s sdktrace.ReadOnlySpan) {
 	size := spanBytes(s)
+	var work *Deferred
+	if v, ok := p.deferred.LoadAndDelete(s.SpanContext().SpanID()); ok {
+		d := v.(Deferred)
+		work = &d
+		size += d.Bytes
+	}
 	for {
 		queued := p.queuedBytes.Load()
 		if queued+size > p.queueBytes {
@@ -148,7 +198,7 @@ func (p *Processor) OnEnd(s sdktrace.ReadOnlySpan) {
 		}
 	}
 	select {
-	case p.queue <- queued{span: s, size: size}:
+	case p.queue <- queued{span: s, size: size, deferred: work}:
 	default:
 		p.queuedBytes.Add(-size)
 		p.queueFull.Add(1)
@@ -220,7 +270,11 @@ func (p *Processor) run() {
 		batch, batchBytes = batch[:0], 0
 	}
 	add := func(q queued) {
-		batch = append(batch, q.span)
+		span := q.span
+		if q.deferred != nil {
+			span = complete(q.span, q.deferred)
+		}
+		batch = append(batch, span)
 		batchBytes += q.size
 		if len(batch) >= p.batchSize {
 			export()
