@@ -231,7 +231,7 @@ docker run --rm -v "$PWD":/work -v crucible-target:/target -v crucible-cargo:/us
 
 Build the `crucible` package on its own, as above: a `--workspace` build also compiles test-only features of other
 crates into the binary. It runs without Postgres, so it takes its project keys from a file. In `deploy/compose/`, make
-`.env` as in the quickstart's step 2 (the `CRUCIBLE_IMAGE` line is not needed) and `keys.toml` as in
+`.env` as in the quickstart's step 1 and `keys.toml` as in
 [Without Postgres](self-hosting/README.md#without-postgres-keys-from-a-file), and start it from that directory:
 
 ```sh

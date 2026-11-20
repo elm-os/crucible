@@ -5,28 +5,28 @@ of the [quickstart](quickstart.md), run from `deploy/compose/` in a POSIX shell 
 
 ## Upgrades
 
-An upgrade is a new image and a restart:
+An upgrade is a new image and a restart. In the folder of the Compose file:
 
-1. Build the image of the new version under a new tag, from a checkout of that version:
+```sh
+docker compose pull && docker compose up -d
+curl -s http://127.0.0.1:8080/readyz     # "ready" once the new server is up
+```
 
-   ```sh
-   docker build -f deploy/docker/Dockerfile -t crucible:<new tag> .
-   ```
-
-2. Set `CRUCIBLE_IMAGE=crucible:<new tag>` in `.env`.
-3. Restart the server on it:
-
-   ```sh
-   docker compose up -d --wait
-   ```
+The Compose file runs `ghcr.io/elm-os/crucible:latest`, so `pull` fetches the newest release. To stay on a release
+line, set `CRUCIBLE_IMAGE=ghcr.io/elm-os/crucible:0.1` in `.env`, or a full version such as
+`ghcr.io/elm-os/crucible:0.1.0` to choose each upgrade yourself. The image is published for linux/amd64 and
+linux/arm64. For an image you build yourself, build the new version under a new tag
+([building the image from source](quickstart.md#building-the-image-from-source)), set `CRUCIBLE_IMAGE` to it and run
+`docker compose up -d`.
 
 On start, `--migrate` applies the Postgres migrations and ClickHouse schema steps that the new version adds and
 skips the ones the ledger in Postgres already holds. The write-ahead log is recovered and whatever it still holds
 is shipped. Stopping the old server lets it finish its open requests first: Compose sends SIGTERM and allows
 35 seconds, and a server with no request open stops within a second.
 
-- Compose stops the `ready` service before it replaces the server and starts it again after, so `--wait` returns
-  once the new server answers `/readyz`.
+- While the old server stops and the new one starts, the ports answer nothing for a few seconds; OTLP exporters
+  retry. Compose stops the `ready` service before it replaces the server and starts it again after, so
+  `docker compose up -d --wait` returns once the new server answers `/readyz`.
 - Keep `CRUCIBLE_MASTER_KEY` across upgrades. The ClickHouse service users were created with passwords derived
   from it, and the API keys and sealed secrets in Postgres depend on it.
 - Migrations only move forward. An older image started on a database that a newer one migrated stays not ready,
