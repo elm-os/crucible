@@ -11,9 +11,10 @@ backups, health and metrics) and the rest of running Crucible are in [self-hosti
 
 ## 1. Get the Compose file and make `.env`
 
-In an empty folder, download the Compose file of the release and write `.env` beside it:
+Make a folder for Crucible, download the Compose file of the release into it, and write `.env` beside it:
 
 ```sh
+mkdir crucible && cd crucible
 curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
 ```
