@@ -38,6 +38,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
+use crucible_admission::CpuShares;
 use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
@@ -343,9 +344,9 @@ fn settings_source(lifecycle: Option<&Arc<Lifecycle>>) -> Arc<dyn ProjectSetting
     }
 }
 
-/// The ingest settings: the defaults, with the compat ingest routes and routing headers of the compat registry
-/// (contract 12.1).
-fn ingest_config() -> IngestConfig {
+/// The ingest settings: the defaults, with the CPU budget's ingest-prepare share and the compat ingest routes and
+/// routing headers of the compat registry (contract 12.1).
+fn ingest_config(prepare_permits: u32) -> IngestConfig {
     let compat_routes = crucible_compat::routes::INGEST_ROUTES
         .iter()
         .map(|route| CompatRoute {
@@ -362,14 +363,15 @@ fn ingest_config() -> IngestConfig {
         })
         .collect();
     IngestConfig {
+        prepare_permits,
         compat_routes,
         routing_headers,
         ..IngestConfig::default()
     }
 }
 
-/// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it.
-/// With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors. With
+/// Opens the WAL under the `wal` root, recovering what is there (contract 4.6), and builds ingest over it with
+/// `ingest`. With `closed`, ingest starts closed for that reason. `cursors` signs and opens the API's cursors. With
 /// `control`, retention and deletion start over this WAL and join `modules`, and so do `media` when they are on.
 #[allow(clippy::too_many_arguments)] // The parts of the node that exist before its WAL is open.
 async fn open_app(
@@ -382,6 +384,7 @@ async fn open_app(
     modules: crucible_api::Modules,
     control: Option<&Control>,
     media: Option<&NodeMedia>,
+    ingest: IngestConfig,
 ) -> anyhow::Result<(App, RecoveryReport)> {
     let (wal, report) = Wal::open(env, config.clone())
         .await
@@ -398,13 +401,7 @@ async fn open_app(
         Some(identity) => Arc::clone(identity.keys()) as Arc<dyn KeyVerifier>,
         None => Arc::new(keys),
     };
-    let ingest = Ingest::new(
-        env,
-        wal.clone(),
-        &config,
-        Arc::clone(&keys),
-        ingest_config(),
-    );
+    let ingest = Ingest::new(env, wal.clone(), &config, Arc::clone(&keys), ingest);
     // Retention and deletion need the control plane and the WAL of this node.
     let lifecycle = control.map(|control| {
         Arc::new(Lifecycle::new(
@@ -1072,7 +1069,9 @@ fn server_result(
     }
 }
 
-pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
+/// Serves until a termination signal. `cpu_permits` is the CPU budget, whose blocking threads `main` gave the
+/// runtime.
+pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyhow::Result<()> {
     let roots = [Root::Wal, Root::Quarantine, Root::Exports];
     let mut roots: BTreeMap<_, _> = roots
         .into_iter()
@@ -1180,6 +1179,8 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     let export_service = control
         .as_ref()
         .map(|control| Exports::new(env.clone(), Arc::new(control.store.clone())));
+    let ingest = ingest_config(CpuShares::of(cpu_permits).ingest_prepare);
+    let inflight_bytes = ingest.inflight_bytes;
     let (app, report) = open_app(
         env,
         keys,
@@ -1198,6 +1199,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         },
         control.as_ref(),
         media.as_ref(),
+        ingest,
     )
     .await?;
     // The lifecycle jobs need the WAL of the node, and act on ClickHouse once the telemetry store is up.
@@ -1221,7 +1223,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
     // The budgets in use: the recent-span index and the shipper run only with a telemetry store.
     let ingest_budget = Budget {
         setting: "ingest.inflight_bytes",
-        bytes: ingest_config().inflight_bytes,
+        bytes: inflight_bytes,
         changed_by: None,
     };
     let budgets = if clickhouse.is_some() {
@@ -1297,6 +1299,7 @@ pub(crate) async fn run(config: Config, migrate: bool) -> anyhow::Result<()> {
         job_tasks = jobs.tasks(),
         memory = ?memory,
         recent_max_bytes,
+        cpu_permits,
         "crucible is serving"
     );
 
@@ -1432,10 +1435,16 @@ mod tests {
             crucible_api::Modules::default(),
             None,
             None,
+            test_ingest(),
         )
         .await
         .unwrap()
         .0
+    }
+
+    /// The ingest settings of a test server: the binary's, with the default ingest-prepare share.
+    fn test_ingest() -> IngestConfig {
+        ingest_config(crucible_ingest::DEFAULT_PREPARE_PERMITS)
     }
 
     fn no_keys(env: &Env) -> StaticKeys {
@@ -2669,6 +2678,7 @@ mod tests {
             crucible_api::Modules::default(),
             None,
             None,
+            test_ingest(),
         )
         .await
         .unwrap();

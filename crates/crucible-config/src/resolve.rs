@@ -42,6 +42,7 @@ type Values = BTreeMap<&'static str, (String, Source)>;
 /// The settings whose TOML value is a number.
 const NUMBERS: &[&str] = &[
     "recent.max_bytes",
+    "cpu.permits",
     "mcp.calls_per_second",
     "mcp.burst",
     "sql.statements_per_hour",
@@ -311,6 +312,14 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     };
     let recent_max_bytes = t.parsed::<u64>("recent.max_bytes", "a whole number of bytes");
     let recent_ok = t.text("recent.max_bytes").is_none() || recent_max_bytes.is_some();
+    let cpu_permits = t.parsed::<u32>("cpu.permits", "a whole number of blocking jobs");
+    if cpu_permits == Some(0) {
+        t.errors.push(
+            "`cpu.permits` must be at least 1; leave it unset for the default of 8 per CPU"
+                .to_owned(),
+        );
+    }
+    let cpu_ok = t.text("cpu.permits").is_none() || cpu_permits.is_some_and(|n| n > 0);
     let idle_timeout = t
         .parsed::<u64>("clickhouse.idle_timeout", "a whole number of seconds")
         .map(Duration::from_secs);
@@ -596,6 +605,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     let (object_store, object_store_ok) = object_store(&mut t);
 
     if !(recent_ok
+        && cpu_ok
         && idle_ok
         && master_key_ok
         && clickhouse_ok
@@ -643,6 +653,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             wal_backend: wal_backend?,
         },
         recent_max_bytes,
+        cpu_permits,
         mcp: Mcp {
             calls_per_second: calls_per_second?,
             burst: burst?,
@@ -1073,7 +1084,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp], [object_store], [media].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [clickhouse], [postgres], [security], [auth], [egress], [smtp], [object_store], [media].",
             ]
         );
     }
@@ -1522,6 +1533,34 @@ max_bytes = 67108864  # default
         ] {
             let errors = load(Some(file), &[], &[]).unwrap_err();
             assert!(errors.to_string().contains(says), "{errors}");
+        }
+    }
+
+    #[test]
+    fn the_cpu_budget_is_optional_and_at_least_one() {
+        assert_eq!(load(None, &[], &[]).unwrap().config.cpu_permits, None);
+        let config = load(Some("[cpu]\npermits = 3\n"), &[], &[]).unwrap().config;
+        assert_eq!(config.cpu_permits, Some(3));
+        let env = env(&[("CRUCIBLE_CPU_PERMITS", "12")]);
+        let loaded = load(Some("[cpu]\npermits = 3\n"), &env, &[]).unwrap();
+        assert_eq!(loaded.config.cpu_permits, Some(12));
+        assert!(
+            loaded
+                .print()
+                .contains("[cpu]\npermits = 12  # env CRUCIBLE_CPU_PERMITS\n")
+        );
+        for (file, says) in [
+            (
+                "[cpu]\npermits = 0\n",
+                "`cpu.permits` must be at least 1; leave it unset for the default of 8 per CPU",
+            ),
+            (
+                "[cpu]\npermits = \"all\"\n",
+                "`cpu.permits` = \"all\" is not a whole number of blocking jobs (file)",
+            ),
+        ] {
+            let ConfigErrors(errors) = load(Some(file), &[], &[]).unwrap_err();
+            assert_eq!(errors, [says]);
         }
     }
 
