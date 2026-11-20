@@ -44,6 +44,7 @@ automatic choice by default, and says which. The same reads are the routes under
 the [API reference](../api/README.md#mcp-analytics)) and the analytics tools of [Crucible's MCP
 server](mcp-server.md); [alert rules](alerts.md) and the MCP servers [starter dashboard](dashboards.md) read the
 `mcp_ops` metrics.
+[MCP analytics](mcp-analytics.md) describes each page and how it chooses what to read.
 
 The SQL workspace reads them in `crucible_sql.mcp_operations`, `crucible_sql.mcp_contents`,
 `crucible_sql.mcp_tool_metrics` (per minute and tool), `crucible_sql.mcp_tools` (the tools, prompts and resources

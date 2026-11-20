@@ -24,6 +24,7 @@
 | [MCP](guides/mcp.md) | SDK wrappers, the proxy and Crucible's MCP server |
 | [MCP proxy](guides/mcp-proxy.md) | Recording an MCP server without changing it |
 | [Crucible's MCP server](guides/mcp-server.md) | Connecting a coding agent to `/mcp` |
+| [MCP analytics](guides/mcp-analytics.md) | Servers, tools, errors, clients, sessions, operations and deploys, per side |
 | [Exploring traces](guides/exploring-traces.md) | Home, traces, the trace page, spans, sessions and users |
 | [Search](guides/search.md) | Full-text and metadata search, and payloads |
 | [Tags, flags, scores and corrections](guides/facts.md) | Facts in the UI, the SDKs and the API |
