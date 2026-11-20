@@ -502,6 +502,8 @@ pub struct Stats {
     pub mcp_subjects: u64,
     /// Keys of the MCP aggregating tables compared with the reference at the end.
     pub mcp_keys: u64,
+    /// MCP rollup plans over the hourly tier compared with the same plans over minute rows at the end.
+    pub mcp_tier_plans: u64,
     /// Reads of a project salt that the simulated control store did not answer.
     pub salt_waits: u64,
     /// Windows in which directory syncs failed, while the node ran.
@@ -580,6 +582,10 @@ impl Stats {
             (self.mcp_proxy_rows, "mcp operation captured by a proxy"),
             (self.mcp_subjects, "mcp user subject hashed"),
             (self.mcp_keys, "mcp aggregates compared with the reference"),
+            (
+                self.mcp_tier_plans,
+                "mcp plan over the hourly tier compared with minute rows",
+            ),
             (self.salt_waits, "frame waited for its project salt"),
             (self.dir_sync_windows, "directory syncs failed"),
             (
@@ -4139,6 +4145,9 @@ impl Run<'_> {
             found.extend(wrong.into_iter().map(Violation::Aggregate));
             let (keys, wrong) = system_oracle::check_mcp(model, &ledger.mcp, skip);
             ledger.stats.mcp_keys = keys;
+            found.extend(wrong.into_iter().map(Violation::Aggregate));
+            let (plans, wrong) = system_oracle::check_mcp_tiers(model, skip);
+            ledger.stats.mcp_tier_plans = plans;
             found.extend(wrong.into_iter().map(Violation::Aggregate));
         }
 

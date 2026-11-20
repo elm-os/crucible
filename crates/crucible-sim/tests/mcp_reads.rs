@@ -23,8 +23,9 @@ fn every_read_matches_the_reference_per_capture_source() {
 fn a_run_lands_traffic_and_compares_reads() {
     let outcome = run_mcp_reads(7);
     assert!(outcome.operations >= 20, "{outcome:?}");
-    // Two sides: four choices of servers twice, and metrics, the three totals of an alert and operations once.
-    assert_eq!(outcome.reads, 2 * (8 + 4 + 12 + 4), "{outcome:?}");
+    // Three windows; two sides: four choices of servers twice, and metrics, the three totals of an alert and
+    // operations once.
+    assert_eq!(outcome.reads, 3 * 2 * (8 + 4 + 12 + 4), "{outcome:?}");
     assert!(outcome.violations.is_empty(), "{outcome:?}");
     assert_eq!(run_mcp_reads(7), outcome, "a seed replays");
 }

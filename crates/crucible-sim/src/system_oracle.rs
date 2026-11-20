@@ -898,6 +898,7 @@ fn differing<K: Ord + core::fmt::Debug, V: PartialEq + core::fmt::Debug>(
 /// - `mcp_tool_rollup`, merged by its key, equals the reference aggregation over `mcp_ops`. The capture
 ///   source is part of the key, so that each source has its own counts, and the rollup counts per capture
 ///   source what `mcp_ops` holds of that source: rows of different sources are never summed (contract 9.5).
+/// - `mcp_tool_rollup_hourly`, merged by its key, equals the same reference with each minute cut to its hour.
 /// - `mcp_deploys`, merged by its key, equals the deploys of the server-side rows of `mcp_ops`.
 /// - `mcp_tool_inventory`, merged by its key, equals the tools that the operations in `mcp_ops` listed, as
 ///   the generator sent them.
@@ -963,6 +964,7 @@ pub(crate) fn check_mcp(
 
     // The references, folded from the rows of `mcp_ops`.
     let mut rollup: BTreeMap<Vec<u8>, ToolAgg> = BTreeMap::new();
+    let mut hourly: BTreeMap<Vec<u8>, ToolAgg> = BTreeMap::new();
     let mut per_source: BTreeMap<u8, u64> = BTreeMap::new();
     let mut deploys: BTreeMap<Vec<u8>, Seen> = BTreeMap::new();
     let mut inventory: BTreeMap<Vec<u8>, Seen> = BTreeMap::new();
@@ -974,17 +976,19 @@ pub(crate) fn check_mcp(
                 if Some(project) == skip {
                     continue;
                 }
-                let side = i8_at(block, "side", row)? as u8;
+                let side = [i8_at(block, "side", row)? as u8];
                 let source = i8_at(block, "capture_source", row)? as u8;
                 let start = i64_at(block, "start_time", row)?;
                 let minute = ((start.div_euclid(60_000_000) * 60) as u32).to_be_bytes();
+                let hour = ((start.div_euclid(3_600_000_000) * 3_600) as u32).to_be_bytes();
                 let server = bytes_at(block, "server_name", row)?;
                 let deploy = bytes_at(block, "deploy_id", row)?;
                 let duration = u64_at(block, "duration_us", row)?;
-                let k = key(&[
-                    &project,
-                    &[side],
-                    &minute,
+                let (request, response) = (
+                    u64_at(block, "request_bytes", row)?,
+                    u64_at(block, "response_bytes", row)?,
+                );
+                let rest = [
                     server,
                     deploy,
                     &[source],
@@ -994,23 +998,27 @@ pub(crate) fn check_mcp(
                     bytes_at(block, "client_name", row)?,
                     &[i8_at(block, "error_class", row)? as u8],
                     &[u8_at(block, "caller_fault", row)?],
-                ]);
-                let agg = rollup.entry(k).or_insert_with(|| ToolAgg {
-                    last_seen: i64::MIN,
-                    ..ToolAgg::default()
-                });
-                agg.count += 1;
-                agg.request_bytes += u64_at(block, "request_bytes", row)?;
-                agg.response_bytes += u64_at(block, "response_bytes", row)?;
-                *agg.durations
-                    .entry(Bucket::of(duration).index())
-                    .or_default() += 1;
-                *agg.semconv
-                    .entry(u16::from(semconv_bucket(duration)))
-                    .or_default() += 1;
-                agg.last_seen = agg.last_seen.max(start);
+                ];
+                for (aggs, time) in [(&mut rollup, &minute), (&mut hourly, &hour)] {
+                    let mut parts: Vec<&[u8]> = vec![&project, &side, time];
+                    parts.extend(rest);
+                    let agg = aggs.entry(key(&parts)).or_insert_with(|| ToolAgg {
+                        last_seen: i64::MIN,
+                        ..ToolAgg::default()
+                    });
+                    agg.count += 1;
+                    agg.request_bytes += request;
+                    agg.response_bytes += response;
+                    *agg.durations
+                        .entry(Bucket::of(duration).index())
+                        .or_default() += 1;
+                    *agg.semconv
+                        .entry(u16::from(semconv_bucket(duration)))
+                        .or_default() += 1;
+                    agg.last_seen = agg.last_seen.max(start);
+                }
                 *per_source.entry(source).or_default() += 1;
-                if side == McpSide::Server.value() {
+                if side[0] == McpSide::Server.value() {
                     let k = key(&[
                         &project,
                         server,
@@ -1049,8 +1057,8 @@ pub(crate) fn check_mcp(
     // What the aggregating tables hold: their data rows merged by key, as a reader aggregates them.
     let mut stored_rollup: BTreeMap<Vec<u8>, ToolAgg> = BTreeMap::new();
     let mut stored_per_source: BTreeMap<u8, u64> = BTreeMap::new();
-    let read = (|| {
-        for part in model.parts(TableId::McpToolRollup) {
+    let read = |table: TableId, time: &str, stored_rollup: &mut BTreeMap<Vec<u8>, ToolAgg>, stored_per_source: &mut BTreeMap<u8, u64>| {
+        for part in model.parts(table) {
             let block = &part.block;
             for row in 0..block.rows {
                 let project = uuid_at(block, "project_id", row)?;
@@ -1061,7 +1069,7 @@ pub(crate) fn check_mcp(
                 let k = key(&[
                     &project,
                     &[i8_at(block, "side", row)? as u8],
-                    &u32_at(block, "minute", row)?.to_be_bytes(),
+                    &u32_at(block, time, row)?.to_be_bytes(),
                     bytes_at(block, "server_name", row)?,
                     bytes_at(block, "deploy_id", row)?,
                     &[source],
@@ -1091,9 +1099,14 @@ pub(crate) fn check_mcp(
             }
         }
         Some(())
-    })();
-    if read.is_none() {
+    };
+    if read(TableId::McpToolRollup, "minute", &mut stored_rollup, &mut stored_per_source).is_none() {
         return unread(TableId::McpToolRollup);
+    }
+    let (mut stored_hourly, mut hourly_per_source) = (BTreeMap::new(), BTreeMap::new());
+    let hours = TableId::McpToolRollupHourly;
+    if read(hours, "hour", &mut stored_hourly, &mut hourly_per_source).is_none() {
+        return unread(hours);
     }
     let seen_rows = |table: TableId, keys: &[&str], with_sources: bool| {
         let mut out: BTreeMap<Vec<u8>, Seen> = BTreeMap::new();
@@ -1156,6 +1169,13 @@ pub(crate) fn check_mcp(
              {per_source:?}: rows of different capture sources were summed"
         ));
     }
+    differing(hours, &hourly, &stored_hourly, &mut wrong);
+    if per_source != hourly_per_source {
+        wrong.push(format!(
+            "mcp_tool_rollup_hourly counts {hourly_per_source:?} operations per capture source and mcp_ops \
+             holds {per_source:?}"
+        ));
+    }
     differing(TableId::McpDeploys, &deploys, &stored_deploys, &mut wrong);
     differing(
         TableId::McpToolInventory,
@@ -1163,7 +1183,7 @@ pub(crate) fn check_mcp(
         &stored_inventory,
         &mut wrong,
     );
-    let keys = (rollup.len() + deploys.len() + inventory.len()) as u64;
+    let keys = (rollup.len() + hourly.len() + deploys.len() + inventory.len()) as u64;
     (keys, wrong)
 }
 
@@ -1341,6 +1361,152 @@ pub(crate) fn resolve<'a>(
         };
         ((row.table, target), version, row.fact_id)
     }))
+}
+
+const MINUTE: i64 = 60_000_000;
+const HOUR: i64 = 3_600_000_000;
+
+/// The rows of an answer as an order-free multiset: a plan's rows that tie on its order, and those of a plan
+/// without one, come in no defined order.
+fn images(answer: crate::ch_model::Answer) -> Vec<String> {
+    let mut images: Vec<String> = answer
+        .into_rows()
+        .iter()
+        .map(|row| format!("{:?}", row.values()))
+        .collect();
+    images.sort_unstable();
+    images
+}
+
+/// I7 for the hourly tier of the MCP tool rollup through the plans that read it: over a window of four days
+/// from the hour of the first MCP operation, and over one of 26 hours that starts 20 minutes into that hour (both
+/// edges partial), every rollup plan of the MCP analytics (presence, servers, tools, error classes, clients, one
+/// tool's hourly series and an alert's totals) returns on the store model, for every project and side, the rows
+/// of the same plan over minute rows only. Valid once every pair of every batch has landed. Returns the number of
+/// plans compared and what differs.
+pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, Vec<String>) {
+    use crucible_plan::test_support::minute_rows_only;
+    use crucible_plan::{
+        Aggregation, Caller, DimensionId, Fill, Filter, Granularity, McpRead, McpSelection,
+        MeasureId, MetricsQuery, QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice,
+        Step, Value, mcp_clients, mcp_error_classes, mcp_metrics_totals, mcp_presence,
+        mcp_servers, mcp_tool_series, mcp_tools,
+    };
+    use crucible_records::{ProjectId, TimeWindow, Timestamp};
+    use crucible_schema::RetentionSettings;
+
+    let mut projects: BTreeSet<[u8; 16]> = BTreeSet::new();
+    let mut first = i64::MAX;
+    for part in model.parts(TableId::McpOps) {
+        let block = &part.block;
+        for row in 0..block.rows {
+            let (Some(project), Some(start)) =
+                (uuid_at(block, "project_id", row), i64_at(block, "start_time", row))
+            else {
+                return (0, vec!["an mcp_ops row does not read".to_owned()]);
+            };
+            if project != [0; 16] && Some(project) != skip {
+                projects.insert(project);
+                first = first.min(start);
+            }
+        }
+    }
+    if projects.is_empty() {
+        return (0, Vec::new());
+    }
+    let hour = first.div_euclid(HOUR) * HOUR;
+    let windows = [
+        (hour, hour + 96 * HOUR),
+        (hour + 20 * MINUTE, hour + 20 * MINUTE + 26 * HOUR),
+    ];
+    let clamp = RetentionClamp::new(RetentionSettings::default(), Timestamp::from_micros(hour));
+    let caller = Caller::Session;
+    let (mut compared, mut wrong) = (0u64, Vec::new());
+    let mut compare = |what: &str, plan: Option<QueryPlan>| -> Option<Vec<Vec<Value>>> {
+        let plan = plan?;
+        if !plan.root().tables().contains(&TableId::McpToolRollupHourly) {
+            wrong.push(format!("{what} over {:?} does not read the hourly tier", plan.window()));
+            return None;
+        }
+        compared += 1;
+        match (model.read(&plan), model.read(&minute_rows_only(&plan))) {
+            (Ok(tiered), Ok(minutes)) => {
+                let rows: Vec<Vec<Value>> =
+                    tiered.clone().into_rows().iter().map(|r| r.values().to_vec()).collect();
+                if images(tiered) != images(minutes) {
+                    wrong.push(format!(
+                        "{what} over {:?} reads other rows from the hourly tier than from minute rows",
+                        plan.window()
+                    ));
+                }
+                Some(rows)
+            }
+            (tiered, minutes) => {
+                wrong.push(format!(
+                    "{what} over {:?} failed: over the tier {:?}, over minutes {:?}",
+                    plan.window(),
+                    tiered.err(),
+                    minutes.err()
+                ));
+                None
+            }
+        }
+    };
+    for project in &projects {
+        let Ok(scope) = crucible_auth::test_support::scope(ProjectId::from_bytes(*project)) else {
+            continue;
+        };
+        for (from, to) in windows {
+            let Ok(window) =
+                TimeWindow::new(Timestamp::from_micros(from), Timestamp::from_micros(to))
+            else {
+                continue;
+            };
+            for side in [McpSide::Client, McpSide::Server] {
+                let class = caller.class(QueryClass::Analytics);
+                let presence = mcp_presence(scope, window, &clamp, class, side, None).ok().flatten();
+                let Some(found) = compare("the presence", presence) else {
+                    continue;
+                };
+                let pairs = found.iter().filter_map(|row| match (row.first(), row.get(1)) {
+                    (Some(Value::String(server)), Some(Value::Enum(source))) => {
+                        Some((server.clone(), CaptureSource::from_value(*source)?))
+                    }
+                    _ => None,
+                });
+                let selection = McpSelection::select(SourceChoice::Auto, pairs);
+                let read = McpRead {
+                    side,
+                    selection: &selection,
+                    include_caller_faults: false,
+                    server: None,
+                };
+                compare("the servers", mcp_servers(scope, window, &clamp, caller, &read).ok().flatten());
+                let tools = compare("the tools", mcp_tools(scope, window, &clamp, caller, &read).ok().flatten());
+                compare(
+                    "the error classes",
+                    mcp_error_classes(scope, window, &clamp, caller, &read).ok().flatten(),
+                );
+                compare("the clients", mcp_clients(scope, window, &clamp, caller, &read).ok().flatten());
+                if let Some(Value::String(tool)) = tools.as_ref().and_then(|t| t.first()).and_then(|r| r.get(1)) {
+                    let series = mcp_tool_series(scope, window, &clamp, caller, &read, tool, Step::Hour);
+                    compare("one tool's hourly series", series.ok().flatten());
+                }
+                let calls = MetricsQuery {
+                    source: Source::McpOps,
+                    measures: vec![(MeasureId::McpCalls, Aggregation::Sum)],
+                    dimensions: vec![DimensionId::McpServer],
+                    filter: Filter::all(),
+                    granularity: Granularity::Auto,
+                    fill: Fill::None,
+                    top_n: None,
+                };
+                let totals = mcp_metrics_totals(scope, window, &clamp, &calls, &read, (true, 50));
+                compare("an alert's totals", totals.ok().flatten());
+            }
+        }
+    }
+    (compared, wrong)
 }
 
 #[cfg(test)]

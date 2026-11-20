@@ -1140,6 +1140,16 @@ impl Node {
         }
     }
 
+    /// The same node reading minute rows only (`test_support::minute_rows_only`).
+    #[cfg(feature = "test-support")]
+    pub(crate) fn clear_hourly(&mut self) {
+        match self {
+            Self::Aggregate(n) => n.hourly = false,
+            Self::TimeSeries(n) => n.aggregate.hourly = false,
+            _ => {}
+        }
+    }
+
     /// Every table the node reads, those of its predicates' sets and an aggregate's hourly tier included. The
     /// renderer adds the project predicate and the window predicate to each.
     pub fn tables(&self) -> Vec<TableId> {

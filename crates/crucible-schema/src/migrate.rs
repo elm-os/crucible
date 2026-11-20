@@ -514,7 +514,8 @@ mod tests {
                 "max(last_seen)",
                 "max(marker_at)",
                 " FROM crucible.mcp_tool_rollup WHERE ",
-                "GROUP BY project_id, side, copied_hour, server_name, deploy_id, capture_source, era, method,                  target_name, client_name, error_class, caller_fault, copied_marker_epoch, copied_marker_batch_seq",
+                "GROUP BY project_id, side, copied_hour, server_name, deploy_id, capture_source, era, method, \
+                 target_name, client_name, error_class, caller_fault, copied_marker_epoch, copied_marker_batch_seq",
             ] {
                 assert!(copy.contains(expected), "{expected} in {copy}");
             }
@@ -585,7 +586,11 @@ mod tests {
     fn the_workspace_shape_covers_every_sql_readable_table_in_both_forms() {
         let shape = access_workspace_shape();
         for def in &TABLES {
-            let readable = def.id != TableId::DedupSelftest;
+            let readable = def.sql_readable;
+            assert_eq!(
+                readable,
+                !matches!(def.id, TableId::DedupSelftest | TableId::McpToolRollupHourly)
+            );
             assert_eq!(
                 shape.contains(&WorkspaceAction::GrantColumns(def.id)),
                 readable

@@ -15,7 +15,7 @@ crucible-wal = { workspace = true, features = ["test-mutants"] }
 crucible-wal-codec = { workspace = true }
 crucible-schema = { workspace = true }
 crucible-chfmt = { workspace = true }
-crucible-plan = { workspace = true }
+crucible-plan = { workspace = true, features = ["test-support"] }
 crucible-shipper = { workspace = true, features = ["test-mutants"] }
 crucible-recent = { workspace = true, features = ["test-mutants"] }
 crucible-query = { workspace = true }

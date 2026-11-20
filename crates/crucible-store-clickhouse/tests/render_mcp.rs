@@ -341,3 +341,86 @@ fn mcp_metrics_plans() {
         )
     );
 }
+
+/// Seven days from half past an hour: long enough for the hourly tier, with half an hour of minutes at each edge.
+fn week() -> TimeWindow {
+    TimeWindow::new(T0, T0.saturating_add_micros(7 * 86_400_000_000)).unwrap()
+}
+
+/// A tiered statement groups the union of two branches, each with the project and window predicates of its own
+/// table and the plan's conditions.
+fn tiered(plan: &QueryPlan) -> String {
+    let sql = rendered(plan);
+    assert_eq!(sql.matches("WHERE project_id = {p").count(), 2, "{sql}");
+    assert_eq!(sql.matches(" UNION ALL ").count(), 1, "{sql}");
+    assert!(sql.contains("FROM crucible.mcp_tool_rollup_hourly WHERE"), "{sql}");
+    sql
+}
+
+#[test]
+fn mcp_rollup_plans_over_the_hourly_tier() {
+    let (s, w, c, caller) = (project(), week(), clamp(), Caller::Session);
+    let selection = selection();
+    let read = read(&selection);
+    let files = McpRead {
+        server: Some("files"),
+        ..read
+    };
+    insta::assert_snapshot!(
+        "mcp_presence_hourly",
+        tiered(&live(mcp_presence(
+            s,
+            w,
+            &c,
+            caller.class(QueryClass::Analytics),
+            McpSide::Client,
+            Some("files")
+        )))
+    );
+    insta::assert_snapshot!(
+        "mcp_servers_hourly",
+        tiered(&live(mcp_servers(s, w, &c, caller, &read)))
+    );
+    // A series over the tier selects its hours under the minute column's name.
+    insta::assert_snapshot!(
+        "mcp_tool_series_hourly",
+        tiered(&live(mcp_tool_series(
+            s,
+            w,
+            &c,
+            caller,
+            &files,
+            "read_file",
+            Step::Hour
+        )))
+    );
+    // A step finer than an hour cannot be served by the tier: the series reads minute rows only.
+    let fine = rendered(&live(mcp_tool_series(
+        s,
+        w,
+        &c,
+        caller,
+        &files,
+        "read_file",
+        Step::FifteenMinutes,
+    )));
+    assert!(!fine.contains("mcp_tool_rollup_hourly"), "{fine}");
+    let query = MetricsQuery {
+        source: Source::McpOps,
+        measures: vec![(MeasureId::McpErrorRate, Aggregation::Rate)],
+        dimensions: vec![DimensionId::McpTarget],
+        filter: Filter::all(),
+        granularity: Granularity::Auto,
+        fill: Fill::Zero,
+        top_n: Some(5),
+    };
+    let keys = [vec![Literal::String("read_file".to_owned())]];
+    insta::assert_snapshot!(
+        "mcp_metrics_series_rate_hourly",
+        tiered(
+            &mcp_metrics_series(s, w, &c, caller, &query, (&read, Some(&keys)))
+                .unwrap()
+                .unwrap()
+        )
+    );
+}

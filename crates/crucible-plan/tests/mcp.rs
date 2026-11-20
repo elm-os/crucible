@@ -9,7 +9,7 @@
 use crucible_auth::test_support;
 use crucible_plan::{
     Aggregation, Caller, CaptureClass, CmpOp, DimensionId, Fill, Filter, Granularity, Literal,
-    MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection,
+    MCP_HOURLY_MIN_WINDOW_HOURS, MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection,
     McpUserKey, MeasureId, MetricsError, MetricsQuery, Node, PlanError, Pred, QueryClass,
     QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema, Step, effective_window,
     mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
@@ -275,11 +275,38 @@ proptest! {
             };
             prop_assert_eq!(plan.class(), class, "{}", built.name);
             let tables = plan.root().tables();
-            // The 300 ms dashboard target binds these: they read the aggregating tables only.
+            // The 300 ms dashboard target binds these: they read the aggregating tables only, the hourly tier
+            // of the tool rollup included.
             if built.gated {
                 for table_id in &tables {
                     prop_assert_eq!(table(*table_id).kind, TableKind::Aggregating, "{}", built.name);
+                    prop_assert!(
+                        [
+                            TableId::McpToolRollup,
+                            TableId::McpToolRollupHourly,
+                            TableId::McpDeploys,
+                            TableId::McpToolInventory,
+                        ]
+                        .contains(table_id),
+                        "{} reads {:?}",
+                        built.name,
+                        table_id
+                    );
                 }
+            }
+            // A read of the tool rollup over a window of at least the threshold takes its whole hours from the
+            // hourly tier (the series of `every_plan` is hourly); a shorter one reads minute rows only.
+            if tables.contains(&TableId::McpToolRollup) {
+                let long = window.len_micros() >= MCP_HOURLY_MIN_WINDOW_HOURS * 3_600_000_000;
+                prop_assert_eq!(
+                    tables.contains(&TableId::McpToolRollupHourly),
+                    long,
+                    "{} over {} µs",
+                    built.name,
+                    window.len_micros()
+                );
+            } else {
+                prop_assert!(!tables.contains(&TableId::McpToolRollupHourly), "{}", built.name);
             }
             let found = conditions(plan.root());
             let on = |name: &str| found.iter().filter(|(c, _, _)| c.name() == name).collect::<Vec<_>>();
@@ -353,8 +380,14 @@ proptest! {
         for (plan, table_id) in plans {
             let expected = effective_window(table_id, window, &settings, now).unwrap();
             prop_assert_eq!(plan.as_ref().map(QueryPlan::window), expected);
-            if let Some(plan) = plan {
-                prop_assert_eq!(plan.root().tables(), vec![table_id]);
+            if let (Some(plan), Some(clamped)) = (plan, expected) {
+                // The tool rollup is read with its hourly tier when the clamped window is long enough.
+                let long = clamped.len_micros() >= MCP_HOURLY_MIN_WINDOW_HOURS * 3_600_000_000;
+                let tables = match table_id {
+                    TableId::McpToolRollup if long => vec![table_id, TableId::McpToolRollupHourly],
+                    _ => vec![table_id],
+                };
+                prop_assert_eq!(plan.root().tables(), tables);
             }
         }
     }

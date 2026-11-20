@@ -25,6 +25,7 @@ mod m2_export;
 mod m2_facts;
 mod maintenance;
 mod mcp;
+mod mcp_hourly;
 mod mcp_reads;
 mod reads;
 pub mod s3;
@@ -41,7 +42,7 @@ use crucible_plan::profile_caps;
 use crucible_records::{BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, WalEpoch};
 use crucible_schema::{
     AccessParams, Granularity, Ident, PasswordHash, ServiceIdentity, Variant, access_service,
-    route, schema_base, schema_span_usage_aggregate,
+    route, schema_base, schema_mcp_tool_rollup_hourly, schema_span_usage_aggregate,
 };
 use crucible_sim::ch_model::ChModel;
 use crucible_store_clickhouse::render::Statement;
@@ -179,7 +180,10 @@ impl Ctx {
         let schema = schema_base(&self.variant, Granularity::Day);
         let access = access_service(&self.variant, &self.access_params()?);
         let column = schema_span_usage_aggregate(&self.variant);
-        for step in [&schema, &schema, &access, &access, &column, &column] {
+        let hourly = schema_mcp_tool_rollup_hourly(&self.variant, &Ident::new(&self.config.admin.user)?);
+        for step in [
+            &schema, &schema, &access, &access, &column, &column, &hourly, &hourly,
+        ] {
             self.store
                 .apply_migration(step)
                 .await
@@ -358,6 +362,16 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
         "ChModel differential: MCP analytics plans (9.9)",
         mcp_reads::mcp_reads(&ctx)
     );
+    row!(
+        "ChModel differential: MCP analytics plans over the hourly tier (3.10, 9.9)",
+        mcp_hourly::reads(&ctx)
+    );
+    if single {
+        row!(
+            "Hourly tier: the copy of the minute rollup (schema step 0005)",
+            mcp_hourly::backfill(&ctx)
+        );
+    }
     if single {
         row!(
             "Service identities see all rows (7.3)",

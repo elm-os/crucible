@@ -1,12 +1,14 @@
 //! The read path of the MCP analytics in simulation (invariant I7 per capture source; contracts 9.5 and 9.9).
 //!
-//! Each run draws, from its seed, a project's MCP traffic: servers on both sides, each observed by a random
-//! set of capture sources (an SDK wrapper, the proxy over stdio or HTTP, plain OTLP), so a call is often
-//! captured twice; error classes with caller faults; tools; deploys. Every observation is one `McpOpRecord`,
-//! turned into the rows of `mcp_ops`, `mcp_tool_rollup` and `mcp_deploys` by the shipper's own row builders and
-//! landed in the store model in several batches, whose parts then merge. The real `QueryService` reads it back
-//! under every `source` choice and both sides, and every answer must equal the reference computed from the
-//! records themselves:
+//! Each run draws, from its seed, a project's MCP traffic over three days: servers on both sides, each observed
+//! by a random set of capture sources (an SDK wrapper, the proxy over stdio or HTTP, plain OTLP), so a call is
+//! often captured twice; error classes with caller faults; tools; deploys. Every observation is one
+//! `McpOpRecord`, turned into the rows of `mcp_ops`, `mcp_tool_rollup`, `mcp_tool_rollup_hourly` and
+//! `mcp_deploys` by the shipper's own row builders and landed in the store model in several batches, whose parts
+//! then merge. The real `QueryService` reads it back over windows of mixed lengths and offsets (three hours,
+//! which read minute rows only; 24 hours that start and end inside an hour; the three days, all whole hours),
+//! the long ones taking their whole hours from the hourly tier, under every `source` choice and both sides, and
+//! every answer must equal the reference computed from the records of the window themselves:
 //!
 //! - **auto** reads each server from its best-ranked class present on the side (SDK, then proxy, then OTLP), and
 //!   a named class reads that class only;
@@ -50,7 +52,8 @@ use crucible_records::{
 };
 use crucible_schema::{Granularity as Partitioning, RetentionSettings, route};
 use crucible_shipper::tables::{
-    mcp_deploy, mcp_deploys_row, mcp_ops_row, mcp_tool_rollup, mcp_tool_rollup_row,
+    mcp_deploy, mcp_deploys_row, mcp_ops_row, mcp_tool_rollup, mcp_tool_rollup_hourly_row,
+    mcp_tool_rollup_row,
 };
 use crucible_shipper::value::Row;
 use crucible_shipper::{BatchId, pair_block, pair_token};
@@ -61,9 +64,20 @@ use crate::ch_model::ChModel;
 use crate::pg_model::{PgFaults, PgModel};
 use crate::runtime::Sim;
 
-/// 2026-11-17T09:00:00Z: the start of every run's hour of traffic.
+/// 2026-11-17T09:00:00Z: the start of every run's three days of traffic.
 const HOUR_START: i64 = 1_794_906_000_000_000;
 const MINUTE: i64 = 60_000_000;
+const HOUR: i64 = 60 * MINUTE;
+/// The hours of traffic of a run.
+const TRAFFIC_HOURS: u32 = 72;
+/// The windows every read runs over, from the start of the traffic: three hours that start ten minutes into an
+/// hour (minute rows only), 24 hours that start and end 25 minutes into an hour (whole hours from the hourly
+/// tier, the minutes of the first and last hour from the minute rollup), and the three days (whole hours only).
+const WINDOWS: [(i64, i64); 3] = [
+    (30 * HOUR + 10 * MINUTE, 33 * HOUR + 10 * MINUTE),
+    (7 * HOUR + 25 * MINUTE, 31 * HOUR + 25 * MINUTE),
+    (0, 72 * HOUR),
+];
 const SERVERS: [&str; 3] = ["alpha", "beta", "gamma"];
 const TOOLS: [&str; 3] = ["read", "write", "list"];
 
@@ -245,6 +259,7 @@ fn traffic(seed: u64, project: ProjectId) -> Vec<McpOpRecord> {
             McpSide::Server
         };
         let tool = TOOLS[rng.next_u32() as usize % TOOLS.len()];
+        let hour = i64::from(rng.next_u32() % TRAFFIC_HOURS);
         let minute = i64::from(rng.next_u32() % 60);
         let (class, code) = match rng.next_u32() % 10 {
             0 => (ErrorClass::ToolExecution, None),
@@ -262,7 +277,8 @@ fn traffic(seed: u64, project: ProjectId) -> Vec<McpOpRecord> {
             op.deploy_id = deploy.into();
             op.server_version = deploy.into();
             op.target_name = tool.into();
-            op.start_time = Timestamp::from_micros(HOUR_START + minute * MINUTE + call as i64);
+            op.start_time =
+                Timestamp::from_micros(HOUR_START + hour * HOUR + minute * MINUTE + call as i64);
             op.duration_us = duration;
             op.error_class = class;
             op.jsonrpc_code = code;
@@ -369,6 +385,14 @@ async fn land(model: &ChModel, ops: &[McpOpRecord], batches: usize) -> Result<()
                 .entry(rollup)
                 .or_default()
                 .push(row(mcp_tool_rollup_row(&mcp_tool_rollup(op))));
+            let hourly = (
+                TableId::McpToolRollupHourly,
+                at(TableId::McpToolRollupHourly, op.start_time).map_err(|e| e.to_string())?,
+            );
+            pairs
+                .entry(hourly)
+                .or_default()
+                .push(row(mcp_tool_rollup_hourly_row(&mcp_tool_rollup(op))));
             if let Some(deploy) = mcp_deploy(op) {
                 let pair = (
                     TableId::McpDeploys,
@@ -451,16 +475,31 @@ pub fn run_mcp_reads(seed: u64) -> McpReadOutcome {
             RetentionSettings::default(),
             crucible_plan::Caller::Session,
         );
-        let Ok(window) = TimeWindow::new(
-            Timestamp::from_micros(HOUR_START),
-            Timestamp::from_micros(HOUR_START + 60 * MINUTE),
-        ) else {
-            return outcome;
-        };
-        check(&service, &ctx, window, &ops, &mut outcome).await;
+        for (from, to) in WINDOWS {
+            let Ok(window) = TimeWindow::new(
+                Timestamp::from_micros(HOUR_START + from),
+                Timestamp::from_micros(HOUR_START + to),
+            ) else {
+                return outcome;
+            };
+            let inside: Vec<McpOpRecord> = ops
+                .iter()
+                .filter(|op| in_window(window, op.start_time))
+                .cloned()
+                .collect();
+            check(&service, &ctx, window, &inside, &mut outcome).await;
+        }
         drop(host);
         outcome
     })
+}
+
+/// Whether a read over `window` counts an operation that started at `start`. The windows are whole minutes, so
+/// the minute rollups (a minute row counts when its minute overlaps the window) and `mcp_ops` (by `start_time`)
+/// agree on it.
+fn in_window(window: TimeWindow, start: Timestamp) -> bool {
+    let minute = start.floor_minute();
+    window.from().floor_minute() <= minute && minute <= window.to().saturating_add_micros(-1).floor_minute()
 }
 
 async fn check(

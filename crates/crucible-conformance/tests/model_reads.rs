@@ -668,7 +668,7 @@ fn every_shipped_table_lands_merges_and_reads_back() {
                 insert(&model, block_of(def, project(1), seq), seq, T0).await;
             }
         }
-        assert_eq!(seq, 32, "16 of the 18 tables are shipped");
+        assert_eq!(seq, 34, "17 of the 19 tables are shipped");
         let read = |def: &'static TableDef| {
             let keys: Vec<ColumnRef> = def
                 .key_columns()

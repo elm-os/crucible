@@ -24,7 +24,7 @@ use crucible_records::{
 use crucible_schema::{
     Column, ColumnRef, DedupSelftestCol, FactCorrectionsCol, FactFlagsCol, FactScoresCol,
     FactTagsCol, McpContentCol, McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol,
-    PROJECT_ID, RetentionSettings, ServiceIdentity, SessionRollupCol, SpanCoreCol, SpanMetricsCol,
+    McpToolRollupHourlyCol, PROJECT_ID, RetentionSettings, ServiceIdentity, SessionRollupCol, SpanCoreCol, SpanMetricsCol,
     SpanPayloadCol, SqlProbeCol, TABLES, TableKind, TraceHeadsCol, TraceStatsCol, Ty,
     UserRollupCol, table,
 };
@@ -60,6 +60,7 @@ fn nameable() -> Vec<Vec<ColumnRef>> {
         refs::<McpDeploysCol>(),
         refs::<DedupSelftestCol>(),
         refs::<SqlProbeCol>(),
+        refs::<McpToolRollupHourlyCol>(),
     ]
 }
 
