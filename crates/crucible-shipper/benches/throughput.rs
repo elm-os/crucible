@@ -3,7 +3,7 @@
 //!
 //! It times what the shipper does with a frame after stage B: derive the rows of every table, then sort,
 //! combine, encode and compress the block of every (table, partition) pair. One lane has agent spans only; the
-//! other has MCP operations, which also fill the five MCP tables.
+//! other has MCP operations, which also fill the six MCP tables.
 // Timing reads the clock directly, which product code may only do through `Env`; benches may.
 #![allow(clippy::disallowed_methods, clippy::unwrap_used, clippy::print_stdout)]
 
