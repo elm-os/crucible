@@ -532,6 +532,19 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
     let held = format!("SELECT count() FROM {tier}");
     let copied = ctx.admin_count(&held).await?;
 
+    // The pattern that the refusal gives for ending a copy that ClickHouse still runs matches the copy as the
+    // server recorded it.
+    ctx.admin("SYSTEM FLUSH LOGS").await?;
+    let copies = ctx
+        .admin_count(format!(
+            "SELECT count() FROM system.query_log WHERE type = 'QueryStart' \
+             AND query LIKE 'INSERT INTO {tier}%' AND query LIKE '%GROUP BY%'"
+        ))
+        .await?;
+    expect(copies >= 1, || {
+        format!("the refusal's KILL QUERY pattern matches {copies} copies in system.query_log")
+    })?;
+
     // Both batches' hourly pairs read present; a batch the minute rollup never had reads absent.
     let partition = route(TableId::McpToolRollupHourly, Partitioning::Day, T0)?;
     for (seq, present) in [(801, true), (802, true), (803, false)] {
@@ -609,8 +622,8 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         })?;
     }
     Ok(format!(
-        "step 0005 refused an unfinished copy, with part of its rows or none, and named the fix; after it, it \
-         copied the minute rollup by hour \
+        "step 0005 refused an unfinished copy, with part of its rows or none, and named the fix, whose KILL \
+         QUERY pattern matches the copy in system.query_log; after it, it copied the minute rollup by hour \
          ({copied} rows, two batches' markers included, so both batches' hourly pairs probe present and another \
          batch's absent), a tiered read of the copied project equals its minute read, and the step applied again \
          changed nothing"
