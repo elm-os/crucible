@@ -272,9 +272,9 @@ Only with an object store and Postgres ([media](../self-hosting/media.md)); othe
 
 | Method and path | What it does | Permission |
 |---|---|---|
-| `GET projects/{project_id}/deletion-requests` | List deletion requests | `read`; key `read` |
+| `GET projects/{project_id}/deletion-requests` | List deletion requests | `read`; key `read`; for a deleted project, org `org_projects` |
 | `POST projects/{project_id}/deletion-requests` | Request a deletion | `delete_traces`; key `delete` |
-| `GET projects/{project_id}/deletion-requests/{request_id}` | Get a deletion request | `read`; key `read` |
+| `GET projects/{project_id}/deletion-requests/{request_id}` | Get a deletion request | `read`; key `read`; for a deleted project, org `org_projects` |
 | `GET projects/{project_id}/retention` | Get retention | `read`; key `read` |
 | `PUT projects/{project_id}/retention` | Set retention | `manage`; no key |
 
@@ -321,7 +321,7 @@ Only with an object store and Postgres ([media](../self-hosting/media.md)); othe
 | `GET projects` | List projects | session |
 | `POST projects` | Create a project | org `org_projects` |
 | `GET projects/{project_id}` | Get a project | session |
-| `DELETE projects/{project_id}` | Delete a project | org `org_projects` |
+| `DELETE projects/{project_id}` | Delete a project and start the purge of its data | org `org_projects` |
 | `PATCH projects/{project_id}` | Rename a project | `manage`; no key |
 | `GET projects/{project_id}/api-keys` | List API keys | `manage`; no key |
 | `POST projects/{project_id}/api-keys` | Create an API key | `manage`; no key |
@@ -847,8 +847,11 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   from `download_path`. With object storage the download answers `303` with a link to the file on the object store,
   valid for 5 minutes, which any server hands out. Files are kept 7 days, and a project may start 5 exports an
   hour.
-- **Retention and deletion**: `GET` and `PUT retention`, and deletion requests for traces, a user or a session; see
-  [retention and deletion](../self-hosting/retention-and-deletion.md).
+- **Retention and deletion**: `GET` and `PUT retention`, and deletion requests for traces, a user or a session.
+  `DELETE projects/{project_id}` answers `204` at once and makes a deletion request of kind `project`, which removes
+  the rest of the project's data in the background; org owners and admins follow it with
+  `GET projects/{project_id}/deletion-requests` under the deleted project's id, and `POST deletion-requests` refuses
+  the kind `project`. See [retention and deletion](../self-hosting/retention-and-deletion.md).
 - **Media**: `POST media` with the content type, length, SHA-256 and the trace that uses them answers a presigned
   upload link valid for 1 hour, whose content type, length and checksum headers must be sent exactly as given, or
   no link when the project already stores the same bytes. `PATCH media/{media_id}` confirms the upload once the

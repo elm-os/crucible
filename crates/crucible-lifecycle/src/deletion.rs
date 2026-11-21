@@ -41,7 +41,7 @@ use crucible_records::{
 use crucible_schema::PartitionExpr;
 use serde::{Deserialize, Serialize};
 
-use crate::actions::{Place, Shared, advance, planned};
+use crate::actions::{self, Place, Shared, advance, planned};
 use crate::detail::{Detail, subject_hash, subject_hex};
 use crate::partitions::{day_of, days_spanned, partition_window, partitions_of_days};
 use crate::reach::{
@@ -627,8 +627,9 @@ impl Executor<'_> {
 
     /// Plans a project deletion (contract 13.4), a table of [`project_reach`] at a time: the partitions that
     /// hold the project's rows are read from the table, and each gets a drop or a delete
-    /// ([`Executor::purge_action`]). The tables planned so far are kept in the request's progress, so a later
-    /// run or another leader goes on from the next one.
+    /// ([`Executor::purge_action`]). A table's actions are recorded in transactions of a bounded size, then the
+    /// table joins the request's progress, so a later run or another leader goes on from the next one; an action
+    /// planned again has the key of the first and is not recorded twice.
     async fn plan_project(
         &self,
         request: &mut DeletionRequest,
@@ -640,17 +641,18 @@ impl Executor<'_> {
             if progress.purged.iter().any(|name| name == table.name()) {
                 continue;
             }
-            let mut actions = Vec::new();
+            let mut purges = Vec::new();
             for partition in self.partitions_of(scope, table).await? {
                 if let Some(action) = self
                     .purge_action(request, table, partition, &mut gone)
                     .await?
                 {
-                    actions.push(action);
+                    purges.push(action);
                 }
             }
+            actions::plan(self.ctx, purges).await?;
             progress.purged.push(table.name().to_owned());
-            self.record(request, progress, actions, &[]).await?;
+            self.record(request, progress, Vec::new(), &[]).await?;
         }
         progress.resolved = true;
         progress.planned = true;

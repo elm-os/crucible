@@ -10,9 +10,11 @@ is in [`methodology.md`](methodology.md); the job runners below the executors ar
 | Piece | Where | What it is |
 |---|---|---|
 | Executors | `crates/crucible-lifecycle` | The three leader jobs under the `lifecycle` lease, the node timer, the service |
-| Unit and property tests | `crates/crucible-lifecycle/src`, `crates/crucible-plan/src/hidden.rs` | The drop-or-delete decision, the partitions of a span of time, the reach list as data, the predicates of a delete, the pending-deletion set, the predicate a pending deletion adds to a plan |
+| Unit and property tests | `crates/crucible-lifecycle/src`, `crates/crucible-plan/src/hidden.rs`, `crates/crucible-plan/src/endpoints/lifecycle.rs` | The drop-or-delete decision, the partitions of a span of time, the reach list as data (a project deletion's every table included), the predicates of a delete (a project deletion's, without an arrival bound), the pending-deletion set, the predicate a pending deletion adds to a plan, the tombstone of a project deletion, the read of the days a project's rows fall in |
 | Simulation | `crucible_sim::lifecycle_sim`, `crates/crucible-sim/tests/lifecycle_dst.rs` | The real jobs and the real service on several nodes over `ChModel` and `PgModel` under faults, with the oracle and the mutants |
-| Directed scenarios | `crates/crucible-sim/tests/lifecycle_directed.rs` | One node with the real WAL and the real shipper: the tombstone is a durable frame that reads back as the request, the checkpoint passes it on a node that receives nothing else, and a deletion by trace runs to `completed` |
+| Directed scenarios | `crates/crucible-sim/tests/lifecycle_directed.rs` | One node with the real WAL and the real shipper: the tombstone is a durable frame that reads back as the request, the checkpoint passes it on a node that receives nothing else, a deletion by trace runs to `completed`, and a project deletion made as `DELETE projects/{id}` makes it logs a project tombstone, empties every table of the project (the rollups the shipper wrote and a frame taken after the deletion included), removes its objects and salt, and runs to `completed` |
+| Project deletion in the control plane | `crates/crucible-auth/src/service/tests.rs`, `crates/crucible-api/tests/api/lifecycle.rs` | The project deletion request is made in the transaction that marks the project deleted; org owners and admins read it after the deletion and nobody else does; `POST deletion-requests` refuses the kind `project` and says how to delete a project |
+| Jobs of a deleted project | `crates/crucible-sim/tests/deleted_project_jobs.rs`, `crates/crucible-export/tests/job.rs`, `crates/crucible-sqlws/src/tests.rs` | From the moment of deletion the alert evaluator runs none of the project's rules, the outbox sends nothing to its channels, an export waiting to run ends with `project_deleted`, and the SQL reconciler drops the project's identity; each beside a live project for which the job acts |
 | Stage B | `crates/crucible-normalize/src/tombstone.rs`, `crates/crucible-normalize/src/stage_b.rs`, `crates/crucible-sim/tests/stage_b_deletions.rs` | What a deletion selects of spans, MCP operations and facts, against a linear model; that dropping leaves stage B's state alone; the frames after a tombstone, a request that completed while the node was down, and a shipper that ships nothing until it has read the requests, each also with the defect it guards against; a read that leaves out a request made before the frames arrived and reads again for a frame that arrived before it after the wall clock stepped back; the drop counts by kind |
 | Write path | The dimension `deletions` of the system simulation ([`system-simulation.md`](system-simulation.md)) | The real WAL, stage B and shipper with deletion requests, tombstones and requests that complete while the node is down, under the system simulation's faults, with invariant I9 and three mutants |
 | Read services | `crates/crucible-query/tests/services/hidden.rs` | Trace detail, the trace list, the payload route, the session, user and span lists and the pages of an export in progress under a pending-deletion set, from the recent index and from the store |
@@ -30,16 +32,18 @@ hold the real `Service`. What the simulation models is a node's log and its stag
   trace, or a tombstone. `NodeLog::append_tombstone` appends a tombstone frame;
 - a shipper task moves the frames to the store in log order: for a frame of spans it inserts one block into each
   of `span_core`, `span_payload`, `trace_heads`, `mcp_ops`, `mcp_content`, the four fact tables, `trace_stats`,
-  `session_rollup` and `user_rollup`, then raises the checkpoint watermark to the frame;
+  `session_rollup`, `user_rollup`, `span_metrics`, `mcp_tool_rollup`, `mcp_tool_rollup_hourly`, `mcp_deploys` and
+  `mcp_tool_inventory`, then raises the checkpoint watermark to the frame;
 - stage B keeps two rules. A tombstone applies to the frames after it in the log: their spans that the request
   selects and that were received before it are dropped, and for a deletion by user also the MCP rows that carry
   the user by `user_id`, or by the hash of the user's subject under the issuer the request names (under any
   issuer when it names none), while the rest of the frame ships. A node that starts registers first
   (its heartbeat is in Postgres), then reads the deletion requests, and only then ships.
 
-A workload appends a frame about once a second to a node that is up. Two projects get traces of five users and
-seven sessions, on fresh days (today and yesterday) and on old days (six to nine days back). The first project's
-old days reach further than the second's, so some old partitions hold one project and some hold both. Half the
+A workload appends a frame about once a second to a node that is up. Three projects get traces of five users and
+seven sessions, on fresh days (today and yesterday) and on old days (six to eleven days back). The first project's
+old days reach further than the second's, and the third's further still, so some old partitions hold one project
+and some hold two or three. Half the
 traces show their user everywhere. The others show it only on their MCP rows, as `user_id` or only as the hash
 of the user's subject under one of two issuers, or on their spans with the MCP rows hashed: a deletion by user
 has to reach those MCP rows by their own columns, in partitions where no span names the user. Every 15 to 50 s a
@@ -47,6 +51,13 @@ caller asks a node for a deletion by trace, by user or by session, with an idemp
 request again when the call fails. A deletion by user names one of the two issuers two times in three: it reaches
 the MCP rows hashed under that issuer and keeps those hashed under the other. Once in a run the first project's
 retention is shortened to three days.
+
+Once in a run, between 3 and 13 minutes in, the third project is deleted the way `DELETE projects/{id}` deletes
+it: one transaction marks its row deleted and makes its project deletion request, sent again while it fails. Its
+frames are still taken for up to 5 s after that, as a node takes them until its key snapshot has the revocation,
+and no deletion request names it any more. The second and the third project each start with one row of every
+control-plane table a project deletion removes: a membership, an API key, a channel with its sealed secret, an
+alert rule with the state of a series, a saved query, a SQL run, an export, a retention floor and a salt.
 
 The mask cycle is 30 min and the retention executor plans every 10 min, so that a run covers several cycles; the
 other settings are the defaults.
@@ -73,15 +84,17 @@ at its end every node is stopped.
 | L1: every action on ClickHouse is recorded under the fencing token before it is issued | The leader reaches the store through a wrapper. At each delete, partition drop and mask application it looks for an action row of that kind, table and partition in the state `issued` with a fencing token |
 | L2: a deletion is hidden at once on the accepting node | When `request_deletion` returns, the node's pending-deletion set holds the request, and the plan that reads exactly the spans the request selects returns nothing once it carries the set |
 | L3: every request completes | At the end every deletion request is `completed` and every action is `verified` |
-| I9: nothing a completed request selects is left | Every row the store still holds of the twelve tables, masked or not, is compared with every completed request: a span table by the request's own column, the MCP, fact and stats tables by the traces the request resolves to, the MCP tables for a deletion by user also by their own `user_id` and by the hash of the user under the issuer it names, or under either when it names none, the rollups by key. A row received at or after the request is kept; a table without an arrival time is exempt for a key that got data after the request |
+| I9: nothing a completed request selects is left | Every row the store still holds of the seventeen tables, masked or not, is compared with every completed request: a span table by the request's own column, the MCP, fact and stats tables by the traces the request resolves to, the MCP tables for a deletion by user also by their own `user_id` and by the hash of the user under the issuer it names, or under either when it names none, the rollups by key. A row received at or after the request is kept; a table without an arrival time is exempt for a key that got data after the request. A completed project deletion selects every row of its project in every table, whatever its arrival |
 | I9: nothing retention expired is left | No table with a retention binding holds a row of the shortened project that is more than five days old, masked or not |
-| I9: nothing else went | Every shipped span that no request selects and that retention keeps is still visible in `span_core`, and so is every `mcp_ops` row that ever landed and that no request selects: a deletion by user that names an issuer keeps the rows hashed under the other. The model's stage B dropped only spans that a request selects |
+| I9: nothing else went | Every shipped span that no request selects and that retention keeps is still visible in `span_core`, and so is every `mcp_ops` row that ever landed and that no request selects: a deletion by user that names an issuer keeps the rows hashed under the other, and a project deletion keeps the rows of the other projects in the partitions it dropped or deleted from. The model's stage B dropped only spans that a request selects at its point in time |
+| I9: the control plane | Once the project deletion completed, the deleted project holds no row of the eleven control-plane tables seeded for it (alert state and channel secrets among them), and the second project still holds each of its rows |
 
 The suite fails unless frames, all three kinds of request, the retention change, deletes, partition drops, mask
 applications, hidden reads, shipper stalls, frames whose MCP rows alone carry their user, deletions by user that
-name an issuer and MCP rows that such a deletion kept because they are hashed under the other occurred, and unless
-every accepted request completed. The profile with every fault also requires crashes, long downtimes, lease
-steals, failovers, store outages and stage B drops.
+name an issuer and MCP rows that such a deletion kept because they are hashed under the other occurred, a project
+was deleted, frames of it were taken after its deletion and its control-plane rows were checked, and unless every
+accepted request, the project deletions included, completed. The profile with every fault also requires crashes,
+long downtimes, lease steals, failovers, store outages and stage B drops.
 
 ## Mutants
 
@@ -93,6 +106,7 @@ Each seeded defect is a value of `crucible_lifecycle::Mutant`, which exists only
 | Drop the mask cycle | The mask scheduler plans nothing | I9: masked rows are still on disk; L3: no request is verified | 3 of seeds 4000..4003, both reports in each |
 | Delete without fencing | An action is sent without its fenced record | L1: an action reached the store with no row recorded as issued | 5 of seeds 5000..5005, with every fault |
 | MCP rows by trace only | A deletion by user reaches the MCP tables only through the traces its spans resolve to, never by the operations' own `user_id` and `user_subject_hash` | I9: an MCP row that carries the user, by `user_id` or subject hash, in a trace no span of which names the user is still there | 6 of seeds 6000..6006, without other faults |
+| Drop shared partitions | A project deletion drops each old partition it reaches, whatever other projects hold rows there | I9: a span of a project that is not deleted, which no request selects and retention keeps, is gone | 6 of seeds 7000..7006, without other faults |
 
 The checkpoint mutant needs frames that a live node has not shipped when the request is logged: that is what the
 shipper stalls are for. It runs in the profile without other faults, and a seed that shows the defect is run again
@@ -102,7 +116,11 @@ without it and must hold.
 
 - The two rules of stage B in the real normalizer and shipper: here stage B is a model of them. The system
   simulation runs the real ones under its faults (dimension `deletions`), and the stage B directed scenarios run
-  each rule on its own.
+  each rule on its own; a project tombstone selects every span, MCP operation and fact of its project there.
+- A frame of a deleted project that a node took in the seconds after the deletion and ships only after the project
+  deletion completed: stage B keeps it, as it keeps whatever a deletion received after its point in time, so its
+  rows stay, unread. In the run every such frame ships long before the mask cycle that verifies the deletion, and a
+  delete whose verification finds rows of the project again is planned and run again.
 - Replay of retained segments, requeue from quarantine and `crucible wal drain`.
 - The size of a statement. A ClickHouse server takes at most 1,000 parameters in a request, and every trace id of
   a list is one. The executor resolves and deletes a list of traces 500 ids at a time, which the conformance row

@@ -1,7 +1,8 @@
 # Retention and deletion
 
 Each project keeps its data for as long as its retention settings say, forever by default. Data can also be deleted
-on request: a list of traces, or everything of one user or one session. Both need the control plane (Postgres).
+on request: a list of traces, or everything of one user or one session, and deleting a project deletes all of its
+data. All of this needs the control plane (Postgres).
 
 ## Retention
 
@@ -36,8 +37,9 @@ A deletion request removes data from a project for good:
 | `trace` | 1 to 10,000 trace ids | Project members and admins; keys with the `delete` scope |
 | `user` | Every trace of one `user_id`, with its facts and MCP operations | Project admins; keys with the `delete` scope |
 | `session` | Every trace of one `session_id`, with its facts and MCP operations | Project admins; keys with the `delete` scope |
+| `project` | Everything of the project | Made by deleting the project ([below](#deleting-a-project)) |
 
-Request one in **Settings**, **Retention**, **Delete data**, or with
+Request one of the first three in **Settings**, **Retention**, **Delete data**, or with
 `POST /api/v1/projects/{project_id}/deletion-requests`. A deletion is point in time: data received after the
 request is new data and is kept.
 
@@ -57,7 +59,7 @@ results, export files made before the request, which expire and are removed (fro
 expiry is recorded, when export files are kept there), and with an object store, the uses of media by the traces
 deleted: media follow `payload_retention_days`, and an object is removed once nothing uses it
 ([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts, and the hourly rollup
-of MCP calls, hold counts with no user, session or content, and are kept.
+of MCP calls, hold counts with no user, session or content, and are kept, unless the whole project is deleted.
 
 A request also reaches data that is not in ClickHouse yet. Spans received before the request that still wait in a
 server's write-ahead log, because ClickHouse was slow or unreachable, are dropped before they are sent, and the
@@ -74,10 +76,38 @@ rows, so an export made while a request is still `pending` or `logged` can inclu
 
 ## Deleting a project
 
-An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. The project leaves every list
-at once and its API keys stop working, on every server within 5 seconds. Its dashboards with their widgets and its
-media records go with it, and with an object store every object under the project's key prefix is deleted next
-([media](media.md#deletion-and-retention)). Its telemetry stays in ClickHouse, where no page, API answer or MCP tool
-reads it any more, and its memberships, alert rules, channels, saved queries and SQL runs stay in Postgres. A trace
-that records media in the project while it is being deleted makes the request answer 503 `control_plane_unavailable`
-with `Retry-After` and delete nothing; send it again.
+An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. The answer comes at once, and
+the project leaves every list; its API keys stop working, on every server within 5 seconds. Its dashboards with
+their widgets and its media records go with it, and with an object store every object under the project's key prefix
+is deleted next ([media](media.md#deletion-and-retention)). A trace that records media in the project while it is
+being deleted makes the request answer 503 `control_plane_unavailable` with `Retry-After` and delete nothing; send it
+again.
+
+The rest of the project's data goes in the background, through a deletion request of kind `project` that the
+deletion makes in the same transaction:
+
+1. Every server records the request in its write-ahead log within 5 seconds, and data of the project that still
+   waits there is dropped before it is sent.
+2. Once every server's write-ahead log has passed the request, every table of the project is emptied: spans and
+   their payloads, trace heads and trace statistics, MCP operations with their arguments and results, the four fact
+   tables, the session and user rollups, the minute rollups, the hourly rollup of MCP calls, the MCP deploys and the
+   tool inventory. A partition that holds rows of deleted projects only, and ended more than an hour before the
+   deletion, is dropped whole; the project's rows are deleted from every other one. Rows that servers took in the
+   seconds after the deletion, before their keys caught up, go too.
+3. After the next mask cycle, within 24 hours, every table is checked to hold no row of the project and no deleted
+   row on disk, and the request is `verified`.
+4. Then the project's export files and every object left under its key prefix are removed, and so are its rows in
+   Postgres: memberships, alert rules with their state and history, notification channels with their sealed secrets,
+   saved queries, SQL runs, exports, the revoked API keys, its retention floor and its salt. The request is
+   `completed`.
+
+From the moment of deletion nothing runs for the project: its alert rules are not evaluated, nothing is sent to its
+channels, an export waiting to run ends with `project_deleted`, and the SQL workspace drops the project's ClickHouse
+user at its next pass. The project's row and its deletion requests stay in Postgres, so that a server that was down
+reads them before it sends anything of the project it still holds.
+
+Org owners and admins follow the purge with `GET /api/v1/projects/{project_id}/deletion-requests`, under the deleted
+project's id: the request of kind `project` lists each table with its deletes, as any deletion request does, and the
+place `control_plane` once the Postgres rows are gone. Nobody else can read a deleted project's requests. The purge
+removes the data of projects deleted on this version; a project deleted on an earlier version keeps the telemetry it
+left in ClickHouse, where no page, API answer or MCP tool reads it.

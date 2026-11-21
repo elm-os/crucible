@@ -60,6 +60,14 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and refuse an invalid one alike: the same member, with the same code.
 - A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
+- Deleting a project removes all of its data in the background, through a deletion request of kind `project` made
+  with the deletion: its telemetry in every table, the minute rollups, the hourly rollup, the MCP deploys and the
+  tool inventory included, then its remaining objects and its rows in Postgres (members, alert rules with their
+  history, channels with their secrets, saved queries, SQL runs, exports, API keys, retention floor and salt).
+  `DELETE projects/{project_id}` answers as before, and org owners and admins follow the purge with
+  `GET projects/{project_id}/deletion-requests` under the deleted project's id.
+- From the moment a project is deleted, the notification outbox sends nothing to its channels.
+- `POST deletion-requests` refuses the kind `project` with 422 and says to delete the project instead.
 
 ## [0.1.1] - 2026-11-21
 

@@ -3,4 +3,4 @@
 /**
  * What a deletion request selects.
  */
-export type DeletionKind = "trace" | "user" | "session";
+export type DeletionKind = "trace" | "user" | "session" | "project";

@@ -1322,7 +1322,7 @@
           "projects"
         ],
         "summary": "Delete a project",
-        "description": "The project disappears from every list and its keys stop working. Its dashboards with their widgets and its\nmedia go with it: the media rows at once and, when object storage is configured, every object under the\nproject's key prefix.",
+        "description": "The project disappears from every list and its keys stop working. Its dashboards with their widgets and its\nmedia go with it: the media rows at once and, when object storage is configured, every object under the\nproject's key prefix. The rest of its data goes in the background, through a deletion request of kind\n`project` made with the deletion: its telemetry, then its members, alert rules, channels, saved queries,\nSQL runs, exports and keys. Org owners and admins follow it with `GET projects/{project_id}/deletion-requests`.",
         "operationId": "delete_project",
         "parameters": [
           {
@@ -3752,7 +3752,7 @@
           "lifecycle"
         ],
         "summary": "List deletion requests",
-        "description": "The project's deletion requests, newest first.",
+        "description": "The project's deletion requests, newest first. An org owner or admin also lists those of a deleted project,\namong them the request of kind `project` that removes its data.",
         "operationId": "list_deletion_requests",
         "parameters": [
           {
@@ -3808,7 +3808,7 @@
             }
           },
           "404": {
-            "description": "`not_found`: the caller cannot see the project.",
+            "description": "`not_found`: the caller cannot see the project, or it is deleted and the caller is not an org owner or admin.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3969,7 +3969,7 @@
           "lifecycle"
         ],
         "summary": "Get a deletion request",
-        "description": "One request with its state and the status of each place it reaches.",
+        "description": "One request with its state and the status of each place it reaches. An org owner or admin also reads those\nof a deleted project.",
         "operationId": "get_deletion_request",
         "parameters": [
           {
@@ -12437,7 +12437,8 @@
         "enum": [
           "trace",
           "user",
-          "session"
+          "session",
+          "project"
         ]
       },
       "DeletionPlace": {
@@ -12454,7 +12455,7 @@
           "deletes": {
             "type": "integer",
             "format": "int32",
-            "description": "Deletes planned for the place, one per partition and page of traces.",
+            "description": "Deletes planned for the place, one per partition and page of traces; for a project deletion, one per\npartition, a partition dropped whole among them.",
             "minimum": 0
           },
           "deletes_done": {
@@ -12471,7 +12472,7 @@
           },
           "place": {
             "type": "string",
-            "description": "The place: a telemetry table, or `comments`, `media`, `export_files`."
+            "description": "The place: a telemetry table, or `comments`, `media`, `export_files`, and for a project deletion\n`control_plane` (its members, alert rules, channels, saved queries and the rest of its rows)."
           },
           "status": {
             "type": "string",

@@ -5,7 +5,8 @@
  */
 export type DeletionPlace = { 
 /**
- * The place: a telemetry table, or `comments`, `media`, `export_files`.
+ * The place: a telemetry table, or `comments`, `media`, `export_files`, and for a project deletion
+ * `control_plane` (its members, alert rules, channels, saved queries and the rest of its rows).
  */
 place: string, 
 /**
@@ -14,7 +15,8 @@ place: string,
  */
 status: string, 
 /**
- * Deletes planned for the place, one per partition and page of traces.
+ * Deletes planned for the place, one per partition and page of traces; for a project deletion, one per
+ * partition, a partition dropped whole among them.
  */
 deletes: number, 
 /**
