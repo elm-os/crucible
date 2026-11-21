@@ -35,10 +35,10 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
 - Changes to the storage format are recorded in the change log of the
   [contract](../architecture/contracts.md#15-change-control), with the migration each one needs.
 - The first start with migration step `0005_mcp_tool_rollup_hourly` copies the MCP tool rollup, by hour, into
-  `crucible.mcp_tool_rollup_hourly`, before the server accepts traffic. With two cores for ClickHouse the copy takes
-  about a minute for every 25 million rows of `crucible.mcp_tool_rollup` (`SELECT count() FROM
-  crucible.mcp_tool_rollup` tells how many it holds), it uses every core ClickHouse has, and ClickHouse ends it
-  after an hour. Stop every server of the earlier version first: calls that an earlier version stores after the
+  `crucible.mcp_tool_rollup_hourly`, before the server accepts traffic. The copy reads every row of
+  `crucible.mcp_tool_rollup` once, so it takes longer the more rows that table holds (`SELECT count() FROM
+  crucible.mcp_tool_rollup` tells how many); it uses every core ClickHouse has, and ClickHouse ends it after an
+  hour. Stop every server of the earlier version first: calls that an earlier version stores after the
   copy reach only the minute rollup, so reads over 12 hours or more would leave them out. With Postgres, a server
   that starts while another one copies waits for it: it stays not ready, logs that another node holds the
   migrations lease, and tries again until the copy has finished. Without Postgres there is no lease, so start one

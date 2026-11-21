@@ -55,8 +55,8 @@ The places a request reaches are the span tables, the trace heads and trace stat
 rollups, the four fact tables (scores, tags, flags, corrections), the MCP operations and their arguments and
 results, export files made before the request, which expire, and with an object store, the uses of media by the
 traces deleted: media follow `payload_retention_days`, and an object is removed once nothing uses it
-([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts hold counts with no
-user, session or content, and are kept.
+([media](media.md#deletion-and-retention)). The minute rollups that power charts and alerts, and the hourly rollup
+of MCP calls, hold counts with no user, session or content, and are kept.
 
 A request also reaches data that is not in ClickHouse yet. Spans received before the request that still wait in a
 server's write-ahead log, because ClickHouse was slow or unreachable, are dropped before they are sent, and the
