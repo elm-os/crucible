@@ -4,6 +4,14 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
+  rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
+  minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
+- Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
+  once, on the first start of this version.
+- The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
+  server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
+  as the copy of step 0005.
 - Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
   many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
 - Deleting a project deletes its dashboards with their widgets and its media records, and then every object under

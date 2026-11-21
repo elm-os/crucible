@@ -779,7 +779,7 @@ mod tests {
         let step = access_workspace(&Variant::SingleNode, &params());
         assert_eq!((step.id, step.kind), (ACCESS_WORKSPACE, StepKind::Access));
         assert!(step.statements[0].starts_with("SELECT throwIf("));
-        assert!(step.statements[0].contains("!= 18"));
+        assert!(step.statements[0].contains("!= 19"));
         let position = |needle: &str| {
             step.statements
                 .iter()

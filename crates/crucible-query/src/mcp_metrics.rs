@@ -273,7 +273,7 @@ impl QueryService {
             read.now,
             consistency,
             state,
-            &[TableId::McpToolRollup],
+            &[TableId::McpToolRollup, TableId::McpToolRollupHourly],
             false,
         )?;
         Ok(MetricsResult {
@@ -350,7 +350,7 @@ impl QueryService {
             read.now,
             consistency,
             state,
-            &[TableId::McpToolRollup],
+            &[TableId::McpToolRollup, TableId::McpToolRollupHourly],
             false,
         )?;
         let dimensions = query.dimensions.len();

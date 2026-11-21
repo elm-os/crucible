@@ -14,7 +14,7 @@ use crucible_schema::{Column, McpToolRollupCol};
 
 use crate::build::RetentionClamp;
 use crate::class::{Caller, QueryClass};
-use crate::endpoints::mcp::{McpRead, and};
+use crate::endpoints::mcp::{McpRead, and, rollup_plan};
 use crate::endpoints::metrics::{
     MetricsError, MetricsQuery, among, dimensions, invalid, metrics_shape,
 };
@@ -71,7 +71,13 @@ fn plan(
     caller: Caller,
     root: Node,
 ) -> Result<Option<QueryPlan>, MetricsError> {
-    Ok(clamp.plan(scope, window, caller.class(QueryClass::Analytics), root)?)
+    Ok(rollup_plan(
+        clamp,
+        scope,
+        window,
+        caller.class(QueryClass::Analytics),
+        root,
+    )?)
 }
 
 /// Step 1 of a query with dimensions: the dimension keys by descending value of the measure when it is
@@ -243,5 +249,11 @@ pub fn mcp_metrics_totals(
             .ordered(order)?
             .limited(limit)?
     };
-    Ok(clamp.plan(scope, window, QueryClass::Alert, Node::Aggregate(aggregate))?)
+    Ok(rollup_plan(
+        clamp,
+        scope,
+        window,
+        QueryClass::Alert,
+        Node::Aggregate(aggregate),
+    )?)
 }
