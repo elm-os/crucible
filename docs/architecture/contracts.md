@@ -423,7 +423,8 @@ only against real ClickHouse by the `sqliso` suite.
 | `presign_put(key, content_type, sha256, len, ttl) -> Presigned` | Content type, length and checksum are signed headers, so the store refuses any other body or type; uses the public endpoint |
 | `presign_get(key, disposition, ttl) -> Presigned` | Uses the public endpoint; the answer carries the disposition (`inline` or `attachment`) |
 | `head(key) -> Option<ObjectMeta { key, len, sha256?, created_at }>` | |
-| `put_small(key, bytes)`, `get_stream(key) -> ByteStream` | Internal endpoint |
+| `put_small(key, content_type, bytes)`, `get_stream(key) -> ByteStream` | Internal endpoint |
+| `start_upload(key, content_type) -> upload_id`, `upload_part(key, upload_id, number, bytes) -> etag`, `finish_upload(key, upload_id, etags)`, `abort_upload(key, upload_id)` | A multipart upload on the internal endpoint: parts 1 to 10,000, each but the last at least 5 MiB (`MIN_PART_BYTES`); nothing appears under the key until `finish_upload` joins the parts in order, and then the object appears whole; abandoning an upload that is gone succeeds (#157) |
 | `delete(key)`, `delete_batch(keys)`, `list(prefix, after) -> ObjectPage { objects, next }` | Deleting a key that holds nothing succeeds; `delete_batch` takes up to 1,000 keys; a listing may lag behind recent writes and deletes |
 
 `Presigned` is `{ url, headers, expires_at }`: the client sends the signed headers exactly as given. Every method
@@ -2730,12 +2731,19 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   channels for a rule; everything else on channels needs the admin `channels` permission, which no key holds.
   `Mailer` is an optional trait in `crucible-env`, not a field of `Env`, built from `smtp.*`. The egress client is
   HTTP/1 over `Net::connect` or `tls_connect` to the vetted address; strict mode's infrastructure list holds the
-  ClickHouse and Postgres hosts only, so node addresses and the object store are not on it.
+  ClickHouse and Postgres hosts and, with an object store, its endpoint and public endpoint hosts (with
+  virtual-host URLs, the bucket's host under each), so node addresses are not on it (#157).
 - Exports (#87): files live 7 days; the export claim lasts 30 minutes (crucible-jobs has no heartbeat for long
   runs); an export's idempotency key lives in its row for the row's life, and a replay answers 202 with the current
-  state; the rate limit counts Postgres rows, so it applies across the deployment. Export files live on the
-  `exports` disk root of the node that wrote them, also when an object store is configured for media, so a file
-  downloads only from that node.
+  state; the rate limit counts Postgres rows, so it applies across the deployment. With an object store, a job
+  writes its file to the bucket as
+  `<prefix>/<project>/exports/<export>/<attempt>/crucible-export-<export>.<extension>`: in one request below 8 MiB,
+  else as a multipart upload of 8 MiB parts, so the object appears whole at the commit; the row records
+  `object:<key>`, and `GET exports/{export_id}/download` answers 303 with a presigned GET (5 minutes, attachment,
+  `Cache-Control: no-store`) from any node, or 501 `media_not_supported` from a node without the store. Without one,
+  files live on the `exports` disk root of the node that wrote them and download only from it, as does a file
+  written to a disk before the store was configured. Each node's sweep also removes the objects of expired, failed
+  and unrecorded attempts, listing only each project's export keys (#157).
 - Lifecycle (#85): `lifecycle_actions` records every ClickHouse action under the fencing token before it is issued;
   `retention_floors`, `nodes` heartbeats, `deletion_node_acks` and the deletion request columns `requested_by`,
   `idempotency_key`, `request_hash`, `places`, `attempts`, `error` and `updated_at` hold the executor's state.
@@ -3072,9 +3080,9 @@ the capability from section 11.6; key principals need the matching scope from 11
 ### 12.8 Export formats
 
 Exports are jobs (claimed work) with a fixed `as_of`, written to an attempt-scoped temporary object and committed
-atomically; gzip is optional; files go to the `exports` disk root of the node that runs the job, also when an object
-store is configured for media, so a file downloads only from that node (section 11.10). Both formats are re-emitted
-from the normalized record with full payloads, never previews.
+atomically; gzip is optional; files go to the object store when one is configured, so any node hands out a presigned
+link to them, and otherwise to the `exports` disk root of the node that runs the job, from which alone they download
+(section 11.10). Both formats are re-emitted from the normalized record with full payloads, never previews.
 
 | Format | Contract |
 |---|---|
@@ -3198,7 +3206,7 @@ Stage B as built (#121):
 | Recent-span index | Entries evicted at the tombstone; reads filtered before that |
 | **Media** | `media_refs` rows for the affected traces are deleted; an object is deleted when its last reference goes; project deletion removes the project's key prefix. Media also follows `payload_retention_days` by reference target time. A presigned download issued earlier can outlive a deletion by at most 5 minutes |
 | **SQL workspace path** | Retention applies immediately through the per-project row policy. A deletion becomes invisible to SQL when the executor issues the masking delete (step 5), not at request time. The target is 60 s after the request; it is a target and not a bound, because step 5 waits for every live node's checkpoint. Project deletion also drops the project's ClickHouse identity and policies |
-| Export files | Files created before the request are expired (`export_expired`) |
+| Export files | Files created before the request are expired (`export_expired`); with an object store, the deletion executor deletes their objects after the expiring transaction commits, and the exports sweep removes any it misses (#157) |
 | Control-plane rows (project deletion) | Project, memberships, keys (through the key feed), dashboards, alerts, channels, saved queries, runs, salts and secrets |
 
 ### 13.5 SLA
@@ -3261,8 +3269,12 @@ Optional. Owner: `crucible-media` on `ObjectStore`. Without an object store, cli
 4. `PATCH projects/{id}/media/{media_id}` confirms: the server calls `head`, checks the length (and the checksum
    where the store returns it), and marks the object `uploaded`; a mismatch is `media_hash_mismatch`.
 5. `GET projects/{id}/media/{media_id}` returns metadata and a presigned GET.
-6. `GET projects/{id}/media?trace_id=&span_id=` lists the uses in a trace, or in one of its spans; the UI previews
-   media from this list.
+6. `GET projects/{id}/media?trace_id=&span_id=` lists the uses in a trace, or in one of its spans.
+7. `GET projects/{id}/spans/{trace_id}/{span_id}/media?start_time=` lists the media one span references, at most 64:
+   those its input, output and metadata name, read in one point read of `span_payload` and found by a reference
+   reader that the binary takes from `crucible-compat`, each with its field, the JSON pointer of the string that
+   names it and the media the project holds for it; then the media uploaded for the span that its payload does not
+   name. It answers 404 when the span's payload is not stored. The span panel's Media tab reads it (#157).
 
 ### 14.3 Keys, references and tokens
 
@@ -3290,7 +3302,7 @@ Media (#99), in the crate `crucible-media`:
 | Rows | Migration `V10__media`. `media_objects.state` holds only `pending` and `uploaded`: the collector deletes a collected object's row instead of marking it, and a new upload of the same bytes gets a new id and a new key. A `media_refs` row references its object without a cascade, so an object row can be deleted only once no use refers to it, and a use recorded while its object is collected makes one of the two transactions fail and keeps the object |
 | Object key | The `<yyyy>/<mm>` of the key is that of the media id's own time, so an id's key never changes |
 | Collector | The `media-gc` leader job, with fenced writes, in order: uses whose target time is before their project's payload cut-off go (`payload_retention_days`, capped by `retention_days`, aligned to UTC days); pending objects asked for more than 24 h ago lose their row and uses, then the stored object; uploaded objects that no use refers to lose their row, then the stored object; once a week, the orphan scan pages through the deployment's prefix (its position is the job cursor) and deletes objects older than 48 h whose media id has no row. A row is deleted before its object; a crash in between leaves an orphan for the next scan |
-| Tokens | No Crucible media token exists: the UI previews media from the list of uses (14.2 step 6). The compat endpoint serves both HTTP ingest listeners, with its wire shapes in `crucible-compat`; the dialect's media id is the first 22 characters of the URL-safe base64 of the SHA-256, and the object is found again by the hash range that the id fixes |
+| Tokens | No Crucible media token exists: the span panel's Media tab lists a span's media through 14.2 step 7, which finds the dialect's references in the payload and adds the span's recorded uses. The compat endpoint serves both HTTP ingest listeners, with its wire shapes in `crucible-compat`; the dialect's media id is the first 22 characters of the URL-safe base64 of the SHA-256, and the object is found again by the hash range that the id fixes |
 | Serving | The UI's CSP allows `img-src` and `media-src` from the object store's public origin. Types outside the inline-safe list download as attachments |
 
 ## 15. Change control
@@ -3328,3 +3340,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #149: the hourly tier `mcp_tool_rollup_hourly`, table 19 (3.10, 6.3, 6.4); the copy's marker rows (5.5); schema step 0005 and the runner's lease renewal (6.6); no workspace access (7.4); tiered aggregates and their rendering (8.1, 8.3); long-window MCP reads (8.7, 9.9); deletion reach (13.4) |
 | v2 | 2026-11-21 | Settled in code by #162: the proxy's content capture, with its sampling, canonical JSON and result shape (9.10); the content keys the proxy sends (9.1); flush and shutdown share one deadline in every SDK (9.10) |
 | v2 | 2026-11-21 | Settled in code by #164: `Migrations::apply` records what was applied (2.7); a server without `--migrate` waits for every step (5.8, 6.6); a changed step applies once, and only under an accepted master key, which restates the master-key rule (6.6); released steps render from the current table list (6.7) |
+| v2 | 2026-11-21 | Settled in code by #157: multipart uploads and `put_small`'s content type (2.10); export files on the object store (11.10, 12.8, 13.4); the object store on strict egress's infrastructure list (11.10); the media of one span (14.2, 14.5) |
