@@ -587,7 +587,9 @@ different parameters must all hold; each takes at most 100 values.
 On the trace list, `observation_type` and `metadata` keep the traces that have a matching span, and every other
 filter tests the trace's head span: `level=error` finds traces whose head span is an error, and
 `observation_type=tool` finds traces with a tool span anywhere. The trace list refuses `observation_type` together
-with `metadata` (422 `validation_failed`, code `conflict`); the span list takes both.
+with `metadata` (422 `validation_failed`, code `conflict`); the span list takes both. A refused filter names its
+member with the same code wherever it is given: `/level` as a query parameter, `/filters/level` in a search
+request, `/filter/level` in the arguments of an MCP tool.
 
 ```sh
 curl -s -H "Authorization: Bearer $CRUCIBLE_SECRET_KEY" \

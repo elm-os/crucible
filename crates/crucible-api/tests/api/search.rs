@@ -179,7 +179,10 @@ fn search_takes_the_filters_of_the_lists() {
             [pair("/filters/tags", "too_many_values")]
         );
         let loud = filtered(json!({"level": ["loud"]}));
-        assert_eq!(refused(search(&api, &loud).await)[0].1, "invalid");
+        assert_eq!(
+            refused(search(&api, &loud).await),
+            [pair("/filters/level", "invalid_value")]
+        );
         let unknown = filtered(json!({"color": ["red"]}));
         assert_eq!(refused(search(&api, &unknown).await)[0].1, "invalid");
     });

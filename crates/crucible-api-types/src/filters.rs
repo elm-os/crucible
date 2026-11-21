@@ -27,13 +27,18 @@ pub struct ListFilter {
     #[ts(optional)]
     pub version: Option<Vec<String>>,
     /// Levels.
+    // Read as text and checked with the other members, so every surface that takes the filter refuses an unknown
+    // level alike; the schema still lists the levels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub level: Option<Vec<Level>>,
+    #[schema(value_type = Option<Vec<Level>>)]
+    #[ts(optional, as = "Option<Vec<Level>>")]
+    pub level: Option<Vec<String>>,
     /// Observation types.
+    // Read as text and checked like `level`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub observation_type: Option<Vec<ObservationType>>,
+    #[schema(value_type = Option<Vec<ObservationType>>)]
+    #[ts(optional, as = "Option<Vec<ObservationType>>")]
+    pub observation_type: Option<Vec<String>>,
     /// User ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

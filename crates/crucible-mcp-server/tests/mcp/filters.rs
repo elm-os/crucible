@@ -101,9 +101,15 @@ fn one_invalid_filter_is_refused_alike_by_every_surface() {
         let mut client = Client::modern(&server, &key(1));
         let pair = |member: &str, code: &str| (member.to_owned(), code.to_owned());
 
-        // Refused wherever the filter is taken: a metadata entry without `key=value`, and a list of too many values.
+        // Refused wherever the filter is taken: a level or a type that does not exist, a metadata entry without
+        // `key=value`, and a list of too many values.
         let tags: Vec<String> = (0..101).map(|n| format!("t{n}")).collect();
         let everywhere = [
+            (json!({ "level": ["loud"] }), pair("level", "invalid_value")),
+            (
+                json!({ "observation_type": ["llm"] }),
+                pair("observation_type", "invalid_value"),
+            ),
             (
                 json!({ "metadata": ["team"] }),
                 pair("metadata", "invalid_value"),

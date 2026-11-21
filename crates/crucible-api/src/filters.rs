@@ -5,7 +5,7 @@
 //! under the pointer its caller gives the filter: a query parameter of a list, `/filters/...` in a search body,
 //! `filter/...` in an MCP tool's arguments.
 
-use crucible_api_types::{self as wire, ListFilter};
+use crucible_api_types::ListFilter;
 use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_TAGS, TextField};
 use crucible_records::{Level, ObservationType};
 
@@ -47,30 +47,19 @@ fn invalid(member: &'static str, message: String) -> FilterProblem {
     }
 }
 
-/// The levels written as `values`, for a filter given as text (query parameters, an MCP tool's arguments).
-pub fn parse_levels(values: &[String]) -> Result<Vec<wire::Level>, FilterProblem> {
-    values
-        .iter()
-        .map(|text| Level::parse(text).map(wire::Level::from))
-        .collect::<Option<_>>()
-        .ok_or_else(|| {
-            let all = names(Level::ALL, Level::as_str);
-            invalid("level", format!("expected one of {all}"))
-        })
-}
-
-/// The observation types written as `values`, for a filter given as text.
-pub fn parse_observation_types(
+/// The values of an enum member written as text, or the problem that names the member and its values.
+fn parse_all<T: Copy>(
+    member: &'static str,
     values: &[String],
-) -> Result<Vec<wire::ObservationType>, FilterProblem> {
+    all: &[T],
+    parse: impl Fn(&str) -> Option<T>,
+    name: impl Fn(&T) -> &'static str,
+) -> Result<Vec<T>, FilterProblem> {
     values
         .iter()
-        .map(|text| ObservationType::parse(text).map(wire::ObservationType::from))
+        .map(|text| parse(text))
         .collect::<Option<_>>()
-        .ok_or_else(|| {
-            let all = names(ObservationType::ALL, ObservationType::as_str);
-            invalid("observation_type", format!("expected one of {all}"))
-        })
+        .ok_or_else(|| invalid(member, format!("expected one of {}", names(all, name))))
 }
 
 /// The filter AST of a list filter for `list`: one condition per member that holds values, in a fixed order. A
@@ -104,21 +93,36 @@ pub fn plan_filter(filter: &ListFilter, list: FilterList) -> Result<Filter, Vec<
             conditions.push(Filter::Text(field, values.clone()));
         }
     }
-    if let Some(levels) = filter.level.as_ref().filter(|v| held("level", v.len())) {
-        conditions.push(Filter::Level(levels.iter().map(|l| (*l).into()).collect()));
-    }
+    let levels = filter.level.as_ref().filter(|v| held("level", v.len()));
     let types = filter.observation_type.as_ref();
-    if let Some(types) = types.filter(|v| held("observation_type", v.len())) {
-        let types = types.iter().map(|t| (*t).into()).collect();
-        conditions.push(Filter::ObservationType(types));
-    }
-    if let Some(tags) = filter.tags.as_ref().filter(|v| held("tags", v.len())) {
-        conditions.push(Filter::Tags(tags.clone()));
-    }
+    let types = types.filter(|v| held("observation_type", v.len()));
+    let tags = filter.tags.as_ref().filter(|v| held("tags", v.len()));
     let metadata = filter
         .metadata
         .as_ref()
         .filter(|v| held("metadata", v.len()));
+    if let Some(levels) = levels {
+        match parse_all("level", levels, Level::ALL, Level::parse, Level::as_str) {
+            Ok(levels) => conditions.push(Filter::Level(levels)),
+            Err(problem) => problems.push(problem),
+        }
+    }
+    if let Some(types) = types {
+        let all = ObservationType::ALL;
+        match parse_all(
+            "observation_type",
+            types,
+            all,
+            ObservationType::parse,
+            ObservationType::as_str,
+        ) {
+            Ok(types) => conditions.push(Filter::ObservationType(types)),
+            Err(problem) => problems.push(problem),
+        }
+    }
+    if let Some(tags) = tags {
+        conditions.push(Filter::Tags(tags.clone()));
+    }
     for entry in metadata.into_iter().flatten() {
         match entry.split_once('=') {
             Some((key, value)) if !key.is_empty() => conditions.push(Filter::Metadata {
@@ -181,31 +185,26 @@ pub(crate) fn list_filter(params: &mut Params, list: FilterList) -> Filter {
     let (environment, release, version) = (text("environment"), text("release"), text("version"));
     let (user_id, session_id) = (text("user_id"), text("session_id"));
     let (tags, metadata) = (text("tags"), text("metadata"));
-    let (level, types) = (params.all("level"), params.all("observation_type"));
+    let (level, observation_type) = (text("level"), text("observation_type"));
     let name = params.optional("name");
-    let mut problems = Vec::new();
-    let level = parse_levels(&level).map_err(|problem| problems.push(problem));
-    let types = parse_observation_types(&types).map_err(|problem| problems.push(problem));
     let filter = ListFilter {
         environment,
         release,
         version,
-        level: level.ok().filter(|values| !values.is_empty()),
-        observation_type: types.ok().filter(|values| !values.is_empty()),
+        level,
+        observation_type,
         user_id,
         session_id,
         tags,
         metadata,
         name,
     };
-    let planned = plan_filter(&filter, list).unwrap_or_else(|more| {
-        problems.extend(more);
+    plan_filter(&filter, list).unwrap_or_else(|problems| {
+        for problem in problems {
+            params.error(problem.member, problem.code, &problem.message);
+        }
         Filter::all()
-    });
-    for problem in problems {
-        params.error(problem.member, problem.code, &problem.message);
-    }
-    planned
+    })
 }
 
 #[cfg(test)]
@@ -225,8 +224,8 @@ mod tests {
         );
         let filter = ListFilter {
             environment: Some(vec!["prod".to_owned()]),
-            level: Some(vec![wire::Level::Error, wire::Level::Warning]),
-            observation_type: Some(vec![wire::ObservationType::Tool]),
+            level: Some(vec!["error".to_owned(), "warning".to_owned()]),
+            observation_type: Some(vec!["tool".to_owned()]),
             tags: Some(vec!["vip".to_owned()]),
             metadata: Some(vec!["team=a=b".to_owned()]),
             name: Some("Checkout".to_owned()),
@@ -254,7 +253,7 @@ mod tests {
             release: values(101),
             tags: values(101),
             metadata: Some(vec!["=x".to_owned(), "plain".to_owned()]),
-            level: Some(vec![wire::Level::Debug; 101]),
+            level: Some(vec!["debug".to_owned(); 101]),
             ..ListFilter::default()
         };
         let problems: Vec<(&str, &str)> = plan_filter(&filter, FilterList::Spans)
@@ -272,16 +271,23 @@ mod tests {
                 ("metadata", "invalid_value"),
             ]
         );
+        let unknown = ListFilter {
+            level: Some(vec!["loud".to_owned()]),
+            observation_type: Some(vec!["tool".to_owned(), "llm".to_owned()]),
+            ..ListFilter::default()
+        };
+        let problems = plan_filter(&unknown, FilterList::Spans).unwrap_err();
+        let named: Vec<(&str, &str)> = problems.iter().map(|p| (p.member, p.code)).collect();
         assert_eq!(
-            parse_levels(&["loud".to_owned()]).unwrap_err().message,
-            "expected one of debug, default, warning, error"
+            named,
+            [
+                ("level", "invalid_value"),
+                ("observation_type", "invalid_value")
+            ]
         );
         assert_eq!(
-            parse_observation_types(&["tool".to_owned(), "span".to_owned()]),
-            Ok(vec![
-                wire::ObservationType::Tool,
-                wire::ObservationType::Span
-            ])
+            problems[0].message,
+            "expected one of debug, default, warning, error"
         );
     }
 
@@ -296,7 +302,7 @@ mod tests {
                 .collect()
         };
         let both = ListFilter {
-            observation_type: Some(vec![wire::ObservationType::Tool]),
+            observation_type: Some(vec!["tool".to_owned()]),
             metadata: Some(vec!["plan=pro".to_owned()]),
             ..ListFilter::default()
         };

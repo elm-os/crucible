@@ -3,7 +3,7 @@
 //! filter AST of `crucible-plan` by the REST API's one conversion. Each member is one condition and all of them
 //! must hold; a member with several values holds when any value matches.
 
-use crucible_api::{FilterList, FilterProblem, parse_levels, parse_observation_types, plan_filter};
+use crucible_api::{FilterList, plan_filter};
 use crucible_api_types as wire;
 use crucible_plan::{Filter, FilterField};
 use crucible_query::QueryServiceError;
@@ -59,21 +59,13 @@ impl ListFilter {
         let Some(filter) = filter else {
             return Filter::all();
         };
-        let mut report = |problem: FilterProblem| {
-            let pointer = format!("filter/{}", problem.member);
-            check.error(&pointer, problem.code, &problem.message);
-        };
-        let level = parse_levels(&filter.level).map_err(&mut report).ok();
-        let types = parse_observation_types(&filter.observation_type)
-            .map_err(&mut report)
-            .ok();
         let some = |values: Vec<String>| Some(values).filter(|values| !values.is_empty());
         let filter = wire::ListFilter {
             environment: some(filter.environment),
             release: some(filter.release),
             version: some(filter.version),
-            level: level.filter(|values| !values.is_empty()),
-            observation_type: types.filter(|values| !values.is_empty()),
+            level: some(filter.level),
+            observation_type: some(filter.observation_type),
             user_id: some(filter.user_id),
             session_id: some(filter.session_id),
             tags: some(filter.tags),
@@ -81,7 +73,10 @@ impl ListFilter {
             name: filter.name,
         };
         plan_filter(&filter, list).unwrap_or_else(|problems| {
-            problems.into_iter().for_each(report);
+            for problem in problems {
+                let pointer = format!("filter/{}", problem.member);
+                check.error(&pointer, problem.code, &problem.message);
+            }
             Filter::all()
         })
     }
