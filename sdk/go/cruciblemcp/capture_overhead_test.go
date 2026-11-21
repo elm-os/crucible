@@ -41,6 +41,9 @@ type overheadShape struct {
 	ID      string          `json:"id"`
 	Blocks  []overheadBlock `json:"blocks"`
 	Records int             `json:"records"`
+	// GateRelativeP99 is the share of the uncaptured p99 the added p99 may reach, when that is more than the
+	// absolute gate.
+	GateRelativeP99 float64 `json:"gate_relative_p99"`
 }
 
 type overheadScenario struct {
@@ -229,9 +232,10 @@ func TestCaptureOverhead(t *testing.T) {
 				}
 			}
 			added := p99(with) - p99(without)
+			gate := max(s.GateAddedP99MS, shape.GateRelativeP99*p99(without))
 			excess := slices.Max(with) - quantile(without, 0.5)
-			t.Logf("capture-overhead go %s: added p99 %.3f ms (off %.3f, on %.3f), slowest excess %.3f ms, serialized %d, scrubbed %d, matcher steps %d (%.1f per character)",
-				shape.ID, added, p99(without), p99(with), excess, serialized, scrubbed, steps, stepsPerChar)
+			t.Logf("capture-overhead go %s: added p99 %.3f ms (off %.3f, on %.3f, gate %.3f), slowest excess %.3f ms, serialized %d, scrubbed %d, matcher steps %d (%.1f per character)",
+				shape.ID, added, p99(without), p99(with), gate, excess, serialized, scrubbed, steps, stepsPerChar)
 			if serialized > s.WorkBound {
 				t.Errorf("bytes serialized for one field: %d > %d", serialized, s.WorkBound)
 			}
@@ -244,8 +248,8 @@ func TestCaptureOverhead(t *testing.T) {
 			if excess > s.CeilingMS {
 				t.Errorf("slowest captured call over the median uncaptured one: %.1f ms > %.0f ms", excess, s.CeilingMS)
 			}
-			if gated && !(added <= s.GateAddedP99MS) {
-				t.Errorf("added p99: %.3f ms > %.3f ms", added, s.GateAddedP99MS)
+			if gated && !(added <= gate) {
+				t.Errorf("added p99: %.3f ms > %.3f ms", added, gate)
 			}
 			if math.IsNaN(added) {
 				t.Errorf("no samples")

@@ -463,7 +463,7 @@ class _CappedJson:
                     self.cut = True
                     return False
                 if kind is dict:
-                    return self.object(value.items(), depth, data)  # type: ignore[attr-defined]
+                    return self.mapping(value.items(), depth, data)  # type: ignore[attr-defined]
                 return self.array(value, depth, data)  # type: ignore[arg-type]
             elif not (kind is str or kind is int or kind is bool or value is None):
                 # Not a builtin type: converted, and its result encoded as it is.
@@ -478,9 +478,9 @@ class _CappedJson:
             self.cut = True
             return False
         if isinstance(value, Mapping):
-            return self.object(value.items(), depth, None)
+            return self.mapping(value.items(), depth, None)
         if isinstance(value, LazyObject):
-            return self.object(value.members, depth, None)
+            return self.mapping(value.members, depth, None)
         if isinstance(value, list | tuple):
             return self.array(value, depth, None)
         if isinstance(value, LazyArray):
@@ -499,7 +499,7 @@ class _CappedJson:
             return False
         return self.emit(text + suffix)
 
-    def object(self, members: Iterable[tuple[Any, Any]], depth: int, data: JsonData | None) -> bool:
+    def mapping(self, members: Iterable[tuple[Any, Any]], depth: int, data: JsonData | None) -> bool:
         if not self.emit("{"):
             return False
         first = True
@@ -554,12 +554,12 @@ class _CappedJson:
     def _flat(self, item: object, depth: int, data: JsonData | None, strings: list[str]) -> int:
         """Adds the string values of `item` to `strings` and returns their length, when `item` may stand in a run;
         else returns -1."""
-        if type(item) is not dict or len(item) > _RUN_KEYS or depth >= _MAX_DEPTH:
+        if not isinstance(item, dict) or type(item) is not dict or len(item) > _RUN_KEYS or depth >= _MAX_DEPTH:
             return -1
         keys = tuple(item)
         usable = self._shapes.get(keys)
         if usable is None:
-            usable = self._shapes[keys] = all([self._key(key) for key in keys])
+            usable = self._shapes[keys] = all(self._key(key) for key in keys)
         if not usable:
             return -1
         added = 0

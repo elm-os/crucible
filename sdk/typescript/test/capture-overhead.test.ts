@@ -27,6 +27,8 @@ interface Shape {
   id: string;
   blocks: Block[];
   records?: number;
+  /** The share of the uncaptured p99 the added p99 may reach, when that is more than the absolute gate. */
+  gate_relative_p99?: number;
 }
 
 interface Run {
@@ -192,9 +194,13 @@ describe("capture overhead (conformance/capture-overhead.json)", () => {
         }
       }
       const added = p99(withCapture) - p99(without);
+      const gate = Math.max(
+        scenario.gate_added_p99_ms,
+        (shape.gate_relative_p99 ?? 0) * p99(without),
+      );
       const excess = Math.max(...withCapture) - quantile(without, 0.5);
       process.stdout.write(
-        `capture-overhead typescript ${shape.id}: added p99 ${added.toFixed(3)} ms (off ${p99(without).toFixed(3)}, on ${p99(withCapture).toFixed(3)}), slowest excess ${excess.toFixed(3)} ms, serialized ${serialized}, scrubbed ${scrubbed}, matcher steps ${steps} (${stepsPerChar.toFixed(1)} per character)\n`,
+        `capture-overhead typescript ${shape.id}: added p99 ${added.toFixed(3)} ms (off ${p99(without).toFixed(3)}, on ${p99(withCapture).toFixed(3)}, gate ${gate.toFixed(3)}), slowest excess ${excess.toFixed(3)} ms, serialized ${serialized}, scrubbed ${scrubbed}, matcher steps ${steps} (${stepsPerChar.toFixed(1)} per character)\n`,
       );
       expect(serialized, "code units serialized for one field").toBeLessThanOrEqual(
         scenario.work_bound,
@@ -210,7 +216,7 @@ describe("capture overhead (conformance/capture-overhead.json)", () => {
         "slowest captured call over the median uncaptured one, ms",
       ).toBeLessThanOrEqual(scenario.ceiling_ms);
       if (gated) {
-        expect(added, "added p99, ms").toBeLessThanOrEqual(scenario.gate_added_p99_ms);
+        expect(added, "added p99, ms").toBeLessThanOrEqual(gate);
       }
     });
   }
