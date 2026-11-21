@@ -1,7 +1,7 @@
 // Scrub rules, content capture and the keyed hashes, as pure functions.
 
 import { readFileSync } from "node:fs";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { captured, decide, glob, jsonPrefix, setCaptureWorkHook } from "../src/mcp/capture.ts";
 import { sessionKey, stateHash } from "../src/mcp/wire.ts";
 import { patternFacts } from "../src/pattern.ts";
@@ -456,6 +456,22 @@ describe("capture", () => {
     };
     expect(jsonPrefix([record, record], 1_000)?.text).toBe('[{"id":7},{"id":7}]');
     expect(reads).toBe(2);
+    // A record with a long member name leaves the run, so no serializer call writes more than the window.
+    const stringify = JSON.stringify;
+    let longest = 0;
+    const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const text = stringify(...(args as Parameters<typeof stringify>));
+      longest = Math.max(longest, text?.length ?? 0);
+      return text;
+    });
+    try {
+      captured([{ ["k".repeat(5 * 1024 * 1024)]: 1 }, { id: 1 }], 16_384);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(longest).toBeLessThanOrEqual(16_384 + 1_024);
+    const named = [{ id: 1 }, { ["n".repeat(129)]: 2 }];
+    expect(jsonPrefix(named, 1_000_000)?.text).toBe(JSON.stringify(named));
   });
 
   test("a value that does not serialize is not captured", () => {

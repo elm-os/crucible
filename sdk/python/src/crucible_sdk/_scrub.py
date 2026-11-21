@@ -429,8 +429,8 @@ class _CappedJson:
         self.cut = False
         self.serialized = 0
         self.scrubbed = 0
-        # Per tuple of keys: whether an object with these keys may stand in a run.
-        self._shapes: dict[tuple[object, ...], bool] = {}
+        # Per tuple of keys: their length in all when an object with these keys may stand in a run, else -1.
+        self._shapes: dict[tuple[object, ...], int] = {}
 
     def emit(self, text: str) -> bool:
         self.serialized += len(text)
@@ -552,17 +552,19 @@ class _CappedJson:
         return self.emit("]")
 
     def _flat(self, item: object, depth: int, data: JsonData | None, strings: list[str]) -> int:
-        """Adds the string values of `item` to `strings` and returns their length, when `item` may stand in a run;
-        else returns -1."""
+        """Adds the string values of `item` to `strings` and returns their length and its keys', when `item` may stand
+        in a run; else returns -1."""
         if not isinstance(item, dict) or type(item) is not dict or len(item) > _RUN_KEYS or depth >= _MAX_DEPTH:
             return -1
         keys = tuple(item)
-        usable = self._shapes.get(keys)
-        if usable is None:
-            usable = self._shapes[keys] = all(self._key(key) for key in keys)
-        if not usable:
+        shape = self._shapes.get(keys)
+        if shape is None:
+            usable = all(self._key(key) for key in keys)
+            shape = self._shapes[keys] = sum(map(len, keys)) if usable else -1
+        if shape < 0:
             return -1
-        added = 0
+        # The keys count toward the run's size like the strings, since a run that does not fit is written again.
+        added = shape
         for value in item.values():
             kind = type(value)
             if kind is str:
@@ -597,6 +599,8 @@ class _CappedJson:
         """Writes a run that scrubbing leaves alone in one call when it fits; else its halves, down to the one object
         that does not fit, which goes item by item and meets the cut."""
         text = _encode_run(run)[1:-1]
+        # Counted whether it fits or not: a run that does not fit is serialized again, in halves.
+        self.serialized += len(text)
         if not first:
             text = "," + text
         if text.isascii():
@@ -608,7 +612,6 @@ class _CappedJson:
         if size <= self.left:
             self.parts.append(text)
             self.left -= size
-            self.serialized += len(text)
             return True
         if len(run) == 1:
             return self._items(run, first, depth, data)

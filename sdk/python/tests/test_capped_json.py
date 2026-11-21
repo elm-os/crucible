@@ -15,7 +15,7 @@ from mcp_types import CallToolResult, TextContent
 from crucible_sdk import _keys, _scrub
 from crucible_sdk.mcp._middleware import Capture, CrucibleMiddleware, _lazy
 from tests.capture_reference import reference_capped_json, reference_lazy, reference_result
-from tests.test_scrub import SCRUBBER, Tone, generated, random_block, random_json
+from tests.test_scrub import RULES, SCRUBBER, Tone, generated, random_block, random_json
 
 DENIED = ["Authorization", "set-cookie", "Request_State", "proxy.authorization", "cookie", "x-cookie"]
 TEXTS = ["", "SKU-00001", "ada@example.com", "4111 1111 1111 1111", "é😀", "\ud800", "a\x00b", 'q"\\\n', "\t\x01"]
@@ -171,6 +171,18 @@ def test_a_joined_check_leaves_alone_only_texts_the_rules_leave_alone() -> None:
             assert alone, texts
         elif "-----" not in "".join(texts):
             assert not alone, texts
+
+
+def test_no_rule_but_pem_matches_across_a_nul() -> None:
+    # `leaves_alone` joins texts by NUL on the strength of this; pinned on every rule's positive vectors.
+    for rule, vectors in zip(SCRUBBER.rules, RULES["rules"], strict=True):
+        if rule.name == "pem":
+            continue
+        for text in vectors["positive"]:
+            for at in range(1, len(text)):
+                joined = text[:at] + "\x00" + text[at:]
+                for match in rule.regex.finditer(joined):
+                    assert not match.start() <= at < match.end(), (rule.name, joined)
 
 
 def test_the_work_of_a_record_capture_stays_within_the_bound() -> None:

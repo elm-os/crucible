@@ -396,8 +396,8 @@ counts through a hook inside the SDK.
   the laptop's round counts and fails a shape whose added p99 is above its gate: `gate_added_p99_ms` (1 ms), or,
   for a shape with `gate_relative_p99`, that share of the p99 of its calls without capture when that is larger.
   Only text-5m has one (5%): its calls move 5 MiB through the MCP library, so without capture their p99 measured
-  25 ms (Rust) to 104 ms (Go) on the laptop, and two arms without capture differed by up to 2.3 ms there, which a
-  1 ms gate cannot tell from capture. Where the library hands the result over in memory (Python, TypeScript), the
+  24 ms (Rust) to 105 ms (Go) on the laptop, and in A/A runs, both arms without capture, the two differed by
+  1.15 ms (Go), more than the 1 ms gate, and by at most 0.39 ms (Rust). Where the library hands the result over in memory (Python, TypeScript), the
   p99 without capture is under 1 ms, so the 1 ms gate still applies. CI never gates on timing.
 
 | SDK | Test | Command, from the repository root |

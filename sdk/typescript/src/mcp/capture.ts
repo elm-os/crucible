@@ -302,7 +302,7 @@ class BoundedJson {
 /** A run of flat records is at most this many items, each of at most this many members. */
 const RUN_ITEMS = 64;
 const RUN_MEMBERS = 16;
-/** The longest string a member of a flat record holds, so that a run writes a bounded amount of text. */
+/** The longest name and string a member of a flat record has, so that a run writes a bounded amount of text. */
 const RUN_STRING = 128;
 
 /**
@@ -322,9 +322,12 @@ function flatRun(items: readonly unknown[], start: number): Record<string, unkno
     if (keys.length > RUN_MEMBERS) {
       break;
     }
-    // No prototype, so that a member named `__proto__` stays a member, as in the record.
+    // No prototype, so that a member named like the prototype accessor stays a member, as in the record.
     const copy: Record<string, unknown> = Object.create(null);
     for (const key of keys) {
+      if (key.length > RUN_STRING) {
+        return run;
+      }
       const member = (item as Record<string, unknown>)[key];
       if (!flatMember(member)) {
         return run;
