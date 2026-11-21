@@ -167,8 +167,9 @@ that you delete right after.
 1. Sign in at https://crates.io with GitHub, and verify your email address at https://crates.io/settings/profile.
 2. Create an API token at https://crates.io/settings/tokens/new: expiration 7 days, scopes `publish-new` and
    `publish-update`, and the crate pattern `crucible-sdk`.
-3. Under Settings, Environments, create the environment `crates-io` and add the environment secret
-   `CARGO_REGISTRY_TOKEN` holding the token. Set the repository variable `PUBLISH_CRATES` to `true`.
+3. In the repository's settings on GitHub, under Environments, create the environment `crates-io` and add the
+   environment secret `CARGO_REGISTRY_TOKEN` holding the token. Set the repository variable `PUBLISH_CRATES` to
+   `true`.
 4. Run the workflow from the current release's tag. With the secret present, the `crates` job publishes with it.
 5. When the crate is on https://crates.io/crates/crucible-sdk: open its Settings, Trusted Publishing, Add, GitHub, and
    enter owner `elm-os`, repository `crucible`, workflow filename `sdk-release.yml` and environment `crates-io`.
