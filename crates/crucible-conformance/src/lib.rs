@@ -180,7 +180,8 @@ impl Ctx {
         let schema = schema_base(&self.variant, Granularity::Day);
         let access = access_service(&self.variant, &self.access_params()?);
         let column = schema_span_usage_aggregate(&self.variant);
-        let hourly = schema_mcp_tool_rollup_hourly(&self.variant, &Ident::new(&self.config.admin.user)?);
+        let hourly =
+            schema_mcp_tool_rollup_hourly(&self.variant, &Ident::new(&self.config.admin.user)?);
         for step in [
             &schema, &schema, &access, &access, &column, &column, &hourly, &hourly,
         ] {

@@ -762,7 +762,12 @@ fn tiered_from(
     let tier_time = table(tier).retention.time_column;
     let split = HourSplit::of(scope.window).ok_or(RenderError::Window(def.name()))?;
     let mut columns: Vec<&str> = n.group().iter().map(ColumnRef::name).collect();
-    columns.extend(n.measures().iter().filter_map(Measure::column).map(ColumnRef::name));
+    columns.extend(
+        n.measures()
+            .iter()
+            .filter_map(Measure::column)
+            .map(ColumnRef::name),
+    );
     if series {
         columns.push(time);
     }

@@ -1136,7 +1136,9 @@ impl Node {
         match self {
             Self::Aggregate(n) => Ok(Self::Aggregate(n.hourly()?)),
             Self::TimeSeries(n) => Ok(Self::TimeSeries(n.hourly()?)),
-            _ => Err(PlanError::HourlyTier("a node other than an aggregate or a time series")),
+            _ => Err(PlanError::HourlyTier(
+                "a node other than an aggregate or a time series",
+            )),
         }
     }
 

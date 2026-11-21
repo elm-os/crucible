@@ -9,15 +9,15 @@
 use crucible_auth::test_support;
 use crucible_plan::{
     Aggregation, Caller, CaptureClass, CmpOp, DimensionId, Fill, Filter, Granularity, Literal,
-    MCP_HOURLY_MIN_WINDOW_HOURS, MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest, McpOpsFilter, McpRead, McpSelection,
-    McpUserKey, MeasureId, MetricsError, MetricsQuery, Node, PlanError, Pred, QueryClass,
-    QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema, Step, effective_window,
-    mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys, mcp_error_breakdown,
-    mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series,
-    mcp_metrics_totals, mcp_operation, mcp_operation_chain, mcp_operation_content,
-    mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers, mcp_session_errors,
-    mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools, mcp_user_errors, mcp_users,
-    metrics_schema, metrics_series, subject_hash,
+    MCP_HOURLY_MIN_WINDOW_HOURS, MCP_LIST_MAX_LIMIT, McpContentField, McpOperationsRequest,
+    McpOpsFilter, McpRead, McpSelection, McpUserKey, MeasureId, MetricsError, MetricsQuery, Node,
+    PlanError, Pred, QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice, SourceSchema,
+    Step, effective_window, mcp_client_versions, mcp_clients, mcp_compare_tools, mcp_deploys,
+    mcp_error_breakdown, mcp_error_classes, mcp_inventory, mcp_metrics_other, mcp_metrics_ranking,
+    mcp_metrics_series, mcp_metrics_totals, mcp_operation, mcp_operation_chain,
+    mcp_operation_content, mcp_operation_peers, mcp_operations, mcp_presence, mcp_servers,
+    mcp_session_errors, mcp_sessions, mcp_tool_clients, mcp_tool_series, mcp_tools,
+    mcp_user_errors, mcp_users, metrics_schema, metrics_series, subject_hash,
 };
 use crucible_records::{
     CaptureSource, McpSide, ProjectId, ProjectScope, SpanId, TableId, TimeWindow, Timestamp,

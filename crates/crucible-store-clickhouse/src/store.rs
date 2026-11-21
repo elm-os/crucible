@@ -1263,7 +1263,8 @@ mod tests {
             migration_deadline(&hourly),
             Duration::from_secs(3_600 + DEADLINE_SLACK_SECS)
         );
-        let base = crucible_schema::schema_base(&Variant::SingleNode, crucible_schema::Granularity::Day);
+        let base =
+            crucible_schema::schema_base(&Variant::SingleNode, crucible_schema::Granularity::Day);
         assert_eq!(migration_deadline(&base), CHANGE_DEADLINE);
     }
 

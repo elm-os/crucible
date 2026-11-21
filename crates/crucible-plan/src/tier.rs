@@ -61,17 +61,30 @@ mod tests {
     #[test]
     fn whole_hours_inside_a_day() {
         let day = 1_794_873_600_000_000; // 2026-11-17T00:00:00Z
-        let split = HourSplit::of(window(day + 23 * MINUTE + 5, day + 86_400_000_000 + 23 * MINUTE)).unwrap();
+        let split = HourSplit::of(window(
+            day + 23 * MINUTE + 5,
+            day + 86_400_000_000 + 23 * MINUTE,
+        ))
+        .unwrap();
         assert_eq!(split.first(), Timestamp::from_micros(day + HOUR));
         assert_eq!(split.end(), Timestamp::from_micros(day + 86_400_000_000));
         // An hour-aligned window is all whole hours.
         let aligned = HourSplit::of(window(day, day + 3 * HOUR)).unwrap();
-        assert_eq!((aligned.first(), aligned.end()), (Timestamp::from_micros(day), Timestamp::from_micros(day + 3 * HOUR)));
+        assert_eq!(
+            (aligned.first(), aligned.end()),
+            (
+                Timestamp::from_micros(day),
+                Timestamp::from_micros(day + 3 * HOUR)
+            )
+        );
         // A window that ends one microsecond into a minute reads that minute, so the hour it completes is whole.
         let into = HourSplit::of(window(day, day + HOUR - MINUTE + 1)).unwrap();
         assert_eq!(into.end(), Timestamp::from_micros(day + HOUR));
         assert_eq!(HourSplit::of(window(day, day + HOUR - MINUTE)), None);
-        assert_eq!(HourSplit::of(window(day + MINUTE, day + 2 * HOUR - MINUTE)), None);
+        assert_eq!(
+            HourSplit::of(window(day + MINUTE, day + 2 * HOUR - MINUTE)),
+            None
+        );
     }
 
     proptest! {

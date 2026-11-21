@@ -126,10 +126,9 @@ fn tier_rows(table: TableId, project: ProjectId, epoch: WalEpoch, lines: &[Line]
     rollup(table, project, epoch, 0, lines.len())
         .each(time, |row| {
             // The marker row holds the first instant of the partition.
-            Value::Time(line(row).map_or_else(
-                || Timestamp::from_micros(1_793_491_200_000_000),
-                |l| l.0,
-            ))
+            Value::Time(
+                line(row).map_or_else(|| Timestamp::from_micros(1_793_491_200_000_000), |l| l.0),
+            )
         })
         .each("side", |row| {
             Value::Enum(of(row).map_or(McpSide::None, |k| k.side).value())
@@ -149,7 +148,9 @@ fn tier_rows(table: TableId, project: ProjectId, epoch: WalEpoch, lines: &[Line]
         .each("error_class", |row| {
             Value::Enum(of(row).map_or(ErrorClass::None, |k| k.class).value())
         })
-        .each("caller_fault", |row| Value::UInt(of(row).map_or(0, |k| k.fault)))
+        .each("caller_fault", |row| {
+            Value::UInt(of(row).map_or(0, |k| k.fault))
+        })
         .each("count", |row| {
             Value::UInt(line(row).map_or(0, |(_, k, _, n)| n * KINDS[k].count))
         })
@@ -249,8 +250,8 @@ fn live<E: std::fmt::Display>(plan: Result<Option<QueryPlan>, E>) -> Result<Quer
 pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     let scope = load(ctx).await?;
     let from = hour_start().saturating_add_micros(37 * MINUTE);
-    let window = TimeWindow::new(from, from.saturating_add_micros(26 * HOUR))
-        .map_err(|e| anyhow!("{e}"))?;
+    let window =
+        TimeWindow::new(from, from.saturating_add_micros(26 * HOUR)).map_err(|e| anyhow!("{e}"))?;
     let clamp = RetentionClamp::new(RetentionSettings::default(), T0);
     let caller = Caller::Session;
     // The window's minute rows of one kind: two in each of its 25 whole hours, and 11:05 and 11:35 of the last.
@@ -298,31 +299,56 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
             ..read
         };
         // The SDK's rows of files (2 + 1 + 1 a minute) and the OTLP rows of db (1), never the proxy's.
-        let servers = tiered(ctx, "the servers", live(mcp_servers(scope, window, &clamp, caller, &read))?).await?;
+        let servers = tiered(
+            ctx,
+            "the servers",
+            live(mcp_servers(scope, window, &clamp, caller, &read))?,
+        )
+        .await?;
         expect(sum_of(&servers, 4) == 5 * per_kind, || {
             format!("the servers' calls {when} the merge: {servers:?}")
         })?;
-        let tools = tiered(ctx, "the tools", live(mcp_tools(scope, window, &clamp, caller, &read))?).await?;
+        let tools = tiered(
+            ctx,
+            "the tools",
+            live(mcp_tools(scope, window, &clamp, caller, &read))?,
+        )
+        .await?;
         expect(sum_of(&tools, 4) == 5 * per_kind, || {
             format!("the tools {when} the merge: {tools:?}")
         })?;
-        let series = live(mcp_tool_series(scope, window, &clamp, caller, &files, "read", Step::Hour))?;
+        let series = live(mcp_tool_series(
+            scope,
+            window,
+            &clamp,
+            caller,
+            &files,
+            "read",
+            Step::Hour,
+        ))?;
         let series = tiered(ctx, "the tool series", series).await?;
         expect(sum_of(&series, 3) == 3 * per_kind, || {
             format!("the tool series {when} the merge: {series:?}")
         })?;
-        let clients = live(mcp_tool_clients(scope, window, &clamp, caller, &files, "read"))?;
+        let clients = live(mcp_tool_clients(
+            scope, window, &clamp, caller, &files, "read",
+        ))?;
         tiered(ctx, "the tool clients", clients).await?;
         let classes = live(mcp_error_classes(scope, window, &clamp, caller, &read))?;
         tiered(ctx, "the error classes", classes).await?;
         let by_client = live(mcp_clients(scope, window, &clamp, caller, &read))?;
         tiered(ctx, "the clients", by_client).await?;
         let deploys = ["v1".to_owned(), "v2".to_owned()];
-        let compare = live(mcp_compare_tools(scope, window, &clamp, caller, &files, &deploys))?;
+        let compare = live(mcp_compare_tools(
+            scope, window, &clamp, caller, &files, &deploys,
+        ))?;
         let compare = tiered(ctx, "the compare", compare).await?;
-        expect(compare.iter().any(|row| row.values().first() == Some(&text("v1"))), || {
-            format!("the compare {when} the merge: {compare:?}")
-        })?;
+        expect(
+            compare
+                .iter()
+                .any(|row| row.values().first() == Some(&text("v1"))),
+            || format!("the compare {when} the merge: {compare:?}"),
+        )?;
         plans += 8;
 
         // The mcp_ops metrics source in hourly buckets, zero-filled, and an alert's totals.
@@ -336,19 +362,42 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
             top_n: Some(5),
         };
         let calls = metrics(MeasureId::McpCalls, Aggregation::Sum);
-        let ranking = live(mcp_metrics_ranking(scope, window, &clamp, caller, &calls, &read))?;
+        let ranking = live(mcp_metrics_ranking(
+            scope, window, &clamp, caller, &calls, &read,
+        ))?;
         tiered(ctx, "the metrics ranking", ranking).await?;
         let keys = [vec![Literal::String("files".to_owned())]];
-        let series = live(mcp_metrics_series(scope, window, &clamp, caller, &calls, (&read, Some(&keys))))?;
+        let series = live(mcp_metrics_series(
+            scope,
+            window,
+            &clamp,
+            caller,
+            &calls,
+            (&read, Some(&keys)),
+        ))?;
         let series = tiered(ctx, "the metrics series", series).await?;
         // Caller faults are left out: 2 + 1 a minute.
         expect(sum_of(&series, 2) == 3 * per_kind, || {
             format!("the metrics series {when} the merge: {series:?}")
         })?;
         let rate = metrics(MeasureId::McpErrorRate, Aggregation::Rate);
-        let rate = live(mcp_metrics_series(scope, window, &clamp, caller, &rate, (&read, Some(&keys))))?;
+        let rate = live(mcp_metrics_series(
+            scope,
+            window,
+            &clamp,
+            caller,
+            &rate,
+            (&read, Some(&keys)),
+        ))?;
         tiered(ctx, "the error rate series", rate).await?;
-        let totals = live(mcp_metrics_totals(scope, window, &clamp, &calls, &read, (true, 5)))?;
+        let totals = live(mcp_metrics_totals(
+            scope,
+            window,
+            &clamp,
+            &calls,
+            &read,
+            (true, 5),
+        ))?;
         tiered(ctx, "an alert's totals", totals).await?;
         plans += 4;
     }
@@ -356,34 +405,49 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
     // Retention (contract 13.2): the tier's oldest row, the delete of the hours before a cut-off in the monthly
     // partition that straddles it, and the drop of the partition, on both stores alike.
     let table = TableId::McpToolRollupHourly;
-    let every = TimeWindow::new(Timestamp::EPOCH, T0.saturating_add_micros(30 * 86_400_000_000))
-        .map_err(|e| anyhow!("{e}"))?;
-    let oldest = async || -> Result<Vec<Row>> { rows(ctx, lifecycle_oldest(scope, table, every, Pred::all())?).await };
+    let every = TimeWindow::new(
+        Timestamp::EPOCH,
+        T0.saturating_add_micros(30 * 86_400_000_000),
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+    let oldest = async || -> Result<Vec<Row>> {
+        rows(ctx, lifecycle_oldest(scope, table, every, Pred::all())?).await
+    };
     let first = oldest().await?;
     let start = hour_start().saturating_add_micros(HOURS.start * HOUR);
-    expect(first.first().map(|r| r.values().to_vec()) == Some(vec![Value::Time(start)]), || {
-        format!("the tier's oldest row: {first:?}")
-    })?;
+    expect(
+        first.first().map(|r| r.values().to_vec()) == Some(vec![Value::Time(start)]),
+        || format!("the tier's oldest row: {first:?}"),
+    )?;
     // The cut-off at the start of the fixture's second day: the hours of the first go.
     let cutoff = T0.floor_day().saturating_add_micros(86_400_000_000);
     let partition = route(table, Partitioning::Day, T0)?;
     let both: [&dyn TelemetryStore; 2] = [&ctx.store, &ctx.model];
     let delete = DeletePlan::project(scope, table, partition, expired_before(table, cutoff)?)?;
     for store in both {
-        let id = store.delete(delete.clone()).await.context("the retention delete of the tier")?;
+        let id = store
+            .delete(delete.clone())
+            .await
+            .context("the retention delete of the tier")?;
         finished(ctx, store, &id).await?;
     }
     let after = oldest().await?;
-    expect(after.first().map(|r| r.values().to_vec()) == Some(vec![Value::Time(cutoff)]), || {
-        format!("the tier's oldest row after the cut-off {cutoff}: {after:?}")
-    })?;
+    expect(
+        after.first().map(|r| r.values().to_vec()) == Some(vec![Value::Time(cutoff)]),
+        || format!("the tier's oldest row after the cut-off {cutoff}: {after:?}"),
+    )?;
     for store in both {
-        store.drop_partition(table, partition).await.context("the drop of the tier's partition")?;
+        store
+            .drop_partition(table, partition)
+            .await
+            .context("the drop of the tier's partition")?;
     }
     let gone = oldest().await?;
     expect(gone.is_empty(), || format!("the drop left {gone:?}"))?;
     let violations = ctx.model.violations();
-    expect(violations.is_empty(), || format!("the model recorded {violations:?}"))?;
+    expect(violations.is_empty(), || {
+        format!("the model recorded {violations:?}")
+    })?;
     Ok(format!(
         "{plans} plans of the MCP analytics builders over a 26-hour window (presence, servers, tools, one tool's \
          hourly series and clients, error classes, clients, compare, and the mcp_ops metrics ranking, hourly \
@@ -394,7 +458,13 @@ pub(crate) async fn reads(ctx: &Ctx) -> Result<String> {
 }
 
 /// One minute block of the tool rollup for batch `seq` of `epoch`, as an earlier version shipped it.
-async fn minute_block(ctx: &Ctx, project: ProjectId, epoch: WalEpoch, seq: u64, hour: i64) -> Result<()> {
+async fn minute_block(
+    ctx: &Ctx,
+    project: ProjectId,
+    epoch: WalEpoch,
+    seq: u64,
+    hour: i64,
+) -> Result<()> {
     let lines: Vec<Line> = (0..KINDS.len())
         .flat_map(|k| {
             MINUTES.map(|minute| {
@@ -438,14 +508,22 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         || format!("the step over an incomplete copy answered {refused:?}"),
     )?;
     ctx.admin(format!("TRUNCATE TABLE {tier}")).await?;
-    ctx.store.apply_migration(&step).await.context("the step after the fix")?;
+    ctx.store
+        .apply_migration(&step)
+        .await
+        .context("the step after the fix")?;
     let held = format!("SELECT count() FROM {tier}");
     let copied = ctx.admin_count(&held).await?;
 
     // Both batches' hourly pairs read present; a batch the minute rollup never had reads absent.
     let partition = route(TableId::McpToolRollupHourly, Partitioning::Day, T0)?;
     for (seq, present) in [(801, true), (802, true), (803, false)] {
-        let probe = batch_probe(TableId::McpToolRollupHourly, partition, epoch, Lsn::new(seq))?;
+        let probe = batch_probe(
+            TableId::McpToolRollupHourly,
+            partition,
+            epoch,
+            Lsn::new(seq),
+        )?;
         let found = ctx.store.probe(probe).await?;
         expect(found == present, || {
             format!("the hourly pair of batch {seq} probes {found}, not {present}")
@@ -455,8 +533,11 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
     // A tiered read of the project equals its minute read, on the server: both batches' hours, 12 minute rows
     // each of the five server kinds.
     let scope = scope(project).map_err(|e| anyhow!("{e}"))?;
-    let window = TimeWindow::new(hour_start().saturating_add_micros(-HOUR), hour_start().saturating_add_micros(32 * HOUR))
-        .map_err(|e| anyhow!("{e}"))?;
+    let window = TimeWindow::new(
+        hour_start().saturating_add_micros(-HOUR),
+        hour_start().saturating_add_micros(32 * HOUR),
+    )
+    .map_err(|e| anyhow!("{e}"))?;
     let clamp = RetentionClamp::new(RetentionSettings::default(), T0);
     let selection = McpSelection::select(
         SourceChoice::Auto,
@@ -473,19 +554,29 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
         server: None,
     };
     let plan = live(mcp_servers(scope, window, &clamp, Caller::Session, &read))?;
-    expect(plan.root().tables().contains(&TableId::McpToolRollupHourly), || {
-        "the servers plan does not read the tier".to_owned()
-    })?;
-    let read_rows = async |plan: QueryPlan| -> Result<Vec<Row>> { Ok(ctx.store.execute(plan).await?.rows().await?) };
+    expect(
+        plan.root().tables().contains(&TableId::McpToolRollupHourly),
+        || "the servers plan does not read the tier".to_owned(),
+    )?;
+    let read_rows = async |plan: QueryPlan| -> Result<Vec<Row>> {
+        Ok(ctx.store.execute(plan).await?.rows().await?)
+    };
     let over_tier = read_rows(plan.clone()).await?;
     let over_minutes = read_rows(minute_rows_only(&plan)).await?;
-    same("the copied project's servers", &images(&over_tier), &images(&over_minutes))?;
+    same(
+        "the copied project's servers",
+        &images(&over_tier),
+        &images(&over_minutes),
+    )?;
     expect(sum_of(&over_tier, 4) == 2 * 2 * 5, || {
         format!("the copied project's calls: {over_tier:?}")
     })?;
 
     // Again: the record of the finished copy makes it a no-op.
-    ctx.store.apply_migration(&step).await.context("the step applied again")?;
+    ctx.store
+        .apply_migration(&step)
+        .await
+        .context("the step applied again")?;
     let again = ctx.admin_count(&held).await?;
     expect(again == copied, || {
         format!("the step applied again changed the hourly table from {copied} to {again} rows")
@@ -496,7 +587,9 @@ pub(crate) async fn backfill(ctx: &Ctx) -> Result<String> {
             crucible_schema::HOURLY_COPY_DONE
         ))
         .await?;
-    expect(done == 1, || format!("{done} rows record the finished copy"))?;
+    expect(done == 1, || {
+        format!("{done} rows record the finished copy")
+    })?;
     Ok(format!(
         "step 0005 refused an incomplete copy and named the fix; after it, it copied the minute rollup by hour \
          ({copied} rows, two batches' markers included, so both batches' hourly pairs probe present and another \

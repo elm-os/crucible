@@ -1057,7 +1057,10 @@ pub(crate) fn check_mcp(
     // What the aggregating tables hold: their data rows merged by key, as a reader aggregates them.
     let mut stored_rollup: BTreeMap<Vec<u8>, ToolAgg> = BTreeMap::new();
     let mut stored_per_source: BTreeMap<u8, u64> = BTreeMap::new();
-    let read = |table: TableId, time: &str, stored_rollup: &mut BTreeMap<Vec<u8>, ToolAgg>, stored_per_source: &mut BTreeMap<u8, u64>| {
+    let read = |table: TableId,
+                time: &str,
+                stored_rollup: &mut BTreeMap<Vec<u8>, ToolAgg>,
+                stored_per_source: &mut BTreeMap<u8, u64>| {
         for part in model.parts(table) {
             let block = &part.block;
             for row in 0..block.rows {
@@ -1100,7 +1103,14 @@ pub(crate) fn check_mcp(
         }
         Some(())
     };
-    if read(TableId::McpToolRollup, "minute", &mut stored_rollup, &mut stored_per_source).is_none() {
+    if read(
+        TableId::McpToolRollup,
+        "minute",
+        &mut stored_rollup,
+        &mut stored_per_source,
+    )
+    .is_none()
+    {
         return unread(TableId::McpToolRollup);
     }
     let (mut stored_hourly, mut hourly_per_source) = (BTreeMap::new(), BTreeMap::new());
@@ -1388,9 +1398,9 @@ pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, 
     use crucible_plan::test_support::minute_rows_only;
     use crucible_plan::{
         Aggregation, Caller, DimensionId, Fill, Filter, Granularity, McpRead, McpSelection,
-        MeasureId, MetricsQuery, QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice,
-        Step, Value, mcp_clients, mcp_error_classes, mcp_metrics_totals, mcp_presence,
-        mcp_servers, mcp_tool_series, mcp_tools,
+        MeasureId, MetricsQuery, QueryClass, QueryPlan, RetentionClamp, Source, SourceChoice, Step,
+        Value, mcp_clients, mcp_error_classes, mcp_metrics_totals, mcp_presence, mcp_servers,
+        mcp_tool_series, mcp_tools,
     };
     use crucible_records::{ProjectId, TimeWindow, Timestamp};
     use crucible_schema::RetentionSettings;
@@ -1400,9 +1410,10 @@ pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, 
     for part in model.parts(TableId::McpOps) {
         let block = &part.block;
         for row in 0..block.rows {
-            let (Some(project), Some(start)) =
-                (uuid_at(block, "project_id", row), i64_at(block, "start_time", row))
-            else {
+            let (Some(project), Some(start)) = (
+                uuid_at(block, "project_id", row),
+                i64_at(block, "start_time", row),
+            ) else {
                 return (0, vec!["an mcp_ops row does not read".to_owned()]);
             };
             if project != [0; 16] && Some(project) != skip {
@@ -1425,14 +1436,21 @@ pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, 
     let mut compare = |what: &str, plan: Option<QueryPlan>| -> Option<Vec<Vec<Value>>> {
         let plan = plan?;
         if !plan.root().tables().contains(&TableId::McpToolRollupHourly) {
-            wrong.push(format!("{what} over {:?} does not read the hourly tier", plan.window()));
+            wrong.push(format!(
+                "{what} over {:?} does not read the hourly tier",
+                plan.window()
+            ));
             return None;
         }
         compared += 1;
         match (model.read(&plan), model.read(&minute_rows_only(&plan))) {
             (Ok(tiered), Ok(minutes)) => {
-                let rows: Vec<Vec<Value>> =
-                    tiered.clone().into_rows().iter().map(|r| r.values().to_vec()).collect();
+                let rows: Vec<Vec<Value>> = tiered
+                    .clone()
+                    .into_rows()
+                    .iter()
+                    .map(|r| r.values().to_vec())
+                    .collect();
                 if images(tiered) != images(minutes) {
                     wrong.push(format!(
                         "{what} over {:?} reads other rows from the hourly tier than from minute rows",
@@ -1464,16 +1482,20 @@ pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, 
             };
             for side in [McpSide::Client, McpSide::Server] {
                 let class = caller.class(QueryClass::Analytics);
-                let presence = mcp_presence(scope, window, &clamp, class, side, None).ok().flatten();
+                let presence = mcp_presence(scope, window, &clamp, class, side, None)
+                    .ok()
+                    .flatten();
                 let Some(found) = compare("the presence", presence) else {
                     continue;
                 };
-                let pairs = found.iter().filter_map(|row| match (row.first(), row.get(1)) {
-                    (Some(Value::String(server)), Some(Value::Enum(source))) => {
-                        Some((server.clone(), CaptureSource::from_value(*source)?))
-                    }
-                    _ => None,
-                });
+                let pairs = found
+                    .iter()
+                    .filter_map(|row| match (row.first(), row.get(1)) {
+                        (Some(Value::String(server)), Some(Value::Enum(source))) => {
+                            Some((server.clone(), CaptureSource::from_value(*source)?))
+                        }
+                        _ => None,
+                    });
                 let selection = McpSelection::select(SourceChoice::Auto, pairs);
                 let read = McpRead {
                     side,
@@ -1481,15 +1503,37 @@ pub(crate) fn check_mcp_tiers(model: &ChModel, skip: Option<[u8; 16]>) -> (u64, 
                     include_caller_faults: false,
                     server: None,
                 };
-                compare("the servers", mcp_servers(scope, window, &clamp, caller, &read).ok().flatten());
-                let tools = compare("the tools", mcp_tools(scope, window, &clamp, caller, &read).ok().flatten());
+                compare(
+                    "the servers",
+                    mcp_servers(scope, window, &clamp, caller, &read)
+                        .ok()
+                        .flatten(),
+                );
+                let tools = compare(
+                    "the tools",
+                    mcp_tools(scope, window, &clamp, caller, &read)
+                        .ok()
+                        .flatten(),
+                );
                 compare(
                     "the error classes",
-                    mcp_error_classes(scope, window, &clamp, caller, &read).ok().flatten(),
+                    mcp_error_classes(scope, window, &clamp, caller, &read)
+                        .ok()
+                        .flatten(),
                 );
-                compare("the clients", mcp_clients(scope, window, &clamp, caller, &read).ok().flatten());
-                if let Some(Value::String(tool)) = tools.as_ref().and_then(|t| t.first()).and_then(|r| r.get(1)) {
-                    let series = mcp_tool_series(scope, window, &clamp, caller, &read, tool, Step::Hour);
+                compare(
+                    "the clients",
+                    mcp_clients(scope, window, &clamp, caller, &read)
+                        .ok()
+                        .flatten(),
+                );
+                if let Some(Value::String(tool)) = tools
+                    .as_ref()
+                    .and_then(|t| t.first())
+                    .and_then(|r| r.get(1))
+                {
+                    let series =
+                        mcp_tool_series(scope, window, &clamp, caller, &read, tool, Step::Hour);
                     compare("one tool's hourly series", series.ok().flatten());
                 }
                 let calls = MetricsQuery {

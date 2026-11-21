@@ -1358,8 +1358,9 @@ impl<'a> Interp<'a> {
         tier: TableId,
     ) -> Result<(Vec<&'a Cells>, Window), QueryError> {
         let def = table(n.table());
-        let split = HourSplit::of(self.window)
-            .ok_or_else(|| internal("a read of the hourly tier over a window without a whole hour"))?;
+        let split = HourSplit::of(self.window).ok_or_else(|| {
+            internal("a read of the hourly tier over a window without a whole hour")
+        })?;
         let at = index(def, def.retention.time_column)?;
         let (mut rows, window) = self.rows(n.table(), n.pred())?;
         rows.retain(|row| !matches!(row.get(at), Some(Value::Time(t)) if split.covers(*t)));

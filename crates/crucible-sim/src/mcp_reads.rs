@@ -499,7 +499,8 @@ pub fn run_mcp_reads(seed: u64) -> McpReadOutcome {
 /// agree on it.
 fn in_window(window: TimeWindow, start: Timestamp) -> bool {
     let minute = start.floor_minute();
-    window.from().floor_minute() <= minute && minute <= window.to().saturating_add_micros(-1).floor_minute()
+    window.from().floor_minute() <= minute
+        && minute <= window.to().saturating_add_micros(-1).floor_minute()
 }
 
 async fn check(

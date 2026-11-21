@@ -353,7 +353,10 @@ fn tiered(plan: &QueryPlan) -> String {
     let sql = rendered(plan);
     assert_eq!(sql.matches("WHERE project_id = {p").count(), 2, "{sql}");
     assert_eq!(sql.matches(" UNION ALL ").count(), 1, "{sql}");
-    assert!(sql.contains("FROM crucible.mcp_tool_rollup_hourly WHERE"), "{sql}");
+    assert!(
+        sql.contains("FROM crucible.mcp_tool_rollup_hourly WHERE"),
+        "{sql}"
+    );
     sql
 }
 

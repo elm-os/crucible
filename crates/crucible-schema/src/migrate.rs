@@ -10,10 +10,10 @@
 
 use crucible_records::{TableId, Uuid};
 
-use crate::access::{
-    AccessParams, ingest_grant, mask_grant, service_policy, service_statements,
+use crate::access::{AccessParams, ingest_grant, mask_grant, service_policy, service_statements};
+use crate::ddl::{
+    DATABASE, Granularity, Ident, SQL_DATABASE, Variant, create_database, create_table,
 };
-use crate::ddl::{DATABASE, Granularity, Ident, SQL_DATABASE, Variant, create_database, create_table};
 use crate::table::{PROJECT_ID, TableDef};
 use crate::tables::{TABLES, table};
 
@@ -56,9 +56,8 @@ pub const LEDGER_ORDER: [(&str, StepKind); 5] = [
 /// ([`schema_mcp_tool_rollup_hourly`]). Like every marker row it has the nil project, so no read sees it. Its
 /// time is the epoch, so it sits in partition `197001`, which holds no project's rows and which retention never
 /// drops. No WAL has this epoch: a WAL epoch carries the time it was made.
-pub const HOURLY_COPY_DONE: Uuid = Uuid::from_bytes([
-    0, 0, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1,
-]);
+pub const HOURLY_COPY_DONE: Uuid =
+    Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1]);
 
 /// The partition of the row that records a finished copy.
 const COPY_DONE_PARTITION: &str = "197001";
@@ -486,7 +485,8 @@ mod tests {
             assert!(step.settings.starts_with(variant.ddl_settings()));
             assert!(step.settings.ends_with(&COPY_SETTINGS));
             let tier = table(TableId::McpToolRollupHourly);
-            let [create, ingest, maint, policy, refuse, copy, done] = step.statements.as_slice() else {
+            let [create, ingest, maint, policy, refuse, copy, done] = step.statements.as_slice()
+            else {
                 panic!("{:#?}", step.statements);
             };
             assert_eq!(*create, create_table(tier, &variant, Granularity::Week));
@@ -589,7 +589,10 @@ mod tests {
             let readable = def.sql_readable;
             assert_eq!(
                 readable,
-                !matches!(def.id, TableId::DedupSelftest | TableId::McpToolRollupHourly)
+                !matches!(
+                    def.id,
+                    TableId::DedupSelftest | TableId::McpToolRollupHourly
+                )
             );
             assert_eq!(
                 shape.contains(&WorkspaceAction::GrantColumns(def.id)),

@@ -9,8 +9,8 @@ use crucible_records::{ProjectScope, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{
     Column, ColumnRef, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,
     McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol, McpToolRollupHourlyCol,
-    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol, Ty,
-    UserRollupCol, table,
+    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol,
+    Ty, UserRollupCol, table,
 };
 
 use crate::class::QueryClass;
