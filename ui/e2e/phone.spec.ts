@@ -387,6 +387,7 @@ test.describe("phone at 390 px", () => {
             enabled: true,
             seeded: false,
             redirect_uri: callback,
+            version: 1,
           },
         ],
       }),

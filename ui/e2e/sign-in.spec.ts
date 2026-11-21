@@ -148,6 +148,15 @@ test.describe("sign in", () => {
     }
     await expect(page.getByText("<script>")).toHaveCount(0);
     await expectAccessible(page, "sign in after a provider error");
+
+    // A provider that lets only some domains sign in names them, and the page shows only domains.
+    await page.goto(
+      `/login/?error=not_invited&domains=${encodeURIComponent("acme.test,<b>x</b>")}`,
+    );
+    await expect(alertIn(page)).toContainText("This provider doesn't accept your email address.");
+    await expect(alertIn(page)).toContainText("Only addresses at acme.test can sign in with it.");
+    await expect(page.getByText("<b>x</b>")).toHaveCount(0);
+    await expectAccessible(page, "sign in after a domain refusal");
   });
 
   test("empty: a server with no owner points to setup; one without a control plane has no sign-in", async ({

@@ -49,6 +49,10 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../migrations/V9__dashboards.sql"),
     ),
     ("V10__media", include_str!("../migrations/V10__media.sql")),
+    (
+        "V11__auth_provider_version",
+        include_str!("../migrations/V11__auth_provider_version.sql"),
+    ),
 ];
 
 fn failed(what: &str, error: impl std::fmt::Display) -> TxError {

@@ -26,6 +26,7 @@ import { FormAlert, failureCopy } from "@/components/form-alert";
 import { Section, SectionFrame } from "@/components/section";
 import { useProject } from "@/lib/project";
 import { useTimeRange } from "@/lib/time-range";
+import { useWide } from "@/lib/wide";
 import type { GridBoxes } from "@/primitives/dashboard-grid/dashboard-grid";
 import {
   DashboardGrid,
@@ -45,13 +46,7 @@ import {
   overlaps,
   startSize,
 } from "./rules";
-import {
-  dashboardHref,
-  dashboardKeys,
-  useDashboardAccess,
-  useMetricsSchema,
-  useWide,
-} from "./shared";
+import { dashboardHref, dashboardKeys, useDashboardAccess, useMetricsSchema } from "./shared";
 import { catalogOf, measureLabel } from "./widget-data";
 import { WidgetForm, type WidgetDraft } from "./widget-form";
 
