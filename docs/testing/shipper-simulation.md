@@ -59,8 +59,9 @@ conformance suite. The raw landed parts that this suite inspects are unaffected 
 
 An incarnation ends at the first of: a seeded number of disk operations, a seeded number of crash barriers of the
 shipper (any barrier, or one chosen barrier so that the rare ones get their share), a seeded virtual time (up to
-150 s), or a process stop. An incarnation that waits for the rarest barrier, the quarantine copy, may run up to
-150 s whatever its other limits, because the copy needs a pair that three attempts and their backoffs failed first. The barriers are those of contract 5.9. The
+150 s), or a process stop. When the chosen barrier is the rarest one, the quarantine copy, the virtual time is drawn
+up to 150 s in every incarnation, short ones included, because the copy needs a pair that three attempts and their
+backoffs failed first. The barriers are those of contract 5.9. The
 shipper awaits a hook at each one (`crucible_shipper::Barriers`); the simulation's hook freezes the disk and never
 completes at the barrier it picked, and the driver then aborts the host. Short incarnations (a few disk operations)
 put the crash inside the shipper's own recovery: the rebuild of stage B and the re-ship of sealed batches.
