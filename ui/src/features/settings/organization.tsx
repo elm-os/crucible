@@ -12,6 +12,8 @@ import {
 } from "@ui-sdk/react/field";
 import { Input } from "@ui-sdk/react/input";
 import { Radio, RadioGroup, RadioIndicator } from "@ui-sdk/react/radio";
+import { Switch, SwitchThumb } from "@ui-sdk/react/switch";
+import Link from "next/link";
 import { type FormEvent, useState } from "react";
 import { getOrg, patchOrg } from "@/api/client";
 import { asUiError, type UiError } from "@/api/errors";
@@ -22,13 +24,13 @@ import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
-import { useWide } from "@/features/dashboards/shared";
 import { useAuth } from "@/lib/auth";
+import { useWide } from "@/lib/wide";
 import { parseDomains, sameDomains } from "./domains";
 import { SETTINGS_CHANGED } from "./retention";
 
 const TITLE = "Organization";
-const ORG_KEY = ["org", "settings"];
+export const ORG_KEY = ["org", "settings"];
 // At least one character that isn't a space: the server trims the name before it checks it.
 const NAME_PATTERN = ".*\\S.*";
 
@@ -52,13 +54,16 @@ const isAccess = (value: string | null): value is ProjectAccess =>
 // The fields that differ from the stored organization; only those are sent.
 function orgChanges(
   org: Org,
-  draft: { name: string; access: ProjectAccess; domains: string[] },
+  draft: { name: string; access: ProjectAccess; domains: string[]; password: boolean },
 ): OrgPatch {
   const patch: OrgPatch = {};
   if (draft.name.trim() !== org.name) patch.name = draft.name.trim();
   if (draft.access !== org.settings.project_access) patch.project_access = draft.access;
   if (!sameDomains(draft.domains, org.settings.allowed_email_domains)) {
     patch.allowed_email_domains = draft.domains;
+  }
+  if (draft.password !== org.settings.password_login_enabled) {
+    patch.password_login_enabled = draft.password;
   }
   return patch;
 }
@@ -124,7 +129,7 @@ function OrganizationSection({ readOnly }: { readOnly: string | null }) {
   );
 }
 
-const SKELETON_ROWS = ["name", "access", "domains"];
+const SKELETON_ROWS = ["name", "access", "password", "domains"];
 
 function OrganizationSkeleton() {
   return (
@@ -141,6 +146,12 @@ function OrganizationSkeleton() {
 
 const SAVE_COPY: CopyByCode = {
   precondition_failed: SETTINGS_CHANGED,
+  // Crucible keeps password sign-in on while the sign-in page offers no provider.
+  conflict: {
+    title: "Password sign-in is the only way to sign in.",
+    detail:
+      "Turn on a sign-in provider on the Sign-in page first, then turn password sign-in off. The sign-in page offers providers once server.public_url is set.",
+  },
   forbidden: {
     title: "Only organization owners and admins change these settings.",
     detail: "Ask an owner or admin of the organization.",
@@ -167,6 +178,7 @@ function OrganizationForm({
   const [name, setName] = useState(org.name);
   const [access, setAccess] = useState<ProjectAccess>(org.settings.project_access);
   const [domainText, setDomainText] = useState(org.settings.allowed_email_domains.join(", "));
+  const [password, setPassword] = useState(org.settings.password_login_enabled);
   const domains = parseDomains(domainText);
 
   const save = useMutation({
@@ -184,7 +196,13 @@ function OrganizationForm({
     },
   });
   const failure = save.isError ? asUiError(save.error) : refused;
-  const patch = orgChanges(org, { name, access, domains: domains === "invalid" ? [] : domains });
+  const lastWayIn = failure?.code === "conflict";
+  const patch = orgChanges(org, {
+    name,
+    access,
+    domains: domains === "invalid" ? [] : domains,
+    password,
+  });
   const changed = domains === "invalid" || Object.keys(patch).length > 0;
 
   // Any edit starts over: the last answer no longer describes the form.
@@ -261,6 +279,31 @@ function OrganizationForm({
         </FieldDescription>
       </Field>
 
+      <Field
+        invalid={lastWayIn || undefined}
+        className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
+      >
+        <Switch
+          checked={password}
+          readOnly={!editable}
+          onCheckedChange={(next) => {
+            setPassword(next);
+            edited();
+          }}
+        >
+          <SwitchThumb />
+        </Switch>
+        <FieldLabel>Password sign-in</FieldLabel>
+        <FieldDescription className="col-span-2">
+          People sign in with their email address and password. Turned off, they sign in only
+          through a provider on the <Link href="/settings/sign-in">Sign-in page</Link>, and Crucible
+          keeps password sign-in on while no provider is offered there.
+        </FieldDescription>
+        <FieldError match={lastWayIn} className="col-span-2">
+          Turn on a sign-in provider first.
+        </FieldError>
+      </Field>
+
       <FieldSet className="flex flex-col gap-3">
         <FieldLegend className="mb-0 text-data font-medium">Sign-up</FieldLegend>
         <FieldDescription>People join by invitation. There is no open sign-up.</FieldDescription>
@@ -314,6 +357,11 @@ function OrganizationForm({
             disabled={!changed || save.isPending}
             focusableWhenDisabled
             aria-busy={save.isPending}
+            data-agent-confirm={
+              patch.password_login_enabled === false
+                ? "Turns off password sign-in, so people sign in only through a sign-in provider"
+                : undefined
+            }
           >
             {save.isPending ? "Saving" : "Save settings"}
           </Button>

@@ -47,30 +47,36 @@ impl AuthProviderRepo for Runner {
         .await
     }
 
-    async fn update(&self, provider: &AuthProvider) -> Result<bool, TxError> {
+    async fn update_if_version(
+        &self,
+        provider: &AuthProvider,
+        expected: u64,
+    ) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             let key = uuid_key(provider.id.to_bytes());
-            if cx.get(Tbl::AuthProviders, &key).is_none() {
-                return Ok(false);
+            match one!(cx, Tbl::AuthProviders, &key, Row::AuthProvider) {
+                Some(stored) if stored.version == expected => {
+                    let mut row = provider.clone();
+                    row.version = expected + 1;
+                    cx.put(Tbl::AuthProviders, key, Some(Row::AuthProvider(row)))?;
+                    Ok(true)
+                }
+                _ => Ok(false),
             }
-            cx.put(
-                Tbl::AuthProviders,
-                key,
-                Some(Row::AuthProvider(provider.clone())),
-            )?;
-            Ok(true)
         })
         .await
     }
 
-    async fn delete(&self, id: Uuid) -> Result<bool, TxError> {
+    async fn delete_if_version(&self, id: Uuid, expected: u64) -> Result<bool, TxError> {
         self.run(Pool::Main, true, |cx| {
             let key = uuid_key(id.to_bytes());
-            if cx.get(Tbl::AuthProviders, &key).is_none() {
-                return Ok(false);
+            match one!(cx, Tbl::AuthProviders, &key, Row::AuthProvider) {
+                Some(stored) if stored.version == expected => {
+                    cx.put(Tbl::AuthProviders, key, None)?;
+                    Ok(true)
+                }
+                _ => Ok(false),
             }
-            cx.put(Tbl::AuthProviders, key, None)?;
-            Ok(true)
         })
         .await
     }
@@ -107,6 +113,24 @@ impl OauthAccountRepo for Runner {
                 Row::OauthAccount(account.clone()),
                 "oauth_accounts_pkey",
             )
+        })
+        .await
+    }
+
+    async fn delete_for_provider(&self, provider_id: Uuid) -> Result<u64, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let mut deleted = 0;
+            for account in all!(cx, Tbl::OauthAccounts, Row::OauthAccount) {
+                if account.provider_id == provider_id {
+                    cx.put(
+                        Tbl::OauthAccounts,
+                        account_key(account.provider_id, &account.subject),
+                        None,
+                    )?;
+                    deleted += 1;
+                }
+            }
+            Ok(deleted)
         })
         .await
     }

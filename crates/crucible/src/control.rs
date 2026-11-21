@@ -50,6 +50,35 @@ pub(crate) trait ApplyStep: Sync {
     fn refusal(&self) -> Refusal<'_>;
 }
 
+/// The steps that changed since the ledger recorded them and were not applied again, because the service identities
+/// refuse this node's master key. They apply at the next migration with the key the deployment was migrated with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Deferred {
+    /// The steps, in order.
+    pub(crate) steps: Vec<&'static str>,
+    /// Why the service identities refuse the key.
+    pub(crate) reason: String,
+}
+
+impl std::fmt::Display for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (noun, them, they) = if self.steps.len() == 1 {
+            ("step", "it", "it is")
+        } else {
+            ("steps", "them", "they are")
+        };
+        write!(
+            f,
+            "ClickHouse migration {noun} {} changed since the migrations ledger recorded {them}, and the service \
+             identities refuse this server's master key ({}), so {they} not applied. Run `crucible migrate` again \
+             with the master key this deployment was migrated with (master_key_file, --master-key-file or \
+             CRUCIBLE_MASTER_KEY); the other steps are applied",
+            self.steps.join(", "),
+            self.reason
+        )
+    }
+}
+
 /// The control plane of this node.
 #[derive(Clone, Debug)]
 pub(crate) struct Control {
@@ -84,13 +113,14 @@ impl Control {
         Arc::new(self.store.clone())
     }
 
-    /// Applies the Postgres migrations, then the steps of `steps` that the ledger does not hold.
+    /// Applies the Postgres migrations, then the steps of `steps` that the ledger does not hold. Answers the
+    /// changed steps that wait for another master key.
     pub(crate) async fn migrate(
         &self,
         env: &Env,
         steps: &[MigrationStep],
         apply: &dyn ApplyStep,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Deferred>> {
         self.migrate_postgres(env).await?;
         let holder = format!("migrate-{}", env.new_id());
         apply_steps(env, &self.store, &holder, steps, apply).await
@@ -296,16 +326,16 @@ pub(crate) async fn ensure_migrated(store: &dyn ControlStore) -> anyhow::Result<
 
 /// Applies the steps the ledger does not hold, in order, under the `migrations` lease, and records each with the
 /// checksum of what was applied. A step that the ledger holds with other content applies again too, unless the
-/// service identities refuse this node's master key ([`ApplyStep::refusal`]).
+/// service identities refuse this node's master key ([`ApplyStep::refusal`]); such steps are answered.
 pub(crate) async fn apply_steps(
     env: &Env,
     store: &dyn ControlStore,
     holder: &str,
     steps: &[MigrationStep],
     apply: &dyn ApplyStep,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Deferred>> {
     if steps.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let mut lease = acquire(env, store, holder).await?;
     let result = async {
@@ -319,6 +349,7 @@ pub(crate) async fn apply_steps(
             .collect();
         // Asked once, and only when a recorded step changed.
         let mut refusal = None;
+        let mut deferred = Vec::new();
         for step in steps {
             let checksum = checksum(step);
             match ledger.get(step.id) {
@@ -340,6 +371,7 @@ pub(crate) async fn apply_steps(
                              this node's master key, so it is not applied again: it applies at the next start \
                              with the master key this deployment was migrated with"
                         );
+                        deferred.push(step.id);
                         continue;
                     }
                     tracing::warn!(
@@ -370,7 +402,13 @@ pub(crate) async fn apply_steps(
             record(env, store, &lease, &entry).await?;
             tracing::info!(step = step.id, "migration step applied and recorded");
         }
-        Ok(())
+        Ok(match refusal {
+            Some(Some(reason)) if !deferred.is_empty() => Some(Deferred {
+                steps: deferred,
+                reason,
+            }),
+            _ => None,
+        })
     }
     .await;
     // Shutdown rule of contract 11.7: a leader releases its lease. A failure here only delays the next
@@ -935,10 +973,21 @@ mod tests {
         sim(PgFaults::default(), async move |env, model| {
             record_0_1_1(&env, &model).await;
             let wrong = other_key();
-            apply_steps(&env, &model, "node-a", &release_steps(OTHER_KEY), &wrong)
+            let deferred = apply_steps(&env, &model, "node-a", &release_steps(OTHER_KEY), &wrong)
                 .await
-                .unwrap();
+                .unwrap()
+                .expect("the changed steps wait for the right key");
             assert_eq!(wrong.steps(), ["0005_mcp_tool_rollup_hourly"]);
+            // `crucible migrate` fails with this, so it says which steps wait, why, and what to run.
+            assert_eq!(deferred.steps, UPGRADE[..3]);
+            let said = deferred.to_string();
+            for needed in [
+                "steps 0001_schema_base, 0002_access_service, 0003_access_workspace",
+                "refuse this server's master key (AUTHENTICATION_FAILED for crucible_maint)",
+                "`crucible migrate` again with the master key this deployment was migrated with",
+            ] {
+                assert!(said.contains(needed), "{needed:?} is missing from: {said}");
+            }
             let refused = log.take();
             assert_eq!(
                 refused
@@ -950,9 +999,10 @@ mod tests {
             assert!(!refused.contains("with other content"), "{refused}");
             let steps = release_steps(KEY);
             let right = Fake::default();
-            apply_steps(&env, &model, "node-b", &steps, &right)
+            let deferred = apply_steps(&env, &model, "node-b", &steps, &right)
                 .await
                 .unwrap();
+            assert_eq!(deferred, None);
             assert_eq!(right.steps(), UPGRADE[..3]);
             let recorded: Vec<(String, String)> = model
                 .migrations()

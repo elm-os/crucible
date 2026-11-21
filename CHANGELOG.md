@@ -60,6 +60,29 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and refuse an invalid one alike: the same member, with the same code.
 - A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
+- Crucible refuses a change that would leave nobody able to sign in: turning off password sign-in while the sign-in
+  page offers no provider, and turning off or deleting the last provider while password sign-in is off. The refusal
+  (409 `conflict`) says what to turn on first.
+- The Organization page has a password sign-in switch, and shows the refusal when password sign-in is the only way in.
+- `crucible admin enable-password-login` turns password sign-in back on from the shell, for a deployment whose sign-in
+  provider no longer signs anyone in; the server logs at start when nobody can sign in.
+- Sign-in providers carry a version: `PATCH` and `DELETE org/auth-providers/{provider_id}` need it in `If-Match`, and
+  the Sign-in page sends it and reloads a provider that changed meanwhile. Postgres migration
+  `V11__auth_provider_version` adds the column.
+- A sign-in provider's client ID, issuer and scopes can be changed in place. An empty client secret is refused and
+  never replaces the stored one, and a new issuer unlinks the provider's accounts, which link again through their
+  verified email.
+- A provider's allowed email domains apply at every sign-in, also to accounts linked before the list changed, and the
+  sign-in page names the domains the provider allows. An account outside its provider's allowed domains that signed
+  in on 0.1.1 is refused after the upgrade: add its domain to the provider, or have the person sign in another way.
+- Sign-in providers can be declared in the configuration (`[auth_github]`, `[auth_google]`, `[auth_oidc]`), with
+  their client secrets in files or environment variables. They are read-only on the Sign-in page and in the API, and
+  removing one from the configuration turns it off, except while it is the last way to sign in: then its row stays on
+  and the server logs at start what to do. A new `auth_oidc.issuer` unlinks the provider's accounts, as an edit on the
+  Sign-in page does.
+- `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
+  with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
+  as applied.
 - The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
   the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
 - The Python SDK also skips a scrub rule on text without a run of the characters its matches are made of as long as

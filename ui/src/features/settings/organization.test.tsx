@@ -12,7 +12,9 @@ import { OrganizationSettings } from "./organization";
 
 vi.mock("next/navigation", () => import("@/test/navigation"));
 
-const agent = createAgent();
+// Steps on controls marked `data-agent-confirm` run only once a person approves.
+let approve = false;
+const agent = createAgent({ allow: (step) => !step.confirm || approve });
 const fetchMock = vi.fn<typeof fetch>();
 const ORG = "/api/v1/org";
 
@@ -92,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  approve = false;
   fetchMock.mockReset();
   vi.unstubAllGlobals();
 });
@@ -202,6 +205,53 @@ describe("organization settings", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
+  test("turning password sign-in off needs a person, and a refusal says what to turn on first", async () => {
+    signIn();
+    let refuse = true;
+    serve({
+      [`GET ${ORG}`]: json(org()),
+      [`PATCH ${ORG}`]: () =>
+        refuse
+          ? problem(409, "conflict")()
+          : json(org({ version: 4 }, { password_login_enabled: false }))(),
+    });
+    renderPage();
+    const toggle = await screen.findByRole("switch", { name: "Password sign-in" });
+    expect(toggle).toHaveProperty("ariaChecked", "true");
+    await act(() =>
+      agent.act({ steps: [{ ref: "Password sign-in", action: "setChecked", args: [false] }] }),
+    );
+    expect(toggle).toHaveProperty("ariaChecked", "false");
+    expect((await press("Save settings")).ok).toBe(false);
+    expect(requests(`PATCH ${ORG}`)).toHaveLength(0);
+    approve = true;
+    await act(() => press("Save settings"));
+    // The server keeps password sign-in on while no provider is offered: the page says what to do.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Password sign-in is the only way to sign in.");
+    expect(alert.textContent).toContain("Turn on a sign-in provider on the Sign-in page first");
+    expect(alert.textContent).not.toContain("raw server title");
+    expect(
+      screen.getByText("Turn on a sign-in provider first.", {
+        selector: "[data-slot=field-error]",
+      }),
+    ).toBeTruthy();
+    expect(bodyOf(requests(`PATCH ${ORG}`)[0])).toEqual({ password_login_enabled: false });
+    expect(new Headers(requests(`PATCH ${ORG}`)[0]?.headers).get("if-match")).toBe('"3"');
+    expect(screen.getByRole("link", { name: "Sign-in page" }).getAttribute("href")).toMatch(
+      /^\/settings\/sign-in\/?$/,
+    );
+
+    refuse = false;
+    await act(() => press("Save settings"));
+    await screen.findByText("Saved.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("switch", { name: "Password sign-in" })).toHaveProperty(
+      "ariaChecked",
+      "false",
+    );
+  });
+
   test("a domain list that isn't one says so before anything is sent", async () => {
     signIn();
     serve({ [`GET ${ORG}`]: json(org()) });
@@ -259,6 +309,7 @@ describe("organization settings", () => {
     expect(name).toHaveProperty("readOnly", true);
     expect(screen.getByLabelText("Allowed email domains")).toHaveProperty("readOnly", true);
     expect(screen.getByRole("radiogroup", { name: "Project access" }).dataset.readonly).toBe("");
+    expect(screen.getByRole("switch", { name: "Password sign-in" }).dataset.readonly).toBe("");
     expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
     await screen.findByText("Only organization owners and admins change these settings.");
   });
@@ -296,6 +347,7 @@ describe("organization settings", () => {
     for (const label of [
       "Organization name",
       "Project access",
+      "Password sign-in",
       "Allowed email domains",
       "Save settings",
     ]) {

@@ -15,7 +15,7 @@ use crucible_env::{Env, TlsRoots};
 
 pub use account::{NewSession, SetupLink};
 pub use admin::{
-    ApiKeyChange, InvitationCreated, KeyCreated, OrgChange, ProviderChange, ProviderInput,
+    ApiKeyChange, InvitationCreated, KeyCreated, OrgChange, ProviderChange, ProviderInput, Seeded,
 };
 pub use provider_flow::{CallbackQuery, FlowFailure, FlowStart, SignInView, SignedIn};
 pub use sessions::{SessionPrincipal, SessionVerdict};
@@ -63,6 +63,9 @@ pub struct IdentityConfig {
     pub hash_permits: usize,
     /// The trust anchors of provider calls.
     pub tls_roots: TlsRoots,
+    /// The sign-in providers of the server configuration, at most one per kind (contract 11.1: seeded rows, which
+    /// the API cannot change). Their client secrets stay here and are never stored.
+    pub providers: Vec<ProviderInput>,
 }
 
 impl IdentityConfig {
@@ -76,6 +79,7 @@ impl IdentityConfig {
             hash_cost: HashCost::CONTRACT,
             hash_permits: 4,
             tls_roots: TlsRoots::WebPki,
+            providers: Vec::new(),
         }
     }
 

@@ -284,6 +284,7 @@ pub(crate) fn provider(
         enabled: provider.enabled,
         seeded: provider.seeded,
         redirect_uri: identity.redirect_uri(provider.id).unwrap_or_default(),
+        version: version(provider.version),
     }
 }
 

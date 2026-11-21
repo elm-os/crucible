@@ -9,9 +9,22 @@ export type AuthProviderPatch = {
  */
 display_name?: string, 
 /**
- * The OAuth client secret.
+ * The OpenID Connect issuer, for `oidc`; ignored otherwise. A new issuer unlinks the accounts that signed in
+ * through the provider, and they link again through their verified email.
+ */
+issuer?: string, 
+/**
+ * The OAuth client id.
+ */
+client_id?: string, 
+/**
+ * A new OAuth client secret. Leave it out to keep the stored one; an empty one is refused.
  */
 client_secret?: string, 
+/**
+ * Scopes requested besides those the kind needs.
+ */
+scopes?: Array<string>, 
 /**
  * When not empty, only these email domains may sign in through the provider.
  */

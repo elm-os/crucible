@@ -60,6 +60,7 @@ const provider = (fields: Partial<AuthProvider> = {}): AuthProvider => ({
   enabled: true,
   seeded: false,
   redirect_uri: CALLBACK,
+  version: 1,
   ...fields,
 });
 
@@ -81,8 +82,10 @@ function signIn(role: OrgRole = "owner") {
   setAuth({ mode: "session", session: { ...session, org: { ...session.org, role } } });
 }
 
+let client = createQueryClient();
+
 function renderPage() {
-  const client = createQueryClient();
+  client = createQueryClient();
   client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retry: false } });
   return render(
     <QueryClientProvider client={client}>
@@ -309,12 +312,18 @@ describe("sign-in providers", () => {
     expect(requests(`POST ${PROVIDERS}`)).toHaveLength(0);
   });
 
-  test("editing sends only what changed and never a secret, and the row shows the change", async () => {
+  test("editing sends only what changed and never a secret, with If-Match, and the row shows the change", async () => {
     signIn();
     serve({
-      [`GET ${PROVIDERS}`]: json({ data: [provider()] }),
+      [`GET ${PROVIDERS}`]: json({ data: [provider({ version: 4 })] }),
       [`PATCH ${PROVIDERS}/${SSO_ID}`]: json(
-        provider({ allowed_domains: ["acme.example", "acme.test"] }),
+        provider({
+          allowed_domains: ["acme.example", "acme.test"],
+          client_id: "crucible-web-2",
+          issuer: "https://sso.acme.example",
+          scopes: ["groups", "offline_access"],
+          version: 5,
+        }),
       ),
     });
     renderPage();
@@ -322,15 +331,74 @@ describe("sign-in providers", () => {
     await act(() => press("Edit Continue with Acme SSO"));
     await screen.findByRole("dialog", { name: "Change Continue with Acme SSO" });
     expect(screen.getByLabelText("Allowed email domains")).toHaveProperty("value", "acme.example");
+    expect(screen.getByLabelText("Client ID")).toHaveProperty("value", "crucible-web");
+    expect(screen.getByLabelText("Issuer URL")).toHaveProperty(
+      "value",
+      "https://login.acme.example",
+    );
     expect(screen.queryByLabelText("Client secret")).toBeNull();
     await act(() => fill("Allowed email domains", "acme.example, acme.test"));
+    await act(() => fill("Client ID", " crucible-web-2 "));
+    await act(() => fill("Issuer URL", "https://sso.acme.example"));
+    await act(() => fill("Extra scopes", "groups offline_access"));
     approve = true;
     await act(() => pressIn("Change Continue with Acme SSO", "Save changes"));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const [patch] = requests(`PATCH ${PROVIDERS}/${SSO_ID}`);
     expect(new Headers(patch?.headers).get("x-crucible-csrf")).toBe("csrf-4");
-    expect(bodyOf(patch)).toEqual({ allowed_domains: ["acme.example", "acme.test"] });
-    expect(row("Continue with Acme SSO").getByText("acme.example, acme.test")).toBeTruthy();
+    expect(new Headers(patch?.headers).get("if-match")).toBe('"4"');
+    expect(bodyOf(patch)).toEqual({
+      client_id: "crucible-web-2",
+      issuer: "https://sso.acme.example",
+      scopes: ["groups", "offline_access"],
+      allowed_domains: ["acme.example", "acme.test"],
+    });
+    const sso = row("Continue with Acme SSO");
+    expect(sso.getByText("acme.example, acme.test")).toBeTruthy();
+    expect(sso.getByText("crucible-web-2")).toBeTruthy();
+    expect(sso.getByText("groups offline_access")).toBeTruthy();
+  });
+
+  test("GitHub's edit dialog offers no issuer or scopes", async () => {
+    signIn();
+    serve({ [`GET ${PROVIDERS}`]: json({ data: [GITHUB] }) });
+    renderPage();
+    await screen.findByText("Iv1.0123456789abcdef");
+    await act(() => press("Edit Continue with GitHub"));
+    await screen.findByRole("dialog", { name: "Change Continue with GitHub" });
+    expect(screen.getByLabelText("Client ID")).toHaveProperty("value", "Iv1.0123456789abcdef");
+    expect(screen.queryByLabelText("Issuer URL")).toBeNull();
+    expect(screen.queryByLabelText("Extra scopes")).toBeNull();
+  });
+
+  test("an edit refused for a stale version starts the form from the stored provider and says why", async () => {
+    signIn();
+    let stored = provider();
+    serve({
+      [`GET ${PROVIDERS}`]: () => json({ data: [stored] })(),
+      [`PATCH ${PROVIDERS}/${SSO_ID}`]: () => {
+        stored = provider({ display_name: "Continue with Acme", version: 2 });
+        return problem(412, "precondition_failed")();
+      },
+    });
+    renderPage();
+    await screen.findByText(CALLBACK);
+    await act(() => press("Edit Continue with Acme SSO"));
+    await screen.findByRole("dialog", { name: "Change Continue with Acme SSO" });
+    await act(() => fill("Client ID", "another-client"));
+    approve = true;
+    await act(() => pressIn("Change Continue with Acme SSO", "Save changes"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Button text")).toHaveProperty("value", "Continue with Acme"),
+    );
+    expect(screen.getByLabelText("Client ID")).toHaveProperty("value", "crucible-web");
+    const alert = within(screen.getByRole("dialog")).getByRole("alert");
+    expect(alert.textContent).toContain("These settings changed since the page loaded.");
+    expect(alert.textContent).toContain("Enter your change again, then save.");
+    expect(alert.textContent).not.toContain("raw server title");
+    expect(new Headers(requests(`PATCH ${PROVIDERS}/${SSO_ID}`)[0]?.headers).get("if-match")).toBe(
+      '"1"',
+    );
   });
 
   test("replacing the secret needs a value and sends only the secret", async () => {
@@ -363,6 +431,7 @@ describe("sign-in providers", () => {
       [`PATCH ${PROVIDERS}/${SSO_ID}`]: json(provider({ enabled: false })),
     });
     renderPage();
+    client.setQueryData(["org", "settings"], { version: 3 });
     await screen.findByText(CALLBACK);
     const turnOff = { steps: [{ ref: "Turn off Continue with Acme SSO", action: "press" }] };
     expect((await agent.act(turnOff)).ok).toBe(false);
@@ -371,6 +440,48 @@ describe("sign-in providers", () => {
     await act(() => agent.act(turnOff));
     await waitFor(() => expect(row("Continue with Acme SSO").getByText("Turned off")).toBeTruthy());
     expect(bodyOf(requests(`PATCH ${PROVIDERS}/${SSO_ID}`)[0])).toEqual({ enabled: false });
+    // The organization's version moved with it, so a cached copy of its settings is read again.
+    expect(client.getQueryState(["org", "settings"])?.isInvalidated).toBe(true);
+    expect(new Headers(requests(`PATCH ${PROVIDERS}/${SSO_ID}`)[0]?.headers).get("if-match")).toBe(
+      '"1"',
+    );
+  });
+
+  test("the last way to sign in stays on, and the row says what to turn on first", async () => {
+    signIn();
+    serve({
+      [`GET ${PROVIDERS}`]: json({ data: [provider()] }),
+      [`PATCH ${PROVIDERS}/${SSO_ID}`]: problem(409, "conflict"),
+    });
+    renderPage();
+    await screen.findByText(CALLBACK);
+    approve = true;
+    await act(() => press("Turn off Continue with Acme SSO"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("This provider is the last way to sign in.");
+    expect(alert.textContent).toContain("Turn password sign-in on in the organization settings");
+    expect(alert.textContent).not.toContain("raw server title");
+    expect(row("Continue with Acme SSO").getByText("On")).toBeTruthy();
+  });
+
+  test("a turn-off refused for a stale version reloads the list and says so", async () => {
+    signIn();
+    let stored = provider();
+    serve({
+      [`GET ${PROVIDERS}`]: () => json({ data: [stored] })(),
+      [`PATCH ${PROVIDERS}/${SSO_ID}`]: () => {
+        stored = provider({ allowed_domains: ["acme.test"], version: 2 });
+        return problem(412, "precondition_failed")();
+      },
+    });
+    renderPage();
+    await screen.findByText(CALLBACK);
+    approve = true;
+    await act(() => press("Turn off Continue with Acme SSO"));
+    await screen.findByText("acme.test");
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "This provider changed since the list loaded.",
+    );
   });
 
   test("a provider someone else deleted says so and leaves the list", async () => {
@@ -418,6 +529,9 @@ describe("sign-in providers", () => {
     await act(() => agent.act(confirm));
     await waitFor(() => expect(screen.queryByText(CALLBACK)).toBeNull());
     expect(requests(`DELETE ${PROVIDERS}/${SSO_ID}`)).toHaveLength(1);
+    expect(new Headers(requests(`DELETE ${PROVIDERS}/${SSO_ID}`)[0]?.headers).get("if-match")).toBe(
+      '"1"',
+    );
     expect(document.querySelector('[data-provider="Continue with GitHub"]')).not.toBeNull();
   });
 

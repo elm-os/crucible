@@ -27,6 +27,7 @@ fn provider(n: u64, kind: ProviderKind, seeded: bool) -> AuthProvider {
         allowed_domains: Vec::new(),
         enabled: true,
         seeded,
+        version: 1,
     }
 }
 
@@ -104,15 +105,27 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     );
     t.outcome("insert oidc", s.auth_providers().insert(&oidc).await);
     t.outcome("insert oidc again", s.auth_providers().insert(&oidc).await);
+    // A change names the version it read, and moves the row to the next one.
     let mut renamed = oidc.clone();
     renamed.display_name = "Company SSO".to_owned();
     renamed.allowed_domains = vec!["example.com".to_owned()];
     renamed.secret_id = Some(id(99));
-    t.outcome("update oidc", s.auth_providers().update(&renamed).await);
+    t.outcome(
+        "update oidc at a version it never had",
+        s.auth_providers().update_if_version(&renamed, 2).await,
+    );
+    t.outcome(
+        "update oidc",
+        s.auth_providers().update_if_version(&renamed, 1).await,
+    );
+    t.outcome(
+        "update oidc at the version it had",
+        s.auth_providers().update_if_version(&renamed, 1).await,
+    );
     t.outcome(
         "update a missing provider",
         s.auth_providers()
-            .update(&provider(98, ProviderKind::Google, false))
+            .update_if_version(&provider(98, ProviderKind::Google, false), 1)
             .await,
     );
     let listed = s.auth_providers().list().await?;
@@ -120,12 +133,13 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         "providers",
         listed
             .iter()
-            .map(|p| (p.kind, p.display_name.clone(), p.seeded))
+            .map(|p| (p.kind, p.display_name.clone(), p.seeded, p.version))
             .collect::<Vec<_>>(),
     );
+    renamed.version = 2;
     ensure!(
         s.auth_providers().get(oidc.id).await? == Some(renamed.clone()),
-        "a provider reads back as written"
+        "a provider reads back as written, at the next version"
     );
 
     // Linked accounts: unique by (provider, subject); both parents must exist.
@@ -180,10 +194,17 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
             .len(),
     );
     // Deleting a provider deletes its linked accounts; deleting a user deletes theirs.
-    t.outcome("delete oidc", s.auth_providers().delete(oidc.id).await);
+    t.outcome(
+        "delete oidc at the version it had",
+        s.auth_providers().delete_if_version(oidc.id, 1).await,
+    );
+    t.outcome(
+        "delete oidc",
+        s.auth_providers().delete_if_version(oidc.id, 2).await,
+    );
     t.outcome(
         "delete oidc again",
-        s.auth_providers().delete(oidc.id).await,
+        s.auth_providers().delete_if_version(oidc.id, 2).await,
     );
     t.note(
         "accounts of user 1 after the provider went",
@@ -199,6 +220,32 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome(
         "get github 1001 after the user went",
         s.oauth_accounts().get(github.id, "1001").await,
+    );
+    // Unlinking a provider's accounts leaves the provider.
+    t.outcome(
+        "link github 2002 to user 2",
+        s.oauth_accounts()
+            .insert(&account(github.id, "2002", 2))
+            .await,
+    );
+    t.outcome(
+        "unlink the accounts of github",
+        s.oauth_accounts().delete_for_provider(github.id).await,
+    );
+    t.outcome(
+        "unlink the accounts of github again",
+        s.oauth_accounts().delete_for_provider(github.id).await,
+    );
+    t.note(
+        "accounts of user 2 after the unlink",
+        s.oauth_accounts()
+            .list_for_user(UserId::from_uuid(id(2)))
+            .await?
+            .len(),
+    );
+    ensure!(
+        s.auth_providers().get(github.id).await?.is_some(),
+        "unlinking keeps the provider"
     );
 
     // Sign-in flows work once and only before they expire.
