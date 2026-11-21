@@ -100,8 +100,9 @@ wrote them until they expire.
 - Once a week it lists the bucket under the prefix and deletes the objects older than 48 hours that no media record
   names, which a server stopped between deleting a record and its object can leave behind.
 - Deleting a project deletes its media records at once and then every object under `<prefix>/<project_id>/`, its
-  export files included. An object the storage did not let it delete, or an upload that lands after the deletion
-  through a link handed out before it, has no record left, so the weekly scan deletes it.
+  export files included. A media object the storage did not let it delete, or an upload that lands after the
+  deletion through a link handed out before it, has no record left, so the weekly scan deletes it. An export file
+  it could not delete stays until the lifecycle rule below removes it.
 - As a backstop, give the bucket a lifecycle rule that expires incomplete multipart uploads, and objects under the
   prefix that are older than your longest retention.
 
