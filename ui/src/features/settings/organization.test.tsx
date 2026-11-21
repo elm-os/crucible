@@ -208,7 +208,9 @@ describe("organization settings", () => {
     renderPage();
     await screen.findByLabelText("Allowed email domains");
     await act(() => fill("Allowed email domains", "ada@example.com"));
-    await screen.findByText("Enter domains only, like example.com, separated by commas.");
+    await screen.findByText("Enter domains only, like example.com, separated by commas.", {
+      selector: "[data-slot=field-error]",
+    });
     await act(() => press("Save settings"));
     expect(requests(`PATCH ${ORG}`)).toHaveLength(0);
   });
@@ -225,8 +227,10 @@ describe("organization settings", () => {
     await screen.findByLabelText("Allowed email domains");
     await act(() => fill("Allowed email domains", "example.com"));
     await act(() => press("Save settings"));
+    // The field's error, not the copy the page announces to screen readers.
     await screen.findByText(
       "The server refused these domains. Enter bare domains, like example.com.",
+      { selector: "[data-slot=field-error]" },
     );
     expect(screen.getByRole("alert").textContent).toContain("Some fields need attention.");
     expect(document.body.textContent).not.toContain("raw server title");

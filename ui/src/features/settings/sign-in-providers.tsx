@@ -361,8 +361,8 @@ function ProviderActions({ provider, remove }: { provider: AuthProvider; remove:
               : "Turns on the sign-in provider"
           }
         >
-          {provider.enabled ? "Turn off" : "Turn on"}
-          <span className="sr-only"> {provider.display_name}</span>
+          {provider.enabled ? "Turn off" : "Turn on"}{" "}
+          <span className="sr-only">{provider.display_name}</span>
         </Button>
         {remove}
       </div>
@@ -420,7 +420,7 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
       }}
     >
       <DialogTrigger className="text-data">
-        Edit<span className="sr-only"> {provider.display_name}</span>
+        Edit <span className="sr-only">{provider.display_name}</span>
       </DialogTrigger>
       <DialogBackdrop />
       <DialogContent>
@@ -558,7 +558,7 @@ function ReplaceSecretDialog({ provider }: { provider: AuthProvider }) {
       }}
     >
       <DialogTrigger className="text-data">
-        Replace secret<span className="sr-only"> of {provider.display_name}</span>
+        Replace secret <span className="sr-only">of {provider.display_name}</span>
       </DialogTrigger>
       <DialogBackdrop />
       <DialogContent>
@@ -870,8 +870,7 @@ function CopyButton({ value, label, name }: { value: string; label: string; name
   return (
     <span className="flex flex-wrap items-center gap-3">
       <Button className="text-data" onClick={copy}>
-        {label}
-        <span className="sr-only"> of {name}</span>
+        {label} <span className="sr-only">of {name}</span>
       </Button>
       <output className="text-label text-ink-soft">{copied ? "Copied." : ""}</output>
       {copied === false ? (
