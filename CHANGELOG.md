@@ -8,7 +8,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 - Settings has an Organization page for the organization's name, project access (every project, or only the projects
   someone is added to) and the allowed email domains, whose people join as viewers without an invitation once their
-  sign-in provider verifies their address. Members and viewers read it; editing needs a screen 768 pixels wide.
+  sign-in provider verifies their address. Members and viewers read it; editing needs a screen at least 768 pixels
+  wide.
 - Settings has a Sign-in page that adds, edits, turns off and deletes GitHub, Google and OpenID Connect sign-in
   providers, replaces a client secret without ever showing the stored one, and copies the callback URL to register
   with the provider.

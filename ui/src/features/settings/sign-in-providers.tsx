@@ -287,9 +287,7 @@ function ProviderItem({
         ) : null}
         <dt className="text-ink-soft">Allowed email domains</dt>
         <dd className="wrap-anywhere">
-          {provider.allowed_domains.length > 0
-            ? provider.allowed_domains.join(", ")
-            : "Any address the provider verifies"}
+          {provider.allowed_domains.length > 0 ? provider.allowed_domains.join(", ") : "Any domain"}
         </dd>
         <dt className="text-ink-soft">Callback URL</dt>
         <dd className="flex min-w-0 flex-col items-start gap-1">
@@ -297,7 +295,9 @@ function ProviderItem({
             "Shows here once server.public_url is set."
           ) : (
             <>
-              <code className="font-mono wrap-anywhere select-all">{provider.redirect_uri}</code>
+              <span className="min-w-0 font-mono wrap-anywhere select-all">
+                {provider.redirect_uri}
+              </span>
               <CopyButton
                 value={provider.redirect_uri}
                 label="Copy callback URL"
@@ -506,8 +506,9 @@ function DomainsField({
         onValueChange={onChange}
       />
       <FieldDescription>
-        Optional. Only people with an email address at these domains sign in with this provider.
-        Separate domains with commas.
+        Optional. Someone signing in with this provider for the first time needs an email address at
+        one of these domains; people who already signed in with it keep their access. Separate
+        domains with commas.
       </FieldDescription>
       <FieldError match={invalid}>
         Enter domains only, like example.com, separated by commas.

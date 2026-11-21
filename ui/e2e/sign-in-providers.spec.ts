@@ -176,6 +176,18 @@ test.describe("settings: sign-in providers", () => {
     await expect(dialog.getByLabel("Button text")).toHaveValue("Continue with GitHub");
     await dialog.getByRole("combobox", { name: "Provider" }).click();
     await page.getByRole("option", { name: "OpenID Connect" }).click();
+    // Submitting with the required fields empty marks each one and sends nothing.
+    await dialog.getByRole("button", { name: "Add OpenID Connect" }).click();
+    for (const error of [
+      "Enter the text for the sign-in button.",
+      "Enter the issuer URL.",
+      "Enter the client ID the provider issued.",
+      "Enter the client secret the provider issued.",
+    ]) {
+      await expect(dialog.getByText(error)).toBeVisible();
+    }
+    expect(posts).toHaveLength(0);
+    await expectAccessible(page, "add provider dialog with empty fields");
     await dialog.getByLabel("Button text").fill("Continue with Acme SSO");
     await dialog.getByLabel("Issuer URL").fill("https://login.acme.example");
     await dialog.getByLabel("Client ID").fill("crucible-web");

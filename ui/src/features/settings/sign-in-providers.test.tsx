@@ -166,7 +166,7 @@ describe("sign-in providers", () => {
       sso.getByRole("button", { name: "Copy callback URL of Continue with Acme SSO" }),
     ).toBeTruthy();
     expect(row("Continue with GitHub").getByText("Turned off")).toBeTruthy();
-    expect(row("Continue with GitHub").getByText("Any address the provider verifies")).toBeTruthy();
+    expect(row("Continue with GitHub").getByText("Any domain")).toBeTruthy();
     expect(row("Continue with GitHub").getByRole("button", { name: /Turn on/ })).toBeTruthy();
     // A provider from the server configuration is read-only here.
     const seeded = row("Continue with Corp");
