@@ -41,7 +41,7 @@ attestations. A version such as `v0.1.0` is tagged `0.1.0`, `0.1` and `latest`; 
 unless `CRUCIBLE_IMAGE` in `.env` names another tag.
 
 ```sh
-docker pull ghcr.io/elm-os/crucible:0.1.0
+docker pull ghcr.io/elm-os/crucible:0.1.1
 ```
 
 To build the image yourself from a checkout of this repository, which needs only Docker:
@@ -98,7 +98,7 @@ CRUCIBLE_MASTER_KEY=<openssl rand -hex 32>
 ```
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.0/deploy/compose/compose.cloud.yaml
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.1/deploy/compose/compose.cloud.yaml
 docker compose -f compose.cloud.yaml up -d --wait
 ```
 
@@ -148,11 +148,11 @@ for Linux (x86_64 and aarch64, glibc and musl), macOS (x86_64 and Apple silicon)
 with checksums, and installers for a shell and for PowerShell:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/releases/download/v0.1.0/crucible-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/elm-os/crucible/releases/download/v0.1.1/crucible-installer.sh | sh
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.0/crucible-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/elm-os/crucible/releases/download/v0.1.1/crucible-installer.ps1 | iex"
 ```
 
 The shell installer needs `curl`, and `tar` with xz support (`xz-utils` on Debian and Ubuntu). It installs `crucible`
