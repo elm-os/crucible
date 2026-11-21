@@ -1,9 +1,9 @@
 # Crucible's MCP server
 
-Crucible serves an MCP server at `/mcp` on its main listener, so a coding agent can read a project's traces while
-it works: list them, open one, read a span's input or output, search, read the MCP analytics of the project's MCP
-servers, and start an export. It speaks Streamable HTTP in both MCP protocol eras: the session-based revisions and
-the stateless 2026-07-28 revision.
+Crucible serves an MCP server at `/mcp` on its main listener, so a coding agent can read a project's traces while it
+works: list traces, spans, sessions and users, open a trace, read a span's input or output, search, read the MCP
+analytics of the project's MCP servers, and start an export. It speaks Streamable HTTP in both MCP protocol eras:
+the session-based revisions and the stateless 2026-07-28 revision.
 
 ## Connect an agent
 

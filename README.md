@@ -53,8 +53,8 @@ is MIT licensed and runs on infrastructure you control.
 - Retention per project, and deletion requests for traces, users and sessions.
 - Exports of a project's spans as `crucible-jsonl` or OTLP JSON, from the UI, the REST API, the `crucible export`
   command and the MCP server.
-- Crucible's own MCP server at `/mcp`: a coding agent connects with a project key and lists, reads and searches
-  that project's traces.
+- Crucible's own MCP server at `/mcp`: a coding agent connects with a project key, lists that project's traces,
+  spans, sessions and users, reads and searches its traces, and reads its MCP analytics.
 - Prometheus metrics, and `/healthz` and `/readyz` for orchestrators.
 
 Crucible works with [rightmodeler](https://github.com/elm-os/rightmodeler): rightmodeler replays the spans of a
