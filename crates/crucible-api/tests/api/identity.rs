@@ -245,11 +245,16 @@ pub(crate) async fn platform_of(env: &Env, world: &World, sql: bool, mail: bool)
     } else {
         None
     };
-    let exports = crucible_export::Exports::new(env.clone(), Arc::new(model.clone()));
     let objects = SimObjectStore::new(
         Arc::clone(&env.clock),
         env.rng.fork("objects"),
         ObjectFaults::default(),
+    );
+    let exports = crucible_export::Exports::new(env.clone(), Arc::new(model.clone())).with_objects(
+        crucible_export::ExportObjects::new(
+            Arc::clone(&objects) as Arc<dyn crucible_env::ObjectStore>,
+            "media",
+        ),
     );
     let media = crucible_media::Media::new(
         env,

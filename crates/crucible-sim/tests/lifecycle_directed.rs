@@ -172,6 +172,7 @@ where
         let stores = LeaderStores {
             telemetry: Arc::new(ch.clone()),
             subjects: Arc::new(NoSalt),
+            exports: None,
         };
         let source: LeaderSource = Arc::new(move || Some(stores.clone()));
         let mut registry = Registry::new();

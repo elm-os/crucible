@@ -23,7 +23,8 @@ use crucible_query::{ExportLimits, QueryService, QueryServiceError, ReadContext}
 use crucible_records::{ExportJobId, Timestamp};
 use crucible_schema::RetentionSettings;
 
-use crate::files::{Draft, remove, sweep};
+use crate::files::{Sink, discard, sweep};
+use crate::objects::{ExportObjects, sweep_objects};
 use crate::spec::{Options, Selector};
 use crate::stream::{CHUNK_BYTES, ExportWriter, Pages, Progress, WriteError};
 
@@ -58,16 +59,29 @@ pub mod codes {
 }
 
 /// What the export job reads with, set once the telemetry store is up: the query service. Until then a claimed
-/// export is given back with a backoff.
+/// export is given back with a backoff. With an object store, files go there instead of this node's disk.
 #[derive(Clone, Debug, Default)]
 pub struct ExportRuntime {
     service: Arc<OnceLock<QueryService>>,
+    objects: Option<ExportObjects>,
 }
 
 impl ExportRuntime {
-    /// A runtime without a query service yet.
+    /// A runtime without a query service yet, writing files to this node's disk.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same runtime writing files to the deployment's object store.
+    #[must_use]
+    pub fn with_objects(mut self, objects: ExportObjects) -> Self {
+        self.objects = Some(objects);
+        self
+    }
+
+    /// Where files go when the deployment has an object store.
+    pub const fn objects(&self) -> Option<&ExportObjects> {
+        self.objects.as_ref()
     }
 
     /// The query service, once the telemetry store is up. Later calls change nothing.
@@ -98,31 +112,44 @@ pub fn job(runtime: ExportRuntime) -> Job {
     )
 }
 
-/// The per-node sweep of the exports root: files no export needs, and files of expired exports. Without a
-/// control plane there are no exports and nothing to sweep.
-pub fn sweep_job() -> Job {
+/// The per-node sweep of the exports root: files no export needs, and files of expired exports; with an object
+/// store, the export objects of the same kinds too, which every node's sweep looks at. Without a control plane
+/// there are no exports and nothing to sweep.
+pub fn sweep_job(objects: Option<ExportObjects>) -> Job {
     Job::per_node(
         "exports-sweep",
         Cadence::every(SWEEP_EVERY),
-        |ctx: NodeCtx| async move {
-            let Some(store) = ctx.control else {
-                return Ok(());
-            };
-            let swept = sweep(
-                store.as_ref(),
-                ctx.env.disk.as_ref(),
-                ctx.env.clock.wall_now(),
-            )
-            .await
-            .map_err(|error| JobError::Failed(error.to_string()))?;
-            if swept.files > 0 {
-                tracing::info!(
-                    job = "exports-sweep",
-                    files = swept.files,
-                    "removed export files that no export needs"
-                );
+        move |ctx: NodeCtx| {
+            let objects = objects.clone();
+            async move {
+                let Some(store) = ctx.control else {
+                    return Ok(());
+                };
+                let now = ctx.env.clock.wall_now();
+                let swept = sweep(store.as_ref(), ctx.env.disk.as_ref(), now)
+                    .await
+                    .map_err(failed)?;
+                if swept.files > 0 {
+                    tracing::info!(
+                        job = "exports-sweep",
+                        files = swept.files,
+                        "removed export files that no export needs"
+                    );
+                }
+                if let Some(objects) = &objects {
+                    let removed = sweep_objects(store.as_ref(), objects, now)
+                        .await
+                        .map_err(failed)?;
+                    if removed > 0 {
+                        tracing::info!(
+                            job = "exports-sweep",
+                            objects = removed,
+                            "removed export objects that no export needs"
+                        );
+                    }
+                }
+                Ok(())
             }
-            Ok(())
         },
     )
 }
@@ -210,8 +237,9 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         ctx.env.clock.sleep(Duration::from_secs(1)).await;
     }
 
-    let mut draft = Draft::open(
+    let mut draft = Sink::open(
         Arc::clone(&ctx.env.disk),
+        runtime.objects(),
         &job,
         ctx.claim.attempt,
         options.gzip,
@@ -261,7 +289,9 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
         Ok(true) => Ok(()),
         Ok(false) => {
             // A newer attempt, an expiry or a failure got there first: this file is nobody's.
-            remove(ctx.env.disk.as_ref(), &file).await.map_err(failed)?;
+            discard(ctx.env.disk.as_ref(), runtime.objects(), &file)
+                .await
+                .map_err(failed)?;
             Ok(())
         }
         // The outcome is unknown: a later attempt finds the row committed, or redoes the export, and the sweep
@@ -281,7 +311,7 @@ async fn write_file(
     read: &ReadContext,
     query: &crucible_query::ExportQuery,
     writer: &mut ExportWriter,
-    draft: &mut Draft,
+    draft: &mut Sink,
 ) -> Result<(), WriteError> {
     let mut pages = Pages::new(service, read, query, ExportLimits::default());
     let mut chunks = 0u32;

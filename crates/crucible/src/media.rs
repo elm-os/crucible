@@ -85,6 +85,14 @@ pub(crate) fn build(
 }
 
 impl NodeMedia {
+    /// The object store as export files use it, under the same key prefix as media.
+    pub(crate) fn export_objects(&self) -> crucible_export::ExportObjects {
+        crucible_export::ExportObjects::new(
+            Arc::clone(&self.store) as Arc<dyn ObjectStore>,
+            self.prefix.clone(),
+        )
+    }
+
     /// The `media-gc` job.
     pub(crate) fn job(&self) -> Job {
         crucible_media::gc::job(

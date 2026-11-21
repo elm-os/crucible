@@ -1,7 +1,8 @@
 //! The export job on the virtual clock (contracts 11.7 and 12.8): a crash at any disk operation of an export
 //! leaves no partial file under a final name, and the export resumes on the restarted node, which commits one
 //! complete file whose checksum the row records; the sweep then leaves only that file. Also: a deletion's purge
-//! expires the export and removes its file, and the API service's rate limit and `Idempotency-Key`.
+//! expires the export and removes its file, the API service's rate limit and `Idempotency-Key`, and, with an
+//! object store, a file that is an object any node hands out a link to, which expiry and purge remove.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -14,13 +15,16 @@ use crucible_control::{
     ControlStore, ExportFormat, ExportJob, JsonDoc, NewExport, Project, Repos as _,
 };
 use crucible_env::{
-    Clock, DiskPath, Env, InsertError, InsertSettings, MutationId, MutationStatus, OpenMode,
-    QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores, TelemetryStore,
+    Clock, Disposition, DiskPath, Env, InsertError, InsertSettings, MutationId, MutationStatus,
+    OpenMode, QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores,
+    TelemetryStore,
 };
 use crucible_export::{
-    CreateError, CreateExport, Created, EXPORT_LEASE, ExportRuntime, ExportState, Exports, Options,
-    Selector, job, purge, sweep, sweep_job,
+    CreateError, CreateExport, Created, DOWNLOAD_TTL, Download, DownloadError, EXPORT_LEASE,
+    EXPORT_TTL, ExportObjects, ExportRuntime, ExportState, Exports, Options, SWEEP_EVERY, Selector,
+    job, purge, sweep, sweep_job, sweep_objects,
 };
+use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_jobs::{Registry, Running};
 use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
 use crucible_query::QueryService;
@@ -212,8 +216,14 @@ fn project() -> Project {
     }
 }
 
-/// A node: the registry with the export job and the sweep, its query service over [`Spans`].
-fn start(host: &Host, model: &PgModel, base: Timestamp) -> Running {
+/// A node: the registry with the export job and the sweep, its query service over [`Spans`], writing its files
+/// to `objects` when the deployment has an object store.
+fn start(
+    host: &Host,
+    model: &PgModel,
+    base: Timestamp,
+    objects: Option<&ExportObjects>,
+) -> Running {
     let (index, _writer) = RecentIndex::new(
         RecentConfig::new(1 << 20, crucible_env::StoreFlavour::SingleNode),
         Arc::clone(&host.env.clock),
@@ -225,11 +235,14 @@ fn start(host: &Host, model: &PgModel, base: Timestamp) -> Running {
         index,
         WalEpoch::from_bytes([1; 16]),
     );
-    let runtime = ExportRuntime::new();
+    let mut runtime = ExportRuntime::new();
+    if let Some(objects) = objects {
+        runtime = runtime.with_objects(objects.clone());
+    }
     runtime.set_service(service);
     let mut registry = Registry::new();
     registry.register(job(runtime));
-    registry.register(sweep_job());
+    registry.register(sweep_job(objects.cloned()));
     let store: Arc<dyn ControlStore> = Arc::new(model.clone());
     registry.start(&host.env, Some(store), "node")
 }
@@ -348,7 +361,7 @@ fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
         let disk: SimDisk = sim.disk("node");
         let host = sim.host("node/boot-1", &disk, 0);
         disk.arm_crash_after_ops(crash_after);
-        let running = start(&host, &model, base);
+        let running = start(&host, &model, base, None);
         let crashed = {
             let crash = disk.crash_point_reached().fuse();
             // Past the sweep's cadence, so the last crash points fall on the sweep after the commit.
@@ -388,7 +401,7 @@ fn crash_and_resume(seed: u64, crash_after: u64) -> Left {
 
         // The restarted node takes the export once the crashed attempt's claim has run out.
         let host = sim.host("node/boot-2", &disk, 0);
-        let _running = start(&host, &model, base);
+        let _running = start(&host, &model, base, None);
         let mut done = None;
         for _ in 0..(EXPORT_LEASE.as_secs() / 30 + 20) {
             let job = row(&model, id).await;
@@ -547,7 +560,7 @@ where
             "{limited:?}"
         );
 
-        let _running = start(&host, &model, base);
+        let _running = start(&host, &model, base, None);
         let id = job.new.id;
         for _ in 0..400 {
             let all = model.export_jobs().list(PROJECT, 10).await.unwrap();
@@ -558,7 +571,9 @@ where
         }
         let job = row(&model, id).await;
         check(&host.env, &job, "a finished export").await;
-        let download = exports.open(scope, id).await.unwrap();
+        let Download::File(download) = exports.open(scope, id).await.unwrap() else {
+            panic!("a file on this node's disk")
+        };
         assert_eq!(download.len, job.bytes);
         let bytes = download
             .read(0, usize::try_from(download.len).unwrap())
@@ -566,5 +581,194 @@ where
             .unwrap();
         assert_eq!(sha256(&bytes), download.checksum);
         then(model, host.env.clone(), id, host.env.clock.wall_now()).await;
+    });
+}
+
+/// A file written to the disk before the deployment had an object store still downloads from the disk.
+#[test]
+fn a_file_on_the_disk_downloads_from_the_disk_once_an_object_store_is_configured() {
+    crash_and_resume_then(|model, env, id, _| async move {
+        let store = SimObjectStore::new(
+            Arc::clone(&env.clock),
+            env.rng.fork("objects"),
+            ObjectFaults::default(),
+        );
+        let exports = Exports::new(env.clone(), Arc::new(model))
+            .with_objects(ExportObjects::new(store.clone(), "media"));
+        let scope = crucible_auth::test_support::scope(PROJECT).unwrap();
+        assert!(matches!(
+            exports.open(scope, id).await.unwrap(),
+            Download::File(_)
+        ));
+        assert!(store.objects().is_empty());
+    });
+}
+
+/// The objects under the project's export keys: key and bytes.
+fn export_objects(store: &SimObjectStore) -> Vec<(String, crucible_sim::object_model::StoredObject)> {
+    let prefix = format!("media/{PROJECT}/exports/");
+    store
+        .objects()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .collect()
+}
+
+/// Runs one export to completion on a node of a deployment with an object store (prefix `media`), then `then`
+/// with the model, the store, the node's env, another node's env, the export and now.
+fn with_objects_then<F, Fut>(seed: u64, gzip: bool, then: F)
+where
+    F: FnOnce(PgModel, Arc<SimObjectStore>, Env, Env, ExportJob, Timestamp) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    crucible_sim::run(seed, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        model.projects().insert(&project()).await.unwrap();
+        let store = SimObjectStore::new(
+            database.clock.clone(),
+            sim.rng("objects"),
+            ObjectFaults::default(),
+        );
+        let objects = ExportObjects::new(store.clone(), "media");
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let now = host.env.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let id = ExportJobId::from_bytes([0x0b; 16]);
+        let new = NewExport {
+            id,
+            project_id: PROJECT,
+            format: ExportFormat::CrucibleJsonl,
+            selector: Selector {
+                window: TimeWindow::new(base, now).unwrap(),
+                trace_ids: Vec::new(),
+                user_id: None,
+                session_id: None,
+            }
+            .to_text(),
+            options: Options {
+                gzip,
+                keep_truncated: false,
+            }
+            .to_text(),
+            dedup_key: id.to_string(),
+            created_by: "user:test".to_owned(),
+            created_at: now,
+            as_of: now,
+        };
+        model.export_jobs().insert(&new).await.unwrap();
+        let _running = start(&host, &model, base, Some(&objects));
+        let mut done = None;
+        for _ in 0..200 {
+            let job = row(&model, id).await;
+            if job.file.is_some() || job.error.is_some() {
+                done = Some(job);
+                break;
+            }
+            database.clock.sleep(Duration::from_secs(5)).await;
+        }
+        let job = done.expect("the export never finished");
+        assert_eq!(job.error, None);
+        let other = sim.host("node-2", &sim.disk("node-2"), 0);
+        let now = host.env.clock.wall_now();
+        then(model, store, host.env.clone(), other.env.clone(), job, now).await;
+    });
+}
+
+/// With an object store the file goes to the store under the project's key prefix and nothing to the node's
+/// disk. Any node, not only the one that wrote it, answers the download with a presigned link that lives at most
+/// 5 minutes and saves the file as an attachment; a node without the store says which setting it needs.
+#[test]
+fn with_an_object_store_the_file_is_an_object_any_node_links_to() {
+    with_objects_then(11, false, |model, store, env, other, job, now| async move {
+        assert!(files(&env).await.is_empty(), "a file on the node's disk");
+        let id = job.new.id;
+        let objects = export_objects(&store);
+        let [(key, object)] = objects.as_slice() else {
+            panic!("one object, not {objects:?}")
+        };
+        assert_eq!(
+            key,
+            &format!("media/{PROJECT}/exports/{id}/1/crucible-export-{id}.jsonl")
+        );
+        assert!(complete(&object.bytes), "the object holds the whole export");
+        assert_eq!(job.checksum.as_deref(), Some(sha256(&object.bytes).as_str()));
+        assert_eq!(job.bytes, object.bytes.len() as u64);
+        assert_eq!(object.content_type, "application/x-ndjson");
+        assert!(store.open_uploads().is_empty());
+
+        // Another node: its own disk, the same control plane and store.
+        let exports = Exports::new(other.clone(), Arc::new(model.clone()))
+            .with_objects(ExportObjects::new(store.clone(), "media"));
+        let scope = crucible_auth::test_support::scope(PROJECT).unwrap();
+        let Download::Link(link) = exports.open(scope, id).await.unwrap() else {
+            panic!("a link to the object")
+        };
+        assert!(link.expires_at <= now.saturating_add_micros(300_000_000));
+        assert!(DOWNLOAD_TTL <= Duration::from_secs(300));
+        let (served, disposition) = store.download(&link.url).unwrap();
+        assert_eq!(disposition, Disposition::Attachment);
+        assert_eq!(served.bytes, object.bytes);
+
+        // Without the store the link cannot be made, and the refusal names the settings.
+        let bare = Exports::new(other, Arc::new(model));
+        let refused = bare.open(scope, id).await.unwrap_err();
+        assert!(matches!(refused, DownloadError::NoObjectStore), "{refused:?}");
+        assert!(refused.to_string().contains("object_store.endpoint"));
+    });
+}
+
+/// The sweep removes an export's object once its file expired (7 days), and objects of attempts the row does not
+/// name, and keeps the file of an export that is still downloadable.
+#[test]
+fn the_sweep_removes_expired_export_objects() {
+    with_objects_then(12, true, |model, store, env, _, job, _| async move {
+        let id = job.new.id;
+        let [(key, _)] = export_objects(&store).try_into().unwrap();
+        assert_eq!(
+            key,
+            format!("media/{PROJECT}/exports/{id}/1/crucible-export-{id}.jsonl.gz")
+        );
+        // What an attempt whose claim ran out after its upload leaves.
+        let stray = format!("media/{PROJECT}/exports/{id}/9/crucible-export-{id}.jsonl.gz");
+        store.plant(&stray, bytes::Bytes::from_static(b"stray"), env.clock.wall_now());
+        env.clock.sleep(SWEEP_EVERY + Duration::from_secs(60)).await;
+        let left: Vec<String> = export_objects(&store).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(left, vec![key], "the stray goes and the file stays");
+
+        // A sweep before the file expires keeps it; one after removes it.
+        let objects = ExportObjects::new(store.clone(), "media");
+        let expires_at = row(&model, id).await.expires_at.unwrap();
+        let before = expires_at.saturating_add_micros(-1);
+        assert_eq!(sweep_objects(&model, &objects, before).await.unwrap(), 0);
+        assert_eq!(export_objects(&store).len(), 1);
+        assert_eq!(ExportState::of(&job, expires_at), ExportState::Expired);
+        assert_eq!(sweep_objects(&model, &objects, expires_at).await.unwrap(), 1);
+        assert!(export_objects(&store).is_empty(), "the expired file is gone");
+        assert!(expires_at <= job.new.created_at.saturating_add_micros(
+            i64::try_from((EXPORT_TTL + EXPORT_LEASE).as_micros()).unwrap()
+        ));
+    });
+}
+
+/// A deletion request expires the exports it predates and removes their objects once the expiry is recorded.
+#[test]
+fn a_deletion_removes_the_objects_of_the_exports_it_predates() {
+    with_objects_then(13, false, |model, store, env, _, job, now| async move {
+        let objects = ExportObjects::new(store.clone(), "media");
+        let purged = purge(&model, env.disk.as_ref(), PROJECT, now, now)
+            .await
+            .unwrap();
+        assert_eq!(purged.expired.len(), 1);
+        assert_eq!(purged.files_removed, 0, "nothing on the node's disk");
+        assert_eq!(export_objects(&store).len(), 1, "the purge never calls the store");
+        assert_eq!(objects.remove(&purged.expired).await.unwrap(), 1);
+        assert!(export_objects(&store).is_empty());
+        let job = row(&model, job.new.id).await;
+        assert_eq!(ExportState::of(&job, now), ExportState::Expired);
     });
 }

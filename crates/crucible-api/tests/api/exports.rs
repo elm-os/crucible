@@ -2,7 +2,7 @@
 //! `Idempotency-Key` replays it or refuses another request; the window and the trace ids are checked by JSON
 //! pointer; a project gets 5 per hour; reading and listing; the download is refused until the export is ready,
 //! streams the file with its checksum as the `ETag` when it is, and answers `export_expired` once a deletion
-//! request expired it.
+//! request expired it. A file on the object store downloads through a 303 to a presigned link.
 
 use axum::body::Body;
 use axum::http::{Method, Request, header};
@@ -358,5 +358,73 @@ fn a_ready_export_downloads_with_its_checksum_until_a_deletion_expires_it() {
         )
         .await;
         assert_eq!(read.body["state"], "expired");
+    });
+}
+
+/// A file on the object store downloads through a 303 to a presigned link that nothing may cache, and that saves
+/// the file as an attachment.
+#[test]
+fn a_file_on_the_object_store_downloads_through_a_presigned_link() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform_with(&env, &world, false).await;
+        let created = call(
+            &p.router,
+            Method::POST,
+            &exports_path(),
+            &p.key,
+            Some(request()),
+            &[],
+        )
+        .await;
+        let id = created.body["id"].as_str().unwrap().to_owned();
+
+        // What the export job does with an object store: upload the attempt's object and record it.
+        let content = b"{\"schema\":\"crucible.span/1\",\"span\":{},\"facts\":[]}\n".repeat(2);
+        let key = format!(
+            "media/{}/exports/{id}/1/crucible-export-{id}.jsonl",
+            project(1)
+        );
+        p.objects
+            .plant(&key, bytes::Bytes::from(content.clone()), env.clock.wall_now());
+        let claim = p
+            .model
+            .claims()
+            .claim(Queue::ExportJobs, 1, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let committed = p
+            .model
+            .export_jobs()
+            .commit(
+                &claim[0],
+                &crucible_control::ExportCommit {
+                    file: format!("object:{key}"),
+                    checksum: "ab".repeat(32),
+                    spans: 2,
+                    bytes: content.len() as u64,
+                    skipped: 0,
+                    expires_at: env.clock.wall_now().saturating_add_micros(3_600_000_000),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(committed);
+
+        let download = call(
+            &p.router,
+            Method::GET,
+            &format!("{}/{id}/download", exports_path()),
+            &p.key,
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(download.status.as_u16(), 303, "{}", download.pretty());
+        assert_eq!(download.headers[header::CACHE_CONTROL], "no-store");
+        let location = download.headers[header::LOCATION].to_str().unwrap();
+        let (object, disposition) = p.objects.download(location).unwrap();
+        assert_eq!(disposition, crucible_env::Disposition::Attachment);
+        assert_eq!(object.bytes.as_ref(), content.as_slice());
     });
 }

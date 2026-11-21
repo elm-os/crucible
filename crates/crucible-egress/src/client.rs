@@ -122,7 +122,7 @@ impl Egress {
         }
         if self.policy.mode == Mode::Strict {
             for own in &self.policy.infrastructure {
-                // A database host that does not resolve here cannot be the target either.
+                // An infrastructure host that does not resolve here cannot be the target either.
                 let theirs = self.resolve(own).await.unwrap_or_default();
                 if theirs.iter().any(|ip| addresses.contains(ip)) {
                     return Err(Refusal::Infrastructure(target.host.clone()).into());
