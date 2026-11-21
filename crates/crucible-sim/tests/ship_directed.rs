@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crucible_env::metrics::registry;
 use crucible_env::{
-    DiskPath, InsertError, InsertSettings, RetryReason, Root, StoreFlavour, Stores,
+    DiskPath, InsertError, InsertSettings, Instant, RetryReason, Root, StoreFlavour, Stores,
 };
 use crucible_normalize::{NORMALIZER_VERSION, Tombstone, TombstoneSelector};
 use crucible_records::{
@@ -28,7 +29,7 @@ use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
 use crucible_sim::ship_sim::{
     QuarantineFault, SpanSpec, named_pairs, read_quarantines, request_payload,
 };
-use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
+use crucible_sim::{DiskFaults, Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{
     Compression, FRAME_HEADER_LEN, FrameHeader, PreparedFrame, Record, RecordType,
@@ -53,10 +54,14 @@ struct Rig {
 
 type Ended = Arc<Mutex<Option<Result<(), ShipError>>>>;
 
+/// When the shipper's run started and when it returned.
+type Ran = Arc<Mutex<Option<(Instant, Instant)>>>;
+
 struct Node {
     host: Host,
     wal: Wal,
     ended: Ended,
+    ran: Ran,
     stats: Arc<crucible_shipper::ShipperStats>,
 }
 
@@ -158,15 +163,19 @@ impl Rig {
             Shipper::new(&host.env, &stores, wal.clone(), &report, config, hooks).unwrap();
         let stats = shipper.stats();
         let ended: Ended = Arc::default();
-        let slot = Arc::clone(&ended);
+        let ran: Ran = Arc::default();
+        let (slot, span, clock) = (Arc::clone(&ended), Arc::clone(&ran), host.env.clock.clone());
         drop(host.env.spawn("shipper", async move {
+            let started = clock.now();
             let result = Box::pin(shipper.run()).await;
+            *span.lock().unwrap() = Some((started, clock.now()));
             *slot.lock().unwrap() = Some(result);
         }));
         let node = Node {
             host,
             wal,
             ended,
+            ran,
             stats,
         };
         (node, report)
@@ -1431,4 +1440,74 @@ fn a_whole_frame_manifest_names_a_durable_copy_at_every_crash_point() {
 #[test]
 fn a_whole_pair_manifest_names_a_durable_copy_at_every_crash_point() {
     sweep_crashes_in_the_copy(Copied::Pair, 8);
+}
+
+/// The `phase` labels of `crucible_shipper_task_microseconds_total`.
+const PHASES: [&str; 8] = [
+    "read",
+    "stage_a",
+    "stage_b",
+    "rows",
+    "encode",
+    "wal_append",
+    "wait_inserts",
+    "wait_frames",
+];
+
+/// The shipper task charges every moment of its run to one phase, so the phases add up to the run exactly. Work
+/// takes no virtual time here, so what this run shows beyond the sum is where the task waits: for the WAL to make
+/// its seals and checkpoints durable, for inserts while a full batch waits at the in-flight cap, and for frames.
+#[test]
+fn the_shipper_task_phases_add_up_to_its_run() {
+    directed(|rig| async move {
+        // Every insert answers after 100 ms and every sync takes 2 ms. A batch is full at four spans, so with
+        // two batches in flight the third full batch waits for an insert.
+        rig.model.set_script(Script::new(|_, _| None));
+        rig.model.set_faults(ChFaults {
+            latency_micros: (100_000, 100_000),
+            ..ChFaults::default()
+        });
+        rig.disk.set_faults(DiskFaults {
+            sync_latency_micros: (2_000, 2_000),
+            ..DiskFaults::default()
+        });
+        let config = ShipperConfig {
+            seal_rows: 4,
+            ..config()
+        };
+        let (node, _) = rig
+            .boot_with(
+                WalConfig::default().replay_retention,
+                config,
+                Hooks::default(),
+            )
+            .await;
+        for tag in 1..=4 {
+            node.ingest(tag, 4).await;
+        }
+        node.sleep(1_000).await;
+        assert_eq!(node.snapshot().checkpoints, 4);
+        node.host.spawner.request_shutdown();
+        node.sleep(10).await;
+        assert_eq!(node.ended(), Some(Ok(())));
+
+        let (started, stopped) = node.ran.lock().unwrap().unwrap();
+        let ran = u64::try_from(stopped.saturating_duration_since(started).as_micros()).unwrap();
+        let recorder = &node.host.recorder;
+        let phases = PHASES.map(|name| {
+            (
+                name,
+                recorder.counter_value(&registry::SHIPPER_TASK_TIME, &[name]),
+            )
+        });
+        let phase = |name: &str| phases.iter().find(|(n, _)| *n == name).unwrap().1;
+        let charged: u64 = phases.iter().map(|(_, micros)| micros).sum();
+        assert_eq!(charged, ran, "{phases:?}");
+        // Four seals and four checkpoints, each durable after one 2 ms sync.
+        assert!(phase("wal_append") >= 16_000, "{phases:?}");
+        // The third batch is full while the first two wait 100 ms for their inserts.
+        assert!(phase("wait_inserts") >= 90_000, "{phases:?}");
+        assert!(phase("wait_frames") > 0, "{phases:?}");
+        node.host.stop().await;
+    });
 }
