@@ -157,7 +157,9 @@ pub struct ShipperConfig {
     pub backoff_max: Duration,
     /// Identical data errors after which a pair is quarantined.
     pub poison_limit: u16,
-    /// How often the shipper looks for new durable frames when it found none.
+    /// The longest the shipper waits with nothing to do, which bounds how late it seals a lingering batch and
+    /// collects garbage. A frame that becomes durable while the shipper can take it, or an insert that answers,
+    /// ends the wait at once.
     pub tail_poll: Duration,
     /// How often garbage collection runs between checkpoints, so that replay retention can elapse.
     pub gc_interval: Duration,

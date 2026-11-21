@@ -10,7 +10,7 @@ use crucible_records::{Lsn, Timestamp, WalEpoch};
 use crucible_wal_codec::{
     Checkpoint, PreparedFrame, Record, RecordType, SEGMENT_HEADER_LEN, load_payload,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::committer::{Committer, Item};
 use crate::config::WalConfig;
@@ -110,6 +110,8 @@ pub(crate) struct Shared {
     /// advance into it.
     segments: Mutex<Vec<SegmentMeta>>,
     durable_lsn: AtomicU64,
+    /// Wakes the waits of [`Shared::durable_reaches`] after each move of the durable LSN.
+    durable_moved: Notify,
     /// The highest checkpoint whose frame is durable. Only the committer and recovery set it, from log
     /// records; no caller can supply a watermark.
     watermark: Mutex<Option<Watermark>>,
@@ -132,6 +134,21 @@ impl Shared {
     pub(crate) fn set_durable_lsn(&self, lsn: u64) {
         self.durable_lsn.store(lsn, Ordering::SeqCst);
         self.metrics.durable_lsn.set(gauge_value(lsn));
+        // After the store: a wait that registered before it checked the LSN either saw the move or is woken here.
+        self.durable_moved.notify_waiters();
+    }
+
+    /// Resolves once the durable LSN is at least `lsn`. The wait registers for the wake before it checks the LSN,
+    /// so a move between a caller's own check and this wait is never missed.
+    pub(crate) async fn durable_reaches(&self, lsn: u64) {
+        loop {
+            // `notify_waiters` wakes a `Notified` from its creation on, whether it was polled or not.
+            let moved = self.durable_moved.notified();
+            if self.durable_lsn.load(Ordering::SeqCst) >= lsn {
+                return;
+            }
+            moved.await;
+        }
     }
 
     pub(crate) fn watermark(&self) -> Option<Watermark> {
@@ -265,6 +282,7 @@ impl Wal {
             clock: Arc::clone(&env.clock),
             segments: Mutex::new(report.segments.clone()),
             durable_lsn: AtomicU64::new(report.last_lsn.get()),
+            durable_moved: Notify::new(),
             watermark: Mutex::new(report.watermark),
             failed: AtomicBool::new(false),
             free_bytes: AtomicU64::new(u64::MAX),
