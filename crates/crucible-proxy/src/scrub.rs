@@ -1,5 +1,5 @@
-//! The shared scrubbing rules (contract 9.10), applied to the error messages the proxy records before they leave
-//! the process.
+//! The shared scrubbing rules (contract 9.10), applied to the error messages and the captured content the proxy
+//! records before they leave the process.
 //!
 //! The rules are data: `scrub-rules.json` in this crate is a copy of the repository's
 //! `conformance/scrub-rules.json`, which every Crucible SDK applies as well, and a test keeps the two identical.
@@ -129,8 +129,19 @@ fn prefix(text: &str, max: usize) -> &str {
 /// At most `max` bytes of `text`, scrubbed. Only the first `max` plus 1 KiB bytes are read, so the cost is
 /// bounded by the cap and not by the size of `text`.
 pub fn capped(text: &str, max: usize) -> String {
+    capped_with_cut(text, max).0
+}
+
+/// [`capped`], and whether anything of `text` was left out: past the window that is read, or past the cap after
+/// scrubbing.
+pub fn capped_with_cut(text: &str, max: usize) -> (String, bool) {
     let window = prefix(text, max.saturating_add(LOOKAHEAD));
-    prefix(&scrub(window), max).to_owned()
+    let scrubbed = scrub(window);
+    let kept = prefix(&scrubbed, max);
+    (
+        kept.to_owned(),
+        window.len() < text.len() || kept.len() < scrubbed.len(),
+    )
 }
 
 /// The size of the window [`capped`] reads for the cap `max`: what the scanner keeps of a message.

@@ -453,9 +453,12 @@ def _model_members(model: BaseModel) -> Iterator[tuple[str, object]]:
 
 
 def _lazy(value: object) -> object:
-    """`value` as `model_dump(mode="json")` has it, with models, mappings and sequences converted while read."""
+    """`value` as `model_dump(mode="json")` has it, with models, mappings and sequences converted while read. The
+    encoder converts builtin dicts, lists and tuples itself, by the same rules, as it reads them."""
     if isinstance(value, BaseModel):
         return _scrub.LazyObject(_model_members(value))
+    if type(value) is dict or type(value) is list or type(value) is tuple:
+        return _scrub.JsonData(value, _lazy, _json_key)
     if isinstance(value, Mapping):
         return _scrub.LazyObject((_json_key(k), _lazy(v)) for k, v in value.items())
     if isinstance(value, list | tuple):

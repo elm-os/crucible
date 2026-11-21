@@ -322,6 +322,8 @@ a frame of the shipper would) and checks the records it makes:
 - every derived field of a golden or a registry rule is checked twice: against the registry's source list, and
   against the field of the normalizer's record (`McpOpRecord` for the MCP fields, the span record for the
   others);
+- the normalizer's `McpOpRecord` keeps each span's captured content as sent: the arguments and result byte for
+  byte, the captured flag, the sample rate and the truncation, whichever capture source sent them;
 - the `outcome` of a golden is checked against the classification in the normalizer's `McpOpRecord`, and the
   driver's own reading of the span's keys must classify the same.
 
@@ -333,7 +335,8 @@ key the projector reads is in `registry.json` with a type the projector takes.
 
 - **Registry rules.** `registry.json` types every known key (unknown keys are allowed), lists the forbidden keys and
   prefixes, and holds `mcp_rules` (applied to every MCP span) and `agent_rules` (applied to every agent span), for
-  example: `capture_source` is `sdk`, era and transport match the case, `mcp.session.id` is absent in the modern era,
+  example: `capture_source` is the sender's (`sdk` for an SDK; `proxy_stdio` or `proxy_http` for the proxy, by the
+  manifest's `source`), era and transport match the case, `mcp.session.id` is absent in the modern era,
   `jsonrpc.request.id` is absent exactly on notifications, content keys are absent unless content was captured.
 - **Classification.** The outcome comes from `crucible_records::classify_mcp_error` (contract 9.2) with these inputs
   read from the span: `rpc.response.status_code` (else a numeric `error.type`) as the JSON-RPC code, `error.type =
@@ -386,9 +389,16 @@ counts through a hook inside the SDK.
   four SDKs and of this crate guard the matcher with linear checks (a text shorter than any match is skipped, a rule
   whose required literal is absent is skipped, and a pattern that opens with a literal prefix, a class repetition
   and an anchor outside the class, as the email and jwt rules do, is tried once per anchor), so the steps stay
-  linear in the text; a differential property test in each holds the guarded scrubber to the plain one.
-- The latency gate: every run prints the added p99 per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to the laptop's
-  round counts and fails a shape whose added p99 is above `gate_added_p99_ms` (1 ms). CI never gates on timing.
+  linear in the text; a differential property test in each holds the guarded scrubber to the plain one. The
+  TypeScript scrubber also skips a rule when the text lacks a class member followed by a literal that every match
+  holds (a hexadecimal digit followed by `:` for the ipv6 rule), one search it counts as a step per character.
+- The latency gate: every run prints the added p99 and the gate per shape. `CRUCIBLE_CAPTURE_GATE=1` switches to
+  the laptop's round counts and fails a shape whose added p99 is above its gate: `gate_added_p99_ms` (1 ms), or,
+  for a shape with `gate_relative_p99`, that share of the p99 of its calls without capture when that is larger.
+  Only text-5m has one (5%): its calls move 5 MiB through the MCP library, so without capture their p99 measured
+  24 ms (Rust) to 105 ms (Go) on the laptop, and in A/A runs, both arms without capture, the two differed by
+  1.15 ms (Go), more than the 1 ms gate, and by at most 0.39 ms (Rust). Where the library hands the result over in memory (Python, TypeScript), the
+  p99 without capture is under 1 ms, so the 1 ms gate still applies. CI never gates on timing.
 
 | SDK | Test | Command, from the repository root |
 |---|---|---|
@@ -468,7 +478,13 @@ Each SDK commits one manifest (schema in `conformance/capability-manifest.schema
 | `kinds`, `variants` | Subsets of the suite's | Cases outside them are reported as skipped with the reason |
 | `throw_outcome` | `tool_error` (the MCP library turns the exception into an `isError` result) or `internal` (a JSON-RPC error, -32603) | Picks the `throw` expectation |
 | `progress_count` | `observed` or `unobserved` | `observed`: `crucible.mcp.progress.count` must equal the notifications sent; `unobserved`: it must be absent (contract 9.1: absent means unobserved) |
+| `source` | `sdk` (the default, left out) or `proxy` | What sends the spans: an SDK has the capture source `sdk`; the proxy has `proxy_stdio` in the stdio variants and `proxy_http` in the HTTP ones |
 | `skips` | `{"case": "<id or scenario>", "reason": "..."}` | Explicit skips; each is printed as skipped, never as passed |
+
+The MCP proxy plays the content-capture scenario `mcp-secret` with a manifest whose `source` is `proxy`, in process:
+`crates/crucible-proxy/tests/conformance.rs` implements the runner contract over the proxy's stdio pumps and HTTP
+reverse proxy in front of a reference server, captures with the run spec's rule (written as a `--capture` rule) and
+passes all four variants.
 
 ## Report
 

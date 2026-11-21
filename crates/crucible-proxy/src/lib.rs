@@ -6,13 +6,17 @@
 //! session is not touched. The proxy never injects anything.
 //!
 //! - [`core`]: [`ProxyCore`], the state machine with no IO, and its forwarding face [`Tap`].
-//! - [`scan`] and [`sse`]: the bounded streaming readers that find JSON-RPC fields in the copy.
-//! - [`scrub`]: the shared scrubbing rules, applied to the error messages the proxy records.
+//! - [`scan`] and [`sse`]: the bounded streaming readers that find JSON-RPC fields in the copy, and [`canonical`],
+//!   the writer of the canonical JSON text of captured content.
+//! - [`capture`]: the opt-in content capture rules (contract 9.10).
+//! - [`scrub`]: the shared scrubbing rules, applied to the error messages and the content the proxy records.
 //! - [`encode`]: operations to OTLP spans.
 //! - [`live`]: the telemetry task and the exporter, off the forwarding path.
 //! - [`stdio`]: the pumps of `crucible proxy stdio`.
 //! - [`http`]: the reverse proxy of `crucible proxy http`, and [`identity`], its opt-in token identity.
 
+pub mod canonical;
+pub mod capture;
 pub mod core;
 pub mod encode;
 pub mod http;
@@ -24,7 +28,8 @@ pub mod scrub;
 pub mod sse;
 pub mod stdio;
 
+pub use crate::capture::{CaptureRule, CaptureRuleError, SampleRate};
 pub use crate::core::{
-    Batch, BodyKind, CoreConfig, EndReason, ExportResult, HeaderView, Identity, Now, Op, ProxyCore,
-    Stats, StreamId, Tap,
+    Batch, BodyKind, Content, CoreConfig, EndReason, ExportResult, HeaderView, Identity, Now, Op,
+    ProxyCore, Stats, StreamId, Tap,
 };

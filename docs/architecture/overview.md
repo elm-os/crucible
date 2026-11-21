@@ -116,7 +116,8 @@ policies, read-only profile and quota enforce isolation.
 
 - **Recording servers.** SDK wrappers for TypeScript, Python, Go and Rust capture every MCP operation with timing,
   outcome, error class, client and session, and opt-in arguments and results scrubbed in the SDK. The proxy forwards
-  bytes unchanged and analyses a copy, so a Crucible outage never breaks an MCP session.
+  bytes unchanged and analyses a copy, so a Crucible outage never breaks an MCP session; it captures opt-in
+  arguments and results with the SDKs' rules, scrubbed in the proxy.
 - **Linking agents and servers.** Agents' client wrappers put W3C trace context in `params._meta`, which joins
   their tool calls and the servers' spans in one trace.
 - **Serving agents.** `crucible-mcp-server` serves read-only tools, and exports, at `/mcp` over the same query

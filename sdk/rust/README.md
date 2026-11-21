@@ -82,8 +82,8 @@ exported, a span is dropped and counted; ending a span never waits for the netwo
 refusing connections or not answering. `crucible_sdk::stats()` returns the counters (`exported`, `dropped`,
 `failed`, `queued_bytes`, and `feedback_sent`, `feedback_dropped`, `feedback_failed` for scores). `flush` exports what
 has ended, sends the queued scores and returns the export error if there is one, else why the last score that was not
-sent failed, and `shutdown` exports the rest and stops the threads; each waits at most `export_timeout` for the spans
-and as long again for the scores.
+sent failed, and `shutdown` exports the rest and stops the threads; each waits at most `export_timeout` in all, for
+the spans and the scores together.
 
 ## Send feedback
 

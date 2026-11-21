@@ -108,15 +108,23 @@ function ruleNamed(name: string): Rule {
 
 /**
  * Applies one rule behind guards that take time linear in the text and change nothing: text shorter than any
- * match, or without the rule's required literal, is left alone, and a lead pattern is tried once per anchor.
+ * match, without the rule's required literal, or without the class and literal pair every match holds, is left
+ * alone, and a lead pattern is tried once per anchor.
  */
 function apply(rule: Rule, text: string): string {
-  const { minLength, literals, lead } = rule.facts;
+  const { minLength, literals, lead, pairs } = rule.facts;
   if (
     text.length < minLength ||
     (literals !== undefined && !literals.some((l) => text.includes(l)))
   ) {
     return text;
+  }
+  if (pairs !== undefined) {
+    // One search for the pair, which a matcher takes at most one step per start for.
+    matcherHook?.(rule.name, text.length);
+    if (!pairs.test(text)) {
+      return text;
+    }
   }
   return lead === undefined || rule.rest === undefined
     ? applyPlain(rule, text)
@@ -232,12 +240,17 @@ function luhn(candidate: string): boolean {
 }
 
 const encoder = new TextEncoder();
+/** Reused by every cut: the bytes are only counted, never read. */
+let cutBuffer = new Uint8Array(0);
 
 /** The longest prefix of `text` that fits in `maxBytes` of UTF-8 and ends on a character boundary. */
 export function cutUtf8(text: string, maxBytes: number): string {
   if (text.length * 3 <= maxBytes) {
     return text;
   }
-  const { read } = encoder.encodeInto(text, new Uint8Array(maxBytes));
+  if (cutBuffer.length < maxBytes) {
+    cutBuffer = new Uint8Array(maxBytes);
+  }
+  const { read } = encoder.encodeInto(text, cutBuffer.subarray(0, maxBytes));
   return read >= text.length ? text : text.slice(0, read);
 }

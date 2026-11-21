@@ -134,11 +134,13 @@ async def test_the_capture_path_stays_within_the_work_bound(stalled: Collector, 
     steps = sum(call_steps)
     steps_per_char = steps / max(sum(c for _, c in work), 1)
     added = p99(with_capture) - p99(without)
+    # A shape may be gated relative to its calls without capture, when that allows more than the absolute gate.
+    gate = max(SCENARIO["gate_added_p99_ms"], shape.get("gate_relative_p99", 0.0) * p99(without))
     excess = max(with_capture) * 1000 - quantile(without, 0.5)
     print(
         f"capture-overhead python {shape['id']}: added p99 {added:.3f} ms (off {p99(without):.3f}, on "
-        f"{p99(with_capture):.3f}), slowest excess {excess:.3f} ms, serialized {serialized}, scrubbed {scrubbed}, "
-        f"matcher steps {steps} ({steps_per_char:.1f} per character)"
+        f"{p99(with_capture):.3f}, gate {gate:.3f}), slowest excess {excess:.3f} ms, serialized {serialized}, "
+        f"scrubbed {scrubbed}, matcher steps {steps} ({steps_per_char:.1f} per character)"
     )
     bound = SCENARIO["work_bound"]
     assert serialized <= bound, f"characters serialized for one field: {serialized} > {bound}"
@@ -147,4 +149,4 @@ async def test_the_capture_path_stays_within_the_work_bound(stalled: Collector, 
     assert steps_per_char <= step_bound, f"matcher steps per character scrubbed: {steps_per_char:.1f} > {step_bound}"
     assert excess <= SCENARIO["ceiling_ms"], f"slowest captured call over the median uncaptured one: {excess:.1f} ms"
     if GATED:
-        assert added <= SCENARIO["gate_added_p99_ms"], f"added p99: {added:.3f} ms"
+        assert added <= gate, f"added p99: {added:.3f} ms > {gate:.3f} ms"

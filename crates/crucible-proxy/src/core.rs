@@ -13,6 +13,11 @@
 //!   requests with responses by (direction, JSON-RPC id) and puts finished operations in a buffer of at most
 //!   8 MiB or 10,000 operations that drops its oldest entry when full. [`ProxyCore::next_export`] and
 //!   [`ProxyCore::export_done`] move batches out, with backoff while the collector fails.
+//!
+//! Content capture (contract 9.10) runs on the analysis face as well: the scanners record the arguments and results
+//! of the calls a rule captures, and the core scrubs and caps them into the operation. Arguments that wait with
+//! their request count toward a byte bound of their own; beyond it a call keeps its operation and loses its content,
+//! and the loss is counted.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -26,7 +31,9 @@ use crucible_records::{
     Transport, classify_mcp_error,
 };
 
-use crate::scan::{JsonId, Message, Scanner, StateKey};
+use crate::canonical::Recorded;
+use crate::capture::{CaptureRule, ContentCapture, SampleRate};
+use crate::scan::{JsonId, Message, ResultMembers, Scanner, StateKey};
 use crate::scrub;
 use crate::sse::SseReader;
 
@@ -162,6 +169,10 @@ pub struct CoreConfig {
     /// The key of the multi-round state hashes (contract 9.6): the export's secret key. Without one no
     /// `requestState` is read.
     pub state_key: Option<StateKey>,
+    /// The content capture rules (contract 9.10); without one no argument or result is kept.
+    pub capture: Vec<CaptureRule>,
+    /// The most bytes of captured arguments held by requests that wait for their response.
+    pub content_bytes: usize,
     /// The seeded defect.
     #[cfg(feature = "test-mutants")]
     pub mutant: Option<Mutant>,
@@ -181,9 +192,30 @@ impl CoreConfig {
             flush_interval: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
             state_key: None,
+            capture: Vec::new(),
+            content_bytes: 8 << 20,
             #[cfg(feature = "test-mutants")]
             mutant: None,
         }
+    }
+}
+
+/// What an operation captured of its tool call (contract 9.10).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Content {
+    /// The sample rate of the rule that captured the call.
+    pub sample_rate: SampleRate,
+    /// `params.arguments` as JSON text, scrubbed and cut at the rule's cap.
+    pub args: Option<String>,
+    /// The result's `content`, `structuredContent` and `isError` as JSON text, scrubbed and cut at the cap.
+    pub result: Option<String>,
+    /// A field was cut at the cap.
+    pub truncated: bool,
+}
+
+impl Content {
+    fn bytes(&self) -> usize {
+        self.args.as_ref().map_or(0, String::len) + self.result.as_ref().map_or(0, String::len)
     }
 }
 
@@ -260,11 +292,21 @@ pub struct Op {
     pub ip_prefix: String,
     /// The identity derived from the token.
     pub identity: Identity,
+    /// The captured arguments and result, when a capture rule took the call.
+    pub content: Option<Content>,
 }
 
 impl Op {
     /// A rough size for the export buffer's byte bound.
     fn estimated_bytes(&self) -> usize {
+        let content = self
+            .content
+            .as_ref()
+            .map_or(0, |content| 96 + content.bytes());
+        self.metadata_bytes() + content
+    }
+
+    fn metadata_bytes(&self) -> usize {
         let strings = self.method.len()
             + self.target.len()
             + self.jsonrpc_id.as_ref().map_or(0, String::len)
@@ -326,6 +368,9 @@ pub struct Stats {
     pub exported_ops: u64,
     /// Exports that failed and will be retried.
     pub export_failures: u64,
+    /// Calls a capture rule took whose content was dropped, because the captured arguments of the requests
+    /// waiting for a response had reached their byte bound. The operations themselves are kept.
+    pub dropped_content: u64,
 }
 
 #[derive(Debug)]
@@ -546,6 +591,8 @@ struct Pending {
     stream: StreamId,
     started: Instant,
     progress_token: Option<JsonId>,
+    /// The capture rule whose result this request waits for.
+    result_rule: Option<usize>,
     op: Op,
 }
 
@@ -603,6 +650,8 @@ struct Outcome {
     message: Option<String>,
     /// The keyed hash of the `requestState` of the result.
     state_out: Option<[u8; 16]>,
+    /// The result's members that content capture takes, when they were recorded.
+    result_members: ResultMembers,
 }
 
 /// See the module documentation.
@@ -631,6 +680,12 @@ pub struct ProxyCore {
     /// Operations dropped since the last delivered export.
     unreported_drops: u64,
     stats: Stats,
+    /// The capture rules and their sampling draws; `None` when capture is off.
+    content: Option<ContentCapture>,
+    /// Bytes of captured arguments held by pending requests.
+    pending_content: usize,
+    /// Pending requests whose result is captured.
+    result_waiters: usize,
 }
 
 fn opposite(direction: Direction) -> Direction {
@@ -663,15 +718,19 @@ fn parse_traceparent(text: &str) -> Option<(TraceId, SpanId)> {
 }
 
 impl ProxyCore {
-    /// A core with an empty queue. `rng` supplies trace and span ids; fork it for the proxy.
+    /// A core with an empty queue. `rng` supplies trace and span ids and the capture sampling draws; fork it for
+    /// the proxy.
     pub fn new(config: CoreConfig, rng: Arc<dyn Rng>) -> Self {
+        let content = ContentCapture::new(&config.capture, rng.fork("crucible-proxy/capture"));
         let mut streams = BTreeMap::new();
         if config.capture_source == CaptureSource::ProxyStdio {
             streams.insert(
                 StreamId::STDIO,
                 StreamState {
                     scope: Scope::Stdio,
-                    request: Scanner::lines().keyed(config.state_key.clone()),
+                    request: Scanner::lines()
+                        .keyed(config.state_key.clone())
+                        .capturing(content.clone()),
                     response: ResponseReader::Lines(
                         Scanner::lines().keyed(config.state_key.clone()),
                     ),
@@ -703,6 +762,9 @@ impl ProxyCore {
             next_attempt: Instant::default(),
             unreported_drops: 0,
             stats: Stats::default(),
+            content,
+            pending_content: 0,
+            result_waiters: 0,
         }
     }
 
@@ -806,6 +868,11 @@ impl ProxyCore {
     }
 
     fn chunk(&mut self, id: StreamId, direction: Direction, bytes: &[u8], now: Now) {
+        // Result members are recorded only while a captured call waits for its result.
+        let result_window = match &self.content {
+            Some(content) if self.result_waiters > 0 => content.result_window(),
+            _ => 0,
+        };
         let Some(stream) = self.streams.get_mut(&id) else {
             return;
         };
@@ -820,10 +887,12 @@ impl ProxyCore {
             }
             Direction::ServerToClient => match &mut stream.response {
                 ResponseReader::Lines(scanner) | ResponseReader::Json(scanner) => {
+                    scanner.record_results(result_window);
                     scanner.push(bytes);
                     scanner.take()
                 }
                 ResponseReader::Sse(reader) => {
+                    reader.record_results(result_window);
                     reader.push(bytes);
                     reader.take()
                 }
@@ -852,7 +921,9 @@ impl ProxyCore {
             id,
             StreamState {
                 scope,
-                request: Scanner::document().keyed(self.config.state_key.clone()),
+                request: Scanner::document()
+                    .keyed(self.config.state_key.clone())
+                    .capturing(self.content.clone()),
                 response: ResponseReader::Opaque,
                 view,
                 status: None,
@@ -916,6 +987,7 @@ impl ProxyCore {
                     has_result: message.has_result,
                     message: words,
                     state_out: message.state_out,
+                    result_members: message.result_members,
                     ..Outcome::default()
                 };
                 self.finish(&key, outcome, now);
@@ -1017,7 +1089,59 @@ impl ProxyCore {
             user_agent: view.user_agent.clone(),
             ip_prefix: view.ip_prefix.clone(),
             identity: view.identity.clone(),
+            content: None,
         }
+    }
+
+    /// The content of a captured call's request (contract 9.10): its arguments scrubbed and capped, within the
+    /// byte bound of pending content. Returns the content and the rule whose result the request waits for.
+    fn capture_request(
+        &mut self,
+        direction: Direction,
+        method: &str,
+        message: &mut Message,
+    ) -> (Option<Content>, Option<usize>) {
+        let rule = match (&self.content, message.capture_rule) {
+            (Some(content), Some(index))
+                if direction == Direction::ClientToServer && method == "tools/call" =>
+            {
+                content.rule(index).cloned().map(|rule| (index, rule))
+            }
+            _ => None,
+        };
+        let Some((index, rule)) = rule else {
+            return (None, None);
+        };
+        let (args, truncated) = match message.arguments.take() {
+            Some(recorded) => captured(&recorded, rule.max_bytes),
+            None => (None, false),
+        };
+        let held = args.as_ref().map_or(0, String::len);
+        if self.pending_content.saturating_add(held) > self.config.content_bytes {
+            self.stats.dropped_content += 1;
+            return (None, None);
+        }
+        self.pending_content += held;
+        let content = Content {
+            sample_rate: rule.sample_rate,
+            args,
+            result: None,
+            truncated,
+        };
+        (Some(content), rule.result.then_some(index))
+    }
+
+    /// Fills in the captured result of a call whose rule takes it.
+    fn capture_result(&self, rule: usize, content: &mut Content, members: &ResultMembers) {
+        let Some(rule) = self.content.as_ref().and_then(|content| content.rule(rule)) else {
+            return;
+        };
+        let Some(recorded) = result_text(members, rule.window()) else {
+            return;
+        };
+        let (result, truncated) = captured(&recorded, rule.max_bytes);
+        content.result = result;
+        content.truncated |= truncated;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1029,10 +1153,10 @@ impl ProxyCore {
         direction: Direction,
         method: String,
         request_id: JsonId,
-        message: Message,
+        mut message: Message,
         now: Now,
     ) {
-        let op = self.begin(view, &scope, direction, method, &message, now);
+        let mut op = self.begin(view, &scope, direction, method, &message, now);
         let key = PendingKey {
             scope: scope.clone(),
             direction,
@@ -1040,6 +1164,11 @@ impl ProxyCore {
         };
         // A reused id replaces the request that still waited under it.
         self.forget_pending(&key);
+        let (content, result_rule) = self.capture_request(direction, &op.method, &mut message);
+        op.content = content;
+        if result_rule.is_some() {
+            self.result_waiters += 1;
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
         if let Some(token) = &message.meta_progress_token {
@@ -1054,6 +1183,7 @@ impl ProxyCore {
                 stream: id,
                 started: now.mono,
                 progress_token: message.meta_progress_token,
+                result_rule,
                 op,
             },
         );
@@ -1077,6 +1207,12 @@ impl ProxyCore {
         if let Some(token) = &pending.progress_token {
             self.progress
                 .remove(&(key.scope.clone(), key.direction, token.clone()));
+        }
+        if let Some(content) = &pending.op.content {
+            self.pending_content = self.pending_content.saturating_sub(content.bytes());
+        }
+        if pending.result_rule.is_some() {
+            self.result_waiters = self.result_waiters.saturating_sub(1);
         }
         Some(pending)
     }
@@ -1172,6 +1308,12 @@ impl ProxyCore {
         };
         if op.result_type == ResultType::InputRequired {
             op.mrtr_state_out = outcome.state_out;
+        }
+        if let Some(rule) = pending.result_rule
+            && outcome.has_result
+            && let Some(content) = op.content.as_mut()
+        {
+            self.capture_result(rule, content, &outcome.result_members);
         }
         self.emit(op, now);
     }
@@ -1370,6 +1512,45 @@ impl ProxyCore {
             }
         }
     }
+}
+
+/// One captured field (contract 9.10): the recorded JSON text scrubbed with the shared rules over the cap plus
+/// the lookahead, then cut at `max` bytes. Returns the text, `None` when nothing is left, and whether anything
+/// was cut.
+fn captured(recorded: &Recorded, max: usize) -> (Option<String>, bool) {
+    let (text, cut) = scrub::capped_with_cut(&recorded.text, max);
+    ((!text.is_empty()).then_some(text), cut || recorded.more)
+}
+
+/// The captured form of a result: `content`, `structuredContent` and `isError`, those present, in that order, as
+/// one JSON object, at most `window` bytes. A member that was cut ends the text, as a cut ends the whole text.
+fn result_text(members: &ResultMembers, window: usize) -> Option<Recorded> {
+    let parts = [
+        ("content", &members.content),
+        ("structuredContent", &members.structured_content),
+        ("isError", &members.is_error),
+    ];
+    if parts.iter().all(|(_, member)| member.is_none()) {
+        return None;
+    }
+    let mut text = String::from("{");
+    for (name, member) in parts {
+        let Some(member) = member else {
+            continue;
+        };
+        if text.len() > 1 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(name);
+        text.push_str("\":");
+        text.push_str(&member.text);
+        if member.more {
+            return Some(Recorded { text, more: true }.within(window));
+        }
+    }
+    text.push('}');
+    Some(Recorded { text, more: false }.within(window))
 }
 
 /// The error message of an operation (contract 9.1): empty when it succeeded; else the server's own words,

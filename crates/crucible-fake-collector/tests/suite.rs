@@ -10,14 +10,19 @@ use crucible_env::Env;
 use crucible_env_prod::ProdConfig;
 use crucible_fake_collector::golden::{self, CaseInput, Finding};
 use crucible_fake_collector::spec::{self, Case};
-use crucible_fake_collector::suite::{Kind, ProgressCount, Skip, ThrowOutcome, Variant};
+use crucible_fake_collector::suite::{
+    Kind, ProgressCount, Skip, Source, ThrowOutcome, Transport, Variant,
+};
 use crucible_fake_collector::value::{Value, get};
 use crucible_fake_collector::{Collector, Event, FeedbackPost, RecordedSpan};
 use crucible_fake_collector::{
     Manifest, Mutant, Options, Report, RunOutcome, RunSpec, Runner, SelfTestOptions,
     SelfTestRunner, Status, Suite, mrtr_hash, run_suite, session_hash,
 };
-use crucible_records::{SpanId, TraceId};
+use crucible_normalize::{
+    IdentityCtx, IngestFrame, NormCtx, NormalizedFrame, PriceTable, ProjectSalt, StageB, normalize,
+};
+use crucible_records::{ApiKeyId, Lsn, PayloadCaps, ProjectId, SpanId, TraceId, WalEpoch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
@@ -296,18 +301,31 @@ fn the_manifest_schema_lists_exactly_the_manifest_fields() {
         .iter()
         .map(|v| v.as_str().unwrap().to_owned())
         .collect();
-    let fields: BTreeSet<String> = serde_json::to_value(manifest())
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    assert_eq!(properties, fields);
-    assert_eq!(required, fields);
+    let fields = |manifest: Manifest| -> BTreeSet<String> {
+        serde_json::to_value(manifest)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    };
+    // `source` is the one optional field: an SDK's manifest leaves it out.
+    let sdk = fields(manifest());
+    let proxy = fields(Manifest {
+        source: Source::Proxy,
+        ..manifest()
+    });
+    assert_eq!(properties, proxy);
+    assert_eq!(required, sdk);
+    assert_eq!(
+        proxy.difference(&sdk).collect::<Vec<_>>(),
+        [&"source".to_owned()]
+    );
     for (key, values) in [
         ("throw_outcome", ["tool_error", "internal"]),
         ("progress_count", ["observed", "unobserved"]),
+        ("source", ["sdk", "proxy"]),
     ] {
         assert_eq!(schema["properties"][key]["enum"], json!(values));
     }
@@ -778,6 +796,154 @@ fn reencode(events: &mut [Event]) {
             })
             .collect();
         export.body = ExportTraceServiceRequest { resource_spans }.encode_to_vec();
+    }
+}
+
+/// The frames the real normalizer makes of a case's exports, stage A and stage B, one frame per export, as the
+/// driver's evaluation builds them.
+fn normalized(events: &[Event]) -> Vec<NormalizedFrame> {
+    let ctx = NormCtx::new(PriceTable::bundled().unwrap(), PayloadCaps::DEFAULT);
+    let salt = ProjectSalt::new([0xc0; 32]);
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Export(export) => Some(export),
+            Event::Checkpoint(_) | Event::Feedback(_) => None,
+        })
+        .enumerate()
+        .map(|(at, export)| {
+            let frame = IngestFrame {
+                wal_epoch: WalEpoch::from_bytes([0xe0; 16]),
+                lsn: Lsn::new(at as u64 + 1),
+                received_at: export.spans.iter().map(|s| s.end).max().unwrap(),
+                project_id: ProjectId::from_bytes([0x01; 16]),
+                api_key_id: ApiKeyId::from_bytes([0x02; 16]),
+                compat_dialect: 0,
+                sdk_name: "",
+                sdk_version: "",
+                rejected: &[],
+                otlp: &export.body,
+            };
+            let mut frame = normalize(&frame, &ctx).unwrap();
+            StageB::default()
+                .admit(&mut frame, &IdentityCtx::Salted(Some(&salt)))
+                .unwrap();
+            frame
+        })
+        .collect()
+}
+
+/// The log as the proxy would send it: the same spans with the proxy's capture source and SDK name.
+fn as_proxy(events: &[Event], transport: Transport) -> Vec<Event> {
+    let source = Source::Proxy.capture_source(transport);
+    let mut proxied = events.to_vec();
+    for export in exports_mut(&mut proxied) {
+        for span in &mut export.spans {
+            set(
+                span,
+                "crucible.mcp.capture_source",
+                Value::String(source.to_owned()),
+            );
+            span.resource.retain(|(k, _)| k != "telemetry.sdk.name");
+            span.resource.push((
+                "telemetry.sdk.name".to_owned(),
+                Value::String("crucible-proxy".to_owned()),
+            ));
+        }
+    }
+    reencode(&mut proxied);
+    proxied
+}
+
+/// Captured arguments and results sent under the SDKs' keys reach the normalizer's records unchanged whether an
+/// SDK or the proxy sent them (contract 9.10): the same golden passes for both senders, and the records differ in
+/// the capture source alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn captured_content_maps_through_the_normalizer_alike_from_an_sdk_and_the_proxy() {
+    let suite = suite();
+    let proxy_manifest = Manifest {
+        source: Source::Proxy,
+        ..manifest()
+    };
+    for variant in Variant::ALL {
+        let case_id = format!("mcp-secret@{}", variant.name());
+        let cases = suite.cases();
+        let case = cases.iter().find(|c| c.id == case_id).unwrap();
+        let (events, responses) = record(&suite, &case_id).await;
+        let proxied = as_proxy(&events, variant.transport());
+        let evaluate = |manifest: &Manifest, events: &[Event]| {
+            golden::evaluate(&CaseInput {
+                suite: &suite,
+                case,
+                manifest,
+                events,
+                responses: &responses,
+            })
+            .failures
+        };
+        assert_eq!(
+            evaluate(&proxy_manifest, &proxied),
+            [],
+            "{case_id} as the proxy"
+        );
+        // The capture source is the one rule the manifest's sender decides.
+        let mislabelled = evaluate(&manifest(), &proxied);
+        assert!(!mislabelled.is_empty());
+        assert!(
+            mislabelled
+                .iter()
+                .all(|f| f.check.starts_with("field capture_source")),
+            "{mislabelled:#?}"
+        );
+
+        let (sdk_frames, proxy_frames) = (normalized(&events), normalized(&proxied));
+        assert_eq!(sdk_frames.len(), proxy_frames.len());
+        let mut captured = 0;
+        for (sdk, proxy) in sdk_frames.iter().zip(&proxy_frames) {
+            assert_eq!(sdk.mcp_ops.len(), proxy.mcp_ops.len());
+            for (sdk_op, proxy_op) in sdk.mcp_ops.iter().zip(&proxy.mcp_ops) {
+                let mut relabelled = proxy_op.record.clone();
+                assert_eq!(
+                    relabelled.capture_source.as_str(),
+                    Source::Proxy.capture_source(variant.transport())
+                );
+                relabelled.capture_source = sdk_op.record.capture_source;
+                assert_eq!(relabelled, sdk_op.record, "{case_id}");
+                if sdk_op.record.content_captured {
+                    captured += 1;
+                    assert!(!proxy_op.record.args.is_empty() && !proxy_op.record.result.is_empty());
+                    assert!(
+                        String::from_utf8_lossy(&proxy_op.record.args).contains("[redacted:email]")
+                    );
+                }
+            }
+            assert_eq!(sdk.spans.len(), proxy.spans.len());
+            for (sdk_span, proxy_span) in sdk.spans.iter().zip(&proxy.spans) {
+                // A tool span's captured content is its input and output.
+                assert_eq!(sdk_span.payload.input, proxy_span.payload.input);
+                assert_eq!(sdk_span.payload.output, proxy_span.payload.output);
+                assert_eq!(sdk_span.core.mcp_side, proxy_span.core.mcp_side);
+            }
+        }
+        assert_eq!(captured, 1, "{case_id}: one captured call");
+
+        // A record that does not hold what the span sent fails the content check: here the recorded span
+        // differs from the export body the normalizer read.
+        let mut diverged = proxied.clone();
+        set(
+            span_mut(&mut diverged, |s| {
+                get(&s.attributes, "gen_ai.tool.call.arguments").is_some()
+            }),
+            "gen_ai.tool.call.arguments",
+            Value::String("{\"note\":\"changed\"}".to_owned()),
+        );
+        let failures = evaluate(&proxy_manifest, &diverged);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.check == "the normalizer's record keeps the captured content as sent"),
+            "{failures:#?}"
+        );
     }
 }
 

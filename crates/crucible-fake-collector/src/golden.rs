@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use crucible_records::{
     CancelSource, Era as RecordEra, ErrorClass, ErrorSubclass, McpClassification,
     McpErrorAnnotations, McpErrorInput, McpSide, McpStatus, NanoUsd, SpanId, SpanKind, TraceId,
-    classify_mcp_error,
+    Truncation, classify_mcp_error,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -424,6 +424,7 @@ fn known_vars(kind: Kind) -> &'static [&'static str] {
         Kind::Mcp => &[
             "era",
             "transport",
+            "capture_source",
             "protocol_version",
             "server_name",
             "server_version",
@@ -826,6 +827,10 @@ impl<'a> Eval<'a> {
                     let era = variant.era();
                     vars.insert("era", Json::from(era.as_str()));
                     vars.insert("transport", Json::from(variant.transport().as_str()));
+                    vars.insert(
+                        "capture_source",
+                        Json::from(input.manifest.source.capture_source(variant.transport())),
+                    );
                     vars.insert("protocol_version", Json::from(constants.eras.version(era)));
                     facts.insert("era", era.as_str().to_owned());
                     facts.insert("transport", variant.transport().as_str().to_owned());
@@ -1292,7 +1297,66 @@ impl<'a> Eval<'a> {
                 || if made { "a record" } else { "no record" }.to_owned(),
                 Some("9.1"),
             );
+            self.content(span);
         }
+    }
+
+    /// The real normalizer keeps a span's captured content as it was sent, whatever the capture source
+    /// (contract 9.10): the arguments and the result byte for byte, the captured flag, the sample rate and the
+    /// truncation, read from the span's keys as the contract reads them.
+    fn content(&mut self, span: &RecordedSpan) {
+        let Some(op) = self.records.op(span) else {
+            return;
+        };
+        let attrs = &span.attributes;
+        let text = |key: &str| get(attrs, key).and_then(Value::as_str);
+        let (args, result) = (
+            text("gen_ai.tool.call.arguments"),
+            text("gen_ai.tool.call.result"),
+        );
+        let captured = match get(attrs, "crucible.mcp.content.captured") {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::String(flag)) if flag == "true" || flag == "false" => flag == "true",
+            _ => args.is_some() || result.is_some(),
+        };
+        let rate = match get(attrs, "crucible.mcp.content.sample_rate") {
+            Some(Value::Double(rate)) if rate.is_finite() => (*rate as f32).clamp(0.0, 1.0),
+            Some(Value::Int(rate)) => (*rate as f32).clamp(0.0, 1.0),
+            Some(Value::Double(_)) => 0.0,
+            _ => f32::from(u8::from(captured)),
+        };
+        let truncation = text("crucible.mcp.content.truncation")
+            .and_then(Truncation::parse)
+            .unwrap_or(Truncation::None);
+        let (args, result) = if captured {
+            (args.unwrap_or(""), result.unwrap_or(""))
+        } else {
+            ("", "")
+        };
+        let want = (
+            captured,
+            rate,
+            truncation,
+            args.as_bytes(),
+            result.as_bytes(),
+        );
+        let found = (
+            op.content_captured,
+            op.content_sample_rate,
+            op.content_truncation,
+            &op.args[..],
+            &op.result[..],
+        );
+        let ok = want == found;
+        let (want, found) = (describe_content(want), describe_content(found));
+        self.check(
+            ok,
+            Some(span.name.as_str()),
+            "the normalizer's record keeps the captured content as sent",
+            want,
+            || found,
+            Some("9.10"),
+        );
     }
 
     fn selects(&self, span: &RecordedSpan, select: &[(String, Expected)]) -> bool {
@@ -1903,6 +1967,17 @@ impl<'a> Eval<'a> {
             }
         }
     }
+}
+
+/// A record's content fields, for a finding.
+fn describe_content(
+    (captured, rate, truncation, args, result): (bool, f32, Truncation, &[u8], &[u8]),
+) -> String {
+    format!(
+        "captured {captured}, sample rate {rate}, truncation {truncation}, arguments {:?}, result {:?}",
+        String::from_utf8_lossy(args),
+        String::from_utf8_lossy(result)
+    )
 }
 
 /// Equal values: strings, booleans, numbers (by value) and string arrays.
