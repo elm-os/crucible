@@ -1029,7 +1029,7 @@ never changes. OTLP ingest does not read `Idempotency-Key`; how it handles a ret
 | Channel test sends | 6 per minute per channel | 429 `rate_limited` |
 | SQL runs | 1 at a time per person, 4 per project, 30 per minute per person, and the hourly statement quota | 429 `sql_quota_exceeded` |
 | MCP tool calls | 50 per second per key, bursts of 200 | A tool error with `rate_limited` |
-| Telemetry reads by API keys and the MCP server | 16 ClickHouse statements at once, shared by every key and project; a read waits for a free one | 504 `query_timeout` when none frees up within the read's time limit; when one frees up too late for ClickHouse to answer in that time, the answer is partial, or 503 `telemetry_store_unavailable` |
+| Telemetry reads by API keys and the MCP server | 16 ClickHouse statements at once on each Crucible server, shared by every key and project it serves; a read waits for a free one. Servers do not share this count, so with several servers their reads together can still reach the 16 that ClickHouse runs at once for these reads | 504 `query_timeout` when none frees up within the read's time limit; when one frees up too late for ClickHouse to answer in that time, the answer is partial, or 503 `telemetry_store_unavailable`. A read that ClickHouse refuses because several servers together reached its cap gets a partial answer or 503 `telemetry_store_unavailable` |
 | Password checks | At most 4 run at once; sign-in answers when all are busy | 429 `rate_limited` |
 
 Ingest is not rate limited: when the server cannot take more, it answers 429 or 503 with `Retry-After`, as
