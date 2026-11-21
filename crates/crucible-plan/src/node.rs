@@ -5,7 +5,7 @@
 //! `Aggregate`. Nodes hold no SQL text; the renderer derives every identifier from the schema.
 
 use crucible_records::{TableId, TimeWindow, Timestamp};
-use crucible_schema::{AggFn, ColumnRef, IndexKind, TableKind, Ty, table};
+use crucible_schema::{AggFn, ColumnRef, IndexKind, TableKind, Ty, hourly_tier, table};
 
 use crate::error::PlanError;
 use crate::literal::Literal;
@@ -303,7 +303,8 @@ pub enum Measure {
 }
 
 impl Measure {
-    fn column(&self) -> Option<&ColumnRef> {
+    /// The column the measure reads; `None` for [`Measure::Count`].
+    pub const fn column(&self) -> Option<&ColumnRef> {
         match self {
             Self::Count => None,
             Self::Sum(c)
@@ -418,6 +419,7 @@ pub struct Aggregate {
     order: Vec<(AggOutput, Direction)>,
     limit: Option<u32>,
     cursor: Option<Vec<Literal>>,
+    hourly: bool,
 }
 
 impl Aggregate {
@@ -453,7 +455,41 @@ impl Aggregate {
             order: Vec::new(),
             limit: None,
             cursor: None,
+            hourly: false,
         })
+    }
+
+    /// Reads the whole hours of the plan's window from the table's hourly tier
+    /// (`crucible_schema::hourly_tier`) and the rest of the window from the table itself, as
+    /// [`crate::HourSplit`] divides it. The answer is the same: the tier holds, for each hour, what the table's
+    /// rows of that hour merge to, and every measure of an aggregating table re-aggregates partial rows. Refused
+    /// for a table without an hourly tier, and when the predicate, a group dimension or a measure names the
+    /// table's time column, whose values differ between the two.
+    pub fn hourly(mut self) -> Result<Self, PlanError> {
+        if hourly_tier(self.table).is_none() {
+            return Err(PlanError::Table(self.table));
+        }
+        let time = table(self.table).retention.time_column;
+        let named = self.group.iter().any(|c| c.name() == time)
+            || self
+                .measures
+                .iter()
+                .any(|m| m.column().is_some_and(|c| c.name() == time))
+            || self.pred.names(time);
+        if named {
+            return Err(PlanError::HourlyTier(time));
+        }
+        self.hourly = true;
+        Ok(self)
+    }
+
+    /// The hourly tier the aggregate reads its window's whole hours from, if it does ([`Aggregate::hourly`]).
+    pub const fn hourly_tier(&self) -> Option<TableId> {
+        if self.hourly {
+            hourly_tier(self.table)
+        } else {
+            None
+        }
     }
 
     /// Keeps the groups whose measures satisfy every condition. A condition's value must have the type of its
@@ -924,6 +960,10 @@ impl TimeSeries {
         if fill == Fill::Zero && shaped {
             return Err(PlanError::ZeroFill);
         }
+        // The tier holds the start of the hour: a bucket finer than an hour cannot place its rows.
+        if aggregate.hourly && step.seconds() % 3_600 != 0 {
+            return Err(PlanError::HourlyTier("a step finer than an hour"));
+        }
         match time.ty() {
             Ty::DateTime | Ty::DateTime64 | Ty::Date => Ok(Self {
                 aggregate,
@@ -938,6 +978,12 @@ impl TimeSeries {
     /// The bucketed aggregate.
     pub const fn aggregate(&self) -> &Aggregate {
         &self.aggregate
+    }
+
+    /// The same series over the hourly tier of its table ([`Aggregate::hourly`]); refused for a step finer than an
+    /// hour, whose buckets the tier's hours cannot fill.
+    pub fn hourly(self) -> Result<Self, PlanError> {
+        Self::new(self.aggregate.hourly()?, self.time, self.step, self.fill)
     }
 
     /// The time column.
@@ -1084,25 +1130,52 @@ impl Node {
         }
     }
 
-    /// Every table the node reads, those of its predicates' sets included. The renderer adds the project
-    /// predicate and the window predicate to each.
+    /// The same node reading the whole hours of its window from its table's hourly tier ([`Aggregate::hourly`]):
+    /// an aggregate, or a time series whose step is a whole number of hours. Every other node is refused.
+    pub fn hourly(self) -> Result<Self, PlanError> {
+        match self {
+            Self::Aggregate(n) => Ok(Self::Aggregate(n.hourly()?)),
+            Self::TimeSeries(n) => Ok(Self::TimeSeries(n.hourly()?)),
+            _ => Err(PlanError::HourlyTier(
+                "a node other than an aggregate or a time series",
+            )),
+        }
+    }
+
+    /// The same node reading minute rows only (`test_support::minute_rows_only`).
+    #[cfg(feature = "test-support")]
+    pub(crate) fn clear_hourly(&mut self) {
+        match self {
+            Self::Aggregate(n) => n.hourly = false,
+            Self::TimeSeries(n) => n.aggregate.hourly = false,
+            _ => {}
+        }
+    }
+
+    /// Every table the node reads, those of its predicates' sets and an aggregate's hourly tier included. The
+    /// renderer adds the project predicate and the window predicate to each.
     pub fn tables(&self) -> Vec<TableId> {
         let with_sets = |table: TableId, pred: &Pred| {
             let mut tables = vec![table];
             tables.extend(pred.set_tables());
             tables
         };
+        let aggregate = |n: &Aggregate| {
+            let mut tables = with_sets(n.table, &n.pred);
+            tables.extend(n.hourly_tier());
+            tables
+        };
         match self {
             Self::Scan(n) => with_sets(n.table, &n.pred),
             Self::PointLookup(n) => vec![n.table],
-            Self::Aggregate(n) => with_sets(n.table, &n.pred),
+            Self::Aggregate(n) => aggregate(n),
             Self::SemiJoin(n) => {
                 let mut tables = with_sets(n.left.table, &n.left.pred);
                 tables.extend(n.right.tables());
                 tables
             }
             Self::TextSearch(n) => with_sets(n.table, &n.pred),
-            Self::TimeSeries(n) => with_sets(n.aggregate.table, &n.aggregate.pred),
+            Self::TimeSeries(n) => aggregate(&n.aggregate),
             Self::FieldRange(n) => vec![n.table],
         }
     }

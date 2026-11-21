@@ -13,6 +13,10 @@
 //!   travels over one transport, so the two never observe the same call and their rows add up.
 //! - **Caller faults.** Rollup reads group by `caller_fault` and the service keeps those calls apart; raw reads
 //!   leave them out unless the request includes them.
+//! - **Hourly tier.** A rollup read over a window of at least [`MCP_HOURLY_MIN_WINDOW_HOURS`] hours takes the
+//!   window's whole hours from `mcp_tool_rollup_hourly` and only the minutes at its edges from `mcp_tool_rollup`
+//!   ([`crate::HourSplit`]), with the same answer: each minute is read from one of the two, and the hourly rows
+//!   of an hour merge to what its minute rows merge to.
 
 use crucible_records::{CaptureSource, McpSide, ProjectScope, TimeWindow};
 use crucible_schema::{Column, ColumnRef, McpToolRollupCol};
@@ -28,6 +32,40 @@ use crate::registry::METRICS_MAX_BUCKETS;
 
 /// The method of a tool call: the rows the tool endpoints read.
 pub const TOOLS_CALL: &str = "tools/call";
+
+/// The shortest window, in hours, whose rollup reads take their whole hours from `mcp_tool_rollup_hourly`.
+///
+/// A window of `w` hours reads at most two partial hours of minute rows at its edges and its whole hours from
+/// the tier, which holds one row per key and hour where the minute rollup holds up to sixty, so the tier never
+/// reads more rows; what it adds is a second table reference in the statement. Measured on the dense dataset of
+/// the MCP dashboard (375 rollup rows a minute on the server side, ClickHouse with two cores; measured on a
+/// laptop, not reference hardware), the two reads cost the same at 6 hours, the tiered one is slower below
+/// (3 hours: 36 ms against 25 ms for `tools`) and faster above (12 hours: 48 ms against 84 ms; 24 hours: 80 ms
+/// against 157 ms). 12 hours keeps a factor of two above that crossover, which grows on sparser data, where a
+/// minute read is cheaper, and puts the UI's ranges of 24 hours, 7 days and 30 days on the tier and its one
+/// hour on minute rows.
+pub const MCP_HOURLY_MIN_WINDOW_HOURS: i64 = 12;
+
+/// The plan of `root`, a read of `mcp_tool_rollup`, over `window` clamped to retention: over the hourly tier
+/// for a clamped window of at least [`MCP_HOURLY_MIN_WINDOW_HOURS`] hours, when the tier can serve the read
+/// (`Node::hourly`), else over minute rows alone.
+pub(crate) fn rollup_plan(
+    clamp: &RetentionClamp,
+    scope: ProjectScope,
+    window: TimeWindow,
+    class: QueryClass,
+    root: Node,
+) -> Result<Option<QueryPlan>, PlanError> {
+    let long = clamp
+        .window(McpToolRollupCol::TABLE, window)?
+        .is_some_and(|clamped| clamped.len_micros() >= MCP_HOURLY_MIN_WINDOW_HOURS * 3_600_000_000);
+    let root = if long {
+        root.clone().hourly().unwrap_or(root)
+    } else {
+        root
+    };
+    clamp.plan(scope, window, class, root)
+}
 
 /// A class of capture sources, as the `source` parameter names it (contract 9.5), in order of preference.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -308,7 +346,7 @@ pub fn mcp_presence(
         (AggOutput::Group(0), Direction::Asc),
         (AggOutput::Group(1), Direction::Asc),
     ])?;
-    clamp.plan(scope, window, class, Node::Aggregate(aggregate))
+    rollup_plan(clamp, scope, window, class, Node::Aggregate(aggregate))
 }
 
 /// The conjunction of `parts`, without the wrapper for one.

@@ -47,9 +47,21 @@ const KILL_DEADLINE: Duration = Duration::from_secs(LOOKUP_SECS);
 /// idempotent call is repeated.
 pub(crate) const CHANGE_DEADLINE: Duration = Duration::from_secs(300);
 
+/// How long the client waits for each statement of a migration step: [`CHANGE_DEADLINE`], or longer when the
+/// step sets its own `max_execution_time`, so that the client never gives up on a statement the server still
+/// runs (the copy of the hourly step runs for minutes on a large rollup) and the server's limit ends it first.
+fn migration_deadline(step: &MigrationStep) -> Duration {
+    step.settings
+        .iter()
+        .find(|(name, _)| *name == "max_execution_time")
+        .and_then(|(_, value)| value.parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.saturating_add(DEADLINE_SLACK_SECS)))
+        .map_or(CHANGE_DEADLINE, |deadline| deadline.max(CHANGE_DEADLINE))
+}
+
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 17] = [
+pub const QUERY_SETTINGS: [&str; 20] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
@@ -67,6 +79,10 @@ pub const QUERY_SETTINGS: [&str; 17] = [
     "mutations_sync",
     "alter_sync",
     "distributed_ddl_entry_format_version",
+    // The copy of the hourly schema step (`crucible_schema::schema_mcp_tool_rollup_hourly`).
+    "max_bytes_before_external_group_by",
+    "min_insert_block_size_rows",
+    "min_insert_block_size_bytes",
 ];
 
 /// Every table-level setting the schema's DDL sets.
@@ -1169,16 +1185,12 @@ impl TelemetryStore for ClickHouseStore {
             .iter()
             .map(|(name, value)| (*name, (*value).to_owned()))
             .collect();
+        let deadline = migration_deadline(step);
         for sql in &step.statements {
             let statement = Binder::default().finish(sql.clone());
-            self.command(
-                ServiceIdentity::Admin,
-                &statement,
-                &settings,
-                CHANGE_DEADLINE,
-            )
-            .await
-            .map_err(Failure::into_store)?;
+            self.command(ServiceIdentity::Admin, &statement, &settings, deadline)
+                .await
+                .map_err(Failure::into_store)?;
         }
         Ok(())
     }
@@ -1259,14 +1271,34 @@ mod tests {
         };
         for variant in [Variant::SingleNode, cluster, Variant::Cloud] {
             sent.extend(variant.ddl_settings().iter().map(|(name, _)| *name));
+            let admin = Ident::new("crucible_admin").unwrap();
+            let hourly = crucible_schema::schema_mcp_tool_rollup_hourly(&variant, &admin);
+            sent.extend(hourly.settings.iter().map(|(name, _)| *name));
         }
         for name in sent {
             // `wait_end_of_query` is a parameter of the HTTP interface, not a setting.
             assert!(
-                QUERY_SETTINGS.contains(&name) || name == "wait_end_of_query",
+                QUERY_SETTINGS.contains(&name)
+                    || InsertSettings::NAMES.contains(&name)
+                    || name == "wait_end_of_query",
                 "{name} is sent and not checked by detect"
             );
         }
+    }
+
+    /// The client waits for a migration statement as long as the step lets the server run it, and never less
+    /// than the default.
+    #[test]
+    fn a_migration_waits_for_the_limit_its_step_sets() {
+        let admin = Ident::new("crucible_admin").unwrap();
+        let hourly = crucible_schema::schema_mcp_tool_rollup_hourly(&Variant::SingleNode, &admin);
+        assert_eq!(
+            migration_deadline(&hourly),
+            Duration::from_secs(3_600 + DEADLINE_SLACK_SECS)
+        );
+        let base =
+            crucible_schema::schema_base(&Variant::SingleNode, crucible_schema::Granularity::Day);
+        assert_eq!(migration_deadline(&base), CHANGE_DEADLINE);
     }
 
     /// Every read keeps column statistics out of its planning: under ingest, ClickHouse 26.8 loads the statistics

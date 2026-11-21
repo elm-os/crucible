@@ -6,6 +6,7 @@ use core::str::FromStr;
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const MICROS_PER_MINUTE: i64 = 60 * MICROS_PER_SECOND;
+const MICROS_PER_HOUR: i64 = 60 * MICROS_PER_MINUTE;
 const MICROS_PER_DAY: i64 = 86_400 * MICROS_PER_SECOND;
 
 /// Microseconds since the Unix epoch, UTC.
@@ -55,6 +56,11 @@ impl Timestamp {
     /// The start of the minute containing this instant.
     pub const fn floor_minute(self) -> Self {
         Self(self.0 - self.0.rem_euclid(MICROS_PER_MINUTE))
+    }
+
+    /// The start of the hour containing this instant.
+    pub const fn floor_hour(self) -> Self {
+        Self(self.0 - self.0.rem_euclid(MICROS_PER_HOUR))
     }
 
     /// The start of the UTC day containing this instant.
@@ -446,6 +452,9 @@ mod tests {
         fn floors_are_consistent(us in 0i64..Timestamp::MAX_EXCLUSIVE.micros()) {
             let t = Timestamp::from_micros(us);
             prop_assert!(t.floor_minute() <= t && t.floor_day() <= t.floor_minute());
+            prop_assert!(t.floor_day() <= t.floor_hour() && t.floor_hour() <= t.floor_minute());
+            prop_assert_eq!(t.floor_hour().micros() % 3_600_000_000, 0);
+            prop_assert_eq!(t.floor_minute().floor_hour(), t.floor_hour());
             prop_assert_eq!(t.floor_day(), t.date().start());
             prop_assert_eq!(i64::from(t.start_minute()) * 1_000_000, t.floor_minute().micros());
         }

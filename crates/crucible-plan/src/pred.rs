@@ -165,6 +165,21 @@ impl Pred {
         }
     }
 
+    /// Whether the predicate compares the column `name` of the table it filters (not of a set's table).
+    pub(crate) fn names(&self, name: &str) -> bool {
+        match self {
+            Self::And(operands) | Self::Or(operands) => operands.iter().any(|p| p.names(name)),
+            Self::Not(operand) => operand.names(name),
+            Self::Cmp(column, ..)
+            | Self::In(column, _)
+            | Self::StartsWith(column, _)
+            | Self::HasAny(column, _)
+            | Self::InSet(column, _) => column.name() == name,
+            Self::MetadataEq { .. } => name == "metadata_kv",
+            Self::TextMatch(_) => name == "name",
+        }
+    }
+
     /// The tables that the predicate's sets read, besides the table it filters.
     pub(crate) fn set_tables(&self) -> Vec<TableId> {
         match self {

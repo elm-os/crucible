@@ -233,7 +233,7 @@ fn access_checks_hold_under_both_switch_values() {
     const DENIED: &str = "error 497";
     const CONSTRAINT: &str = "error 452";
     let want = [
-        ("service_policies_present", "18"),
+        ("service_policies_present", "19"),
         ("ingest_probe_plain", "1"),
         ("ingest_probe_marker", "1"),
         ("ingest_reads_no_other_column", DENIED),
@@ -255,7 +255,7 @@ fn access_checks_hold_under_both_switch_values() {
         ("maint_rows_after_drop", "0"),
         ("maint_cannot_create", DENIED),
     ];
-    assert_eq!(TABLES.len(), 18);
+    assert_eq!(TABLES.len(), 19);
     for expected in &VERSIONS {
         let mut recorded = rows(expected.checks).into_iter();
         for switch in SWITCHES {

@@ -93,7 +93,7 @@ impl RecentHook {
 }
 
 /// The tables a frame's rows reach: what a quarantined frame withholds from the store.
-const SPAN_TABLES: [TableId; 12] = [
+const SPAN_TABLES: [TableId; 13] = [
     TableId::SpanCore,
     TableId::SpanPayload,
     TableId::TraceHeads,
@@ -104,6 +104,7 @@ const SPAN_TABLES: [TableId; 12] = [
     TableId::McpOps,
     TableId::McpContent,
     TableId::McpToolRollup,
+    TableId::McpToolRollupHourly,
     TableId::McpDeploys,
     TableId::McpToolInventory,
 ];

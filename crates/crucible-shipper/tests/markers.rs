@@ -67,7 +67,7 @@ fn every_aggregating_table_gets_its_marker_row() {
             std::slice::from_ref(&marker.cells)
         );
     }
-    assert_eq!(aggregating, 7);
+    assert_eq!(aggregating, 8);
 }
 
 #[test]

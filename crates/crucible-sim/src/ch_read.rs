@@ -38,8 +38,8 @@ use crucible_chfmt::{DecodedBlock, Values};
 use crucible_env::{MutationId, MutationStatus, QueryError, Rng};
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, CmpOp, DeletePlan, DeleteTarget, Direction, FieldRange,
-    Fill, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, Scan, SemiJoin, Step,
-    TextSearch, TimeSeries, TokenMode, Value,
+    Fill, HourSplit, Literal, Measure, Node, Order, PointLookup, Pred, QueryPlan, Row, Scan,
+    SemiJoin, Step, TextSearch, TimeSeries, TokenMode, Value,
 };
 use crucible_records::{
     CivilDate, PartitionId, ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str,
@@ -1346,9 +1346,41 @@ struct Interp<'a> {
 impl<'a> Interp<'a> {
     /// The rows of one table reference: of the plan's project, inside the window, matching `pred`.
     fn rows(&self, id: TableId, pred: &Pred) -> Result<(Vec<&'a Cells>, Window), QueryError> {
+        self.rows_in(id, table(id), pred, self.window)
+    }
+
+    /// The rows an aggregate over its table's hourly tier reads, as the renderer's union does: the table's rows of
+    /// the window outside its whole hours, then the tier's rows of those hours. The tier has the table's columns
+    /// in its order, so the aggregate's predicate tests both, and a row of either reads alike.
+    fn tiered_rows(
+        &self,
+        n: &Aggregate,
+        tier: TableId,
+    ) -> Result<(Vec<&'a Cells>, Window), QueryError> {
+        let def = table(n.table());
+        let split = HourSplit::of(self.window).ok_or_else(|| {
+            internal("a read of the hourly tier over a window without a whole hour")
+        })?;
+        let at = index(def, def.retention.time_column)?;
+        let (mut rows, window) = self.rows(n.table(), n.pred())?;
+        rows.retain(|row| !matches!(row.get(at), Some(Value::Time(t)) if split.covers(*t)));
+        let (hours, _) = self.rows_in(tier, def, n.pred(), split.hours())?;
+        rows.extend(hours);
+        Ok((rows, window))
+    }
+
+    /// The rows of table `id` of the plan's project inside `window`, matching `pred` as a predicate over the
+    /// columns of `columns`, the table's own definition or that of the table whose hourly tier `id` is.
+    fn rows_in(
+        &self,
+        id: TableId,
+        columns: &TableDef,
+        pred: &Pred,
+        window: TimeWindow,
+    ) -> Result<(Vec<&'a Cells>, Window), QueryError> {
         let def = table(id);
-        let window = Window::of(def, self.window)?;
-        let test = Test::of(def, pred, &|set| {
+        let window = Window::of(def, window)?;
+        let test = Test::of(columns, pred, &|set| {
             self.ids(&self.aggregate(set, None, false)?)
         })?;
         let mut rows = Vec::new();
@@ -1459,7 +1491,10 @@ impl<'a> Interp<'a> {
         filled: bool,
     ) -> Result<Answer, QueryError> {
         let def = table(n.table());
-        let (rows, window) = self.rows(n.table(), n.pred())?;
+        let (rows, window) = match n.hourly_tier() {
+            Some(tier) => self.tiered_rows(n, tier)?,
+            None => self.rows(n.table(), n.pred())?,
+        };
         let group_at = indexes(def, n.group())?;
         let measures: Vec<Computed> = n
             .measures()

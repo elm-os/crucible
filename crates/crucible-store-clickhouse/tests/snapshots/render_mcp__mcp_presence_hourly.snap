@@ -1,0 +1,17 @@
+---
+source: crates/crucible-store-clickhouse/tests/render_mcp.rs
+expression: "tiered(&live(mcp_presence(s, w, &c, caller.class(QueryClass::Analytics),\nMcpSide::Client, Some(\"files\"))))"
+---
+SELECT server_name, capture_source, sum(count) AS m0, max(last_seen) AS m1 FROM (SELECT server_name, capture_source, count, last_seen FROM crucible.mcp_tool_rollup WHERE project_id = {p0:UUID} AND minute >= {p1:DateTime('UTC')} AND minute <= {p2:DateTime('UTC')} AND (minute < {p3:DateTime('UTC')} OR minute >= {p4:DateTime('UTC')}) AND (side = {p5:String} AND server_name = {p6:String}) UNION ALL SELECT server_name, capture_source, count, last_seen FROM crucible.mcp_tool_rollup_hourly WHERE project_id = {p7:UUID} AND hour >= {p8:DateTime('UTC')} AND hour <= {p9:DateTime('UTC')} AND (side = {p10:String} AND server_name = {p11:String})) GROUP BY server_name, capture_source ORDER BY server_name ASC, capture_source ASC
+p0: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p1: DateTime('UTC') = "1794907800"
+p2: DateTime('UTC') = "1795512540"
+p3: DateTime('UTC') = "1794909600"
+p4: DateTime('UTC') = "1795510800"
+p5: String = "client"
+p6: String = "files"
+p7: UUID = "0193a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b"
+p8: DateTime('UTC') = "1794909600"
+p9: DateTime('UTC') = "1795510740"
+p10: String = "client"
+p11: String = "files"

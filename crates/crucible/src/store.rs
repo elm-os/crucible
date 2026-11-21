@@ -26,7 +26,8 @@ use crucible_plan::profile_caps;
 use crucible_schema::{
     AccessParams, Granularity, Ident, MigrationStep, PROBE_PROJECTS, PasswordHash,
     RetentionSettings, ServiceIdentity, SqlProfile, TABLES, Variant, WorkspaceParams,
-    access_service, access_workspace, schema_base, schema_span_usage_aggregate, workspace_user,
+    access_service, access_workspace, schema_base, schema_mcp_tool_rollup_hourly,
+    schema_span_usage_aggregate, workspace_user,
 };
 
 use crate::control::{ApplyStep, Applying, Control};
@@ -240,13 +241,16 @@ impl ClickHouse {
 
     /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
     /// workspace's settings profile, fitted to the server.
-    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 4]> {
+    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 5]> {
         let variant = Variant::SingleNode;
+        let admin = Ident::new(&self.admin.user)
+            .context("the ClickHouse admin user is not a plain identifier")?;
         Ok([
             schema_base(&variant, Granularity::Day),
             access_service(&variant, &self.access_params()?),
             access_workspace(&variant, &self.workspace_params(profile)?),
             schema_span_usage_aggregate(&variant),
+            schema_mcp_tool_rollup_hourly(&variant, &admin),
         ])
     }
 }
@@ -594,7 +598,8 @@ mod tests {
                 crucible_schema::SCHEMA_BASE,
                 crucible_schema::ACCESS_SERVICE,
                 crucible_schema::ACCESS_WORKSPACE,
-                crucible_schema::SCHEMA_SPAN_USAGE_AGGREGATE
+                crucible_schema::SCHEMA_SPAN_USAGE_AGGREGATE,
+                crucible_schema::SCHEMA_MCP_TOOL_ROLLUP_HOURLY,
             ]
         );
         // The probe identities' passwords are derived like every other, and only their digests are sent.
