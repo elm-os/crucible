@@ -28,7 +28,7 @@ import { parseDomains, sameDomains } from "./domains";
 import { SETTINGS_CHANGED } from "./retention";
 
 const TITLE = "Organization";
-export const ORG_KEY = ["org", "settings"];
+const ORG_KEY = ["org", "settings"];
 // At least one character that isn't a space: the server trims the name before it checks it.
 const NAME_PATTERN = ".*\\S.*";
 
@@ -50,7 +50,7 @@ const isAccess = (value: string | null): value is ProjectAccess =>
   ACCESS.some((option) => option.value === value);
 
 // The fields that differ from the stored organization; only those are sent.
-export function orgChanges(
+function orgChanges(
   org: Org,
   draft: { name: string; access: ProjectAccess; domains: string[] },
 ): OrgPatch {

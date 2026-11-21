@@ -50,7 +50,7 @@ import { parseDomains, sameDomains } from "./domains";
 import { RowsSkeleton } from "./rows-skeleton";
 
 const TITLE = "Sign-in providers";
-export const PROVIDERS_KEY = ["org", "auth-providers"];
+const PROVIDERS_KEY = ["org", "auth-providers"];
 // At least one character that isn't a space: the server trims these before it checks them.
 const TEXT_PATTERN = ".*\\S.*";
 
