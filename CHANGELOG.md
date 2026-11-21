@@ -48,6 +48,18 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
 - SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
   needs.
+- Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
+  many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
+- Deleting a project deletes its dashboards with their widgets and its media records, and then every object under
+  the project's key prefix in object storage.
+- A time series widget draws as areas: a light fill under each series' line, with its dash, marker and table view.
+- The widget sheet edits a widget's filters: a field of the metrics schema, is or is not, and a value, with the
+  values the time range holds offered as suggestions.
+- Search takes the filters of the span list, name included, as `filters` in its request, and the search page has the
+  lists' filter bar. The lists, search and the MCP server's `list_traces` and `list_spans` read one filter object
+  and refuse an invalid one alike: the same member, with the same code.
+- A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
+  (`CRUCIBLE_SERVER_METRICS_LISTEN`).
 - The metric `crucible_shipper_task_microseconds_total{phase}` gives the shipper's time by what it was doing:
   reading the log, normalizing, building rows, encoding blocks, writing its own log records, waiting for inserts and
   idle.

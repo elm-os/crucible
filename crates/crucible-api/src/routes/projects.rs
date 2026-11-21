@@ -7,6 +7,7 @@ use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{Problem, ProblemCode};
 use crucible_auth::service::{ApiKeyChange, Identity, SessionPrincipal};
+use crucible_auth::stored_project_scope;
 use crucible_records::{ApiKeyId, ProjectId, RequestId, Timestamp, UserId, Uuid};
 use std::sync::Arc;
 use utoipa::OpenApi;
@@ -218,7 +219,9 @@ pub(crate) async fn patch_project(
 
 /// Delete a project
 ///
-/// A soft delete: the project disappears from every list and its keys stop working.
+/// The project disappears from every list and its keys stop working. Its dashboards with their widgets and its
+/// media go with it: the media rows at once and, when object storage is configured, every object under the
+/// project's key prefix.
 #[utoipa::path(
     delete,
     path = "/api/v1/projects/{project_id}",
@@ -234,6 +237,7 @@ pub(crate) async fn patch_project(
     security(("session" = [])),
 )]
 pub(crate) async fn delete_project(
+    axum::extract::State(state): axum::extract::State<ApiState>,
     org: OrgScoped<OrgProjects>,
     path: PathParams,
     headers: HeaderMap,
@@ -244,10 +248,26 @@ pub(crate) async fn delete_project(
         return Err(ApiError::not_found(rid));
     }
     let expected = if_match(&headers, rid)?;
-    org.identity
+    let deleted = org
+        .identity
         .delete_project(id, expected)
         .await
         .map_err(auth(rid))?;
+    // The rows went with the project, so whatever this leaves in the store has no row, and the media
+    // collector's orphan scan deletes it.
+    if let (Some(media), Ok(scope)) = (&state.media, stored_project_scope(&deleted)) {
+        match media.remove_project(scope).await {
+            Ok(objects) => {
+                tracing::info!(request_id = %rid, project = %id, objects, "deleted the media objects of a deleted project")
+            }
+            Err(error) => tracing::warn!(
+                request_id = %rid,
+                project = %id,
+                %error,
+                "deleting the media objects of a deleted project failed; the media collector's weekly orphan scan deletes them"
+            ),
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

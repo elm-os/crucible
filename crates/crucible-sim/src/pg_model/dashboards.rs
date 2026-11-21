@@ -157,4 +157,19 @@ impl DashboardRepo for Runner {
         })
         .await
     }
+
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            let mut deleted = 0;
+            for dashboard in all!(cx, Tbl::Dashboards, Row::Dashboard) {
+                if dashboard.project_id == project_id {
+                    // Its widgets go with it, as `widgets_dashboard_id_fkey` cascades.
+                    cx.put(Tbl::Dashboards, uuid_key(dashboard.id.to_bytes()), None)?;
+                    deleted += 1;
+                }
+            }
+            Ok(deleted)
+        })
+        .await
+    }
 }

@@ -18,6 +18,7 @@ mod auth;
 mod caps;
 mod eras;
 mod exports;
+mod filters;
 mod lists;
 mod text;
 mod tools;
@@ -55,7 +56,7 @@ pub(crate) fn public_key(n: u8) -> String {
     format!("cpk_{}", n.to_string().repeat(43))
 }
 
-fn keys(env: &Env) -> Arc<dyn KeyVerifier> {
+pub(crate) fn keys(env: &Env) -> Arc<dyn KeyVerifier> {
     let static_key = |n: u8| StaticKey {
         id: ApiKeyId::from_bytes([n; 16]),
         project_id: project(n),
@@ -66,7 +67,7 @@ fn keys(env: &Env) -> Arc<dyn KeyVerifier> {
     Arc::new(StaticKeys::new(env.rng.as_ref(), keys).unwrap())
 }
 
-fn cursor_keys() -> Arc<KeyRing> {
+pub(crate) fn cursor_keys() -> Arc<KeyRing> {
     Arc::new(KeyRing::new(SigningKey::new(
         Kid::new("test").unwrap(),
         [9; 32],

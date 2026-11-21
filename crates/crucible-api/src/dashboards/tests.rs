@@ -384,7 +384,7 @@ proptest! {
         kind in kind(),
         r in rect(),
         title in "[a-zA-Z ]{1,20}",
-        chart in proptest::option::of(prop_oneof![Just(ChartForm::Line), Just(ChartForm::Bar)]),
+        chart in proptest::option::of(prop_oneof![Just(ChartForm::Line), Just(ChartForm::Bar), Just(ChartForm::Area)]),
         id in any::<[u8; 16]>(),
     ) {
         let mut widget = valid(kind, r);

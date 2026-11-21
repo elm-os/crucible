@@ -19,6 +19,7 @@ use crucible_records::{
 
 use crate::context::{Meta, QueryServiceError, ReadContext};
 use crate::decode::Fields;
+use crate::turns::{METRICS_QUERIES_PER_PROJECT, Turns};
 
 /// Every instant the contract allows: the window of a lookup by trace id, which the retention clamp then cuts.
 pub(crate) fn all_time() -> Result<TimeWindow, QueryServiceError> {
@@ -54,6 +55,8 @@ pub struct QueryService {
     pub(crate) hidden: Option<Arc<dyn HiddenSource>>,
     /// The per-request counters, when the service records them.
     meters: Option<Arc<Meters>>,
+    /// The metrics queries each project runs at once (`metrics.queries_per_project`).
+    pub(crate) turns: Arc<Turns>,
 }
 
 /// The pending-deletion set of a node as reads see it (contract 13.4): the deletion requests whose deletes
@@ -125,7 +128,16 @@ impl QueryService {
             wal_epoch,
             hidden: None,
             meters: None,
+            turns: Arc::new(Turns::new(METRICS_QUERIES_PER_PROJECT)),
         }
+    }
+
+    /// The same service whose projects each run at most `per_project` metrics queries at once (at least one,
+    /// [`METRICS_QUERIES_PER_PROJECT`] by default); the others wait for a turn within their deadline.
+    #[must_use]
+    pub fn with_metrics_per_project(mut self, per_project: u32) -> Self {
+        self.turns = Arc::new(Turns::new(per_project));
+        self
     }
 
     /// The service, recording for every request, by class ([`READ_CLASSES`]), the store reads it issued

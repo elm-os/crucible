@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
+use crate::filters::ListFilter;
 use crate::meta::Meta;
 use crate::trace_detail::Span;
 
@@ -51,6 +52,11 @@ pub struct SearchRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fields: Option<Vec<SearchField>>,
+    /// Keeps only the hits whose span matches, as the span list's filters test a span; `name` keeps the spans
+    /// whose name contains the text. None by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub filters: Option<ListFilter>,
     /// Start of the window over the spans' start times, inclusive (RFC 3339).
     #[schema(format = DateTime)]
     pub from: String,
@@ -63,7 +69,7 @@ pub struct SearchRequest {
     #[schema(minimum = 1, maximum = 200)]
     #[ts(optional)]
     pub limit: Option<u32>,
-    /// The `next_cursor` of the previous page, with the same query, mode, fields and window.
+    /// The `next_cursor` of the previous page, with the same query, mode, fields, filters and window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cursor: Option<String>,

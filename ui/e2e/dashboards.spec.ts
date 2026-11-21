@@ -28,6 +28,7 @@ const OVERVIEW_PATH = new RegExp(`/projects/${PROJECT}/dashboards/overview$`);
 const DUPLICATE_PATH = new RegExp(`/projects/${PROJECT}/dashboards/overview/duplicate$`);
 const SCHEMA_PATH = new RegExp(`/projects/${PROJECT}/metrics/schema$`);
 const QUERY_PATH = new RegExp(`/projects/${PROJECT}/metrics/query$`);
+const VALUES_PATH = new RegExp(`/projects/${PROJECT}/filter-values$`);
 
 const LIST_URL = `/dashboards/?project=${PROJECT}`;
 const VIEW_URL = `/dashboard/?project=${PROJECT}&id=${ID}`;
@@ -391,6 +392,36 @@ test.describe("dashboard: view", () => {
     await expectNoPageScrollX(page);
   });
 
+  test("a time series drawn as areas fills under each line, keeps each series' dash and marker, and has its table", async ({
+    page,
+    api,
+  }) => {
+    editor(api);
+    metricsByQuery(api);
+    const areas = widget("w-areas", {
+      query: {
+        source: "spans",
+        measures: [
+          { measure: "count", aggregation: "sum" },
+          { measure: "error_count", aggregation: "sum" },
+        ],
+      },
+      display: { kind: "timeseries", title: "Spans and errors", chart: "area" },
+      layout: { x: 0, y: 0, w: 6, h: 3 },
+    });
+    api.on(ONE_PATH, json(dashboard({ widgets: [areas] })));
+    await page.goto(VIEW_URL);
+    const chart = region(page, "Spans and errors");
+    await expect(chart.locator("svg [data-area]")).toHaveCount(2);
+    await expect(chart.locator("svg [data-series]")).toHaveCount(2);
+    await expect(chart.locator("[data-marker]")).toHaveCount(2);
+    await expect(chart.getByText("Errors", { exact: true })).toBeVisible();
+    await expectAccessible(page, "view of an area chart");
+    await chart.getByRole("button", { name: "View as table: spans and errors" }).click();
+    await expect(chart.getByRole("columnheader", { name: "Errors" })).toBeVisible();
+    await expect(chart.locator("svg [data-area]")).toHaveCount(0);
+  });
+
   test("one widget down: its error and retry stay inside it; empty and loading widgets hold their place", async ({
     page,
     api,
@@ -579,6 +610,110 @@ test.describe("dashboard: editor", () => {
     expect(body.widgets[0]).toMatchObject({ id: "w-spans" });
     expect(body.widgets[1]?.id).toBeUndefined();
     expect(body.widgets[1]?.layout).toEqual({ x: 3, y: 0, w: 6, h: 3 });
+  });
+
+  test("filter a widget's data: the schema's fields, the range's values as suggestions, and the filter saved with the widget", async ({
+    page,
+    api,
+  }) => {
+    editor(api);
+    const spans = SCHEMA.sources[0] as MetricsSchema["sources"][number];
+    api.on(
+      SCHEMA_PATH,
+      json({
+        sources: [
+          {
+            ...spans,
+            filter_fields: [
+              { field: "environment", operator: "in" },
+              { field: "release", operator: "in" },
+              { field: "level", operator: "in" },
+            ],
+          },
+        ],
+      }),
+    );
+    const previews: Record<string, unknown>[] = [];
+    metricsByQuery(api, (body) => previews.push(body));
+    const asked: URL[] = [];
+    api.on(VALUES_PATH, (route, url) => {
+      asked.push(url);
+      if (url.searchParams.get("field") === "release") {
+        return route.fulfill(problem(503, "telemetry_store_unavailable"));
+      }
+      return route.fulfill(
+        json({
+          data: [
+            { value: "prod", count: 1_204 },
+            { value: "staging", count: 87 },
+          ],
+          truncated: false,
+          saturated: false,
+          meta: { as_of: AS_OF, partial: false, consistency: "strong" },
+        }),
+      );
+    });
+    const patches: Request[] = [];
+    api.on(ONE_PATH, (route) => {
+      if (route.request().method() === "PATCH") {
+        patches.push(route.request());
+        return route.fulfill(json(dashboard({ version: 2, widgets: [WIDGETS[0] as Widget] })));
+      }
+      return route.fulfill(json(dashboard({ widgets: [WIDGETS[0] as Widget] })));
+    });
+    await page.goto(EDIT_URL);
+    await page.getByRole("button", { name: "Add widget" }).click();
+    const drawer = page.getByRole("dialog", { name: "Add a widget" });
+    await drawer.getByLabel("Title").fill("Production spans");
+    const filters = drawer.getByRole("form", { name: "Filter the widget's data" });
+    const field = filters.getByRole("combobox", { name: "Filter by" });
+    await expect(field).toHaveText("Environment");
+    // The values the range holds, most frequent first, offered as the field takes focus.
+    await filters.getByRole("combobox", { name: "Value" }).click();
+    await expect(page.getByRole("option", { name: /^prod/ })).toBeVisible();
+    expect(asked[0]?.searchParams.get("source")).toBe("spans");
+    expect(asked[0]?.searchParams.get("field")).toBe("environment");
+    expect(asked[0]?.searchParams.get("from")).toBeTruthy();
+    await expectAccessible(page, "widget filter with suggestions");
+    await page.getByRole("option", { name: /^prod/ }).click();
+    await filters.getByRole("button", { name: "Add filter" }).click();
+    await expect(
+      drawer.getByRole("button", { name: "Remove filter Environment is prod" }),
+    ).toBeVisible();
+    await expect
+      .poll(() => previews.at(-1))
+      .toMatchObject({ filter: { in: { field: "environment", values: ["prod"] } } });
+
+    // Values that can't load leave the field to type in.
+    await field.click();
+    await page.getByRole("option", { name: "Release" }).click();
+    const release = filters.getByRole("combobox", { name: "Value" });
+    await release.click();
+    await expect(
+      page.getByText("The release values couldn't load; type one as it is written."),
+    ).toBeVisible();
+    await release.fill("v2");
+    await filters.getByRole("button", { name: "Add filter" }).click();
+    await expect(drawer.getByRole("button", { name: "Remove filter Release is v2" })).toBeVisible();
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    // An empty value says what to add.
+    await filters.getByRole("button", { name: "Add filter" }).click();
+    await expect(drawer.getByText("Choose or type a release to filter by.")).toBeVisible();
+
+    await drawer.getByRole("button", { name: "Apply" }).click();
+    await expect(drawer).toBeHidden();
+    await expect(page.locator("[inert]")).toHaveCount(0);
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible();
+    const body = patches[0]?.postDataJSON() as { widgets: { id?: string; query?: unknown }[] };
+    expect(body.widgets.find((w) => w.id === undefined)?.query).toMatchObject({
+      filter: {
+        and: [
+          { in: { field: "environment", values: ["prod"] } },
+          { in: { field: "release", values: ["v2"] } },
+        ],
+      },
+    });
   });
 
   test("an MCP widget reads the side and capture source chosen in the sheet, offered only for MCP operations", async ({

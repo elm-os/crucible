@@ -17,6 +17,8 @@ crucible-recent = { workspace = true }
 crucible-schema = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
+# The per-project turns of metrics queries.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 crucible-auth = { workspace = true, features = ["test-support"] }

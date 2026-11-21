@@ -331,4 +331,19 @@ impl MediaRepo for Runner {
         })
         .await
     }
+
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError> {
+        self.run(Pool::Main, true, |cx| {
+            delete_refs(cx, |r| r.project_id == project_id)?;
+            let mut deleted = 0;
+            for object in objects(cx) {
+                if object.project_id == project_id {
+                    cx.put(Tbl::MediaObjects, uuid_key(object.id.to_bytes()), None)?;
+                    deleted += 1;
+                }
+            }
+            Ok(deleted)
+        })
+        .await
+    }
 }

@@ -19,6 +19,11 @@ Type what to find and choose **Find**. Choose where to look and how the words co
 Results come newest first, each with the span's name, its trace, and the matching passage with the words
 highlighted; choosing a result opens the span on its trace page. **Load more results** reads the next page.
 
+The filter bar under the search narrows the results with the conditions of the span list: a name the span's name
+contains, its environment, level, type, user, session, a tag, a metadata entry, its release or its version. Each
+condition is a chip that removes it, and the conditions stay in the page's address, so a filtered search can be
+shared. The API takes the same conditions as the `filters` of `POST search`.
+
 Search reads what has reached ClickHouse, so a span acknowledged a moment ago can be missing from the results for a
 few seconds; the page says when spans may still be arriving.
 

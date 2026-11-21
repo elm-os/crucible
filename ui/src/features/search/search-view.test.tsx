@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { SearchHit } from "@/api/generated/SearchHit";
 import type { SearchPage } from "@/api/generated/SearchPage";
@@ -182,5 +182,37 @@ describe("search", () => {
     renderView();
     await screen.findByText(/No spans match/);
     expect(bodies()[0]).toMatchObject({ query: "tenant=acme", mode: "any", fields: ["metadata"] });
+  });
+
+  test("filters: the filter bar's conditions travel with the search and live in the URL", async () => {
+    fetchMock.mockImplementation(async () => json(page([])));
+    window.history.replaceState(
+      null,
+      "",
+      "/search/?project=p1&q=refund&environment=prod&level=error&name=checkout",
+    );
+    renderView();
+    expect(await screen.findByText(/No spans match "refund" and these filters/)).toBeTruthy();
+    expect(bodies()[0]).toMatchObject({
+      query: "refund",
+      filters: { environment: ["prod"], level: ["error"], name: "checkout" },
+    });
+    const chips = screen.getByRole("list", { name: "Active filters" });
+    expect(chips.textContent).toContain("Environment: prod");
+    expect(chips.textContent).toContain("Name contains: checkout");
+    const results = screen.getByRole("region", { name: "Results" });
+    fireEvent.click(within(results).getByRole("button", { name: "Clear filters" }));
+    await screen.findByText(/No spans match "refund" in the last 24 hours/);
+    expect(bodies().at(-1)?.filters).toBeUndefined();
+    expect(window.location.search).not.toContain("environment=");
+  });
+
+  test("filters: a search without filters sends none", async () => {
+    fetchMock.mockResolvedValue(json(page([])));
+    renderView();
+    search("refund");
+    await screen.findByText(/No spans match/);
+    expect(bodies()[0]).not.toHaveProperty("filters");
+    expect(screen.getByRole("form", { name: "Filter results" })).toBeTruthy();
   });
 });

@@ -92,4 +92,7 @@ pub trait DashboardRepo: Send + Sync {
         id: DashboardId,
         expected: u64,
     ) -> Result<bool, TxError>;
+    /// Deletes every dashboard of the project with its widgets, for the project's deletion (contract 13.4);
+    /// returns how many dashboards.
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError>;
 }

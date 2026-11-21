@@ -7,6 +7,7 @@
 //!   the inline-safe types.
 //! - [`gc::job`]: the `media-gc` leader job: retention by reference time, stale uploads, unused objects and
 //!   the weekly orphan scan.
+//! - [`Media::remove_project`]: every object under a deleted project's key prefix (contract 13.4).
 //! - [`rules`]: the allowlist, the inline-safe list, the caps, the lifetimes and the object key layout.
 //! - [`Media::span_references`]: the media a span references, read out of its payload with the reader the binary
 //!   passes in ([`FindRefs`]), and the uses recorded for it.
@@ -15,6 +16,7 @@
 
 pub mod gc;
 mod http;
+mod project;
 pub mod rules;
 mod s3;
 mod service;

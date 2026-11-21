@@ -23,6 +23,7 @@ import type { ChartForm } from "@/api/generated/ChartForm";
 import type { Granularity } from "@/api/generated/Granularity";
 import type { McpSideParam } from "@/api/generated/McpSideParam";
 import type { MeasureRequest } from "@/api/generated/MeasureRequest";
+import type { MetricsFilter } from "@/api/generated/MetricsFilter";
 import type { MetricsSchema } from "@/api/generated/MetricsSchema";
 import type { SourceParam } from "@/api/generated/SourceParam";
 import type { Widget } from "@/api/generated/Widget";
@@ -43,6 +44,7 @@ import {
   maxChartKeys,
   shapeProblem,
 } from "./rules";
+import { WidgetFilters } from "./widget-filters";
 import { WidgetView } from "./widget-view";
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -126,6 +128,10 @@ export function WidgetForm({
   const [side, setSide] = useState<McpSideParam>(initial.query?.side ?? "server");
   const [capture, setCapture] = useState<SourceParam>(initial.query?.capture_source ?? "auto");
   const [callerFaults, setCallerFaults] = useState(initial.query?.include_caller_faults ?? false);
+  const [filter, setFilter] = useState<MetricsFilter | undefined>(initial.query?.filter);
+  const filterFields = (schemaOf?.filter_fields ?? [])
+    .filter((f) => f.operator === "in")
+    .map((f) => f.field);
   const markdown = kind === "markdown";
   const shape = kindShape(kind);
   const maxKeys = kind === "timeseries" ? maxChartKeys(measures, catalog) : MAX_SERIES_KEYS;
@@ -141,6 +147,7 @@ export function WidgetForm({
         source,
         measures,
         dimensions: dimensions.length > 0 ? dimensions : undefined,
+        filter,
         top_n: keys ?? undefined,
         granularity: granularity === "auto" ? undefined : granularity,
         side: mcp ? side : undefined,
@@ -181,6 +188,8 @@ export function WidgetForm({
   };
   const changeSource = (next: string) => {
     setSource(next);
+    // Each source has its own filter fields.
+    setFilter(undefined);
     const first = sources.find((s) => s.source === next)?.measures[0];
     setMeasures(first ? [{ measure: first.id, aggregation: first.aggregations[0] ?? "sum" }] : []);
     const dims = sources.find((s) => s.source === next)?.dimensions.map((d) => d.id) ?? [];
@@ -438,6 +447,16 @@ export function WidgetForm({
               </FieldDescription>
             </Field>
           ) : null}
+          {filterFields.length > 0 || filter !== undefined ? (
+            <WidgetFilters
+              project={project}
+              source={source}
+              range={range}
+              fields={filterFields}
+              filter={filter}
+              onChange={setFilter}
+            />
+          ) : null}
           <Field>
             <FieldLabel>Buckets</FieldLabel>
             <Select
@@ -471,7 +490,9 @@ export function WidgetForm({
               <SegmentedControl
                 aria-labelledby={`${problemId}-chart`}
                 value={chart}
-                onValueChange={(next) => setChart(next === "bar" ? "bar" : "line")}
+                onValueChange={(next) =>
+                  setChart(next === "bar" || next === "area" ? next : "line")
+                }
               >
                 <SegmentedControlIndicator />
                 <SegmentedControlItem value="line" className="text-data">
@@ -479,6 +500,9 @@ export function WidgetForm({
                 </SegmentedControlItem>
                 <SegmentedControlItem value="bar" className="text-data">
                   Bars
+                </SegmentedControlItem>
+                <SegmentedControlItem value="area" className="text-data">
+                  Areas
                 </SegmentedControlItem>
               </SegmentedControl>
             </div>

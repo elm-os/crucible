@@ -26,6 +26,7 @@ mod mcp;
 mod media;
 mod metrics;
 mod payload;
+mod projects;
 mod search;
 mod sql;
 

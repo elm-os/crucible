@@ -15,7 +15,7 @@ kind: WidgetKind,
  */
 title: string, 
 /**
- * `timeseries` only: lines (the default) or bars per bucket.
+ * `timeseries` only: lines (the default), bars per bucket, or areas.
  */
 chart?: ChartForm, 
 /**

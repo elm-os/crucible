@@ -56,6 +56,8 @@ is MIT licensed and runs on infrastructure you control.
 - Retention per project, and deletion requests for traces, users and sessions.
 - Exports of a project's spans as `crucible-jsonl` or OTLP JSON, from the UI, the REST API, the `crucible export`
   command and the MCP server.
+- Optional media storage on S3-compatible object storage: the images, audio, video and files that spans reference,
+  shown in the span panel. With it, export files are stored there too, so any server can hand them out.
 - Crucible's own MCP server at `/mcp`: a coding agent connects with a project key, lists that project's traces,
   spans, sessions and users, reads and searches its traces, and reads its MCP analytics.
 - Prometheus metrics, and `/healthz` and `/readyz` for orchestrators.
