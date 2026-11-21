@@ -2228,7 +2228,7 @@ Alert measures over `mcp_ops`: `mcp.calls`, `mcp.error_rate` (caller faults excl
 |---|---|
 | Defaults | MCP metadata is always captured. Arguments and results are opt-in per server or tool glob, sampled before any copy, cut at 16 KiB per field by default, and scrubbed in the sender. The Python, TypeScript and Rust SDKs scrub on the request path. The Go SDK scrubs on its export goroutine, one span at a time as it leaves the queue: a captured call keeps only the part of each field that scrubbing reads (the cap plus 1 KiB), which counts toward the queue's byte bound, and a panic in the `Scrub` option costs the span its captured content, never the exporter (#145) |
 | Scrub rules | Data in `conformance/scrub-rules.json` with test vectors, shared by the four SDKs and the proxy; patterns stay in the linear-time regular-expression subset |
-| Export | Off the request path through a queue bounded by spans and by bytes (defaults 2,048 spans and 8 MiB). The byte bound counts the batch being exported and estimates each span from the lengths of its name, attributes, events and status message; a span beyond either bound is dropped and counted, never blocks. Whether the span bound counts the in-flight batch is left to each SDK (default; revisit). Flush and shutdown return within their deadline (a Python timeout, a Go context deadline, the export timeout in TypeScript and Rust), also while an export to a collector that never answers is in flight; `conformance/export-latency.json` checks it in the four SDKs (#145) |
+| Export | Off the request path through a queue bounded by spans and by bytes (defaults 2,048 spans and 8 MiB). The byte bound counts the batch being exported and estimates each span from the lengths of its name, attributes, events and status message; a span beyond either bound is dropped and counted, never blocks. Whether the span bound counts the in-flight batch is left to each SDK (default; revisit). Flush and shutdown keep to their deadline (a Python `timeout`, a Go context, the export timeout in TypeScript and Rust) while an export to a collector that never answers is in flight; `conformance/export-latency.json` checks it in the four SDKs with no scores queued. Queued scores share that deadline, except in a Rust flush, which waits as long again for them (#145) |
 | Proxy passthrough | Bytes are forwarded unchanged and immediately in both directions; analysis runs on a copy through a bounded non-blocking channel; the proxy never injects; telemetry buffer 8 MiB or 10,000 operations, drop-oldest; logs go to stderr only |
 | Proxy correlation | Pending operations are keyed by (direction, JSON-RPC id); operations pending at child exit become `transport` errors |
 | Shipping | OTLP HTTP protobuf to `/v1/traces` with a project key holding the `ingest` scope |
@@ -2684,8 +2684,8 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
 - Deletion replay (#121, #144): `LifecycleRepo::requests_after(requested_after, after, limit)` reads the deletion
   requests of every project, in every state, requested after `requested_after` and with a sequence number above
   `after`, in sequence order; the binary registers the node, then pages through it 500 at a time for the shipper's
-  read before stage B admits a frame (section 13.3). `deletion_requests` has no index on `requested_at`: Postgres
-  filters while it walks the sequence order.
+  read before stage B admits a frame (section 13.3). The read filters on `requested_at` and is ordered by
+  `deletion_seq`; `deletion_requests` has no index on `requested_at`.
 - Dashboards (#98): reads need `read` and writes `edit_content`, which no key holds. `{dashboard_id}` takes a
   dashboard id or a built-in key. Every change sends the dashboard's `ETag` in `If-Match` (412 when stale, 428 when
   missing), except adding a widget, which re-reads and compares on its own; `PATCH dashboards/{dashboard_id}` with
