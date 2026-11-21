@@ -15,7 +15,7 @@ Make a folder for Crucible, download the Compose file of the release into it, an
 
 ```sh
 mkdir crucible && cd crucible
-curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.1/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/elm-os/crucible/v0.1.2/deploy/compose/compose.yaml
 printf '%s\n' "CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)" "POSTGRES_PASSWORD=$(openssl rand -hex 16)" "CRUCIBLE_MASTER_KEY=$(openssl rand -hex 32)" > .env
 ```
 
