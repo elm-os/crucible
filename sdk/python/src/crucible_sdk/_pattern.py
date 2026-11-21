@@ -50,6 +50,16 @@ class Lead:
 
 
 @dataclass(frozen=True)
+class Run:
+    """The characters every match of an alternative is made of, and the fewest it has: `table` maps each of them to
+    one of them, so a text holds such a run when its translation holds `needle`, that one character as many times
+    as a match has characters at the fewest (`[0-9 -]` 14 times for the card rule)."""
+
+    table: dict[int, str]
+    needle: str
+
+
+@dataclass(frozen=True)
 class Facts:
     min_length: int
     """The fewest characters a match has."""
@@ -60,9 +70,12 @@ class Facts:
     """A regular expression that finds, in any text that holds a match, a member of a class followed by a literal
     character that a top-level alternative always holds (`[0-9A-Fa-f]:` for the ipv6 rule); None when an
     alternative holds no such pair."""
+    runs: tuple[Run, ...] | None
+    """The runs of the top-level alternatives, one per set of characters; None when an alternative can hold any
+    character (a negated class)."""
 
 
-_NO_GUARD = Facts(0, None, None, None)
+_NO_GUARD = Facts(0, None, None, None, None)
 
 
 def facts(pattern: str) -> Facts:
@@ -78,6 +91,7 @@ def facts(pattern: str) -> Facts:
         literals=tuple(lit for lit in literals if lit is not None) if None not in literals else None,
         lead=_lead_of(branches, pattern),
         pairs=re.compile("|".join(p for p in pairs if p is not None)) if None not in pairs else None,
+        runs=_runs_of(branches),
     )
 
 
@@ -242,6 +256,43 @@ def _pair_of(items: Sequence[_Item]) -> str | None:
             if inner is not None:
                 return inner
     return None
+
+
+def _chars_of(items: Sequence[_Item]) -> frozenset[str] | None:
+    """Every character a match of `items` can hold; None when a negated class lets it hold any other."""
+    chars: set[str] = set()
+    for item in items:
+        atom = item.atom
+        if isinstance(atom, str):
+            chars.add(atom)
+        elif isinstance(atom, _Class):
+            if atom.negated:
+                return None
+            chars |= atom.members
+        else:
+            for branch in atom.branches:
+                inner = _chars_of(branch)
+                if inner is None:
+                    return None
+                chars |= inner
+    return frozenset(chars)
+
+
+def _runs_of(branches: Sequence[Sequence[_Item]]) -> tuple[Run, ...] | None:
+    """The run of each alternative: every match of it is a run of at least its fewest characters, all of them
+    characters it can hold. Alternatives made of the same characters share the shorter run."""
+    fewest: dict[frozenset[str], int] = {}
+    for items in branches:
+        chars = _chars_of(items)
+        if not chars:
+            return None
+        length = _min_length((items,))
+        fewest[chars] = min(length, fewest.get(chars, length))
+    runs = []
+    for chars, length in fewest.items():
+        marker = min(chars)
+        runs.append(Run({ord(c): marker for c in chars}, marker * length))
+    return tuple(runs)
 
 
 def _once(item: _Item | None) -> str | None:

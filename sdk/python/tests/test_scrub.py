@@ -288,6 +288,70 @@ def test_the_pair_guard_skips_only_text_its_rule_leaves_alone() -> None:
     assert all(decided.get(name, 0) >= 50 for name in paired), decided
 
 
+def test_a_run_is_the_characters_every_match_is_made_of_and_its_fewest() -> None:
+    runs = {}
+    for rule in SCRUBBER.rules:
+        f = rule.facts
+        runs[rule.name] = (
+            None if f.runs is None else sorted((len(r.needle), "".join(sorted(map(chr, r.table)))) for r in f.runs)
+        )
+    assert runs["card"] == [(14, " -0123456789")]
+    assert runs["phone"] == [(8, " +-.0123456789"), (12, " ()-.0123456789")]
+    assert runs["ipv4"] == [(7, ".0123456789")]
+    # A negated class lets a match hold any character.
+    assert runs["pem"] is None
+
+
+# Runs of digits and separators a little shorter and longer than a card or a phone number, and the characters that
+# end them: letters, spaces, other punctuation and characters outside ASCII.
+RUN_FRAGMENTS = [
+    *"0123456789",
+    *" -.+()",
+    *"aZx\n_/",
+    "é",
+    "😀",
+    "4111",
+    "1111 ",
+    "1111-",
+    "555 0134",
+    "(415) ",
+    "+1 ",
+    "4111 1111 1111 1111",
+    "378282246310005",
+    "+1 415 555 0134",
+    "(415) 555-0134",
+    "0123456789abcdef",
+    # A card and a phone number as short as a match can be.
+    "30569309025904",
+    "+1 23 45",
+]
+
+
+def test_the_run_guard_skips_only_text_its_rule_leaves_alone() -> None:
+    random = Random(20261122)
+    mismatches: list[str] = []
+    # Per rule, texts that pass the other guards and hold no run, so that the run guard alone decides.
+    decided: dict[str, int] = {}
+    for _ in range(5000):
+        text = "".join(random.choice(RUN_FRAGMENTS) for _ in range(random.randrange(1, 16)))
+        for rule in SCRUBBER.rules:
+            f = rule.facts
+            if f.runs is None:
+                continue
+            literal = f.literals is None or any(lit in text for lit in f.literals)
+            paired = f.pairs is None or f.pairs.search(text) is not None
+            held = any(r.needle in text.translate(r.table) for r in f.runs)
+            if len(text) >= f.min_length and literal and paired and not held:
+                decided[rule.name] = decided.get(rule.name, 0) + 1
+            if rule.apply(text) != rule.apply_plain(text):
+                mismatches.append(f"{rule.name}: {text!r}")
+        if SCRUBBER.text(text) != SCRUBBER.text_plain(text):
+            mismatches.append(f"all rules: {text!r}")
+    assert mismatches[:5] == []
+    assert decided.get("card", 0) >= 50, decided
+    assert decided.get("phone", 0) >= 50, decided
+
+
 def test_a_model_result_is_serialized_no_further_than_the_cap_and_the_margin() -> None:
     middleware = CrucibleMiddleware(
         server_name="s",

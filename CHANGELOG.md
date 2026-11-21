@@ -62,6 +62,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
 - The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
   the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
+- The Python SDK also skips a scrub rule on text without a run of the characters its matches are made of as long as
+  its shortest match (14 digits, spaces and dashes for the card rule), so each shape of the capture-overhead scenario
+  adds less than 1 ms per call on a laptop (64 KiB of hexadecimal text 0.6 ms instead of 1.3 ms), with the same
+  scrubbed text.
 
 ## [0.1.1] - 2026-11-21
 
