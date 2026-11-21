@@ -211,8 +211,8 @@ The proxy fails open. Telemetry runs on its own task, on a copy of the traffic:
   and counted; the bytes are already on their way.
 - Finished operations wait in a buffer of at most 8 MiB or 10,000 operations. When it is full, the oldest are
   dropped. The number dropped is logged on standard error at the next export that succeeds. A call whose arguments
-  and result are both captured, under a `max_bytes` above 4 MiB, can make one operation larger than the buffer,
-  and such an operation is dropped the same way.
+  and result are both captured, under a `max_bytes` above 4 MiB, can make one operation larger than the buffer:
+  every operation waiting before it is dropped to make room, and then the operation itself.
 - Exports are retried with a backoff of 1 s doubling to 30 s. A refusal (for example a wrong key) drops the batch
   and says what to check.
 - At exit the proxy waits at most 500 ms for a last export.

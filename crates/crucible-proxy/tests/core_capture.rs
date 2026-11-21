@@ -495,12 +495,13 @@ fn http_answers_in_json_and_event_streams_are_captured() {
 #[test]
 fn a_field_captured_at_the_largest_cap_is_exported_with_its_operation() {
     // The largest cap a rule may set, with the other fields of the operation as long as the proxy keeps them: the
-    // operation fits the 8 MiB export buffer with its content, so nothing is dropped.
+    // operation fits the 8 MiB export buffer with its content, so nothing is dropped. Each other value on the wire
+    // is longer than the 64 KiB the cap leaves, so the test holds only if the proxy cuts every one of them.
     let cap = MAX_CAP_BYTES;
     assert!(CaptureRule::parse(&format!("*,max_bytes={}", cap + 1)).is_err());
     let rule = format!("*,args=false,max_bytes={cap}");
     let (mut core, tap) = stdio(&[&rule]);
-    let long = "n".repeat(4096);
+    let long = "n".repeat(100_000);
     send(
         &tap,
         C2S,
