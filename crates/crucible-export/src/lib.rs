@@ -9,7 +9,8 @@
 //!   row records it; [`sweep`] removes what no export needs. With an object store ([`ExportObjects`]) the file
 //!   is an object under the project's key prefix instead, which appears whole at the commit and downloads
 //!   through a presigned link from any node; [`sweep_objects`] removes what no export needs there.
-//! - **Jobs.** [`job`] is the claimed consumer of `export_jobs`, [`sweep_job`] the per-node sweep.
+//! - **Jobs.** [`job`] is the claimed consumer of `export_jobs`, [`sweep_job`] the per-node sweep of the disk and
+//!   [`object_sweep_job`] the sweep of the object store, which one node at a time runs.
 //! - **Service.** [`Exports`] creates exports under the project's rate limit and the request's
 //!   `Idempotency-Key`, reads them and opens committed files for download, for the API and the MCP server.
 //! - **Deletion.** [`purge`] is the export side of a deletion request (contract 13.4), and
@@ -28,7 +29,7 @@ mod stream;
 pub use files::{FilesError, Purged, Swept, purge, sweep};
 pub use job::{
     EXPORT_LEASE, EXPORT_TTL, ExportRuntime, ExportState, SHIPPING_WAIT, SWEEP_EVERY, codes,
-    expiry, job, sweep_job,
+    expiry, job, object_sweep_job, sweep_job,
 };
 pub use jsonl::{SCHEMA, write_jsonl};
 pub use objects::{DOWNLOAD_TTL, ExportObjects, PART_BYTES, sweep_objects};

@@ -1,6 +1,6 @@
 """The capped JSON encoder and the model walk as they were before the fast encoder: the reference its property
-tests hold `Scrubber.capped_json` to. It encodes token by token, which is simple and slow; the SDK's encoder must
-give the same text and the same cut flag for every input."""
+tests hold `Scrubber.capped_json` to. It encodes token by token, which is simple and slow, and applies the scrub
+rules without their guards; the SDK's encoder must give the same text and the same cut flag for every input."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ class ReferenceCappedJson:
 
     def _string(self, value: str, suffix: str = "") -> bool:
         raw = value[: self._left + _MARGIN]
-        text = json.dumps(self._scrubber.text(raw), ensure_ascii=False)
+        text = json.dumps(self._scrubber.text_plain(raw), ensure_ascii=False)
         if len(raw) < len(value):
             self._emit(text[:-1])
             self.cut = True

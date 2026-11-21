@@ -333,6 +333,10 @@ pub async fn run(env: &Env, target: &Target) -> Vec<Outcome> {
             "Agent reads wait for a statement slot (7.1)",
             slots::agent_slots(&ctx)
         );
+        row!(
+            "Agent reads wait for a statement slot another node holds (7.1)",
+            slots::agent_slots_across_nodes(&ctx)
+        );
     }
     row!(
         "Typed plans on the real server (8.1, 8.3)",
