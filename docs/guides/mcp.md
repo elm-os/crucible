@@ -7,7 +7,7 @@ the server's side too; and Crucible's own MCP server lets a coding agent read it
 | Want to | Use |
 |---|---|
 | Record what an MCP server does, with error subclasses, user identity and opt-in arguments and results | The SDK wrapper of the server's language, below |
-| Record what an MCP server does without changing it, in any language | [`crucible proxy`](mcp-proxy.md) |
+| Record what an MCP server does without changing it, in any language, with opt-in arguments and results | [`crucible proxy`](mcp-proxy.md) |
 | See an agent's MCP calls and the servers' handling of them in one trace | The SDK's client wrapper in the agent, and a wrapper or the proxy on the server |
 | Let a coding agent list, read and search traces | [Crucible's MCP server](mcp-server.md) at `/mcp` |
 
@@ -27,7 +27,8 @@ an agent makes and puts its trace context in the request's `params._meta`.
 In a tool handler, every wrapper lets the server say more than the wire shows: an error's subclass (auth, rate
 limit, upstream, business), whether a failure was the caller's (validation, not found), and who the caller is.
 Arguments and results are captured only when you ask for them, per server or per tool, cut at 16 KiB by default and
-scrubbed in the SDK with the shared rules of `conformance/scrub-rules.json`.
+scrubbed in the SDK with the shared rules of `conformance/scrub-rules.json`. The proxy captures with the same rules
+([content capture](mcp-proxy.md#content-capture-opt-in)).
 
 ## What Crucible records
 

@@ -23,7 +23,7 @@ use bytes::Bytes;
 use crucible_env::{ChaChaRng, Instant, Rng};
 use crucible_proxy::core::Mutant;
 use crucible_proxy::{
-    Batch, CaptureRule, CoreConfig, ExportResult, Now, Op, ProxyCore, StreamId, Tap,
+    Batch, CaptureRule, CoreConfig, ExportResult, Now, Op, ProxyCore, SampleRate, StreamId, Tap,
 };
 use crucible_records::{
     CancelSource, CaptureSource, Direction, ErrorClass, McpStatus, ResultType, Timestamp,
@@ -521,11 +521,14 @@ fn capture_rules(rng: &dyn Rng) -> Vec<CaptureRule> {
     let globs = ["*", "echo", "search", "lookup_*", "a tool*"];
     let mut rules = Vec::new();
     for _ in 0..1 + below(rng, 2) {
-        let mut rule = CaptureRule::parse(globs[below(rng, globs.len() as u64) as usize]).unwrap();
+        let mut rule = CaptureRule {
+            tool: globs[below(rng, globs.len() as u64) as usize].to_owned(),
+            ..CaptureRule::default()
+        };
         rule.args = chance(rng, 85);
         rule.result = chance(rng, 85);
-        rule.sample_rate =
-            crucible_proxy::SampleRate::new([1.0, 1.0, 0.5, 0.0][below(rng, 4) as usize]).unwrap();
+        rule.sample_rate = SampleRate::new([1.0, 1.0, 0.5, 0.0][below(rng, 4) as usize])
+            .unwrap_or(SampleRate::ALL);
         rule.max_bytes = match below(rng, 3) {
             0 => 16_384,
             1 => 1 + below(rng, 64) as usize,

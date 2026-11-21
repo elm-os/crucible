@@ -187,8 +187,8 @@ in a fixed order, `events`, `links`, `resource_attributes`, `attributes`, `tool_
 - Short fields have their own caps, for example 1,024 bytes for a span name, 8 KiB for a status message, 512 bytes
   for a session or user id and 64 tags of 256 bytes each. [Contract 3.1](../architecture/contracts.md#31-spanrecord)
   lists every cap.
-- MCP arguments and results are captured only when an SDK is told to capture them, and the SDKs cut each at
-  16 KiB by default before they send it. On the server they become the tool span's `input` and `output`, under the
+- MCP arguments and results are captured only when an SDK or the proxy is told to capture them, and each cuts
+  them at 16 KiB by default before it sends them. On the server they become the tool span's `input` and `output`, under the
   caps above, and the arguments and result of its MCP operation, cut at 8 MiB each
   ([contract 3.5](../architecture/contracts.md#35-mcpoprecord)).
 

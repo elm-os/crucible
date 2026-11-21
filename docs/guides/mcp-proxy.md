@@ -116,6 +116,7 @@ there with the project's salt (contract 9.3). Each of these flags is also read f
 | `--secret-key-file <path>` | `CRUCIBLE_SECRET_KEY_FILE`, or the key itself in `CRUCIBLE_SECRET_KEY` | A project secret key with the `ingest` scope |
 | `--server-name <name>` | `CRUCIBLE_SERVER_NAME` | The `service.name` of the proxy's spans. Default: the command's file name (stdio) or the upstream host (http). Operations carry the name the server gives in its `initialize` answer, and this name until it has given one |
 | `--deploy-id <id>` | `CRUCIBLE_DEPLOY_ID` | The deploy id of the server, recorded on every operation |
+| `--capture <rule>` | `CRUCIBLE_PROXY_CAPTURE`, rules separated by `;` | Records the arguments and results of matching tool calls; see [content capture](#content-capture-opt-in). Repeat the flag for more rules |
 
 An endpoint without a key is refused at startup, with a message that names both ways to give the key and how to
 run without telemetry.
@@ -124,8 +125,9 @@ Spans are sent as OTLP/HTTP protobuf to `/v1/traces`. They carry the OTel MCP se
 `crucible.mcp.*` keys of contract 9.1: method, tool or prompt name, JSON-RPC id, direction, era and protocol
 version, client and server name, outcome class, JSON-RPC code, HTTP status, progress count, cancellation, the
 error message of a failed operation, the keyed hashes of a multi-round exchange, and the exact sizes of the request
-and response messages. When a request carries a `traceparent` in `params._meta`, the span joins that trace; the
-proxy reads trace context and never writes it.
+and response messages, and the arguments and results of the calls a `--capture` rule records. When a request
+carries a `traceparent` in `params._meta`, the span joins that trace; the proxy reads trace context and never
+writes it.
 
 - **Error messages.** A failed operation carries the server's own words: the `message` of a JSON-RPC error, or the
   text of the first text block of a result with `isError: true`. They are scrubbed with the rules the SDKs apply
@@ -152,14 +154,54 @@ the server above gave one row per message in the SQL workspace's `crucible_sql.m
 Through `crucible proxy http` the rows carry `capture_source = proxy_http`, the era (`legacy` for a session), the
 hash of the session id, the client's `/24` or `/48` address prefix and its user agent.
 
-Never sent: argument and result content (the one exception is the text of a failed tool result's first text block,
-which becomes the operation's error message, scrubbed and cut at 2 KiB), `Authorization` values, cookies,
-`Mcp-Param-*` values, raw session ids (only their hash), raw IP addresses (only the /24 or /48 prefix), raw
-`requestState` values (only their keyed hash) and unscrubbed error messages.
+Never sent: `Authorization` values, cookies, `Mcp-Param-*` values, raw session ids (only their hash), raw IP
+addresses (only the /24 or /48 prefix), raw `requestState` values (only their keyed hash), unscrubbed error messages
+and unscrubbed content. Without a `--capture` rule no argument or result content is sent; the text of a failed tool
+result's first text block becomes the operation's error message, scrubbed and cut at 2 KiB.
 
-Not recorded by the proxy: argument and result content beyond that error message, and the contents of compressed
-bodies (such a request is reported from its `Mcp-Method` and `Mcp-Name` headers and the HTTP status only). An SDK
-wrapper records content ([MCP](mcp.md)).
+The contents of compressed bodies are not read: such a request is reported from its `Mcp-Method` and `Mcp-Name`
+headers and the HTTP status only, and its content is not captured.
+
+### Content capture (opt-in)
+
+`--capture` records the arguments and results of the tool calls you name, with the rules the SDKs apply (contract
+9.10). A rule is a tool name glob (`*` matches any run of characters, `?` one character), then options:
+
+```sh
+crucible proxy stdio --capture 'search_*' --capture 'lookup_order,result=false,sample_rate=0.1,max_bytes=4096' -- npx -y @modelcontextprotocol/server-everything
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `args` | `true` | Record `params.arguments` as `gen_ai.tool.call.arguments` |
+| `result` | `true` | Record the result's `content`, `structuredContent` and `isError` as `gen_ai.tool.call.result` |
+| `sample_rate` | `1` | The share of matching calls recorded, from 0 to 1 |
+| `max_bytes` | `16384` | The cap per field, in bytes, from 1 to 8,388,608 |
+
+`tool=<glob>` is accepted for the glob too. A rule the proxy cannot read is refused at startup with what to write
+instead, for example `max_bytes must be a whole number from 1 to 8388608 (the most Crucible keeps of a field), not
+"lots"`.
+
+- **Which calls.** Only `tools/call` requests from the client. The first rule whose glob matches the tool applies;
+  a tool no rule matches is not recorded. In `CRUCIBLE_PROXY_CAPTURE`, rules are separated by `;`.
+- **Sampling.** Each call is sampled against its rule's rate once its tool name is read. Arguments that follow the
+  tool name in the request are read only for a sampled call. Arguments sent before the tool name are held, at most
+  the largest cap plus 1 KiB, until the name arrives, and dropped unless the call is recorded.
+- **What is recorded.** Each field is JSON text written again from the wire: whitespace between tokens is dropped
+  and every string is decoded and escaped with only the escapes JSON requires, so an address written as
+  `ada@example.com` is scrubbed like `ada@example.com`. The result keeps `content`, `structuredContent` and
+  `isError` only, so a `requestState` or `_meta` member is never recorded.
+- **Scrubbing and the cap.** The shared rules of `conformance/scrub-rules.json` run over the cap plus 1 KiB of each
+  field, so a secret that starts before the cap is replaced whole, and the field is then cut at the cap. A field
+  that was cut carries `crucible.mcp.content.truncation = cap_exceeded`. However large an argument or result, the
+  proxy reads at most the cap plus 1 KiB of it.
+- **The keys.** A recorded call carries `crucible.mcp.content.captured = true`, its rule's
+  `crucible.mcp.content.sample_rate` and `crucible.mcp.content.truncation`, under the keys the SDKs send. Crucible
+  keeps the content beside the operation, under `mcp_content_retention_days`.
+- **Bounds.** Recording runs on the analysis task, never on the forwarding path. Arguments that wait for their
+  response count toward a bound of 8 MiB; past it a call keeps its operation and loses its content, and the number
+  of such calls is logged on standard error after the next export. Recorded content counts toward the 8 MiB
+  telemetry buffer.
 
 ## When Crucible is down
 
@@ -188,6 +230,11 @@ are identical to a run with no telemetry, for every chunking, and added latency 
 | Real processes on Linux and Windows: collector healthy, refused, stalled and absent; lines over 1 MiB; exit codes; a crash in mid answer; signals; end of input; the process tree; a `.cmd` shim | `crates/crucible-proxy/tests/stdio_process.rs` |
 | Real sockets: the same requests with and without the proxy, event streams, the 401 challenge, a legacy session, client disconnect, identity modes, and a planted token that must appear in no export | `crates/crucible-proxy/tests/http_process.rs` |
 | Error messages scrubbed with the shared rules and cut at 2 KiB, the multi-round state hashes, and a raw `requestState` that never leaves the proxy: in the core, through a real child process, and against a full JSON parse of the scanner's input | `crates/crucible-proxy/tests/core_parity.rs`, `crates/crucible-proxy/tests/stdio_process.rs`, `crates/crucible-proxy/tests/scan_diff.rs` |
+| Content capture: the SDKs' rules for which calls and what of them, sampling, escapes decoded before scrubbing, the cap with no part of a secret left at it, either order of tool name and arguments, the bound on waiting content, JSON and event-stream answers | `crates/crucible-proxy/tests/core_capture.rs` |
+| The recorded text against a full JSON parse under arbitrary chunking, escaping and whitespace | `crates/crucible-proxy/tests/scan_diff.rs` |
+| Capture in the simulation: a swarm flag over the 10,000 seeds, every property above held, and the same seed without capture giving the same operations apart from their content | `crates/crucible-proxy/tests/core_dst.rs` |
+| The shared content-capture scenario (`mcp-secret`) in its four variants through the SDK conformance driver, judged by its golden, the registry and the real normalizer; the capture-overhead shapes read no more than the work bound | `crates/crucible-proxy/tests/conformance.rs` |
+| Capture through a real child process: the bytes unchanged, content scrubbed and cut | `crates/crucible-proxy/tests/stdio_process.rs` |
 | The `crucible` binary itself: exit code, dying of the child's signal, the parent-death signal, a clean standard output; on Windows, the server's process tree ending when the proxy process is killed | `crates/crucible/tests/proxy.rs`, `crates/crucible/tests/proxy_windows.rs` |
 | Every exported attribute against the key registry of the SDK conformance suite | the process tests, with `conformance/registry.json` |
 
