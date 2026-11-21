@@ -14,9 +14,11 @@
 #
 #   deploy/compose/upgrade-test.sh <image> [release image] [http port] [otlp port]
 #
-# Like smoke-test.sh, it works in a temporary copy under its own project name and asks nothing.
+# Like smoke-test.sh, it works in a temporary copy under its own project name and asks nothing. It reads the API's
+# answers with jq, so a check holds whatever order a version writes the JSON keys in.
 set -euo pipefail
 
+command -v jq >/dev/null || { echo "the upgrade test reads JSON with jq; install jq" >&2; exit 1; }
 image=${1:?usage: upgrade-test.sh <image> [release image] [http port] [otlp port]}
 release=${2:-ghcr.io/elm-os/crucible:latest}
 http_port=${3:-18180}
@@ -94,17 +96,18 @@ wait_ready() {
   echo "/readyz did not answer $1 with '$2' within 120 s; last answer: $body" >&2
   return 1
 }
-# Waits until a GET of $1 with the API key answers a body that contains $2.
-wait_body() {
+# Waits until a GET of $1 with the API key answers JSON for which the jq filter $2 is true.
+wait_json() {
   local body=""
   for _ in $(seq 1 60); do
     body=$(curl --silent --header "Authorization: Bearer $secret" "$1" || true)
-    case "$body" in
-      *"$2"*) return 0 ;;
-    esac
+    # `input` fails on a body that holds no JSON value, where a bare filter would pass an empty answer.
+    if jq -e -n "input | $2" >/dev/null 2>&1 <<<"$body"; then
+      return 0
+    fi
     sleep 1
   done
-  echo "GET $1 did not answer '$2' within 60 s; last response: $body" >&2
+  echo "GET $1 did not answer JSON matching '$2' within 60 s; last response: $body" >&2
   return 1
 }
 # POSTs the OTLP JSON body $1 with the API key; prints the status.
@@ -163,11 +166,12 @@ status=$(send "$calls")
 
 trace_url="$base/api/v1/projects/$project_id/traces/$trace_id"
 week="$base/api/v1/projects/$project_id/mcp/tools?side=server&from=$(date -u -d "@$((now - 7 * 86400))" +%Y-%m-%dT%H:%M:%SZ)"
-three='"tool_name":"upgrade_lookup","stats":{"calls":3,'
+span='any(.spans[]?; .name == "compose upgrade span")'
+three='any(.data[]?; .tool_name == "upgrade_lookup" and .stats.calls == 3)'
 echo "reading them back from the release"
-wait_body "$trace_url" '"name":"compose upgrade span"'
+wait_json "$trace_url" "$span"
 # The release has stored the calls in the minute rollup, so only the copy of step 0005 brings them to the hourly one.
-wait_body "$week&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$three"
+wait_json "$week&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$three"
 
 echo "upgrading to $image"
 before=$(recorded_steps)
@@ -206,9 +210,9 @@ for restart in 1 2; do
 done
 echo "ok: the restarts applied no migration step"
 
-wait_body "$trace_url" '"name":"compose upgrade span"'
+wait_json "$trace_url" "$span"
 echo "ok: the trace came back"
-wait_body "$week&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$three"
+wait_json "$week&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$three"
 echo "ok: a seven-day MCP read counts each call once"
 
 echo "starting the server without --migrate on a ledger that lacks step 0005"
