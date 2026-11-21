@@ -231,13 +231,23 @@ class BoundedJson {
     const holder = value as Record<string, unknown>;
     if (Array.isArray(value)) {
       this.#write("[");
-      for (let i = 0; i < value.length; i += 1) {
+      let i = 0;
+      while (i < value.length) {
+        // A run of flat records is written by `JSON.stringify` in one call: the same text, far fewer strings.
+        const run = flatRun(value, i);
+        if (run.length > 0) {
+          const text = JSON.stringify(run);
+          this.#write(i > 0 ? `,${text.slice(1, -1)}` : text.slice(1, -1));
+          i += run.length;
+          continue;
+        }
         if (i > 0) {
           this.#write(",");
         }
         if (!this.#value(this.#prepare(holder[i], String(i)))) {
           this.#write("null");
         }
+        i += 1;
       }
       this.#write("]");
     } else {
@@ -286,6 +296,55 @@ class BoundedJson {
       i = end;
     }
     this.#write('"');
+  }
+}
+
+/** A run of flat records is at most this many items, each of at most this many members. */
+const RUN_ITEMS = 64;
+const RUN_MEMBERS = 16;
+/** The longest string a member of a flat record holds, so that a run writes a bounded amount of text. */
+const RUN_STRING = 128;
+
+/**
+ * The run of flat records that starts at `start`: plain objects whose members all hold a short string, a number, a
+ * boolean or null, each copied with the values read once, as `JSON.stringify` reads them. `JSON.stringify` writes
+ * such a run exactly as the bounded writer would. A record that turns out not to be flat is written member by
+ * member, so the members read before the one that ended the run are read again.
+ */
+function flatRun(items: readonly unknown[], start: number): Record<string, unknown>[] {
+  const run: Record<string, unknown>[] = [];
+  for (let at = start; at < items.length && run.length < RUN_ITEMS; at += 1) {
+    const item = items[at];
+    if (typeof item !== "object" || item === null || Object.getPrototypeOf(item) !== PLAIN) {
+      break;
+    }
+    const keys = Object.keys(item);
+    if (keys.length > RUN_MEMBERS) {
+      break;
+    }
+    // No prototype, so that a member named `__proto__` stays a member, as in the record.
+    const copy: Record<string, unknown> = Object.create(null);
+    for (const key of keys) {
+      const member = (item as Record<string, unknown>)[key];
+      if (!flatMember(member)) {
+        return run;
+      }
+      copy[key] = member;
+    }
+    run.push(copy);
+  }
+  return run;
+}
+
+function flatMember(value: unknown): boolean {
+  switch (typeof value) {
+    case "string":
+      return value.length <= RUN_STRING;
+    case "number":
+    case "boolean":
+      return true;
+    default:
+      return value === null;
   }
 }
 
