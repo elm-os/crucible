@@ -59,7 +59,8 @@ conformance suite. The raw landed parts that this suite inspects are unaffected 
 
 An incarnation ends at the first of: a seeded number of disk operations, a seeded number of crash barriers of the
 shipper (any barrier, or one chosen barrier so that the rare ones get their share), a seeded virtual time (up to
-150 s), or a process stop. The barriers are those of contract 5.9. The
+150 s), or a process stop. An incarnation that waits for the rarest barrier, the quarantine copy, may run up to
+150 s whatever its other limits, because the copy needs a pair that three attempts and their backoffs failed first. The barriers are those of contract 5.9. The
 shipper awaits a hook at each one (`crucible_shipper::Barriers`); the simulation's hook freezes the disk and never
 completes at the barrier it picked, and the driver then aborts the host. Short incarnations (a few disk operations)
 put the crash inside the shipper's own recovery: the rebuild of stage B and the re-ship of sealed batches.
@@ -104,7 +105,7 @@ invariant it breaks, and the first seed that does so is recorded in `ship_dst.rs
 | `SendBeforeSeal` | Inserts are sent before the `BatchSeal` frame is durable | Two batch identities over the same frames | 31 |
 | `DropToken` | Every attempt carries a new deduplication identity | A block lands twice | 1 |
 | `CheckpointBeforeResolution` | The checkpoint is appended before the pairs are resolved | An acknowledged span below the watermark is nowhere | 0 |
-| `QuarantineWithoutProbe` | A pair in doubt is quarantined without a probe | A quarantined pair whose block the store had accepted | 6 |
+| `QuarantineWithoutProbe` | A pair in doubt is quarantined without a probe | A quarantined pair whose block the store had accepted | 4 |
 | `RejectionClearsDoubt` | A rejection after an unknown outcome clears the doubt (the model's finding, reverted) | A block lands twice: the first attempt lands late, the store sheds the retries until the probe's answer has expired, and the blind resend lands again | 44 |
 
 A change to the workload, the fault model or the product moves the recorded seeds. The failing assertion prints
