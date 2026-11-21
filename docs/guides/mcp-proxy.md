@@ -194,7 +194,7 @@ instead, for example `max_bytes must be a whole number from 1 to 8388608 (the mo
 - **Scrubbing and the cap.** The shared rules of `conformance/scrub-rules.json` run over the cap plus 1 KiB of each
   field, so a secret that starts before the cap is replaced whole, and the field is then cut at the cap. A field
   that was cut carries `crucible.mcp.content.truncation = cap_exceeded`. However large an argument or result, the
-  proxy reads at most the cap plus 1 KiB of it.
+  proxy keeps and scrubs at most the cap plus 1 KiB of it.
 - **The keys.** A recorded call carries `crucible.mcp.content.captured = true`, its rule's
   `crucible.mcp.content.sample_rate` and `crucible.mcp.content.truncation`, under the keys the SDKs send. Crucible
   keeps the content beside the operation, under `mcp_content_retention_days`.

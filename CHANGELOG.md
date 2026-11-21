@@ -14,7 +14,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   as the copy of step 0005.
 - `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
   `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
-  rules and cut at 16 KiB per field, read no further than the cap plus 1 KiB, and never on the forwarding path.
+  rules and cut at 16 KiB per field, keeping no more than the cap plus 1 KiB of a value, and never on the forwarding
+  path.
 - The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
   instead of 5.2 ms per call on a laptop, with the same text as before.
 - The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
