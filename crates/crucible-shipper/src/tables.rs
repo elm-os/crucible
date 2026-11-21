@@ -5,6 +5,9 @@
 //! inventory entry; and the row a fact yields in its fact table (contract 3.8). Each function lists the cells in `TableDef` column order; a
 //! test checks every row against its table's column types.
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+
 use crucible_normalize::{Admission, NormalizedFrame};
 use crucible_records::{
     BucketCounts, CaptureSource, Fact, FactBody, HeadKind, Histogram, Ingestion, Level,
@@ -833,9 +836,10 @@ pub struct RoutedRow {
 /// per span, and a `session_rollup` and a `user_rollup` partial per span that names a session or a user. Every
 /// row of a span routes by the span's `start_time`, read verbatim (contract 5.2).
 ///
-/// Then the rows of the frame's MCP operations: one `mcp_ops` row, one `mcp_tool_rollup` and one
-/// `mcp_tool_rollup_hourly` partial per operation, an `mcp_content` row when content was captured and an
-/// `mcp_deploys` partial for a server-side operation, routed by the operation's `start_time`, which is its span's; and one `mcp_tool_inventory` partial
+/// Then the rows of the frame's MCP operations: one `mcp_ops` row and one `mcp_tool_rollup` partial per
+/// operation, one `mcp_tool_rollup_hourly` partial per key and hour of the frame's operations, an `mcp_content`
+/// row when content was captured and an `mcp_deploys` partial for a server-side operation, routed by the
+/// operation's `start_time`, which is its span's (the hourly partial by the start of its hour); and one `mcp_tool_inventory` partial
 /// per tool inventory entry, routed by the reporting span's `start_time`.
 pub fn derive(
     frame: &NormalizedFrame,
@@ -844,6 +848,23 @@ pub fn derive(
 ) -> Result<Vec<RoutedRow>, OutOfRange> {
     derive_rows(frame, admission, granularity, Defects::default())
 }
+
+/// The key of an hourly partial in [`derive_rows`]: the ORDER BY columns of `mcp_tool_rollup_hourly` before the
+/// marker columns, with the operation's strings borrowed and the enums as their stored values.
+type HourKey<'a> = (
+    crucible_records::ProjectId,
+    u8,
+    Timestamp,
+    &'a str,
+    &'a str,
+    u8,
+    u8,
+    &'a str,
+    &'a str,
+    &'a str,
+    u8,
+    bool,
+);
 
 /// The seeded defects of [`derive_rows`]; none outside the simulation suite.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -923,6 +944,10 @@ pub(crate) fn derive_rows(
         });
         Ok::<(), OutOfRange>(())
     };
+    // The hourly partials, combined by key as the operations come: an hour holds many operations of one key, so
+    // the frame gives the hourly pair one row per key (at its first operation's ordinal), where it gives the
+    // minute pair one per operation. The block combines them further across the frames of a batch.
+    let mut hours: BTreeMap<HourKey<'_>, (McpToolRollupRow, u32)> = BTreeMap::new();
     for op in &frame.mcp_ops {
         let (record, at) = (&op.record, op.record.start_time);
         push(TableId::McpOps, at, op.span, mcp_ops_row(record))?;
@@ -939,15 +964,35 @@ pub(crate) fn derive_rows(
             op.span,
             mcp_tool_rollup_row(&rollup),
         )?;
-        push(
-            TableId::McpToolRollupHourly,
-            at,
-            op.span,
-            mcp_tool_rollup_hourly_row(&rollup),
-        )?;
+        let key = (
+            record.project_id,
+            record.side.value(),
+            at.floor_hour(),
+            &*record.server_name,
+            &*record.deploy_id,
+            rollup.capture_source.value(),
+            record.era.value(),
+            &*record.method,
+            &*record.target_name,
+            &*record.client_name,
+            record.error_class.value(),
+            record.caller_fault,
+        );
+        match hours.entry(key) {
+            Entry::Occupied(mut entry) => entry.get_mut().0.merge(&rollup),
+            Entry::Vacant(entry) => {
+                rollup.minute = rollup.minute.floor_hour();
+                entry.insert((rollup, op.span));
+            }
+        }
         if let Some(deploy) = mcp_deploy(record) {
             push(TableId::McpDeploys, at, op.span, mcp_deploys_row(&deploy))?;
         }
+    }
+    for (partial, ordinal) in hours.into_values() {
+        // The partial's minute is the start of its hour.
+        let row = mcp_tool_rollup_row(&partial);
+        push(TableId::McpToolRollupHourly, partial.minute, ordinal, row)?;
     }
     for (index, entry) in frame.inventory.iter().enumerate() {
         let ordinal = u32::try_from(index).unwrap_or(u32::MAX);

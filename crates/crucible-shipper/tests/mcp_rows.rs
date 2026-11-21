@@ -557,7 +557,13 @@ proptest! {
             let count = |table| rows.iter().filter(|r| r.table == table).count();
             prop_assert_eq!(count(TableId::McpOps), frame.mcp_ops.len());
             prop_assert_eq!(count(TableId::McpToolRollup), frame.mcp_ops.len());
-            prop_assert_eq!(count(TableId::McpToolRollupHourly), frame.mcp_ops.len());
+            // The frame's hourly partials are combined by key: one row per key and hour.
+            let hourly: BTreeSet<String> = frame
+                .mcp_ops
+                .iter()
+                .map(|op| format!("{:?}", hourly_key(&op.record)))
+                .collect();
+            prop_assert_eq!(count(TableId::McpToolRollupHourly), hourly.len());
             prop_assert_eq!(count(TableId::SpanCore), frame.spans.len());
             let captured = frame.mcp_ops.iter().filter(|op| op.record.content_captured).count();
             prop_assert_eq!(count(TableId::McpContent), captured);
