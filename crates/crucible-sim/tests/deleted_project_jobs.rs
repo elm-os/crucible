@@ -3,6 +3,8 @@
 //! a live project too, where the job does act, so it holds because of the deletion alone. The SQL reconciler's
 //! check is in `crucible-sqlws` and the export job's in `crucible-export`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 

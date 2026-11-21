@@ -62,3 +62,12 @@ raise higher: ()
 raise nothing: ()
 the floor keeps the later instant of each setting: [(ProjectId(01a3185c-501e-7000-8000-00000000001e), RetentionFloor { retention: Some(Timestamp(2027-01-15T08:03:20.000000Z)), payload: Some(Timestamp(2027-01-15T08:01:10.000000Z)), mcp_content: None })]
 a floor of a project that does not exist: error ForeignKeyViolation("retention_floors_project_id_fkey")
+a live project keeps everything: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+the project is marked deleted: true
+a deleted project loses its rows: PurgedRows { memberships: 1, alert_rules: 1, channels: 1, secrets: 2, saved_queries: 1, sql_runs: 1, export_jobs: 1, api_keys: 1, retention_floors: 1, salts: 1 }
+again nothing is left: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
+what the deleted project holds: [("memberships", 0), ("api_keys", 0), ("channels", 0), ("secrets", 0), ("alert_rules", 0), ("alert_state", 0), ("saved_queries", 0), ("sql_runs", 0), ("export_jobs", 0), ("retention_floors", 0), ("project_salts", 0)]
+what the other project holds: [("memberships", 1), ("api_keys", 1), ("channels", 1), ("secrets", 2), ("alert_rules", 1), ("alert_state", 1), ("saved_queries", 1), ("sql_runs", 1), ("export_jobs", 1), ("retention_floors", 1), ("project_salts", 1)]
+the deleted project's row stays: Some(true)
+its deletion request stays: [("{}", Pending)]
+a project that does not exist: PurgedRows { memberships: 0, alert_rules: 0, channels: 0, secrets: 0, saved_queries: 0, sql_runs: 0, export_jobs: 0, api_keys: 0, retention_floors: 0, salts: 0 }
