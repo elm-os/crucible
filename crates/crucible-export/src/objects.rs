@@ -177,7 +177,10 @@ impl ObjectDraft {
 
     async fn upload_part(&mut self, part: Bytes) -> Result<(), ObjectError> {
         if self.upload.is_none() {
-            let id = self.store.start_upload(&self.key, self.content_type).await?;
+            let id = self
+                .store
+                .start_upload(&self.key, self.content_type)
+                .await?;
             self.upload = Some((id, Vec::new()));
         }
         let Some((id, etags)) = &mut self.upload else {
@@ -189,10 +192,7 @@ impl ObjectDraft {
             .ok_or_else(|| {
                 ObjectError::Invalid("the export is larger than 10,000 parts".to_owned())
             })?;
-        let etag = self
-            .store
-            .upload_part(&self.key, id, number, part)
-            .await?;
+        let etag = self.store.upload_part(&self.key, id, number, part).await?;
         etags.push(etag);
         Ok(())
     }
@@ -253,7 +253,11 @@ pub async fn sweep_objects(
             let named: Vec<(&str, Named)> = page
                 .objects
                 .iter()
-                .filter_map(|o| objects.named(project.id, &o.key).map(|n| (o.key.as_str(), n)))
+                .filter_map(|o| {
+                    objects
+                        .named(project.id, &o.key)
+                        .map(|n| (o.key.as_str(), n))
+                })
                 .collect();
             let mut ids: Vec<ExportJobId> = named.iter().map(|(_, n)| n.id).collect();
             ids.sort();
@@ -343,7 +347,9 @@ mod tests {
     }
 
     fn bytes(len: usize, seed: u8) -> Vec<u8> {
-        (0..len).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
+        (0..len)
+            .map(|i| (i as u8).wrapping_mul(31) ^ seed)
+            .collect()
     }
 
     #[test]
@@ -375,7 +381,10 @@ mod tests {
                 assert_eq!(objects.named(PROJECT, &foreign), None, "{foreign}");
             }
             let bare = ExportObjects::new(Arc::clone(&objects.store), "");
-            assert!(bare.key(&job, 1, false).starts_with(&format!("{PROJECT}/exports/")));
+            assert!(
+                bare.key(&job, 1, false)
+                    .starts_with(&format!("{PROJECT}/exports/"))
+            );
         });
     }
 
@@ -392,7 +401,10 @@ mod tests {
                 }
                 let parts = draft.upload.as_ref().map_or(0, |(_, etags)| etags.len());
                 assert_eq!(parts, len / PART_BYTES, "{len} bytes");
-                assert!(store.objects().is_empty(), "{len} bytes: visible before the commit");
+                assert!(
+                    store.objects().is_empty(),
+                    "{len} bytes: visible before the commit"
+                );
                 let reference = draft.commit().await.unwrap();
                 let key = object_of(&reference).unwrap();
                 let stored = store.objects().remove(key).unwrap();

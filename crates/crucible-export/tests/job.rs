@@ -15,7 +15,7 @@ use crucible_control::{
     ControlStore, ExportFormat, ExportJob, JsonDoc, NewExport, Project, Repos as _,
 };
 use crucible_env::{
-    Clock, Disposition, DiskPath, Env, InsertError, InsertSettings, MutationId, MutationStatus,
+    Clock, DiskPath, Disposition, Env, InsertError, InsertSettings, MutationId, MutationStatus,
     OpenMode, QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores,
     TelemetryStore,
 };
@@ -24,7 +24,6 @@ use crucible_export::{
     EXPORT_TTL, ExportObjects, ExportRuntime, ExportState, Exports, Options, SWEEP_EVERY, Selector,
     job, purge, sweep, sweep_job, sweep_objects,
 };
-use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_jobs::{Registry, Running};
 use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
 use crucible_query::QueryService;
@@ -34,6 +33,7 @@ use crucible_records::{
     WalEpoch,
 };
 use crucible_schema::{MigrationStep, Ty, table};
+use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 use crucible_sim::{Host, SimDisk};
 use futures::FutureExt as _;
@@ -605,7 +605,9 @@ fn a_file_on_the_disk_downloads_from_the_disk_once_an_object_store_is_configured
 }
 
 /// The objects under the project's export keys: key and bytes.
-fn export_objects(store: &SimObjectStore) -> Vec<(String, crucible_sim::object_model::StoredObject)> {
+fn export_objects(
+    store: &SimObjectStore,
+) -> Vec<(String, crucible_sim::object_model::StoredObject)> {
     let prefix = format!("media/{PROJECT}/exports/");
     store
         .objects()
@@ -696,7 +698,10 @@ fn with_an_object_store_the_file_is_an_object_any_node_links_to() {
             &format!("media/{PROJECT}/exports/{id}/1/crucible-export-{id}.jsonl")
         );
         assert!(complete(&object.bytes), "the object holds the whole export");
-        assert_eq!(job.checksum.as_deref(), Some(sha256(&object.bytes).as_str()));
+        assert_eq!(
+            job.checksum.as_deref(),
+            Some(sha256(&object.bytes).as_str())
+        );
         assert_eq!(job.bytes, object.bytes.len() as u64);
         assert_eq!(object.content_type, "application/x-ndjson");
         assert!(store.open_uploads().is_empty());
@@ -717,7 +722,10 @@ fn with_an_object_store_the_file_is_an_object_any_node_links_to() {
         // Without the store the link cannot be made, and the refusal names the settings.
         let bare = Exports::new(other, Arc::new(model));
         let refused = bare.open(scope, id).await.unwrap_err();
-        assert!(matches!(refused, DownloadError::NoObjectStore), "{refused:?}");
+        assert!(
+            matches!(refused, DownloadError::NoObjectStore),
+            "{refused:?}"
+        );
         assert!(refused.to_string().contains("object_store.endpoint"));
     });
 }
@@ -735,7 +743,11 @@ fn the_sweep_removes_expired_export_objects() {
         );
         // What an attempt whose claim ran out after its upload leaves.
         let stray = format!("media/{PROJECT}/exports/{id}/9/crucible-export-{id}.jsonl.gz");
-        store.plant(&stray, bytes::Bytes::from_static(b"stray"), env.clock.wall_now());
+        store.plant(
+            &stray,
+            bytes::Bytes::from_static(b"stray"),
+            env.clock.wall_now(),
+        );
         env.clock.sleep(SWEEP_EVERY + Duration::from_secs(60)).await;
         let left: Vec<String> = export_objects(&store).into_iter().map(|(k, _)| k).collect();
         assert_eq!(left, vec![key], "the stray goes and the file stays");
@@ -747,11 +759,20 @@ fn the_sweep_removes_expired_export_objects() {
         assert_eq!(sweep_objects(&model, &objects, before).await.unwrap(), 0);
         assert_eq!(export_objects(&store).len(), 1);
         assert_eq!(ExportState::of(&job, expires_at), ExportState::Expired);
-        assert_eq!(sweep_objects(&model, &objects, expires_at).await.unwrap(), 1);
-        assert!(export_objects(&store).is_empty(), "the expired file is gone");
-        assert!(expires_at <= job.new.created_at.saturating_add_micros(
-            i64::try_from((EXPORT_TTL + EXPORT_LEASE).as_micros()).unwrap()
-        ));
+        assert_eq!(
+            sweep_objects(&model, &objects, expires_at).await.unwrap(),
+            1
+        );
+        assert!(
+            export_objects(&store).is_empty(),
+            "the expired file is gone"
+        );
+        assert!(
+            expires_at
+                <= job.new.created_at.saturating_add_micros(
+                    i64::try_from((EXPORT_TTL + EXPORT_LEASE).as_micros()).unwrap()
+                )
+        );
     });
 }
 
@@ -765,7 +786,11 @@ fn a_deletion_removes_the_objects_of_the_exports_it_predates() {
             .unwrap();
         assert_eq!(purged.expired.len(), 1);
         assert_eq!(purged.files_removed, 0, "nothing on the node's disk");
-        assert_eq!(export_objects(&store).len(), 1, "the purge never calls the store");
+        assert_eq!(
+            export_objects(&store).len(),
+            1,
+            "the purge never calls the store"
+        );
         assert_eq!(objects.remove(&purged.expired).await.unwrap(), 1);
         assert!(export_objects(&store).is_empty());
         let job = row(&model, job.new.id).await;

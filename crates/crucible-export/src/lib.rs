@@ -26,12 +26,12 @@ mod spec;
 mod stream;
 
 pub use files::{FilesError, Purged, Swept, purge, sweep};
-pub use objects::{DOWNLOAD_TTL, ExportObjects, PART_BYTES, sweep_objects};
 pub use job::{
     EXPORT_LEASE, EXPORT_TTL, ExportRuntime, ExportState, SHIPPING_WAIT, SWEEP_EVERY, codes,
     expiry, job, sweep_job,
 };
 pub use jsonl::{SCHEMA, write_jsonl};
+pub use objects::{DOWNLOAD_TTL, ExportObjects, PART_BYTES, sweep_objects};
 pub use otlp::{Written, write_otlp};
 pub use service::{
     CreateError, CreateExport, Created, Download, DownloadError, EXPORTS_PER_HOUR, ExportFile,

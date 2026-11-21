@@ -277,7 +277,10 @@ mod tests {
             );
         }
         let open = policy(&with_object_store("open", "path")).unwrap();
-        assert!(open.check_url("https://media.example.com:7443/hook").is_ok());
+        assert!(
+            open.check_url("https://media.example.com:7443/hook")
+                .is_ok()
+        );
         assert!(open.check_url("http://versitygw:7070/hook").is_ok());
     }
 }

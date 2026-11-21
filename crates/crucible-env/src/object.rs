@@ -123,8 +123,12 @@ pub trait ObjectStore: fmt::Debug + Send + Sync {
     async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, ObjectError>;
 
     /// Stores `bytes` of `content_type` under `key` in one request, replacing what was there.
-    async fn put_small(&self, key: &str, content_type: &str, bytes: Bytes)
-    -> Result<(), ObjectError>;
+    async fn put_small(
+        &self,
+        key: &str,
+        content_type: &str,
+        bytes: Bytes,
+    ) -> Result<(), ObjectError>;
 
     /// Starts a multipart upload of an object of `content_type` under `key`, and returns the store's id for
     /// it. Nothing appears under the key until the upload is finished.

@@ -302,7 +302,9 @@ impl ObjectStore for S3Store {
         }
         let body = answer.bytes(&self.env).await?;
         let started = CreateMultipartUpload::parse_response(&String::from_utf8_lossy(&body))
-            .map_err(|error| unavailable(format!("unreadable answer to an upload start: {error}")))?;
+            .map_err(|error| {
+                unavailable(format!("unreadable answer to an upload start: {error}"))
+            })?;
         Ok(started.upload_id().to_owned())
     }
 

@@ -385,8 +385,11 @@ fn a_file_on_the_object_store_downloads_through_a_presigned_link() {
             "media/{}/exports/{id}/1/crucible-export-{id}.jsonl",
             project(1)
         );
-        p.objects
-            .plant(&key, bytes::Bytes::from(content.clone()), env.clock.wall_now());
+        p.objects.plant(
+            &key,
+            bytes::Bytes::from(content.clone()),
+            env.clock.wall_now(),
+        );
         let claim = p
             .model
             .claims()

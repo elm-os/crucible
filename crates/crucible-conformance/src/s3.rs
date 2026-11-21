@@ -233,7 +233,10 @@ async fn multipart(env: &Env, store: &S3Store, root: &str) -> Result<String> {
     let signed = store.presign_get(&key, Disposition::Attachment, Duration::from_secs(300))?;
     let (status, headers, body) = call(env, Method::GET, &signed.url, &[], b"").await?;
     ensure!(status == StatusCode::OK, "GET answered {status}");
-    ensure!(body.as_ref() == whole.as_slice(), "GET answered other bytes");
+    ensure!(
+        body.as_ref() == whole.as_slice(),
+        "GET answered other bytes"
+    );
     let served = headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -248,7 +251,12 @@ async fn multipart(env: &Env, store: &S3Store, root: &str) -> Result<String> {
     let abandoned = format!("{root}/abandoned");
     let upload = store.start_upload(&abandoned, "application/gzip").await?;
     store
-        .upload_part(&abandoned, &upload, 1, Bytes::from_static(b"never finished"))
+        .upload_part(
+            &abandoned,
+            &upload,
+            1,
+            Bytes::from_static(b"never finished"),
+        )
         .await?;
     store.abort_upload(&abandoned, &upload).await?;
     store.abort_upload(&abandoned, &upload).await?;
