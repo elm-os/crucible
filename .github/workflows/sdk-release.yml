@@ -247,7 +247,16 @@ jobs:
           go mod init example.com/consumer
           printf '%s\n' 'package main' 'import "fmt"' 'import "github.com/elm-os/crucible/sdk/go/crucible"' \
             'func main() { fmt.Print(crucible.Version) }' > main.go
-          go get "github.com/elm-os/crucible/sdk/go@$TAG"
+          # Through proxy.golang.org, as users get it; the proxy can answer "not found" for a few minutes if someone
+          # asked for the version before the tag existed.
+          for attempt in 1 2 3 4 5 6; do
+            go get "github.com/elm-os/crucible/sdk/go@$TAG" && break
+            if [ "$attempt" = 6 ]; then
+              echo "::error::go get github.com/elm-os/crucible/sdk/go@$TAG fails although the tag exists; run this workflow from the tag again later."
+              exit 1
+            fi
+            sleep 120
+          done
           go mod tidy
           got=$(go run .)
           if [ "$got" != "$VERSION" ]; then
@@ -285,7 +294,7 @@ jobs:
           # A pre-release must not become what `npm install @elm-os/crucible` picks.
           dist_tag=latest
           if [ "$PRERELEASE" = true ]; then dist_tag=next; fi
-          npm publish "sdk/elm-os-crucible-$VERSION.tgz" --tag "$dist_tag"
+          npm publish "./sdk/elm-os-crucible-$VERSION.tgz" --tag "$dist_tag"
 
   pypi:
     needs: [version, release-assets]
