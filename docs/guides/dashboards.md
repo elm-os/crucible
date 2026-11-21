@@ -39,8 +39,10 @@ in reading order.
 The editor needs a screen at least 768 px wide; on a narrower one the dashboard says so instead of offering Edit.
 
 - **Add a widget** opens a sheet: the title, the kind, the data it reads (agent spans, traces or MCP operations), the
-  measures, up to two group-by dimensions, how many keys to show, the bucket width, and for a time series lines or
-  bars. A widget over MCP operations reads one measure, from one side (the server side unless you choose the client
+  measures, up to two group-by dimensions, how many keys to show, the bucket width, and for a time series lines,
+  bars or areas. For agent spans, **Filters** keeps the spans whose environment, release, level or type is, or is
+  not, a value: level and type are chosen from their lists, and environment and release offer the values the time
+  range holds as you type, or take a value as written. Each filter is a chip that removes it. A widget over MCP operations reads one measure, from one side (the server side unless you choose the client
   side) and one capture source (Automatic picks each server's SDK, else its proxy, else OTLP), and counts calls that
   failed because of what the caller sent only when **Include caller faults** is on; a second measure is refused when
   you save. A preview draws the widget as soon as it is complete. A text widget takes its text instead of a query.
@@ -54,7 +56,7 @@ The editor needs a screen at least 768 px wide; on a narrower one the dashboard 
 
 | Kind | What it shows | Query | Smallest size |
 |---|---|---|---|
-| Time series | The measures over time, as lines or bars per bucket | Measures of one unit, at most four series: up to four measures, or one measure split by dimensions with `top_n` keys and the `other` series fitting in four | 3 by 2 |
+| Time series | The measures over time, as lines, bars per bucket, or areas (a light fill under each line, the series laid over one another) | Measures of one unit, at most four series: up to four measures, or one measure split by dimensions with `top_n` keys and the `other` series fitting in four | 3 by 2 |
 | Stat | One number for the time range, with its trend | One measure, no dimensions | 2 by 1 |
 | Bar | One measure for each key, as horizontal bars | One measure, split by one or two dimensions | 3 by 2 |
 | Table | The measures of each key | Any metrics query | 3 by 2 |
