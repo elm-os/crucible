@@ -73,10 +73,13 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   never replaces the stored one, and a new issuer unlinks the provider's accounts, which link again through their
   verified email.
 - A provider's allowed email domains apply at every sign-in, also to accounts linked before the list changed, and the
-  sign-in page names the domains the provider allows.
+  sign-in page names the domains the provider allows. An account outside its provider's allowed domains that signed
+  in on 0.1.1 is refused after the upgrade: add its domain to the provider, or have the person sign in another way.
 - Sign-in providers can be declared in the configuration (`[auth_github]`, `[auth_google]`, `[auth_oidc]`), with
   their client secrets in files or environment variables. They are read-only on the Sign-in page and in the API, and
-  removing one from the configuration turns it off.
+  removing one from the configuration turns it off, except while it is the last way to sign in: then its row stays on
+  and the server logs at start what to do. A new `auth_oidc.issuer` unlinks the provider's accounts, as an edit on the
+  Sign-in page does.
 - `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
   with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
   as applied.

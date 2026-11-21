@@ -65,7 +65,9 @@ says so and shows the provider as it is now.
 Providers can also be declared in the server configuration, one of each kind (`[auth_github]`, `[auth_google]`,
 `[auth_oidc]`), with their client secrets in files or environment variables
 ([configuration](configuration.md#auth_github-auth_google-and-auth_oidc)). Such a provider is read-only here and
-in the API: change it in the configuration and restart.
+in the API: change it in the configuration and restart. A new issuer there unlinks its accounts, as an edit here
+does. Removing its section turns it off at the next start, except while it is the last way to sign in: with password
+sign-in off and no other provider offered, it stays on, and the server logs at start what to do.
 
 ## How a provider sign-in finds the person
 

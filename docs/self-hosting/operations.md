@@ -46,6 +46,11 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   every migration step of its version. `/readyz` names the missing step and says to run `crucible migrate`, or to
   start one server with `--migrate`; within 15 seconds of that the server opens, without a restart. So its shipper
   never writes before step 0005 has copied the minute rollup.
+- A sign-in provider's allowed email domains apply at every sign-in. On 0.1.1 they applied only when someone first
+  signed in with the provider, so an account outside its provider's allowed domains that signed in on 0.1.1 is
+  refused after the upgrade, and the sign-in page names the domains the provider allows. Check each provider's
+  **Allowed email domains** under **Settings > Sign-in**, or `allowed_domains` in its configuration section: add the
+  domains such accounts use, or have those people sign in another way.
 - Changes to the storage format are recorded in the change log of the
   [contract](../architecture/contracts.md#15-change-control), with the migration each one needs.
 - The first start with migration step `0005_mcp_tool_rollup_hourly` copies the MCP tool rollup, by hour, into

@@ -166,7 +166,9 @@ in Postgres stop working under another key.
 
 Sign-in providers declared in the configuration, at most one of each kind. They need Postgres. At every start the
 server makes each provider's row in Postgres match its section: a new section adds the provider, a changed one
-changes its row in place, and a section you remove turns its provider off. The row keeps its id, so the callback URL
+changes its row in place, and a section you remove turns its provider off. A new `auth_oidc.issuer` also unlinks the
+accounts that signed in through the provider, because a person at one issuer is not the same person at another;
+each person links again through their verified email at their next sign-in. The row keeps its id, so the callback URL
 stays the same, and a provider you declare again comes back on with it. These providers are read-only under
 **Settings > Sign-in** and in the API, and their client secrets stay in the configuration: Postgres never stores
 them. Give every server of a deployment the same sections, because each one applies its own at start.
@@ -204,9 +206,11 @@ URL with the provider's id.
 | `auth_oidc.scopes` | `CRUCIBLE_AUTH_OIDC_SCOPES` | | none | Comma-separated scopes to ask for besides `openid`, `email` and `profile` |
 | `auth_oidc.allowed_domains` | `CRUCIBLE_AUTH_OIDC_ALLOWED_DOMAINS` | | any | Comma-separated email domains that may sign in through the provider |
 
-Removing a section can leave nobody able to sign in, when password sign-in is off and that provider was the only one.
-The server then logs `nobody can sign in` at start; `crucible admin enable-password-login` turns password sign-in back
-on ([troubleshooting](troubleshooting.md#signing-in)).
+A section you remove while password sign-in is off and no other provider is offered stays on, because it is the last
+way to sign in: the start leaves its row as it was and logs an error that names the section. The server cannot sign
+anyone in through it, because its client secret was in that section, so put the section back and restart, or turn
+password sign-in on with `crucible admin enable-password-login` (or under **Settings > Organization**) and restart,
+which turns the row off ([troubleshooting](troubleshooting.md#signing-in)).
 
 ### `[egress]`
 
