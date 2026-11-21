@@ -64,6 +64,14 @@ and dashboard widgets and search take filters.
 - The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
   manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
   all four variants.
+- The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
+  the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
+- The Python SDK also skips a scrub rule on text without a run of the characters its matches are made of as long as
+  its shortest match (14 digits, spaces and dashes for the card rule), so each shape of the capture-overhead scenario
+  adds less than 1 ms per call on a laptop (64 KiB of hexadecimal text 0.6 ms instead of 1.3 ms), with the same
+  scrubbed text.
+- `crucible proxy` refuses a `--capture` rule whose `max_bytes` is above 8,323,072 (8 MiB less 64 KiB) and says so:
+  a field captured near 8 MiB did not fit the proxy's 8 MiB export buffer with its operation, which was then dropped.
 
 ### Media and exports
 
@@ -76,11 +84,16 @@ and dashboard widgets and search take filters.
 - With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
 - SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
   needs.
+- With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so the
+  servers of a deployment no longer each list every project's export keys every 10 minutes.
 
 ### Dashboards and search
 
 - Each project runs at most 4 metrics queries at once on a server (`metrics.queries_per_project`), so a dashboard of
   many widgets takes turns: the other queries wait within their deadline instead of reaching ClickHouse together.
+- A read made with an API key or through the MCP server that ClickHouse refuses because several servers together run
+  as many such reads as it allows (`TOO_MANY_SIMULTANEOUS_QUERIES`) waits and is sent again within its deadline,
+  instead of answering 503.
 - A time series widget draws as areas: a light fill under each series' line, with its dash, marker and table view.
 - The widget sheet edits a widget's filters: a field of the metrics schema, is or is not, and a value, with the
   values the time range holds offered as suggestions.
@@ -103,19 +116,6 @@ and dashboard widgets and search take filters.
   to turn into rows as a request of one such trace, and takes about 1.2 times as long, measured on a laptop.
 - The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
   trace reads see a span up to 5 ms sooner after its acknowledgement.
-- The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
-  the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
-- The Python SDK also skips a scrub rule on text without a run of the characters its matches are made of as long as
-  its shortest match (14 digits, spaces and dashes for the card rule), so each shape of the capture-overhead scenario
-  adds less than 1 ms per call on a laptop (64 KiB of hexadecimal text 0.6 ms instead of 1.3 ms), with the same
-  scrubbed text.
-- `crucible proxy` refuses a `--capture` rule whose `max_bytes` is above 8,323,072 (8 MiB less 64 KiB) and says so:
-  a field captured near 8 MiB did not fit the proxy's 8 MiB export buffer with its operation, which was then dropped.
-- With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so the
-  servers of a deployment no longer each list every project's export keys every 10 minutes.
-- A read made with an API key or through the MCP server that ClickHouse refuses because several servers together run
-  as many such reads as it allows (`TOO_MANY_SIMULTANEOUS_QUERIES`) waits and is sent again within its deadline,
-  instead of answering 503.
 
 ### Migrations and startup
 
