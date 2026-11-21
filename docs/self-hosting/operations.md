@@ -40,11 +40,17 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
   every table with its grants and row policies, and so now `mcp_tool_rollup_hourly` too. The ledger compares steps
   without their password digests, so a start with another master key applies none of the steps it records. When
   such a start is also the first of a new version, a step that changed waits, with a warning, for a start with the
-  master key the ClickHouse service users accept.
+  master key the ClickHouse service users accept. `crucible migrate` then exits with 1 and names the steps that
+  wait, why the key is refused, and that it must run with the master key the deployment was migrated with.
 - With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the ledger records
   every migration step of its version. `/readyz` names the missing step and says to run `crucible migrate`, or to
   start one server with `--migrate`; within 15 seconds of that the server opens, without a restart. So its shipper
   never writes before step 0005 has copied the minute rollup.
+- A sign-in provider's allowed email domains apply at every sign-in. On 0.1.1 they applied only when someone first
+  signed in with the provider, so an account outside its provider's allowed domains that signed in on 0.1.1 is
+  refused after the upgrade, and the sign-in page names the domains the provider allows. Check each provider's
+  **Allowed email domains** under **Settings > Sign-in**, or `allowed_domains` in its configuration section: add the
+  domains such accounts use, or have those people sign in another way.
 - Changes to the storage format are recorded in the change log of the
   [contract](../architecture/contracts.md#15-change-control), with the migration each one needs.
 - The first start with migration step `0005_mcp_tool_rollup_hourly` copies the MCP tool rollup, by hour, into

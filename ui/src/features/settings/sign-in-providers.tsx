@@ -43,10 +43,12 @@ import { EmptyState } from "@/components/empty-state";
 import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
 import { AlertIcon, CheckIcon, UnsetIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
-import { useWide } from "@/features/dashboards/shared";
 import { useAuth } from "@/lib/auth";
+import { useWide } from "@/lib/wide";
 import { ConfirmDialog } from "./confirm-dialog";
 import { parseDomains, sameDomains } from "./domains";
+import { ORG_KEY } from "./organization";
+import { SETTINGS_CHANGED } from "./retention";
 import { RowsSkeleton } from "./rows-skeleton";
 
 const TITLE = "Sign-in providers";
@@ -103,7 +105,29 @@ const CHANGE_COPY: CopyByCode = {
     title: "This provider isn't there anymore.",
     detail: "Someone may have deleted it. The list shows the current providers.",
   },
+  precondition_failed: {
+    title: "This provider changed since the list loaded.",
+    detail: "The list is up to date now. Check the provider, then try again.",
+  },
+  // Crucible refuses to turn off or delete the last way to sign in.
+  conflict: {
+    title: "This provider is the last way to sign in.",
+    detail:
+      "Password sign-in is off, so nobody could sign in without it. Turn password sign-in on in the organization settings first, or turn on another provider.",
+  },
 };
+
+// The confirmation keeps the provider it opened with, so a changed one is checked again first.
+const DELETE_COPY: CopyByCode = {
+  ...CHANGE_COPY,
+  precondition_failed: {
+    title: "This provider changed since the list loaded.",
+    detail: "The list is up to date now. Close this, check the provider, then delete it again.",
+  },
+};
+
+// The dialog starts again from the stored provider, as the settings pages' forms do.
+const EDIT_COPY: CopyByCode = { ...CHANGE_COPY, precondition_failed: SETTINGS_CHANGED };
 
 const ADD_COPY: CopyByCode = {
   forbidden: {
@@ -172,14 +196,22 @@ function ProviderList({ providers, editable }: { providers: AuthProvider[]; edit
   const queryClient = useQueryClient();
   const [remove] = useState(() => createAlertDialogController<AuthProvider>());
 
-  // A provider someone else already deleted needs nothing more.
+  const refresh = () => queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
+
+  // A provider someone else already deleted needs nothing more; one that changed needs the fresh
+  // version first. Deleting one moves the organization's version, so its settings are read again.
   const removeOne = async (provider: AuthProvider) => {
     try {
-      await deleteAuthProvider(provider.id);
+      await deleteAuthProvider(provider);
+      await queryClient.invalidateQueries({ queryKey: ORG_KEY });
     } catch (error) {
-      if (asUiError(error).kind !== "not_found") throw error;
+      const failure = asUiError(error);
+      if (failure.kind !== "not_found") {
+        if (failure.code === "precondition_failed") await refresh();
+        throw error;
+      }
     }
-    await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
+    await refresh();
   };
 
   return (
@@ -224,7 +256,7 @@ function ProviderList({ providers, editable }: { providers: AuthProvider[]; edit
           pending="Deleting"
           agentConfirm="Deletes the sign-in provider and its client secret"
           failed="Couldn't delete the provider."
-          copy={CHANGE_COPY}
+          copy={DELETE_COPY}
           run={removeOne}
         />
       ) : (
@@ -326,23 +358,30 @@ function useReplaceRow() {
     );
 }
 
-// A provider someone else deleted leaves the list; anything else stays where it failed.
-function useRefreshWhenGone() {
+// A provider someone else deleted leaves the list, and one someone else changed shows its stored
+// version; anything else stays where it failed.
+function useRefreshAfterFailure() {
   const queryClient = useQueryClient();
-  return (error: unknown) => {
-    if (asUiError(error).kind === "not_found") {
-      return queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
+  return async (error: unknown) => {
+    const failure = asUiError(error);
+    if (failure.kind === "not_found" || failure.code === "precondition_failed") {
+      await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
     }
   };
 }
 
 function ProviderActions({ provider, remove }: { provider: AuthProvider; remove: ReactNode }) {
+  const queryClient = useQueryClient();
   const replaceRow = useReplaceRow();
-  const refreshWhenGone = useRefreshWhenGone();
+  const refreshAfterFailure = useRefreshAfterFailure();
   const toggle = useMutation({
-    mutationFn: () => patchAuthProvider(provider.id, { enabled: !provider.enabled }),
-    onSuccess: replaceRow,
-    onError: refreshWhenGone,
+    mutationFn: () => patchAuthProvider(provider, { enabled: !provider.enabled }),
+    onSuccess: (updated) => {
+      replaceRow(updated);
+      // Turning one off moves the organization's version, so its settings are read again.
+      if (!updated.enabled) return queryClient.invalidateQueries({ queryKey: ORG_KEY });
+    },
+    onError: refreshAfterFailure,
   });
   const failure = toggle.isError ? asUiError(toggle.error) : null;
   return (
@@ -376,28 +415,70 @@ function ProviderActions({ provider, remove }: { provider: AuthProvider; remove:
   );
 }
 
+interface ProviderDraft {
+  name: string;
+  clientId: string;
+  issuer: string;
+  scopes: string;
+  domains: string;
+}
+
+const draftOf = (provider: AuthProvider): ProviderDraft => ({
+  name: provider.display_name,
+  clientId: provider.client_id,
+  issuer: provider.issuer,
+  scopes: provider.scopes.join(" "),
+  domains: provider.allowed_domains.join(", "),
+});
+
+const scopesOf = (text: string): string[] => text.split(/[\s,]+/).filter((scope) => scope !== "");
+
+// The fields that differ from the stored provider; only those are sent, and never a client secret:
+// Replace secret is the one way to set it.
+function providerChanges(
+  provider: AuthProvider,
+  draft: ProviderDraft,
+  domains: string[],
+): AuthProviderPatch {
+  const patch: AuthProviderPatch = {};
+  if (draft.name.trim() !== provider.display_name) patch.display_name = draft.name.trim();
+  if (draft.clientId.trim() !== provider.client_id) patch.client_id = draft.clientId.trim();
+  if (provider.kind === "oidc") {
+    if (draft.issuer.trim() !== provider.issuer) patch.issuer = draft.issuer.trim();
+    const scopes = scopesOf(draft.scopes);
+    if (scopes.join(" ") !== provider.scopes.join(" ")) patch.scopes = scopes;
+  }
+  if (!sameDomains(domains, provider.allowed_domains)) patch.allowed_domains = domains;
+  return patch;
+}
+
 function EditProviderDialog({ provider }: { provider: AuthProvider }) {
+  const queryClient = useQueryClient();
   const replaceRow = useReplaceRow();
-  const refreshWhenGone = useRefreshWhenGone();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(provider.display_name);
-  const [domainText, setDomainText] = useState(provider.allowed_domains.join(", "));
-  const domains = parseDomains(domainText);
+  const [draft, setDraft] = useState(() => draftOf(provider));
+  const edit = (field: keyof ProviderDraft) => (value: string) =>
+    setDraft((current) => ({ ...current, [field]: value }));
+  const domains = parseDomains(draft.domains);
   const save = useMutation({
-    mutationFn: (body: AuthProviderPatch) => patchAuthProvider(provider.id, body),
+    mutationFn: (body: AuthProviderPatch) => patchAuthProvider(provider, body),
     onSuccess: (updated) => {
       replaceRow(updated);
       setOpen(false);
     },
-    onError: refreshWhenGone,
+    onError: async (error) => {
+      const failure = asUiError(error);
+      if (failure.kind !== "not_found" && failure.code !== "precondition_failed") return;
+      await queryClient.invalidateQueries({ queryKey: PROVIDERS_KEY });
+      // A change made meanwhile is what the next attempt builds on: the form starts from it.
+      const stored = queryClient
+        .getQueryData<AuthProviderList>(PROVIDERS_KEY)
+        ?.data.find((row) => row.id === provider.id);
+      if (stored) setDraft(draftOf(stored));
+    },
   });
   const failure = save.isError ? asUiError(save.error) : null;
-  // Only what changed is sent, and never a client secret: Replace secret is the one way to set it.
-  const patch: AuthProviderPatch = {};
-  if (name.trim() !== provider.display_name) patch.display_name = name.trim();
-  if (domains !== "invalid" && !sameDomains(domains, provider.allowed_domains)) {
-    patch.allowed_domains = domains;
-  }
+  const patch = providerChanges(provider, draft, domains === "invalid" ? [] : domains);
   const changed = domains === "invalid" || Object.keys(patch).length > 0;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -412,8 +493,7 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
       onOpenChange={(next) => {
         // Each opening starts from the provider as it is now.
         if (next) {
-          setName(provider.display_name);
-          setDomainText(provider.allowed_domains.join(", "));
+          setDraft(draftOf(provider));
           save.reset();
         }
         setOpen(next);
@@ -427,7 +507,7 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
         <div className="flex flex-col gap-2">
           <DialogTitle>Change {provider.display_name}</DialogTitle>
           <DialogDescription>
-            To use another client ID or issuer, add the provider again, then delete this one.
+            Changes apply from the next sign-in. Replace secret sets a new client secret.
           </DialogDescription>
         </div>
         <form
@@ -444,8 +524,8 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
               maxLength={200}
               pattern={TEXT_PATTERN}
               autoComplete="off"
-              value={name}
-              onValueChange={setName}
+              value={draft.name}
+              onValueChange={edit("name")}
             />
             <FieldError match="valueMissing">Enter the text for the sign-in button.</FieldError>
             <FieldError match="patternMismatch">Enter the text for the sign-in button.</FieldError>
@@ -453,15 +533,75 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
               Use 1 to 200 characters.
             </FieldError>
           </Field>
+          {provider.kind === "oidc" ? (
+            <Field name="issuer" invalid={fieldFailed(failure, "issuer") || undefined}>
+              <FieldLabel>Issuer URL</FieldLabel>
+              <Input
+                type="url"
+                required
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+                value={draft.issuer}
+                onValueChange={edit("issuer")}
+              />
+              <FieldDescription>
+                A new issuer unlinks the accounts that signed in through this provider. Each person
+                links again through their verified email at their next sign-in.
+              </FieldDescription>
+              <FieldError match="valueMissing">Enter the issuer URL.</FieldError>
+              <FieldError match="typeMismatch">
+                Enter a full URL, like https://login.example.com.
+              </FieldError>
+              <FieldError match={fieldFailed(failure, "issuer")}>
+                Enter the issuer URL, starting with https:// or http://.
+              </FieldError>
+            </Field>
+          ) : null}
+          <Field name="client_id" invalid={fieldFailed(failure, "client_id") || undefined}>
+            <FieldLabel>Client ID</FieldLabel>
+            <Input
+              required
+              pattern={TEXT_PATTERN}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono"
+              value={draft.clientId}
+              onValueChange={edit("clientId")}
+            />
+            <FieldError match="valueMissing">Enter the client ID the provider issued.</FieldError>
+            <FieldError match="patternMismatch">
+              Enter the client ID the provider issued.
+            </FieldError>
+            <FieldError match={fieldFailed(failure, "client_id")}>
+              Enter the client ID the provider issued.
+            </FieldError>
+          </Field>
+          {provider.kind === "oidc" ? (
+            <Field name="scopes">
+              <FieldLabel>Extra scopes</FieldLabel>
+              <Input
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="None"
+                className="font-mono"
+                value={draft.scopes}
+                onValueChange={edit("scopes")}
+              />
+              <FieldDescription>
+                Optional, separated by spaces. Crucible always asks for openid, email and profile.
+              </FieldDescription>
+            </Field>
+          ) : null}
           <DomainsField
-            value={domainText}
-            onChange={setDomainText}
+            value={draft.domains}
+            onChange={edit("domains")}
             invalid={domains === "invalid"}
             refused={fieldFailed(failure, "allowed_domains")}
           />
           {failure ? (
             <FormAlert
-              copy={failureCopy(failure, "Couldn't save the provider.", CHANGE_COPY)}
+              copy={failureCopy(failure, "Couldn't save the provider.", EDIT_COPY)}
               requestId={failure.requestId}
             />
           ) : null}
@@ -473,7 +613,7 @@ function EditProviderDialog({ provider }: { provider: AuthProvider }) {
               disabled={!changed || save.isPending}
               focusableWhenDisabled
               aria-busy={save.isPending}
-              data-agent-confirm="Changes the sign-in provider's button text or allowed email domains"
+              data-agent-confirm="Changes the sign-in provider's settings, which apply from the next sign-in"
             >
               {save.isPending ? "Saving" : "Save changes"}
             </Button>
@@ -506,9 +646,8 @@ function DomainsField({
         onValueChange={onChange}
       />
       <FieldDescription>
-        Optional. Someone signing in with this provider for the first time needs an email address at
-        one of these domains; people who already signed in with it keep their access. Separate
-        domains with commas.
+        Optional. Only people whose verified email address is at one of these domains can sign in
+        with this provider, at every sign-in. Separate domains with commas.
       </FieldDescription>
       <FieldError match={invalid}>
         Enter domains only, like example.com, separated by commas.
@@ -537,11 +676,11 @@ function SecretField({ label }: { label: string }) {
 
 function ReplaceSecretDialog({ provider }: { provider: AuthProvider }) {
   const replaceRow = useReplaceRow();
-  const refreshWhenGone = useRefreshWhenGone();
+  const refreshAfterFailure = useRefreshAfterFailure();
   const replace = useMutation({
-    mutationFn: (secret: string) => patchAuthProvider(provider.id, { client_secret: secret }),
+    mutationFn: (secret: string) => patchAuthProvider(provider, { client_secret: secret }),
     onSuccess: replaceRow,
-    onError: refreshWhenGone,
+    onError: refreshAfterFailure,
   });
   const failure = replace.isError ? asUiError(replace.error) : null;
 
@@ -636,9 +775,7 @@ function AddProviderDialog() {
     if (domains === "invalid" || create.isPending) return;
     const form = new FormData(event.currentTarget);
     const field = (name: string) => String(form.get(name) ?? "").trim();
-    const scopes = field("scopes")
-      .split(/[\s,]+/)
-      .filter((scope) => scope !== "");
+    const scopes = scopesOf(field("scopes"));
     const body: AuthProviderCreate = {
       kind,
       display_name: text.trim(),

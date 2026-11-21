@@ -229,7 +229,7 @@ fn redirect(location: &str, cookies: &[String]) -> Response {
 fn login_error(identity: &Identity, failure: FlowFailure) -> Response {
     let cookies = identity.config().cookies();
     redirect(
-        &format!("/login/?error={}", failure.code()),
+        &format!("/login/?{}", failure.login_query()),
         &[cookies.clear(cookies.flow())],
     )
 }
@@ -295,14 +295,16 @@ impl CallbackParams {
 /// Finish a provider sign-in
 ///
 /// The provider's redirect target. Checks the state against the flow cookie, exchanges the code, signs the
-/// person in and redirects (303) to where the sign-in began, or to `/login/?error=<code>`.
+/// person in and redirects (303) to where the sign-in began, or to `/login/?error=<code>`. When the provider lets
+/// only some email domains sign in and the email is at none of them, the code is `not_invited` and `domains` lists
+/// the allowed ones, comma-separated.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/oauth/{provider_id}/callback",
     operation_id = "oauth_callback",
     tag = "auth",
     params(("provider_id" = String, Path, description = "The provider id."), CallbackParams),
-    responses((status = 303, description = "To the page the sign-in began on, or to `/login/?error=<code>`.")),
+    responses((status = 303, description = "To the page the sign-in began on, or to `/login/?error=<code>` (with `domains` for a domain the provider does not allow).")),
     security(()),
 )]
 pub(crate) async fn oauth_callback(

@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::settings::{SETTINGS, Setting, find, nearest};
 use crate::types::{
     Auth, ClickHouse, Config, ConfigErrors, Data, Egress, Mcp, ObjectStore, PgOutageMode, Postgres,
-    Secret, Server, Smtp, SmtpTls, Source, Sql, WalBackend,
+    Secret, Server, SignInKind, SignInProvider, Smtp, SmtpTls, Source, Sql, WalBackend,
 };
 
 /// The three layers, lowest first.
@@ -614,6 +614,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
     }
     let media_max_bytes = media_max_bytes.filter(|max| (1..=MAX_MEDIA_BYTES).contains(max));
     let (object_store, object_store_ok) = object_store(&mut t);
+    let (providers, providers_ok) = sign_in_providers(&mut t, warnings);
 
     if !(recent_ok
         && cpu_ok
@@ -623,7 +624,8 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
         && postgres_ok
         && fail_open_ok
         && smtp_ok
-        && object_store_ok)
+        && object_store_ok
+        && providers_ok)
     {
         return None;
     }
@@ -684,6 +686,7 @@ fn typed(values: &Values, errors: &mut Vec<String>, warnings: &mut Vec<String>) 
             fail_open_max,
             session_outage_grace: session_outage_grace?,
             require_https: require_https?,
+            providers,
         },
         egress: Egress {
             strict: strict?,
@@ -805,6 +808,138 @@ fn object_store(t: &mut Typed<'_>) -> (Option<ObjectStore>, bool) {
         _ => None,
     };
     (store, ok)
+}
+
+/// The sign-in providers of `[auth_github]`, `[auth_google]` and `[auth_oidc]`, and whether they are free of
+/// problems. A section turns on with its client id; it then needs the client secret, OpenID Connect its issuer, and
+/// every one the control plane, which keeps sign-in.
+fn sign_in_providers(t: &mut Typed<'_>, warnings: &mut Vec<String>) -> (Vec<SignInProvider>, bool) {
+    let mut providers = Vec::new();
+    let mut ok = true;
+    for (kind, section, label) in [
+        (SignInKind::Github, "auth_github", "GitHub"),
+        (SignInKind::Google, "auth_google", "Google"),
+        (SignInKind::Oidc, "auth_oidc", "OpenID Connect"),
+    ] {
+        let key = |name: &str| format!("{section}.{name}");
+        let variable = |name: &str| format!("CRUCIBLE_{}_{}", section, name).to_uppercase();
+        let mut names = vec!["client_secret", "display_name", "allowed_domains"];
+        if kind == SignInKind::Oidc {
+            names.extend(["issuer", "scopes"]);
+        }
+        let Some(client_id) = t.text(&key("client_id")).map(str::trim).map(str::to_owned) else {
+            for name in names {
+                if t.text(&key(name)).is_some() {
+                    ok = false;
+                    t.errors.push(format!(
+                        "`{}` is set but `{}` is not, so {label} sign-in stays off; set `{}` ({}) or remove `{}`",
+                        key(name),
+                        key("client_id"),
+                        key("client_id"),
+                        variable("client_id"),
+                        key(name)
+                    ));
+                }
+            }
+            continue;
+        };
+        let before = t.errors.len();
+        if client_id.is_empty() {
+            t.errors.push(format!(
+                "`{}` is empty; give the client id the provider issued",
+                key("client_id")
+            ));
+        }
+        let client_secret = t.secret(&key("client_secret"));
+        match &client_secret {
+            None => t.errors.push(format!(
+                "`{}` needs the client secret: set `{}` ({}) or {}",
+                key("client_id"),
+                key("client_secret_file"),
+                variable("client_secret_file"),
+                variable("client_secret")
+            )),
+            Some(secret) if secret.expose().trim().is_empty() => t.errors.push(format!(
+                "`{}` is empty; give the client secret the provider issued",
+                key("client_secret")
+            )),
+            Some(_) => {}
+        }
+        let issuer = match (kind, t.text(&key("issuer"))) {
+            (SignInKind::Oidc, None) => {
+                t.errors.push(format!(
+                    "`{}` needs the provider's issuer: set `{}` ({}), for example https://login.example.com",
+                    key("client_id"),
+                    key("issuer"),
+                    variable("issuer")
+                ));
+                None
+            }
+            (SignInKind::Oidc, Some(issuer))
+                if !(issuer.starts_with("https://") || issuer.starts_with("http://")) =>
+            {
+                t.errors.push(format!(
+                    "`{}` = {} must start with https:// or http://",
+                    key("issuer"),
+                    quoted(issuer)
+                ));
+                None
+            }
+            (_, issuer) => issuer.map(str::to_owned),
+        };
+        let mut allowed_domains = Vec::new();
+        let domains = t.text(&key("allowed_domains")).unwrap_or_default();
+        for entry in domains.split(',').map(str::trim).filter(|d| !d.is_empty()) {
+            let domain = entry.trim_start_matches('@').to_ascii_lowercase();
+            if domain.is_empty() || domain.contains(['@', ' ', '/']) {
+                t.errors.push(format!(
+                    "`{}` entry {} must be a bare domain such as example.com",
+                    key("allowed_domains"),
+                    quoted(entry)
+                ));
+            } else {
+                allowed_domains.push(domain);
+            }
+        }
+        if t.text("postgres.url").is_none() {
+            t.errors.push(format!(
+                "`{}` needs the control plane, which keeps sign-in: set `postgres.url` (CRUCIBLE_POSTGRES_URL), or \
+                 remove the [{section}] settings",
+                key("client_id")
+            ));
+        }
+        let scopes = t
+            .text(&key("scopes"))
+            .unwrap_or_default()
+            .split([',', ' '])
+            .filter(|scope| !scope.is_empty())
+            .map(str::to_owned)
+            .collect();
+        match client_secret {
+            Some(client_secret) if t.errors.len() == before => providers.push(SignInProvider {
+                kind,
+                display_name: t
+                    .text(&key("display_name"))
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+                issuer,
+                client_id,
+                client_secret,
+                scopes,
+                allowed_domains,
+            }),
+            _ => ok = false,
+        }
+    }
+    if !providers.is_empty() && t.text("server.public_url").is_none() {
+        warnings.push(
+            "the sign-in providers of the configuration are offered only once `server.public_url` is set \
+             (CRUCIBLE_SERVER_PUBLIC_URL): their callback URLs are built from it"
+                .to_owned(),
+        );
+    }
+    (providers, ok)
 }
 
 /// Whether `text` is `address/prefix` with a prefix that fits the address family.
@@ -1096,7 +1231,7 @@ directory_of_everything = "x"
                 "crucible.toml: `master_key` is a top-level key, not a key of [clickhouse]: move it above the first [section] line",
                 "crucible.toml: unknown key `data.directory_of_everything`; the keys of [data] are dir, wal_backend",
                 "crucible.toml: unknown key `server.lisen`; did you mean `server.listen`?",
-                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [metrics], [clickhouse], [postgres], [security], [auth], [egress], [smtp], [object_store], [media].",
+                "crucible.toml: unknown section [webhooks]. The sections are [server], [data], [recent], [cpu], [mcp], [sql], [metrics], [clickhouse], [postgres], [security], [auth], [auth_github], [auth_google], [auth_oidc], [egress], [smtp], [object_store], [media].",
             ]
         );
     }
@@ -1266,6 +1401,7 @@ directory_of_everything = "x"
                 fail_open_max: Some(120),
                 session_outage_grace: 0,
                 require_https: false,
+                providers: Vec::new(),
             }
         );
         let https = env(&[
@@ -1617,6 +1753,107 @@ max_bytes = 67108864  # default
         assert_eq!(
             errors,
             ["`clickhouse.idle_timeout` = \"soon\" is not a whole number of seconds (file)"]
+        );
+    }
+
+    #[test]
+    fn sign_in_providers_come_from_the_configuration_and_say_what_is_missing() {
+        let file = format!(
+            "master_key = \"{KEY}\"\n\
+             [server]\npublic_url = \"https://crucible.example.com\"\n\
+             [postgres]\nurl = \"postgres://crucible@postgres:5432/crucible\"\n\
+             [auth_github]\nclient_id = \"Iv1.abc\"\nallowed_domains = \"Example.com, @partner.example\"\n\
+             [auth_oidc]\nissuer = \"https://login.example.com\"\nclient_id = \"crucible\"\n\
+             client_secret_file = \"/run/secrets/clickhouse\"\ndisplay_name = \"Continue with Acme SSO\"\n\
+             scopes = \"groups, offline_access\"\n"
+        );
+        let secret = env(&[("CRUCIBLE_AUTH_GITHUB_CLIENT_SECRET", "gh-secret")]);
+        let loaded = load(Some(&file), &secret, &[]).unwrap();
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let [github, oidc] = loaded.config.auth.providers.as_slice() else {
+            panic!("{:?}", loaded.config.auth.providers);
+        };
+        assert_eq!(
+            (
+                github.kind,
+                github.client_id.as_str(),
+                github.client_secret.expose(),
+                github.display_name.as_deref(),
+                github.issuer.as_deref()
+            ),
+            (SignInKind::Github, "Iv1.abc", "gh-secret", None, None)
+        );
+        assert_eq!(github.allowed_domains, ["example.com", "partner.example"]);
+        assert_eq!(
+            (
+                oidc.kind,
+                oidc.issuer.as_deref(),
+                oidc.client_secret.expose(),
+                oidc.display_name.as_deref()
+            ),
+            (
+                SignInKind::Oidc,
+                Some("https://login.example.com"),
+                "s3cret-from-file",
+                Some("Continue with Acme SSO")
+            )
+        );
+        assert_eq!(oidc.scopes, ["groups", "offline_access"]);
+        let printed = loaded.print();
+        assert!(
+            printed.contains("[auth_github]\nclient_id = \"Iv1.abc\"  # file\n"),
+            "{printed}"
+        );
+        assert!(!printed.contains("gh-secret") && !printed.contains("s3cret-from-file"));
+        // Whatever is missing or malformed is named with the setting that fixes it.
+        let bare = env(&[
+            ("CRUCIBLE_AUTH_GITHUB_ALLOWED_DOMAINS", "example.com"),
+            ("CRUCIBLE_AUTH_GOOGLE_CLIENT_ID", "google-client"),
+            (
+                "CRUCIBLE_AUTH_GOOGLE_ALLOWED_DOMAINS",
+                "example.com, someone@example.com",
+            ),
+            ("CRUCIBLE_AUTH_OIDC_CLIENT_ID", "crucible"),
+            ("CRUCIBLE_AUTH_OIDC_CLIENT_SECRET", "oidc-secret"),
+            ("CRUCIBLE_AUTH_OIDC_ISSUER", "login.example.com"),
+        ]);
+        let ConfigErrors(errors) = load(None, &bare, &[]).unwrap_err();
+        let expected = [
+            "`auth_github.allowed_domains` is set but `auth_github.client_id` is not, so GitHub sign-in stays off; set \
+             `auth_github.client_id` (CRUCIBLE_AUTH_GITHUB_CLIENT_ID) or remove `auth_github.allowed_domains`",
+            "`auth_google.client_id` needs the client secret: set `auth_google.client_secret_file` \
+             (CRUCIBLE_AUTH_GOOGLE_CLIENT_SECRET_FILE) or CRUCIBLE_AUTH_GOOGLE_CLIENT_SECRET",
+            "`auth_google.allowed_domains` entry \"someone@example.com\" must be a bare domain such as example.com",
+            "`auth_google.client_id` needs the control plane, which keeps sign-in: set `postgres.url` \
+             (CRUCIBLE_POSTGRES_URL), or remove the [auth_google] settings",
+            "`auth_oidc.issuer` = \"login.example.com\" must start with https:// or http://",
+            "`auth_oidc.client_id` needs the control plane, which keeps sign-in: set `postgres.url` \
+             (CRUCIBLE_POSTGRES_URL), or remove the [auth_oidc] settings",
+        ];
+        assert_eq!(errors, expected);
+        assert!(!errors.concat().contains("oidc-secret"));
+        // OpenID Connect needs its issuer; without server.public_url a warning says the sign-in page does not offer
+        // the providers yet.
+        let file = format!(
+            "master_key = \"{KEY}\"\n[postgres]\nurl = \"postgres://crucible@postgres:5432/crucible\"\n\
+             [auth_oidc]\nclient_id = \"crucible\"\nclient_secret = \"s\"\n"
+        );
+        let ConfigErrors(errors) = load(Some(&file), &[], &[]).unwrap_err();
+        assert_eq!(
+            errors,
+            [
+                "`auth_oidc.client_id` needs the provider's issuer: set `auth_oidc.issuer` (CRUCIBLE_AUTH_OIDC_ISSUER), \
+              for example https://login.example.com"
+            ]
+        );
+        let file = format!("{file}issuer = \"https://login.example.com\"\n");
+        let loaded = load(Some(&file), &[], &[]).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            [
+                "the sign-in providers of the configuration are offered only once `server.public_url` is set \
+              (CRUCIBLE_SERVER_PUBLIC_URL): their callback URLs are built from it"
+            ]
         );
     }
 

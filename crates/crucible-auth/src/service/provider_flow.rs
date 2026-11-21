@@ -2,9 +2,10 @@
 //! callback that checks `state` against the flow cookie and the stored flow, exchanges the code with PKCE (and,
 //! for OpenID Connect, the nonce), then finds or links the user.
 //!
-//! Linking: a known (provider, subject) signs its user in. Otherwise the provider must assert a verified email;
-//! then an existing user with that email is linked, an open invitation for it is accepted, or, when the email's
-//! domain is in `org.settings.allowed_email_domains`, a viewer joins. Anything else is `not_invited`.
+//! Linking: a provider that lists allowed domains first needs a verified email at one of them, at every sign-in.
+//! Then a known (provider, subject) signs its user in. Otherwise the provider must assert a verified email; then an
+//! existing user with that email is linked, an open invitation for it is accepted, or, when the email's domain is in
+//! `org.settings.allowed_email_domains`, a viewer joins. Anything else is `not_invited`.
 
 use crucible_control::{
     AuthFlow, Email, OauthAccount, OrgRole, TokenKind, User, UserStatus, transaction,
@@ -71,7 +72,7 @@ pub struct SignedIn {
 }
 
 /// Why a provider sign-in failed: the `error` of `/login/?error=<code>` (contract 11.4).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum FlowFailure {
     /// The person declined at the provider.
     #[error("oauth_denied")]
@@ -88,6 +89,9 @@ pub enum FlowFailure {
     /// The email is not invited and its domain is not allowed.
     #[error("not_invited")]
     NotInvited,
+    /// The provider lets only these email domains sign in, and the email is at none of them.
+    #[error("not_invited")]
+    DomainNotAllowed(Vec<String>),
     /// The user is disabled.
     #[error("account_disabled")]
     AccountDisabled,
@@ -98,17 +102,43 @@ pub enum FlowFailure {
 
 impl FlowFailure {
     /// The `error` parameter of the login page.
-    pub fn code(self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::Denied => "oauth_denied",
             Self::StateInvalid => "oauth_state_invalid",
             Self::ExchangeFailed => "oauth_exchange_failed",
             Self::EmailUnverified => "email_unverified",
-            Self::NotInvited => "not_invited",
+            Self::NotInvited | Self::DomainNotAllowed(_) => "not_invited",
             Self::AccountDisabled => "account_disabled",
             Self::ProviderDisabled => "provider_disabled",
         }
     }
+
+    /// The query of the login page's URL: `error=<code>`, and for a refused domain the domains the provider
+    /// allows, comma-separated, so the page can name them.
+    pub fn login_query(&self) -> String {
+        match self {
+            Self::DomainNotAllowed(domains) => format!(
+                "error={}&domains={}",
+                self.code(),
+                percent_encoded(&domains.join(","))
+            ),
+            other => format!("error={}", other.code()),
+        }
+    }
+}
+
+/// `text` with every byte other than an unreserved URL character percent-encoded.
+fn percent_encoded(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 fn exchange(error: impl std::fmt::Display) -> FlowFailure {
@@ -123,7 +153,7 @@ fn verifier_aad(state_hash: &[u8; 32]) -> Vec<u8> {
 
 impl Identity {
     /// The enabled providers people can sign in with; none without `server.public_url`, which their callback
-    /// URLs need.
+    /// URLs need, and none from the configuration that it no longer declares.
     pub async fn sign_in_providers(
         &self,
     ) -> Result<Vec<crucible_control::AuthProvider>, AuthError> {
@@ -134,7 +164,7 @@ impl Identity {
             .providers()
             .await?
             .into_iter()
-            .filter(|p| p.enabled)
+            .filter(|p| self.offers(p))
             .collect())
     }
 
@@ -171,7 +201,7 @@ impl Identity {
         provider_id: Uuid,
     ) -> Result<(crucible_control::AuthProvider, ProviderConfig), FlowFailure> {
         let provider = match self.store.auth_providers().get(provider_id).await {
-            Ok(Some(provider)) if provider.enabled => provider,
+            Ok(Some(provider)) if self.offers(&provider) => provider,
             Ok(_) => return Err(FlowFailure::ProviderDisabled),
             Err(error) => return Err(exchange(error)),
         };
@@ -293,6 +323,28 @@ impl Identity {
         identity: &crate::oauth::ProviderIdentity,
     ) -> Result<UserId, FlowFailure> {
         let store = self.store.as_ref();
+        let email = match (&identity.email, identity.email_verified) {
+            (Some(email), true) => Email::new(email),
+            _ => None,
+        };
+        let domain_of = |email: &Email| {
+            email
+                .as_str()
+                .rsplit('@')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        // Only these domains may sign in through the provider: checked at every sign-in, so an account linked
+        // before the list changed is held to it too.
+        if !provider.allowed_domains.is_empty() {
+            let email = email.as_ref().ok_or(FlowFailure::EmailUnverified)?;
+            if !provider.allowed_domains.contains(&domain_of(email)) {
+                return Err(FlowFailure::DomainNotAllowed(
+                    provider.allowed_domains.clone(),
+                ));
+            }
+        }
         let linked = store
             .oauth_accounts()
             .get(provider.id, &identity.subject)
@@ -301,19 +353,8 @@ impl Identity {
         if let Some(account) = linked {
             return self.active(account.user_id).await;
         }
-        let email = match (&identity.email, identity.email_verified) {
-            (Some(email), true) => Email::new(email).ok_or(FlowFailure::EmailUnverified)?,
-            _ => return Err(FlowFailure::EmailUnverified),
-        };
-        let domain = email
-            .as_str()
-            .rsplit('@')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-        if !provider.allowed_domains.is_empty() && !provider.allowed_domains.contains(&domain) {
-            return Err(FlowFailure::NotInvited);
-        }
+        let email = email.ok_or(FlowFailure::EmailUnverified)?;
+        let domain = domain_of(&email);
         let account = |user_id| OauthAccount {
             provider_id: provider.id,
             subject: identity.subject.clone(),

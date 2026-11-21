@@ -247,7 +247,7 @@
           "auth"
         ],
         "summary": "Finish a provider sign-in",
-        "description": "The provider's redirect target. Checks the state against the flow cookie, exchanges the code, signs the\nperson in and redirects (303) to where the sign-in began, or to `/login/?error=<code>`.",
+        "description": "The provider's redirect target. Checks the state against the flow cookie, exchanges the code, signs the\nperson in and redirects (303) to where the sign-in began, or to `/login/?error=<code>`. When the provider lets\nonly some email domains sign in and the email is at none of them, the code is `not_invited` and `domains` lists\nthe allowed ones, comma-separated.",
         "operationId": "oauth_callback",
         "parameters": [
           {
@@ -289,7 +289,7 @@
         ],
         "responses": {
           "303": {
-            "description": "To the page the sign-in began on, or to `/login/?error=<code>`."
+            "description": "To the page the sign-in began on, or to `/login/?error=<code>` (with `domains` for a domain the provider does not allow)."
           }
         },
         "security": [
@@ -628,7 +628,7 @@
           "org"
         ],
         "summary": "Update the organization",
-        "description": "Changes the name and settings; send `If-Match` with the version you read.",
+        "description": "Changes the name and settings; send `If-Match` with the version you read. Turning password sign-in off while\nthe sign-in page offers no provider is refused with `conflict`, which says what to turn on first.",
         "operationId": "patch_org",
         "requestBody": {
           "content": {
@@ -653,6 +653,16 @@
           },
           "403": {
             "description": "`forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: password sign-in is the only way to sign in.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -733,7 +743,7 @@
         },
         "responses": {
           "201": {
-            "description": "The provider.",
+            "description": "The provider; `ETag` is its version.",
             "content": {
               "application/json": {
                 "schema": {
@@ -766,6 +776,7 @@
           "org"
         ],
         "summary": "Delete a sign-in provider",
+        "description": "Send `If-Match` with the version you read. Deleting the last way to sign in is refused with `conflict`.",
         "operationId": "delete_auth_provider",
         "parameters": [
           {
@@ -801,6 +812,36 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "`conflict`: it is the last way to sign in.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -814,6 +855,7 @@
           "org"
         ],
         "summary": "Change a sign-in provider",
+        "description": "Send `If-Match` with the version you read. The client id, issuer and scopes are checked as on create; leave\n`client_secret` out to keep the stored secret. Turning off the last way to sign in is refused with `conflict`.",
         "operationId": "patch_auth_provider",
         "parameters": [
           {
@@ -838,7 +880,7 @@
         },
         "responses": {
           "200": {
-            "description": "The provider.",
+            "description": "The provider; `ETag` is its version.",
             "content": {
               "application/json": {
                 "schema": {
@@ -859,6 +901,46 @@
           },
           "404": {
             "description": "`not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: it is the last way to sign in.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`validation_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "`precondition_required`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11717,7 +11799,8 @@
           "allowed_domains",
           "enabled",
           "seeded",
-          "redirect_uri"
+          "redirect_uri",
+          "version"
         ],
         "properties": {
           "allowed_domains": {
@@ -11765,6 +11848,12 @@
           "seeded": {
             "type": "boolean",
             "description": "Whether the provider comes from the server configuration, which makes it read-only here."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version, for `If-Match`.",
+            "minimum": 0
           }
         }
       },
@@ -11854,12 +11943,19 @@
             },
             "description": "When not empty, only these email domains may sign in through the provider."
           },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OAuth client id."
+          },
           "client_secret": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The OAuth client secret."
+            "description": "A new OAuth client secret. Leave it out to keep the stored one; an empty one is refused."
           },
           "display_name": {
             "type": [
@@ -11874,6 +11970,23 @@
               "null"
             ],
             "description": "Whether the provider is offered."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OpenID Connect issuer, for `oidc`; ignored otherwise. A new issuer unlinks the accounts that signed in\nthrough the provider, and they link again through their verified email."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes requested besides those the kind needs."
           }
         },
         "additionalProperties": false

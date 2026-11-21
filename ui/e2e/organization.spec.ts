@@ -114,6 +114,47 @@ test.describe("settings: organization", () => {
     await expect(alert).toHaveCount(0);
   });
 
+  test("password sign-in stays on while it is the only way in, and the page says what to turn on first", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(ORG_PATH, (route) =>
+      route.request().method() === "PATCH"
+        ? route.fulfill(problem(409, "conflict", "req-last"))
+        : route.fulfill(json(org())),
+    );
+    await page.goto(URL);
+    const password = region(page).getByRole("switch", { name: "Password sign-in" });
+    await expect(password).toBeChecked();
+    await password.click();
+    await expect(password).not.toBeChecked();
+    await region(page).getByRole("button", { name: "Save settings" }).click();
+    const alert = region(page).getByRole("alert");
+    await expect(alert).toContainText("Password sign-in is the only way to sign in.");
+    await expect(alert).toContainText("Turn on a sign-in provider on the Sign-in page first");
+    await expect(alert).toContainText("req-last");
+    await expect(region(page).getByText("Turn on a sign-in provider first.")).toBeVisible();
+    await expect(page.getByText(SERVER_TEXT)).toHaveCount(0);
+    await expectAccessible(page, "organization refusing to turn off the only way in");
+
+    const patches = capture(
+      api,
+      ORG_PATH,
+      json(org({ version: 4 }, { password_login_enabled: false })),
+    );
+    await region(page).getByRole("button", { name: "Save settings" }).click();
+    await expect(region(page).getByText("Saved.")).toBeVisible();
+    const patch = patches.find((sent) => sent.method() === "PATCH");
+    expect(patch?.postDataJSON()).toEqual({ password_login_enabled: false });
+    expect(patch?.headers()["if-match"]).toBe('"3"');
+    await expect(password).not.toBeChecked();
+    api.on(/\/api\/v1\/org\/auth-providers$/, json({ data: [] }));
+    await region(page).getByRole("link", { name: "Sign-in page" }).click();
+    await expect(page).toHaveURL(/\/settings\/sign-in\//);
+    await expect(page.getByText("No sign-in providers yet.")).toBeVisible();
+  });
+
   test("a domain list that isn't one is marked before anything is sent, and a refused name after", async ({
     page,
     api,
