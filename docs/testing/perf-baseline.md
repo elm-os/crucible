@@ -306,7 +306,7 @@ keeps up by definition and shows idle time.
 ## The shipper after #168
 
 Measured on 2026-11-21 (UTC) on the same laptop, **measured on a laptop, not reference hardware**, with no other
-track's containers on the machine. #168 puts `crucible_shipper_task_microseconds_total{phase}` on `main`, finds
+track's containers on the machine except where noted. #168 puts `crucible_shipper_task_microseconds_total{phase}` on `main`, finds
 a frame's provisional heads in one pass, and wakes the shipper when the durable LSN moves. Its build is `870828b`;
 the base is `main` at `c9e1758`. Every image is the gate's (`crucible-gate:<commit>`).
 
@@ -339,26 +339,32 @@ trace, 30 s of load, then the drain (`sustained-step 1k plain <spans/s> 30`).
   of 132 ms for `span_core` and 255 ms for `span_payload` on average, in blocks of 60,000 rows, against the 500 ms
   linger), Crucible used 1.19 of its 2 CPUs and ClickHouse 0.70 of its 2.
 - Of the task's busy time, encode is 48%, stage A 22%, rows 17% and stage B 9%. On this rig, encoding off the task
-  can buy at most 1 / (1 - 0.48) = 1.9 times, and encoding with stage A 1 / (1 - 0.70) = 3.4 times, before the cost
-  of handing work between tasks and the next limit.
+  can buy at most 1 / (1 - 0.483) = 1.9 times, and encoding with stage A 1 / (1 - 0.704) = 3.4 times, before the
+  cost of handing work between tasks and the next limit.
 
 ### The deciding gates
 
-`cargo xtask perf gate --base c9e1758 --candidate 870828b --rig small --pairs 7 --lane 1kb`, once with `--path ack`
-and once with `--path e2e`, through `tools/perf/xtask.sh`. The probe classified the WAL volume `honest` in both
-sessions, no arm was invalid, and the only container outside each session was the gate's own driver. Both verdicts
-are `pass`:
+`cargo xtask perf gate --base c9e1758 --candidate 870828b --rig small --pairs 7 --lane 1kb`, with `--path ack`
+and with `--path e2e`, through `tools/perf/xtask.sh`, in three sessions. The probe classified the WAL volume
+`honest` in each, no arm was invalid, and every verdict is `pass`:
 
-| Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first |
-|---|---|---|---|---|---|---|
-| ack | Throughput, acknowledged spans/s | 594,588 | 584,396 | -1.7% | 0.53 | -2.0% |
-| ack | Durable-ack p99, ms | 5.50 | 5.92 | +7.7% | 0.016 | +2.6% |
-| e2e | Sustained, shipped spans/s | 61,472 | 62,803 | +2.2% | 0.59 | -0.3% |
-| e2e | Freshness p95, ms | 570.3 | 568.4 | -0.3% | 0.96 | +0.1% |
+| Session (UTC) | Path | Metric | Base median | Candidate median | Change | One-sided p | Second vs first |
+|---|---|---|---|---|---|---|---|
+| 06:48 | ack | Throughput, acknowledged spans/s | 594,588 | 584,396 | -1.7% | 0.53 | -2.0% |
+| 06:48 | ack | Durable-ack p99, ms | 5.50 | 5.92 | +7.7% | 0.016 | +2.6% |
+| 06:55 | e2e | Sustained, shipped spans/s | 61,472 | 62,803 | +2.2% | 0.59 | -0.3% |
+| 06:55 | e2e | Freshness p95, ms | 570.3 | 568.4 | -0.3% | 0.96 | +0.1% |
+| 18:56 | ack | Throughput, acknowledged spans/s | 565,460 | 599,348 | +6.0% | 0.96 | +1.7% |
+| 18:56 | ack | Durable-ack p99, ms | 5.85 | 5.32 | -9.0% | 0.71 | +5.1% |
 
-- Durable-ack p99 rose in 6 of 7 pairs, by 0.4 ms in the median, below the 10% that blocks. On the small rig this
-  metric swings by more than that from arm to arm ([A/A calibration](perf.md#aa-calibration)); it decides on the
-  full rig.
+- The ack path's latency arm offers 10,000 spans/s, below the shipper's capacity, so the shipper is caught up and
+  waits on the wake there; of #168's changes, the wake is the one most likely to reach the acknowledgement. In the
+  first session durable-ack p99 rose in 6 of 7 pairs, by 0.4 ms in the median, below the 10% that blocks. The
+  third session repeated the ack path with the same images to see whether the rise holds, and p99 fell in 5 of 7
+  pairs. The small rig's arm-to-arm spread ([A/A calibration](perf.md#aa-calibration)) is larger than either
+  change; the full rig decides.
+- In the first two sessions the only container outside the session was the gate's own driver. In the third,
+  another container also ran during 8 of its 28 runs.
 - Freshness p95 is the 500 ms linger plus the insert; the wake's milliseconds do not show in it.
 
 ### Ack to readable
