@@ -4,6 +4,12 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
+- MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
+  rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
+  minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
+- Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
+  once, on the first start of this version.
+
 ## [0.1.1] - 2026-11-21
 
 Trace reads stay fast while data is arriving, the MCP server lists spans, sessions and users, the Go SDK scrubs
@@ -56,11 +62,6 @@ captured content off the request path, and the web UI, compatible SDKs and delet
   export goroutine, so capture no longer adds the scrubbing time to a call.
 - The Rust SDK's `flush` and `shutdown` keep to the export timeout when an export to a stalled collector is already
   in flight.
-- MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
-  rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
-  minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
-- Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
-  once, on the first start of this version.
 
 ## [0.1.0] - 2026-11-20
 
