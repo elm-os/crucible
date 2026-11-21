@@ -51,12 +51,19 @@ class Lead:
 
 @dataclass(frozen=True)
 class Run:
-    """The characters every match of an alternative is made of, and the fewest it has: `table` maps each of them to
-    one of them, so a text holds such a run when its translation holds `needle`, that one character as many times
-    as a match has characters at the fewest (`[0-9 -]` 14 times for the card rule)."""
+    """The characters every match of an alternative is made of, all of them ASCII, and the fewest it has: a text
+    holds a match of the alternative only where it holds that many of them in a row (`[0-9 -]` 14 times for the card
+    rule)."""
 
-    table: dict[int, str]
-    needle: str
+    members: bytes
+    """256 bytes: 1 at the code of each of the characters, 0 elsewhere."""
+    needle: bytes
+    """A 1 for each character a match has at the fewest."""
+
+    def held_by(self, text: str) -> bool:
+        """Whether `text` holds such a run. Its UTF-8 bytes stand for its characters: an ASCII character is one byte,
+        and each byte of any other character is above 127, so outside the run, as the character is."""
+        return self.needle in text.encode("utf-8", "surrogatepass").translate(self.members)
 
 
 @dataclass(frozen=True)
@@ -284,15 +291,13 @@ def _runs_of(branches: Sequence[Sequence[_Item]]) -> tuple[Run, ...] | None:
     fewest: dict[frozenset[str], int] = {}
     for items in branches:
         chars = _chars_of(items)
-        if not chars:
+        if not chars or not all(c.isascii() for c in chars):
             return None
         length = _min_length((items,))
         fewest[chars] = min(length, fewest.get(chars, length))
-    runs = []
-    for chars, length in fewest.items():
-        marker = min(chars)
-        runs.append(Run({ord(c): marker for c in chars}, marker * length))
-    return tuple(runs)
+    return tuple(
+        Run(bytes(chr(code) in chars for code in range(256)), bytes([1]) * length) for chars, length in fewest.items()
+    )
 
 
 def _once(item: _Item | None) -> str | None:

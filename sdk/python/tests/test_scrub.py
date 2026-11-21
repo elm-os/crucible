@@ -293,7 +293,9 @@ def test_a_run_is_the_characters_every_match_is_made_of_and_its_fewest() -> None
     for rule in SCRUBBER.rules:
         f = rule.facts
         runs[rule.name] = (
-            None if f.runs is None else sorted((len(r.needle), "".join(sorted(map(chr, r.table)))) for r in f.runs)
+            None
+            if f.runs is None
+            else sorted((len(r.needle), "".join(chr(code) for code in range(256) if r.members[code])) for r in f.runs)
         )
     assert runs["card"] == [(14, " -0123456789")]
     assert runs["phone"] == [(8, " +-.0123456789"), (12, " ()-.0123456789")]
@@ -310,6 +312,7 @@ RUN_FRAGMENTS = [
     *"aZx\n_/",
     "é",
     "😀",
+    "\ud800",
     "4111",
     "1111 ",
     "1111-",
@@ -340,7 +343,7 @@ def test_the_run_guard_skips_only_text_its_rule_leaves_alone() -> None:
                 continue
             literal = f.literals is None or any(lit in text for lit in f.literals)
             paired = f.pairs is None or f.pairs.search(text) is not None
-            held = any(r.needle in text.translate(r.table) for r in f.runs)
+            held = any(r.held_by(text) for r in f.runs)
             if len(text) >= f.min_length and literal and paired and not held:
                 decided[rule.name] = decided.get(rule.name, 0) + 1
             if rule.apply(text) != rule.apply_plain(text):

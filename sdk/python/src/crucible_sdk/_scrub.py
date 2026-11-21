@@ -214,8 +214,8 @@ class _Rule:
                 _matcher_hook(self.name, len(text))
             if f.pairs.search(text) is None:
                 return text
-        # A translation and a substring search, without the matcher.
-        if f.runs is not None and not any(run.needle in text.translate(run.table) for run in f.runs):
+        # A translation of the text's bytes and a substring search, without the matcher.
+        if f.runs is not None and not any(run.held_by(text) for run in f.runs):
             return text
         if f.lead is not None and self.rest is not None:
             return self._apply_lead(f.lead, self.rest, text)
