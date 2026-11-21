@@ -9,11 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use crucible_env::metrics::registry;
 use crucible_env::{
-    DiskPath, InsertError, InsertSettings, Instant, RetryReason, Root, StoreFlavour, Stores,
+    Clock, Disk, DiskError, DiskPath, Entry, File, InsertError, InsertSettings, Instant, OpenMode,
+    RetryReason, Root, StoreFlavour, Stores,
 };
-use crucible_normalize::{NORMALIZER_VERSION, Tombstone, TombstoneSelector};
+use crucible_normalize::{
+    Admission, NORMALIZER_VERSION, NormalizedFrame, Tombstone, TombstoneSelector,
+};
 use crucible_records::{
     AuthorKind, BatchToken, DeletionRequestId, DeletionState, FactId, FactTargetKind, Lsn,
     PartitionId, ProjectId, ScoreDataType, ScoreSource, SpanId, TableId, TagOp, Timestamp, TraceId,
@@ -22,15 +26,15 @@ use crucible_records::{
 use crucible_schema::Granularity;
 use crucible_shipper::{
     Barrier, Barriers, DeletionRequests, DeletionsUnavailable, FRAMES_FILE, FrameManifest, Hooks,
-    KnownDeletion, MANIFEST_FILE, Mutant, ShipError, Shipper, ShipperConfig, StatsSnapshot,
-    frame_quarantine_ref,
+    KnownDeletion, MANIFEST_FILE, Mutant, RecentIndex, ShipError, Shipper, ShipperConfig,
+    StatsSnapshot, frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
 use crucible_sim::ship_sim::{
     QuarantineFault, SpanSpec, named_pairs, read_quarantines, request_payload,
 };
 use crucible_sim::{DiskFaults, Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
-use crucible_wal::{RecoveryReport, Wal, WalConfig};
+use crucible_wal::{RecoveryReport, Wal, WalConfig, WalFrame};
 use crucible_wal_codec::{
     Compression, FRAME_HEADER_LEN, FrameHeader, PreparedFrame, Record, RecordType,
 };
@@ -1509,5 +1513,142 @@ fn the_shipper_task_phases_add_up_to_its_run() {
         assert!(phase("wait_inserts") >= 90_000, "{phases:?}");
         assert!(phase("wait_frames") > 0, "{phases:?}");
         node.host.stop().await;
+    });
+}
+
+/// A disk whose free-space query takes a millisecond of virtual time, as a real one's may: the WAL committer can
+/// make a frame durable while the shipper's garbage collection waits for the answer.
+#[derive(Debug)]
+struct SlowFreeSpace {
+    disk: SimDisk,
+    clock: Arc<dyn Clock>,
+}
+
+#[async_trait]
+impl Disk for SlowFreeSpace {
+    async fn create_dir_all(&self, dir: &DiskPath) -> Result<(), DiskError> {
+        self.disk.create_dir_all(dir).await
+    }
+
+    async fn list(&self, dir: &DiskPath) -> Result<Vec<Entry>, DiskError> {
+        self.disk.list(dir).await
+    }
+
+    async fn open(&self, path: &DiskPath, mode: OpenMode) -> Result<File, DiskError> {
+        self.disk.open(path, mode).await
+    }
+
+    async fn sync_dir(&self, dir: &DiskPath) -> Result<(), DiskError> {
+        self.disk.sync_dir(dir).await
+    }
+
+    async fn rename(&self, from: &DiskPath, to: &DiskPath) -> Result<(), DiskError> {
+        self.disk.rename(from, to).await
+    }
+
+    async fn remove(&self, path: &DiskPath) -> Result<(), DiskError> {
+        self.disk.remove(path).await
+    }
+
+    async fn free_space(&self, root: Root) -> Result<u64, DiskError> {
+        self.clock.sleep(Duration::from_millis(1)).await;
+        self.disk.free_space(root).await
+    }
+}
+
+/// The recent index of the lost-wake test: it notes when stage B applies each frame and, once armed, appends a
+/// frame when the shipper next asks for its floor, which the shipper does as garbage collection starts.
+#[derive(Debug)]
+struct Watch {
+    clock: Arc<dyn Clock>,
+    armed: Mutex<Option<(Wal, PreparedFrame)>>,
+    appended_at: Mutex<Option<Instant>>,
+    applied: Mutex<BTreeMap<Lsn, Instant>>,
+}
+
+impl RecentIndex for Watch {
+    fn applied(&self, source: &WalFrame, _frame: &NormalizedFrame, _admission: &Admission) {
+        self.applied
+            .lock()
+            .unwrap()
+            .insert(source.lsn(), self.clock.now());
+    }
+
+    fn passed(&self, _source: &WalFrame) {}
+
+    fn floor(&self) -> Option<Lsn> {
+        if let Some((wal, frame)) = self.armed.lock().unwrap().take() {
+            // Queued now; the committer makes it durable while the collection runs.
+            drop(wal.append(frame));
+            *self.appended_at.lock().unwrap() = Some(self.clock.now());
+        }
+        None
+    }
+}
+
+/// SPD-11: the shipper reads a frame once it is durable, not at its next tail poll. Garbage collection runs
+/// between the read that found the log exhausted and the wait, and a frame that becomes durable in that window
+/// must still end the wait, so the shipper registers for the committer's wake before it checks the durable LSN
+/// again.
+#[test]
+fn a_frame_durable_while_the_shipper_collects_garbage_ends_its_wait() {
+    directed(|rig| async move {
+        rig.model.set_script(Script::new(|_, _| None));
+        let host = rig.sim.host("node/boot-1", &rig.disk, 0);
+        let mut env = host.env.clone();
+        env.disk = Arc::new(SlowFreeSpace {
+            disk: rig.disk.clone(),
+            clock: env.clock.clone(),
+        });
+        let watch = Arc::new(Watch {
+            clock: env.clock.clone(),
+            armed: Mutex::default(),
+            appended_at: Mutex::default(),
+            applied: Mutex::default(),
+        });
+        let wal_config = WalConfig {
+            segment_bytes: 64 << 10,
+            max_bytes: 64 << 20,
+            min_free_bytes: 0,
+            ..WalConfig::default()
+        };
+        let (wal, report) = Box::pin(Wal::open(&env, wal_config)).await.unwrap();
+        // A tail poll far longer than the wake takes, so that only the wake reads the frame in time.
+        let config = ShipperConfig {
+            tail_poll: Duration::from_millis(500),
+            gc_interval: Duration::from_millis(10),
+            ..config()
+        };
+        let hooks = Hooks {
+            recent: watch.clone(),
+            ..Hooks::default()
+        };
+        let stores = Stores::new(Arc::new(rig.model.clone()));
+        let shipper = Shipper::new(&env, &stores, wal.clone(), &report, config, hooks).unwrap();
+        drop(env.spawn("shipper", async move {
+            drop(Box::pin(shipper.run()).await);
+        }));
+        // The shipper finds the log empty and waits. At its next tail poll it collects garbage, and the frame is
+        // appended as the collection starts.
+        let payload = request_payload([1; 16], &root_spans(1, 1), 0).unwrap();
+        let frame =
+            PreparedFrame::new(RecordType::IngestRequest, payload, Compression::Lz4).unwrap();
+        *watch.armed.lock().unwrap() = Some((wal.clone(), frame));
+        env.clock.sleep(Duration::from_millis(1_200)).await;
+
+        let appended = watch.appended_at.lock().unwrap().expect("a collection ran");
+        let applied = *watch
+            .applied
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .expect("the frame was applied");
+        let waited = applied.saturating_duration_since(appended);
+        assert!(
+            waited <= Duration::from_millis(5),
+            "stage B applied the frame {waited:?} after it was appended"
+        );
+        host.stop().await;
     });
 }

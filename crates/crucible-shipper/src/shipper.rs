@@ -1277,12 +1277,17 @@ impl Shipper {
             // for the batches in flight. A collection in doubt waits for the next attempt, which is no work of
             // the task either.
             let mut waiting = Phase::WaitFrames;
+            // The open batch takes another frame and the durable log has none: the wait also ends when one
+            // becomes durable, with the timer left to the linger, garbage collection and maintenance.
+            let mut caught_up = false;
             if !self.gc_in_doubt {
                 if !self.can_read() {
                     waiting = Phase::WaitInserts;
                 } else if let Some(frame) = self.next_frame().await? {
                     self.on_frame(&frame).await?;
                     continue;
+                } else {
+                    caught_up = true;
                 }
             }
             let now = self.ctx.env.clock.now();
@@ -1293,6 +1298,16 @@ impl Shipper {
                 self.collect_garbage().await;
                 self.lap(Phase::WalAppend);
             }
+            // The wait checks the durable LSN again after it registers for the committer's wake, so a frame that
+            // became durable since the read above, during the collection for one, ends it at once.
+            let replay = &self.replay;
+            let durable = async {
+                if caught_up {
+                    replay.wait_durable().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
             let mut tick = self.ctx.env.clock.sleep(self.ctx.config.tail_poll).fuse();
             select_biased! {
                 done = self.done_rx.recv().fuse() => {
@@ -1300,6 +1315,7 @@ impl Shipper {
                         self.on_done(done)?;
                     }
                 }
+                () = durable.fuse() => {}
                 () = tick => {}
                 () = (&mut shutdown).fuse() => {
                     self.lap(waiting);
