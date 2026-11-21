@@ -42,8 +42,8 @@ once, across retries, lost acks, crashes, restarts and normalizer upgrades. It f
   or after a restart (contract 4.6, step 6), so runs with repeated spans are checked like any other;
 - each accepted fact appears exactly once in its fact table;
 - every aggregating table (`trace_stats`, `session_rollup`, `user_rollup`, `span_metrics`, `mcp_tool_rollup`,
-  `mcp_deploys`, `mcp_tool_inventory`) holds exactly one marker per pair, and its merged measures equal the
-  oracle's;
+  `mcp_tool_rollup_hourly`, `mcp_deploys`, `mcp_tool_inventory`) holds exactly one marker per pair, and its merged
+  measures equal the oracle's;
 - a span that was never acknowledged appears at most once;
 - the rows of a quarantined pair appear zero times until requeue and exactly once after it.
 

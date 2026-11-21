@@ -13,7 +13,7 @@
 #
 # Per tag, single mode records:
 #   version.txt             the server's version()
-#   single_day.sql          SHOW CREATE TABLE of all 18 tables, day granularity
+#   single_day.sql          SHOW CREATE TABLE of every table, day granularity
 #   single_week.sql         the same at week granularity
 #   partition_ids.tsv       _partition_id of sample rows (table, granularity, time in microseconds, id)
 #   service_identities.tsv  rows each identity counts in each table after access step A1, under both values of
@@ -84,6 +84,27 @@ later_steps() {
   client "$container" "$ADMIN" "$@" -q "ALTER TABLE crucible.span_core$on_cluster DROP COLUMN usage_aggregate"
   apply "$container" "step__${variant}__0004_span_usage_aggregate" "$@"
   apply "$container" "step__${variant}__0004_span_usage_aggregate" "$@"
+}
+
+# hourly_step <container> <variant> <on cluster clause> [clickhouse-client args]: step 0005 from the shape before
+# it (no hourly table), twice. It needs the service identities of access step A1, so it runs after A1. The minute
+# rollup holds one known row and one marker row by then, and the hourly table must hold the hour of the first,
+# the marker row, and the records of the copy's start and end, after either apply.
+hourly_step() {
+  local container=$1 variant=$2 on_cluster=$3
+  shift 3
+  client "$container" "$ADMIN" "$@" -q "DROP TABLE crucible.mcp_tool_rollup_hourly$on_cluster SYNC"
+  client "$container" "$ADMIN" "$@" --multiquery <<SQL
+INSERT INTO crucible.mcp_tool_rollup (project_id, side, minute, marker_epoch, marker_batch_seq, count)
+VALUES ('00000000-0000-0000-0000-000000000000', 'none', '2026-11-01 00:00:00', '0193a1b2-0000-7000-8000-000000000001', 7, 0);
+SQL
+  local twice
+  for twice in 1 2; do
+    apply "$container" "step__${variant}__0005_mcp_tool_rollup_hourly" "$@"
+    local held
+    held=$(client "$container" "$ADMIN" "$@" -q "SELECT count(), sum(count), countIf(marker_batch_seq = 7) FROM crucible.mcp_tool_rollup_hourly FORMAT TSV")
+    [ "$held" = "$(printf '4	0	1')" ] || { echo "step 0005 left $held in the hourly table" >&2; return 1; }
+  done
 }
 
 start() {
@@ -220,6 +241,7 @@ single() {
   show_creates "$name" >"$out/single_day.sql"
   partition_ids "$name" day >>"$out/partition_ids.tsv"
   access_checks "$name" permissive "$out"
+  hourly_step "$name" single ""
   docker rm -f "$name" >/dev/null
 
   # Server 2: the strict value.
@@ -310,6 +332,8 @@ cluster() {
         "$(outcome crucible-conf-r2 "$identity" "SELECT count() FROM crucible.$table")"
     done
   done >>"$out/cluster_identities.tsv"
+  # shellcheck disable=SC2086
+  hourly_step crucible-conf-r1 cluster " ON CLUSTER crucible" $settings >/dev/null
   echo "cluster $tag: done"
 }
 

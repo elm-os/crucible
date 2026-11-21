@@ -257,6 +257,28 @@ fn probe_columns(def: &TableDef) -> Vec<&'static str> {
     }
 }
 
+/// `crucible_ingest`'s grant on a table: insert, and read the existence-probe columns (contract section 7.1).
+/// Access step A1 grants it on every table the shipper writes; a later schema step that adds a table grants it
+/// on that table. `on` is the variant's `ON CLUSTER` clause.
+pub(crate) fn ingest_grant(def: &TableDef, on: &str) -> String {
+    format!(
+        "GRANT{on} INSERT, SELECT({}) ON {DATABASE}.{} TO {}",
+        probe_columns(def).join(", "),
+        def.name(),
+        ServiceIdentity::Ingest.name()
+    )
+}
+
+/// `crucible_maint`'s grant to mask a table's rows: a lightweight `DELETE` needs `ALTER UPDATE` on the
+/// `_row_exists` column, which is a per-table column grant. `ALTER DELETE` on the whole database covers the rest.
+pub(crate) fn mask_grant(def: &TableDef, on: &str) -> String {
+    format!(
+        "GRANT{on} ALTER UPDATE(_row_exists) ON {DATABASE}.{} TO {}",
+        def.name(),
+        ServiceIdentity::Maint.name()
+    )
+}
+
 /// The statements of access step A1, in order: profiles, users, the agent quota, grants, then one service
 /// policy per base table. Every statement is idempotent.
 pub(crate) fn service_statements(variant: &Variant, params: &AccessParams) -> Vec<String> {
@@ -298,14 +320,9 @@ pub(crate) fn service_statements(variant: &Variant, params: &AccessParams) -> Ve
         ServiceIdentity::ReadAgent.name()
     ));
 
-    let ingest = ServiceIdentity::Ingest.name();
     for def in &TABLES {
-        let table = def.name();
         if def.id != TableId::SqlProbe {
-            out.push(format!(
-                "GRANT{on} INSERT, SELECT({}) ON {DATABASE}.{table} TO {ingest}",
-                probe_columns(def).join(", ")
-            ));
+            out.push(ingest_grant(def, &on));
         }
     }
     for reader in [ServiceIdentity::ReadUi, ServiceIdentity::ReadAgent] {
@@ -321,10 +338,7 @@ pub(crate) fn service_statements(variant: &Variant, params: &AccessParams) -> Ve
         "GRANT{on} SELECT, ALTER DELETE ON {DATABASE}.* TO {maint}"
     ));
     for def in &TABLES {
-        out.push(format!(
-            "GRANT{on} ALTER UPDATE(_row_exists) ON {DATABASE}.{} TO {maint}",
-            def.name()
-        ));
+        out.push(mask_grant(def, &on));
     }
     out.push(format!("GRANT{on} KILL QUERY ON *.* TO {maint}"));
     for system_table in MAINT_SYSTEM_TABLES {

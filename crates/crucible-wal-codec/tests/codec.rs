@@ -988,9 +988,9 @@ fn payload_layouts_match_the_contract() {
         last_lsn: Lsn::new(2),
         table_bitmap: Checkpoint::ALL_TABLES,
     });
-    assert_eq!(Checkpoint::ALL_TABLES, 0x7_FFFE);
+    assert_eq!(Checkpoint::ALL_TABLES, 0xF_FFFE);
     let mut expected = vec![1u8];
-    for value in [1u64, 2, 0x7_FFFE] {
+    for value in [1u64, 2, 0xF_FFFE] {
         expected.extend_from_slice(&value.to_le_bytes());
     }
     assert_eq!(checkpoint.encode().unwrap(), expected);

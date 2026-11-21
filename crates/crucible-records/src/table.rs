@@ -47,11 +47,13 @@ pub enum TableId {
     DedupSelftest = 17,
     /// Canary rows for the SQL workspace self-probe; never written by the shipper.
     SqlProbe = 18,
+    /// Per-hour MCP tool rollup: the hourly tier of [`TableId::McpToolRollup`].
+    McpToolRollupHourly = 19,
 }
 
 impl TableId {
     /// Every table in id order.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::SpanCore,
         Self::SpanPayload,
         Self::McpOps,
@@ -70,6 +72,7 @@ impl TableId {
         Self::McpDeploys,
         Self::DedupSelftest,
         Self::SqlProbe,
+        Self::McpToolRollupHourly,
     ];
 
     /// The stable number.
@@ -107,6 +110,7 @@ impl TableId {
             Self::McpDeploys => "mcp_deploys",
             Self::DedupSelftest => "dedup_selftest",
             Self::SqlProbe => "sql_probe",
+            Self::McpToolRollupHourly => "mcp_tool_rollup_hourly",
         }
     }
 
@@ -223,7 +227,8 @@ mod tests {
             assert_eq!(TableId::from_name(t.name()), Some(*t));
         }
         assert_eq!(TableId::from_id(0), None);
-        assert_eq!(TableId::from_id(19), None);
+        assert_eq!(TableId::from_id(20), None);
+        assert_eq!(TableId::McpToolRollupHourly.id(), 19);
         assert_eq!(TableId::TraceStats.id(), 11);
         assert_eq!(TableId::McpToolRollup.name(), "mcp_tool_rollup");
     }

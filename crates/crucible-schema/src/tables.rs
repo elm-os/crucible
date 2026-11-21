@@ -1,11 +1,11 @@
-//! The 18 tables of contract section 6.3.
+//! The 19 tables of contract section 6.3, and the hourly tier of the minute MCP rollup.
 
 use crucible_records::TableId;
 
 use crate::columns::{
     DEDUP_SELFTEST, FACT_CORRECTIONS, FACT_FLAGS, FACT_SCORES, FACT_TAGS, MCP_CONTENT, MCP_DEPLOYS,
-    MCP_OPS, MCP_TOOL_INVENTORY, MCP_TOOL_ROLLUP, SESSION_ROLLUP, SPAN_CORE, SPAN_METRICS,
-    SPAN_PAYLOAD, SQL_PROBE, TRACE_HEADS, TRACE_STATS, USER_ROLLUP,
+    MCP_OPS, MCP_TOOL_INVENTORY, MCP_TOOL_ROLLUP, MCP_TOOL_ROLLUP_HOURLY, SESSION_ROLLUP,
+    SPAN_CORE, SPAN_METRICS, SPAN_PAYLOAD, SQL_PROBE, TRACE_HEADS, TRACE_STATS, USER_ROLLUP,
 };
 use crate::table::{
     ColumnDef, PartitionExpr, Retention, RetentionBinding, SkipIndex, TableDef, TableKind,
@@ -62,7 +62,7 @@ const fn fact_table(
 }
 
 /// Every table, in table-id order.
-pub static TABLES: [TableDef; 18] = [
+pub static TABLES: [TableDef; 19] = [
     TableDef {
         id: TableId::SpanCore,
         kind: TableKind::Plain,
@@ -363,11 +363,51 @@ pub static TABLES: [TableDef; 18] = [
         retention: retention(RetentionBinding::None, "start_time"),
         sql_readable: true,
     },
+    // The hourly tier of `mcp_tool_rollup` ([`hourly_tier`]): its columns in its order, with `hour` in place of
+    // `minute`. Long-window MCP reads take their whole hours from it. The SQL workspace reads the minute rollup
+    // only.
+    TableDef {
+        id: TableId::McpToolRollupHourly,
+        kind: TableKind::Aggregating,
+        columns: MCP_TOOL_ROLLUP_HOURLY,
+        partition: PartitionExpr::Month("hour"),
+        order_by: &[
+            "project_id",
+            "side",
+            "hour",
+            "server_name",
+            "deploy_id",
+            "capture_source",
+            "era",
+            "method",
+            "target_name",
+            "client_name",
+            "error_class",
+            "caller_fault",
+            "marker_epoch",
+            "marker_batch_seq",
+        ],
+        primary_key_len: 3,
+        indexes: &[],
+        settings: GRANULARITY_8192,
+        retention: retention(RetentionBinding::RetentionDays, "hour"),
+        sql_readable: false,
+    },
 ];
 
 /// The definition of a table.
 pub fn table(id: TableId) -> &'static TableDef {
     &TABLES[usize::from(id.id()) - 1]
+}
+
+/// The hourly tier of a minute rollup: a table with the same columns in the same order, whose time column holds
+/// the start of the hour instead of the minute. The shipper writes both from the same operations, so the rows of
+/// a whole hour of the tier merge to what the minute rows of that hour merge to.
+pub const fn hourly_tier(id: TableId) -> Option<TableId> {
+    match id {
+        TableId::McpToolRollup => Some(TableId::McpToolRollupHourly),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +441,7 @@ mod tests {
             refs::<McpDeploysCol>(),
             refs::<DedupSelftestCol>(),
             refs::<SqlProbeCol>(),
+            refs::<McpToolRollupHourlyCol>(),
         ]
     }
 
@@ -494,7 +535,7 @@ mod tests {
             .iter()
             .filter(|d| d.kind == TableKind::Aggregating)
             .collect();
-        assert_eq!(aggregating.len(), 7);
+        assert_eq!(aggregating.len(), 8);
         for def in aggregating {
             let tail = &def.order_by[def.order_by.len() - 2..];
             assert_eq!(tail, ["marker_epoch", "marker_batch_seq"], "{}", def.name());
@@ -532,7 +573,43 @@ mod tests {
             ] {
                 assert!(!readable.contains(&hidden), "{}.{hidden}", def.name());
             }
-            assert_eq!(readable.is_empty(), def.id == TableId::DedupSelftest);
+            let hidden = [TableId::DedupSelftest, TableId::McpToolRollupHourly];
+            assert_eq!(readable.is_empty(), hidden.contains(&def.id));
+        }
+    }
+
+    /// An hourly tier has its table's columns in its order, with the same types, codecs and workspace
+    /// flags, and differs only in the name of the time column; its key, partition and retention follow the
+    /// renamed column. A read of the tier is therefore a read of the table with coarser time.
+    #[test]
+    fn the_hourly_tier_mirrors_its_minute_table() {
+        let tiers: Vec<(TableId, TableId)> = TableId::ALL
+            .into_iter()
+            .filter_map(|id| hourly_tier(id).map(|tier| (id, tier)))
+            .collect();
+        assert_eq!(
+            tiers,
+            [(TableId::McpToolRollup, TableId::McpToolRollupHourly)]
+        );
+        for (minute, hour) in tiers {
+            let (m, h) = (table(minute), table(hour));
+            let (m_time, h_time) = (m.retention.time_column, h.retention.time_column);
+            assert_eq!((m_time, h_time), ("minute", "hour"));
+            let rename = |name: &'static str| if name == m_time { h_time } else { name };
+            assert_eq!(m.columns.len(), h.columns.len());
+            for (a, b) in m.columns.iter().zip(h.columns) {
+                assert_eq!(rename(a.name), b.name);
+                assert_eq!((a.ty, a.codec), (b.ty, b.codec), "{}", a.name);
+            }
+            assert_eq!(m.kind, h.kind);
+            assert_eq!(PartitionExpr::Month(h_time), h.partition);
+            assert_eq!(PartitionExpr::Month(m_time), m.partition);
+            let renamed: Vec<&str> = m.order_by.iter().map(|c| rename(c)).collect();
+            assert_eq!(renamed, h.order_by);
+            assert_eq!(m.primary_key_len, h.primary_key_len);
+            assert_eq!((m.indexes, m.settings), (h.indexes, h.settings));
+            assert_eq!(m.retention.binding, h.retention.binding);
+            assert!(m.sql_readable && !h.sql_readable);
         }
     }
 
