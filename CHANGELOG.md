@@ -83,6 +83,14 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
   with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
   as applied.
+- The metric `crucible_shipper_task_microseconds_total{phase}` gives the shipper's time by what it was doing:
+  reading the log, normalizing, building rows, encoding blocks, writing its own log records, waiting for inserts and
+  idle.
+- The shipper finds the first span of each new trace in one pass over a request. A request of 50,000 traces whose
+  spans all name parents it does not carry, as a service that exports only child spans sends, took 3.1 times as long
+  to turn into rows as a request of one such trace, and takes about 1.2 times as long, measured on a laptop.
+- The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
+  trace reads see a span up to 5 ms sooner after its acknowledgement.
 
 ## [0.1.1] - 2026-11-21
 
