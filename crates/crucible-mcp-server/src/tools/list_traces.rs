@@ -9,6 +9,7 @@ use crate::error::ToolError;
 use crate::filters::{ListFilter, list_error};
 use crate::shape::{Meta, TraceRow, fit, meta};
 use crate::tools::{Call, Check, Tool, check_window};
+use crucible_api::FilterList;
 
 /// The most traces one call returns.
 const MAX_ROWS: u32 = 50;
@@ -67,7 +68,7 @@ impl Tool for ListTraces {
         let mut check = Check::default();
         let window = check.window(&args.from, &args.to);
         let limit = check.limit(args.limit, MAX_ROWS, MAX_ROWS);
-        let filter = ListFilter::parse_for_traces(args.filter, &mut check);
+        let filter = ListFilter::parse(args.filter, &mut check, FilterList::Traces);
         check.finish()?;
         let Some(window) = window else {
             return Err(ToolError::validation(Vec::new()));

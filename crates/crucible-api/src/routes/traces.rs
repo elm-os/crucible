@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{Problem, Saturation, TraceListPage, TraceListParams, usd_from_nanos};
-use crucible_plan::{Filter, FilterTarget, TRACE_LIST_MAX_LIMIT, TRACE_LIST_MAX_TAGS};
+use crucible_plan::{Filter, TRACE_LIST_MAX_LIMIT};
 use crucible_query as query;
 use crucible_query::{TraceListQuery, TraceTailQuery};
 use utoipa::OpenApi;
@@ -15,7 +15,7 @@ use super::cursor_invalid;
 use crate::access::{ApiState, Project};
 use crate::convert::{meta, micros_between, trace_facts};
 use crate::cursor::Cursors;
-use crate::filters::list_filter;
+use crate::filters::{FilterList, list_filter};
 use crate::params::{Params, check_window};
 use crate::problem::{ApiError, field_error};
 
@@ -62,14 +62,7 @@ pub(crate) async fn list_traces(
     let window = params.window();
     let limit = params.limit(TRACE_LIST_MAX_LIMIT);
     let (page, since) = (params.optional("cursor"), params.optional("since"));
-    let filter = list_filter(&mut params);
-    if tags(&filter) > TRACE_LIST_MAX_TAGS {
-        let message = format!(
-            "the trace list filters by at most {TRACE_LIST_MAX_TAGS} tags, each resolved over the traces' tag \
-             edits; filter by fewer tags"
-        );
-        params.error("tags", "too_many_values", &message);
-    }
+    let filter = list_filter(&mut params, FilterList::Traces);
     params.finish()?;
     let Some(window) = window else {
         return Err(ApiError::validation(rid, Vec::new()));
@@ -79,14 +72,6 @@ pub(crate) async fn list_traces(
             "since",
             "conflict",
             "`since` and `cursor` cannot be combined",
-        );
-        return Err(ApiError::validation(rid, vec![error]));
-    }
-    if !span_conditions_fit_one_table(&filter) {
-        let error = field_error(
-            "metadata",
-            "conflict",
-            "`metadata` cannot be combined with `observation_type` on the trace list;              the span list (`GET .../spans`) filters by both",
         );
         return Err(ApiError::validation(rid, vec![error]));
     }
@@ -117,25 +102,6 @@ pub(crate) async fn list_traces(
     let page = service.trace_list(&project.ctx, query).await;
     let page = page.map_err(|e| ApiError::query(rid, &e))?;
     Ok(Json(trace_list(&page, &cursors, &filter)))
-}
-
-/// The number of tags the filter tests.
-fn tags(filter: &Filter) -> usize {
-    match filter {
-        Filter::And(operands) | Filter::Or(operands) => operands.iter().map(tags).sum(),
-        Filter::Not(operand) => tags(operand),
-        Filter::Tags(values) => values.len(),
-        _ => 0,
-    }
-}
-
-/// The conditions that heads do not carry are evaluated on one span table, `span_core` or `span_payload`
-/// (`crucible_plan::filtered_trace_list`), which holds when they do not test both `observation_type` and
-/// `metadata`.
-fn span_conditions_fit_one_table(filter: &Filter) -> bool {
-    let (_, on_spans) = filter.split(FilterTarget::TraceHeads);
-    on_spans.unsupported(FilterTarget::SpanCore).is_none()
-        || on_spans.unsupported(FilterTarget::SpanPayload).is_none()
 }
 
 fn list_item(item: &query::TraceListItem) -> wire::TraceListItem {

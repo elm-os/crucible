@@ -20,7 +20,7 @@ use super::cursor_invalid;
 use crate::access::{ApiState, Project};
 use crate::convert::{meta, span};
 use crate::cursor::Cursors;
-use crate::filters::plan_filter;
+use crate::filters::{FilterList, plan_filter};
 use crate::params::check_window;
 use crate::problem::{ApiError, field_error, problem, request_id};
 
@@ -284,7 +284,7 @@ fn checked(
         error(&mut errors, "limit", "out_of_range", &message);
     }
     let filter = match &request.filters {
-        Some(filters) => plan_filter(filters).unwrap_or_else(|problems| {
+        Some(filters) => plan_filter(filters, FilterList::Spans).unwrap_or_else(|problems| {
             for problem in problems {
                 let member = format!("filters/{}", problem.member);
                 error(&mut errors, &member, problem.code, &problem.message);

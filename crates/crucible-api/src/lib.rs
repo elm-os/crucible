@@ -53,7 +53,8 @@ use crucible_sqlws::SqlWorkspace;
 
 pub use authz::{Access, ROUTES, RouteAccess, authz_matrix};
 pub use filters::{
-    FilterProblem, MAX_FILTER_VALUES, parse_levels, parse_observation_types, plan_filter,
+    FilterList, FilterProblem, MAX_FILTER_VALUES, parse_levels, parse_observation_types,
+    plan_filter,
 };
 pub use layers::{BODY_LIMIT, REQUEST_TIMEOUT, SQL_REQUEST_TIMEOUT, X_REQUEST_ID, common_layers};
 pub use openapi::{openapi, openapi_json};

@@ -3,9 +3,9 @@
 //! filter AST of `crucible-plan` by the REST API's one conversion. Each member is one condition and all of them
 //! must hold; a member with several values holds when any value matches.
 
-use crucible_api::{FilterProblem, parse_levels, parse_observation_types, plan_filter};
+use crucible_api::{FilterList, FilterProblem, parse_levels, parse_observation_types, plan_filter};
 use crucible_api_types as wire;
-use crucible_plan::{Filter, FilterField, TRACE_LIST_MAX_TAGS};
+use crucible_plan::{Filter, FilterField};
 use crucible_query::QueryServiceError;
 use crucible_records::RequestId;
 use schemars::JsonSchema;
@@ -53,25 +53,9 @@ pub(crate) struct ListFilter {
 }
 
 impl ListFilter {
-    /// The filter of `list_traces`, which tests at most 20 tags (`TRACE_LIST_MAX_TAGS`).
-    pub(crate) fn parse_for_traces(filter: Option<Self>, check: &mut Check) -> Filter {
-        if filter
-            .as_ref()
-            .is_some_and(|filter| filter.tags.len() > TRACE_LIST_MAX_TAGS)
-        {
-            check.error(
-                "filter/tags",
-                "too_many_values",
-                &format!("list_traces tests at most {TRACE_LIST_MAX_TAGS} tags"),
-            );
-            return Filter::all();
-        }
-        Self::parse(filter, check)
-    }
-
-    /// The filter, or [`Filter::all`] without one: the REST lists' filter DTO and its one conversion, with each
-    /// problem recorded on `check` under the member's pointer.
-    pub(crate) fn parse(filter: Option<Self>, check: &mut Check) -> Filter {
+    /// The filter of `list`, or [`Filter::all`] without one: the REST lists' filter DTO and its one conversion,
+    /// so each refusal is the REST list's, recorded on `check` under the member's pointer.
+    pub(crate) fn parse(filter: Option<Self>, check: &mut Check, list: FilterList) -> Filter {
         let Some(filter) = filter else {
             return Filter::all();
         };
@@ -96,7 +80,7 @@ impl ListFilter {
             metadata: some(filter.metadata),
             name: filter.name,
         };
-        plan_filter(&filter).unwrap_or_else(|problems| {
+        plan_filter(&filter, list).unwrap_or_else(|problems| {
             problems.into_iter().for_each(report);
             Filter::all()
         })
@@ -112,17 +96,26 @@ pub(crate) fn list_error(error: &QueryServiceError, request_id: RequestId) -> To
                 .iter()
                 .any(|known| known.as_str() == *field) =>
         {
-            // The trace list refuses `metadata` with `observation_type` as the REST list does: code `conflict`
-            // (contract 12.5).
-            let (code, message) = match *field {
+            // The filter's conversion refuses `metadata` with `observation_type` on the trace list before any
+            // read, as the REST list does; a read that still finds them together answers the same.
+            let (member, code, message) = match *field {
                 "metadata" | "observation_type" => (
+                    "metadata",
                     "conflict",
-                    "list_traces cannot combine `metadata` with `observation_type`; drop one of them, or use \
-                     list_spans, which tests both on each span",
+                    "the trace list cannot combine `metadata` with `observation_type`; drop one of them, or list \
+                     spans, which test both on each span",
                 ),
-                _ => ("unsupported", "this list cannot test this member; drop it"),
+                _ => (
+                    *field,
+                    "unsupported",
+                    "this list cannot test this member; drop it",
+                ),
             };
-            ToolError::validation(vec![field_error(&format!("filter/{field}"), code, message)])
+            ToolError::validation(vec![field_error(
+                &format!("filter/{member}"),
+                code,
+                message,
+            )])
         }
         _ => ToolError::query(error, request_id),
     }
