@@ -224,5 +224,5 @@ and proxy workflows run when the files they cover change. Pull requests are squa
 
 ## Releasing
 
-A release is a version bump and an annotated tag on `main`; the tag builds the binaries, the installers and the
-image. [docs/releasing.md](docs/releasing.md) has the steps and the checks after the tag.
+A release is a version bump and an annotated tag on `main`; the tag builds the binaries, the installers, the image
+and the SDK packages. [docs/releasing.md](docs/releasing.md) has the steps and the checks after the tag.

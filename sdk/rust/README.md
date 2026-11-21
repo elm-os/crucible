@@ -9,8 +9,15 @@ OTLP/HTTP. It has one module that is always built and two optional features:
 | `crucible_sdk::mcp` (feature `mcp`) | `CrucibleService`, a wrapper for MCP servers built on rmcp 3.11 that records one span per operation in both protocol eras, over stdio and streamable HTTP |
 | `crucible_sdk::mcp_client` (feature `mcp-client`) | `TracedClient`, which records the calls of an rmcp client and carries their trace context to the server |
 
-Depend on it by git, `crucible-sdk = { git = "https://github.com/elm-os/crucible", features = ["mcp"] }`, or by
-path from a checkout. It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never
+Depend on it by git, pinned to the tag of a Crucible release (the SDK has the server's version), or by path from a
+checkout:
+
+```toml
+[dependencies]
+crucible-sdk = { git = "https://github.com/elm-os/crucible", tag = "v0.1.1", features = ["mcp"] }
+```
+
+It uses OpenTelemetry 0.33 and exports over hyper with rustls and the ring provider: it never
 links OpenSSL.
 
 ## Send traces from an agent

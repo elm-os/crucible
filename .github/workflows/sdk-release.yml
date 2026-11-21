@@ -1,0 +1,356 @@
+name: sdk-release
+
+# The SDK packages of a release (docs/releasing.md).
+# - A v* tag builds the TypeScript package, the Python wheel and source distribution and the Rust crate from the tagged
+#   commit, checks that each carries the tag's version and that the package and the wheel install into a new project,
+#   and attaches them to the tag's GitHub release, which release.yml creates. Then it tags the Go module as
+#   sdk/go/<tag> and publishes each package to its registry with trusted publishing, a registry only while the
+#   repository variable PUBLISH_NPM, PUBLISH_PYPI or PUBLISH_CRATES is 'true' (docs/releasing.md, "Registry setup").
+# - Run by hand from a tag, it does the same for that release again; a version already on a registry is left alone.
+# - A pull request that can change the packages, or a run by hand from a branch, builds and checks them against the
+#   workspace version and publishes nothing.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - Cargo.toml
+      - sdk/**
+      - tools/release/**
+      - .github/workflows/sdk-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-release-${{ github.ref }}
+  # A newer push to a pull request replaces its older run; a release run is never cut short.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      python: ${{ steps.version.outputs.python }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: The workspace and every SDK hold the version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            node tools/release/sdk-version.mjs check "${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            node tools/release/sdk-version.mjs check >> "$GITHUB_OUTPUT"
+          fi
+
+  typescript:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build and pack @elm-os/crucible
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts --filter @elm-os/crucible
+          pnpm --filter @elm-os/crucible build
+          pnpm --filter @elm-os/crucible pack --pack-destination "$RUNNER_TEMP/sdk"
+          test -f "$RUNNER_TEMP/sdk/elm-os-crucible-$VERSION.tgz"
+      - name: The package installs into a new project and imports
+        working-directory: ${{ runner.temp }}
+        # zizmor: ignore[adhoc-packages] the check installs the package into a new project, as a user does, with the MCP SDK it needs
+        run: |
+          mkdir consumer && cd consumer
+          npm init -y >/dev/null
+          npm pkg set type=module
+          npm install --no-audit --no-fund "$RUNNER_TEMP/sdk/elm-os-crucible-$VERSION.tgz" \
+            @modelcontextprotocol/server@2.4.0 @modelcontextprotocol/client@2.4.0
+          cat > check.mjs <<'EOF'
+          import { readFileSync } from "node:fs";
+
+          const { version } = JSON.parse(readFileSync("node_modules/@elm-os/crucible/package.json", "utf8"));
+          if (version !== process.env.VERSION) {
+            throw new Error(`the installed package is ${version}, expected ${process.env.VERSION}`);
+          }
+          const entries = {
+            "@elm-os/crucible": ["init", "observe"],
+            "@elm-os/crucible/mcp": ["instrument"],
+            "@elm-os/crucible/mcp-client": ["instrumentClient"],
+          };
+          for (const [entry, names] of Object.entries(entries)) {
+            const module = await import(entry);
+            for (const name of names) {
+              if (typeof module[name] !== "function") {
+                throw new Error(`${entry} has no ${name}`);
+              }
+            }
+          }
+          console.log(`@elm-os/crucible ${version} installs and imports`);
+          EOF
+          node check.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-typescript
+          path: ${{ runner.temp }}/sdk/elm-os-crucible-${{ needs.version.outputs.version }}.tgz
+          if-no-files-found: error
+
+  python:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      PY_VERSION: ${{ needs.version.outputs.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: false
+      - name: Build the source distribution, and the wheel from it
+        working-directory: sdk/python
+        run: |
+          uv build --out-dir "$RUNNER_TEMP/sdk"
+          test -f "$RUNNER_TEMP/sdk/crucible_sdk-$PY_VERSION.tar.gz"
+          test -f "$RUNNER_TEMP/sdk/crucible_sdk-$PY_VERSION-py3-none-any.whl"
+      - name: The wheel installs into a new environment and imports
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv venv consumer
+          uv pip install --python consumer "crucible-sdk[mcp] @ file://$RUNNER_TEMP/sdk/crucible_sdk-$PY_VERSION-py3-none-any.whl"
+          consumer/bin/python -I -c '
+          import os, crucible_sdk, crucible_sdk.mcp
+          version = crucible_sdk.__version__
+          assert version == os.environ["PY_VERSION"], f"the installed package is {version}"
+          print(f"crucible-sdk {version} installs and imports")
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-python
+          path: |
+            ${{ runner.temp }}/sdk/crucible_sdk-${{ needs.version.outputs.python }}.tar.gz
+            ${{ runner.temp }}/sdk/crucible_sdk-${{ needs.version.outputs.python }}-py3-none-any.whl
+          if-no-files-found: error
+
+  rust:
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from sdk/rust/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Package the crate and build what it holds, with every feature
+        run: |
+          cargo package -p crucible-sdk --locked --all-features
+          test -f "target/package/crucible-sdk-$VERSION.crate"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-rust
+          path: sdk/rust/target/package/crucible-sdk-${{ needs.version.outputs.version }}.crate
+          if-no-files-found: error
+
+  release-assets:
+    needs: [version, typescript, python, rust]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write # uploads the packages to the tag's GitHub release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sdk-*
+          path: sdk
+          merge-multiple: true
+      - name: Attach the packages to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # release.yml creates the release once the binaries are built, about 25 minutes after the tag.
+          for _ in $(seq 60); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 60
+          done
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            echo "::error::The release $TAG does not exist after an hour; release.yml creates it. Once it exists, run this workflow from the tag $TAG again."
+            exit 1
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber sdk/*
+
+  go-module:
+    needs: [version, release-assets]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the module tag sdk/go/<tag>
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Tag the Go module on the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          # A tag made with the workflow's token starts no workflow. sdk/go/v* matches release.yml's tag pattern, so
+          # the same tag pushed by hand would start a second binary release.
+          ref="tags/sdk/go/$TAG"
+          if current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/$ref" --jq .object.sha 2>/dev/null); then
+            if [ "$current" != "$SHA" ]; then
+              echo "::error::sdk/go/$TAG points at $current, not at the release commit $SHA."
+              exit 1
+            fi
+            echo "sdk/go/$TAG already points at $SHA"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/$ref" -f "sha=$SHA" >/dev/null
+            echo "tagged sdk/go/$TAG at $SHA"
+          fi
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache: false
+      - name: A new module gets the SDK at the tag
+        working-directory: ${{ runner.temp }}
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir consumer && cd consumer
+          go mod init example.com/consumer
+          printf '%s\n' 'package main' 'import "fmt"' 'import "github.com/elm-os/crucible/sdk/go/crucible"' \
+            'func main() { fmt.Print(crucible.Version) }' > main.go
+          go get "github.com/elm-os/crucible/sdk/go@$TAG"
+          go mod tidy
+          got=$(go run .)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::The module at sdk/go/$TAG reports version $got, expected $VERSION."
+            exit 1
+          fi
+          echo "github.com/elm-os/crucible/sdk/go@$TAG resolves and reports $got"
+
+  npm:
+    needs: [version, release-assets]
+    if: github.ref_type == 'tag' && vars.PUBLISH_NPM == 'true'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write # trusted publishing, which also signs the provenance statement
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sdk-typescript
+          path: sdk
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Publish @elm-os/crucible
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          if npm view "@elm-os/crucible@$VERSION" version >/dev/null 2>&1; then
+            echo "@elm-os/crucible $VERSION is already on npm"
+            exit 0
+          fi
+          # A pre-release must not become what `npm install @elm-os/crucible` picks.
+          dist_tag=latest
+          if [ "$PRERELEASE" = true ]; then dist_tag=next; fi
+          npm publish "sdk/elm-os-crucible-$VERSION.tgz" --tag "$dist_tag"
+
+  pypi:
+    needs: [version, release-assets]
+    if: github.ref_type == 'tag' && vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/crucible-sdk
+    permissions:
+      id-token: write # trusted publishing, which also signs the PEP 740 attestations
+    steps:
+      - name: Look for the version on PyPI
+        id: published
+        env:
+          PY_VERSION: ${{ needs.version.outputs.python }}
+        run: |
+          if curl -fsS -o /dev/null "https://pypi.org/pypi/crucible-sdk/$PY_VERSION/json"; then
+            echo "crucible-sdk $PY_VERSION is already on PyPI"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.published.outputs.found != 'true'
+        with:
+          name: sdk-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        if: steps.published.outputs.found != 'true'
+
+  crates:
+    needs: [version, release-assets]
+    if: github.ref_type == 'tag' && vars.PUBLISH_CRATES == 'true'
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write # trusted publishing
+    defaults:
+      run:
+        working-directory: sdk/rust
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # crates.io takes a crate's first version only with an API token: the CARGO_REGISTRY_TOKEN secret of the
+      # crates-io environment, set for that one run (docs/releasing.md, "Registry setup"). Every later version uses
+      # trusted publishing.
+      FIRST_PUBLISH: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Look for the version on crates.io
+        id: published
+        run: |
+          if curl -fsS -o /dev/null -A "elm-os/crucible sdk-release" "https://crates.io/api/v1/crates/crucible-sdk/$VERSION"; then
+            echo "crucible-sdk $VERSION is already on crates.io"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Toolchain (from sdk/rust/rust-toolchain.toml)
+        if: steps.published.outputs.found != 'true'
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+        if: steps.published.outputs.found != 'true' && env.FIRST_PUBLISH != 'true'
+      - name: Publish crucible-sdk
+        if: steps.published.outputs.found != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p crucible-sdk --locked

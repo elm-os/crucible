@@ -12,13 +12,14 @@ It needs Go 1.26 or newer.
 
 ## Install
 
-Add the module from the repository's main branch:
+Add the module at the version of your Crucible server; the SDK has the server's version, and the release of Crucible
+0.1.1 tags it as `sdk/go/v0.1.1`:
 
 ```sh
-go get github.com/elm-os/crucible/sdk/go@main
+go get github.com/elm-os/crucible/sdk/go@v0.1.1
 ```
 
-or point your module at a checkout of the repository:
+To work on a checkout of the repository instead, point your module at it:
 
 ```sh
 git clone https://github.com/elm-os/crucible.git
@@ -27,7 +28,7 @@ go mod edit -require=github.com/elm-os/crucible/sdk/go@v0.0.0 -replace=github.co
 go mod tidy
 ```
 
-The examples on this page are complete programs, one per directory of a module set up this way. Each passed
+The examples on this page are complete programs, one per directory of a module that requires the SDK. Each passed
 `go vet` with Go 1.27.4 and was run, with only the endpoint changed, against a Crucible server whose API then
 returned the traces they sent.
 

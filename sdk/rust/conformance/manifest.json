@@ -2,7 +2,7 @@
   "schema": "crucible.conformance.manifest/v1",
   "sdk": "rust",
   "language": "rust",
-  "sdk_version": "0.1.0",
+  "sdk_version": "0.1.1",
   "runner": ["cargo", "run", "--quiet", "--locked", "--manifest-path", "sdk/rust/Cargo.toml", "-p", "crucible-sdk-conformance", "--"],
   "kinds": ["agent", "mcp"],
   "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],

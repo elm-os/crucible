@@ -2,7 +2,7 @@
   "schema": "crucible.conformance.manifest/v1",
   "sdk": "python",
   "language": "python",
-  "sdk_version": "0.1.0",
+  "sdk_version": "0.1.1",
   "runner": ["uv", "run", "--locked", "--project", "sdk/python", "python", "sdk/python/conformance/runner.py"],
   "kinds": ["agent", "mcp"],
   "variants": ["legacy-stdio", "legacy-http", "modern-stdio", "modern-http"],
