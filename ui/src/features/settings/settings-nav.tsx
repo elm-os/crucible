@@ -12,12 +12,14 @@ const PAGES = [
   { label: "API keys", href: "/settings/api-keys" },
   { label: "Exports", href: "/settings/exports" },
   { label: "Retention", href: "/settings/retention" },
+  { label: "Organization", href: "/settings/organization" },
+  { label: "Sign-in", href: "/settings/sign-in" },
 ] as const satisfies readonly { label: string; href: Route }[];
 
 function Links({ search }: { search: URLSearchParams | null }) {
   const pathname = usePathname().replace(/\/$/, "");
   return (
-    <ul className="flex gap-5">
+    <ul className="flex flex-wrap gap-x-5 gap-y-1">
       {PAGES.map((page) => (
         <li key={page.href}>
           <Link
