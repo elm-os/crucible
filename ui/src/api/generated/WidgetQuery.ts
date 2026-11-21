@@ -32,7 +32,7 @@ filter?: MetricsFilter,
  */
 granularity?: Granularity, 
 /**
- * The time zone of the buckets. Only `UTC` is supported yet.
+ * The time zone of the buckets: `UTC` or `Etc/UTC`; any other is refused.
  */
 timezone?: string, 
 /**

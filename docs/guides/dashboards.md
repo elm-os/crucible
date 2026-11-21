@@ -38,14 +38,15 @@ in reading order.
 
 The editor needs a screen at least 768 px wide; on a narrower one the dashboard says so instead of offering Edit.
 
-- **Add a widget** opens a sheet: the title, the kind, the data it reads (agent spans, traces or MCP operations), the
-  measures, up to two group-by dimensions, how many keys to show, the bucket width, and for a time series lines,
+- **Add a widget** opens a sheet: the title, the kind, the data it reads (agent spans, traces or MCP operations),
+  the measures, up to two group-by dimensions, how many keys to show, the bucket width, and for a time series lines,
   bars or areas. For agent spans, **Filters** keeps the spans whose environment, release, level or type is, or is
   not, a value: level and type are chosen from their lists, and environment and release offer the values the time
-  range holds as you type, or take a value as written. Each filter is a chip that removes it. A widget over MCP operations reads one measure, from one side (the server side unless you choose the client
-  side) and one capture source (Automatic picks each server's SDK, else its proxy, else OTLP), and counts calls that
-  failed because of what the caller sent only when **Include caller faults** is on; a second measure is refused when
-  you save. A preview draws the widget as soon as it is complete. A text widget takes its text instead of a query.
+  range holds as you type, or take a value as written. Each filter is a chip that removes it. A widget over MCP
+  operations reads one measure, from one side (the server side unless you choose the client side) and one capture
+  source (Automatic picks each server's SDK, else its proxy, else OTLP), and counts calls that failed because of
+  what the caller sent only when **Include caller faults** is on; a second measure is refused when you save. A
+  preview draws the widget as soon as it is complete. A text widget takes its text instead of a query.
 - **Layout**: drag a widget by its move handle and resize it by its corner, or focus a handle and use the arrow keys.
   A move that would overlap another widget is refused and announced.
 - **Save** stores the name, the description and every widget in one change, so a layout that moves several widgets
