@@ -34,7 +34,10 @@ fn registry(
     registry.register(housekeeping::job());
     if let Some(exports) = exports {
         registry.register(crucible_export::job(exports.clone()));
-        registry.register(crucible_export::sweep_job(exports.objects().cloned()));
+        registry.register(crucible_export::sweep_job());
+        if let Some(objects) = exports.objects() {
+            registry.register(crucible_export::object_sweep_job(objects.clone()));
+        }
     }
     for job in alerts {
         registry.register(job);
@@ -104,6 +107,29 @@ mod tests {
             registry(Some(&exports), Vec::new(), None, None).names(),
             ["housekeeping", "exports", "exports-sweep"]
         );
+    }
+
+    #[test]
+    fn with_an_object_store_the_registry_also_holds_the_object_sweep() {
+        crucible_sim::run(2, |sim| async move {
+            let host = sim.host("node", &sim.disk("node"), 0);
+            let store = crucible_sim::object_model::SimObjectStore::new(
+                host.clock.clone(),
+                sim.rng("objects"),
+                crucible_sim::object_model::ObjectFaults::default(),
+            );
+            let exports = ExportRuntime::new()
+                .with_objects(crucible_export::ExportObjects::new(store, "media"));
+            assert_eq!(
+                registry(Some(&exports), Vec::new(), None, None).names(),
+                [
+                    "housekeeping",
+                    "exports",
+                    "exports-sweep",
+                    "exports-object-sweep"
+                ]
+            );
+        });
     }
 
     #[derive(Debug)]

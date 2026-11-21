@@ -15,14 +15,14 @@ use crucible_control::{
     ControlStore, ExportFormat, ExportJob, JsonDoc, NewExport, Project, Repos as _,
 };
 use crucible_env::{
-    Clock, DiskPath, Disposition, Env, InsertError, InsertSettings, MutationId, MutationStatus,
-    OpenMode, QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores,
-    TelemetryStore,
+    ByteStream, Clock, DiskPath, Disposition, Env, InsertError, InsertSettings, MutationId,
+    MutationStatus, ObjectError, ObjectMeta, ObjectPage, ObjectStore, OpenMode, Presigned,
+    QueryError, Root, RowStream, StoreError, StoreFacts, StoreHealth, Stores, TelemetryStore,
 };
 use crucible_export::{
     CreateError, CreateExport, Created, DOWNLOAD_TTL, Download, DownloadError, EXPORT_LEASE,
     EXPORT_TTL, ExportObjects, ExportRuntime, ExportState, Exports, Options, PART_BYTES,
-    SWEEP_EVERY, Selector, job, purge, sweep, sweep_job, sweep_objects,
+    SWEEP_EVERY, Selector, job, object_sweep_job, purge, sweep, sweep_job, sweep_objects,
 };
 use crucible_jobs::{Registry, Running};
 use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
@@ -262,7 +262,10 @@ fn start_over(
     runtime.set_service(service);
     let mut registry = Registry::new();
     registry.register(job(runtime));
-    registry.register(sweep_job(objects.cloned()));
+    registry.register(sweep_job());
+    if let Some(objects) = objects {
+        registry.register(object_sweep_job(objects.clone()));
+    }
     let store: Arc<dyn ControlStore> = Arc::new(model.clone());
     registry.start(&host.env, Some(store), "node")
 }
@@ -912,5 +915,137 @@ fn a_throttled_store_ends_with_one_whole_object() {
             Some(sha256(&left[0].1.bytes).as_str())
         );
         assert!(store.open_uploads().iter().all(|key| *key != recorded));
+    });
+}
+
+/// An object store that counts the listings asked of it, over the simulated one.
+#[derive(Debug)]
+struct CountedListings {
+    inner: Arc<SimObjectStore>,
+    lists: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait]
+impl ObjectStore for CountedListings {
+    fn presign_put(
+        &self,
+        key: &str,
+        content_type: &str,
+        sha256: &[u8; 32],
+        len: u64,
+        ttl: Duration,
+    ) -> Result<Presigned, ObjectError> {
+        self.inner.presign_put(key, content_type, sha256, len, ttl)
+    }
+
+    fn presign_get(
+        &self,
+        key: &str,
+        disposition: Disposition,
+        ttl: Duration,
+    ) -> Result<Presigned, ObjectError> {
+        self.inner.presign_get(key, disposition, ttl)
+    }
+
+    async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, ObjectError> {
+        self.inner.head(key).await
+    }
+
+    async fn put_small(
+        &self,
+        key: &str,
+        content_type: &str,
+        bytes: bytes::Bytes,
+    ) -> Result<(), ObjectError> {
+        self.inner.put_small(key, content_type, bytes).await
+    }
+
+    async fn start_upload(&self, key: &str, content_type: &str) -> Result<String, ObjectError> {
+        self.inner.start_upload(key, content_type).await
+    }
+
+    async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        number: u16,
+        bytes: bytes::Bytes,
+    ) -> Result<String, ObjectError> {
+        self.inner.upload_part(key, upload_id, number, bytes).await
+    }
+
+    async fn finish_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        etags: &[String],
+    ) -> Result<(), ObjectError> {
+        self.inner.finish_upload(key, upload_id, etags).await
+    }
+
+    async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), ObjectError> {
+        self.inner.abort_upload(key, upload_id).await
+    }
+
+    async fn get_stream(&self, key: &str) -> Result<ByteStream, ObjectError> {
+        self.inner.get_stream(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectError> {
+        self.inner.delete(key).await
+    }
+
+    async fn delete_batch(&self, keys: &[String]) -> Result<(), ObjectError> {
+        self.inner.delete_batch(keys).await
+    }
+
+    async fn list(&self, prefix: &str, after: Option<&str>) -> Result<ObjectPage, ObjectError> {
+        self.lists
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.list(prefix, after).await
+    }
+}
+
+/// With an object store, one node at a time sweeps the export objects: two nodes list the project's export keys
+/// as often as one node would, not once each.
+#[test]
+fn one_node_at_a_time_sweeps_the_export_objects() {
+    crucible_sim::run(19, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        model.projects().insert(&project()).await.unwrap();
+        let counted = Arc::new(CountedListings {
+            inner: SimObjectStore::new(
+                database.clock.clone(),
+                sim.rng("objects"),
+                ObjectFaults::default(),
+            ),
+            lists: std::sync::atomic::AtomicU64::new(0),
+        });
+        let objects = ExportObjects::new(counted.clone(), "media");
+        let mut running = Vec::new();
+        for name in ["node-1", "node-2"] {
+            let host = sim.host(name, &sim.disk(name), 0);
+            let mut registry = Registry::new();
+            registry.register(sweep_job());
+            registry.register(object_sweep_job(objects.clone()));
+            let store: Arc<dyn ControlStore> = Arc::new(model.clone());
+            running.push(registry.start(&host.env, Some(store), name));
+        }
+        // Three sweep periods with their largest jitter, and some room: one node sweeps four times in that span.
+        database
+            .clock
+            .sleep(3 * (SWEEP_EVERY + SWEEP_EVERY / 10) + Duration::from_secs(30))
+            .await;
+        let lists = counted.lists.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            (1..=4).contains(&lists),
+            "two nodes listed the export keys {lists} times"
+        );
+        drop(running);
     });
 }
