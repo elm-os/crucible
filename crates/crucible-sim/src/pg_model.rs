@@ -2484,10 +2484,17 @@ impl Migrations for Runner {
             if cx.locked_by_other(Tbl::Ledger, &key) {
                 return Err(Halt::Blocked);
             }
-            if cx.latest(Tbl::Ledger, &key).is_some() {
-                return Ok(false);
-            }
-            cx.put(Tbl::Ledger, key, Some(Row::Ledger(entry.clone())))?;
+            let row = match cx.latest(Tbl::Ledger, &key) {
+                Some(Row::Ledger(row)) if row.checksum == entry.checksum => return Ok(false),
+                // A step applied again after its content changed keeps its kind.
+                Some(Row::Ledger(row)) => LedgerEntry {
+                    applied_at: entry.applied_at,
+                    checksum: entry.checksum.clone(),
+                    ..row
+                },
+                _ => entry.clone(),
+            };
+            cx.put(Tbl::Ledger, key, Some(Row::Ledger(row)))?;
             Ok(true)
         })
         .await

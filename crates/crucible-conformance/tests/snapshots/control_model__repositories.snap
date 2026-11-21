@@ -95,4 +95,5 @@ project salt after delete: false
 ledger apply schema: true
 ledger apply access: true
 ledger apply schema again: false
-ledger: [LedgerEntry { id: "0001_schema_base", kind: ClickhouseSchema, applied_at: Timestamp(2027-01-15T08:01:40.000000Z), checksum: "aa" }, LedgerEntry { id: "0002_access_service", kind: ClickhouseAccess, applied_at: Timestamp(2027-01-15T08:01:40.000000Z), checksum: "bb" }]
+ledger apply schema with other content: true
+ledger: [LedgerEntry { id: "0001_schema_base", kind: ClickhouseSchema, applied_at: Timestamp(2027-01-15T08:05:00.000000Z), checksum: "cc" }, LedgerEntry { id: "0002_access_service", kind: ClickhouseAccess, applied_at: Timestamp(2027-01-15T08:01:40.000000Z), checksum: "bb" }]

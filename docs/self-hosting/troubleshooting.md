@@ -37,10 +37,12 @@ that names a database that is still starting clears by itself.
 |---|---|
 | `startup detection (the service users are missing, or were created under a different master key; see --migrate and --master-key-file)` with `AUTHENTICATION_FAILED` | The server runs with another master key than the one this ClickHouse was migrated with. Start it with the original master key |
 | `N of M tables exist; start once with --migrate` | Start once with `--migrate` (Compose always does), or run `crucible migrate` |
+| `this version needs ClickHouse migration step <id>, which the migrations ledger does not record` | The server runs without `--migrate`, and no server of this version has migrated yet. Run `crucible migrate`, or start one server with `--migrate`; within 15 seconds of that the server opens |
 | `ClickHouse <version> is older than the minimum, 26.3` | Upgrade ClickHouse to 26.3 or newer |
 | The ClickHouse server is `Cloud` or `Clustered` | Crucible needs a single-node ClickHouse server |
 | `the server lacks the text index or the text-search functions`, or `the server lacks the settings ...` | Use a ClickHouse release that has them: 26.3 or newer, with its default configuration |
 | `applying the Postgres migrations: ... migration V5__export_jobs is missing from the filesystem` | An older image started on a database that a newer one migrated. Start the newer image, or restore the backup taken before the upgrade ([operations](operations.md#upgrades)) |
+| `migration step 0003_access_workspace: ... access step A1 has not created the service policy of every base table` | An older image, such as 0.1.1, started on a database that a newer one migrated after adding a table. Start the newer image, or restore the backup taken before the upgrade ([operations](operations.md#upgrades)) |
 
 The server also logs a warning at startup when its memory budgets add up to more than 90% of the memory it may
 use, with the amount to give it. With the defaults, give the container at least 2 GiB
