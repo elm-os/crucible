@@ -92,19 +92,28 @@ impl Variant {
     /// The clustered variant also raises `distributed_ddl_entry_format_version`: ClickHouse refuses an
     /// `ON CLUSTER` statement that creates a text index with a preprocessor unless the entry format is at least 8
     /// and every host sets the server setting `distributed_ddl_use_initial_user_and_roles`. The server setting is
-    /// a deployment requirement that the operator configures.
+    /// a deployment requirement that the operator configures. An `ON CLUSTER` statement waits for every replica,
+    /// for at most `distributed_ddl_task_timeout` seconds, and fails when one has not run it
+    /// (`distributed_ddl_output_mode = throw`): both are sent, because the other output modes, and a timeout of
+    /// 0 in a settings profile, return before every replica has run the statement and say nothing about the one
+    /// that has not.
     pub fn ddl_settings(&self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::SingleNode => &[],
-            Self::Clustered { .. } => &[
-                ("alter_sync", "2"),
-                ("wait_end_of_query", "1"),
-                ("distributed_ddl_entry_format_version", "8"),
-            ],
+            Self::Clustered { .. } => &CLUSTERED_DDL_SETTINGS,
             Self::Cloud => &[("alter_sync", "2"), ("wait_end_of_query", "1")],
         }
     }
 }
+
+/// [`Variant::ddl_settings`] of the clustered variant.
+pub(crate) const CLUSTERED_DDL_SETTINGS: [(&str, &str); 5] = [
+    ("alter_sync", "2"),
+    ("wait_end_of_query", "1"),
+    ("distributed_ddl_entry_format_version", "8"),
+    ("distributed_ddl_output_mode", "throw"),
+    ("distributed_ddl_task_timeout", "180"),
+];
 
 /// The replication path and replica name of the clustered variant; ClickHouse expands the macros per replica.
 const REPLICATED_ARGS: &str = "('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')";
@@ -243,6 +252,23 @@ mod tests {
         ] {
             assert!(Ident::new(bad).is_err(), "{bad}");
         }
+    }
+
+    /// Every `ON CLUSTER` statement waits for every replica and fails when one has not run it, whatever a
+    /// settings profile says; a single server sends no DDL setting.
+    #[test]
+    fn clustered_statements_wait_for_every_replica() {
+        let cluster = Variant::Clustered {
+            cluster: Ident::new("crucible").unwrap(),
+        };
+        let settings = cluster.ddl_settings();
+        assert!(settings.contains(&("distributed_ddl_output_mode", "throw")));
+        assert!(settings.iter().any(|(name, value)| {
+            *name == "distributed_ddl_task_timeout"
+                && value.parse::<u32>().is_ok_and(|secs| secs > 0)
+        }));
+        assert!(settings.contains(&("alter_sync", "2")));
+        assert!(Variant::SingleNode.ddl_settings().is_empty());
     }
 
     #[test]

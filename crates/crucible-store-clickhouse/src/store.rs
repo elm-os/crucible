@@ -21,7 +21,7 @@ use crucible_records::{
     BatchToken, Lsn, PartitionId, ProjectId, TableId, Timestamp, Uuid, WalEpoch,
 };
 use crucible_schema::{
-    AGENT_MAX_CONCURRENT_QUERIES, DATABASE, IndexKind, MigrationStep, ServiceIdentity, table,
+    AGENT_MAX_CONCURRENT_QUERIES, DATABASE, Ident, IndexKind, MigrationStep, ServiceIdentity, table,
 };
 use futures::Stream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -66,7 +66,7 @@ fn migration_deadline(step: &MigrationStep) -> Duration {
 
 /// Every query-level setting this crate sends, apart from the per-insert settings of
 /// [`InsertSettings::NAMES`]. Startup detection checks that the server knows each one (contract 5.8).
-pub const QUERY_SETTINGS: [&str; 20] = [
+pub const QUERY_SETTINGS: [&str; 24] = [
     "max_execution_time",
     "max_memory_usage",
     "max_rows_to_read",
@@ -84,6 +84,11 @@ pub const QUERY_SETTINGS: [&str; 20] = [
     "mutations_sync",
     "alter_sync",
     "distributed_ddl_entry_format_version",
+    "distributed_ddl_output_mode",
+    "distributed_ddl_task_timeout",
+    // The reads of every replica in a cluster, and the replicated changes that a replica that is down has not run.
+    "skip_unavailable_shards",
+    "replication_wait_for_inactive_replica_timeout",
     // The copy of the hourly schema step (`crucible_schema::schema_mcp_tool_rollup_hourly`).
     "max_bytes_before_external_group_by",
     "min_insert_block_size_rows",
@@ -108,6 +113,13 @@ const DELETE_SETTINGS: [(&str, &str); 2] = [
     ("lightweight_deletes_sync", "2"),
     ("lightweight_delete_mode", "alter_update"),
 ];
+
+/// On a cluster, a replicated change waits for every active replica and not for one that is down, which runs it
+/// when it returns: the server answers [`UNFINISHED`] at once instead of after two minutes.
+const INACTIVE_REPLICAS: (&str, &str) = ("replication_wait_for_inactive_replica_timeout", "0");
+
+/// `UNFINISHED`: a replicated change that a replica that is down has not run yet. The change is queued for it.
+const UNFINISHED: u32 = 341;
 
 /// The settings every read carries: the limits of its class and the fixed settings (contracts 8.4 and 8.5).
 fn class_settings(limits: ClassLimits) -> Vec<(&'static str, String)> {
@@ -169,6 +181,9 @@ pub struct StoreConfig {
     pub maint: Credentials,
     /// The configured flavour (`clickhouse.flavor`); `None` is `auto`.
     pub flavour: Option<StoreFlavour>,
+    /// The cluster of a replicated deployment (`clickhouse.cluster`), one shard with several replicas, whose
+    /// replicas the store reads together where a call must hold on every one of them. `None` for one server.
+    pub cluster: Option<Ident>,
     /// The trust anchors for an `https` endpoint.
     pub tls_roots: TlsRoots,
     /// How long opening a connection may take.
@@ -264,6 +279,108 @@ fn unexpected(what: &str, text: &str) -> StoreError {
 
 fn count(what: &str, text: &str) -> Result<u64, StoreError> {
     text.trim().parse().map_err(|_| unexpected(what, text))
+}
+
+/// The tab-separated numbers of a one-row answer.
+fn numbers<const N: usize>(what: &str, text: &str) -> Result<[u64; N], StoreError> {
+    let fields: Vec<u64> = text
+        .trim()
+        .split('\t')
+        .map(|field| field.parse().map_err(|_| unexpected(what, text)))
+        .collect::<Result<_, _>>()?;
+    fields.try_into().map_err(|_| unexpected(what, text))
+}
+
+/// The answer of the existence probe on a cluster of `replicas` replicas, of which `answered` answered and
+/// `holding` hold the block. The block is present once a majority holds it, as an acknowledged insert with
+/// `insert_quorum = auto` leaves it, and absent when every replica answered and none holds it. Between the two
+/// the probe cannot tell: a block on fewer replicas waits for its quorum, and a quorum that fails drops the block
+/// from the replica that holds it, while a replica that did not answer may hold a block that lands later. The
+/// shipper probes again.
+fn probe_answer(holding: u64, answered: u64, replicas: u64) -> Result<bool, StoreError> {
+    if replicas == 0 {
+        return Err(StoreError::Unavailable(
+            "the server defines no replica in the configured cluster in remote_servers".to_owned(),
+        ));
+    }
+    if holding > replicas / 2 {
+        Ok(true)
+    } else if holding == 0 && answered >= replicas {
+        Ok(false)
+    } else {
+        Err(StoreError::Unavailable(format!(
+            "{holding} of the cluster's {replicas} replicas hold the block and {answered} answered: the probe \
+             answers once a majority holds the block, or once every replica answers without it"
+        )))
+    }
+}
+
+/// One replica's row of a mutation in `system.mutations`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ReplicaMutation<'a> {
+    listed: bool,
+    done: bool,
+    killed: bool,
+    reason: &'a str,
+}
+
+/// The state of a mutation on a cluster of `replicas` replicas from the rows of those that answered. It is done
+/// when every replica has done it, or when none lists it any more; one that did not answer, or that does not list
+/// it while another does, has not run it yet.
+fn mutation_answer(replicas: u64, rows: &[ReplicaMutation<'_>]) -> MutationStatus {
+    if let Some(row) = rows
+        .iter()
+        .find(|r| r.listed && !r.done && (r.killed || !r.reason.is_empty()))
+    {
+        return MutationStatus::Failed {
+            code: parse_code(row.reason).unwrap_or(0),
+            reason: if row.reason.is_empty() {
+                "the mutation was killed".to_owned()
+            } else {
+                row.reason.to_owned()
+            },
+        };
+    }
+    let all_answered = rows.len() as u64 >= replicas;
+    let gone = rows.iter().all(|r| !r.listed);
+    let done = rows.iter().all(|r| r.listed && r.done);
+    if all_answered && (gone || done) {
+        MutationStatus::Done
+    } else {
+        MutationStatus::Pending
+    }
+}
+
+/// In a read of a replica's system tables, whether the replica has the table (`database` and `name` are the
+/// placeholders of their bound values). A replica that lacks the table lists no part and no mutation of it, so it
+/// counts as one that did not answer.
+fn table_present(database: &str, name: &str) -> String {
+    format!("(SELECT count() FROM system.tables WHERE database = {database} AND name = {name})")
+}
+
+/// `clusterAllReplicas('<cluster>', view(<select>))`: `select` on every replica, one answer row each.
+fn on_every_replica(cluster: &Ident, select: &str) -> String {
+    format!("clusterAllReplicas('{cluster}', view({select}))")
+}
+
+/// What the startup checks of a replicated deployment read through the replica the store talks to, as
+/// `crucible_admin`, so that they run before the first migration creates the service identities.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClusterFacts {
+    /// Whether the server is a ClickHouse Cloud service (its `cloud_mode` setting).
+    pub cloud: bool,
+    /// The shards of the configured cluster in the server's `remote_servers`; 0 when no cluster has its name.
+    pub shards: u64,
+    /// Its replicas as `host:port`, in the order of `remote_servers`.
+    pub replicas: Vec<String>,
+    /// The macros of the replication path, of `shard` and `replica`, that the server does not define.
+    pub missing_macros: Vec<String>,
+    /// Why the server holds no Keeper session, when it holds none.
+    pub keeper: Option<String>,
+    /// Why a statement sent to every replica failed, when it failed; a replica that is down does not fail it.
+    pub fan_out: Option<String>,
+    /// The replicas that did not answer a statement sent to every replica, as `host:port`.
+    pub silent: Vec<String>,
 }
 
 fn engine_family(engine: &str) -> EngineFamily {
@@ -703,12 +820,158 @@ impl ClickHouseStore {
 
     /// The value of one row of `system.settings` or `system.server_settings`; empty when it is not listed.
     async fn setting_value(&self, system_table: &str, name: &str) -> Result<String, StoreError> {
+        self.setting_value_as(ServiceIdentity::Maint, system_table, name)
+            .await
+    }
+
+    /// [`ClickHouseStore::setting_value`] as `identity`.
+    async fn setting_value_as(
+        &self,
+        identity: ServiceIdentity,
+        system_table: &str,
+        name: &str,
+    ) -> Result<String, StoreError> {
         let mut b = Binder::default();
         let name = b.string(name);
         let statement = b.finish(format!(
             "SELECT value FROM system.{system_table} WHERE name = {name}"
         ));
-        self.lookup(ServiceIdentity::Maint, &statement).await
+        self.lookup(identity, &statement).await
+    }
+
+    /// The cluster whose replicas the calls that must hold on every replica read, when the store is clustered.
+    async fn replicated(&self) -> Result<Option<&Ident>, StoreError> {
+        match self.flavour().await? {
+            StoreFlavour::Clustered => {
+                self.inner.config.cluster.as_ref().map(Some).ok_or_else(|| {
+                    StoreError::Internal(
+                        "a replicated store needs the name of its cluster (clickhouse.cluster)"
+                            .to_owned(),
+                    )
+                })
+            }
+            StoreFlavour::SingleNode | StoreFlavour::Cloud => Ok(None),
+        }
+    }
+
+    /// A one-row answer read as `identity`, sent to every replica in the cluster.
+    async fn every_replica_lookup(
+        &self,
+        identity: ServiceIdentity,
+        statement: Statement,
+    ) -> Result<String, StoreError> {
+        let mut statement = statement;
+        statement
+            .settings
+            .push(("skip_unavailable_shards", "1".to_owned()));
+        self.lookup(identity, &statement).await
+    }
+
+    /// The replicas of `cluster` as `host:port`, in the order of `remote_servers`, with their shard numbers.
+    async fn cluster_replicas(&self, cluster: &Ident) -> Result<Vec<(u64, String)>, StoreError> {
+        let mut b = Binder::default();
+        let name = b.string(cluster.as_str());
+        let answer = self
+            .lookup(
+                ServiceIdentity::Admin,
+                &b.finish(format!(
+                    "SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = {name} ORDER BY \
+                     shard_num, replica_num"
+                )),
+            )
+            .await?;
+        lines(&answer)
+            .into_iter()
+            .filter(|line| line != &[""])
+            .map(|line| match line.as_slice() {
+                [shard, host, port] => shard
+                    .parse()
+                    .map(|shard| (shard, format!("{host}:{port}")))
+                    .map_err(|_| unexpected("system.clusters", &answer)),
+                _ => Err(unexpected("system.clusters", &answer)),
+            })
+            .collect()
+    }
+
+    /// The replicas of `cluster` that do not answer a statement sent to every replica, as `host:port`.
+    async fn silent_replicas(
+        &self,
+        cluster: &Ident,
+        replicas: &[(u64, String)],
+    ) -> Result<Vec<String>, StoreError> {
+        let statement = Binder::default().finish(format!(
+            "SELECT _shard_num FROM {}",
+            on_every_replica(cluster, "SELECT 1")
+        ));
+        let answer = self
+            .every_replica_lookup(ServiceIdentity::Admin, statement)
+            .await?;
+        let answered: Vec<&str> = answer.lines().collect();
+        Ok(replicas
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| !answered.contains(&(n + 1).to_string().as_str()))
+            .map(|(_, (_, host))| host.clone())
+            .collect())
+    }
+
+    /// What the startup checks of a replicated deployment need from the server (contract 5.8), read as
+    /// `crucible_admin` through the replica the store talks to: whether it is ClickHouse Cloud, the cluster's
+    /// shards and replicas, the macros of the replication path, the Keeper session, and whether every replica
+    /// answers a statement sent to all of them.
+    pub async fn cluster_facts(&self, cluster: &Ident) -> Result<ClusterFacts, StoreError> {
+        let admin = ServiceIdentity::Admin;
+        let cloud = self
+            .setting_value_as(admin, "settings", "cloud_mode")
+            .await?
+            .trim()
+            == "1";
+        let replicas = self.cluster_replicas(cluster).await?;
+        let mut shards: Vec<u64> = replicas.iter().map(|(shard, _)| *shard).collect();
+        shards.dedup();
+        let mut b = Binder::default();
+        let wanted = b.strings(&["shard", "replica"]);
+        let defined = self
+            .lookup(
+                admin,
+                &b.finish(format!(
+                    "SELECT macro FROM system.macros WHERE has({wanted}, macro)"
+                )),
+            )
+            .await?;
+        let defined: Vec<&str> = defined.lines().collect();
+        let missing_macros = ["shard", "replica"]
+            .into_iter()
+            .filter(|name| !defined.contains(name))
+            .map(str::to_owned)
+            .collect();
+        let keeper = self
+            .text(
+                admin,
+                &Binder::default()
+                    .finish("SELECT count() FROM system.zookeeper WHERE path = '/'".to_owned()),
+                LOOKUP_SECS,
+            )
+            .await
+            .err()
+            .map(|failure| failure.into_store().to_string());
+        let (fan_out, silent) = if shards.len() == 1 {
+            match self.silent_replicas(cluster, &replicas).await {
+                Ok(silent) => (None, silent),
+                Err(error) => (Some(error.to_string()), Vec::new()),
+            }
+        } else {
+            (None, Vec::new())
+        };
+        Ok(ClusterFacts {
+            cloud,
+            shards: shards.len() as u64,
+            replicas: replicas.into_iter().map(|(_, host)| host).collect(),
+            missing_macros,
+            keeper,
+            fan_out,
+            silent,
+        })
     }
 
     /// The names of `names` that `system.<system_table>` does not list.
@@ -792,7 +1055,9 @@ impl ClickHouseStore {
                 let cloud = self.setting_value("settings", "cloud_mode").await?;
                 if cloud.trim() == "1" || engines.iter().any(|(_, f)| *f == EngineFamily::Shared) {
                     StoreFlavour::Cloud
-                } else if engines.iter().any(|(_, f)| *f == EngineFamily::Replicated) {
+                } else if self.inner.config.cluster.is_some()
+                    || engines.iter().any(|(_, f)| *f == EngineFamily::Replicated)
+                {
                     StoreFlavour::Clustered
                 } else {
                     StoreFlavour::SingleNode
@@ -1069,8 +1334,18 @@ impl TelemetryStore for ClickHouseStore {
     }
 
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
-        let statement =
-            render::plan(&plan).map_err(|error| QueryError::Internal(error.to_string()))?;
+        let cluster = if plan.every_replica() {
+            self.replicated()
+                .await
+                .map_err(|error| QueryError::Unavailable(error.to_string()))?
+        } else {
+            None
+        };
+        let statement = match cluster {
+            Some(cluster) => render::plan_on_replicas(&plan, cluster),
+            None => render::plan(&plan),
+        }
+        .map_err(|error| QueryError::Internal(error.to_string()))?;
         let limits = plan.limits();
         let settings = class_settings(limits);
         let (query_id, reading) = self.read(
@@ -1085,6 +1360,16 @@ impl TelemetryStore for ClickHouseStore {
     }
 
     async fn probe(&self, probe: BatchProbe) -> Result<bool, StoreError> {
+        if let Some(cluster) = self.replicated().await? {
+            let answer = self
+                .lookup(
+                    ServiceIdentity::Ingest,
+                    &render::probe_replicas(&probe, cluster),
+                )
+                .await?;
+            let [holding, answered, replicas] = numbers("the probe of every replica", &answer)?;
+            return probe_answer(holding, answered, replicas);
+        }
         let answer = self
             .lookup(ServiceIdentity::Ingest, &render::probe(&probe))
             .await?;
@@ -1094,8 +1379,23 @@ impl TelemetryStore for ClickHouseStore {
     async fn delete(&self, plan: DeletePlan) -> Result<MutationId, StoreError> {
         let statement =
             render::delete(&plan).map_err(|error| StoreError::Internal(error.to_string()))?;
-        let settings = DELETE_SETTINGS.map(|(name, value)| (name, value.to_owned()));
-        self.change(&statement, &settings).await?;
+        let mut settings: Vec<(&str, String)> = DELETE_SETTINGS
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned()))
+            .collect();
+        let replicated = self.replicated().await?.is_some();
+        if replicated {
+            settings.push((INACTIVE_REPLICAS.0, INACTIVE_REPLICAS.1.to_owned()));
+        }
+        match self.change(&statement, &settings).await {
+            Ok(()) => {}
+            // A replica that is down runs the delete when it returns; the mutation's status says when every replica
+            // has.
+            Err(StoreError::Rejected {
+                code: UNFINISHED, ..
+            }) if replicated => {}
+            Err(error) => return Err(error),
+        }
         self.latest_mutation(plan.table(), plan.partition()).await
     }
 
@@ -1110,8 +1410,20 @@ impl TelemetryStore for ClickHouseStore {
             "ALTER TABLE {DATABASE}.{} DROP PARTITION ID {partition}",
             table.name()
         ));
-        let settings = [("alter_sync", self.alter_sync().await?)];
-        self.change(&statement, &settings).await
+        let mut settings = vec![("alter_sync", self.alter_sync().await?)];
+        let replicated = self.replicated().await?.is_some();
+        if replicated {
+            settings.push((INACTIVE_REPLICAS.0, INACTIVE_REPLICAS.1.to_owned()));
+        }
+        match self.change(&statement, &settings).await {
+            // The drop is whole once every replica has run it: until a replica that is down returns and drops the
+            // partition too, the drop is sent again.
+            Err(StoreError::Rejected {
+                code: UNFINISHED,
+                message,
+            }) if replicated => Err(StoreError::Unavailable(message)),
+            other => other,
+        }
     }
 
     async fn apply_deleted_mask(
@@ -1134,6 +1446,52 @@ impl TelemetryStore for ClickHouseStore {
     async fn mutation_status(&self, id: &MutationId) -> Result<MutationStatus, StoreError> {
         if id.name().is_empty() {
             return Ok(MutationStatus::Done);
+        }
+        if let Some(cluster) = self.replicated().await? {
+            let mut b = Binder::default();
+            let database = b.string(DATABASE);
+            let name = b.string(id.table().name());
+            let mutation = b.string(id.name());
+            let cluster_name = b.string(cluster.as_str());
+            let present = table_present(&database, &name);
+            let rows = on_every_replica(
+                cluster,
+                &format!(
+                    "SELECT count() AS listed, countIf(is_done) AS done, countIf(is_killed) AS killed, \
+                     max(latest_fail_reason) AS reason, {present} AS present FROM system.mutations WHERE database \
+                     = {database} AND table = {name} AND mutation_id = {mutation}"
+                ),
+            );
+            let answer = self
+                .every_replica_lookup(
+                    ServiceIdentity::Maint,
+                    b.finish(format!(
+                        "SELECT listed, done, killed, reason, (SELECT count() FROM system.clusters WHERE cluster = \
+                         {cluster_name}) FROM {rows} WHERE present > 0"
+                    )),
+                )
+                .await?;
+            let mut replicas = 0;
+            let mut rows = Vec::new();
+            for line in lines(&answer) {
+                let [listed, done, killed, reason, total] = line.as_slice() else {
+                    return Err(unexpected("system.mutations of every replica", &answer));
+                };
+                replicas = total
+                    .parse()
+                    .map_err(|_| unexpected("system.clusters", &answer))?;
+                rows.push(ReplicaMutation {
+                    listed: *listed != "0",
+                    done: *done != "0",
+                    killed: *killed != "0",
+                    reason,
+                });
+            }
+            // A cluster none of whose replicas answered counts its replicas in no row.
+            if rows.is_empty() {
+                return Ok(MutationStatus::Pending);
+            }
+            return Ok(mutation_answer(replicas, &rows));
         }
         let mut b = Binder::default();
         let database = b.string(DATABASE);
@@ -1208,6 +1566,35 @@ impl TelemetryStore for ClickHouseStore {
         let database = b.string(DATABASE);
         let name = b.string(table.name());
         let partition = b.string(&partition.to_string());
+        if let Some(cluster) = self.replicated().await? {
+            let cluster_name = b.string(cluster.as_str());
+            let present = table_present(&database, &name);
+            let parts = on_every_replica(
+                cluster,
+                &format!(
+                    "SELECT count() AS n, {present} AS present FROM system.parts WHERE database = {database} AND \
+                     table = {name} AND partition_id = {partition} AND active AND has_lightweight_delete"
+                ),
+            );
+            let answer = self
+                .every_replica_lookup(
+                    ServiceIdentity::Maint,
+                    b.finish(format!(
+                        "SELECT sum(n), countIf(present > 0), (SELECT count() FROM system.clusters WHERE cluster = \
+                         {cluster_name}) FROM {parts}"
+                    )),
+                )
+                .await?;
+            let [masked, answered, replicas] =
+                numbers("the masked parts of every replica", &answer)?;
+            if answered < replicas {
+                return Err(StoreError::Unavailable(format!(
+                    "{answered} of the cluster's {replicas} replicas answered with the table, and one that did not \
+                     may still hold masked parts"
+                )));
+            }
+            return Ok(masked);
+        }
         let answer = self
             .lookup(
                 ServiceIdentity::Maint,
@@ -1221,6 +1608,18 @@ impl TelemetryStore for ClickHouseStore {
     }
 
     async fn apply_migration(&self, step: &MigrationStep) -> Result<(), StoreError> {
+        // Every replica runs a step's ON CLUSTER statements, so none may be down when it starts.
+        if let Some(cluster) = &self.inner.config.cluster {
+            let replicas = self.cluster_replicas(cluster).await?;
+            let silent = self.silent_replicas(cluster, &replicas).await?;
+            if !silent.is_empty() {
+                return Err(StoreError::Unavailable(format!(
+                    "{} of cluster {cluster} did not answer, and every replica runs the migration's ON CLUSTER \
+                     statements: start it, then migrate again",
+                    silent.join(", ")
+                )));
+            }
+        }
         let settings: Vec<(&str, String)> = step
             .settings
             .iter()
@@ -1297,6 +1696,8 @@ mod tests {
             sent.extend(class_settings(class.limits()).iter().map(|(name, _)| *name));
         }
         sent.extend(DELETE_SETTINGS.map(|(name, _)| name));
+        // The reads of every replica in a cluster and its replicated changes.
+        sent.extend(["skip_unavailable_shards", INACTIVE_REPLICAS.0]);
         // The byte limit a plan may carry, the semi-join id cap, the per-series fill, the mask application and
         // the partition drop.
         sent.extend([
@@ -1397,6 +1798,113 @@ mod tests {
         )
         .unwrap();
         assert_eq!(block.rows(), 1);
+    }
+
+    proptest::proptest! {
+        /// The probe of a cluster reads present only when a majority holds the block, as an acknowledged insert
+        /// with `insert_quorum = auto` leaves it, and absent only when every replica answered without it; every
+        /// other answer is no answer, so the shipper probes again rather than resend a block that may land.
+        #[test]
+        fn the_probe_of_a_cluster_answers_only_what_every_replica_settles(
+            replicas in 1u64..8,
+            answered in 0u64..8,
+            holding in 0u64..8,
+        ) {
+            let answered = answered.min(replicas);
+            let holding = holding.min(answered);
+            match probe_answer(holding, answered, replicas) {
+                Ok(true) => proptest::prop_assert!(2 * holding > replicas),
+                Ok(false) => proptest::prop_assert!(holding == 0 && answered == replicas),
+                Err(StoreError::Unavailable(_)) => proptest::prop_assert!(
+                    2 * holding <= replicas && (holding > 0 || answered < replicas)
+                ),
+                Err(other) => proptest::prop_assert!(false, "{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_probe_of_a_cluster_with_no_replica_is_no_answer() {
+        assert!(matches!(
+            probe_answer(0, 0, 0),
+            Err(StoreError::Unavailable(_))
+        ));
+        // Two replicas: one holds the block while its quorum waits.
+        assert!(probe_answer(1, 2, 2).is_err());
+        assert_eq!(probe_answer(2, 2, 2).unwrap(), true);
+        assert_eq!(probe_answer(0, 2, 2).unwrap(), false);
+        // Three replicas, one down: a majority still answers present, never absent.
+        assert_eq!(probe_answer(2, 2, 3).unwrap(), true);
+        assert!(probe_answer(0, 2, 3).is_err());
+    }
+
+    /// A mutation of a cluster is done once every replica has done it or none lists it any more; a replica that
+    /// did not answer, or that does not list it yet, has not run it.
+    #[test]
+    fn a_mutation_of_a_cluster_is_done_on_every_replica_or_pending() {
+        let row = |listed, done| ReplicaMutation {
+            listed,
+            done,
+            killed: false,
+            reason: "",
+        };
+        assert_eq!(
+            mutation_answer(2, &[row(true, true), row(true, true)]),
+            MutationStatus::Done
+        );
+        assert_eq!(
+            mutation_answer(2, &[row(false, false), row(false, false)]),
+            MutationStatus::Done
+        );
+        for pending in [
+            vec![row(true, true), row(true, false)],
+            vec![row(true, true), row(false, false)],
+            vec![row(true, true)],
+            vec![],
+        ] {
+            assert_eq!(
+                mutation_answer(2, &pending),
+                MutationStatus::Pending,
+                "{pending:?}"
+            );
+        }
+        let failed = ReplicaMutation {
+            reason: "Code: 241. DB::Exception: Memory limit exceeded",
+            ..row(true, false)
+        };
+        assert_eq!(
+            mutation_answer(2, &[row(true, true), failed]),
+            MutationStatus::Failed {
+                code: 241,
+                reason: failed.reason.to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn one_row_answers_read_as_numbers() {
+        assert_eq!(
+            numbers::<3>(
+                "x", "1	2	3
+"
+            )
+            .unwrap(),
+            [1, 2, 3]
+        );
+        assert!(
+            numbers::<3>(
+                "x", "1	2
+"
+            )
+            .is_err()
+        );
+        assert!(
+            numbers::<2>(
+                "x", "1	z
+"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1517,6 +2025,7 @@ mod refused_agent_reads {
                     read_agent: credentials("crucible_read_agent"),
                     maint: credentials("crucible_maint"),
                     flavour: Some(StoreFlavour::SingleNode),
+                    cluster: None,
                     tls_roots: TlsRoots::WebPki,
                     connect_timeout: Duration::from_secs(5),
                     idle_timeout: Some(Duration::from_secs(5)),

@@ -51,7 +51,7 @@ use crucible_plan::{
     TokenMode, pad_in_list,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str};
-use crucible_schema::{ColumnRef, DATABASE, PROJECT_ID, TableDef, Ty, table};
+use crucible_schema::{ColumnRef, DATABASE, Ident, PROJECT_ID, TableDef, Ty, table};
 
 /// The byte cap of one `metadata_kv` item (contract 3.1).
 const METADATA_KV_CAP: usize = 1_024;
@@ -116,6 +116,8 @@ pub(crate) struct Binder {
     scope: Option<Scope>,
     /// The most ids a set of the statement may hold, when it has a set.
     set_cap: Option<u64>,
+    /// The cluster whose replicas each table reference reads together, for a plan read on every replica.
+    replicas: Option<String>,
 }
 
 pub(crate) fn escape(text: &str) -> String {
@@ -416,12 +418,13 @@ impl Scope {
     /// `FROM crucible.<table> WHERE project_id = {scope} AND <window>`, and the window's post-grouping part.
     fn from(&self, b: &mut Binder, id: TableId) -> Result<(String, Vec<String>), RenderError> {
         let def = table(id);
+        let source = match &b.replicas {
+            Some(cluster) => format!("clusterAllReplicas('{cluster}', {DATABASE}.{})", def.name()),
+            None => format!("{DATABASE}.{}", def.name()),
+        };
         let project = b.uuid(self.project.uuid());
         let (filter, having) = window(b, def, self.window)?;
-        let mut sql = format!(
-            "FROM {DATABASE}.{} WHERE {PROJECT_ID} = {project}",
-            def.name()
-        );
+        let mut sql = format!("FROM {source} WHERE {PROJECT_ID} = {project}");
         for condition in filter {
             sql.push_str(" AND ");
             sql.push_str(&condition);
@@ -955,28 +958,71 @@ pub fn plan(plan: &QueryPlan) -> Result<Statement, RenderError> {
     Ok(b.finish(sql))
 }
 
-/// Renders the existence probe (contract 5.5): the one statement without a project scope. It returns one
-/// `count()`, and the block is present when the count is above zero.
-pub fn probe(probe: &BatchProbe) -> Statement {
-    let mut b = Binder::default();
+/// Renders a plan read on each of the replicas in `cluster` ([`QueryPlan::on_every_replica`]): each table reference
+/// reads the rows of all replicas together (`clusterAllReplicas`), and a replica that cannot answer fails the
+/// read, whatever the caller's settings profile says about unavailable shards.
+pub fn plan_on_replicas(plan: &QueryPlan, cluster: &Ident) -> Result<Statement, RenderError> {
+    let scope = Scope {
+        project: plan.scope().project_id(),
+        window: plan.window(),
+    };
+    let mut b = Binder {
+        scope: Some(scope),
+        replicas: Some(cluster.to_string()),
+        ..Binder::default()
+    };
+    let sql = node(&mut b, &scope, plan.root())?;
+    let mut statement = b.finish(sql);
+    statement
+        .settings
+        .push(("skip_unavailable_shards", "0".to_owned()));
+    Ok(statement)
+}
+
+/// `FROM crucible.<table> WHERE <the probe's predicate>`.
+fn probe_source(b: &mut Binder, probe: &BatchProbe) -> String {
     let name = probe.table().name();
     let partition = b.string(&probe.partition().to_string());
     let epoch = b.uuid(probe.epoch().uuid());
     let batch_seq = b.u64(probe.batch_seq().get());
-    let sql = match probe.kind() {
+    match probe.kind() {
         ProbeKind::BatchSeq => format!(
-            "SELECT count() FROM {DATABASE}.{name} WHERE _partition_id = {partition} AND wal_epoch = {epoch} \
-             AND batch_seq = {batch_seq}"
+            "FROM {DATABASE}.{name} WHERE _partition_id = {partition} AND wal_epoch = {epoch} AND batch_seq = \
+             {batch_seq}"
         ),
         ProbeKind::Marker => {
             let nil = b.uuid(Uuid::NIL);
             format!(
-                "SELECT count() FROM {DATABASE}.{name} WHERE {PROJECT_ID} = {nil} AND marker_epoch = {epoch} AND \
+                "FROM {DATABASE}.{name} WHERE {PROJECT_ID} = {nil} AND marker_epoch = {epoch} AND \
                  marker_batch_seq = {batch_seq} AND _partition_id = {partition}"
             )
         }
-    };
-    b.finish(sql)
+    }
+}
+
+/// Renders the existence probe (contract 5.5): the one statement without a project scope. It returns one
+/// `count()`, and the block is present when the count is above zero.
+pub fn probe(probe: &BatchProbe) -> Statement {
+    let mut b = Binder::default();
+    let source = probe_source(&mut b, probe);
+    b.finish(format!("SELECT count() {source}"))
+}
+
+/// Renders the existence probe on each of the replicas in `cluster`: one row of three counts, the replicas that hold the
+/// block, the replicas that answered, and the replicas the cluster defines. A replica that cannot be reached, or
+/// that lacks the table, is left out and not counted as answering.
+pub fn probe_replicas(probe: &BatchProbe, cluster: &Ident) -> Statement {
+    let mut b = Binder::default();
+    let source = probe_source(&mut b, probe);
+    let name = b.string(cluster.as_str());
+    let mut statement = b.finish(format!(
+        "SELECT countIf(n > 0), count(), (SELECT count() FROM system.clusters WHERE cluster = {name}) FROM \
+         clusterAllReplicas('{cluster}', view(SELECT count() AS n {source}))"
+    ));
+    statement
+        .settings
+        .push(("skip_unavailable_shards", "1".to_owned()));
+    statement
 }
 
 /// Renders a lightweight delete in one partition. It always carries the project predicate or the marker
@@ -1033,6 +1079,41 @@ mod tests {
         assert_eq!(seconds(Timestamp::from_micros(60_000_000)), "0000000060");
         assert_eq!(micros(Timestamp::from_micros(-500_000)), "-0.500000");
         assert_eq!(micros(Timestamp::EPOCH), "0.000000");
+    }
+
+    /// On a cluster the probe counts, on every replica, the rows the single-server probe counts, and the
+    /// replicas that answered; a replica that cannot answer is left out, never read as holding nothing.
+    #[test]
+    fn the_probe_of_every_replica_counts_what_the_probe_counts() {
+        use crucible_records::{CivilDate, Lsn, PartitionId, WalEpoch};
+
+        let cluster = Ident::new("crucible").unwrap();
+        let day = PartitionId::date(CivilDate::new(2026, 11, 17).unwrap());
+        let month = PartitionId::month(2026, 11).unwrap();
+        for (table, partition) in [(TableId::SpanCore, day), (TableId::SpanMetrics, month)] {
+            let probe = crucible_plan::test_support::batch_probe(
+                table,
+                partition,
+                WalEpoch::from_bytes([7; 16]),
+                Lsn::new(5),
+            )
+            .unwrap();
+            let single = super::probe(&probe);
+            let every = probe_replicas(&probe, &cluster);
+            let condition = single.sql.strip_prefix("SELECT count() ").unwrap();
+            assert!(every.sql.contains(&format!(
+                "clusterAllReplicas('crucible', view(SELECT count() AS n {condition}))"
+            )));
+            assert!(every.sql.starts_with(
+                "SELECT countIf(n > 0), count(), (SELECT count() FROM system.clusters"
+            ));
+            assert_eq!(every.params[..single.params.len()], single.params[..]);
+            assert!(
+                every
+                    .settings
+                    .contains(&("skip_unavailable_shards", "1".to_owned()))
+            );
+        }
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub struct QueryPlan {
     class: QueryClass,
     limits: ClassLimits,
     root: Node,
+    /// Whether a clustered store reads the plan on every replica.
+    every_replica: bool,
 }
 
 impl QueryPlan {
@@ -38,7 +40,22 @@ impl QueryPlan {
             class,
             limits: class.limits(),
             root,
+            every_replica: false,
         }
+    }
+
+    /// The same plan, read on each replica when the store is one shard with several replicas, whose answer is then
+    /// the rows of all of them together, and on the one server of any other store. A replica that does not
+    /// answer fails the read. The verification of a delete reads this way (contract 13.3, step 7): it must find
+    /// no row on any replica.
+    pub const fn on_every_replica(mut self) -> Self {
+        self.every_replica = true;
+        self
+    }
+
+    /// Whether a store of several replicas reads the plan on each of them ([`QueryPlan::on_every_replica`]).
+    pub const fn every_replica(&self) -> bool {
+        self.every_replica
     }
 
     /// The same plan under other limits than its class's defaults, for tests of the guardrails only.

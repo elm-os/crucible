@@ -185,6 +185,7 @@ impl ClickHouse {
                 maint: self.generated(ServiceIdentity::Maint),
                 // `clickhouse.flavor = auto`: detection reads it from the server.
                 flavour: None,
+                cluster: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: CONNECT_TIMEOUT,
                 idle_timeout: self.idle_timeout,
@@ -489,6 +490,7 @@ mod tests {
                     read_agent: user(),
                     maint: user(),
                     flavour: Some(StoreFlavour::SingleNode),
+                    cluster: None,
                     tls_roots: TlsRoots::WebPki,
                     connect_timeout: CONNECT_TIMEOUT,
                     idle_timeout: None,

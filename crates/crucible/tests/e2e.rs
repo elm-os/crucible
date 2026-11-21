@@ -918,6 +918,7 @@ async fn otlp_reaches_the_api_and_the_ui_and_survives_a_crash() {
                 read_agent: admin.clone(),
                 maint: admin.clone(),
                 flavour: None,
+                cluster: None,
                 tls_roots: TlsRoots::WebPki,
                 connect_timeout: Duration::from_secs(10),
                 idle_timeout: None,

@@ -12,7 +12,8 @@ use crucible_records::{TableId, Uuid};
 
 use crate::access::{AccessParams, ingest_grant, mask_grant, service_policy, service_statements};
 use crate::ddl::{
-    DATABASE, Granularity, Ident, SQL_DATABASE, Variant, create_database, create_table,
+    CLUSTERED_DDL_SETTINGS, DATABASE, Granularity, Ident, SQL_DATABASE, Variant, create_database,
+    create_table,
 };
 use crate::table::{PROJECT_ID, TableDef};
 use crate::tables::{TABLES, table};
@@ -149,10 +150,12 @@ pub fn schema_span_usage_aggregate(variant: &Variant) -> MigrationStep {
 /// The settings of the hourly step on a variant: the variant's DDL settings, then [`COPY_SETTINGS`].
 fn hourly_step_settings(variant: &Variant) -> &'static [(&'static str, &'static str)] {
     const SINGLE: [(&str, &str); 5] = COPY_SETTINGS;
-    const CLUSTERED: [(&str, &str); 8] = [
-        ("alter_sync", "2"),
-        ("wait_end_of_query", "1"),
-        ("distributed_ddl_entry_format_version", "8"),
+    const CLUSTERED: [(&str, &str); 10] = [
+        CLUSTERED_DDL_SETTINGS[0],
+        CLUSTERED_DDL_SETTINGS[1],
+        CLUSTERED_DDL_SETTINGS[2],
+        CLUSTERED_DDL_SETTINGS[3],
+        CLUSTERED_DDL_SETTINGS[4],
         COPY_SETTINGS[0],
         COPY_SETTINGS[1],
         COPY_SETTINGS[2],
@@ -549,6 +552,28 @@ mod tests {
             HOURLY_COPY_STARTED.to_string(),
             "00000000-0000-7000-8000-000000000002"
         );
+    }
+
+    /// On a cluster the probe, the maintenance reads and the verification of a delete read every replica with
+    /// `clusterAllReplicas`: the clustered A1 grants the remote source to the identities that run them and the
+    /// cluster's definition to the two that count its replicas. Other variants grant neither.
+    #[test]
+    fn only_the_clustered_service_step_grants_reads_of_every_replica() {
+        for variant in variants() {
+            let a1 = access_service(&variant, &params());
+            let has = |grant: &str| a1.statements.iter().any(|s| s.ends_with(grant));
+            let clustered = matches!(variant, Variant::Clustered { .. });
+            assert_eq!(
+                has(" REMOTE ON *.* TO crucible_ingest, crucible_read_ui, crucible_maint"),
+                clustered,
+                "{variant:?}"
+            );
+            assert_eq!(
+                has(" SELECT ON system.clusters TO crucible_ingest, crucible_maint"),
+                clustered,
+                "{variant:?}"
+            );
+        }
     }
 
     #[test]

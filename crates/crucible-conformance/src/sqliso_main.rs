@@ -78,6 +78,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args> {
             url,
             admin,
             cluster: None,
+            replicas: Vec::new(),
         },
         options,
     })
