@@ -100,7 +100,7 @@ pub enum MediaError {
 pub struct Media {
     env: Env,
     control: Arc<dyn ControlStore>,
-    objects: Arc<dyn ObjectStore>,
+    pub(crate) objects: Arc<dyn ObjectStore>,
     config: MediaConfig,
 }
 

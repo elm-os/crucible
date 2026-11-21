@@ -70,3 +70,11 @@ sends ClickHouse the data it had not sent yet, so it does not store again what a
 Older requests are left out, because a deletion selects only data received before the request. Until Postgres
 answers, the server keeps accepting data into its write-ahead log and sends nothing. An export reads the stored
 rows, so an export made while a request is still `pending` or `logged` can include the data it names.
+
+## Deleting a project
+
+An org owner or admin deletes a project with `DELETE /api/v1/projects/{project_id}`. The project leaves every list
+at once and its API keys stop working, on every server within 5 seconds. Its dashboards with their widgets and its
+media records go with it, and with an object store every object under the project's key prefix is deleted next
+([media](media.md#deletion-and-retention)). Its telemetry stays in ClickHouse, where no page, API answer or MCP tool
+reads it any more.

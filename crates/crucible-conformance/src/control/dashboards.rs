@@ -155,5 +155,34 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
         "get the new dashboard",
         repo.get(one.id, DashboardId::from_uuid(id(104))).await,
     );
+
+    // A project's deletion takes every dashboard of the project with its widgets, and nothing of another's.
+    t.outcome(
+        "delete the project's dashboards",
+        repo.delete_project(one.id).await,
+    );
+    t.outcome("list after the project's deletion", repo.list(one.id).await);
+    t.outcome(
+        "the other project keeps its dashboards",
+        repo.list(two.id).await,
+    );
+    // No widget row is left behind: the same dashboard and widget ids insert again.
+    t.outcome(
+        "insert the deleted dashboard's ids again",
+        repo.insert(&dashboard(104, one.id), &[widget(110, 0)?])
+            .await,
+    );
+    t.outcome(
+        "get it",
+        repo.get(one.id, DashboardId::from_uuid(id(104))).await,
+    );
+    t.outcome(
+        "delete the project's dashboards again",
+        repo.delete_project(one.id).await,
+    );
+    t.outcome(
+        "delete the dashboards of a project without any",
+        repo.delete_project(ProjectId::from_uuid(id(999))).await,
+    );
     Ok(())
 }

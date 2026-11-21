@@ -632,13 +632,16 @@ impl Identity {
     }
 
     /// Deletes a project (a soft delete); `expected` is the `If-Match` version. Its keys are revoked in the same
-    /// transaction, so they stop working here at once and on every node through the key feed.
-    pub async fn delete_project(&self, id: ProjectId, expected: u64) -> Result<(), AuthError> {
+    /// transaction, so they stop working here at once and on every node through the key feed, and its
+    /// dashboards with their widgets and its media rows are deleted with it (contract 13.4). Returns the deleted
+    /// project's row; the media objects under its key prefix are the caller's to remove.
+    pub async fn delete_project(&self, id: ProjectId, expected: u64) -> Result<Project, AuthError> {
         let mut project = self.live_project(id).await?;
         let version = check_version(project.version, Some(expected))?;
         let now = self.now();
         project.deleted_at = Some(now);
         project.version += 1;
+        let deleted_row = project.clone();
         let revoked: Vec<ApiKey> = self
             .store
             .api_keys()
@@ -668,6 +671,8 @@ impl Identity {
                         return Err(crucible_control::TxError::SerializationFailure);
                     }
                 }
+                tx.dashboards().delete_project(id).await?;
+                tx.media().delete_project(id).await?;
                 Ok(true)
             })
         })
@@ -679,7 +684,7 @@ impl Identity {
             self.keys.apply_local(key);
         }
         self.forget_sessions();
-        Ok(())
+        Ok(deleted_row)
     }
 
     /// The explicit members of a project with their user rows, ordered by user id.

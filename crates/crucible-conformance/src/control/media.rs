@@ -1,7 +1,8 @@
 //! Media (contracts 11.1 and 14.3): the rows of `media_objects` and `media_refs`. Every statement of
 //! `MediaRepo`: inserts and their constraints, the reads by id, hash and hash range, re-arming, the confirm,
-//! uses and their reads, the deletes by trace and by time, the collector's reads and deletes, and the foreign
-//! key that keeps a used object's row: a delete that races a new use, in both orders, fails.
+//! uses and their reads, the deletes by trace and by time, the collector's reads and deletes, a project's
+//! deletion, and the foreign key that keeps a used object's row: a delete that races a new use, in both orders,
+//! fails.
 
 use anyhow::{Result, ensure};
 use crucible_control::{MediaObject, MediaRef, MediaState, MediaUse, TxError};
@@ -371,6 +372,61 @@ pub(super) async fn run(ctl: &Ctl, t: &mut Transcript) -> Result<()> {
     t.outcome(
         "the pending object stays with its use",
         media.uses(two.id, trace(6), None).await.map(|u| u.len()),
+    );
+
+    // A project's deletion takes every use and object row of the project in one statement, and nothing of
+    // another project's.
+    media
+        .add_ref(&reference(&b, 8, None, "input", 1_000))
+        .await?;
+    t.outcome(
+        "delete the project's media",
+        media.delete_project(one.id).await,
+    );
+    t.outcome(
+        "its object after",
+        media.object(one.id, b.id).await.map(|o| o.is_some()),
+    );
+    t.outcome(
+        "its uses after",
+        media.uses(one.id, trace(8), None).await.map(|u| u.len()),
+    );
+    t.outcome(
+        "the other project's objects stay",
+        media
+            .existing(&[d.id, e.id])
+            .await
+            .map(|ids| ids.iter().map(ToString::to_string).collect::<Vec<_>>()),
+    );
+    t.outcome(
+        "the other project's uses stay",
+        media.uses(two.id, trace(5), None).await.map(|u| u.len()),
+    );
+    t.outcome(
+        "delete the project's media again",
+        media.delete_project(one.id).await,
+    );
+
+    // A use recorded while a project's media is deleted: the deletion, which cannot see it, fails.
+    let tx = s.begin().await?;
+    t.outcome(
+        "a transaction reads an object of the project",
+        tx.media().object(two.id, d.id).await.map(|o| o.is_some()),
+    );
+    t.outcome(
+        "a use is recorded outside",
+        media.add_ref(&reference(&d, 9, None, "input", 1_100)).await,
+    );
+    let late = tx.media().delete_project(two.id).await;
+    ensure!(
+        late.is_err(),
+        "a project's media was deleted while a use its snapshot does not show refers to it: {late:?}"
+    );
+    t.outcome("the transaction then deletes the project's media", late);
+    tx.rollback().await;
+    t.outcome(
+        "the project's object stays with its uses",
+        media.uses(two.id, trace(9), None).await.map(|u| u.len()),
     );
     Ok(())
 }

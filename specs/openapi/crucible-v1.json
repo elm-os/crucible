@@ -1322,7 +1322,7 @@
           "projects"
         ],
         "summary": "Delete a project",
-        "description": "A soft delete: the project disappears from every list and its keys stop working.",
+        "description": "The project disappears from every list and its keys stop working. Its dashboards with their widgets and its\nmedia go with it: the media rows at once and, when object storage is configured, every object under the\nproject's key prefix.",
         "operationId": "delete_project",
         "parameters": [
           {

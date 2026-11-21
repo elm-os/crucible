@@ -192,4 +192,13 @@ impl DashboardRepo for Handle {
             .await?;
         Ok(deleted == 1)
     }
+
+    async fn delete_project(&self, project_id: ProjectId) -> Result<u64, TxError> {
+        // The widgets go with their dashboards (`widgets_dashboard_id_fkey` cascades).
+        self.write(
+            "DELETE FROM dashboards WHERE project_id = $1 RETURNING 1",
+            &[P::Uuid(project_id.uuid())],
+        )
+        .await
+    }
 }
