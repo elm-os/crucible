@@ -525,7 +525,7 @@ function SecretField({ label }: { label: string }) {
       <FieldLabel>{label}</FieldLabel>
       <PasswordInput name="client_secret" required autoComplete="off">
         <PasswordInputControl spellCheck={false} pattern={TEXT_PATTERN} />
-        <PasswordInputToggle aria-label="Show client secret">Show</PasswordInputToggle>
+        <PasswordInputToggle aria-label="Show client secret" />
       </PasswordInput>
       <FieldDescription>Crucible stores it sealed and never shows it again.</FieldDescription>
       <FieldError match="valueMissing">Enter the client secret the provider issued.</FieldError>
