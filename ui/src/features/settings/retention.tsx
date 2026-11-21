@@ -12,7 +12,13 @@ import type { Retention } from "@/api/generated/Retention";
 import type { RetentionUpdate } from "@/api/generated/RetentionUpdate";
 import type { SessionProject } from "@/api/generated/SessionProject";
 import { EmptyState } from "@/components/empty-state";
-import { type CopyByCode, FormAlert, failureCopy, fieldFailed } from "@/components/form-alert";
+import {
+  type Copy,
+  type CopyByCode,
+  FormAlert,
+  failureCopy,
+  fieldFailed,
+} from "@/components/form-alert";
 import { TickIcon } from "@/components/icons";
 import { Section, SectionFrame } from "@/components/section";
 import { useAuth } from "@/lib/auth";
@@ -109,11 +115,14 @@ function RetentionSection({ project }: { project: SessionProject }) {
   );
 }
 
+// A save refused because the stored version moved on; the form shows the stored values again.
+export const SETTINGS_CHANGED: Copy = {
+  title: "These settings changed since the page loaded.",
+  detail: "The form shows the stored values now. Enter your change again, then save.",
+};
+
 const SAVE_COPY: CopyByCode = {
-  precondition_failed: {
-    title: "These settings changed since the page loaded.",
-    detail: "The form shows the stored values now. Enter your change again, then save.",
-  },
+  precondition_failed: SETTINGS_CHANGED,
   forbidden: {
     title: "Only project admins change retention.",
     detail: "Ask an admin of the project, or for the admin role on it.",

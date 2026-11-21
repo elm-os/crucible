@@ -13,6 +13,10 @@ import type { ApiKey } from "./generated/ApiKey";
 import type { ApiKeyCreate } from "./generated/ApiKeyCreate";
 import type { ApiKeyCreated } from "./generated/ApiKeyCreated";
 import type { ApiKeyList } from "./generated/ApiKeyList";
+import type { AuthProvider } from "./generated/AuthProvider";
+import type { AuthProviderCreate } from "./generated/AuthProviderCreate";
+import type { AuthProviderList } from "./generated/AuthProviderList";
+import type { AuthProviderPatch } from "./generated/AuthProviderPatch";
 import type { Channel } from "./generated/Channel";
 import type { ChannelCreate } from "./generated/ChannelCreate";
 import type { ChannelList } from "./generated/ChannelList";
@@ -56,9 +60,11 @@ import type { Media } from "./generated/Media";
 import type { MetricsQueryRequest } from "./generated/MetricsQueryRequest";
 import type { MetricsResponse } from "./generated/MetricsResponse";
 import type { MetricsSchema } from "./generated/MetricsSchema";
+import type { Org } from "./generated/Org";
 import type { OrgMember } from "./generated/OrgMember";
 import type { OrgMemberList } from "./generated/OrgMemberList";
 import type { OrgMemberPatch } from "./generated/OrgMemberPatch";
+import type { OrgPatch } from "./generated/OrgPatch";
 import type { PasswordResetConfirm } from "./generated/PasswordResetConfirm";
 import type { PasswordResetRequest } from "./generated/PasswordResetRequest";
 import type { PayloadField } from "./generated/PayloadField";
@@ -679,6 +685,35 @@ export async function createInvitation(body: InvitationCreate): Promise<Invitati
 export async function revokeInvitation(invitationId: string): Promise<void> {
   const path = `/org/invitations/${encodeURIComponent(invitationId)}`;
   await call(path, "session", { method: "DELETE" });
+}
+
+export async function getOrg(signal?: AbortSignal): Promise<Org> {
+  return read<Org>(await call("/org", "session", { signal }));
+}
+
+export async function patchOrg(org: Pick<Org, "version">, body: OrgPatch): Promise<Org> {
+  return read<Org>(await call("/org", "session", { method: "PATCH", body, version: org.version }));
+}
+
+// Sign-in providers carry no version, so their writes send no If-Match.
+export async function listAuthProviders(signal?: AbortSignal): Promise<AuthProviderList> {
+  return read<AuthProviderList>(await call("/org/auth-providers", "session", { signal }));
+}
+
+export async function createAuthProvider(body: AuthProviderCreate): Promise<AuthProvider> {
+  return read<AuthProvider>(await call("/org/auth-providers", "session", { method: "POST", body }));
+}
+
+export async function patchAuthProvider(
+  id: string,
+  body: AuthProviderPatch,
+): Promise<AuthProvider> {
+  const path = `/org/auth-providers/${encodeURIComponent(id)}`;
+  return read<AuthProvider>(await call(path, "session", { method: "PATCH", body }));
+}
+
+export async function deleteAuthProvider(id: string): Promise<void> {
+  await call(`/org/auth-providers/${encodeURIComponent(id)}`, "session", { method: "DELETE" });
 }
 
 export async function listApiKeys(project: string, signal?: AbortSignal): Promise<ApiKeyList> {

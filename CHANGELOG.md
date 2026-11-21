@@ -12,6 +12,13 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
   server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
   as the copy of step 0005.
+- Settings has an Organization page for the organization's name, project access (every project, or only the projects
+  someone is added to) and the allowed email domains, whose people join as viewers without an invitation once their
+  sign-in provider verifies their address. Members and viewers read it; editing needs a screen at least 768 pixels
+  wide.
+- Settings has a Sign-in page that adds, edits, turns off and deletes GitHub, Google and OpenID Connect sign-in
+  providers, replaces a client secret without ever showing the stored one, and copies the callback URL to register
+  with the provider.
 - With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
   a presigned link that any server hands out; expiry and deletion requests remove the objects.
 - The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
