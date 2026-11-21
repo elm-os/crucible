@@ -153,12 +153,20 @@ test.describe("trace detail: the media of a span", () => {
     await expect(page.getByRole("img", { name: /Image from the payload/ })).toBeVisible();
   });
 
-  test("empty: a span without media says so", async ({ page, api }) => {
+  test("empty: a span without media says so, and one whose payload expired says that", async ({
+    page,
+    api,
+  }) => {
     setUp(api);
     api.on(SPAN_MEDIA_PATH, references([]));
     await page.goto(mediaTab);
     await expect(page.getByText("This span references no media.")).toBeVisible();
     await expectAccessible(page, "span media empty");
+
+    api.on(SPAN_MEDIA_PATH, problem(404, "not_found"));
+    await page.reload();
+    await expect(page.getByText("This span's payload isn't stored.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Retry/ })).toHaveCount(0);
   });
 
   test("no object storage: one sentence and the guide, and nothing is asked for", async ({

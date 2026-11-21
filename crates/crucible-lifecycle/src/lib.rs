@@ -45,6 +45,8 @@ use crucible_records::ProjectId;
 use futures::future::BoxFuture;
 
 pub use config::{LifecycleConfig, Mutant};
+/// Where export files are when the deployment has an object store: the type of [`LeaderStores::exports`].
+pub use crucible_export::ExportObjects;
 pub use deletion::{PlaceStatus, Progress};
 pub use node::{AckError, LogError, NodeLog, NodeState, node_job};
 pub use partitions::{partition_window, partitions_between, partitions_of_days};

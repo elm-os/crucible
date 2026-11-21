@@ -10,14 +10,14 @@ use std::time::Duration;
 
 use crucible_auth::test_support::scope;
 use crucible_control::{
-    ControlStore, DeletionRequest, DeletionSelector, ExportFormat, JsonDoc, MediaObject, MediaRef,
-    MediaState, NewExport, Project, Repos as _,
+    ControlStore, DeletionRequest, DeletionSelector, ExportCommit, ExportFormat, JsonDoc,
+    MediaObject, MediaRef, MediaState, NewExport, Project, Queue, Repos as _,
 };
 use crucible_env::{StoreFlavour, Stores};
 use crucible_jobs::Registry;
 use crucible_lifecycle::{
-    LeaderSource, LeaderStores, LifecycleConfig, NewDeletion, NodeLog as _, NodeState, Service,
-    Subjects, WalLog, leader_jobs, node_job,
+    ExportObjects, LeaderSource, LeaderStores, LifecycleConfig, NewDeletion, NodeLog as _,
+    NodeState, Service, Subjects, WalLog, leader_jobs, node_job,
 };
 use crucible_plan::Value;
 use crucible_records::{
@@ -26,6 +26,7 @@ use crucible_records::{
 use crucible_schema::{Granularity, table};
 use crucible_shipper::{Hooks, Shipper, ShipperConfig};
 use crucible_sim::ch_model::ChModel;
+use crucible_sim::object_model::{ObjectFaults, SimObjectStore};
 use crucible_sim::pg_model::{PgFaults, PgModel};
 use crucible_sim::ship_sim::{SpanSpec, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, run};
@@ -57,6 +58,8 @@ struct Node {
     pg: PgModel,
     service: Service,
     log: WalLog,
+    /// The object store, which holds export files under the prefix `media`.
+    objects: Arc<SimObjectStore>,
 }
 
 impl Node {
@@ -169,10 +172,15 @@ where
         let mut config = LifecycleConfig::default();
         config.mask_cycle = Duration::from_secs(1_800);
         config.media = true;
+        let objects = SimObjectStore::new(
+            host.clock.clone(),
+            sim.rng("objects"),
+            ObjectFaults::default(),
+        );
         let stores = LeaderStores {
             telemetry: Arc::new(ch.clone()),
             subjects: Arc::new(NoSalt),
-            exports: None,
+            exports: Some(ExportObjects::new(objects.clone(), "media")),
         };
         let source: LeaderSource = Arc::new(move || Some(stores.clone()));
         let mut registry = Registry::new();
@@ -188,6 +196,7 @@ where
             pg,
             service,
             log,
+            objects,
         };
         body(node).await;
     });
@@ -264,8 +273,40 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
             as_of: created_at,
         };
         let exports = node.pg.export_jobs();
+        // Each export's file is an object on the store, recorded under the export's claim.
+        let file = |n: u8| {
+            let id = ExportJobId::from_bytes([n; 16]);
+            let key = format!(
+                "media/{}/exports/{id}/1/crucible-export-{id}.jsonl",
+                ProjectId::from_bytes(PROJECT)
+            );
+            (key.clone(), format!("object:{key}"))
+        };
+        let commit = |n: u8| {
+            let (pg, objects) = (node.pg.clone(), Arc::clone(&node.objects));
+            let now = node.host.env.clock.wall_now();
+            async move {
+                let (key, reference) = file(n);
+                objects.plant(&key, bytes::Bytes::from_static(b"{}\n"), now);
+                let claim = pg
+                    .claims()
+                    .claim(Queue::ExportJobs, 1, Duration::from_secs(60))
+                    .await
+                    .unwrap();
+                let commit = ExportCommit {
+                    file: reference,
+                    checksum: "ab".repeat(32),
+                    spans: 1,
+                    bytes: 3,
+                    skipped: 0,
+                    expires_at: now.saturating_add_micros(7 * 86_400_000_000),
+                };
+                assert!(pg.export_jobs().commit(&claim[0], &commit).await.unwrap());
+            }
+        };
         let before = node.host.env.clock.wall_now();
         exports.insert(&export(1, before)).await.unwrap();
+        commit(1).await;
         // Media used in both traces before the request.
         let media = node.pg.media();
         let object = MediaObject {
@@ -314,6 +355,7 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
         node.ingest(1, 3..4).await;
         let after = node.host.env.clock.wall_now();
         exports.insert(&export(2, after)).await.unwrap();
+        commit(2).await;
         media.add_ref(&used(1, after)).await.unwrap();
 
         // One period of the executor after the checkpoint: the deletes have run and hide the rows.
@@ -337,9 +379,17 @@ fn a_deletion_by_trace_completes_over_the_real_wal_and_shipper() {
             .await
             .unwrap()
             .iter()
-            .map(|job| job.expires_at.is_some())
+            .map(|job| {
+                job.expires_at
+                    .is_some_and(|at| at <= node.host.env.clock.wall_now())
+            })
             .collect();
         assert_eq!(expired, [true, false]);
+        // The file of the expired export is removed from the object store once the expiry is recorded; the later
+        // export's file stays.
+        let stored = node.objects.objects();
+        assert!(!stored.contains_key(&file(1).0), "{:?}", stored.keys());
+        assert!(stored.contains_key(&file(2).0), "{:?}", stored.keys());
         assert!(
             done.places.contains("\"export_files\":\"done\""),
             "{}",

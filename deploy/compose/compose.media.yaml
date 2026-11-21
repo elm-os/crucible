@@ -1,6 +1,7 @@
 # Media for compose.yaml: an S3-compatible object store (the Versity S3 gateway over a local volume) that holds the
-# images, audio and files SDKs upload beside their traces. Without it, media stay inline in payloads, under the
-# 8 MiB field cap, and the media routes answer 501 media_not_supported. See docs/self-hosting/media.md.
+# images, audio and files SDKs upload beside their traces, and export files. Without it, media stay inline in
+# payloads, under the 8 MiB field cap, the media routes answer 501 media_not_supported, and export files stay on the
+# server's disk. See docs/self-hosting/media.md.
 #
 # Two more settings in .env beside this file, made once:
 #   MEDIA_ACCESS_KEY   the gateway's access key:   printf 'MEDIA_ACCESS_KEY=%s\n' "$(openssl rand -hex 8)" >> .env

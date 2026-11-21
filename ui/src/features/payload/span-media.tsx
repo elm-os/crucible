@@ -84,6 +84,14 @@ export function SpanMedia({ project, span }: { project: string; span: PayloadSpa
   if (references.isError) {
     const error = asUiError(references.error);
     if (error.code === "media_not_supported") return <NoObjectStorage />;
+    if (error.kind === "not_found") {
+      return (
+        <EmptyState kind="filtered" title="This span's payload isn't stored.">
+          Its media can&apos;t be listed. The payload may have expired under the project&apos;s
+          payload retention, which can be shorter than the retention of spans.
+        </EmptyState>
+      );
+    }
     return (
       <ErrorCard error={error} label="media of this span" onRetry={() => references.refetch()} />
     );

@@ -87,8 +87,9 @@ bucket whole, once it is complete: a file under 8 MiB in one request, a larger o
 parts. A download answers `303` with a presigned link that works for 5 minutes and saves the file under its name, so
 every server of the deployment can answer it. Every server removes the objects of expired exports (7 days) and of
 exports that a deletion request expired, and of attempts that ended without being recorded; an upload that a stopped
-server left unfinished stays in the bucket until its lifecycle rule for incomplete multipart uploads removes it.
-Files written before object storage was configured stay on the disk of the server that wrote them until they expire.
+server left unfinished stays in the bucket until a lifecycle rule for incomplete multipart uploads removes it, on a
+store that supports one. Files written before object storage was configured stay on the disk of the server that
+wrote them until they expire.
 
 ## Deletion and retention
 

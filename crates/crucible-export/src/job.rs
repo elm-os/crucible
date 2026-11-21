@@ -274,8 +274,18 @@ async fn run(ctx: ClaimCtx, runtime: ExportRuntime) -> JobResult {
             .await;
         }
     }
-    let (rest, summary) = writer.finish().map_err(failed)?;
-    draft.append(rest).await.map_err(failed)?;
+    // A file given up here is abandoned, so that an upload to the object store does not stay open.
+    let (rest, summary) = match writer.finish() {
+        Ok(finished) => finished,
+        Err(error) => {
+            draft.abandon().await;
+            return Err(failed(error));
+        }
+    };
+    if let Err(error) = draft.append(rest).await {
+        draft.abandon().await;
+        return Err(failed(error));
+    }
     let file = draft.commit().await.map_err(failed)?;
     let commit = ExportCommit {
         file: file.clone(),

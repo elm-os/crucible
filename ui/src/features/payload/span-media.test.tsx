@@ -131,6 +131,13 @@ describe("the media of a span", () => {
     expect(await screen.findByRole("img", { name: /Image from the payload/ })).toBeTruthy();
   });
 
+  test("empty: a span whose payload isn't stored says so, without a retry", async () => {
+    fetchMock.mockResolvedValue(problem(404, "not_found"));
+    renderMedia();
+    expect(await screen.findByText("This span's payload isn't stored.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+
   test("empty: a span without media says so", async () => {
     serve([]);
     renderMedia();

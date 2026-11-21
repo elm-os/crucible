@@ -112,7 +112,9 @@ for attempt in $(seq 1 20); do
     --data '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name",
       "value":{"stringValue":"compose-smoke"}}]},
       "scopeSpans":[{"spans":[{"traceId":"'"$trace_id"'","spanId":"'"$span_id"'","name":"compose smoke span","kind":1,
-      "startTimeUnixNano":"'"$now"'000000000","endTimeUnixNano":"'"$now"'250000000"}]}]}]}' || true)
+      "startTimeUnixNano":"'"$now"'000000000","endTimeUnixNano":"'"$now"'250000000",
+      "attributes":[{"key":"crucible.input","value":{"stringValue":"{\"question\":\"what is in the picture?\"}"}}]}]}]}]}' \
+    || true)
   if [ "$status" = 200 ]; then
     break
   fi
@@ -200,6 +202,16 @@ curl --fail --silent --show-error --output "$work/media.down" "$download_url"
 cmp "$work/media.bin" "$work/media.down" || { echo "the downloaded media differs from the upload" >&2; exit 1; }
 echo "ok: the media came back byte for byte"
 
+# The span's Media tab: the server reads the span's payload from ClickHouse and lists the upload made for it.
+echo "listing the media of the span"
+start=$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)
+listed=$(curl --fail --silent --show-error "$api/spans/$trace_id/$span_id/media?start_time=$start" --header "$auth")
+if [ "$(jq -r '.data[0].media.id' <<<"$listed")" != "$media_id" ] || [ "$(jq -r '.data[0].field' <<<"$listed")" != input ]; then
+  echo "the span's media list is $listed" >&2
+  exit 1
+fi
+echo "ok: the span lists its media"
+
 # With object storage an export's file goes to the store, and its download is a 303 to a presigned link there.
 echo "exporting the trace to the object store"
 from=$(date -u -d "@$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)
@@ -223,7 +235,9 @@ case "$answer" in
   "303 http://127.0.0.1:$media_port/"*) ;;
   *) echo "the export download answered '$answer', not a 303 to the gateway" >&2; exit 1 ;;
 esac
-curl --fail --silent --show-error --output "$work/export.jsonl" "${answer#303 }"
+# As the exports guide says: follow the redirect with the key, which curl keeps away from the store's address.
+curl --fail --silent --show-error --location --output "$work/export.jsonl" --header "$auth" \
+  "$api/exports/$export_id/download"
 checksum=$(curl --fail --silent --show-error "$api/exports/$export_id" --header "$auth" | jq -r '.checksum')
 [ "$(sha256sum "$work/export.jsonl" | cut -d' ' -f1)" = "$checksum" ] \
   || { echo "the exported file does not match its checksum" >&2; exit 1; }

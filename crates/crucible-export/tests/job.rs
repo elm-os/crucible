@@ -21,8 +21,8 @@ use crucible_env::{
 };
 use crucible_export::{
     CreateError, CreateExport, Created, DOWNLOAD_TTL, Download, DownloadError, EXPORT_LEASE,
-    EXPORT_TTL, ExportObjects, ExportRuntime, ExportState, Exports, Options, SWEEP_EVERY, Selector,
-    job, purge, sweep, sweep_job, sweep_objects,
+    EXPORT_TTL, ExportObjects, ExportRuntime, ExportState, Exports, Options, PART_BYTES,
+    SWEEP_EVERY, Selector, job, purge, sweep, sweep_job, sweep_objects,
 };
 use crucible_jobs::{Registry, Running};
 use crucible_plan::{BatchProbe, DeletePlan, Node, QueryPlan, Row, RowBlock, Value};
@@ -68,6 +68,8 @@ fn zero(ty: &Ty) -> Value {
 #[derive(Debug)]
 struct Spans {
     base: Timestamp,
+    /// How long each span's name is: 400 characters, or more for an export of several multipart parts.
+    name_len: usize,
 }
 
 impl Spans {
@@ -84,7 +86,7 @@ impl Spans {
             "end_time" => Value::Time(self.start(i).saturating_add_micros(5)),
             "span_id" => Value::Bytes((i + 1).to_be_bytes().to_vec()),
             "trace_id" => Value::Bytes(TRACE.to_bytes().to_vec()),
-            "name" => Value::String(format!("span {i} {}", "x".repeat(400))),
+            "name" => Value::String(format!("span {i} {}", "x".repeat(self.name_len))),
             "received_at" => {
                 Value::Time(self.base.saturating_add_micros(i64::try_from(i).unwrap()))
             }
@@ -224,13 +226,31 @@ fn start(
     base: Timestamp,
     objects: Option<&ExportObjects>,
 ) -> Running {
+    start_over(
+        host,
+        model,
+        Spans {
+            base,
+            name_len: 400,
+        },
+        objects,
+    )
+}
+
+/// [`start`] over these spans.
+fn start_over(
+    host: &Host,
+    model: &PgModel,
+    spans: Spans,
+    objects: Option<&ExportObjects>,
+) -> Running {
     let (index, _writer) = RecentIndex::new(
         RecentConfig::new(1 << 20, crucible_env::StoreFlavour::SingleNode),
         Arc::clone(&host.env.clock),
         Arc::new(NoWal),
     );
     let service = QueryService::new(
-        Stores::new(Arc::new(Spans { base })),
+        Stores::new(Arc::new(spans)),
         Arc::clone(&host.env.clock),
         index,
         WalEpoch::from_bytes([1; 16]),
@@ -795,5 +815,102 @@ fn a_deletion_removes_the_objects_of_the_exports_it_predates() {
         assert!(export_objects(&store).is_empty());
         let job = row(&model, job.new.id).await;
         assert_eq!(ExportState::of(&job, now), ExportState::Expired);
+    });
+}
+
+/// Under a store that throttles a fifth of its calls, an export of several parts is retried until it records one
+/// whole object; no partial object ever appears, and once the store recovers the sweep leaves only the recorded one.
+/// An upload whose abandoning was throttled stays open, invisible, for the bucket's lifecycle rule.
+#[test]
+fn a_throttled_store_ends_with_one_whole_object() {
+    crucible_sim::run(17, |sim| async move {
+        let database = sim.host("postgres", &sim.disk("postgres"), 0);
+        let model = PgModel::new(
+            database.clock.clone(),
+            sim.rng("pg").as_ref(),
+            PgFaults::default(),
+        );
+        model.projects().insert(&project()).await.unwrap();
+        let store = SimObjectStore::new(
+            database.clock.clone(),
+            sim.rng("objects"),
+            ObjectFaults {
+                throttle_ppm: 200_000,
+                ..ObjectFaults::default()
+            },
+        );
+        let objects = ExportObjects::new(store.clone(), "media");
+        let host = sim.host("node", &sim.disk("node"), 0);
+        let now = host.env.clock.wall_now();
+        let base = now.saturating_add_micros(-600_000_000);
+        let id = ExportJobId::from_bytes([0x0c; 16]);
+        let new = NewExport {
+            id,
+            project_id: PROJECT,
+            format: ExportFormat::CrucibleJsonl,
+            selector: Selector {
+                window: TimeWindow::new(base, now).unwrap(),
+                trace_ids: Vec::new(),
+                user_id: None,
+                session_id: None,
+            }
+            .to_text(),
+            options: Options::default().to_text(),
+            dedup_key: id.to_string(),
+            created_by: "user:test".to_owned(),
+            created_at: now,
+            as_of: now,
+        };
+        model.export_jobs().insert(&new).await.unwrap();
+        let spans = Spans {
+            base,
+            name_len: 4_000,
+        };
+        let _running = start_over(&host, &model, spans, Some(&objects));
+        let mut done = None;
+        for _ in 0..2_000 {
+            let job = row(&model, id).await;
+            if job.file.is_some() || job.error.is_some() {
+                done = Some(job);
+                break;
+            }
+            for (key, object) in export_objects(&store) {
+                assert!(complete(&object.bytes), "{key} is a partial object");
+            }
+            database.clock.sleep(Duration::from_secs(5)).await;
+        }
+        let job = done.expect("the export never finished");
+        assert_eq!(job.error, None);
+        assert!(
+            job.attempts > 1,
+            "the store's faults never made an attempt fail"
+        );
+        assert!(
+            job.bytes > PART_BYTES as u64,
+            "{} bytes is not several parts",
+            job.bytes
+        );
+        let recorded = job
+            .file
+            .as_deref()
+            .unwrap()
+            .strip_prefix("object:")
+            .unwrap()
+            .to_owned();
+
+        store.set_faults(ObjectFaults::default());
+        host.env
+            .clock
+            .sleep(SWEEP_EVERY + Duration::from_secs(60))
+            .await;
+        let left = export_objects(&store);
+        let keys: Vec<&str> = left.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, [recorded.as_str()]);
+        assert!(complete(&left[0].1.bytes));
+        assert_eq!(
+            job.checksum.as_deref(),
+            Some(sha256(&left[0].1.bytes).as_str())
+        );
+        assert!(store.open_uploads().iter().all(|key| *key != recorded));
     });
 }

@@ -372,6 +372,11 @@ pub fn payload_tokens(body: &[u8]) -> Vec<PayloadToken> {
     let Some(token) = delimiters() else {
         return Vec::new();
     };
+    // Most bodies hold no reference: a byte scan answers for them without parsing the JSON.
+    let prefix = token.prefix.as_bytes();
+    if prefix.is_empty() || !body.windows(prefix.len()).any(|window| window == prefix) {
+        return Vec::new();
+    }
     let mut found = Vec::new();
     match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(value) => walk(&value, &mut String::new(), token, &mut found),

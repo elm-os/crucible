@@ -236,7 +236,11 @@ pub const SETTINGS: &[Setting] = &[
         Some("us-east-1"),
         "the region the request signatures name",
     ),
-    plain("object_store.bucket", None, "the bucket that holds media"),
+    plain(
+        "object_store.bucket",
+        None,
+        "the bucket that holds media and export files",
+    ),
     plain(
         "object_store.access_key",
         None,
@@ -259,7 +263,7 @@ pub const SETTINGS: &[Setting] = &[
     plain(
         "object_store.prefix",
         Some("media"),
-        "the key prefix under which media objects are stored",
+        "the key prefix under which media objects and export files are stored",
     ),
     plain(
         "media.max_bytes",
