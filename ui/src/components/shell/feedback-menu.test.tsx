@@ -27,8 +27,10 @@ function renderShell() {
   );
 }
 
+const header = () => within(screen.getByRole("banner"));
+
 async function openFromKeyboard() {
-  const trigger = within(screen.getByRole("banner")).getByRole("button", { name: "Feedback" });
+  const trigger = header().getByRole("button", { name: "Feedback" });
   await act(async () => {
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
@@ -75,8 +77,6 @@ test("an agent finds Feedback by name and reads both links once it opens", async
 });
 
 test("Feedback stays in the header signed in, without a control plane, and when the server can't be reached", async () => {
-  const header = () => within(screen.getByRole("banner"));
-
   const keys = renderShell();
   expect(header().getByRole("button", { name: "Feedback" })).toBeTruthy();
   expect(header().getByRole("button", { name: "Connect" })).toBeTruthy();

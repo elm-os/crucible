@@ -10,7 +10,7 @@ import {
 } from "@ui-sdk/react/menu";
 import { ChevronDownIcon } from "@/components/icons";
 
-export const FEEDBACK_LINKS = [
+const FEEDBACK_LINKS = [
   {
     label: "Ask a question or suggest an idea",
     href: "https://github.com/elm-os/crucible/discussions",
@@ -32,11 +32,13 @@ export function FeedbackMenu() {
           {FEEDBACK_LINKS.map((link) => (
             <MenuItem
               key={link.href}
-              render={<a href={link.href} target="_blank" rel="noreferrer" />}
-              className="text-data"
-            >
-              {link.label}
-            </MenuItem>
+              className="text-data no-underline"
+              render={(props) => (
+                <a {...props} href={link.href} target="_blank" rel="noreferrer">
+                  {link.label}
+                </a>
+              )}
+            />
           ))}
         </MenuGroup>
       </MenuContent>
