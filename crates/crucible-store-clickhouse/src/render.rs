@@ -34,13 +34,21 @@
 //! | `SimpleAggregateFunction(max, ...)` (`last_seen`) | after grouping: `max(last_seen) >= from AND min(first_seen) < to` |
 //!
 //! and, for the sort key, the same bounds on `start_minute` and `target_day` where the table has them.
+//!
+//! # Hourly tier
+//!
+//! An aggregate that reads its table's hourly tier (`Aggregate::hourly`) groups the union of two branches: the
+//! table's rows of the window outside its whole hours, and the tier's rows of those hours (`HourSplit`), each
+//! branch with the project, its own window predicates and the aggregate's predicate. The tier's time column is
+//! selected under the table's name, so the statement around the union reads the columns of one table.
 
 use std::fmt::{self, Write as _};
 
 use crucible_plan::{
     AggOutput, Aggregate, ArrivalBounds, BatchProbe, CmpOp, DEFAULT_MAX_IDS, DeletePlan,
-    DeleteTarget, Direction, FieldRange, Fill, Literal, Measure, Node, Order, PointLookup, Pred,
-    ProbeKind, QueryPlan, Scan, SemiJoin, Step, TextSearch, TimeSeries, TokenMode, pad_in_list,
+    DeleteTarget, Direction, FieldRange, Fill, HourSplit, Literal, Measure, Node, Order,
+    PointLookup, Pred, ProbeKind, QueryPlan, Scan, SemiJoin, Step, TextSearch, TimeSeries,
+    TokenMode, pad_in_list,
 };
 use crucible_records::{ProjectId, TableId, TimeWindow, Timestamp, Uuid, truncate_str};
 use crucible_schema::{ColumnRef, DATABASE, PROJECT_ID, TableDef, Ty, table};
@@ -639,9 +647,18 @@ fn aggregate(
         select.push("count() AS matched".to_owned());
     }
     let mut sql = format!("SELECT {} ", select.join(", "));
-    let (from, mut having) = scope.from(b, n.table())?;
-    sql.push_str(&from);
-    and_pred(b, &mut sql, n.pred())?;
+    let mut having = match n.hourly_tier() {
+        Some(tier) => {
+            sql.push_str(&tiered_from(b, scope, n, tier, bucket.is_some())?);
+            Vec::new()
+        }
+        None => {
+            let (from, having) = scope.from(b, n.table())?;
+            sql.push_str(&from);
+            and_pred(b, &mut sql, n.pred())?;
+            having
+        }
+    };
 
     let mut group: Vec<&str> = bucket.iter().map(|_| "bucket").collect();
     group.extend(n.group().iter().map(ColumnRef::name));
@@ -727,6 +744,65 @@ fn aggregate(
     }
     limit(b, &mut sql, n.limit());
     Ok(sql)
+}
+
+/// `FROM (<minutes outside the whole hours> UNION ALL <the tier's whole hours>)`: what an aggregate over a table
+/// with an hourly tier groups (module documentation). Each branch selects the columns the statement around it
+/// reads: the group dimensions, the measured columns and, for a time series, the time column, which the tier
+/// branch selects under the table's name.
+fn tiered_from(
+    b: &mut Binder,
+    scope: &Scope,
+    n: &Aggregate,
+    tier: TableId,
+    series: bool,
+) -> Result<String, RenderError> {
+    let def = table(n.table());
+    let time = def.retention.time_column;
+    let tier_time = table(tier).retention.time_column;
+    let split = HourSplit::of(scope.window).ok_or(RenderError::Window(def.name()))?;
+    let mut columns: Vec<&str> = n.group().iter().map(ColumnRef::name).collect();
+    columns.extend(
+        n.measures()
+            .iter()
+            .filter_map(Measure::column)
+            .map(ColumnRef::name),
+    );
+    if series {
+        columns.push(time);
+    }
+    let mut seen = Vec::new();
+    columns.retain(|c| {
+        let fresh = !seen.contains(c);
+        seen.push(*c);
+        fresh
+    });
+    let tier_columns: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            if *c == time {
+                format!("{tier_time} AS {time}")
+            } else {
+                (*c).to_owned()
+            }
+        })
+        .collect();
+    let (from, _) = scope.from(b, n.table())?;
+    let mut minutes = format!(
+        "SELECT {} {from} AND ({time} < {} OR {time} >= {})",
+        columns.join(", "),
+        b.minute(split.first()),
+        b.minute(split.end())
+    );
+    and_pred(b, &mut minutes, n.pred())?;
+    let hours = Scope {
+        window: split.hours(),
+        ..*scope
+    };
+    let (from, _) = hours.from(b, tier)?;
+    let mut tiered = format!("SELECT {} {from}", tier_columns.join(", "));
+    and_pred(b, &mut tiered, n.pred())?;
+    Ok(format!("FROM ({minutes} UNION ALL {tiered})"))
 }
 
 fn semi_join(b: &mut Binder, scope: &Scope, n: &SemiJoin) -> Result<String, RenderError> {

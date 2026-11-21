@@ -3,8 +3,9 @@
 //!
 //! With Postgres configured, `crucible migrate` and `serve --migrate` apply the Postgres migrations and then
 //! the ClickHouse schema and access steps that the ledger (`schema_migrations`) does not hold yet. The
-//! ClickHouse steps run under the `migrations` lease (contract 11.7), and each is recorded in a transaction
-//! fenced by the lease's token, so two nodes that migrate at once never interleave. Without Postgres there is
+//! ClickHouse steps run under the `migrations` lease (contract 11.7), renewed every 5 s while a step applies, and
+//! each is recorded in a transaction fenced by the lease's token, so two nodes that migrate at once never
+//! interleave, even over a step that runs longer than the lease lives. Without Postgres there is
 //! no ledger and every step is applied each time, which their idempotence allows.
 
 use std::borrow::Cow;
@@ -15,10 +16,11 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_control::{
-    ControlStore, LEASE_TTL, Lease, LeaseName, LedgerEntry, MigrationKind, TxError,
+    ControlStore, LEASE_RENEW_EVERY, LEASE_SAFETY_MARGIN, LEASE_TTL, Lease, LeaseName, LedgerEntry,
+    MigrationKind, TxError,
 };
 use crucible_control_pg::{PgConfig, PgControlStore};
-use crucible_env::Env;
+use crucible_env::{ClockExt as _, Env, Instant};
 use crucible_schema::{MigrationStep, StepKind, without_secrets};
 use sha2::{Digest, Sha256};
 
@@ -198,6 +200,64 @@ async fn record(
     }
 }
 
+/// Applies `step` while renewing `lease` every 5 s (contract 11.7), so that a step that runs longer than the
+/// lease lives, such as the copy of step 0005, keeps it, and a node that starts meanwhile waits instead of
+/// applying the step beside it. `asked` is when the last renewal was sent. The step ends with an error when the
+/// lease is lost: Postgres says so, or the lease's local window ends before a renewal got through. ClickHouse
+/// may still finish the statement in flight; the step is idempotent, so the next run applies it again.
+async fn apply_holding(
+    env: &Env,
+    store: &dyn ControlStore,
+    lease: &mut Lease,
+    mut asked: Instant,
+    apply: &dyn ApplyStep,
+    step: &MigrationStep,
+) -> anyhow::Result<()> {
+    let lost = || {
+        anyhow::anyhow!(
+            "the migrations lease was lost while step {} ran, so it is not recorded. Run the migration \
+             again: the step is idempotent",
+            step.id
+        )
+    };
+    let window = LEASE_TTL.saturating_sub(LEASE_SAFETY_MARGIN);
+    let mut next = asked.saturating_add(LEASE_RENEW_EVERY);
+    let mut applying = apply.apply(step);
+    loop {
+        tokio::select! {
+            biased;
+            applied = &mut applying => return applied,
+            () = env.clock.sleep_until(next) => {}
+        }
+        let until = asked.saturating_add(window);
+        let sent = env.clock.now();
+        if sent >= until {
+            return Err(lost());
+        }
+        match env
+            .clock
+            .timeout_at(until, store.leases().renew(lease, LEASE_TTL))
+            .await
+        {
+            Ok(Ok(Some(renewed))) => {
+                *lease = renewed;
+                asked = sent;
+                next = sent.saturating_add(LEASE_RENEW_EVERY);
+            }
+            Ok(Ok(None)) | Err(_) => return Err(lost()),
+            // Nothing was renewed, or the outcome is unknown: the last renewal still bounds this node.
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    %error,
+                    step = step.id,
+                    "renewing the migrations lease failed; trying again"
+                );
+                next = env.clock.now().saturating_add(RETRY_EVERY);
+            }
+        }
+    }
+}
+
 /// Applies the steps the ledger does not hold, in order, under the `migrations` lease, and records each.
 pub(crate) async fn apply_steps(
     env: &Env,
@@ -235,13 +295,14 @@ pub(crate) async fn apply_steps(
                 ),
                 None => {}
             }
+            let asked = env.clock.now();
             lease = store
                 .leases()
                 .renew(&lease, LEASE_TTL)
                 .await
                 .context("renewing the migrations lease")?
                 .context("the migrations lease was lost; run the migration again")?;
-            apply.apply(step).await?;
+            apply_holding(env, store, &mut lease, asked, apply, step).await?;
             let entry = LedgerEntry {
                 id: step.id.to_owned(),
                 kind: match step.kind {
@@ -291,13 +352,17 @@ mod tests {
         ]
     }
 
-    /// A stand-in for ClickHouse: counts the steps, and can refuse access steps or outlive the lease.
+    /// A stand-in for ClickHouse: counts the steps, and can refuse access steps or run past the lease.
     #[derive(Default)]
     struct Fake {
         applied: AtomicUsize,
         refuse_access: bool,
-        /// Sleep past the lease on this clock, then let another node take the lease.
+        /// Run for three lease lifetimes on this clock while another node tries every second to take the lease.
         outlive: Option<(Arc<dyn crucible_env::Clock>, PgModel)>,
+        /// Step the database clock past the lease, let another node take it, and finish at once.
+        steal: Option<PgModel>,
+        /// Make Postgres unavailable, then run for two lease lifetimes on this clock.
+        cut_off: Option<(Arc<dyn crucible_env::Clock>, PgModel)>,
     }
 
     impl Fake {
@@ -313,13 +378,34 @@ mod tests {
                     !(self.refuse_access && step.kind == StepKind::Access),
                     "clickhouse said no"
                 );
-                if let Some((clock, thief)) = &self.outlive {
-                    clock.sleep(LEASE_TTL + Duration::from_secs(1)).await;
+                if let Some((clock, other)) = &self.outlive {
+                    for _ in 0..3 * LEASE_TTL.as_secs() {
+                        clock.sleep(Duration::from_secs(1)).await;
+                        let taken = other
+                            .leases()
+                            .acquire(LeaseName::Migrations, "node-other", LEASE_TTL)
+                            .await?;
+                        assert!(
+                            taken.is_none(),
+                            "another node took the lease of a running step"
+                        );
+                    }
+                }
+                if let Some(thief) = &self.steal {
+                    let past = LEASE_TTL + Duration::from_secs(1);
+                    thief.step_db_clock(i64::try_from(past.as_micros())?);
                     let taken = thief
                         .leases()
                         .acquire(LeaseName::Migrations, "node-other", LEASE_TTL)
                         .await?;
                     assert!(taken.is_some());
+                }
+                if let Some((clock, model)) = &self.cut_off {
+                    model.set_faults(PgFaults {
+                        unavailable_ppm: 1_000_000,
+                        ..PgFaults::default()
+                    });
+                    clock.sleep(2 * LEASE_TTL).await;
                 }
                 self.applied.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -434,20 +520,65 @@ mod tests {
     }
 
     #[test]
-    fn a_step_that_outlives_the_lease_is_not_recorded_under_a_stale_token() {
+    fn a_step_that_runs_longer_than_the_lease_keeps_it() {
         sim(PgFaults::default(), async |env, model| {
-            // The step takes longer than the lease lives, and another node takes the lease meanwhile.
+            // Each step runs for 45 s. The lease is renewed every 5 s meanwhile, so the other node never takes
+            // it, and both steps are recorded.
             let slow = Fake {
                 outlive: Some((Arc::clone(&env.clock), model.clone())),
                 ..Fake::default()
             };
-            let error = apply_steps(&env, &model, "node-a", &steps(), &slow)
+            apply_steps(&env, &model, "node-a", &steps(), &slow)
+                .await
+                .unwrap();
+            assert_eq!(slow.applied(), 2);
+            assert_eq!(ledger(&model).await.len(), 2);
+        });
+    }
+
+    #[test]
+    fn a_step_whose_lease_another_node_took_is_not_recorded_under_a_stale_token() {
+        sim(PgFaults::default(), async |env, model| {
+            let stolen = Fake {
+                steal: Some(model.clone()),
+                ..Fake::default()
+            };
+            let error = apply_steps(&env, &model, "node-a", &steps(), &stolen)
                 .await
                 .unwrap_err();
             assert!(
-                error.to_string().contains("the migrations lease was lost"),
+                error
+                    .to_string()
+                    .contains("the migrations lease was lost while step 0001_schema_base ran"),
                 "{error}"
             );
+            assert!(ledger(&model).await.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_step_that_cannot_renew_the_lease_ends_before_the_lease_does() {
+        sim(PgFaults::default(), async |env, model| {
+            // Postgres is unavailable while the step runs, so no renewal gets through: the step ends when the
+            // lease's local window does, 2 s before the lease expires and another node could take it.
+            let cut = Fake {
+                cut_off: Some((Arc::clone(&env.clock), model.clone())),
+                ..Fake::default()
+            };
+            let before = env.clock.now();
+            let error = apply_steps(&env, &model, "node-a", &steps(), &cut)
+                .await
+                .unwrap_err();
+            let ran = env.clock.now().saturating_duration_since(before);
+            assert!(
+                error
+                    .to_string()
+                    .contains("the migrations lease was lost while step 0001_schema_base ran"),
+                "{error}"
+            );
+            assert!(ran < LEASE_TTL, "{ran:?}");
+            model.set_faults(PgFaults::default());
+            assert_eq!(cut.applied(), 0);
             assert!(ledger(&model).await.is_empty());
         });
     }
