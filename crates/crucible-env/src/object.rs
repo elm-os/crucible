@@ -1,4 +1,4 @@
-//! `ObjectStore` (contract 2.10): optional S3-compatible object storage, for media.
+//! `ObjectStore` (contract 2.10): optional S3-compatible object storage, for media and export files.
 //!
 //! Keys are full object keys; the layout under a deployment's prefix belongs to the caller. Presigned
 //! requests are signed for the store's public endpoint, which clients reach directly; every other call goes
@@ -94,6 +94,9 @@ pub enum ObjectError {
 /// The bytes of a stored object, in order.
 pub type ByteStream = BoxStream<'static, Result<Bytes, ObjectError>>;
 
+/// The smallest part of a multipart upload, except its last part, which may be shorter.
+pub const MIN_PART_BYTES: usize = 5 << 20;
+
 /// S3-compatible object storage behind presigned URLs (contract 2.10).
 #[async_trait]
 pub trait ObjectStore: fmt::Debug + Send + Sync {
@@ -119,8 +122,35 @@ pub trait ObjectStore: fmt::Debug + Send + Sync {
     /// The object's length, checksum and write time; `None` when there is no such object.
     async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, ObjectError>;
 
-    /// Stores `bytes` under `key`, replacing what was there.
-    async fn put_small(&self, key: &str, bytes: Bytes) -> Result<(), ObjectError>;
+    /// Stores `bytes` of `content_type` under `key` in one request, replacing what was there.
+    async fn put_small(&self, key: &str, content_type: &str, bytes: Bytes)
+    -> Result<(), ObjectError>;
+
+    /// Starts a multipart upload of an object of `content_type` under `key`, and returns the store's id for
+    /// it. Nothing appears under the key until the upload is finished.
+    async fn start_upload(&self, key: &str, content_type: &str) -> Result<String, ObjectError>;
+
+    /// Uploads part `number` (1 to 10,000) of an upload, and returns the part's `ETag`. Every part but the
+    /// last must hold at least [`MIN_PART_BYTES`].
+    async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        number: u16,
+        bytes: Bytes,
+    ) -> Result<String, ObjectError>;
+
+    /// Joins the parts, given by their `ETag`s in part order from part 1, into the object under `key`, which
+    /// then appears whole.
+    async fn finish_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        etags: &[String],
+    ) -> Result<(), ObjectError>;
+
+    /// Abandons an upload and frees its parts. Abandoning an upload that is gone succeeds.
+    async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), ObjectError>;
 
     /// The object's bytes; [`ObjectError::NotFound`] when there is no such object.
     async fn get_stream(&self, key: &str) -> Result<ByteStream, ObjectError>;

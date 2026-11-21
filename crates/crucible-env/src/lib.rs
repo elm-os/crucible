@@ -58,7 +58,8 @@ pub use metrics::{
 };
 pub use net::{Listener, Net, NetError, Stream, StreamIo, TlsRoots};
 pub use object::{
-    ByteStream, Disposition, ObjectError, ObjectMeta, ObjectPage, ObjectStore, Presigned,
+    ByteStream, Disposition, MIN_PART_BYTES, ObjectError, ObjectMeta, ObjectPage, ObjectStore,
+    Presigned,
 };
 pub use rng::{ChaChaRng, Rng, RngAdapter};
 pub use spawner::{

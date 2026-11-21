@@ -1,9 +1,10 @@
 name: s3-conformance
 
-# The object store adapter of crates/crucible-media against a real S3-compatible server, the Versity S3 gateway:
-# presign, upload, confirm by HEAD, get, delete and list, with a client of the presigned URLs
-# (docs/testing/media-simulation.md). The gateway runs in a step rather than as a service container, because its
-# bucket directory is made before it starts.
+# The object store adapter of crates/crucible-media against real S3-compatible servers, the Versity S3 gateway,
+# SeaweedFS and Garage: presign, upload, confirm by HEAD, get, delete, list and multipart uploads, with a client of
+# the presigned URLs (docs/testing/media-simulation.md). Each server runs in a step rather than as a service
+# container, because its bucket is made before the rows run: a directory for the gateway, a startup flag for
+# SeaweedFS, and the layout, key and bucket commands for Garage.
 
 on:
   pull_request:
@@ -72,3 +73,109 @@ jobs:
           cargo run --locked -p crucible-conformance --bin crucible-s3-conformance -- \
             --endpoint http://localhost:7070 --bucket media --access-key conformance \
             --secret-key conformance-secret --label "versitygw $TAG"
+
+  seaweedfs:
+    name: seaweedfs ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["4.52"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: s3-conformance
+          save-if: false
+      - name: Start SeaweedFS
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          identity='{"name":"conformance","credentials":[{"accessKey":"conformance","secretKey":"conformance-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}'
+          printf '{"identities":[%s]}' "$identity" > "$RUNNER_TEMP/s3.json"
+          docker run -d --name seaweedfs -p 8333:8333 -v "$RUNNER_TEMP/s3.json:/etc/s3.json:ro" \
+            "chrislusf/seaweedfs:$TAG" mini -dir=/data -bucket=media -s3.config=/etc/s3.json
+          for _ in $(seq 1 60); do
+            if docker logs seaweedfs 2>&1 | grep -q 'created bucket media'; then exit 0; fi
+            sleep 1
+          done
+          docker logs seaweedfs
+          exit 1
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance --bin crucible-s3-conformance
+      - name: Object store rows
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          cargo run --locked -p crucible-conformance --bin crucible-s3-conformance -- \
+            --endpoint http://localhost:8333 --bucket media --access-key conformance \
+            --secret-key conformance-secret --label "seaweedfs $TAG"
+
+  garage:
+    name: garage ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ["v2.5.0"]
+    env:
+      # Garage's own forms: an access key id is GK and 24 hex characters, a secret 64 hex characters.
+      ACCESS_KEY: GK0123456789abcdef01234567
+      SECRET_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: s3-conformance
+          save-if: false
+      - name: Start Garage
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          # One node, one copy of each object. Signatures must name s3_region, which matches the suite's default.
+          cat > "$RUNNER_TEMP/garage.toml" <<EOF
+          metadata_dir = "/var/lib/garage/meta"
+          data_dir = "/var/lib/garage/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+          rpc_bind_addr = "[::]:3901"
+          rpc_public_addr = "127.0.0.1:3901"
+          rpc_secret = "$(openssl rand -hex 32)"
+
+          [s3_api]
+          s3_region = "us-east-1"
+          api_bind_addr = "[::]:3900"
+          EOF
+          docker run -d --name garage -p 3900:3900 -v "$RUNNER_TEMP/garage.toml:/etc/garage.toml:ro" \
+            "dxflrs/garage:$TAG"
+          garage() { docker exec garage /garage "$@"; }
+          node=""
+          for _ in $(seq 1 30); do
+            node=$(garage node id -q 2>/dev/null | cut -d@ -f1) && [ -n "$node" ] && break
+            sleep 1
+          done
+          [ -n "$node" ] || { docker logs garage; exit 1; }
+          garage layout assign -z dc1 -c 1G "$node"
+          garage layout apply --version 1
+          garage key import --yes -n conformance "$ACCESS_KEY" "$SECRET_KEY"
+          garage bucket create media
+          garage bucket allow --read --write --owner media --key conformance
+      - name: Build the suite
+        run: cargo build --locked -p crucible-conformance --bin crucible-s3-conformance
+      - name: Object store rows
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          cargo run --locked -p crucible-conformance --bin crucible-s3-conformance -- \
+            --endpoint http://localhost:3900 --bucket media --access-key "$ACCESS_KEY" \
+            --secret-key "$SECRET_KEY" --label "garage $TAG"
