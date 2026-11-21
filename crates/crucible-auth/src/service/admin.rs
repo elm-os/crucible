@@ -672,7 +672,17 @@ impl Identity {
                     }
                 }
                 tx.dashboards().delete_project(id).await?;
-                tx.media().delete_project(id).await?;
+                // A media use recorded after this transaction's snapshot keeps its object row: the race is lost,
+                // nothing is applied, and the caller retries.
+                tx.media()
+                    .delete_project(id)
+                    .await
+                    .map_err(|error| match error {
+                        crucible_control::TxError::ForeignKeyViolation(_) => {
+                            crucible_control::TxError::SerializationFailure
+                        }
+                        other => other,
+                    })?;
                 Ok(true)
             })
         })
