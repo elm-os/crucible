@@ -41,9 +41,11 @@ the server side.
 
 ## Long time ranges
 
-The pages read a per-minute rollup, so a longer time range reads more rows. Over 7 or 30 days with many servers, a
-page can take seconds to answer. A read made with an API key runs under its class's 5-second limit, and one that
-passes it answers `query_timeout`: narrow the time range, or name a server.
+The pages read a per-minute rollup. Over a time range of 12 hours or more, they read the range's whole hours from an
+hourly rollup and only the minutes at its edges from the per-minute one, with the same numbers. A longer range still
+reads more rows, so over 7 or 30 days with many servers a page can take seconds to answer. A read made with an API
+key runs under its class's 5-second limit, and one that passes it answers `query_timeout`: narrow the time range, or
+name a server.
 
 ## Alerts and dashboards
 
