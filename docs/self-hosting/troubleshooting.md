@@ -78,6 +78,7 @@ use, with the amount to give it. With the defaults, give the container at least 
 | 400 `cursor_invalid` | The cursor expired (after 24 hours) or belongs to another query: start again from the first page |
 | 428 `precondition_required` or 412 `precondition_failed` | Read the resource again and send its `ETag` in `If-Match` |
 | 503 `telemetry_store_unavailable` | ClickHouse is not configured, or not reachable and the recent-span index cannot answer the read |
+| 504 `query_timeout` | The read hit its time limit. A read made with an API key or through the MCP server runs under a 5-second limit, and first waits, within its deadline, for one of the 16 ClickHouse statements that these reads share ([rate limits](../api/README.md#rate-limits)): narrow the time range, or send fewer reads at once |
 
 ## Channels and alerts
 
