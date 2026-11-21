@@ -498,6 +498,8 @@ pub struct AuthProvider {
     pub seeded: bool,
     /// The callback URL to register with the provider.
     pub redirect_uri: String,
+    /// The version, for `If-Match`.
+    pub version: u32,
 }
 
 /// The sign-in providers.
@@ -541,10 +543,23 @@ pub struct AuthProviderPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub display_name: Option<String>,
-    /// The OAuth client secret.
+    /// The OpenID Connect issuer, for `oidc`; ignored otherwise. A new issuer unlinks the accounts that signed in
+    /// through the provider, and they link again through their verified email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub issuer: Option<String>,
+    /// The OAuth client id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_id: Option<String>,
+    /// A new OAuth client secret. Leave it out to keep the stored one; an empty one is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub client_secret: Option<String>,
+    /// Scopes requested besides those the kind needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scopes: Option<Vec<String>>,
     /// When not empty, only these email domains may sign in through the provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

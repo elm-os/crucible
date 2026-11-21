@@ -182,4 +182,18 @@ describe("a provider sign-in that came back with an error", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(title);
     expect(screen.queryByText(code)).toBeNull();
   });
+
+  test("a domain the provider doesn't allow names the domains it does, and only domains", async () => {
+    fetchMock.mockResolvedValueOnce(json(options()));
+    renderLogin(
+      `?error=not_invited&domains=${encodeURIComponent("Acme.test,partner.test,<b>hi</b>,a b")}`,
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("This provider doesn't accept your email address.");
+    expect(alert.textContent).toContain(
+      "Only addresses at acme.test or partner.test can sign in with it.",
+    );
+    expect(alert.textContent).not.toContain("<b>");
+    expect(alert.textContent).not.toContain("a b");
+  });
 });

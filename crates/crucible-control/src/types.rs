@@ -663,6 +663,8 @@ pub struct AuthProvider {
     pub enabled: bool,
     /// Whether the row comes from configuration: at most one such row per kind, read-only in the UI.
     pub seeded: bool,
+    /// The optimistic-concurrency version; starts at 1.
+    pub version: u64,
 }
 
 /// A provider identity linked to a user (contract 11.1).

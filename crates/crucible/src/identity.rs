@@ -1,19 +1,20 @@
 //! Identity on a node with Postgres (contract 11): sessions, members and API keys from the control plane.
 //!
 //! `crucible serve` builds [`Identity`] over the control store, keeps the key snapshot current (the key feed and
-//! the 60 s `last_used_at` writes), and, while no owner exists, prints a one-time setup link. `crucible admin
-//! init` creates the first owner from the command line, and `crucible admin reset-password` prints a reset link:
-//! this version sends no email.
+//! the 60 s `last_used_at` writes), makes the sign-in providers of the configuration match their rows, and, while
+//! no owner exists, prints a one-time setup link. `crucible admin init` creates the first owner from the command
+//! line, `crucible admin reset-password` prints a reset link (the server sends no email for it), and `crucible
+//! admin enable-password-login` turns password sign-in back on when no provider signs anyone in.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_auth::csrf::Origins;
-use crucible_auth::service::{AuthError, Identity, IdentityConfig};
+use crucible_auth::service::{AuthError, Identity, IdentityConfig, ProviderInput};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer, StoreFeed, run_feed, run_last_used};
-use crucible_config::{Config, PgOutageMode};
-use crucible_control::{ControlStore, KeyScope};
+use crucible_config::{Config, PgOutageMode, SignInKind, SignInProvider};
+use crucible_control::{ControlStore, KeyScope, ProviderKind};
 use crucible_env::Env;
 
 use crate::control::Control;
@@ -54,6 +55,7 @@ pub(crate) fn build(
         );
     }
     identity.hash_permits = hash_permits();
+    identity.providers = config.auth.providers.iter().map(provider_input).collect();
     let identity = Identity::new(
         env,
         Arc::new(control.store.clone()),
@@ -64,6 +66,27 @@ pub(crate) fn build(
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(Arc::new(identity))
+}
+
+/// A sign-in provider of the configuration, as identity seeds it.
+fn provider_input(provider: &SignInProvider) -> ProviderInput {
+    let (kind, button) = match provider.kind {
+        SignInKind::Github => (ProviderKind::Github, "Continue with GitHub"),
+        SignInKind::Google => (ProviderKind::Google, "Continue with Google"),
+        SignInKind::Oidc => (ProviderKind::Oidc, "Continue with single sign-on"),
+    };
+    ProviderInput {
+        kind,
+        display_name: provider
+            .display_name
+            .clone()
+            .unwrap_or_else(|| button.to_owned()),
+        issuer: provider.issuer.clone(),
+        client_id: provider.client_id.clone(),
+        client_secret: provider.client_secret.expose().to_owned(),
+        scopes: provider.scopes.clone(),
+        allowed_domains: provider.allowed_domains.clone(),
+    }
 }
 
 /// min(cores, 4) concurrent password hashes (contract 11.4).
@@ -121,6 +144,7 @@ pub(crate) fn start_tasks(env: &Env, identity: &Arc<Identity>, store: Arc<dyn Co
         ),
     );
     env.spawn("key-last-used", run_last_used(env.clone(), keys, store));
+    start_seeding(env, identity);
     let identity = Arc::clone(identity);
     let setup_env = env.clone();
     env.spawn("first-run-setup", async move {
@@ -161,6 +185,69 @@ pub(crate) fn start_tasks(env: &Env, identity: &Arc<Identity>, store: Arc<dyn Co
             }
         }
     });
+}
+
+/// Makes the rows of the configuration's sign-in providers match it, retrying until Postgres answers, then says so
+/// when nobody can sign in, with the command that turns password sign-in back on.
+fn start_seeding(env: &Env, identity: &Arc<Identity>) {
+    let (seed_env, identity) = (env.clone(), Arc::clone(identity));
+    env.spawn("sign-in-providers", async move {
+        let mut shutdown = seed_env.shutdown();
+        loop {
+            let seeded = tokio::select! {
+                biased;
+                () = &mut shutdown => return,
+                seeded = identity.seed_providers() => seeded,
+            };
+            match seeded {
+                Ok(changed) => {
+                    for (kind, change) in changed {
+                        tracing::info!(provider = %kind, ?change, "a sign-in provider of the configuration");
+                    }
+                    if let Ok(true) = identity.nobody_can_sign_in().await {
+                        tracing::warn!(
+                            "nobody can sign in: password sign-in is off and the sign-in page offers no provider. Run \
+                             `crucible admin enable-password-login` to turn password sign-in back on"
+                        );
+                    }
+                    return;
+                }
+                Err(AuthError::Invalid { field, message }) => {
+                    tracing::error!(
+                        "a sign-in provider of the configuration is not added: {field}: {message}; correct its \
+                         [auth_github], [auth_google] or [auth_oidc] settings and restart"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "making the configuration's sign-in providers match; retrying");
+                    tokio::select! {
+                        biased;
+                        () = &mut shutdown => return,
+                        () = seed_env.clock.sleep(SETUP_RETRY) => {}
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// `crucible admin enable-password-login`: turns password sign-in back on, for a deployment whose sign-in providers
+/// no longer sign anyone in. Answers what to tell the operator.
+pub(crate) async fn admin_enable_password_login(config: &Config) -> anyhow::Result<&'static str> {
+    let (_prod, identity) = admin_identity(config)?;
+    match identity.enable_password_login().await {
+        Ok(true) => Ok(
+            "password sign-in is on: sign in at /login/ with your email and password. Someone who joined through a \
+             sign-in provider has no password yet: `crucible admin reset-password <email>` prints a link that sets one",
+        ),
+        Ok(false) => Ok("password sign-in is already on; nothing changed"),
+        Err(AuthError::NotFound) => Err(anyhow::anyhow!(
+            "no organization exists yet, and password sign-in is on until one does: create it with the setup link \
+             that `crucible serve` prints, or with `crucible admin init`"
+        )),
+        Err(other) => Err(anyhow::anyhow!("{other}")),
+    }
 }
 
 /// `crucible admin init`: the organization and its first owner.
@@ -253,4 +340,55 @@ fn admin_identity(config: &Config) -> anyhow::Result<(crucible_env_prod::Prod, A
     let control = Control::new(&prod.env, postgres)?;
     let identity = build(&prod.env, config, &control)?;
     Ok((prod, identity))
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_config::Secret;
+
+    use super::*;
+
+    #[test]
+    fn a_configured_provider_without_button_text_gets_its_kind_s() {
+        let configured = |kind, display_name: Option<&str>| SignInProvider {
+            kind,
+            display_name: display_name.map(str::to_owned),
+            issuer: (kind == SignInKind::Oidc).then(|| "https://login.example.com".to_owned()),
+            client_id: "client".to_owned(),
+            client_secret: Secret::new("secret"),
+            scopes: vec!["groups".to_owned()],
+            allowed_domains: vec!["example.com".to_owned()],
+        };
+        let buttons: Vec<_> = [SignInKind::Github, SignInKind::Google, SignInKind::Oidc]
+            .into_iter()
+            .map(|kind| provider_input(&configured(kind, None)).display_name)
+            .collect();
+        assert_eq!(
+            buttons,
+            [
+                "Continue with GitHub",
+                "Continue with Google",
+                "Continue with single sign-on"
+            ]
+        );
+        let input = provider_input(&configured(SignInKind::Oidc, Some("Continue with Acme")));
+        assert_eq!(
+            (
+                input.kind,
+                input.display_name.as_str(),
+                input.issuer.as_deref(),
+                input.client_secret.as_str(),
+                input.scopes.as_slice(),
+                input.allowed_domains.as_slice()
+            ),
+            (
+                ProviderKind::Oidc,
+                "Continue with Acme",
+                Some("https://login.example.com"),
+                "secret",
+                ["groups".to_owned()].as_slice(),
+                ["example.com".to_owned()].as_slice()
+            )
+        );
+    }
 }

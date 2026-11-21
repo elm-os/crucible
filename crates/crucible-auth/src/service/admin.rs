@@ -3,9 +3,9 @@
 //! are the ones a permission cannot express (an admin cannot touch owners, the owner changes only by transfer).
 
 use crucible_control::{
-    ApiKey, AuthProvider, Invitation, JsonDoc, KeyChangeKind, KeyScope, OneTimeToken, Org,
-    OrgMembership, OrgRole, Project, ProjectAccess, ProjectMembership, ProjectRole, ProviderKind,
-    Secret, TokenKind, User, transaction,
+    ApiKey, AuthProvider, ControlTx, Invitation, JsonDoc, KeyChangeKind, KeyScope, OneTimeToken,
+    Org, OrgMembership, OrgRole, Project, ProjectAccess, ProjectMembership, ProjectRole,
+    ProviderKind, Secret, TokenKind, TxError, User, transaction,
 };
 use crucible_records::{ApiKeyId, ProjectId, Timestamp, UserId, Uuid};
 
@@ -38,7 +38,7 @@ pub struct InvitationCreated {
     pub token: Token,
 }
 
-/// What `POST org/auth-providers` sets.
+/// What `POST org/auth-providers` sets, and what the server configuration declares of a provider.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProviderInput {
     /// The kind.
@@ -71,8 +71,14 @@ impl std::fmt::Debug for ProviderInput {
 pub struct ProviderChange {
     /// The text on the button.
     pub display_name: Option<String>,
-    /// A new client secret.
+    /// The issuer, for `oidc`; GitHub and Google keep theirs, as on create.
+    pub issuer: Option<String>,
+    /// The client id.
+    pub client_id: Option<String>,
+    /// A new client secret; without one the stored secret stays.
     pub client_secret: Option<String>,
+    /// Extra scopes.
+    pub scopes: Option<Vec<String>>,
     /// Allowed email domains.
     pub allowed_domains: Option<Vec<String>>,
     /// Whether it is offered.
@@ -83,8 +89,94 @@ impl std::fmt::Debug for ProviderChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderChange")
             .field("display_name", &self.display_name)
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
             .field("enabled", &self.enabled)
             .finish_non_exhaustive()
+    }
+}
+
+/// How a start changed the row of a provider from the configuration.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Seeded {
+    /// The configuration declares it for the first time.
+    Added,
+    /// The configuration changed it; its row and id stay.
+    Changed,
+    /// The configuration no longer declares it: its row stays, turned off.
+    TurnedOff,
+}
+
+/// Whether the sign-in page offers a provider, as this node sees it (contract 11.4): the provider is on, its
+/// callback URL can be built from `server.public_url`, and one from the configuration is still declared there,
+/// which holds its secret.
+#[derive(Clone, Debug)]
+struct Offering {
+    public_url: bool,
+    configured: Vec<ProviderKind>,
+}
+
+impl Offering {
+    fn offers(&self, provider: &AuthProvider) -> bool {
+        provider.enabled
+            && self.public_url
+            && (!provider.seeded || self.configured.contains(&provider.kind))
+    }
+}
+
+/// Inside the transaction that turns off or deletes the provider `id` at version `expected`: refuses the change when
+/// it leaves no way to sign in, and moves the organization's version. The guard reads the organization and the
+/// providers and the change writes one provider, so two changes made at once could each count the other's provider
+/// as a way in; with both writing the organization's row, one of them fails instead.
+async fn keep_a_way_in(
+    tx: &dyn ControlTx,
+    offering: &Offering,
+    id: Uuid,
+    expected: u64,
+) -> Result<Result<(), AuthError>, TxError> {
+    let providers = tx.auth_providers().list().await?;
+    // The organization's row moves only together with the provider's change, so a stale version writes nothing.
+    match providers.iter().find(|provider| provider.id == id) {
+        Some(provider) if provider.version == expected => {}
+        Some(_) => return Ok(Err(AuthError::PreconditionFailed)),
+        None => return Ok(Err(AuthError::NotFound)),
+    }
+    let Some(org) = tx.org().get().await? else {
+        return Ok(Ok(()));
+    };
+    let another = providers
+        .iter()
+        .any(|provider| provider.id != id && offering.offers(provider));
+    if !org.settings.password_login_enabled && !another {
+        return Ok(Err(AuthError::Conflict(
+            "password sign-in is off and no other sign-in provider is offered, so nobody could sign in: turn \
+             password sign-in on in the organization settings, or turn on another provider, first"
+                .to_owned(),
+        )));
+    }
+    let mut moved = org.clone();
+    moved.version += 1;
+    if !tx.org().update_if_version(&moved, org.version).await? {
+        return Err(TxError::SerializationFailure);
+    }
+    Ok(Ok(()))
+}
+
+/// The issuer a provider of `kind` keeps: the URL given for OpenID Connect, Google's own, none for GitHub.
+fn issuer(kind: ProviderKind, given: Option<String>) -> Result<String, AuthError> {
+    match kind {
+        ProviderKind::Oidc => {
+            let issuer = given.unwrap_or_default();
+            if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
+                return Err(AuthError::Invalid {
+                    field: "issuer",
+                    message: "use the issuer URL, for example https://login.example.com".to_owned(),
+                });
+            }
+            Ok(issuer)
+        }
+        ProviderKind::Google => Ok(crate::oauth::GOOGLE_ISSUER.to_owned()),
+        ProviderKind::Github => Ok(String::new()),
     }
 }
 
@@ -161,7 +253,8 @@ fn check_version(found: u64, expected: Option<u64>) -> Result<u64, AuthError> {
 }
 
 impl Identity {
-    /// Changes the organization; `expected` is the `If-Match` version.
+    /// Changes the organization; `expected` is the `If-Match` version. Turning password sign-in off is refused
+    /// while it is the only way to sign in.
     pub async fn update_org(&self, expected: u64, change: OrgChange) -> Result<Org, AuthError> {
         let mut org = self.org().await?.ok_or(AuthError::NotFound)?;
         check_version(org.version, Some(expected))?;
@@ -171,11 +264,18 @@ impl Identity {
         if let Some(list) = change.allowed_email_domains {
             org.settings.allowed_email_domains = domains("allowed_email_domains", list)?;
         }
+        let password_goes =
+            org.settings.password_login_enabled && change.password_login_enabled == Some(false);
         if let Some(enabled) = change.password_login_enabled {
             org.settings.password_login_enabled = enabled;
         }
         if let Some(access) = change.project_access {
             org.settings.project_access = access;
+        }
+        // The providers are read after the organization: a provider turned off meanwhile moved the organization's
+        // version, so the write below fails instead of passing on what it read.
+        if password_goes {
+            self.password_can_go().await?;
         }
         let version = org.version;
         org.version += 1;
@@ -184,6 +284,68 @@ impl Identity {
         }
         self.forget_sessions();
         Ok(org)
+    }
+
+    /// Refuses turning password sign-in off while the sign-in page offers no provider (contract 1.7: the refusal
+    /// says what to turn on first).
+    async fn password_can_go(&self) -> Result<(), AuthError> {
+        let offering = self.offering();
+        let providers = self.store.auth_providers().list().await?;
+        if providers.iter().any(|provider| offering.offers(provider)) {
+            return Ok(());
+        }
+        Err(AuthError::Conflict(if offering.public_url {
+            "password sign-in is the only way to sign in: add or turn on a sign-in provider first, then turn \
+             password sign-in off"
+                .to_owned()
+        } else {
+            "password sign-in is the only way to sign in, because sign-in providers are offered only once \
+             server.public_url is set: set server.public_url and turn on a sign-in provider first, then turn \
+             password sign-in off"
+                .to_owned()
+        }))
+    }
+
+    /// Turns password sign-in on, for a deployment whose providers no longer sign anyone in (`crucible admin
+    /// enable-password-login`). `false` when it was on already; `NotFound` before first-owner setup.
+    pub async fn enable_password_login(&self) -> Result<bool, AuthError> {
+        let on = OrgChange {
+            password_login_enabled: Some(true),
+            ..OrgChange::default()
+        };
+        // Another change to the organization may land between the read and the write; then read again.
+        for _ in 0..5 {
+            let org = self.org().await?.ok_or(AuthError::NotFound)?;
+            if org.settings.password_login_enabled {
+                return Ok(false);
+            }
+            match self.update_org(org.version, on.clone()).await {
+                Err(AuthError::PreconditionFailed) => {}
+                done => return done.map(|_| true),
+            }
+        }
+        Err(AuthError::PreconditionFailed)
+    }
+
+    /// Whether nobody can sign in: password sign-in is off and the sign-in page offers no provider. The server
+    /// says so at start, with the command that turns password sign-in back on.
+    pub async fn nobody_can_sign_in(&self) -> Result<bool, AuthError> {
+        let Some(org) = self.org().await? else {
+            return Ok(false);
+        };
+        Ok(!org.settings.password_login_enabled && self.sign_in_providers().await?.is_empty())
+    }
+
+    fn offering(&self) -> Offering {
+        Offering {
+            public_url: self.config.public_url.is_some(),
+            configured: self.config.providers.iter().map(|p| p.kind).collect(),
+        }
+    }
+
+    /// Whether the sign-in page offers `provider`.
+    pub(super) fn offers(&self, provider: &AuthProvider) -> bool {
+        self.offering().offers(provider)
     }
 
     /// Every org member with their user row, ordered by user id.
@@ -397,44 +559,40 @@ impl Identity {
         Some(format!("{base}/api/v1/auth/oauth/{provider_id}/callback"))
     }
 
-    /// Adds a sign-in provider, sealing its client secret.
-    pub async fn add_provider(&self, input: ProviderInput) -> Result<AuthProvider, AuthError> {
+    /// The row of provider `id` that `input` describes, checked as `POST org/auth-providers` checks it. A row from
+    /// the configuration keeps its secret there, so it names no stored secret.
+    fn provider_row(
+        id: Uuid,
+        input: &ProviderInput,
+        seeded: bool,
+    ) -> Result<AuthProvider, AuthError> {
         let display_name = display_name("display_name", &input.display_name)?;
-        let issuer = match input.kind {
-            ProviderKind::Oidc => {
-                let issuer = input.issuer.unwrap_or_default();
-                if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
-                    return Err(AuthError::Invalid {
-                        field: "issuer",
-                        message: "use the issuer URL, for example https://login.example.com"
-                            .to_owned(),
-                    });
-                }
-                issuer
-            }
-            ProviderKind::Google => crate::oauth::GOOGLE_ISSUER.to_owned(),
-            ProviderKind::Github => String::new(),
-        };
+        let issuer = issuer(input.kind, input.issuer.clone())?;
         if input.client_id.trim().is_empty() || input.client_secret.is_empty() {
             return Err(AuthError::Invalid {
                 field: "client_id",
                 message: "give the client id and secret the provider issued".to_owned(),
             });
         }
-        let id = self.env.new_id();
-        let secret = self.seal_secret(id, &input.client_secret);
-        let provider = AuthProvider {
+        Ok(AuthProvider {
             id,
             kind: input.kind,
             display_name,
             issuer,
             client_id: input.client_id.trim().to_owned(),
-            secret_id: Some(secret.id),
-            scopes: input.scopes,
-            allowed_domains: domains("allowed_domains", input.allowed_domains)?,
+            secret_id: (!seeded).then_some(id),
+            scopes: input.scopes.clone(),
+            allowed_domains: domains("allowed_domains", input.allowed_domains.clone())?,
             enabled: true,
-            seeded: false,
-        };
+            seeded,
+            version: 1,
+        })
+    }
+
+    /// Adds a sign-in provider, sealing its client secret.
+    pub async fn add_provider(&self, input: ProviderInput) -> Result<AuthProvider, AuthError> {
+        let provider = Self::provider_row(self.env.new_id(), &input, false)?;
+        let secret = self.seal_secret(provider.id, &input.client_secret);
         let stored = provider.clone();
         transaction(self.store.as_ref(), move |tx| {
             Box::pin(async move {
@@ -466,11 +624,25 @@ impl Identity {
         }
     }
 
-    /// The opened client secret of a provider.
+    /// The client secret of a provider: from the configuration for a row seeded from it, otherwise opened from its
+    /// sealed row.
     pub(super) async fn provider_secret(
         &self,
         provider: &AuthProvider,
     ) -> Result<String, AuthError> {
+        if provider.seeded {
+            return self
+                .config
+                .providers
+                .iter()
+                .find(|configured| configured.kind == provider.kind)
+                .map(|configured| configured.client_secret.clone())
+                .ok_or_else(|| {
+                    AuthError::Internal(
+                        "the server configuration no longer declares this provider".to_owned(),
+                    )
+                });
+        }
         let id = provider
             .secret_id
             .ok_or_else(|| AuthError::Internal("the provider has no secret".to_owned()))?;
@@ -492,51 +664,13 @@ impl Identity {
         String::from_utf8(plaintext).map_err(|e| AuthError::Internal(e.to_string()))
     }
 
-    /// Changes a provider added through the API.
-    pub async fn update_provider(
+    /// A provider added through the API, at the version `expected` names.
+    async fn editable_provider(
         &self,
         id: Uuid,
-        change: ProviderChange,
+        expected: u64,
+        verb: &str,
     ) -> Result<AuthProvider, AuthError> {
-        let mut provider = self
-            .store
-            .auth_providers()
-            .get(id)
-            .await?
-            .ok_or(AuthError::NotFound)?;
-        if provider.seeded {
-            return Err(AuthError::Forbidden(
-                "this provider comes from the server configuration; change it there".to_owned(),
-            ));
-        }
-        if let Some(name) = change.display_name {
-            provider.display_name = display_name("display_name", &name)?;
-        }
-        if let Some(list) = change.allowed_domains {
-            provider.allowed_domains = domains("allowed_domains", list)?;
-        }
-        if let Some(enabled) = change.enabled {
-            provider.enabled = enabled;
-        }
-        let sealed = change
-            .client_secret
-            .map(|secret| self.seal_secret(provider.id, &secret));
-        let stored = provider.clone();
-        transaction(self.store.as_ref(), move |tx| {
-            Box::pin(async move {
-                if let Some(secret) = &sealed {
-                    tx.secrets().delete(secret.id).await?;
-                    tx.secrets().insert(secret).await?;
-                }
-                tx.auth_providers().update(&stored).await
-            })
-        })
-        .await?;
-        Ok(provider)
-    }
-
-    /// Deletes a provider added through the API, with its linked accounts and its secret.
-    pub async fn delete_provider(&self, id: Uuid) -> Result<(), AuthError> {
         let provider = self
             .store
             .auth_providers()
@@ -544,21 +678,192 @@ impl Identity {
             .await?
             .ok_or(AuthError::NotFound)?;
         if provider.seeded {
-            return Err(AuthError::Forbidden(
-                "this provider comes from the server configuration; remove it there".to_owned(),
-            ));
+            return Err(AuthError::Forbidden(format!(
+                "this provider comes from the server configuration; {verb} it there"
+            )));
         }
-        transaction(self.store.as_ref(), move |tx| {
+        check_version(provider.version, Some(expected))?;
+        Ok(provider)
+    }
+
+    /// Changes a provider added through the API; `expected` is the `If-Match` version. The client id, issuer and
+    /// scopes are checked as on create; without a client secret the stored one stays. A new issuer unlinks the
+    /// provider's accounts, because a subject at another issuer is another person; people link again through their
+    /// verified email. Turning off the last way to sign in is refused.
+    pub async fn update_provider(
+        &self,
+        id: Uuid,
+        expected: u64,
+        change: ProviderChange,
+    ) -> Result<AuthProvider, AuthError> {
+        let current = self.editable_provider(id, expected, "change").await?;
+        let mut provider = current.clone();
+        if let Some(name) = change.display_name {
+            provider.display_name = display_name("display_name", &name)?;
+        }
+        if let Some(given) = change.issuer
+            && provider.kind == ProviderKind::Oidc
+        {
+            provider.issuer = issuer(ProviderKind::Oidc, Some(given))?;
+        }
+        if let Some(client_id) = change.client_id {
+            if client_id.trim().is_empty() {
+                return Err(AuthError::Invalid {
+                    field: "client_id",
+                    message: "give the client id the provider issued".to_owned(),
+                });
+            }
+            provider.client_id = client_id.trim().to_owned();
+        }
+        if let Some(scopes) = change.scopes {
+            provider.scopes = scopes;
+        }
+        if let Some(list) = change.allowed_domains {
+            provider.allowed_domains = domains("allowed_domains", list)?;
+        }
+        if let Some(enabled) = change.enabled {
+            provider.enabled = enabled;
+        }
+        let sealed = match change.client_secret {
+            Some(secret) if secret.trim().is_empty() => {
+                return Err(AuthError::Invalid {
+                    field: "client_secret",
+                    message:
+                        "leave client_secret out to keep the stored secret, or give the new secret \
+                              the provider issued"
+                            .to_owned(),
+                });
+            }
+            Some(secret) => Some(self.seal_secret(provider.id, &secret)),
+            None => None,
+        };
+        let unlink = provider.issuer != current.issuer;
+        let guard = (current.enabled && !provider.enabled).then(|| self.offering());
+        let stored = provider.clone();
+        let written = transaction(self.store.as_ref(), move |tx| {
             Box::pin(async move {
-                tx.auth_providers().delete(id).await?;
-                if let Some(secret) = provider.secret_id {
-                    tx.secrets().delete(secret).await?;
+                if let Some(offering) = &guard
+                    && let Err(refused) = keep_a_way_in(tx, offering, id, expected).await?
+                {
+                    return Ok(Err(refused));
                 }
-                Ok(())
+                if !tx
+                    .auth_providers()
+                    .update_if_version(&stored, expected)
+                    .await?
+                {
+                    return Ok(Err(AuthError::PreconditionFailed));
+                }
+                if let Some(secret) = &sealed {
+                    tx.secrets().delete(secret.id).await?;
+                    tx.secrets().insert(secret).await?;
+                }
+                if unlink {
+                    tx.oauth_accounts().delete_for_provider(id).await?;
+                }
+                Ok(Ok(()))
             })
         })
         .await?;
+        written?;
+        if current.enabled && !provider.enabled {
+            self.forget_sessions();
+        }
+        provider.version = expected + 1;
+        Ok(provider)
+    }
+
+    /// Deletes a provider added through the API, with its linked accounts and its secret; `expected` is the
+    /// `If-Match` version. Deleting the last way to sign in is refused.
+    pub async fn delete_provider(&self, id: Uuid, expected: u64) -> Result<(), AuthError> {
+        let provider = self.editable_provider(id, expected, "remove").await?;
+        let guard = provider.enabled.then(|| self.offering());
+        let deleted = transaction(self.store.as_ref(), move |tx| {
+            Box::pin(async move {
+                if let Some(offering) = &guard
+                    && let Err(refused) = keep_a_way_in(tx, offering, id, expected).await?
+                {
+                    return Ok(Err(refused));
+                }
+                if !tx.auth_providers().delete_if_version(id, expected).await? {
+                    return Ok(Err(AuthError::PreconditionFailed));
+                }
+                if let Some(secret) = provider.secret_id {
+                    tx.secrets().delete(secret).await?;
+                }
+                Ok(Ok(()))
+            })
+        })
+        .await?;
+        deleted?;
+        if provider.enabled {
+            self.forget_sessions();
+        }
         Ok(())
+    }
+
+    /// Makes the rows seeded from the configuration match its providers (contract 11.1), at start: a provider the
+    /// configuration declares is added, or its row changed in place, since the row's id is in the callback URL; a
+    /// row whose provider left the configuration stays, turned off, and comes back with the same id. Answers what
+    /// changed, by kind.
+    pub async fn seed_providers(&self) -> Result<Vec<(ProviderKind, Seeded)>, AuthError> {
+        let mut changed = Vec::new();
+        for &kind in ProviderKind::ALL {
+            if let Some(seeded) = self.seed(kind).await? {
+                changed.push((kind, seeded));
+            }
+        }
+        Ok(changed)
+    }
+
+    async fn seed(&self, kind: ProviderKind) -> Result<Option<Seeded>, AuthError> {
+        let wanted = self.config.providers.iter().find(|p| p.kind == kind);
+        // Nodes that start together race on a kind's row: the one that loses reads the winner's row and goes on.
+        for _ in 0..4 {
+            let row = self
+                .providers()
+                .await?
+                .into_iter()
+                .find(|p| p.seeded && p.kind == kind);
+            let (outcome, written) = match (wanted, row) {
+                (None, None) => return Ok(None),
+                (None, Some(row)) if !row.enabled => return Ok(None),
+                (None, Some(row)) => {
+                    let mut off = row.clone();
+                    off.enabled = false;
+                    let written = self
+                        .store
+                        .auth_providers()
+                        .update_if_version(&off, row.version)
+                        .await?;
+                    (Seeded::TurnedOff, written)
+                }
+                (Some(input), None) => {
+                    let row = Self::provider_row(self.env.new_id(), input, true)?;
+                    match self.store.auth_providers().insert(&row).await {
+                        Err(TxError::UniqueViolation(_)) => (Seeded::Added, false),
+                        inserted => (Seeded::Added, inserted.map(|()| true)?),
+                    }
+                }
+                (Some(input), Some(row)) => {
+                    let mut wanted = Self::provider_row(row.id, input, true)?;
+                    wanted.version = row.version;
+                    if wanted == row {
+                        return Ok(None);
+                    }
+                    let written = self
+                        .store
+                        .auth_providers()
+                        .update_if_version(&wanted, row.version)
+                        .await?;
+                    (Seeded::Changed, written)
+                }
+            };
+            if written {
+                return Ok(Some(outcome));
+            }
+        }
+        Err(AuthError::Unavailable)
     }
 
     /// Creates a project with its salt (contract 9.3) in one transaction; the creator, an org admin or owner, is

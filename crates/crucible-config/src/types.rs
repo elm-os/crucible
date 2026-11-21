@@ -110,7 +110,7 @@ pub enum PgOutageMode {
     FailClosed,
 }
 
-/// The `[auth]` section.
+/// The `[auth]` section, with the sign-in providers of `[auth_github]`, `[auth_google]` and `[auth_oidc]`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Auth {
     /// API keys during a Postgres outage.
@@ -121,6 +121,39 @@ pub struct Auth {
     pub session_outage_grace: u64,
     /// `security.require_https`: refuse sign-in unless the public URL is HTTPS.
     pub require_https: bool,
+    /// The sign-in providers the configuration declares, at most one per kind, in the order GitHub, Google,
+    /// OpenID Connect.
+    pub providers: Vec<SignInProvider>,
+}
+
+/// The kind of a sign-in provider the configuration declares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SignInKind {
+    /// `[auth_github]`.
+    Github,
+    /// `[auth_google]`.
+    Google,
+    /// `[auth_oidc]`.
+    Oidc,
+}
+
+/// A sign-in provider the configuration declares. Its row in Postgres is read-only in the API and the UI.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SignInProvider {
+    /// The kind.
+    pub kind: SignInKind,
+    /// The text of the sign-in button; `None` for the kind's own.
+    pub display_name: Option<String>,
+    /// The issuer URL, for OpenID Connect.
+    pub issuer: Option<String>,
+    /// The client id.
+    pub client_id: String,
+    /// The client secret.
+    pub client_secret: Secret,
+    /// Scopes to ask for besides those the kind needs.
+    pub scopes: Vec<String>,
+    /// Email domains that may sign in through it; empty allows any.
+    pub allowed_domains: Vec<String>,
 }
 
 /// The `[data]` section.

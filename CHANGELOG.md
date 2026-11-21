@@ -39,6 +39,23 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
   manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
   all four variants.
+- Crucible refuses a change that would leave nobody able to sign in: turning off password sign-in while the sign-in
+  page offers no provider, and turning off or deleting the last provider while password sign-in is off. The refusal
+  (409 `conflict`) says what to turn on first.
+- The Organization page has a password sign-in switch, and shows the refusal when password sign-in is the only way in.
+- `crucible admin enable-password-login` turns password sign-in back on from the shell, for a deployment whose sign-in
+  provider no longer signs anyone in; the server logs at start when nobody can sign in.
+- Sign-in providers carry a version: `PATCH` and `DELETE org/auth-providers/{provider_id}` need it in `If-Match`, and
+  the Sign-in page sends it and reloads a provider that changed meanwhile. Postgres migration
+  `V11__auth_provider_version` adds the column.
+- A sign-in provider's client ID, issuer and scopes can be changed in place. An empty client secret is refused and
+  never replaces the stored one, and a new issuer unlinks the provider's accounts, which link again through their
+  verified email.
+- A provider's allowed email domains apply at every sign-in, also to accounts linked before the list changed, and the
+  sign-in page names the domains the provider allows.
+- Sign-in providers can be declared in the configuration (`[auth_github]`, `[auth_google]`, `[auth_oidc]`), with
+  their client secrets in files or environment variables. They are read-only on the Sign-in page and in the API, and
+  removing one from the configuration turns it off.
 
 ## [0.1.1] - 2026-11-21
 

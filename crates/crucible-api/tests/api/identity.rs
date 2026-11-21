@@ -745,6 +745,126 @@ fn keys_made_through_the_api_work_at_once_and_stop_at_once() {
     });
 }
 
+/// Sign-in providers carry a version that `PATCH` and `DELETE` send in `If-Match` (contract 12.5); an empty client
+/// secret never replaces the stored one; and password sign-in stays on while it is the only way to sign in, with a
+/// refusal that says what to turn on first.
+#[test]
+fn sign_in_providers_through_the_api() {
+    run(|env| async move {
+        let world = World::new(10);
+        let p = platform(&env, &world).await;
+        let providers = "/api/v1/org/auth-providers";
+        let created = call(
+            &p.router,
+            Method::POST,
+            providers,
+            &p.owner,
+            Some(json!({
+                "kind": "oidc",
+                "display_name": "Company SSO",
+                "issuer": "https://login.example.com",
+                "client_id": "crucible",
+                "client_secret": "s3cret",
+            })),
+            &[],
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{:#}", created.body);
+        assert_eq!(created.header("etag"), Some("\"1\""));
+        assert_eq!(created.body["version"], 1);
+        let one = format!("{providers}/{}", created.body["id"].as_str().unwrap());
+        let listed = call(&p.router, Method::GET, providers, &p.owner, None, &[]).await;
+        assert_eq!(listed.body["data"][0]["version"], 1);
+        let rename = json!({"display_name": "Acme SSO", "client_id": "crucible-2"});
+        call(
+            &p.router,
+            Method::PATCH,
+            &one,
+            &p.owner,
+            Some(rename.clone()),
+            &[],
+        )
+        .await
+        .assert_problem(428, "precondition_required");
+        call(
+            &p.router,
+            Method::PATCH,
+            &one,
+            &p.owner,
+            Some(rename.clone()),
+            &[("if-match", "\"7\"")],
+        )
+        .await
+        .assert_problem(412, "precondition_failed");
+        let renamed = call(
+            &p.router,
+            Method::PATCH,
+            &one,
+            &p.owner,
+            Some(rename),
+            &[("if-match", "\"1\"")],
+        )
+        .await;
+        assert_eq!(renamed.status, StatusCode::OK, "{:#}", renamed.body);
+        assert_eq!(renamed.header("etag"), Some("\"2\""));
+        assert_eq!(
+            (&renamed.body["display_name"], &renamed.body["client_id"]),
+            (&json!("Acme SSO"), &json!("crucible-2"))
+        );
+        // An empty secret is a field error, never a new secret.
+        let empty = call(
+            &p.router,
+            Method::PATCH,
+            &one,
+            &p.owner,
+            Some(json!({"client_secret": ""})),
+            &[("if-match", "\"2\"")],
+        )
+        .await;
+        empty.assert_problem(422, "validation_failed");
+        assert_eq!(empty.body["errors"][0]["pointer"], "/client_secret");
+        // Without server.public_url no provider is offered, so password sign-in is the only way in.
+        let org = call(&p.router, Method::GET, "/api/v1/org", &p.owner, None, &[]).await;
+        let org_etag = org.header("etag").unwrap().to_owned();
+        let refused = call(
+            &p.router,
+            Method::PATCH,
+            "/api/v1/org",
+            &p.owner,
+            Some(json!({"password_login_enabled": false})),
+            &[("if-match", org_etag.as_str())],
+        )
+        .await;
+        refused.assert_problem(409, "conflict");
+        let detail = refused.body["detail"].as_str().unwrap();
+        assert!(detail.contains("server.public_url"), "{detail}");
+        // A delete names the version too.
+        call(&p.router, Method::DELETE, &one, &p.owner, None, &[])
+            .await
+            .assert_problem(428, "precondition_required");
+        call(
+            &p.router,
+            Method::DELETE,
+            &one,
+            &p.owner,
+            None,
+            &[("if-match", "\"1\"")],
+        )
+        .await
+        .assert_problem(412, "precondition_failed");
+        let deleted = call(
+            &p.router,
+            Method::DELETE,
+            &one,
+            &p.owner,
+            None,
+            &[("if-match", "\"2\"")],
+        )
+        .await;
+        assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:#}", deleted.body);
+    });
+}
+
 #[test]
 fn invitations_through_the_api() {
     run(|env| async move {

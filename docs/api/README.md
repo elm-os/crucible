@@ -849,7 +849,12 @@ The answer is 201 with the dashboard, each widget with its new `id`, and `ETag: 
   uses in a trace or a span. An object is at most `media.max_bytes`, 64 MiB by default; see
   [media](../self-hosting/media.md).
 - **Identity**: sign-in, sessions, password reset, invitations, the organization, its members and sign-in providers,
-  projects, project members and API keys, as listed under [routes](#routes).
+  projects, project members and API keys, as listed under [routes](#routes). A change that would leave no way to
+  sign in answers 409 `conflict` and says what to turn on first: turning password sign-in off (`PATCH org`) while
+  the sign-in page offers no provider, and turning off or deleting the last provider while password sign-in is off.
+  `PATCH org/auth-providers/{provider_id}` changes the client id, issuer and scopes as well, checked as on create; it
+  keeps the stored client secret unless the body carries a new one, and refuses an empty one. Providers from the
+  server configuration are read-only ([configuration](../self-hosting/configuration.md)).
 
 An export, from request to file:
 
@@ -1002,10 +1007,10 @@ The codes in `errors[].code` are stable too, such as `required`, `repeated`, `un
 
 ## Concurrency and idempotency
 
-- **Versions.** Retention, alert rules, channels, saved queries, projects and other mutable resources carry a
-  `version`, also sent as `ETag`. A `PATCH`, `PUT` or `DELETE` of them requires `If-Match` with that value: without it
-  the answer is 428 `precondition_required`, and with a stale one 412 `precondition_failed`, with the current version
-  in the message.
+- **Versions.** Retention, alert rules, channels, saved queries, projects, sign-in providers and other mutable
+  resources carry a `version`, also sent as `ETag`. A `PATCH`, `PUT` or `DELETE` of them requires `If-Match` with
+  that value: without it the answer is 428 `precondition_required`, and with a stale one 412 `precondition_failed`,
+  with the current version in the message.
 - **Idempotency.** The fact writes (`feedback`, `tags`, `flags`, `corrections`), `POST exports` and
   `POST deletion-requests` honour an `Idempotency-Key` header of 1 to 128 characters of `[A-Za-z0-9_-]`: a replay
   returns the first answer (an export, its current state), and the same key with a different request answers 409

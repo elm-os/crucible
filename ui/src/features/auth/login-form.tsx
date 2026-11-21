@@ -78,7 +78,29 @@ const LOGIN_COPY: CopyByCode = {
   },
 };
 
-function flowErrorCopy(code: string): Copy {
+// A provider that lets only some email domains sign in names them in `domains`; an entry that isn't
+// a domain is left out, since anyone can write this address.
+const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)*$/;
+
+function allowedDomains(text: string | null): string[] {
+  return (text ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => DOMAIN.test(entry))
+    .slice(0, 10);
+}
+
+function either(items: string[]): string {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
+}
+
+function flowErrorCopy(code: string, domains: string[]): Copy {
+  if (code === "not_invited" && domains.length > 0) {
+    return {
+      title: "This provider doesn't accept your email address.",
+      detail: `Only addresses at ${either(domains)} can sign in with it. Sign in with an account at one of those domains, or choose another way to sign in.`,
+    };
+  }
   return Object.hasOwn(FLOW_ERRORS, code) ? FLOW_ERRORS[code] : FLOW_ERROR_UNKNOWN;
 }
 
@@ -90,6 +112,7 @@ export function LoginForm() {
   const params = useSearchParams();
   const next = safeNext(params.get("next"));
   const flowError = params.get("error");
+  const domains = allowedDomains(params.get("domains"));
   const mode = useQuery({
     queryKey: ["sign-in-mode"],
     queryFn: ({ signal }) => getSignInMode(signal),
@@ -150,7 +173,7 @@ export function LoginForm() {
   return (
     <>
       <AuthHeading title={TITLE} />
-      {flowError === null ? null : <FormAlert copy={flowErrorCopy(flowError)} />}
+      {flowError === null ? null : <FormAlert copy={flowErrorCopy(flowError, domains)} />}
       {body}
     </>
   );

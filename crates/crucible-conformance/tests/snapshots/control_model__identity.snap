@@ -7,9 +7,11 @@ insert a second seeded github: error UniqueViolation("auth_providers_seeded_kind
 insert unseeded github: ()
 insert oidc: ()
 insert oidc again: error UniqueViolation("auth_providers_pkey")
+update oidc at a version it never had: false
 update oidc: true
+update oidc at the version it had: false
 update a missing provider: false
-providers: [(Github, "Provider 20", true), (Oidc, "Company SSO", false), (Github, "Provider 23", false)]
+providers: [(Github, "Provider 20", true, 1), (Oidc, "Company SSO", false, 2), (Github, "Provider 23", false, 1)]
 link github 1001 to user 1: ()
 link github 1001 again: error UniqueViolation("oauth_accounts_pkey")
 link oidc sub-a to user 1: ()
@@ -18,11 +20,16 @@ link to a missing provider: error ForeignKeyViolation("oauth_accounts_provider_i
 get github 1001: Some(OauthAccount { provider_id: Uuid(01a3185c-5014-7000-8000-000000000014), subject: "1001", user_id: UserId(01a3185c-5001-7000-8000-000000000001) })
 get github 1002: None
 accounts of user 1: 2
+delete oidc at the version it had: false
 delete oidc: true
 delete oidc again: false
 accounts of user 1 after the provider went: 1
 delete user 1: true
 get github 1001 after the user went: None
+link github 2002 to user 2: ()
+unlink the accounts of github: 1
+unlink the accounts of github again: 0
+accounts of user 2 after the unlink: 0
 insert flow: ()
 insert flow: ()
 insert flow 1 again: error UniqueViolation("auth_flows_pkey")

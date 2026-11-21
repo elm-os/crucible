@@ -693,7 +693,6 @@ export async function patchOrg(org: Pick<Org, "version">, body: OrgPatch): Promi
   return read<Org>(await call("/org", "session", { method: "PATCH", body, version: org.version }));
 }
 
-// Sign-in providers carry no version, so their writes send no If-Match.
 export async function listAuthProviders(signal?: AbortSignal): Promise<AuthProviderList> {
   return read<AuthProviderList>(await call("/org/auth-providers", "session", { signal }));
 }
@@ -703,15 +702,19 @@ export async function createAuthProvider(body: AuthProviderCreate): Promise<Auth
 }
 
 export async function patchAuthProvider(
-  id: string,
+  provider: Pick<AuthProvider, "id" | "version">,
   body: AuthProviderPatch,
 ): Promise<AuthProvider> {
-  const path = `/org/auth-providers/${encodeURIComponent(id)}`;
-  return read<AuthProvider>(await call(path, "session", { method: "PATCH", body }));
+  const path = `/org/auth-providers/${encodeURIComponent(provider.id)}`;
+  const init: Init = { method: "PATCH", body, version: provider.version };
+  return read<AuthProvider>(await call(path, "session", init));
 }
 
-export async function deleteAuthProvider(id: string): Promise<void> {
-  await call(`/org/auth-providers/${encodeURIComponent(id)}`, "session", { method: "DELETE" });
+export async function deleteAuthProvider(
+  provider: Pick<AuthProvider, "id" | "version">,
+): Promise<void> {
+  const path = `/org/auth-providers/${encodeURIComponent(provider.id)}`;
+  await call(path, "session", { method: "DELETE", version: provider.version });
 }
 
 export async function listApiKeys(project: string, signal?: AbortSignal): Promise<ApiKeyList> {

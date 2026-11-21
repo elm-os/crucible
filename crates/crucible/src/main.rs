@@ -76,6 +76,9 @@ enum AdminCommand {
     /// Make an API key for a project and print `project_id`, `public_key` and `secret_key`. The secret key is
     /// shown once.
     CreateKey(Box<AdminCreateKeyArgs>),
+    /// Turn password sign-in back on, when the sign-in providers no longer sign anyone in, for example after a
+    /// provider changed at the identity provider. Running servers use it at the next sign-in.
+    EnablePasswordLogin(Box<ConfigArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -411,6 +414,13 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 Ok(())
             }
+            AdminCommand::EnablePasswordLogin(args) => {
+                let config = args.load_for_run()?;
+                let said = runtime(cpu_permits(&config))?
+                    .block_on(identity::admin_enable_password_login(&config))?;
+                writeln!(std::io::stdout().lock(), "{said}")?;
+                Ok(())
+            }
             AdminCommand::ResetPassword(args) => {
                 let config = args.config.load_for_run()?;
                 let link = runtime(cpu_permits(&config))?
@@ -671,6 +681,31 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["crucible", "config"]).is_err());
         assert!(Cli::try_parse_from(["crucible", "serve", "--no-such-flag"]).is_err());
+    }
+
+    #[test]
+    fn admin_enable_password_login_takes_the_server_settings() {
+        let argv = [
+            "crucible",
+            "admin",
+            "enable-password-login",
+            "--config",
+            "crucible.toml",
+            "--postgres-url",
+            "postgres://u@h/d",
+        ];
+        match Cli::parse_from(argv).command {
+            Command::Admin {
+                command: AdminCommand::EnablePasswordLogin(args),
+            } => {
+                assert_eq!(args.config.as_deref(), Some(Path::new("crucible.toml")));
+                assert_eq!(
+                    args.flags(),
+                    [("postgres.url", "postgres://u@h/d".to_owned())]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

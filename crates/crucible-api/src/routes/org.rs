@@ -81,7 +81,8 @@ pub(crate) async fn get_org(org: OrgScoped<OrgRead>) -> (HeaderMap, Json<wire::O
 
 /// Update the organization
 ///
-/// Changes the name and settings; send `If-Match` with the version you read.
+/// Changes the name and settings; send `If-Match` with the version you read. Turning password sign-in off while
+/// the sign-in page offers no provider is refused with `conflict`, which says what to turn on first.
 #[utoipa::path(
     patch,
     path = "/api/v1/org",
@@ -91,6 +92,7 @@ pub(crate) async fn get_org(org: OrgScoped<OrgRead>) -> (HeaderMap, Json<wire::O
     responses(
         (status = 200, description = "The organization.", body = wire::Org),
         (status = 403, description = "`forbidden`.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "`conflict`: password sign-in is the only way to sign in.", body = Problem, content_type = "application/problem+json"),
         (status = 412, description = "`precondition_failed`.", body = Problem, content_type = "application/problem+json"),
         (status = 428, description = "`precondition_required`.", body = Problem, content_type = "application/problem+json"),
     ),
@@ -383,7 +385,7 @@ pub(crate) async fn list_providers(
     tag = "org",
     request_body = wire::AuthProviderCreate,
     responses(
-        (status = 201, description = "The provider.", body = wire::AuthProvider),
+        (status = 201, description = "The provider; `ETag` is its version.", body = wire::AuthProvider),
         (status = 422, description = "`validation_failed`.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("session" = [])),
@@ -391,7 +393,7 @@ pub(crate) async fn list_providers(
 pub(crate) async fn create_provider(
     org: OrgScoped<OrgSettings>,
     ApiJson(body): ApiJson<wire::AuthProviderCreate>,
-) -> Result<(StatusCode, Json<wire::AuthProvider>), ApiError> {
+) -> Result<(StatusCode, HeaderMap, Json<wire::AuthProvider>), ApiError> {
     let input = ProviderInput {
         kind: c::kind_in(body.kind),
         display_name: body.display_name,
@@ -408,11 +410,15 @@ pub(crate) async fn create_provider(
         .map_err(auth(org.request_id))?;
     Ok((
         StatusCode::CREATED,
+        etag(provider.version),
         Json(c::provider(&org.identity, &provider)),
     ))
 }
 
 /// Change a sign-in provider
+///
+/// Send `If-Match` with the version you read. The client id, issuer and scopes are checked as on create; leave
+/// `client_secret` out to keep the stored secret. Turning off the last way to sign in is refused with `conflict`.
 #[utoipa::path(
     patch,
     path = "/api/v1/org/auth-providers/{provider_id}",
@@ -421,34 +427,48 @@ pub(crate) async fn create_provider(
     params(("provider_id" = String, Path, description = "The provider id.")),
     request_body = wire::AuthProviderPatch,
     responses(
-        (status = 200, description = "The provider.", body = wire::AuthProvider),
+        (status = 200, description = "The provider; `ETag` is its version.", body = wire::AuthProvider),
         (status = 403, description = "`forbidden`: from the configuration.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "`not_found`.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "`conflict`: it is the last way to sign in.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`precondition_failed`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "`validation_failed`.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`precondition_required`.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("session" = [])),
 )]
 pub(crate) async fn patch_provider(
     org: OrgScoped<OrgSettings>,
     path: PathParams,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<wire::AuthProviderPatch>,
-) -> Result<Json<wire::AuthProvider>, ApiError> {
+) -> Result<(HeaderMap, Json<wire::AuthProvider>), ApiError> {
     let rid = org.request_id;
     let id = path.id("provider_id", |u| u)?;
+    let expected = if_match(&headers, rid)?;
     let change = ProviderChange {
         display_name: body.display_name,
+        issuer: body.issuer,
+        client_id: body.client_id,
         client_secret: body.client_secret,
+        scopes: body.scopes,
         allowed_domains: body.allowed_domains,
         enabled: body.enabled,
     };
     let provider = org
         .identity
-        .update_provider(id, change)
+        .update_provider(id, expected, change)
         .await
         .map_err(auth(rid))?;
-    Ok(Json(c::provider(&org.identity, &provider)))
+    Ok((
+        etag(provider.version),
+        Json(c::provider(&org.identity, &provider)),
+    ))
 }
 
 /// Delete a sign-in provider
+///
+/// Send `If-Match` with the version you read. Deleting the last way to sign in is refused with `conflict`.
 #[utoipa::path(
     delete,
     path = "/api/v1/org/auth-providers/{provider_id}",
@@ -459,15 +479,23 @@ pub(crate) async fn patch_provider(
         (status = 204, description = "Deleted with its linked accounts."),
         (status = 403, description = "`forbidden`: from the configuration.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "`not_found`.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "`conflict`: it is the last way to sign in.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`precondition_failed`.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`precondition_required`.", body = Problem, content_type = "application/problem+json"),
     ),
     security(("session" = [])),
 )]
 pub(crate) async fn delete_provider(
     org: OrgScoped<OrgSettings>,
     path: PathParams,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let rid = org.request_id;
     let id = path.id("provider_id", |u| u)?;
-    org.identity.delete_provider(id).await.map_err(auth(rid))?;
+    let expected = if_match(&headers, rid)?;
+    org.identity
+        .delete_provider(id, expected)
+        .await
+        .map_err(auth(rid))?;
     Ok(StatusCode::NO_CONTENT)
 }
