@@ -351,6 +351,65 @@ test.describe("phone at 390 px", () => {
     await expectNoPageScrollX(page);
     await expectAccessible(page, "delete data on a phone");
   });
+
+  test("organization and sign-in settings read on a phone, and editing waits for a wider screen", async ({
+    page,
+    api,
+  }) => {
+    signedIn(api);
+    api.on(
+      /\/api\/v1\/org$/,
+      json({
+        id: "0193a1b2-0000-7000-8000-0000000000aa",
+        name: "Analytical Engines",
+        settings: {
+          signup_mode: "invite_only",
+          allowed_email_domains: ["research.analytical-engines.example"],
+          password_login_enabled: true,
+          project_access: "all",
+        },
+        version: 3,
+      }),
+    );
+    const callback = `https://crucible.example.com/api/v1/auth/oauth/0193a1b2-0000-7000-8000-0000000000c1/callback`;
+    api.on(
+      /\/api\/v1\/org\/auth-providers$/,
+      json({
+        data: [
+          {
+            id: "0193a1b2-0000-7000-8000-0000000000c1",
+            kind: "oidc",
+            display_name: "Continue with Acme SSO",
+            issuer: "https://login.acme.example",
+            client_id: "crucible-web-client-for-the-analytical-engines-organization",
+            scopes: [],
+            allowed_domains: [],
+            enabled: true,
+            seeded: false,
+            redirect_uri: callback,
+          },
+        ],
+      }),
+    );
+    await page.goto(`/settings/organization/?project=${PROJECT}`);
+    await expect(page.getByLabel("Organization name")).toHaveAttribute("readonly", "");
+    await expect(page.getByText("Editing needs a wider screen.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save settings" })).toHaveCount(0);
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "organization settings on a phone");
+
+    await page.goto(`/settings/sign-in/?project=${PROJECT}`);
+    await expect(page.getByText(callback)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Copy callback URL of Continue with Acme SSO" }),
+    ).toBeVisible();
+    await expect(page.getByText("Editing needs a wider screen.")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^(Add provider|Edit|Turn off|Delete)/ }),
+    ).toHaveCount(0);
+    await expectNoPageScrollX(page);
+    await expectAccessible(page, "sign-in providers on a phone");
+  });
 });
 
 test.describe("phone at 390 px: lists", () => {
