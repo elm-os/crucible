@@ -105,6 +105,10 @@ pub enum Seeded {
     Changed,
     /// The configuration no longer declares it: its row stays, turned off.
     TurnedOff,
+    /// The configuration no longer declares it, but it is the last way to sign in (password sign-in is off and no
+    /// other provider is offered), so its row stays on. This server cannot sign anyone in through it, because its
+    /// client secret was in the configuration.
+    KeptOn,
 }
 
 /// Whether the sign-in page offers a provider, as this node sees it (contract 11.4): the provider is on, its
@@ -804,11 +808,15 @@ impl Identity {
 
     /// Makes the rows seeded from the configuration match its providers (contract 11.1), at start: a provider the
     /// configuration declares is added, or its row changed in place, since the row's id is in the callback URL; a
-    /// row whose provider left the configuration stays, turned off, and comes back with the same id. Answers what
-    /// changed, by kind.
+    /// row whose provider left the configuration stays, turned off, and comes back with the same id. A row that is
+    /// the last way to sign in stays on instead. Answers what changed, by kind.
     pub async fn seed_providers(&self) -> Result<Vec<(ProviderKind, Seeded)>, AuthError> {
+        // The declared kinds go first, so a provider this start adds counts as a way in when another one goes.
+        let (declared, gone): (Vec<ProviderKind>, Vec<ProviderKind>) = ProviderKind::ALL
+            .iter()
+            .partition(|kind| self.config.providers.iter().any(|p| p.kind == **kind));
         let mut changed = Vec::new();
-        for &kind in ProviderKind::ALL {
+        for kind in declared.into_iter().chain(gone) {
             if let Some(seeded) = self.seed(kind).await? {
                 changed.push((kind, seeded));
             }
@@ -829,14 +837,35 @@ impl Identity {
                 (None, None) => return Ok(None),
                 (None, Some(row)) if !row.enabled => return Ok(None),
                 (None, Some(row)) => {
-                    let mut off = row.clone();
+                    let mut off = row;
                     off.enabled = false;
-                    let written = self
-                        .store
-                        .auth_providers()
-                        .update_if_version(&off, row.version)
-                        .await?;
-                    (Seeded::TurnedOff, written)
+                    // Checked and written as an API turn-off is, so a peer that turns password sign-in off at the
+                    // same time cannot pass too.
+                    let offering = self.offering();
+                    let turned = transaction(self.store.as_ref(), move |tx| {
+                        Box::pin(async move {
+                            if let Err(refused) =
+                                keep_a_way_in(tx, &offering, off.id, off.version).await?
+                            {
+                                return Ok(Err(refused));
+                            }
+                            let written = tx
+                                .auth_providers()
+                                .update_if_version(&off, off.version)
+                                .await?;
+                            Ok(Ok(written))
+                        })
+                    })
+                    .await;
+                    match turned {
+                        Ok(Ok(written)) => (Seeded::TurnedOff, written),
+                        Ok(Err(AuthError::Conflict(_))) => return Ok(Some(Seeded::KeptOn)),
+                        // The row or the organization changed meanwhile: read again.
+                        Ok(Err(_)) | Err(TxError::SerializationFailure) => {
+                            (Seeded::TurnedOff, false)
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 (Some(input), None) => {
                     let row = Self::provider_row(self.env.new_id(), input, true)?;
@@ -851,11 +880,21 @@ impl Identity {
                     if wanted == row {
                         return Ok(None);
                     }
-                    let written = self
-                        .store
-                        .auth_providers()
-                        .update_if_version(&wanted, row.version)
-                        .await?;
+                    // A subject at another issuer is another person, as for an edit through the API.
+                    let unlink = wanted.issuer != row.issuer;
+                    let written = transaction(self.store.as_ref(), move |tx| {
+                        Box::pin(async move {
+                            let written = tx
+                                .auth_providers()
+                                .update_if_version(&wanted, wanted.version)
+                                .await?;
+                            if written && unlink {
+                                tx.oauth_accounts().delete_for_provider(wanted.id).await?;
+                            }
+                            Ok(written)
+                        })
+                    })
+                    .await?;
                     (Seeded::Changed, written)
                 }
             };

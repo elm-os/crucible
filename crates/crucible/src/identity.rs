@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use crucible_auth::csrf::Origins;
-use crucible_auth::service::{AuthError, Identity, IdentityConfig, ProviderInput};
+use crucible_auth::service::{AuthError, Identity, IdentityConfig, ProviderInput, Seeded};
 use crucible_auth::{DbKeys, LookupKey, OutageMode, Sealer, StoreFeed, run_feed, run_last_used};
 use crucible_config::{Config, PgOutageMode, SignInKind, SignInProvider};
 use crucible_control::{ControlStore, KeyScope, ProviderKind};
@@ -188,7 +188,8 @@ pub(crate) fn start_tasks(env: &Env, identity: &Arc<Identity>, store: Arc<dyn Co
 }
 
 /// Makes the rows of the configuration's sign-in providers match it, retrying until Postgres answers, then says so
-/// when nobody can sign in, with the command that turns password sign-in back on.
+/// when nobody can sign in, or when a provider the configuration no longer declares stays on as the last way in,
+/// with the command that turns password sign-in back on.
 fn start_seeding(env: &Env, identity: &Arc<Identity>) {
     let (seed_env, identity) = (env.clone(), Arc::clone(identity));
     env.spawn("sign-in-providers", async move {
@@ -201,10 +202,23 @@ fn start_seeding(env: &Env, identity: &Arc<Identity>) {
             };
             match seeded {
                 Ok(changed) => {
+                    let mut kept = false;
                     for (kind, change) in changed {
-                        tracing::info!(provider = %kind, ?change, "a sign-in provider of the configuration");
+                        if change == Seeded::KeptOn {
+                            kept = true;
+                            tracing::error!(
+                                "the configuration no longer declares [auth_{kind}], but password sign-in is off and \
+                                 no other sign-in provider is offered, so its row stays on. This server cannot sign \
+                                 anyone in through it, because its client secret was in that section: put the section \
+                                 back and restart, or turn password sign-in on (`crucible admin \
+                                 enable-password-login`, or Settings > Organization) and restart, which turns the row \
+                                 off"
+                            );
+                        } else {
+                            tracing::info!(provider = %kind, ?change, "a sign-in provider of the configuration");
+                        }
                     }
-                    if let Ok(true) = identity.nobody_can_sign_in().await {
+                    if !kept && let Ok(true) = identity.nobody_can_sign_in().await {
                         tracing::warn!(
                             "nobody can sign in: password sign-in is off and the sign-in page offers no provider. Run \
                              `crucible admin enable-password-login` to turn password sign-in back on"

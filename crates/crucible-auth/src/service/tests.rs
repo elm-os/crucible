@@ -1539,14 +1539,7 @@ fn providers_from_the_configuration_are_seeded_read_only_and_turned_off_when_rem
         let off = stored(&identity, row.id).await;
         assert!(!off.enabled);
         assert!(identity.sign_in_providers().await.unwrap().is_empty());
-        // With password sign-in off as well nobody can sign in, which the server reports at start.
         assert!(!identity.nobody_can_sign_in().await.unwrap());
-        identity.config.providers = vec![oidc("Acme SSO")];
-        identity.seed_providers().await.unwrap();
-        set_password(&identity, false).await.unwrap();
-        identity.config.providers.clear();
-        identity.seed_providers().await.unwrap();
-        assert!(identity.nobody_can_sign_in().await.unwrap());
         // Back in the configuration, the same row is on again.
         identity.config.providers = vec![oidc("Acme SSO")];
         identity.seed_providers().await.unwrap();
@@ -1585,6 +1578,161 @@ fn nodes_that_start_together_seed_one_row_per_kind() {
                     (ProviderKind::Oidc, true, true)
                 ],
                 "seed {seed}"
+            );
+        });
+    }
+}
+
+/// How many provider accounts `user` has linked.
+async fn links(model: &PgModel, user: crucible_records::UserId) -> usize {
+    model
+        .oauth_accounts()
+        .list_for_user(user)
+        .await
+        .unwrap()
+        .len()
+}
+
+/// A configured OpenID Connect provider moved to another issuer unlinks its accounts, as an edit through the API
+/// does: a subject at another issuer is another person. People link again through their verified email.
+#[test]
+fn a_configured_provider_at_another_issuer_unlinks_its_accounts() {
+    sim(24, async |env, model| {
+        let idp = FakeIdp::new(&env, person("grace@example.com", true));
+        let env = idp.env(&env);
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![oidc("Company SSO")];
+        let owner = owner(&identity).await.principal;
+        identity.seed_providers().await.unwrap();
+        let row = identity.providers().await.unwrap()[0].clone();
+        identity
+            .invite(&owner, "grace@example.com", OrgRole::Member, Vec::new())
+            .await
+            .unwrap();
+        let grace = provider_sign_in(&identity, &idp, row.id)
+            .await
+            .unwrap()
+            .session
+            .principal
+            .user
+            .id;
+        assert_eq!(links(&model, grace).await, 1);
+        // Another change keeps the links.
+        identity.config.providers[0].display_name = "Acme SSO".to_owned();
+        identity.seed_providers().await.unwrap();
+        assert_eq!(links(&model, grace).await, 1);
+        identity.config.providers[0].issuer = Some("https://login.example.com".to_owned());
+        assert_eq!(
+            identity.seed_providers().await.unwrap(),
+            [(ProviderKind::Oidc, Seeded::Changed)]
+        );
+        assert_eq!(
+            stored(&identity, row.id).await.issuer,
+            "https://login.example.com"
+        );
+        assert_eq!(links(&model, grace).await, 0);
+        // Back at the first issuer, Grace links again through her verified email.
+        identity.config.providers[0].issuer = Some(ISSUER.to_owned());
+        identity.seed_providers().await.unwrap();
+        let again = provider_sign_in(&identity, &idp, row.id).await.unwrap();
+        assert_eq!(again.session.principal.user.id, grace);
+        assert_eq!(links(&model, grace).await, 1);
+    });
+}
+
+/// A start whose configuration no longer declares the last way to sign in (password sign-in off, no other provider
+/// offered) keeps that provider's row on, so the start leaves the organization as it was and the section can come
+/// back. This server cannot sign anyone in through it, because its client secret was in the section. Once password
+/// sign-in is on, as the start's message says, the next start turns the row off.
+#[test]
+fn a_configured_provider_that_is_the_last_way_in_stays_on_when_its_section_goes() {
+    sim(25, async |env, model| {
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![oidc("Company SSO")];
+        owner(&identity).await;
+        identity.seed_providers().await.unwrap();
+        let row = identity.providers().await.unwrap()[0].clone();
+        set_password(&identity, false).await.unwrap();
+        let org = identity.org().await.unwrap().unwrap();
+        identity.config.providers.clear();
+        for _ in 0..2 {
+            assert_eq!(
+                identity.seed_providers().await.unwrap(),
+                [(ProviderKind::Oidc, Seeded::KeptOn)]
+            );
+            assert_eq!(stored(&identity, row.id).await, row);
+            assert_eq!(identity.org().await.unwrap().unwrap(), org);
+        }
+        assert!(identity.sign_in_providers().await.unwrap().is_empty());
+        assert!(identity.nobody_can_sign_in().await.unwrap());
+        assert!(identity.enable_password_login().await.unwrap());
+        assert_eq!(
+            identity.seed_providers().await.unwrap(),
+            [(ProviderKind::Oidc, Seeded::TurnedOff)]
+        );
+        assert!(!stored(&identity, row.id).await.enabled);
+    });
+}
+
+/// A start that swaps one configured provider for another adds the new one before it judges the old one, so the old
+/// one is turned off rather than kept as the last way in.
+#[test]
+fn a_start_that_swaps_configured_providers_turns_the_old_one_off() {
+    sim(26, async |env, model| {
+        let mut identity = identity(&env, &model, OUTAGE_GRACE);
+        identity.config.providers = vec![github()];
+        owner(&identity).await;
+        identity.seed_providers().await.unwrap();
+        set_password(&identity, false).await.unwrap();
+        identity.config.providers = vec![oidc("Company SSO")];
+        let mut changed = identity.seed_providers().await.unwrap();
+        changed.sort_by_key(|(kind, _)| *kind);
+        assert_eq!(
+            changed,
+            [
+                (ProviderKind::Github, Seeded::TurnedOff),
+                (ProviderKind::Oidc, Seeded::Added)
+            ]
+        );
+        let mut rows: Vec<_> = identity
+            .providers()
+            .await
+            .unwrap()
+            .iter()
+            .map(|p| (p.kind, p.enabled))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [(ProviderKind::Github, false), (ProviderKind::Oidc, true)]
+        );
+        assert!(a_way_in(&identity).await);
+    });
+}
+
+/// One node starts without a provider's section while another, which still declares it, turns password sign-in off.
+/// The start's turn-off moves the organization's version as an API change does, so one of the two refuses or fails
+/// and someone can still sign in.
+#[test]
+fn a_removal_at_start_and_a_password_turn_off_at_once_leave_a_way_in() {
+    let slow = PgFaults {
+        latency_micros: (0, 4_000),
+        ..PgFaults::default()
+    };
+    for seed in 0..24 {
+        let faults = slow.clone();
+        sim(600 + seed, async move |env, model| {
+            let mut declares = identity(&env, &model, OUTAGE_GRACE);
+            declares.config.providers = vec![oidc("Company SSO")];
+            owner(&declares).await;
+            declares.seed_providers().await.unwrap();
+            let dropped = identity(&env, &model, OUTAGE_GRACE);
+            model.set_faults(faults);
+            let _ = futures::join!(set_password(&declares, false), dropped.seed_providers());
+            model.set_faults(PgFaults::default());
+            assert!(
+                a_way_in(&declares).await,
+                "seed {seed}: password off and the provider off"
             );
         });
     }
