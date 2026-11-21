@@ -80,8 +80,8 @@ pub struct TraceDetail {
 #[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
 pub struct TraceDetailParams {
-    /// When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;
-    /// the read does not need it yet.
+    /// When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked,
+    /// then unused: the read finds the trace's time bounds itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[param(format = DateTime)]
     #[ts(optional)]

@@ -10277,7 +10277,7 @@
           {
             "name": "hint_time",
             "in": "query",
-            "description": "When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked;\nthe read does not need it yet.",
+            "description": "When the trace is known to have started, for example from the list (RFC 3339). Accepted and checked,\nthen unused: the read finds the trace's time bounds itself.",
             "required": false,
             "schema": {
               "type": "string",
@@ -15549,7 +15549,7 @@
               "string",
               "null"
             ],
-            "description": "The time zone of the buckets. Only `UTC` is supported yet."
+            "description": "The time zone of the buckets: `UTC` or `Etc/UTC`; any other is refused."
           },
           "to": {
             "type": "string",
@@ -19174,7 +19174,7 @@
               "string",
               "null"
             ],
-            "description": "The time zone of the buckets. Only `UTC` is supported yet."
+            "description": "The time zone of the buckets: `UTC` or `Etc/UTC`; any other is refused."
           },
           "top_n": {
             "type": [
