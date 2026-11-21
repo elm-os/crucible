@@ -240,13 +240,18 @@ pub fn init(options: Options) -> Result<(), InitError> {
 
 /// Exports every span that has ended and sends every queued score. It returns the export error, else why the last
 /// score that was not sent since the previous flush was dropped or failed. Before [`init`] it does nothing. It
-/// waits at most `Options::export_timeout` for the spans and as long again for the scores.
+/// waits at most `Options::export_timeout` in all, for the spans and the scores together.
 pub async fn flush() -> Result<(), FlushError> {
     let Some(client) = active() else {
         return Ok(());
     };
+    let deadline = Instant::now() + client.export_timeout;
     let spans = client.pipeline.flush().await;
-    let scores = client.feedback.flush().await.map_err(FlushError);
+    let scores = client
+        .feedback
+        .flush(deadline.saturating_duration_since(Instant::now()))
+        .await
+        .map_err(FlushError);
     spans.and(scores)
 }
 

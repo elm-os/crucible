@@ -9,6 +9,10 @@
 //! - telemetry that does not fit is dropped and counted, and every finished operation is accounted for;
 //! - when nothing was dropped, the operations are exactly the ones the script implies.
 //!
+//! Content capture (contract 9.10) is a swarm flag: a run with capture rules keeps every property above, its
+//! captured content belongs to tool calls only, stays within its caps and never holds the planted address, and
+//! the same seed without capture gives the same operations apart from their content.
+//!
 //! The two seeded defects (`test-mutants`) must be caught by the same checks.
 
 use std::collections::BTreeMap;
@@ -18,12 +22,26 @@ use std::time::Duration;
 use bytes::Bytes;
 use crucible_env::{ChaChaRng, Instant, Rng};
 use crucible_proxy::core::Mutant;
-use crucible_proxy::{Batch, CoreConfig, ExportResult, Now, Op, ProxyCore, StreamId, Tap};
+use crucible_proxy::{
+    Batch, CaptureRule, CoreConfig, ExportResult, Now, Op, ProxyCore, SampleRate, StreamId, Tap,
+};
 use crucible_records::{
     CancelSource, CaptureSource, Direction, ErrorClass, McpStatus, ResultType, Timestamp,
 };
 
 const SEEDS: u64 = 10_000;
+
+/// A planted address in every call's arguments: captured arguments carry it scrubbed, never as it is.
+const PLANTED: &str = "ada@example.com";
+
+/// Whether a run captures content.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Capture {
+    /// Each seed flips its own coin.
+    Swarm,
+    On,
+    Off,
+}
 
 fn below(rng: &dyn Rng, n: u64) -> u64 {
     rng.next_u64() % n
@@ -211,7 +229,7 @@ fn script(rng: &dyn Rng) -> Script {
                         "tools/call",
                         tool_names[tool],
                         format!(
-                            r#"{{"arguments":{{"text":"{}","name":"shadow","nested":{{"id":5,"method":"x"}}}},"name":"{}"{meta}}}"#,
+                            r#"{{"arguments":{{"text":"{}","name":"shadow","nested":{{"id":5,"method":"x"}},"mail":"{PLANTED}"}},"name":"{}"{meta}}}"#,
                             padding(rng),
                             tools[tool]
                         ),
@@ -491,16 +509,62 @@ struct Summary {
     dropped_chunks: u64,
     /// Finished operations dropped.
     dropped_ops: u64,
+    /// Operations that carried captured content.
+    captured: usize,
+    /// The operations delivered, in order.
+    delivered: Vec<Op>,
+}
+
+/// The capture rules of a run, drawn from their own stream so that a run with and a run without capture draw the
+/// same chunks, schedules and collector.
+fn capture_rules(rng: &dyn Rng) -> Vec<CaptureRule> {
+    let globs = ["*", "echo", "search", "lookup_*", "a tool*"];
+    let mut rules = Vec::new();
+    for _ in 0..1 + below(rng, 2) {
+        let mut rule = CaptureRule {
+            tool: globs[below(rng, globs.len() as u64) as usize].to_owned(),
+            ..CaptureRule::default()
+        };
+        rule.args = chance(rng, 85);
+        rule.result = chance(rng, 85);
+        rule.sample_rate = SampleRate::new([1.0, 1.0, 0.5, 0.0][below(rng, 4) as usize])
+            .unwrap_or(SampleRate::ALL);
+        rule.max_bytes = match below(rng, 3) {
+            0 => 16_384,
+            1 => 1 + below(rng, 64) as usize,
+            _ => 1 + below(rng, 4_000) as usize,
+        };
+        rules.push(rule);
+    }
+    rules
 }
 
 /// Runs one seed. `Err` describes the first violated invariant.
-fn run(seed: u64, mutant: Option<Mutant>) -> Result<Summary, String> {
+fn run(seed: u64, mutant: Option<Mutant>, capture: Capture) -> Result<Summary, String> {
     let rng: Arc<dyn Rng> = Arc::new(ChaChaRng::from_u64(seed));
     let script = script(rng.as_ref());
 
     // Swarm: each run draws its own queue sizes, analyser schedule and collector state.
     let mut config = CoreConfig::new(CaptureSource::ProxyStdio);
     config.mutant = mutant;
+    let capture_rng = rng.fork("capture-swarm");
+    let capturing = match capture {
+        Capture::Swarm => chance(capture_rng.as_ref(), 50),
+        Capture::On => true,
+        Capture::Off => false,
+    };
+    if capturing {
+        config.capture = capture_rules(capture_rng.as_ref());
+        if chance(capture_rng.as_ref(), 20) {
+            config.content_bytes = below(capture_rng.as_ref(), 4_000) as usize;
+        }
+    }
+    let max_bytes = config
+        .capture
+        .iter()
+        .map(|rule| rule.max_bytes)
+        .max()
+        .unwrap_or(0);
     if chance(rng.as_ref(), 40) {
         config.queue_bytes = 64 + below(rng.as_ref(), 4_096) as usize;
     }
@@ -690,21 +754,60 @@ fn run(seed: u64, mutant: Option<Mutant>) -> Result<Summary, String> {
         if op.trace_id.is_zero() || op.span_id.is_zero() {
             return Err(format!("seed {seed}: an operation has a zero id"));
         }
+        check_content(op, max_bytes).map_err(|problem| format!("seed {seed}: {problem}"))?;
     }
     Ok(Summary {
         complete,
         ops: got.len(),
         dropped_chunks: stats.dropped_chunks,
         dropped_ops: stats.dropped_ops,
+        captured: run
+            .delivered
+            .iter()
+            .filter(|op| op.content.is_some())
+            .count(),
+        delivered: run.delivered,
     })
+}
+
+/// Captured content belongs to a tool call from the client, stays within the largest cap and holds the planted
+/// address only scrubbed.
+fn check_content(op: &Op, max_bytes: usize) -> Result<(), String> {
+    let Some(content) = &op.content else {
+        return Ok(());
+    };
+    if op.method != "tools/call" || op.direction != C2S {
+        return Err(format!("content on a {} {:?}", op.method, op.direction));
+    }
+    for field in [&content.args, &content.result].into_iter().flatten() {
+        if field.len() > max_bytes {
+            return Err(format!(
+                "{} bytes of content over the cap of {max_bytes}",
+                field.len()
+            ));
+        }
+        if field.contains(PLANTED) {
+            return Err(format!("the planted address left the proxy: {field}"));
+        }
+    }
+    if let Some(args) = &content.args
+        && !content.truncated
+        && !args.contains("[redacted:email]")
+    {
+        return Err(format!(
+            "whole arguments without the scrubbed address: {args}"
+        ));
+    }
+    Ok(())
 }
 
 #[test]
 fn passthrough_is_byte_identical_and_drops_are_counted_for_every_seed() {
     let (mut complete, mut compared, mut with_chunk_drops, mut with_op_drops) =
         (0u64, 0usize, 0u64, 0u64);
+    let mut captured = 0usize;
     for seed in 0..SEEDS {
-        match run(seed, None) {
+        match run(seed, None, Capture::Swarm) {
             Ok(summary) => {
                 if summary.complete {
                     complete += 1;
@@ -712,10 +815,15 @@ fn passthrough_is_byte_identical_and_drops_are_counted_for_every_seed() {
                 }
                 with_chunk_drops += u64::from(summary.dropped_chunks > 0);
                 with_op_drops += u64::from(summary.dropped_ops > 0);
+                captured += summary.captured;
             }
             Err(violation) => panic!("{violation}"),
         }
     }
+    assert!(
+        captured > SEEDS as usize / 5,
+        "only {captured} operations carried captured content"
+    );
     // The run must have exercised both halves: exact comparison with the script, and loss under pressure.
     assert!(
         complete > SEEDS / 5,
@@ -735,8 +843,34 @@ fn passthrough_is_byte_identical_and_drops_are_counted_for_every_seed() {
     );
     println!(
         "{SEEDS} seeds: {complete} compared one for one ({compared} operations), {with_chunk_drops} with \
-         dropped chunk copies, {with_op_drops} with dropped operations"
+         dropped chunk copies, {with_op_drops} with dropped operations, {captured} operations with content"
     );
+}
+
+#[test]
+fn capture_changes_nothing_but_the_content_of_operations() {
+    // A seed run with and without capture draws the same chunks and schedules; where neither run dropped an
+    // operation, the two deliver the same operations once content is set aside.
+    let mut compared = 0;
+    for seed in 0..2_000 {
+        let with = run(seed, None, Capture::On).unwrap();
+        let without = run(seed, None, Capture::Off).unwrap();
+        assert!(without.delivered.iter().all(|op| op.content.is_none()));
+        if with.dropped_ops > 0 || without.dropped_ops > 0 {
+            continue;
+        }
+        let stripped: Vec<Op> = with
+            .delivered
+            .into_iter()
+            .map(|op| Op {
+                content: None,
+                ..op
+            })
+            .collect();
+        assert_eq!(stripped, without.delivered, "seed {seed}");
+        compared += 1;
+    }
+    assert!(compared > 500, "only {compared} seeds were compared");
 }
 
 #[test]
@@ -778,7 +912,7 @@ fn the_same_seed_gives_the_same_run() {
 #[test]
 fn the_byte_changing_mutant_is_caught() {
     let caught = (0..200)
-        .filter(|seed| run(*seed, Some(Mutant::FlipByte)).is_err())
+        .filter(|seed| run(*seed, Some(Mutant::FlipByte), Capture::Swarm).is_err())
         .count();
     assert!(
         caught > 150,
@@ -790,7 +924,7 @@ fn the_byte_changing_mutant_is_caught() {
 fn the_blocking_mutant_is_caught() {
     // Only runs whose analysis queue fills up can tell; the swarm makes that common.
     let caught = (0..200)
-        .filter(|seed| run(*seed, Some(Mutant::BlockOnFullQueue)).is_err())
+        .filter(|seed| run(*seed, Some(Mutant::BlockOnFullQueue), Capture::Swarm).is_err())
         .count();
     assert!(
         caught > 20,
@@ -798,9 +932,9 @@ fn the_blocking_mutant_is_caught() {
     );
     // And a seed that the mutants fail passes without them.
     let failing = (0..200)
-        .find(|seed| run(*seed, Some(Mutant::BlockOnFullQueue)).is_err())
+        .find(|seed| run(*seed, Some(Mutant::BlockOnFullQueue), Capture::Swarm).is_err())
         .unwrap();
-    run(failing, None).unwrap();
+    run(failing, None, Capture::Swarm).unwrap();
 }
 
 #[test]

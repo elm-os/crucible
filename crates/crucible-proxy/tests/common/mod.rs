@@ -14,7 +14,7 @@ use crucible_proxy::encode::ResourceInfo;
 use crucible_proxy::live::{ExportConfig, Telemetry};
 use crucible_proxy::net::Target;
 use crucible_proxy::scan::StateKey;
-use crucible_proxy::{CoreConfig, ProxyCore};
+use crucible_proxy::{CaptureRule, CoreConfig, ProxyCore};
 use crucible_records::CaptureSource;
 
 pub const SECRET: &str = "csk_test0000000000000000000000000000000000000000";
@@ -52,6 +52,16 @@ pub struct Sinked {
 }
 
 pub async fn start_sink(env: &Env, sink: Sink, capture_source: CaptureSource) -> Sinked {
+    start_capturing_sink(env, sink, capture_source, Vec::new()).await
+}
+
+/// [`start_sink`], with content capture rules (contract 9.10).
+pub async fn start_capturing_sink(
+    env: &Env,
+    sink: Sink,
+    capture_source: CaptureSource,
+    capture: Vec<CaptureRule>,
+) -> Sinked {
     let mut collector = None;
     let mut stalled = None;
     let endpoint = match sink {
@@ -83,6 +93,7 @@ pub async fn start_sink(env: &Env, sink: Sink, capture_source: CaptureSource) ->
             ProxyCore::new(
                 CoreConfig {
                     state_key: StateKey::new(SECRET),
+                    capture,
                     ..CoreConfig::new(capture_source)
                 },
                 env.rng.fork("proxy"),

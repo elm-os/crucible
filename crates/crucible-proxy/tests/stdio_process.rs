@@ -12,7 +12,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Sink, Sinked, by_id, check_wire_contract, prod_env, start_sink, text};
+use common::{
+    Sink, Sinked, by_id, check_wire_contract, prod_env, start_capturing_sink, start_sink, text,
+};
 use crucible_env::{ChildProcess, ChildSignal, ChildSpec, Env, ExitStatus, JoinHandle, StderrMode};
 use crucible_env_prod::TokioChildProcess;
 use crucible_fake_collector::RecordedSpan;
@@ -47,6 +49,20 @@ struct Proxy {
 
 async fn start(env: &Env, spec: ChildSpec, sink: Sink) -> Proxy {
     let sink = start_sink(env, sink, CaptureSource::ProxyStdio).await;
+    start_with(env, spec, sink)
+}
+
+/// A proxy with content capture rules (contract 9.10).
+async fn start_capturing(env: &Env, spec: ChildSpec, sink: Sink, rules: &[&str]) -> Proxy {
+    let rules = rules
+        .iter()
+        .map(|rule| crucible_proxy::CaptureRule::parse(rule).unwrap())
+        .collect();
+    let sink = start_capturing_sink(env, sink, CaptureSource::ProxyStdio, rules).await;
+    start_with(env, spec, sink)
+}
+
+fn start_with(env: &Env, spec: ChildSpec, sink: Sinked) -> Proxy {
     let (to_proxy, proxy_in) = tokio::io::duplex(64 * 1024);
     let (proxy_out, from_proxy) = tokio::io::duplex(64 * 1024);
     let (proxy_err, stderr) = tokio::io::duplex(64 * 1024);
@@ -240,6 +256,76 @@ async fn bytes_are_identical_with_and_without_the_proxy_in_every_collector_state
         } else {
             assert!(spans.is_empty());
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn captured_content_leaves_the_bytes_unchanged_and_leaves_scrubbed() {
+    // Invariant I11 with content capture on: the same session as above plus a call that carries a planted
+    // address, against a healthy and a stalled collector.
+    let env = prod_env();
+    let mut input = transcript();
+    input.extend_from_slice(
+        br#"{"id":46,"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"note":"mail ada.lovelace@example.com"}}}"#,
+    );
+    input.push(b'\n');
+    let flags = ["--eof-exit", "0"];
+    let (baseline, status) = direct(server(&flags), &input).await;
+    assert_eq!(status, ExitStatus::Code(0));
+    for sink in [Sink::Healthy, Sink::Stalled] {
+        let mut proxy = start_capturing(&env, server(&flags), sink, &["echo"]).await;
+        let mut to_proxy = proxy.to_proxy.take().unwrap();
+        let writer = {
+            let input = input.clone();
+            env.spawn("client-writer", async move {
+                for chunk in input.chunks(7_919) {
+                    to_proxy.write_all(chunk).await.unwrap();
+                }
+                drop(to_proxy);
+            })
+        };
+        let (output, status, spans) = proxy.finish().await;
+        drop(writer);
+        assert_eq!(status, ExitStatus::Code(0), "{sink:?}");
+        assert!(
+            output == baseline,
+            "{sink:?}: the output differs from the direct run"
+        );
+        if sink != Sink::Healthy {
+            continue;
+        }
+        check_wire_contract(&spans, "proxy_stdio");
+        let small = by_id(&spans, "7");
+        assert_eq!(
+            get(&small.attributes, "crucible.mcp.content.captured"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            text(small, "gen_ai.tool.call.arguments"),
+            Some(r#"{"n":7,"text":"héllo \"quoted\" {}"}"#)
+        );
+        assert_eq!(text(small, "crucible.mcp.content.truncation"), Some("none"));
+        // A 1.5 MB argument is cut at the cap.
+        let large = by_id(&spans, "41");
+        assert_eq!(
+            text(large, "crucible.mcp.content.truncation"),
+            Some("cap_exceeded")
+        );
+        assert!(text(large, "gen_ai.tool.call.arguments").unwrap().len() <= 16 * 1024);
+        let planted = by_id(&spans, "46");
+        assert_eq!(
+            text(planted, "gen_ai.tool.call.arguments"),
+            Some(r#"{"note":"mail [redacted:email]"}"#)
+        );
+        assert!(!format!("{spans:?}").contains("ada.lovelace"));
+        // Only the calls of the rule's tool are captured.
+        assert_eq!(
+            get(
+                &by_id(&spans, "42").attributes,
+                "crucible.mcp.content.captured"
+            ),
+            Some(&Value::Bool(false))
+        );
     }
 }
 

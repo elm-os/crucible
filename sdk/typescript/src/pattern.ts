@@ -41,6 +41,12 @@ export interface PatternFacts {
   /** For each top-level alternative, a literal every match of it contains; undefined when one has none. */
   readonly literals: readonly string[] | undefined;
   readonly lead: Lead | undefined;
+  /**
+   * A regular expression that finds, in any text that holds a match, a member of a class followed by a literal
+   * character that a top-level alternative always holds (`[0-9A-Fa-f]:` for the ipv6 rule); undefined when an
+   * alternative holds no such pair.
+   */
+  readonly pairs: RegExp | undefined;
 }
 
 /** The facts of `pattern`, or none (no guard) when it does not parse as the subset. */
@@ -48,13 +54,17 @@ export function patternFacts(pattern: string): PatternFacts {
   try {
     const branches = parse(pattern);
     const literals = branches.map(literalOf);
+    const pairs = branches.map(pairOf);
     return {
       minLength: minLength(branches),
       literals: literals.every((l) => l !== undefined) ? (literals as string[]) : undefined,
       lead: leadOf(branches, pattern),
+      pairs: pairs.every((p) => p !== undefined)
+        ? new RegExp((pairs as string[]).join("|"))
+        : undefined,
     };
   } catch {
-    return { minLength: 0, literals: undefined, lead: undefined };
+    return { minLength: 0, literals: undefined, lead: undefined, pairs: undefined };
   }
 }
 
@@ -214,6 +224,43 @@ function literalOf(items: readonly Item[]): string | undefined {
     }
   }
   return best;
+}
+
+/** The source of a pattern that finds one character, written as an escape so that no character is special. */
+function escaped(code: number): string {
+  return code < 256
+    ? `\\x${code.toString(16).padStart(2, "0")}`
+    : `\\u${code.toString(16).padStart(4, "0")}`;
+}
+
+/**
+ * A class item followed by a literal character item, both matched at least once, that every match of `items`
+ * holds, as the source of a pattern that finds the pair: the last character the class item matches comes right
+ * before the literal. A group matched at least once with one alternative holds the pairs of its items.
+ */
+function pairOf(items: readonly Item[]): string | undefined {
+  for (let k = 0; k + 1 < items.length; k += 1) {
+    const [first, second] = [items[k] as Item, items[k + 1] as Item];
+    if (
+      first.atom.kind === "class" &&
+      first.min >= 1 &&
+      second.atom.kind === "char" &&
+      second.min >= 1
+    ) {
+      const { members, negated } = first.atom.cls;
+      const codes = members.flatMap((on, code) => (on ? [escaped(code)] : []));
+      return `[${negated ? "^" : ""}${codes.join("")}]${escaped(second.atom.char.charCodeAt(0))}`;
+    }
+  }
+  for (const item of items) {
+    if (item.atom.kind === "group" && item.min >= 1 && item.atom.branches.length === 1) {
+      const inner = pairOf(item.atom.branches[0] as readonly Item[]);
+      if (inner !== undefined) {
+        return inner;
+      }
+    }
+  }
+  return undefined;
 }
 
 /** The character of an item that is one literal character, matched once. */

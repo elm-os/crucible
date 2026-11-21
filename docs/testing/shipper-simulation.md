@@ -87,7 +87,10 @@ holds it, instead of a row at its own LSN.
 A quarantine directory counts as a quarantine when its batch is at or below the watermark and the store's last
 answer about the pair was an absent probe, or a data error for a pair it never accepted. A directory whose pair
 landed after all is what a crash between the copy and the `Quarantine` frame leaves behind. The copy of a counted
-quarantine must hold exactly the frames of its batch.
+quarantine must hold exactly the frames of its batch. Here every restart ships each pair of a sealed batch again,
+so the last answer tells the two apart. In the system simulation a restart that knows more deletion requests can
+leave a pair without rows, so it counts only the directories that a `Quarantine` frame names (see "Deletions" in
+[`system-simulation.md`](system-simulation.md)).
 
 ## Mutants
 

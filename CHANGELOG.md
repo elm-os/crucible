@@ -19,6 +19,20 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Settings has a Sign-in page that adds, edits, turns off and deletes GitHub, Google and OpenID Connect sign-in
   providers, replaces a client secret without ever showing the stored one, and copies the callback URL to register
   with the provider.
+- `crucible proxy` records the arguments and results of the tool calls a `--capture` rule (or
+  `CRUCIBLE_PROXY_CAPTURE`) names, with the SDKs' rules: off by default, sampled per call, scrubbed with the shared
+  rules and cut at 16 KiB per field, keeping no more than the cap plus 1 KiB of a value, and never on the forwarding
+  path.
+- The Python SDK encodes captured content without a step per JSON token: a result of 500 records took 0.4 ms
+  instead of 5.2 ms per call on a laptop, with the same text as before.
+- The TypeScript SDK writes runs of plain records with one serializer call and skips a scrub rule on text that lacks
+  a pair of characters every match of it holds (a hexadecimal digit before a `:` for the ipv6 rule), so capturing
+  500 records or 64 KiB of hexadecimal text costs about half as much.
+- The Rust SDK's `flush` waits at most the export timeout in all, for the spans and the queued scores together; it
+  waited as long again for the scores.
+- The SDK conformance driver checks that the normalizer keeps each span's captured content as sent, and a capability
+  manifest can name the proxy as the sender (`"source": "proxy"`); the proxy passes the content-capture scenario in
+  all four variants.
 - With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
   a presigned link that any server hands out; expiry and deletion requests remove the objects.
 - The span panel has a Media tab, in place of the media section under each payload tab, that lists the media a span's
