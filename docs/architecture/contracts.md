@@ -1608,13 +1608,15 @@ the master key. A step whose ledger row holds another checksum, such as one whos
 applies again once, with a warning, and its row takes the new checksum and time (section 2.7), so the next start
 applies nothing. It does so only while the service identities accept this node's master key, by the store's health
 check; otherwise, and whenever that check fails, the step waits, with a warning, for a start with the key the
-deployment was migrated with (#164). A start with another master key therefore applies no step that the ledger
-records, changed or not; a step the ledger does not record yet still applies. A row written before digests were left
-out holds the checksum over the whole statements and still matches under the key it was recorded with (#114). After
-the steps, every migration with Postgres provisions the SQL workspace's two probe identities again with the current
-key's passwords (section 7.5), unless the service identities refuse that key; then a warning names the key to use.
-With Postgres, a server started without `--migrate` takes no ingest until the ledger records every step of
-`LEDGER_ORDER` (section 5.8). Without Postgres, `--migrate` applies the ClickHouse steps on every start.
+deployment was migrated with (#164); `crucible migrate` then exits with 1, naming the steps it passed over and the
+fix, while `serve --migrate` keeps the warning (#169). A start with another master key therefore applies no step
+that the ledger records, changed or not; a step the ledger does not record yet still applies. A row written before
+digests were left out holds the checksum over the whole statements and still matches under the key it was recorded
+with (#114). After the steps, every migration with Postgres provisions the SQL workspace's two probe identities
+again with the current key's passwords (section 7.5), unless the service identities refuse that key; then a warning
+names the key to use. With Postgres, a server started without `--migrate` takes no ingest until the ledger records
+every step of `LEDGER_ORDER` (section 5.8). Without Postgres, `--migrate` applies the ClickHouse steps on every
+start.
 
 ### 6.7 Settled in code
 
@@ -2523,7 +2525,7 @@ Postgres (floor 15) behind `ControlStore`: traits and domain types in `crucible-
 | `users` | `id`, `email` (unique, case-folded), `name`, `status`, `email_verified_at` | |
 | `credentials` | `user_id`, Argon2id PHC string, `params_version`, `failed_count`, `locked_until` | |
 | `sessions` | SHA-256 of the 256-bit token (pk), `user_id`, `csrf_token`, `idle_expires_at`, `absolute_expires_at`, `auth_method`, `revoked_at` | The raw token is never stored |
-| `auth_providers` | `id`, `kind` (github, google, oidc), `issuer`, `client_id`, `secret_id`, `scopes`, `allowed_domains`, `enabled` | Rows seeded from config are read-only in the UI |
+| `auth_providers` | `id`, `kind` (github, google, oidc), `issuer`, `client_id`, `secret_id`, `scopes`, `allowed_domains`, `enabled`, `version` (V11) | `PATCH` and `DELETE` take `If-Match` (12.5), and `POST` and `PATCH` answer `ETag`. Turning a provider off or deleting it also moves the organization's `version`, so two such changes cannot both pass the last-way-in check (12.3). A new `issuer`, through the API or the configuration, deletes the provider's `oauth_accounts` in the same transaction: a subject at another issuer is another person, who links again through a verified email. Rows seeded from the configuration (`[auth_github]`, `[auth_google]`, `[auth_oidc]`, at most one of each kind) are read-only in the UI and the API and keep their client secret in the configuration (`secret_id` stays null). At every start each node makes them match it: a declared provider is added, or its row changed in place, since the id is in the callback URL; a row whose section is gone is turned off, except while it is the last way to sign in, when it stays on and the server logs an error that names the fix (#169) |
 | `oauth_accounts` | (`provider_id`, `subject`) unique, `user_id` | |
 | `auth_flows` | state hash (pk), `provider_id`, encrypted PKCE verifier, `nonce`, `next_path`, `expires_at` (10 min), `consumed_at` | |
 | `one_time_tokens` | token hash (pk), `kind` (password_reset, invite, setup), `subject`, `expires_at`, `consumed_at` | |
@@ -2615,16 +2617,21 @@ the public-key path off.
 `next` after sign-in must start with a single `/`, must not start with `//` or `/\`, must hold no scheme, host or
 control character, and must not be under `/api/`; otherwise it becomes `/`. Sign-in failures redirect to
 `/login/?error=<code>` with one of `oauth_denied`, `oauth_state_invalid`, `oauth_exchange_failed`,
-`email_unverified`, `not_invited`, `account_disabled`, `provider_disabled`, `sso_required`.
+`email_unverified`, `not_invited`, `account_disabled`, `provider_disabled`, `sso_required`. When a provider refuses
+the email's domain, `not_invited` comes with `domains=`, the provider's allowed domains, comma-separated, which the
+sign-in page names (#169).
 
 ### 11.5 Sign-up mode
 
 Sign-up is **invite-only**. A user can be created only by accepting an unexpired invitation, by first-owner setup
 (`crucible admin init` or the one-time setup token), or through the allowed-domain rule: when
-`org.settings.allowed_email_domains` is non-empty, a person whose email is verified (by the sign-in provider, or by
-a one-time link) and whose domain is listed may join without an invitation, with org role `viewer` (default;
-revisit). There is no open sign-up. A first provider login attaches to an existing or invited user only when the
-provider asserts a verified email.
+`org.settings.allowed_email_domains` is non-empty, a person whose email the sign-in provider verifies and whose
+domain is listed may join without an invitation, with org role `viewer` (default; revisit). There is no open
+sign-up. A first provider login attaches to an existing or invited user only when the provider asserts a verified
+email. Joining by allowed domain happens only through provider sign-in; no one-time link verifies an email for it. A
+provider's own `allowed_domains`, when set, hold at every sign-in through it, before a linked account signs in: an
+email outside them, or one the provider does not assert as verified, is refused (11.4). An issuer change unlinks the
+provider's accounts (11.1) (#169).
 
 ### 11.6 Roles, project access and the capability matrix
 
@@ -2813,6 +2820,10 @@ A GCRA limiter on `Clock` in `crucible-auth`, per node. Client IP comes from `X-
   file is refused with a message that says how to fix it. `crucible admin create-key --project <slug|id>
   [--scopes ...] [--note ...] [--import]` creates a key from the command line; running servers see it within 5 s
   (the key feed, 11.8).
+- `crucible admin enable-password-login` turns password sign-in back on, and says so when it already is; before
+  first-owner setup it points to `crucible admin init`. A server logs at start when nobody can sign in, with that
+  command. The configuration sections `[auth_github]`, `[auth_google]` and `[auth_oidc]` declare sign-in providers
+  (11.1) (#169).
 - Refusals on `/v1/traces` use the OTLP-specified `google.rpc.Status` body (the protobuf form carries the 4.8 gRPC
   code), not problem+json. `sdk_name` and `sdk_version` come from the first `User-Agent` product; on a compat route
   that declares SDK identity headers, from those headers when present.
@@ -2875,7 +2886,7 @@ message, because a user writing SQL needs the engine's error. Guardrail errors a
 | `not_found` | 404 | Unknown route or entity, or an entity the caller cannot see, or one that was deleted or expired |
 | `method_not_allowed` | 405 | |
 | `request_timeout` | 408 | The server-side request deadline passed |
-| `conflict` | 409 | Unique or state conflict |
+| `conflict` | 409 | Unique or state conflict, including a change that would leave no way to sign in: password sign-in turned off while the sign-in page offers no provider, or the last offered provider turned off or deleted while password sign-in is off (#169) |
 | `idempotency_key_reused` | 409 | An `Idempotency-Key` was reused with a different request |
 | `precondition_failed` | 412 | `If-Match` did not match |
 | `payload_too_large` | 413 | |
@@ -3357,3 +3368,4 @@ Media (#99), in the crate `crucible-media`:
 | v2 | 2026-11-21 | Settled in code by #164: `Migrations::apply` records what was applied (2.7); a server without `--migrate` waits for every step (5.8, 6.6); a changed step applies once, and only under an accepted master key, which restates the master-key rule (6.6); released steps render from the current table list (6.7) |
 | v2 | 2026-11-21 | Settled in code by #157: multipart uploads and `put_small`'s content type (2.10); export files on the object store (11.10, 12.8, 13.4); the object store on strict egress's infrastructure list (11.10); the media of one span (14.2, 14.5) |
 | v2 | 2026-11-21 | Settled in code by #158: per-project metrics turns (2.14); the area chart form (11.10); search filters through the lists' conversion (12.5, 12.6); project deletion as built, with its object store prefix (13.4, 13.6) |
+| v2 | 2026-11-21 | Settled in code by #169: provider versions, issuer changes and configured providers (11.1); the `domains` parameter of `not_invited` (11.4); joining by allowed domain through providers only, and domains at every sign-in (11.5); the recovery command and the configuration sections (12.1); `conflict` for the last way to sign in (12.3); `crucible migrate` fails on deferred steps (6.6) |

@@ -1192,12 +1192,15 @@ impl Run<'_> {
         if coin(rng) {
             self.disk.arm_crash_after_ops(1 + pick(rng, ops));
         }
+        let mut micros = micros;
         if self.plan().barrier_crashes && coin(rng) {
             if coin(rng) {
                 shipping.barriers.arm(None, 1 + pick(rng, barriers));
             } else if self.plan().faults.poison_pair_ppm > 0 && coin(rng) {
-                // The rarest barrier: it needs a pair that is being quarantined.
+                // The rarest barrier: it needs a pair that is being quarantined, after three failed attempts
+                // and their backoffs, so the incarnation may run long enough for one.
                 shipping.barriers.arm(Some(QUARANTINE_COPIED), 1);
+                micros = micros.max(150_000_000);
             } else {
                 // A batch has to resolve every pair before its checkpoint, so the two checkpoint barriers
                 // are reached least often in an incarnation: they get a double share of the draws.
