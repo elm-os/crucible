@@ -609,6 +609,41 @@ impl ProgressCount {
     }
 }
 
+/// What sends a manifest's spans.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// An SDK: every MCP operation has the capture source `sdk`.
+    #[default]
+    Sdk,
+    /// The MCP proxy: the capture source is `proxy_stdio` in the stdio variants and `proxy_http` in the HTTP
+    /// variants.
+    Proxy,
+}
+
+impl Source {
+    /// The manifest name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sdk => "sdk",
+            Self::Proxy => "proxy",
+        }
+    }
+
+    /// The capture source (contract 1.6 `CaptureSource`) of the operations of a case over `transport`.
+    pub const fn capture_source(self, transport: Transport) -> &'static str {
+        match (self, transport) {
+            (Self::Sdk, _) => "sdk",
+            (Self::Proxy, Transport::Stdio) => "proxy_stdio",
+            (Self::Proxy, Transport::StreamableHttp) => "proxy_http",
+        }
+    }
+
+    fn is_sdk(&self) -> bool {
+        *self == Self::Sdk
+    }
+}
+
 /// A declared skip.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -641,6 +676,9 @@ pub struct Manifest {
     pub throw_outcome: ThrowOutcome,
     /// Whether progress notifications are counted.
     pub progress_count: ProgressCount,
+    /// What sends the spans; an SDK unless the manifest says otherwise.
+    #[serde(default, skip_serializing_if = "Source::is_sdk")]
+    pub source: Source,
     /// Declared skips.
     pub skips: Vec<Skip>,
 }
