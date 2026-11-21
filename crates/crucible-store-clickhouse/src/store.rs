@@ -417,7 +417,8 @@ impl Reading {
         // which other nodes' statements of the identity can fill: nothing ran, so it is sent again after a wait,
         // within its deadline, as a statement waits for a slot of this node's own.
         let mut wait = AGENT_RETRY_FIRST;
-        while let Ok(Err(error)) = &outcome
+        while !self.answered
+            && let Ok(Err(error)) = &outcome
             && codes::too_many_queries(error)
             && let Some((query, format)) = &self.refused_resend
         {
