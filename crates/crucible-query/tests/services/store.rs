@@ -31,6 +31,33 @@ struct State {
     tables: BTreeMap<TableId, Vec<StoredRow>>,
     unavailable: bool,
     executed: Vec<QueryPlan>,
+    /// A table whose reads find the store unavailable while the others answer.
+    unavailable_table: Option<TableId>,
+    /// Whether each read yields once before it answers, as a read that takes time does.
+    slow: bool,
+    /// Reads in flight now, and the most that were in flight at once.
+    in_flight: usize,
+    most_in_flight: usize,
+}
+
+/// Returns `Pending` once and wakes itself, so that the futures polled together with it run in between.
+#[derive(Default)]
+struct YieldOnce(bool);
+
+impl std::future::Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.0 {
+            return std::task::Poll::Ready(());
+        }
+        self.0 = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
 }
 
 type Hook = Box<dyn FnOnce(&FakeStore) + Send>;
@@ -330,6 +357,59 @@ impl FakeStore {
     /// Every plan executed so far.
     pub fn executed(&self) -> Vec<QueryPlan> {
         self.state().executed.clone()
+    }
+
+    /// Makes each read yield once before it answers, so that reads sent together are all in flight before the
+    /// first of them answers.
+    pub fn slow_reads(&self) {
+        self.state().slow = true;
+    }
+
+    /// The most reads that were in flight at once.
+    pub fn most_in_flight(&self) -> usize {
+        self.state().most_in_flight
+    }
+
+    /// Makes the reads of `table` find the store unavailable, while reads of the other tables answer.
+    pub fn set_unavailable_table(&self, table: TableId) {
+        self.state().unavailable_table = Some(table);
+    }
+
+    /// The answer to one read, once it has been in flight.
+    fn answer(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
+        let state = self.state();
+        let down = state.unavailable
+            || state
+                .unavailable_table
+                .is_some_and(|table| plan.root().tables().contains(&table));
+        drop(state);
+        if down {
+            return Err(QueryError::Unavailable("the store is down".to_owned()));
+        }
+        let rows = match plan.root() {
+            Node::Scan(scan) => self.scan(&plan, scan),
+            Node::Aggregate(aggregate) => self.aggregate(&plan, aggregate),
+            Node::SemiJoin(join) => self.semi_join(&plan, join),
+            Node::TimeSeries(series) => self.time_series(&plan, series),
+            Node::TextSearch(search) => self.text_search(&plan, search),
+            Node::FieldRange(range) => self.field_range(&plan, range),
+            Node::PointLookup(lookup) => self.point_lookup(&plan, lookup),
+        };
+        let hook = self.during_read.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(self);
+        }
+        let output = plan.output();
+        for row in &rows {
+            if let Err(shape) = output.check_row(row) {
+                return Err(QueryError::Internal(shape.to_string()));
+            }
+        }
+        let blocks = RowBlock::split(rows).into_iter().map(Ok);
+        Ok(RowStream::new(
+            Uuid::from_bytes([7; 16]),
+            futures::stream::iter(blocks),
+        ))
     }
 
     /// `pred` with each set membership replaced by the list of its ids, read under the same plan.
@@ -835,34 +915,19 @@ impl TelemetryStore for FakeStore {
     }
 
     async fn execute(&self, plan: QueryPlan) -> Result<RowStream, QueryError> {
-        self.state().executed.push(plan.clone());
-        if self.state().unavailable {
-            return Err(QueryError::Unavailable("the store is down".to_owned()));
-        }
-        let rows = match plan.root() {
-            Node::Scan(scan) => self.scan(&plan, scan),
-            Node::Aggregate(aggregate) => self.aggregate(&plan, aggregate),
-            Node::SemiJoin(join) => self.semi_join(&plan, join),
-            Node::TimeSeries(series) => self.time_series(&plan, series),
-            Node::TextSearch(search) => self.text_search(&plan, search),
-            Node::FieldRange(range) => self.field_range(&plan, range),
-            Node::PointLookup(lookup) => self.point_lookup(&plan, lookup),
+        let slow = {
+            let mut state = self.state();
+            state.executed.push(plan.clone());
+            state.in_flight += 1;
+            state.most_in_flight = state.most_in_flight.max(state.in_flight);
+            state.slow
         };
-        let hook = self.during_read.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook(self);
+        if slow {
+            YieldOnce::default().await;
         }
-        let output = plan.output();
-        for row in &rows {
-            if let Err(shape) = output.check_row(row) {
-                return Err(QueryError::Internal(shape.to_string()));
-            }
-        }
-        let blocks = RowBlock::split(rows).into_iter().map(Ok);
-        Ok(RowStream::new(
-            Uuid::from_bytes([7; 16]),
-            futures::stream::iter(blocks),
-        ))
+        let answer = self.answer(plan);
+        self.state().in_flight -= 1;
+        answer
     }
 
     async fn probe(&self, _: BatchProbe) -> Result<bool, StoreError> {

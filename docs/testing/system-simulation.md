@@ -206,14 +206,14 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `skip-wal-sync` | `crucible-wal` | A group's waiters complete before its `sync_data` | I3: a trace-by-id read of an acknowledged request finds no trace (other runs of the budget report liveness, I1 or I9) | 0 | `0xb04e3dca437a47` |
 | `drop-token` | `crucible-shipper` | Every insert attempt carries a new deduplication identity | I2: a second block of one batch lands | 1000 | `0x1f2fe574beef1d` |
 | `gc-above-checkpoint` | `crucible-wal` | Garbage collection removes segments above the checkpoint watermark | Liveness: the shipper stops because a frame above the watermark was reclaimed (most runs report I12: recovery finds a gap between the watermark and the oldest segment) | 0 | `0xb04e3dca437a47` |
-| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 1 | `0xb04e3dca437a47` |
+| `silent-eviction` | `crucible-recent` | Entries dropped at the index bound leave no gap | I3: a read omits an acknowledged span and looks whole | 11000 | `0xf451ac841d13a4` |
 | `skip-probe-after-unknown` | `crucible-shipper` | A retry after an unknown outcome skips the probe | I2: a second block of one batch lands | 7000 | `0xc443c5fa7b02ff` |
 | `ack-before-append` | `crucible-ingest` | The client gets 200 before the WAL append resolves | I3: a trace-by-id read of an acknowledged request finds no trace (other runs report I1, and I9 for the deleted project) | 0 | `0xb04e3dca437a47` |
 | `double-count-rollup` | `crucible-shipper` | One row of every rollup block is counted twice | I7: a rollup differs from the reference aggregation over `span_core` | 1 | `0xb04e3dca437a47` |
 | `drop-fact-on-retry` | `crucible-shipper` | A pair of a fact table counts as landed when its insert is retried | I1: an acknowledged fact is in no table, frame or quarantine copy (I9 for the deleted project) | 3001 | `0x7fce3d29abb2c7` |
 | `frame-quarantine-without-copy` | `crucible-shipper` | A frame that does not normalize is quarantined without its copy | I1: an acknowledged request is in no table, frame or quarantine copy (other runs report I3, and I9 for the deleted project) | 0 | `0xb04e3dca437a47` |
 | `count-aggregate-usage` | `crucible-shipper` | The rollup sums take the tokens and cost of a usage aggregate | I7: a rollup differs from the reference aggregation over `span_core` | 10000 | `0xba10fc4cdc20e` |
-| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 30000 | `0xd7530d3ce86c33` |
+| `collect-what-frames-rely-on` | `crucible-shipper` | Garbage collection removes segments that the admission of an unchecked frame relied on | I2: the WAL no longer holds a frame that the admission of an unchecked frame relied on | 21001 | `0xc38b1d5993bffe` |
 | `misclassify-caller-fault` | `crucible-normalize` | An invalid-params error on a server-side row is not the caller's fault | I8: an `mcp_ops` row differs from the shared classifier in `caller_fault` | 2001 | `0x21c6206ca7c81b` |
 | `sum-capture-sources` | `crucible-shipper` | Every `mcp_tool_rollup` partial gets one capture source | I7: the rollup differs from the reference over `mcp_ops`, and its counts per capture source are not those of `mcp_ops` | 1 | `0xb04e3dca437a47` |
 | `drop-rollup-marker` | `crucible-shipper` | The blocks of `mcp_tool_rollup` are sent without their marker row | I2: the store model refuses the block | 0 | `0xb04e3dca437a47` |
@@ -223,8 +223,11 @@ run is recorded in `crates/crucible-sim/tests/system_dst.rs`. The same run must 
 | `seed-only-open-requests` | `crucible-shipper` | Before shipping, the shipper applies only the deletion requests that are still open, not those that completed while the node was down | I9: a row that a request completed while the node was down selects landed after the request completed | 2 | `0xb04e3dca437a47` |
 | `skip-flag-reliance` | `crucible-normalize` | A kept span flagged a usage aggregate on an earlier frame's support does not lower `relies_on` | I2: a kept span is flagged on the usage of an earlier frame that the admission does not rely on | 15000 | `0xc1f46c2a19a297` |
 
-Of the 600 runs of the budget, the mutants are caught by 593, 137, 71, 48, 97, 496, 462, 71, 149, 147, 24, 46,
-215, 291, 72, 130, 12, 95 and 40 runs, in the order of the table. The windows of `dir_sync_errors` while the node
+Of the 600 runs of the budget, the mutants are caught by 593, 138, 69, 50, 97, 498, 469, 75, 149, 151, 25, 47,
+218, 291, 78, 136, 9, 97 and 46 runs, in the order of the table. Sending a request's independent store reads
+together moved them from 593, 137, 71, 48, 97, 496, 462, 71, 149, 147, 24, 46, 215, 291, 72, 130, 12, 95 and 40,
+and the first catching runs of `silent-eviction` from seed 1 and of `collect-what-frames-rely-on` from seed 30000.
+The windows of `dir_sync_errors` while the node
 starts and the shipper's read of only the deletion requests made after what it admits arrived moved them from 594,
 140, 57, 44, 101, 500, 466, 74, 145, 154, 21, 48, 219, 292, 67, 127, 11, 96 and 36, and the first catching run of
 `collect-what-frames-rely-on` from seed 21000. The check at admission of "Usage aggregates,

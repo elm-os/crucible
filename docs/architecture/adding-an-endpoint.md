@@ -68,7 +68,8 @@ both entries.
 4. **Query service module.** Create `crates/crucible-query/src/<service>.rs` with the request and response types
    and one `impl QueryService` block whose method takes `&ReadContext`. It builds plans only through the builders
    of step 1 and reads them with `Read::rows`, so an unavailable store makes the answer partial instead of failing
-   it while the recent index can answer. It filters recent-index entries with `Read::retained` and ends with
+   it while the recent index can answer. Plans that do not need each other's answers go to the store together
+   through `Read::rows_together`, under the same rules. It filters recent-index entries with `Read::retained` and ends with
    `Read::finish`, which builds `meta` from the tables the read depends on. A read of a trace's spans reuses
    `spans.rs` (the merge with the recent index and de-duplication by `span_id`); a read of trace heads reuses
    `heads.rs`. Register it in `crates/crucible-query/src/lib.rs` with `mod <service>;` and one

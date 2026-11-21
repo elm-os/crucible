@@ -229,26 +229,50 @@ impl Read<'_> {
         &mut self,
         plan: Result<Option<QueryPlan>, PlanError>,
     ) -> Result<Vec<Row>, QueryServiceError> {
-        let Some(plan) = plan? else {
-            return Ok(Vec::new());
-        };
+        Ok(self
+            .rows_together(vec![plan])
+            .await?
+            .pop()
+            .unwrap_or_default())
+    }
+
+    /// The rows of several independent plans, one entry per plan: every read is sent before any answer is
+    /// awaited, and the answers are taken in plan order under the rules of [`Read::rows`], so the outcome is the
+    /// one that reading them one after another gives. An unavailable store leaves the answers after it empty,
+    /// and the first other error ends the request. Whatever the request takes from the recent index for these
+    /// rows it takes before the reads, never after one has returned.
+    pub(crate) async fn rows_together(
+        &mut self,
+        plans: Vec<Result<Option<QueryPlan>, PlanError>>,
+    ) -> Result<Vec<Vec<Row>>, QueryServiceError> {
+        let plans = plans.into_iter().collect::<Result<Vec<_>, _>>()?;
         if self.store_down.is_some() {
-            return Ok(Vec::new());
+            return Ok(plans.iter().map(|_| Vec::new()).collect());
         }
-        self.store_reads += 1;
-        let plan = plan.hiding(&self.hidden);
-        let result = match self.service.stores.telemetry.execute(plan).await {
-            Ok(stream) => stream.rows().await,
-            Err(error) => Err(error),
-        };
-        match result {
-            Ok(rows) => Ok(rows),
-            Err(QueryError::Unavailable(reason)) => {
-                self.store_down = Some(reason);
-                Ok(Vec::new())
+        let (store, hidden) = (&self.service.stores.telemetry, &self.hidden);
+        let reads = plans.into_iter().map(|plan| async move {
+            let plan = plan?.hiding(hidden);
+            Some(match store.execute(plan).await {
+                Ok(stream) => stream.rows().await,
+                Err(error) => Err(error),
+            })
+        });
+        let answers = futures::future::join_all(reads).await;
+        self.store_reads += answers.iter().filter(|answer| answer.is_some()).count() as u64;
+        let mut out = Vec::with_capacity(answers.len());
+        for answer in answers {
+            match answer {
+                None => out.push(Vec::new()),
+                Some(_) if self.store_down.is_some() => out.push(Vec::new()),
+                Some(Ok(rows)) => out.push(rows),
+                Some(Err(QueryError::Unavailable(reason))) => {
+                    self.store_down = Some(reason);
+                    out.push(Vec::new());
+                }
+                Some(Err(error)) => return Err(error.into()),
             }
-            Err(error) => Err(error.into()),
         }
+        Ok(out)
     }
 
     /// The first instant of `table` that has not expired.

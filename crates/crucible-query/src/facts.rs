@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible_plan::{
-    FactTable, FactsOf, MAX_LIST, Row, TraceBounds, Value, fact_page, fact_rows, session_detail,
-    trace_bounds_window,
+    FactTable, FactsOf, MAX_LIST, PlanError, QueryPlan, Row, TraceBounds, Value, fact_page,
+    fact_rows, session_detail, trace_bounds_window,
 };
 use crucible_recent::RecentSpan;
 use crucible_records::{
@@ -389,38 +389,60 @@ fn resolve(candidates: Vec<Candidate>) -> Decoded<Facts> {
     Ok(facts)
 }
 
+/// Resolves the answers to [`Read::fact_plans`], one per fact table, into the target's facts.
+pub(crate) fn resolve_rows(answers: Vec<Vec<Row>>) -> Decoded<Facts> {
+    let mut all = Vec::new();
+    for (table, rows) in FactTable::ALL.into_iter().zip(answers) {
+        all.extend(candidates(table, rows)?.into_iter().map(|(_, c)| c));
+    }
+    resolve(all)
+}
+
 impl Read<'_> {
-    /// The resolved facts of one target, read inside `window`.
+    /// The plans of one target's fact rows inside `window`, one per table of [`FactTable::ALL`], in its order.
+    pub(crate) fn fact_plans(
+        &self,
+        target: &FactTarget,
+        window: TimeWindow,
+    ) -> Vec<Result<Option<QueryPlan>, PlanError>> {
+        let (scope, caller) = (self.ctx.scope, self.ctx.caller);
+        FactTable::ALL
+            .into_iter()
+            .map(|table| fact_rows(scope, window, &self.clamp, caller, table, target.of()))
+            .collect()
+    }
+
+    /// The resolved facts of one target, read inside `window`: one read per fact table, all sent together.
     pub(crate) async fn target_facts(
         &mut self,
         target: &FactTarget,
         window: TimeWindow,
     ) -> Result<Facts, QueryServiceError> {
-        let (scope, caller) = (self.ctx.scope, self.ctx.caller);
-        let mut all = Vec::new();
-        for table in FactTable::ALL {
-            let plan = fact_rows(scope, window, &self.clamp, caller, table, target.of());
-            let rows = self.rows(plan).await?;
-            all.extend(candidates(table, rows)?.into_iter().map(|(_, c)| c));
-        }
-        resolve(all)
+        let answers = self.rows_together(self.fact_plans(target, window)).await?;
+        resolve_rows(answers)
     }
 
-    /// The trace-level facts of a page of traces, read inside `window`, without the large body fields.
+    /// The trace-level facts of a page of traces, read inside `window`, without the large body fields: one read
+    /// per fact table and chunk of ids, all sent together.
     pub(crate) async fn page_facts(
         &mut self,
         trace_ids: &[TraceId],
         window: TimeWindow,
     ) -> Result<BTreeMap<TraceId, Facts>, QueryServiceError> {
         let (scope, caller) = (self.ctx.scope, self.ctx.caller);
+        let reads: Vec<(FactTable, &[TraceId])> = trace_ids
+            .chunks(MAX_LIST)
+            .flat_map(|ids| PAGE_FACT_TABLES.map(|table| (table, ids)))
+            .collect();
+        let plans = reads
+            .iter()
+            .map(|(table, ids)| fact_page(scope, window, &self.clamp, caller, *table, ids))
+            .collect();
+        let answers = self.rows_together(plans).await?;
         let mut by_trace: BTreeMap<TraceId, Vec<Candidate>> = BTreeMap::new();
-        for ids in trace_ids.chunks(MAX_LIST) {
-            for table in PAGE_FACT_TABLES {
-                let plan = fact_page(scope, window, &self.clamp, caller, table, ids);
-                let rows = self.rows(plan).await?;
-                for (trace_id, c) in candidates(table, rows)? {
-                    by_trace.entry(trace_id).or_default().push(c);
-                }
+        for ((table, _), rows) in reads.into_iter().zip(answers) {
+            for (trace_id, c) in candidates(table, rows)? {
+                by_trace.entry(trace_id).or_default().push(c);
             }
         }
         by_trace
@@ -544,26 +566,8 @@ pub(crate) fn ingest_tags(spans: &[TraceSpan]) -> Vec<Arc<str>> {
 }
 
 impl Read<'_> {
-    /// The facts of a trace for its detail view, read inside the trace's bounds.
-    pub(crate) async fn trace_facts(
-        &mut self,
-        trace_id: TraceId,
-        extent: Option<(Timestamp, Timestamp)>,
-        spans: &[TraceSpan],
-    ) -> Result<TraceFacts, QueryServiceError> {
-        let Some((start, end)) = extent else {
-            return Ok(TraceFacts::default());
-        };
-        let target = FactTarget::Trace(trace_id);
-        let facts = self
-            .target_facts(&target, trace_window(start, end)?)
-            .await?;
-        let tags = facts.effective_tags(&ingest_tags(spans));
-        Ok(TraceFacts { facts, tags })
-    }
-
     /// Decorates a page of the trace list with each trace's facts (contract 3.8): one read per fact table for
-    /// the page's traces, inside the window that holds all of their bounds.
+    /// the page's traces, sent together, inside the window that holds all of their bounds.
     pub(crate) async fn decorate(
         &mut self,
         items: &mut [TraceListItem],
