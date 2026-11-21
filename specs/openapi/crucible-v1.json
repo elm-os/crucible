@@ -11950,7 +11950,8 @@
         "description": "How a time series draws its values.",
         "enum": [
           "line",
-          "bar"
+          "bar",
+          "area"
         ]
       },
       "Consistency": {
@@ -18739,7 +18740,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ChartForm",
-                "description": "`timeseries` only: lines (the default) or bars per bucket."
+                "description": "`timeseries` only: lines (the default), bars per bucket, or areas."
               },
               {
                 "type": "null"
