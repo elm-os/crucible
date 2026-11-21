@@ -65,8 +65,8 @@ pub use config::{
 };
 pub use error::ShipError;
 pub use hooks::{
-    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, KnownDeletion, NoBarriers,
-    NoDeletions, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
+    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, IngestLoad, KnownDeletion,
+    NoBarriers, NoDeletions, NoRecent, NoSalts, ProjectSalts, RecentIndex, SaltUnavailable,
 };
 pub use limits::SealLimits;
 pub use quarantine::{

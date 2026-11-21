@@ -14,7 +14,6 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crucible_admission::{Offer, PermitPool};
 use crucible_env::metrics::registry;
 use crucible_env::{
     Clock, InsertError, Instant, RetryReason, Rng, ShutdownSignal, Spawner, StoreFlavour, Stores,
@@ -25,7 +24,7 @@ use crucible_records::{
     Timestamp, TraceId, Uuid,
 };
 use crucible_schema::Granularity;
-use crucible_shipper::{Hooks, ShipError, Shipper, ShipperConfig, StatsSnapshot};
+use crucible_shipper::{Hooks, IngestLoad, ShipError, Shipper, ShipperConfig, StatsSnapshot};
 use crucible_sim::ch_model::{Call, ChModel, Script};
 use crucible_sim::{SIM_EPOCH_MICROS, run};
 use crucible_wal::{Wal, WalConfig};
@@ -110,6 +109,16 @@ impl Deferred {
                 }
             }
         }
+    }
+}
+
+/// Ingest's load: busy or not, for the whole run.
+#[derive(Debug)]
+struct Ingest(bool);
+
+impl IngestLoad for Ingest {
+    fn busy(&self) -> bool {
+        self.0
     }
 }
 
@@ -322,7 +331,7 @@ struct Setup {
     cache_bytes: u64,
     /// The store refuses the first attempt of every pair with a retry, so every pair is sent twice.
     retry_first: bool,
-    /// Ingest's share of the CPU budget has every permit taken for the whole run.
+    /// Ingest is busy for the whole run.
     ingest_busy: bool,
 }
 
@@ -448,17 +457,8 @@ fn ship(seed: u64, frames: &[(RecordType, Vec<u8>)], setup: Setup) -> Shipped {
             ..ShipperConfig::default()
         };
         let stores = Stores::new(Arc::new(model.clone()));
-        // Ingest's share, its one permit held by a job that never runs while `ingest_busy`.
-        let ingest = Arc::new(PermitPool::new(1));
-        let _taken = setup
-            .ingest_busy
-            .then(|| ingest.offer(Box::new(|| ())))
-            .map(|offer| match offer {
-                Offer::Run(permit) => permit,
-                Offer::Queued(_) => panic!("the permit is free"),
-            });
         let hooks = Hooks {
-            ingest: Some(ingest),
+            ingest: Some(Arc::new(Ingest(setup.ingest_busy))),
             ..Hooks::default()
         };
         let shipper = Shipper::new(&env, &stores, wal.clone(), &report, config, hooks).unwrap();
@@ -610,10 +610,10 @@ fn a_cache_budget_too_small_for_one_frame_reads_one_at_a_time() {
     assert_eq!(deferred.stats.frames_ahead_peak, 1);
 }
 
-/// While ingest takes every permit of its share, its requests wait for the CPUs: the shipper normalizes and encodes
-/// on its own task, reading one frame at a time, and inserts what it inserts otherwise.
+/// While ingest is busy, the shipper normalizes and encodes on its own task, reading one frame at a time, and inserts
+/// what it inserts otherwise.
 #[test]
-fn while_ingest_takes_every_permit_the_shipper_works_on_its_task() {
+fn while_ingest_is_busy_the_shipper_works_on_its_task() {
     let log = large_requests(12);
     let in_place = ship(7, &log, Setup::in_place(40));
     let busy = ship(

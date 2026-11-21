@@ -123,7 +123,7 @@ in Postgres stop working under another key.
 
 | Key | Environment variable | Flag | Default | Meaning |
 |---|---|---|---|---|
-| `cpu.permits` | `CRUCIBLE_CPU_PERMITS` | | 8 per CPU the process may use | How many blocking jobs run at once: a sixteenth each (at least one) for the shipper's normalizing and encoding of blocks, the rest for ingest's inflating, transcoding, scanning and compressing of requests. While ingest's share has no free permit, the shipper does its part on its own task instead. The CPUs counted are those of the process's affinity and its cgroup quota. A job beyond its share waits its turn without holding a thread, and 8 more threads are kept for disk reads, name lookups and password hashing |
+| `cpu.permits` | `CRUCIBLE_CPU_PERMITS` | | 8 per CPU the process may use | How many blocking jobs run at once: a sixteenth each (at least one) for the shipper's normalizing and encoding of blocks, the rest for ingest's inflating, transcoding, scanning and compressing of requests. While ingest holds more requests than its share prepares at once, as in a burst, the shipper does its part on its own task instead. The CPUs counted are those of the process's affinity and its cgroup quota. A job beyond its share waits its turn without holding a thread, and 8 more threads are kept for disk reads, name lookups and password hashing |
 
 ### `[mcp]`, `[sql]` and `[metrics]`
 

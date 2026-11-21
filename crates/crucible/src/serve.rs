@@ -40,7 +40,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use crucible_admission::{CpuShares, PermitPool};
+use crucible_admission::CpuShares;
 use crucible_api::{ProjectSettingsSource, StaticProjectSettings};
 use crucible_api_types::ProblemCode;
 use crucible_auth::service::Identity;
@@ -64,8 +64,8 @@ use crucible_recent::{RecentConfig, RecentIndex};
 use crucible_records::{Lsn, PartitionId, ProjectId, TableId};
 use crucible_schema::SqlProfile;
 use crucible_shipper::{
-    DeletionRequests, FrameManifest, Hooks, MANIFEST_FILE, NoBarriers, NoDeletions, NoSalts,
-    ProjectSalts, RecentHook, Shipper, ShipperConfig,
+    DeletionRequests, FrameManifest, Hooks, IngestLoad, MANIFEST_FILE, NoBarriers, NoDeletions,
+    NoSalts, ProjectSalts, RecentHook, Shipper, ShipperConfig,
 };
 use crucible_sqlws::SqlWorkspace;
 use crucible_ui_assets::{Catalog, Outcome};
@@ -652,6 +652,16 @@ async fn start(
     })
 }
 
+/// Ingest's load as the shipper reads it.
+#[derive(Debug)]
+struct IngestBusy(Ingest);
+
+impl IngestLoad for IngestBusy {
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
+}
+
 /// What the `telemetry-store` task takes over.
 struct StoreTask {
     config: ClickHouse,
@@ -685,8 +695,8 @@ struct StoreTask {
     media: Option<crucible_media::Media>,
     /// The CPU budget's shares, of which the shipper takes stage A's and encoding's.
     cpu: CpuShares,
-    /// Ingest's share of the CPU budget, which tells the shipper when ingest needs the CPUs.
-    ingest_permits: Arc<PermitPool>,
+    /// Ingest, whose load tells the shipper when ingest needs the CPUs.
+    ingest: Ingest,
 }
 
 /// The pairs that were quarantined at or below `watermark`, from the manifests under the quarantine root. The
@@ -777,7 +787,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         lifecycle,
         media,
         cpu,
-        ingest_permits,
+        ingest,
     } = task;
     let store = config.store(&env);
     let mut shutdown = env.shutdown();
@@ -902,7 +912,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         recent: hook,
         salts,
         deletions,
-        ingest: Some(ingest_permits),
+        ingest: Some(Arc::new(IngestBusy(ingest))),
     };
     let shipper = Shipper::new(&env, &stores, wal, &report, shipper_config, hooks)
         .context("starting the shipper")?;
@@ -1375,7 +1385,7 @@ pub(crate) async fn run(config: Config, migrate: bool, cpu_permits: u32) -> anyh
                 lifecycle: app.lifecycle.clone(),
                 media: media.as_ref().map(|media| media.service.clone()),
                 cpu,
-                ingest_permits: app.ingest.prepare_permits(),
+                ingest: app.ingest.clone(),
             };
             Some(env.spawn("telemetry-store", run_store(env.clone(), task)))
         }

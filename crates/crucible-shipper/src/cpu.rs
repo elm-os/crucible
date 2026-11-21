@@ -3,9 +3,8 @@
 //!
 //! A job takes a permit of its stage before it is spawned. One that finds none waits without a thread and runs
 //! on the thread of the job that passes its permit on, first come, first served. Each job's wait (from the offer
-//! to its start) and hold (its run) are recorded by stage. While ingest takes every permit of its own share, its
-//! requests wait for the CPUs, and the work runs in place on the shipper's task instead, as it did before it moved
-//! off the task: a burst of ingest keeps the CPUs it had. The simulation's spawner runs a blocking job in place,
+//! to its start) and hold (its run) are recorded by stage. While ingest is busy, as in a burst, the work runs in
+//! place on the shipper's task instead, as it did before it moved off the task: the burst keeps the CPUs it had. The simulation's spawner runs a blocking job in place,
 //! so there every job has ended when its offer returns, at the point of the shipper's run where the work was done
 //! before it moved off the task.
 
@@ -16,6 +15,8 @@ use crucible_admission::{Job, Offer, PermitPool, Waiting};
 use crucible_env::metrics::registry;
 use crucible_env::{Cancelled, Env, Histogram, Metrics};
 use futures::channel::oneshot;
+
+use crate::hooks::IngestLoad;
 
 /// The `stage` label of stage A's jobs in the CPU budget's metrics.
 pub(crate) const STAGE_A: &str = "stage_a";
@@ -33,21 +34,21 @@ pub(crate) struct CpuStage {
     /// The name of its jobs' blocking tasks.
     task: &'static str,
     permits: Arc<PermitPool>,
-    /// Ingest's share, when the node has one.
-    ingest: Option<Arc<PermitPool>>,
+    /// Ingest's load, when the node ingests.
+    ingest: Option<Arc<dyn IngestLoad>>,
     wait: Histogram,
     hold: Histogram,
 }
 
 impl CpuStage {
     /// The stage labelled `stage`, with `permits` permits (at least 1), whose jobs run as blocking tasks named
-    /// `task` while `ingest`, ingest's share, has a free permit.
+    /// `task` while `ingest` is not busy.
     pub(crate) fn new(
         metrics: &dyn Metrics,
         stage: &'static str,
         task: &'static str,
         permits: u32,
-        ingest: Option<Arc<PermitPool>>,
+        ingest: Option<Arc<dyn IngestLoad>>,
     ) -> Self {
         Self {
             task,
@@ -59,18 +60,14 @@ impl CpuStage {
     }
 
     /// Runs `work` as a blocking job under a permit of the stage and returns its result to come; or, while
-    /// ingest takes every permit of its share, runs it here.
+    /// ingest is busy, runs it here.
     pub(crate) fn run<T, F>(&self, env: &Env, work: F) -> Pending<T>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
         let (sender, result) = oneshot::channel();
-        if self
-            .ingest
-            .as_ref()
-            .is_some_and(|pool| pool.available() == 0)
-        {
+        if self.ingest.as_ref().is_some_and(|ingest| ingest.busy()) {
             // The receiver is held below.
             let _held = sender.send(work());
             return Pending {

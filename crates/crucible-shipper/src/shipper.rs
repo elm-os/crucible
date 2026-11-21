@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use crucible_admission::PermitPool;
 use crucible_env::metrics::registry;
 use crucible_env::{Counter, Env, Gauge, Instant, JoinHandle, Metrics, Rng, Stores};
 use crucible_normalize::{
@@ -37,8 +36,8 @@ use crate::cpu::{CpuStage, ENCODE, STAGE_A};
 use crate::error::ShipError;
 use crate::frames::Content;
 use crate::hooks::{
-    Barrier, Barriers, DeletionRequests, NoBarriers, NoDeletions, NoRecent, NoSalts, ProjectSalts,
-    RecentIndex,
+    Barrier, Barriers, DeletionRequests, IngestLoad, NoBarriers, NoDeletions, NoRecent, NoSalts,
+    ProjectSalts, RecentIndex,
 };
 use crate::limits::{DrainRate, Gate, SealLimits, backoff};
 use crate::pair::{PairEnd, PairJob, ship_pair};
@@ -58,10 +57,9 @@ pub struct Hooks {
     pub salts: Arc<dyn ProjectSalts>,
     /// The deletion requests, which stage B applies; [`NoDeletions`] without a control store.
     pub deletions: Arc<dyn DeletionRequests>,
-    /// Ingest's share of the CPU budget, whose requests wait for the CPUs while every permit of it is taken. Then
-    /// the shipper runs its stage A and encoding on its own task, as it would without the jobs, so that a burst of
-    /// ingest keeps the CPUs it had. `None` runs them as jobs always.
-    pub ingest: Option<Arc<PermitPool>>,
+    /// Ingest's load: while ingest is busy, the shipper runs its stage A and encoding on its own task, as it
+    /// would without the jobs, so that a burst of ingest keeps the CPUs it had. `None` runs them as jobs always.
+    pub ingest: Option<Arc<dyn IngestLoad>>,
 }
 
 impl Default for Hooks {

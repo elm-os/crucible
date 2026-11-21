@@ -92,10 +92,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The shipper reads a request as soon as it is durable instead of looking for new requests every 5 ms, so at low load
   trace reads see a span up to 5 ms sooner after its acknowledgement.
 - The shipper normalizes the requests it reads ahead, and encodes the blocks of each sealed batch, on blocking
-  threads, while its task keeps the work that depends on the order of the log. While ingest's share of the CPU
-  budget has no free permit, as in a burst, the shipper does that work on its task again, so ingest keeps the CPUs
-  it had. Requests still reach deduplication in log order, and every attempt of an insert still sends the same
-  bytes.
+  threads, while its task keeps the work that depends on the order of the log. While ingest holds more requests
+  than its share of the CPU budget prepares at once, as in a burst, the shipper does that work on its task again,
+  so ingest keeps the CPUs it had. Requests still reach deduplication in log order, and every attempt of an insert
+  still sends the same bytes.
 - `cpu.permits` also bounds the shipper: its normalizing and its encoding of blocks take a sixteenth of the budget
   each, at least one permit, and ingest's preparation of requests the rest. The histograms
   `crucible_cpu_permit_wait_microseconds` and `crucible_cpu_permit_hold_microseconds` have the stages `stage_a` and

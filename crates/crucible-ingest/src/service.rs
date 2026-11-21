@@ -376,10 +376,11 @@ impl Ingest {
         }
     }
 
-    /// The ingest-prepare share of the CPU budget. While none of its permits is free, requests wait for the CPUs
-    /// to be prepared, which the shipper reads as ingest needing them (`crucible_shipper::Hooks::ingest`).
-    pub fn prepare_permits(&self) -> Arc<PermitPool> {
-        Arc::clone(&self.inner.permits)
+    /// Whether ingest needs the CPUs now: it holds more requests than its share of the CPU budget may prepare at
+    /// once, so requests queue, as in a burst (default; revisit). The shipper keeps its own work on its task
+    /// meanwhile (`crucible_shipper::Hooks::ingest`).
+    pub fn busy(&self) -> bool {
+        self.inner.admission.requests() > u64::from(self.inner.permits.total())
     }
 
     /// The HTTP routes for the `:8080` and `:4318` listeners alike: `POST /v1/traces` (contract 12.6) and

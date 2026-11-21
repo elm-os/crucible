@@ -1,5 +1,6 @@
 //! What the shipper takes from its surroundings besides `Env` and `Stores`: crash barriers (contract 5.9), the
-//! recent-span index (contract 8.6), the project salts (contract 9.3) and the deletion requests (contract 13.3).
+//! recent-span index (contract 8.6), the project salts (contract 9.3), the deletion requests (contract 13.3) and
+//! ingest's load (contract 2.14).
 
 use std::fmt;
 
@@ -151,6 +152,15 @@ pub trait DeletionRequests: fmt::Debug + Send + Sync {
         project: ProjectId,
         id: DeletionRequestId,
     ) -> BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>>;
+}
+
+/// Ingest's load, as the shipper sees it. While ingest needs the CPUs, as in a burst, the shipper runs its stage A
+/// and its encoding on its own task, as one thread, rather than as blocking jobs beside ingest's: the burst keeps
+/// the CPUs it would have without them. The hook is a trait the shipper takes, so that it does not depend on
+/// ingest.
+pub trait IngestLoad: fmt::Debug + Send + Sync {
+    /// Whether ingest needs the CPUs now.
+    fn busy(&self) -> bool;
 }
 
 /// No control store: no deletion requests.
