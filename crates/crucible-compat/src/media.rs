@@ -691,6 +691,21 @@ mod tests {
         );
     }
 
+    /// The token an SDK wrote into the stored input of a recorded trace is found where it is.
+    #[test]
+    fn the_token_of_a_recorded_trace_is_found() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/d1/s4-fanout-and-media.json")).unwrap();
+        let input = fixture["expect"]["0000000000000001"]["input"]
+            .as_str()
+            .unwrap();
+        let found = payload_tokens(input.as_bytes());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pointer, "/0/content/1/image_url/url");
+        assert_eq!(found[0].content_type, "image/png");
+        assert_eq!(Some(found[0].hashes), hash_range("Zm9vYmFyYmF6cXV4MTIzNA"));
+    }
+
     #[test]
     fn what_is_not_a_whole_token_with_an_id_is_left_alone() {
         let id = media_id(&[3; 32]);

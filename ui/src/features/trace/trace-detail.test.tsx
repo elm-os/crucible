@@ -184,6 +184,19 @@ describe("the trace page", () => {
     );
     expect(within(panel).getByRole("tab", { name: "Input" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/payload"))).toBe(false);
+    expect(within(panel).getByRole("tab", { name: "Media" })).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/media"))).toBe(false);
+
+    // An agent opens the Media tab as a person would, and the span's media are asked for then.
+    fetchMock.mockImplementation(async (input) =>
+      String(input).includes(`/spans/${TRACE}/`) ? json({ data: [] }) : json(detail()),
+    );
+    const opened = await agent.act({
+      steps: [{ ref: "Span details", action: "setValue", args: ["media"] }],
+    });
+    expect(opened.ok, opened.error?.message).toBe(true);
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe("media");
+    expect(await within(panel).findByText("This span references no media.")).toBeTruthy();
   });
 
   test("a paged trace says its totals cover the loaded spans, and expanding fetches children", async () => {
