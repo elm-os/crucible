@@ -48,6 +48,9 @@ Each provider then shows whether it is **On** or **Turned off**, with these acti
 - **Delete** removes the provider and its client secret. Accounts that signed in with it stay, and can sign in
   through another provider that verifies the same email address.
 
+Password sign-in stays on unless it is turned off through the API (`PATCH org` with `"password_login_enabled":
+false`). With it off, keep a provider turned on: Crucible does not stop the last way to sign in from being removed.
+
 ## How a provider sign-in finds the person
 
 1. A person who signed in with the provider before is signed in.
