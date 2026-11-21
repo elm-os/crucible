@@ -171,7 +171,9 @@ test.describe("search: results", () => {
     await browser.getByRole("option", { name: "Environment" }).click();
     await bar.getByRole("textbox", { name: "Value" }).fill("prod");
     await bar.getByRole("button", { name: "Add filter" }).click();
-    await expect(browser.getByRole("button", { name: "Remove filter Environment: prod" })).toBeVisible();
+    await expect(
+      browser.getByRole("button", { name: "Remove filter Environment: prod" }),
+    ).toBeVisible();
     await expect(browser).toHaveURL(/environment=prod/);
     await expect.poll(() => bodies.at(-1)?.filters).toEqual({ environment: ["prod"] });
     await expect(browser.getByRole("link", { name: "plan reply" })).toBeVisible();
