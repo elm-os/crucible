@@ -330,7 +330,13 @@ async fn migrate(config: Config) -> anyhow::Result<()> {
         (Some(clickhouse), control) => {
             let clickhouse = store::ClickHouse::new(clickhouse, config.sql)?;
             let store = clickhouse.store(env);
-            store::apply_migrations(env, &clickhouse, &store, control.as_ref()).await?;
+            // A changed step that waits for the master key the deployment was migrated with fails the command, so
+            // a script or an operator sees that the migration is not complete (contract 1.7).
+            if let Some(deferred) =
+                store::apply_migrations(env, &clickhouse, &store, control.as_ref()).await?
+            {
+                anyhow::bail!("{deferred}");
+            }
         }
         (None, Some(control)) => {
             control.migrate_postgres(env).await?;

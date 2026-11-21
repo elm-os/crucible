@@ -65,6 +65,9 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - Sign-in providers can be declared in the configuration (`[auth_github]`, `[auth_google]`, `[auth_oidc]`), with
   their client secrets in files or environment variables. They are read-only on the Sign-in page and in the API, and
   removing one from the configuration turns it off.
+- `crucible migrate` exits with 1 when a changed migration step waits for the master key the deployment was migrated
+  with, and names the steps, why the key is refused and the key to run it with, instead of reporting the migrations
+  as applied.
 
 ## [0.1.1] - 2026-11-21
 

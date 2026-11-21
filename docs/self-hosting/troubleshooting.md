@@ -36,6 +36,7 @@ that names a database that is still starting clears by itself.
 | Reason | Fix |
 |---|---|
 | `startup detection (the service users are missing, or were created under a different master key; see --migrate and --master-key-file)` with `AUTHENTICATION_FAILED` | The server runs with another master key than the one this ClickHouse was migrated with. Start it with the original master key |
+| `crucible migrate` exits with 1: `ClickHouse migration step 0003_access_workspace changed since the migrations ledger recorded it, and the service identities refuse this server's master key (...), so it is not applied` | The command ran with another master key than the one this ClickHouse was migrated with, and a step changed since then (a new version, or another `sql.statements_per_hour`). Run `crucible migrate` again with the original master key; the other steps are applied |
 | `N of M tables exist; start once with --migrate` | Start once with `--migrate` (Compose always does), or run `crucible migrate` |
 | `this version needs ClickHouse migration step <id>, which the migrations ledger does not record` | The server runs without `--migrate`, and no server of this version has migrated yet. Run `crucible migrate`, or start one server with `--migrate`; within 15 seconds of that the server opens |
 | `ClickHouse <version> is older than the minimum, 26.3` | Upgrade ClickHouse to 26.3 or newer |
