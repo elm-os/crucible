@@ -32,8 +32,8 @@ const SMOKE_CONFIGS: u64 = 40;
 const MUTANTS: [(Mutant, u64, &str); 19] = [
     (Mutant::SkipWalSync, 0, "I3"),
     (Mutant::DropToken, 1000, "I2"),
-    (Mutant::GcAboveCheckpoint, 0, "liveness"),
-    (Mutant::SilentEviction, 11_000, "I3"),
+    (Mutant::GcAboveCheckpoint, 0, "I12"),
+    (Mutant::SilentEviction, 11_002, "I3"),
     (Mutant::SkipProbeAfterUnknown, 7000, "I2"),
     (Mutant::AckBeforeAppend, 0, "I3"),
     (Mutant::DoubleCountRollup, 1, "I7"),

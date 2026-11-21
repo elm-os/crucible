@@ -89,9 +89,11 @@ payload.
 - **Two tiers.** `span_core` holds narrow columns and previews for lists and aggregates; `span_payload` holds full
   inputs, outputs and attributes for point reads and full-text search.
 - **MCP tables.** `mcp_ops` (one row per MCP operation), `mcp_content` (opt-in arguments and results),
-  `mcp_tool_inventory`, `mcp_tool_rollup` and `mcp_deploys`.
+  `mcp_tool_inventory`, `mcp_tool_rollup` with its hourly tier `mcp_tool_rollup_hourly`, and `mcp_deploys`.
 - **Derived tables written by the shipper.** `trace_heads`, `trace_stats`, session and user rollups, span metrics and
-  the MCP tool rollup. Latency percentiles use a deterministic integer histogram.
+  the MCP tool rollup by minute and by hour. Latency percentiles use a deterministic integer histogram. An MCP
+  analytics read over 12 hours or more takes its whole hours from the hourly tier and only the minutes at its edges
+  from the minute rollup.
 - **One schema description** renders the DDL, the row policies and the SQL workspace's curated views; migrations are
   forward-only steps recorded in a ledger in Postgres.
 

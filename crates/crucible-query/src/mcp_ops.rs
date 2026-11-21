@@ -21,6 +21,14 @@ use crate::decode::Fields;
 use crate::mcp::{CaptureSources, McpQuery, fields};
 use crate::service::QueryService;
 
+/// The tables of a read of `mcp_ops` under a capture-source selection, for the quarantine rule: the selection
+/// reads the rollup, whose hourly tier serves a long window, and the read reads the operations.
+const SELECTED_OPS: [TableId; 3] = [
+    TableId::McpToolRollup,
+    TableId::McpToolRollupHourly,
+    TableId::McpOps,
+];
+
 /// The bytes of each captured content field that the operation detail returns; the rest is read through the
 /// payload route.
 pub const MCP_CONTENT_PREVIEW: u64 = 16 * 1024;
@@ -428,7 +436,7 @@ impl QueryService {
         }
         let truncated = groups.len() > limit as usize;
         groups.truncate(limit as usize);
-        let meta = read.mcp_meta(consistency, &[TableId::McpToolRollup, TableId::McpOps])?;
+        let meta = read.mcp_meta(consistency, &SELECTED_OPS)?;
         Ok(McpErrorBreakdown {
             groups,
             truncated,
@@ -468,7 +476,7 @@ impl QueryService {
         }
         let truncated = versions.len() > limit as usize;
         versions.truncate(limit as usize);
-        let meta = read.mcp_meta(consistency, &[TableId::McpToolRollup, TableId::McpOps])?;
+        let meta = read.mcp_meta(consistency, &SELECTED_OPS)?;
         Ok(McpClientVersions {
             versions,
             truncated,
@@ -541,7 +549,7 @@ impl QueryService {
                 user.errors = errors.get(&user.key).copied().unwrap_or(0);
             }
         }
-        let meta = read.mcp_meta(consistency, &[TableId::McpToolRollup, TableId::McpOps])?;
+        let meta = read.mcp_meta(consistency, &SELECTED_OPS)?;
         Ok(McpUsers {
             users,
             truncated,
@@ -605,7 +613,7 @@ impl QueryService {
                 session.errors = errors.get(&key).copied().unwrap_or(0);
             }
         }
-        let meta = read.mcp_meta(consistency, &[TableId::McpToolRollup, TableId::McpOps])?;
+        let meta = read.mcp_meta(consistency, &SELECTED_OPS)?;
         Ok(McpSessions {
             sessions,
             truncated,
@@ -655,7 +663,7 @@ impl QueryService {
             }),
             _ => None,
         };
-        let mut meta = read.mcp_meta(consistency, &[TableId::McpToolRollup, TableId::McpOps])?;
+        let mut meta = read.mcp_meta(consistency, &SELECTED_OPS)?;
         meta.as_of = as_of;
         Ok(McpOperationsPage {
             operations,
