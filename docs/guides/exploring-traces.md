@@ -33,9 +33,11 @@ its spans.
   expanding a span loads its children.
 - **Agent graph.** The agents, tools and model calls of the trace as a graph, each linked to its place in the
   timeline.
-- **Span details.** Choosing a span opens its overview (status, level, model, tokens, cost, duration, its parent
-  and child spans, its id) and its input, output, attributes and events. Model conversations show as messages by
-  role (system, developer, user, assistant, tool); other JSON as a tree; text as text.
+- **Span details.** Choosing a span opens its overview (status, level, model, tokens, cost, duration, its parent and
+  child spans, its id) and its input, output, attributes and events. Model conversations show as messages by role
+  (system, developer, user, assistant, tool); other JSON as a tree; text as text. The **Media** tab shows the
+  images, audio, video and files the span references, when the server has object storage
+  ([media](media.md#in-the-span-panel)).
 
 The **Tags, flags and feedback** section of the trace page adds tags, the bookmark and public flags, and scores
 ([facts](facts.md)).
