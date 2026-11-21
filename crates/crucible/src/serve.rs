@@ -13,7 +13,8 @@
 //! - **Ingest only** (no `--clickhouse-url`): requests are made durable in the WAL and nothing ships them; the
 //!   API and the MCP server authenticate each request and answer `telemetry_store_unavailable`.
 //! - **With ClickHouse**: the `telemetry-store` task brings the store up ([`store::bring_up`]: migrations when
-//!   asked for, startup detection and the self-tests of contract 5.8), retrying until it succeeds. Until then
+//!   asked for, else with Postgres a ledger that records every step, then startup detection and the self-tests of
+//!   contract 5.8), retrying until it succeeds. Until then
 //!   ingest answers 503 and `/readyz` says why. Then it builds the recent-span index, mounts the API and the MCP
 //!   server over the store, opens ingest, and runs the shipper, whose replay of the retained WAL prefix
 //!   rebuilds the index.
@@ -738,7 +739,6 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         lifecycle,
         media,
     } = task;
-    let migration = migrate.then_some(store::Migrate(control.as_ref()));
     let store = config.store(&env);
     let mut shutdown = env.shutdown();
     let mut delay = STORE_RETRY.0;
@@ -746,7 +746,7 @@ async fn run_store(env: Env, task: StoreTask) -> anyhow::Result<()> {
         let attempt = tokio::select! {
             biased;
             () = &mut shutdown => return Ok(()),
-            attempt = store::bring_up(&env, &config, &store, migration.as_ref()) => attempt,
+            attempt = store::bring_up(&env, &config, &store, control.as_ref(), migrate) => attempt,
         };
         match attempt {
             Ok(facts) => break facts,

@@ -4,7 +4,8 @@
 //! 1. With the right key the workspace runs a query.
 //! 2. A start with another key: the service identities refuse it, so the server is not ready and says why. It
 //!    changes nothing the right key needs: the migrations ledger leaves the password digests out of its checksums,
-//!    so access step A2 is not applied again with the wrong key's passwords for the probe identities.
+//!    so the start applies no migration step (its log says so), and access step A2 is not applied again with the
+//!    wrong key's passwords for the probe identities, which still sign in with the right key's.
 //! 3. With the right key again the workspace runs queries, and no operator had to repair anything.
 //!
 //! The test runs only when `CRUCIBLE_SQLISO_CLICKHOUSE_URL` is set and passes as skipped otherwise. It takes the
@@ -24,12 +25,13 @@
 mod common;
 
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{ANY_PORT, exit_error, serving};
+use crucible_schema::{PROBE_PROJECTS, workspace_user};
 use serde_json::{Value, json};
 
 const MASTER_KEY: &str = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
@@ -97,6 +99,22 @@ impl Server {
     fn readyz(&self) -> Option<(u16, String)> {
         let (status, body) = http(self.api, "GET", "/readyz", &[], b"").ok()?;
         Some((status, String::from_utf8_lossy(&body).into_owned()))
+    }
+
+    /// Panics when the server's log shows a migration step applied, or one recorded with other content.
+    fn applied_no_step(&self, when: &str) {
+        let log = std::fs::read_to_string(&self.log).unwrap();
+        let applied: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                line.contains("migration step applied") || line.contains("with other content")
+            })
+            .collect();
+        assert!(
+            applied.is_empty(),
+            "{when}: the server applied migration steps:\n{}",
+            applied.join("\n")
+        );
     }
 
     /// Waits until `GET /readyz` answers in a way `done` accepts; panics after `within`, and with the server's
@@ -246,6 +264,35 @@ fn write_secret(dir: &Path, name: &str, value: &str) {
     std::fs::write(dir.join(name), format!("{value}\n")).unwrap();
 }
 
+/// Whether the ClickHouse user `user` signs in with the password that `master_key` derives for it: HKDF-SHA256 of
+/// the key with the user name and generation 0 (contract 7.1).
+fn signs_in(clickhouse: SocketAddr, master_key: &str, user: &str) -> bool {
+    use base64::Engine as _;
+
+    let key: Vec<u8> = (0..master_key.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&master_key[at..at + 2], 16).unwrap())
+        .collect();
+    let mut password = [0u8; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(None, &key)
+        .expand(
+            format!("crucible/clickhouse-identity/v1/{user}/0").as_bytes(),
+            &mut password,
+        )
+        .unwrap();
+    let password: String = password.iter().map(|byte| format!("{byte:02x}")).collect();
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    let (status, _) = http(
+        clickhouse,
+        "GET",
+        "/?query=SELECT%201",
+        &[("Authorization", &format!("Basic {basic}"))],
+        b"",
+    )
+    .unwrap();
+    status == 200
+}
+
 #[test]
 fn a_start_with_a_wrong_master_key_leaves_the_sql_workspace_working() {
     let Ok(clickhouse_url) = std::env::var("CRUCIBLE_SQLISO_CLICKHOUSE_URL") else {
@@ -314,18 +361,36 @@ fn a_start_with_a_wrong_master_key_leaves_the_sql_workspace_working() {
     drop(server);
 
     // 2. Another master key: the service identities refuse their derived passwords, so detection fails after the
-    //    migrations ran, and the server says which setting to check.
+    //    migrations ran, and the server says which setting to check. It applied no step, and the probe identities
+    //    still take the right key's passwords.
     let mut server = rig.start("wrong-key");
     server.wait_for(
         Duration::from_secs(90),
         "refusing the wrong key",
         |status, body| status == 503 && body.contains("different master key"),
     );
+    server.applied_no_step("with the wrong key");
     drop(server);
+    let clickhouse = rig
+        .clickhouse_url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_socket_addrs()
+        .unwrap()
+        .min_by_key(|addr| !addr.is_ipv4())
+        .unwrap();
+    for project in PROBE_PROJECTS {
+        let user = workspace_user(project);
+        assert!(
+            signs_in(clickhouse, MASTER_KEY, &user),
+            "after the start with the wrong key, {user} refuses the right key's password"
+        );
+    }
 
     // 3. The right key again: ready, and the workspace runs queries without a repair by an operator.
     let mut server = rig.start("master-key");
     server.wait_for(Duration::from_secs(120), "ready", |status, _| status == 200);
+    server.applied_no_step("with the right key after a start with a wrong one");
     workspace.runs(
         &server,
         Duration::from_secs(90),

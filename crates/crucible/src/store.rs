@@ -8,11 +8,13 @@
 //!   hex.
 //! - `--migrate` and `crucible migrate` apply schema step `0001_schema_base`, the access steps
 //!   `0002_access_service` and `0003_access_workspace` (the SQL workspace's role, profile, quota, static
-//!   policies, views and probe identities) and schema step `0004_span_usage_aggregate` for a single-node
-//!   server ([`apply_migrations`]). All are idempotent. With Postgres configured they are recorded in the
-//!   ledger of contract 6.6 and applied once, and the probe identities are provisioned again at every run with
-//!   the passwords of the current master key; without Postgres there is no ledger and all are applied each time.
-//! - [`bring_up`] is everything that must hold before ingest is accepted.
+//!   policies, views and probe identities) and schema steps `0004_span_usage_aggregate` and
+//!   `0005_mcp_tool_rollup_hourly` for a single-node server ([`apply_migrations`]). All are idempotent. With
+//!   Postgres configured they are recorded in the ledger of contract 6.6 and applied once, and once more after
+//!   their content changes, and the probe identities are provisioned again at every run with the passwords of the
+//!   current master key; without Postgres there is no ledger and all are applied each time.
+//! - [`bring_up`] is everything that must hold before ingest is accepted. With Postgres, a server started without
+//!   `--migrate` waits until the ledger records every step.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -241,7 +243,7 @@ impl ClickHouse {
 
     /// The steps `--migrate` applies, in ledger order, for a single-node server. `profile` is the SQL
     /// workspace's settings profile, fitted to the server.
-    fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 5]> {
+    pub(crate) fn steps(&self, profile: SqlProfile) -> anyhow::Result<[MigrationStep; 5]> {
         let variant = Variant::SingleNode;
         let admin = Ident::new(&self.admin.user)
             .context("the ClickHouse admin user is not a plain identifier")?;
@@ -264,11 +266,6 @@ impl ApplyStep for ClickHouseStore {
         })
     }
 }
-
-/// What `--migrate` asks of [`bring_up`]: apply the migrations first, under the ledger of the control plane
-/// when Postgres is configured.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Migrate<'a>(pub(crate) Option<&'a Control>);
 
 /// Applies the ClickHouse schema and access steps. With a control plane, the Postgres migrations run first and
 /// the ledger of contract 6.6 (`schema_migrations`) decides which steps are still to apply, and then the probe
@@ -358,16 +355,20 @@ fn refusal(facts: &StoreFacts) -> Option<String> {
     None
 }
 
-/// Everything that must hold before a node accepts ingest: the migrations when asked for, then startup
+/// Everything that must hold before a node accepts ingest: the migrations when `migrate` asks for them (under the
+/// ledger of `control`, when Postgres is configured), or else a ledger that records every step; then startup
 /// detection and the two self-tests of contract 5.8. On `Err` ingest stays closed and the text says why.
 pub(crate) async fn bring_up(
     env: &Env,
     config: &ClickHouse,
     store: &ClickHouseStore,
-    migrate: Option<&Migrate<'_>>,
+    control: Option<&Control>,
+    migrate: bool,
 ) -> anyhow::Result<StoreFacts> {
-    if let Some(Migrate(control)) = migrate {
-        apply_migrations(env, config, store, *control).await?;
+    if migrate {
+        apply_migrations(env, config, store, control).await?;
+    } else if let Some(control) = control {
+        crate::control::ensure_migrated(&control.store).await?;
     }
     // `detect` includes the check that every service identity sees a known row.
     let facts = store.detect().await.map_err(|error| {

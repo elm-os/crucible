@@ -12,6 +12,10 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 - The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
   server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
   as the copy of step 0005.
+- A migration step whose content changed, such as steps 0001 to 0003 on an upgrade from 0.1.1, applies once and the
+  ledger records its new content; it no longer applies again, with a warning, at every start.
+- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the migrations ledger
+  records every step of its version, and says to run `crucible migrate` or to start one server with `--migrate`.
 
 ## [0.1.1] - 2026-11-21
 

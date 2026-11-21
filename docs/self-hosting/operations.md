@@ -32,6 +32,15 @@ is shipped. Stopping the old server lets it finish its open requests first: Comp
 - Migrations only move forward. An older image started on a database that a newer one migrated stays not ready,
   and `/readyz` names the migration it does not know, such as `migration V5__export_jobs is missing from the
   filesystem`. Take a [backup](#backups) before an upgrade so that you can return to it.
+- The first start of a new version applies each migration step whose content changed once more, and the ledger
+  records the new content, so the next start applies nothing. The log warns that the ledger records the step with
+  other content. On an upgrade from 0.1.1 these are steps `0001_schema_base` to `0003_access_workspace`, which cover
+  every table with its grants and row policies, and so now `mcp_tool_rollup_hourly` too. A start with another master
+  key applies nothing, because the ledger compares steps without their password digests.
+- With Postgres, a server started without `--migrate` stays not ready and refuses ingest until the ledger records
+  every migration step of its version. `/readyz` names the missing step and says to run `crucible migrate`, or to
+  start one server with `--migrate`; within 15 seconds of that the server opens, without a restart. So its shipper
+  never writes before step 0005 has copied the minute rollup.
 - Changes to the storage format are recorded in the change log of the
   [contract](../architecture/contracts.md#15-change-control), with the migration each one needs.
 - The first start with migration step `0005_mcp_tool_rollup_hourly` copies the MCP tool rollup, by hour, into
