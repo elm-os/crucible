@@ -5,29 +5,33 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible_env::{
     DiskPath, InsertError, InsertSettings, RetryReason, Root, StoreFlavour, Stores,
 };
-use crucible_normalize::NORMALIZER_VERSION;
+use crucible_normalize::{NORMALIZER_VERSION, Tombstone, TombstoneSelector};
 use crucible_records::{
-    AuthorKind, BatchToken, FactId, FactTargetKind, Lsn, ProjectId, ScoreDataType, ScoreSource,
-    SpanId, TableId, TagOp, Timestamp, TraceId, Uuid,
+    AuthorKind, BatchToken, DeletionRequestId, DeletionState, FactId, FactTargetKind, Lsn,
+    PartitionId, ProjectId, ScoreDataType, ScoreSource, SpanId, TableId, TagOp, Timestamp, TraceId,
+    Uuid,
 };
 use crucible_schema::Granularity;
 use crucible_shipper::{
-    FRAMES_FILE, FrameManifest, Hooks, MANIFEST_FILE, ShipError, Shipper, ShipperConfig,
-    StatsSnapshot, frame_quarantine_ref,
+    Barrier, Barriers, DeletionRequests, DeletionsUnavailable, FRAMES_FILE, FrameManifest, Hooks,
+    KnownDeletion, MANIFEST_FILE, ShipError, Shipper, ShipperConfig, StatsSnapshot,
+    frame_quarantine_ref,
 };
 use crucible_sim::ch_model::{Call, ChFaults, ChModel, Script, u64_at};
-use crucible_sim::ship_sim::{SpanSpec, request_payload};
+use crucible_sim::ship_sim::{SpanSpec, read_quarantines, request_payload};
 use crucible_sim::{Host, SIM_EPOCH_MICROS, Sim, SimDisk, run};
 use crucible_wal::{RecoveryReport, Wal, WalConfig};
 use crucible_wal_codec::{
     Compression, FRAME_HEADER_LEN, FrameHeader, PreparedFrame, Record, RecordType,
 };
+use futures::future::{self, BoxFuture};
 
 /// The tables a span without a session or a user yields rows in.
 const TABLES: [TableId; 5] = [
@@ -122,6 +126,17 @@ impl Rig {
 
     /// As [`Rig::boot`], with a WAL that keeps checkpointed segments for `replay_retention`.
     async fn boot_retaining(&self, replay_retention: Duration) -> (Node, RecoveryReport) {
+        self.boot_with(replay_retention, config(), Hooks::default())
+            .await
+    }
+
+    /// As [`Rig::boot_retaining`], with this shipper configuration and these hooks.
+    async fn boot_with(
+        &self,
+        replay_retention: Duration,
+        config: ShipperConfig,
+        hooks: Hooks,
+    ) -> (Node, RecoveryReport) {
         let boot = {
             let mut boots = self.boots.lock().unwrap();
             *boots += 1;
@@ -137,15 +152,7 @@ impl Rig {
         };
         let (wal, report) = Box::pin(Wal::open(&host.env, wal_config)).await.unwrap();
         let stores = Stores::new(Arc::new(self.model.clone()));
-        let shipper = Shipper::new(
-            &host.env,
-            &stores,
-            wal.clone(),
-            &report,
-            config(),
-            Hooks::default(),
-        )
-        .unwrap();
+        let shipper = Shipper::new(&host.env, &stores, wal.clone(), &report, config, hooks).unwrap();
         let stats = shipper.stats();
         let ended: Ended = Arc::default();
         let slot = Arc::clone(&ended);
@@ -767,6 +774,177 @@ fn a_pair_in_doubt_is_quarantined_only_after_an_absent_probe() {
             rig.calls_by_pair()[&(TableId::SpanPayload, lsn.get())],
             "IPIPIPIP"
         );
+        node.host.stop().await;
+    });
+}
+
+/// The store refuses every pair as a data error, except that it accepts the first attempt of each and keeps it
+/// in flight past the end of the test: from its first answer on, every pair is in doubt.
+fn poison_in_flight(model: &ChModel) {
+    model.set_faults(ChFaults {
+        poison_pair_ppm: 1_000_000,
+        poison_first_in_flight_ppm: 1_000_000,
+        late_apply_micros: (3_600_000_000, 3_600_000_000),
+        ..ChFaults::default()
+    });
+}
+
+/// A crash at `barrier` (contract 5.9): from there on no barrier completes and the disk is frozen, so that
+/// nothing after it is done, and the test crashes the host.
+#[derive(Debug)]
+struct CrashAt {
+    disk: SimDisk,
+    barrier: Barrier,
+    tripped: AtomicBool,
+}
+
+impl CrashAt {
+    fn new(disk: &SimDisk, barrier: Barrier) -> Arc<Self> {
+        Arc::new(Self {
+            disk: disk.clone(),
+            barrier,
+            tripped: AtomicBool::new(false),
+        })
+    }
+
+    /// Runs the node until it reaches the barrier, then crashes it.
+    async fn crash(&self, node: Node) {
+        while !self.tripped.load(Ordering::SeqCst) {
+            assert_eq!(node.ended(), None);
+            node.sleep(1).await;
+        }
+        let Node { host, wal, .. } = node;
+        drop(wal);
+        host.crash().await;
+    }
+}
+
+impl Barriers for CrashAt {
+    fn reached(&self, barrier: Barrier) -> BoxFuture<'static, ()> {
+        if barrier == self.barrier || self.tripped.load(Ordering::SeqCst) {
+            self.tripped.store(true, Ordering::SeqCst);
+            self.disk.freeze();
+            return Box::pin(future::pending());
+        }
+        Box::pin(future::ready(()))
+    }
+}
+
+/// The deletion requests of a control store.
+#[derive(Debug)]
+struct Requests(Vec<KnownDeletion>);
+
+impl DeletionRequests for Requests {
+    fn configured(&self) -> bool {
+        true
+    }
+
+    fn requested_after(
+        &self,
+        received_at: Timestamp,
+    ) -> BoxFuture<'_, Result<Vec<KnownDeletion>, DeletionsUnavailable>> {
+        let known = self
+            .0
+            .iter()
+            .filter(|known| known.tombstone.requested_at > received_at)
+            .cloned()
+            .collect();
+        Box::pin(future::ready(Ok(known)))
+    }
+
+    fn request(
+        &self,
+        project: ProjectId,
+        id: DeletionRequestId,
+    ) -> BoxFuture<'_, Result<Option<KnownDeletion>, DeletionsUnavailable>> {
+        let found = self
+            .0
+            .iter()
+            .find(|known| known.tombstone.project_id == project && known.tombstone.request_id == id)
+            .cloned();
+        Box::pin(future::ready(Ok(found)))
+    }
+}
+
+/// The pairs of the quarantine directories whose manifest is whole.
+fn copied_pairs(disk: &SimDisk) -> Vec<(TableId, PartitionId)> {
+    disk.files(Root::Quarantine)
+        .iter()
+        .filter(|path| path.as_str().ends_with(&format!("/{MANIFEST_FILE}")))
+        .filter_map(|path| {
+            let text = String::from_utf8(disk.read_file(path)?).ok()?;
+            let field = |name: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+            };
+            field("bytes")?;
+            let table = TableId::from_id(field("table_id")?.parse().ok()?)?;
+            Some((table, PartitionId::parse(field("partition")?).ok()?))
+        })
+        .collect()
+}
+
+/// The run of seed 44853202051001 (config `0xea716b1a2a1c1c`), shortened. The first attempt of a poison pair
+/// stays in flight; the pair is probed absent before each of its three data errors and before its copy, and
+/// the node crashes at `quarantine.copied`, before the `Quarantine` frame. The restart sends the pair again
+/// after an absent probe, gets a data error and crashes. A request that completed while the node was down
+/// deletes the batch's trace, so the next restart leaves no row in any pair of the batch: it checkpoints the
+/// batch without a call to the store, and the copy stays (contracts 5.3 and 5.9). No `Quarantine` frame names
+/// the pair, so the copy is no quarantine, whatever the store answered last: here a data error after an
+/// accepted attempt, which the system simulation read as a quarantine in doubt (invariant I2).
+#[test]
+fn a_copy_that_no_quarantine_frame_names_is_no_quarantine() {
+    directed(|rig| async move {
+        let retain = Duration::from_secs(3_600);
+        poison_in_flight(&rig.model);
+        let crash = CrashAt::new(&rig.disk, Barrier::QuarantineCopied);
+        let hooks = Hooks {
+            barriers: crash.clone(),
+            ..Hooks::default()
+        };
+        let (node, _) = rig.boot_with(retain, config(), hooks).await;
+        let lsn = node.ingest(1, 2).await;
+        crash.crash(node).await;
+        // The copies that were whole when the first of them reached the barrier.
+        let copied = copied_pairs(&rig.disk);
+        let Some(&(table, partition)) = copied.first() else {
+            panic!("no whole copy");
+        };
+
+        let crash = CrashAt::new(&rig.disk, Barrier::InsertSent(table, partition));
+        let hooks = Hooks {
+            barriers: crash.clone(),
+            ..Hooks::default()
+        };
+        let (node, report) = rig.boot_with(retain, config(), hooks).await;
+        assert_eq!(report.unchecked_seals.len(), 1);
+        crash.crash(node).await;
+
+        let requested_at = SIM_EPOCH_MICROS + i64::try_from(rig.sim.elapsed().as_micros()).unwrap();
+        let deletion = KnownDeletion {
+            tombstone: Tombstone {
+                request_id: DeletionRequestId::from_bytes([1; 16]),
+                project_id: ProjectId::from_bytes([1; 16]),
+                requested_at: Timestamp::from_micros(requested_at),
+                deletion_seq: 1,
+                selector: TombstoneSelector::Traces(vec![TraceId::from_bytes([1; 16])]),
+            },
+            state: DeletionState::Completed,
+        };
+        let calls = (rig.model.stats().inserts, rig.model.stats().probes);
+        let hooks = Hooks {
+            deletions: Arc::new(Requests(vec![deletion])),
+            ..Hooks::default()
+        };
+        let (node, _) = rig.boot_with(retain, config(), hooks).await;
+        node.sleep(300).await;
+        let watermark = node.watermark();
+        assert!(watermark >= lsn.get());
+        assert_eq!((rig.model.stats().inserts, rig.model.stats().probes), calls);
+        assert_eq!(copied_pairs(&rig.disk), copied);
+
+        let (_, quarantined, faults) = read_quarantines(&rig.disk, &rig.model, watermark);
+        assert!(quarantined.is_empty() && faults.is_empty(), "{faults:?}");
         node.host.stop().await;
     });
 }

@@ -657,7 +657,7 @@ struct Shipping {
 
 /// A quarantine directory whose pair is in fact quarantined.
 #[derive(Clone, Debug)]
-pub(crate) struct Quarantined {
+pub struct Quarantined {
     pub(crate) table: TableId,
     pub(crate) partition: PartitionId,
     pub(crate) first: u64,
@@ -668,7 +668,7 @@ pub(crate) struct Quarantined {
 
 /// What is wrong with a quarantine.
 #[derive(Clone, Debug)]
-pub(crate) enum QuarantineFault {
+pub enum QuarantineFault {
     /// Contract 5.6: a pair of which the store had accepted a block was quarantined without a probe that read
     /// absent.
     InDoubt { table: &'static str, batch_seq: u64 },
@@ -768,7 +768,7 @@ pub(crate) fn manifests(disk: &SimDisk) -> Vec<(String, Option<(Quarantined, usi
 /// The number of quarantine directories with a manifest, those whose pair is quarantined, and what is wrong
 /// with them (contract 5.6). A directory whose pair landed after all is what a crash between the copy and the
 /// `Quarantine` frame leaves behind.
-pub(crate) fn read_quarantines(
+pub fn read_quarantines(
     disk: &SimDisk,
     model: &ChModel,
     through: u64,
