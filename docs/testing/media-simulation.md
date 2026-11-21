@@ -104,4 +104,5 @@ requests that touch `crucible-media`, `crucible-env/src/object.rs` or the rows t
 Export files on the object store are checked in `crates/crucible-export`: unit tests of the writer (a file appears
 whole at its commit, in one request or in 8 MiB parts, and an abandoned one leaves neither an object nor an open
 upload), and the export job over `PgModel` and `SimObjectStore` (the file is an object any node links to, the sweep
-removes expired and stray objects, a deletion removes the objects of the exports it predates).
+removes expired and stray objects and runs on one node at a time, a deletion removes the objects of the exports it
+predates).

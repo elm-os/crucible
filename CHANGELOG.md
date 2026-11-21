@@ -68,6 +68,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   scrubbed text.
 - `crucible proxy` refuses a `--capture` rule whose `max_bytes` is above 8,323,072 (8 MiB less 64 KiB) and says so:
   a field captured near 8 MiB did not fit the proxy's 8 MiB export buffer with its operation, which was then dropped.
+- With object storage, one server at a time sweeps the export objects, the one that runs the media collector, so the
+  servers of a deployment no longer each list every project's export keys every 10 minutes.
 
 ## [0.1.1] - 2026-11-21
 
