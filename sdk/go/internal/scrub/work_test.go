@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,8 @@ type ruleFacts struct {
 	minLength int
 	literals  []string
 	lead      []string
+	// pairs is what the pair guard finds among a few samples, nil without a pair.
+	pairs []string
 }
 
 func TestTheRulesPatternsYieldTheFactsTheGuardsUse(t *testing.T) {
@@ -60,18 +63,26 @@ func TestTheRulesPatternsYieldTheFactsTheGuardsUse(t *testing.T) {
 		if l := r.facts.lead; l != nil {
 			f.lead = []string{l.prefix, string(l.anchor)}
 		}
+		if r.facts.pairs != nil {
+			f.pairs = []string{}
+			for _, sample := range []string{"a:", "1.", "Z@", "0-", "x"} {
+				if r.facts.holdsPair(sample) {
+					f.pairs = append(f.pairs, sample)
+				}
+			}
+		}
 		got[r.name] = f
 	}
 	want := map[string]ruleFacts{
-		"pem":        {32, []string{"-----BEGIN "}, nil},
-		"jwt":        {7, []string{"eyJ"}, []string{"eyJ", "."}},
-		"bearer":     {23, nil, nil},
-		"secret_key": {12, []string{"csk_"}, nil},
-		"card":       {14, nil, nil},
-		"email":      {6, []string{"@"}, []string{"", "@"}},
-		"ipv6":       {6, []string{":", ":"}, nil},
-		"ipv4":       {7, []string{"."}, nil},
-		"phone":      {8, nil, nil},
+		"pem":        {32, []string{"-----BEGIN "}, nil, []string{"0-"}},
+		"jwt":        {7, []string{"eyJ"}, []string{"eyJ", "."}, []string{"1."}},
+		"bearer":     {23, nil, nil, nil},
+		"secret_key": {12, []string{"csk_"}, nil, nil},
+		"card":       {14, nil, nil, nil},
+		"email":      {6, []string{"@"}, []string{"", "@"}, []string{"Z@"}},
+		"ipv6":       {6, []string{":", ":"}, nil, []string{"a:"}},
+		"ipv4":       {7, []string{"."}, nil, []string{"1."}},
+		"phone":      {8, nil, nil, nil},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts\n got %v\nwant %v", got, want)
@@ -127,6 +138,49 @@ func TestGuardedApplicationEqualsPlainApplicationOverGeneratedText(t *testing.T)
 		}
 		if steps, bound := matcherSteps(s), 2*len(rules)*max(len(s), 1); steps > bound {
 			t.Fatalf("%q: %d matcher steps > %d", s, steps, bound)
+		}
+	}
+}
+
+// pairFragments are the literals of the rules with a pair, after characters that make the pair and after ones that
+// do not: at the start of a text, after a space or a letter outside the pair's class, and after characters outside
+// ASCII.
+var pairFragments = []string{
+	":", ".", "@", "-", "a", "1", "Z", "g", "_", "%", "x", " ", "\n", "é:", "😀-", "é.", "😀@", "g:", "F:", "_@",
+	"%@", " -", "A-", "fe80", "::1", "1.2.3.4", "203.0.113.42", "2001:db8::1", "a@b.co", "eyJ", "eyJa.b.c",
+	"-----BEGIN ", "-----BEGIN é", "-----BEGIN A-----", "-----END A-----",
+}
+
+func TestThePairGuardSkipsOnlyTextItsRuleLeavesAlone(t *testing.T) {
+	r := rand.New(rand.NewPCG(20261121, 1))
+	// Per rule, texts that pass the length and literal guards and lack the pair, so that the pair guard alone
+	// decides.
+	decided := map[string]int{}
+	for range 5000 {
+		var b strings.Builder
+		for range 1 + r.IntN(11) {
+			b.WriteString(pairFragments[r.IntN(len(pairFragments))])
+		}
+		s := b.String()
+		plain := s
+		for i := range rules {
+			f := &rules[i].facts
+			literal := f.literals == nil || slices.ContainsFunc(f.literals, func(l string) bool { return strings.Contains(s, l) })
+			if f.pairs != nil && len(s) >= f.minLength && literal && !f.holdsPair(s) {
+				decided[rules[i].name]++
+			}
+			if got, want := rules[i].apply(s), rules[i].applyPlain(s); got != want {
+				t.Fatalf("rule %s on %q: guarded %q, plain %q", rules[i].name, s, got, want)
+			}
+			plain = rules[i].applyPlain(plain)
+		}
+		if got := String(s); got != plain {
+			t.Fatalf("all rules on %q: guarded %q, plain %q", s, got, plain)
+		}
+	}
+	for i := range rules {
+		if rules[i].facts.pairs != nil && decided[rules[i].name] < 50 {
+			t.Errorf("the pair guard alone decided %d texts of rule %s", decided[rules[i].name], rules[i].name)
 		}
 	}
 }

@@ -147,17 +147,25 @@ def test_the_rules_patterns_yield_the_facts_the_guards_use() -> None:
     found = {}
     for rule in RULES["rules"]:
         f = facts(rule["pattern"])
-        found[rule["name"]] = (f.min_length, f.literals, None if f.lead is None else (f.lead.prefix, f.lead.anchor))
+        # A pair is shown as what it finds in a sample.
+        pairs = f.pairs
+        finds = None if pairs is None else [s for s in ("a:", "1.", "Z@", "0-", "x") if pairs.search(s)]
+        found[rule["name"]] = (
+            f.min_length,
+            f.literals,
+            None if f.lead is None else (f.lead.prefix, f.lead.anchor),
+            finds,
+        )
     assert found == {
-        "pem": (32, ("-----BEGIN ",), None),
-        "jwt": (7, ("eyJ",), ("eyJ", ".")),
-        "bearer": (23, None, None),
-        "secret_key": (12, ("csk_",), None),
-        "card": (14, None, None),
-        "email": (6, ("@",), ("", "@")),
-        "ipv6": (6, (":", ":"), None),
-        "ipv4": (7, (".",), None),
-        "phone": (8, None, None),
+        "pem": (32, ("-----BEGIN ",), None, ["0-"]),
+        "jwt": (7, ("eyJ",), ("eyJ", "."), ["1."]),
+        "bearer": (23, None, None, None),
+        "secret_key": (12, ("csk_",), None, None),
+        "card": (14, None, None, None),
+        "email": (6, ("@",), ("", "@"), ["Z@"]),
+        "ipv6": (6, (":", ":"), None, ["a:"]),
+        "ipv4": (7, (".",), None, ["1."]),
+        "phone": (8, None, None, None),
     }
 
 
@@ -225,6 +233,59 @@ def test_guarded_application_equals_plain_application_over_generated_text() -> N
         if matcher_steps(text) > 2 * len(RULES["rules"]) * max(len(text), 1):
             mismatches.append(f"steps: {text!r}")
     assert mismatches[:5] == []
+
+
+# The literals of the rules with a pair, after characters that make the pair and after ones that do not: at the start
+# of a text, after a space or a letter outside the pair's class, and after characters outside ASCII.
+PAIR_FRAGMENTS = [
+    *":.@-",
+    *"a1Zg_%x \n",
+    "é:",
+    "😀-",
+    "é.",
+    "😀@",
+    "g:",
+    "F:",
+    "_@",
+    "%@",
+    " -",
+    "A-",
+    "fe80",
+    "::1",
+    "1.2.3.4",
+    "203.0.113.42",
+    "2001:db8::1",
+    "a@b.co",
+    "eyJ",
+    "eyJa.b.c",
+    "-----BEGIN ",
+    "-----BEGIN é",
+    "-----BEGIN A-----",
+    "-----END A-----",
+]
+
+
+def test_the_pair_guard_skips_only_text_its_rule_leaves_alone() -> None:
+    random = Random(20261121)
+    mismatches: list[str] = []
+    # Per rule, texts that pass the length and literal guards and lack the pair, so that the pair guard alone decides.
+    decided: dict[str, int] = {}
+    for _ in range(5000):
+        text = "".join(random.choice(PAIR_FRAGMENTS) for _ in range(random.randrange(1, 12)))
+        for rule in SCRUBBER.rules:
+            f = rule.facts
+            if f.pairs is None:
+                continue
+            literal = f.literals is None or any(lit in text for lit in f.literals)
+            if len(text) >= f.min_length and literal and f.pairs.search(text) is None:
+                decided[rule.name] = decided.get(rule.name, 0) + 1
+            if rule.apply(text) != rule.apply_plain(text):
+                mismatches.append(f"{rule.name}: {text!r}")
+        if SCRUBBER.text(text) != SCRUBBER.text_plain(text):
+            mismatches.append(f"all rules: {text!r}")
+    assert mismatches[:5] == []
+    paired = [rule.name for rule in SCRUBBER.rules if rule.facts.pairs is not None]
+    assert all(decided.get(name, 0) >= 50 for name in paired), decided
 
 
 def test_a_model_result_is_serialized_no_further_than_the_cap_and_the_margin() -> None:

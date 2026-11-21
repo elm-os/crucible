@@ -51,6 +51,13 @@ pub(crate) struct Lead {
     pub(crate) rest: String,
 }
 
+/// A member of a class followed by a literal character: `[0-9A-Fa-f]` then `:` for the ipv6 rule.
+#[derive(Clone, Debug)]
+pub(crate) struct Pair {
+    class: CharClass,
+    literal: u8,
+}
+
 /// What the scrubber's guards read.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Facts {
@@ -59,6 +66,21 @@ pub(crate) struct Facts {
     /// For each top-level alternative, a literal every match of it contains; `None` when one has none.
     pub(crate) literals: Option<Vec<String>>,
     pub(crate) lead: Option<Lead>,
+    /// For each top-level alternative, a pair every match of it holds; `None` when one has none.
+    pub(crate) pairs: Option<Vec<Pair>>,
+}
+
+impl Facts {
+    /// Whether `text` holds one of the pairs: its literal right after a member of its class. A text without any
+    /// of them holds no match.
+    pub(crate) fn holds_pair(&self, text: &str) -> bool {
+        let bytes = text.as_bytes();
+        self.pairs.iter().flatten().any(|pair| {
+            bytes
+                .windows(2)
+                .any(|w| w[1] == pair.literal && pair.class.has(w[0]))
+        })
+    }
 }
 
 /// The facts of `pattern`, or none (no guard) when it does not parse as the subset.
@@ -70,6 +92,7 @@ pub(crate) fn facts(pattern: &str) -> Facts {
         min_length: min_length(&branches),
         literals: branches.iter().map(|items| literal_of(items)).collect(),
         lead: lead_of(&branches, pattern),
+        pairs: branches.iter().map(|items| pair_of(items)).collect(),
     }
 }
 
@@ -263,6 +286,39 @@ fn literal_of(items: &[Item]) -> Option<String> {
     runs.into_iter()
         .filter(|r| !r.is_empty())
         .reduce(|best, r| if r.len() > best.len() { r } else { best })
+}
+
+/// A class item followed by a literal character item, both matched at least once, that every match of `items`
+/// holds: the last character the class item matches comes right before the literal. A group matched at least once
+/// with one alternative holds the pairs of its items.
+fn pair_of(items: &[Item]) -> Option<Pair> {
+    let adjacent = items.windows(2).find_map(|w| match (&w[0], &w[1]) {
+        (
+            Item {
+                atom: Atom::Class(class),
+                min: 1..,
+                ..
+            },
+            Item {
+                atom: Atom::Char(literal),
+                min: 1..,
+                ..
+            },
+        ) => Some(Pair {
+            class: class.clone(),
+            literal: *literal,
+        }),
+        _ => None,
+    });
+    adjacent.or_else(|| {
+        items.iter().find_map(|item| match &item.atom {
+            Atom::Group(inner) if item.min >= 1 => match inner.as_slice() {
+                [only] => pair_of(only),
+                _ => None,
+            },
+            _ => None,
+        })
+    })
 }
 
 /// The character of an item that is one literal character, matched once.

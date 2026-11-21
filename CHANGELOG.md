@@ -60,6 +60,8 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
   and refuse an invalid one alike: the same member, with the same code.
 - A listener whose address is taken names the setting that moves it, for example `server.metrics_listen`
   (`CRUCIBLE_SERVER_METRICS_LISTEN`).
+- The Python, Go and Rust SDKs skip a scrub rule on text that lacks a pair of characters every match of it holds, as
+  the TypeScript SDK does (a digit before a `.` for the ipv4 rule), with the same scrubbed text as before.
 
 ## [0.1.1] - 2026-11-21
 

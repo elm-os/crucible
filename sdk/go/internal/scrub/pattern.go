@@ -40,11 +40,31 @@ type lead struct {
 	rest   string // the pattern from the anchor on
 }
 
+// pair is a member of a class followed by a literal character: [0-9A-Fa-f] then ':' for the ipv6 rule.
+type pair struct {
+	class   *charClass
+	literal byte
+}
+
 // facts are what the scrubber's guards read.
 type facts struct {
 	minLength int
 	literals  []string // per top-level alternative, a literal every match of it contains; nil when one has none
 	lead      *lead
+	pairs     []pair // per top-level alternative, a pair every match of it holds; nil when one has none
+}
+
+// holdsPair reports whether s holds one of the pairs: its literal right after a member of its class. A text
+// without any of them holds no match.
+func (f *facts) holdsPair(s string) bool {
+	for _, p := range f.pairs {
+		for at := indexByteFrom(s, p.literal, 1); at >= 0; at = indexByteFrom(s, p.literal, at+1) {
+			if p.class.has(s[at-1]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // patternFacts returns the facts of pattern, or none (no guard) when it does not parse as the subset.
@@ -54,6 +74,14 @@ func patternFacts(pattern string) facts {
 		return facts{}
 	}
 	f := facts{minLength: minLength(branches), lead: leadOf(branches, pattern)}
+	for _, items := range branches {
+		p, ok := pairOf(items)
+		if !ok {
+			f.pairs = nil
+			break
+		}
+		f.pairs = append(f.pairs, p)
+	}
 	for _, items := range branches {
 		lit, ok := literalOf(items)
 		if !ok {
@@ -291,6 +319,26 @@ func literalOf(items []item) (string, bool) {
 		}
 	}
 	return best, best != ""
+}
+
+// pairOf is a class item followed by a literal character item, both matched at least once, that every match of
+// items holds: the last character the class item matches comes right before the literal. A group matched at least
+// once with one alternative holds the pairs of its items.
+func pairOf(items []item) (pair, bool) {
+	for k := 0; k+1 < len(items); k++ {
+		first, second := items[k], items[k+1]
+		if first.class != nil && first.min >= 1 && second.class == nil && second.group == nil && second.min >= 1 {
+			return pair{class: first.class, literal: second.char}, true
+		}
+	}
+	for _, it := range items {
+		if it.group != nil && it.min >= 1 && len(it.group) == 1 {
+			if p, ok := pairOf(it.group[0]); ok {
+				return p, true
+			}
+		}
+	}
+	return pair{}, false
 }
 
 // once is the character of an item that is one literal character, matched once.

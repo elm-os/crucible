@@ -7,8 +7,10 @@ Patterns are in the shared subset of `conformance/scrub-rules.json` (literals, e
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 
 @dataclass(frozen=True)
@@ -54,9 +56,13 @@ class Facts:
     literals: tuple[str, ...] | None
     """For each top-level alternative, a literal every match of it contains; None when one has none."""
     lead: Lead | None
+    pairs: re.Pattern[str] | None
+    """A regular expression that finds, in any text that holds a match, a member of a class followed by a literal
+    character that a top-level alternative always holds (`[0-9A-Fa-f]:` for the ipv6 rule); None when an
+    alternative holds no such pair."""
 
 
-_NO_GUARD = Facts(0, None, None)
+_NO_GUARD = Facts(0, None, None, None)
 
 
 def facts(pattern: str) -> Facts:
@@ -66,10 +72,12 @@ def facts(pattern: str) -> Facts:
     except ValueError:
         return _NO_GUARD
     literals = [_literal_of(items) for items in branches]
+    pairs = [_pair_of(items) for items in branches]
     return Facts(
         min_length=_min_length(branches),
         literals=tuple(lit for lit in literals if lit is not None) if None not in literals else None,
         lead=_lead_of(branches, pattern),
+        pairs=re.compile("|".join(p for p in pairs if p is not None)) if None not in pairs else None,
     )
 
 
@@ -212,6 +220,28 @@ def _literal_of(items: Sequence[_Item]) -> str | None:
         if r and (best is None or len(r) > len(best)):
             best = r
     return best
+
+
+def _escaped(char: str) -> str:
+    """The source of a pattern that finds one character, written as an escape so that no character is special."""
+    code = ord(char)
+    return f"\\x{code:02x}" if code < 256 else f"\\u{code:04x}"
+
+
+def _pair_of(items: Sequence[_Item]) -> str | None:
+    """A class item followed by a literal character item, both matched at least once, that every match of `items`
+    holds, as the source of a pattern that finds the pair: the last character the class item matches comes right
+    before the literal. A group matched at least once with one alternative holds the pairs of its items."""
+    for first, second in pairwise(items):
+        if isinstance(first.atom, _Class) and first.min >= 1 and isinstance(second.atom, str) and second.min >= 1:
+            members = "".join(_escaped(c) for c in sorted(first.atom.members))
+            return f"[{'^' if first.atom.negated else ''}{members}]{_escaped(second.atom)}"
+    for item in items:
+        if isinstance(item.atom, _Group) and item.min >= 1 and len(item.atom.branches) == 1:
+            inner = _pair_of(item.atom.branches[0])
+            if inner is not None:
+                return inner
+    return None
 
 
 def _once(item: _Item | None) -> str | None:

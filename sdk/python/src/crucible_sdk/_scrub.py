@@ -202,10 +202,17 @@ class _Rule:
 
     def apply(self, text: str) -> str:
         """The rule behind guards that take time linear in the text and change nothing: text shorter than any match,
-        or without the rule's required literal, is left alone, and a lead pattern is tried once per anchor."""
+        without the rule's required literal, or without the class and literal pair every match holds, is left alone,
+        and a lead pattern is tried once per anchor."""
         f = self.facts
         if len(text) < f.min_length or (f.literals is not None and not any(lit in text for lit in f.literals)):
             return text
+        if f.pairs is not None:
+            # One search for the pair, which a matcher takes at most one step per start for.
+            if _matcher_hook is not None:
+                _matcher_hook(self.name, len(text))
+            if f.pairs.search(text) is None:
+                return text
         if f.lead is not None and self.rest is not None:
             return self._apply_lead(f.lead, self.rest, text)
         return self.apply_plain(text)
