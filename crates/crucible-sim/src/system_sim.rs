@@ -69,9 +69,9 @@ use crucible_recent::{RecentConfig, RecentIndex, SpanRead, WalLocator, WalReadEr
 use crucible_records::{
     ApiKeyId, AuthorKind, CancelSource, CaptureSource, CorrectionBody, DeletionRequestId,
     DeletionState, Era, ErrorClass, ErrorSubclass, FactBody, FactTargetKind, FlagBody, Lsn,
-    McpErrorAnnotations, McpErrorInput, McpSide, McpStatus, PayloadCaps, ProjectId, ScoreBody,
-    ScoreDataType, ScoreSource, SpanId, TableId, TagBody, TagOp, TimeWindow, Timestamp, TraceId,
-    Transport, Uuid, classify_mcp_error,
+    McpErrorAnnotations, McpErrorInput, McpSide, McpStatus, PartitionId, PayloadCaps, ProjectId,
+    ScoreBody, ScoreDataType, ScoreSource, SpanId, TableId, TagBody, TagOp, TimeWindow, Timestamp,
+    TraceId, Transport, Uuid, classify_mcp_error,
 };
 use crucible_schema::{Granularity, RetentionSettings};
 use crucible_shipper::{
@@ -102,7 +102,7 @@ use crate::disk::{DiskFaults, SimDisk};
 use crate::runtime::{Host, SIM_EPOCH_MICROS, Sim, run};
 use crate::ship_sim::{
     BARRIERS, QUARANTINE_COPIED, QuarantineFault, SimBarriers, add, copied_payloads, manifests,
-    random, read_quarantines,
+    named_pairs, random, read_quarantines,
 };
 use crate::swarm::{ConfigMask, Dim, RunRecord};
 use crate::system_oracle::{self, Admitted, FactRow, FrameSpan, McpKey, McpSent};
@@ -1085,6 +1085,9 @@ struct Ledger {
     copies: BTreeMap<([u8; 16], [u8; 8]), BTreeSet<u64>>,
     /// When each fact of the deleted project arrived, as stage B passed its frame.
     fact_arrivals: BTreeMap<[u8; 16], i64>,
+    /// The pairs named by a `Quarantine` frame that stage B passed, as (batch, table, partition): those frames
+    /// can be collected before a later check reads the log.
+    quarantine_frames: BTreeSet<(u64, TableId, PartitionId)>,
     repeats: u64,
     violations: Vec<Violation>,
     stats: Stats,
@@ -2928,6 +2931,12 @@ impl StageBHook for Observed {
         if self.deleted.is_some() && source.record_type() == RecordType::FactBatch {
             self.record_facts(source);
         }
+        if source.record_type() == RecordType::Quarantine {
+            self.shared
+                .ledger()
+                .quarantine_frames
+                .extend(named_pairs(source));
+        }
         self.check_retained();
         self.inner.passed(source);
     }
@@ -3827,7 +3836,22 @@ impl Run<'_> {
         if let Some((first, second)) = model.overlapping_ranges() {
             self.violate(Violation::IdentityOverlap { first, second });
         }
-        let (directories, quarantined, faults) = read_quarantines(&self.disk, model, watermark);
+        // A directory is a quarantine when a `Quarantine` frame names its pair: one that stage B passed, or one
+        // in the log that it has not read yet. A restart that knows more deletions can leave a pair without
+        // rows, and then the copy that a crash at `quarantine.copied` left stays beside whatever the store
+        // answered last.
+        let named: BTreeSet<(u64, TableId, PartitionId)> = {
+            let ledger = self.shared.ledger();
+            let logged = log.values().flat_map(named_pairs);
+            ledger
+                .quarantine_frames
+                .iter()
+                .copied()
+                .chain(logged)
+                .collect()
+        };
+        let (directories, quarantined, faults) =
+            read_quarantines(&self.disk, model, watermark, Some(&named));
         let (frame_copies, broken_copies) = frame_copies(&self.disk);
         let in_log = keys_above(log, watermark);
         let facts_in_log = facts_above(log, watermark);
