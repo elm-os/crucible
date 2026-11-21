@@ -20,6 +20,14 @@ pub fn query_plan(
     QueryPlan::new(scope, window, class, root)
 }
 
+/// The same plan reading minute rows only, as if its window were too short for the hourly tier: the reference
+/// that a read over the tier must equal, for tests only.
+pub fn minute_rows_only(plan: &QueryPlan) -> QueryPlan {
+    let mut plan = plan.clone();
+    plan.root_mut().clear_hourly();
+    plan
+}
+
 /// A probe for the block of one (batch, table, partition) pair, for tests only.
 pub fn batch_probe(
     table_id: TableId,

@@ -8,8 +8,9 @@
 use crucible_records::{ProjectScope, TableId, TimeWindow, Timestamp, TraceId};
 use crucible_schema::{
     Column, ColumnRef, FactCorrectionsCol, FactFlagsCol, FactScoresCol, FactTagsCol, McpContentCol,
-    McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol, SessionRollupCol, SpanCoreCol,
-    SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol, Ty, UserRollupCol, table,
+    McpDeploysCol, McpOpsCol, McpToolInventoryCol, McpToolRollupCol, McpToolRollupHourlyCol,
+    SessionRollupCol, SpanCoreCol, SpanMetricsCol, SpanPayloadCol, TraceHeadsCol, TraceStatsCol,
+    Ty, UserRollupCol, table,
 };
 
 use crate::class::QueryClass;
@@ -67,6 +68,7 @@ pub fn lifecycle_column(table_id: TableId, name: &str) -> Option<ColumnRef> {
         TableId::UserRollup => named::<UserRollupCol>(name),
         TableId::SpanMetrics => named::<SpanMetricsCol>(name),
         TableId::McpToolRollup => named::<McpToolRollupCol>(name),
+        TableId::McpToolRollupHourly => named::<McpToolRollupHourlyCol>(name),
         TableId::McpDeploys => named::<McpDeploysCol>(name),
         TableId::DedupSelftest | TableId::SqlProbe => None,
     }

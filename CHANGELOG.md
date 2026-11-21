@@ -4,11 +4,22 @@ Notable changes to Crucible, newest first. Versions follow [semantic versioning]
 
 ## [Unreleased]
 
-- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with a presigned link that any server hands out; expiry and deletion requests remove the objects.
-- The span panel has a Media tab that lists the media a span's input, output and metadata reference, with where each appears, and the media uploaded for the span; without object storage it says so and links the media guide.
+- MCP analytics over 12 hours or more (the MCP pages, their API routes and MCP tools, `mcp_ops` metrics and alert
+  rules) read whole hours from a new hourly rollup, `mcp_tool_rollup_hourly`, which the shipper writes beside the
+  minute rollup, and only the minutes at the window's edges from the minute rollup; the answers are the same.
+- Migration step `0005_mcp_tool_rollup_hourly` adds the hourly rollup and copies the existing minute rollup into it
+  once, on the first start of this version.
+- The server that applies a migration step renews the migrations lease every 5 seconds while the step runs, so a
+  server that starts meanwhile waits for it, also during a step that takes longer than the lease's 15 seconds, such
+  as the copy of step 0005.
+- With object storage, export files go to the bucket under the project's prefix, and their download answers 303 with
+  a presigned link that any server hands out; expiry and deletion requests remove the objects.
+- The span panel has a Media tab that lists the media a span's input, output and metadata reference, with where each
+  appears, and the media uploaded for the span; without object storage it says so and links the media guide.
 - `GET projects/{project_id}/spans/{trace_id}/{span_id}/media` lists the media a span references.
 - With `egress.mode = strict`, alert channels and webhooks cannot target the object store's endpoints.
-- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one needs.
+- SeaweedFS and Garage join the Versity S3 gateway as tested object stores, and the media guide says what each one
+  needs.
 
 ## [0.1.1] - 2026-11-21
 

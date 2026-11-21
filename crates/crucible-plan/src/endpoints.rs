@@ -35,8 +35,8 @@ pub use lifecycle::{
     trace_id_in,
 };
 pub use mcp::{
-    CaptureClass, McpRead, McpSelection, ServerSources, SourceChoice, TOOLS_CALL, mcp_presence,
-    mcp_series_step,
+    CaptureClass, MCP_HOURLY_MIN_WINDOW_HOURS, McpRead, McpSelection, ServerSources, SourceChoice,
+    TOOLS_CALL, mcp_presence, mcp_series_step,
 };
 pub use mcp_metrics::{
     mcp_metrics_other, mcp_metrics_ranking, mcp_metrics_series, mcp_metrics_totals,

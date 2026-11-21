@@ -54,6 +54,8 @@ GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_
 
 GRANT ON CLUSTER crucible INSERT, SELECT(id, wal_epoch, batch_seq) ON crucible.dedup_selftest TO crucible_ingest;
 
+GRANT ON CLUSTER crucible INSERT, SELECT(project_id, marker_epoch, marker_batch_seq, _partition_id) ON crucible.mcp_tool_rollup_hourly TO crucible_ingest;
+
 GRANT ON CLUSTER crucible SELECT ON crucible.* TO crucible_read_ui;
 
 GRANT ON CLUSTER crucible SELECT ON crucible.* TO crucible_read_agent;
@@ -95,6 +97,8 @@ GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_deploys TO c
 GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.dedup_selftest TO crucible_maint;
 
 GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.sql_probe TO crucible_maint;
+
+GRANT ON CLUSTER crucible ALTER UPDATE(_row_exists) ON crucible.mcp_tool_rollup_hourly TO crucible_maint;
 
 GRANT ON CLUSTER crucible KILL QUERY ON *.* TO crucible_maint;
 
@@ -149,3 +153,5 @@ CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_deploys ON CLUSTER crucible
 CREATE ROW POLICY IF NOT EXISTS crucible_service_dedup_selftest ON CLUSTER crucible ON crucible.dedup_selftest AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
 
 CREATE ROW POLICY IF NOT EXISTS crucible_service_sql_probe ON CLUSTER crucible ON crucible.sql_probe AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;
+
+CREATE ROW POLICY IF NOT EXISTS crucible_service_mcp_tool_rollup_hourly ON CLUSTER crucible ON crucible.mcp_tool_rollup_hourly AS PERMISSIVE FOR SELECT USING 1 TO crucible_admin, crucible_ingest, crucible_read_ui, crucible_read_agent, crucible_maint;

@@ -496,7 +496,7 @@ mod tests {
         use PartitionRule::{Day, Month, None, Week};
         let expected = [
             Day, Day, Day, Day, None, Month, Month, Month, Month, Day, Day, Month, Month, Month,
-            Month, None, None, None,
+            Month, None, None, None, Month,
         ];
         for (id, rule) in TableId::ALL.into_iter().zip(expected) {
             assert_eq!(
@@ -593,7 +593,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn routes_match_civil_date(us in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), table in 0usize..18, week in any::<bool>()) {
+        fn routes_match_civil_date(us in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), table in 0usize..TableId::ALL.len(), week in any::<bool>()) {
             let id = TableId::ALL[table];
             let granularity = if week { Granularity::Week } else { Granularity::Day };
             let t = Timestamp::from_micros(us);
@@ -602,7 +602,7 @@ mod tests {
         }
 
         #[test]
-        fn routing_is_monotone_in_time(a in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), b in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), table in 0usize..18, week in any::<bool>()) {
+        fn routing_is_monotone_in_time(a in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), b in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), table in 0usize..TableId::ALL.len(), week in any::<bool>()) {
             let id = TableId::ALL[table];
             let granularity = if week { Granularity::Week } else { Granularity::Day };
             let (lo, hi) = (a.min(b), a.max(b));
@@ -612,7 +612,7 @@ mod tests {
         }
 
         #[test]
-        fn out_of_range_times_are_refused(us in prop_oneof![i64::MIN..0, Timestamp::MAX_EXCLUSIVE.micros()..i64::MAX], table in 0usize..18) {
+        fn out_of_range_times_are_refused(us in prop_oneof![i64::MIN..0, Timestamp::MAX_EXCLUSIVE.micros()..i64::MAX], table in 0usize..TableId::ALL.len()) {
             let t = Timestamp::from_micros(us);
             prop_assert_eq!(route(TableId::ALL[table], Granularity::Day, t), Err(OutOfRange));
             prop_assert_eq!(retention_cutoff(t, 1), Err(OutOfRange));
@@ -637,7 +637,7 @@ mod tests {
         }
 
         #[test]
-        fn fate_agrees_with_the_rows_of_the_partition(us in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), now in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), days in 0u32..4_000, table in 0usize..18, week in any::<bool>()) {
+        fn fate_agrees_with_the_rows_of_the_partition(us in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), now in 0i64..Timestamp::MAX_EXCLUSIVE.micros(), days in 0u32..4_000, table in 0usize..TableId::ALL.len(), week in any::<bool>()) {
             let id = TableId::ALL[table];
             let granularity = if week { Granularity::Week } else { Granularity::Day };
             let row = Timestamp::from_micros(us);

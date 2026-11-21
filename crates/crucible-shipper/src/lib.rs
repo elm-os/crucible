@@ -21,9 +21,10 @@
 //! The row builders ([`value`]) are generic over `TableDef`: a table needs one function from its record to a row
 //! of cells ([`tables`] has those of the span tables, the span rollups, the MCP tables and the fact tables).
 //!
-//! An `IngestRequest` frame whose spans carry `mcp.method.name` also yields the rows of the five MCP tables
-//! (contract 3.5 to 3.7). Stage B hashes a user subject with the salt of the frame's project, which the shipper
-//! takes from the [`ProjectSalts`] hook before it admits the frame; a frame whose salt cannot be had waits.
+//! An `IngestRequest` frame whose spans carry `mcp.method.name` also yields the rows of the six MCP tables
+//! (contract 3.5 to 3.7, and the hourly tier of 3.10). Stage B hashes a user subject with the salt of the frame's
+//! project, which the shipper takes from the [`ProjectSalts`] hook before it admits the frame; a frame whose salt
+//! cannot be had waits.
 //!
 //! Stage B drops the spans, MCP operations and facts that a deletion request selects (contract 13.3, step 3):
 //! those of every `Tombstone` frame it has passed, and those of every request in every state that the

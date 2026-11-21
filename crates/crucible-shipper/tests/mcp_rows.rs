@@ -1,4 +1,4 @@
-//! The rows of the five MCP tables (contract sections 3.5 to 3.7, 3.10 and 6.4): every field in its column, and
+//! The rows of the six MCP tables (contract sections 3.5 to 3.7, 3.10 and 6.4): every field in its column, and
 //! the blocks of generated MCP traffic, decoded again, against what the operations say.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -23,7 +23,8 @@ use crucible_records::{
 use crucible_schema::{Granularity, TableKind, route, table};
 use crucible_shipper::tables::{
     RoutedRow, derive, mcp_content_row, mcp_deploy, mcp_deploys_row, mcp_ops_row,
-    mcp_tool_inventory, mcp_tool_inventory_row, mcp_tool_rollup, mcp_tool_rollup_row,
+    mcp_tool_inventory, mcp_tool_inventory_row, mcp_tool_rollup, mcp_tool_rollup_hourly_row,
+    mcp_tool_rollup_row,
 };
 use crucible_shipper::value::{Row, Value};
 use crucible_shipper::{BatchId, pair_block};
@@ -352,6 +353,20 @@ fn the_mcp_partials_put_every_measure_in_its_column() {
         &mcp_tool_rollup_row(&mcp_tool_rollup(&op)),
         &expected,
     );
+    // The hourly partial holds the same measures under the start of the operation's hour.
+    let hour = ((BASE + 61_000_000) / 3_600_000_000 * 3_600) as u32;
+    let hourly: Vec<(&str, Value)> = expected
+        .iter()
+        .map(|(name, value)| match *name {
+            "minute" => ("hour", Value::U32(hour)),
+            _ => (*name, value.clone()),
+        })
+        .collect();
+    assert_columns(
+        TableId::McpToolRollupHourly,
+        &mcp_tool_rollup_hourly_row(&mcp_tool_rollup(&op)),
+        &hourly,
+    );
 
     let mut expected = vec![
         ("project_id", Value::Uuid([1; 16])),
@@ -526,6 +541,11 @@ fn rollup_key(op: &McpOpRecord) -> Vec<Value> {
     mcp_tool_rollup_row(&mcp_tool_rollup(op))[..12].to_vec()
 }
 
+/// The key of an hourly rollup row as a reader groups it.
+fn hourly_key(op: &McpOpRecord) -> Vec<Value> {
+    mcp_tool_rollup_hourly_row(&mcp_tool_rollup(op))[..12].to_vec()
+}
+
 proptest! {
     /// Every MCP row routes through `crucible_schema::route`: operations and content by day (or week), the
     /// tool rollup by month, and deploys and inventory to the one partition of an unpartitioned table.
@@ -537,6 +557,13 @@ proptest! {
             let count = |table| rows.iter().filter(|r| r.table == table).count();
             prop_assert_eq!(count(TableId::McpOps), frame.mcp_ops.len());
             prop_assert_eq!(count(TableId::McpToolRollup), frame.mcp_ops.len());
+            // The frame's hourly partials are combined by key: one row per key and hour.
+            let hourly: BTreeSet<String> = frame
+                .mcp_ops
+                .iter()
+                .map(|op| format!("{:?}", hourly_key(&op.record)))
+                .collect();
+            prop_assert_eq!(count(TableId::McpToolRollupHourly), hourly.len());
             prop_assert_eq!(count(TableId::SpanCore), frame.spans.len());
             let captured = frame.mcp_ops.iter().filter(|op| op.record.content_captured).count();
             prop_assert_eq!(count(TableId::McpContent), captured);
@@ -546,13 +573,19 @@ proptest! {
             for routed in &rows {
                 prop_assert_eq!(routed.row.lsn, frame.lsn);
                 match routed.table {
-                    TableId::McpOps | TableId::McpContent | TableId::McpToolRollup | TableId::McpDeploys => {
+                    TableId::McpOps
+                    | TableId::McpContent
+                    | TableId::McpToolRollup
+                    | TableId::McpToolRollupHourly
+                    | TableId::McpDeploys => {
                         let span = &frame.spans[routed.row.ordinal as usize];
                         let expected = route(routed.table, granularity, span.core.start_time).unwrap();
                         prop_assert_eq!(routed.partition, expected);
                         let date = span.core.start_time.date();
                         let partition = match routed.table {
-                            TableId::McpToolRollup => PartitionId::month(date.year(), date.month()).unwrap(),
+                            TableId::McpToolRollup | TableId::McpToolRollupHourly => {
+                                PartitionId::month(date.year(), date.month()).unwrap()
+                            }
                             TableId::McpDeploys => PartitionId::UNPARTITIONED,
                             _ if weekly => PartitionId::date(date.monday_on_or_before()),
                             _ => PartitionId::date(date),
@@ -595,15 +628,19 @@ proptest! {
                 pairs.entry((table, partition)).or_default().push(row);
             }
         }
-        // The reference: per rollup key, the count, the byte sums, the durations and the last start.
+        // The reference: per rollup key, the count, the byte sums, the durations and the last start; the same
+        // per hourly key.
         let mut expected: ToolAggs = BTreeMap::new();
+        let mut expected_hourly: ToolAggs = BTreeMap::new();
         let mut deploys: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         for op in &ops {
-            let entry = expected.entry(format!("{:?}", rollup_key(op))).or_default();
-            entry.0 += 1;
-            *entry.1.entry(Bucket::of(op.duration_us).index()).or_default() += 1;
-            *entry.2.entry(semconv_bucket(op.duration_us)).or_default() += 1;
-            entry.3 = entry.3.max(op.start_time.micros());
+            for (aggs, key) in [(&mut expected, rollup_key(op)), (&mut expected_hourly, hourly_key(op))] {
+                let entry = aggs.entry(format!("{key:?}")).or_default();
+                entry.0 += 1;
+                *entry.1.entry(Bucket::of(op.duration_us).index()).or_default() += 1;
+                *entry.2.entry(semconv_bucket(op.duration_us)).or_default() += 1;
+                entry.3 = entry.3.max(op.start_time.micros());
+            }
             if let Some(deploy) = mcp_deploy(op) {
                 let key = format!("{:?}", &mcp_deploys_row(&deploy)[..5]);
                 let seen = deploys.entry(key).or_insert((i64::MAX, i64::MIN));
@@ -613,12 +650,14 @@ proptest! {
         }
         let (mut op_rows, mut content_rows, mut inventory_rows) = (0usize, 0usize, 0usize);
         let mut found: ToolAggs = BTreeMap::new();
+        let mut found_hourly: ToolAggs = BTreeMap::new();
         let mut found_deploys: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         let mut per_source: BTreeMap<i8, u64> = BTreeMap::new();
         let mcp = [
             TableId::McpOps,
             TableId::McpContent,
             TableId::McpToolRollup,
+            TableId::McpToolRollupHourly,
             TableId::McpDeploys,
             TableId::McpToolInventory,
         ];
@@ -656,12 +695,14 @@ proptest! {
                     prop_assert!(data.iter().all(|row| at(row, "batch_seq") == Value::U64(10)));
                 }
                 TableId::McpContent => content_rows += data.len(),
-                TableId::McpToolRollup => {
+                TableId::McpToolRollup | TableId::McpToolRollupHourly => {
                     // Within a block every key appears once: the shipper combined the partials.
                     let keys: BTreeSet<String> = data.iter().map(|row| format!("{:?}", &row[..12])).collect();
                     prop_assert_eq!(keys.len(), data.len());
+                    let hourly = pair.0 == TableId::McpToolRollupHourly;
                     for row in data {
-                        let entry = found.entry(format!("{:?}", &row[..12])).or_default();
+                        let aggs = if hourly { &mut found_hourly } else { &mut found };
+                        let entry = aggs.entry(format!("{:?}", &row[..12])).or_default();
                         let Value::U64(count) = at(row, "count") else { panic!("count") };
                         entry.0 += count;
                         for (bucket, n) in map16(at(row, "dur_hist")) {
@@ -673,7 +714,9 @@ proptest! {
                         let Value::I64(last) = at(row, "last_seen") else { panic!("last_seen") };
                         entry.3 = entry.3.max(last);
                         let Value::I8(source) = at(row, "capture_source") else { panic!("source") };
-                        *per_source.entry(source).or_default() += count;
+                        if !hourly {
+                            *per_source.entry(source).or_default() += count;
+                        }
                     }
                 }
                 TableId::McpDeploys => {
@@ -693,6 +736,7 @@ proptest! {
         prop_assert_eq!(op_rows, ops.len());
         prop_assert_eq!(content_rows, ops.iter().filter(|op| op.content_captured).count());
         prop_assert_eq!(&found, &expected);
+        prop_assert_eq!(&found_hourly, &expected_hourly);
         prop_assert_eq!(&found_deploys, &deploys);
         prop_assert_eq!(inventory_rows, tools.len());
         // Per capture source the rollup counts the operations of that source and no other.

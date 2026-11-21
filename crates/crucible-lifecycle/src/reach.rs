@@ -9,6 +9,10 @@
 //! A deletion by user also reaches the MCP tables by the user's own columns, `user_id` and
 //! `user_subject_hash` ([`identity_reach`]): an MCP operation can carry the user when no span of its trace
 //! does. Those deletes go to the partitions in which the MCP rows themselves were found.
+//!
+//! The rollups without a user dimension (`span_metrics`, `mcp_tool_rollup` and its hourly tier
+//! `mcp_tool_rollup_hourly`, `mcp_deploys`, `mcp_tool_inventory`) keep their counts under a deletion (contract
+//! 13.4); retention reaches every partitioned one ([`retention_tables`]).
 
 use crucible_control::DeletionSelector;
 use crucible_plan::lifecycle_time_column;
@@ -166,13 +170,14 @@ mod tests {
                 "user_rollup",
                 "span_metrics",
                 "mcp_tool_rollup",
+                "mcp_tool_rollup_hourly",
             ]
         );
     }
 
     /// Contract 13.4: every kind reaches the span tiers, the heads, the MCP rows, the four fact tables and
-    /// `trace_stats`; a user also `user_rollup`, a session also `session_rollup`; never the minute rollups,
-    /// the deploys or the inventory, which hold no user dimension.
+    /// `trace_stats`; a user also `user_rollup`, a session also `session_rollup`; never the minute rollups, the
+    /// hourly tier of the MCP rollup, the deploys or the inventory, which hold no user dimension.
     #[test]
     fn every_kind_reaches_its_places_by_columns_the_tables_have() {
         let common: BTreeSet<TableId> = SPAN_TABLES

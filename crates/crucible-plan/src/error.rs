@@ -73,6 +73,11 @@ pub enum PlanError {
     /// cannot serve: `metadata` with `input` or `output`.
     #[error("one text search cannot cover fields whose indexes tokenize differently")]
     Tokenizers,
+    /// A read of a table's hourly tier that the tier cannot serve: one that names the table's time column, a
+    /// time series whose step is finer than an hour, or a window without a whole hour. The tier holds the start
+    /// of the hour where the table holds the minute.
+    #[error("the hourly tier cannot serve {0}")]
+    HourlyTier(&'static str),
     /// A filter condition on a field the read cannot evaluate. The request must drop the condition on `field`
     /// or use an endpoint whose data carries it.
     #[error("the filter field {field} is not available for {target}")]
