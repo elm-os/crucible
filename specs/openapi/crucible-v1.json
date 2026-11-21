@@ -7785,7 +7785,7 @@
           "search"
         ],
         "summary": "Search span payloads",
-        "description": "The spans that started in the window whose input, output or metadata hold the query, newest first, each\nwith the matching part of its fields. Search reads the store only: a span acknowledged moments ago may be\nmissing, and the page then says `consistency: lagging`.",
+        "description": "The spans that started in the window whose input, output or metadata hold the query, newest first, each\nwith the matching part of its fields. `filters` keeps the spans that match, with the conditions of the span\nlist, `name` among them. Search reads the store only: a span acknowledged moments ago may be missing, and\nthe page then says `consistency: lagging`.",
         "operationId": "search",
         "parameters": [
           {
@@ -13336,6 +13336,110 @@
           "error"
         ]
       },
+      "ListFilter": {
+        "type": "object",
+        "description": "Conditions on the rows of a list or of a search. Each member is one condition and all of them must hold; a\nmember with several values holds when any of them matches, and takes at most 100 values. Each condition tests\nthe span's own value, except on the trace list, whose parameters say what they test.",
+        "properties": {
+          "environment": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Environments, such as `production`."
+          },
+          "level": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Level"
+            },
+            "description": "Levels."
+          },
+          "metadata": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Metadata entries as `key=value`, split at the first `=`; each entry must match."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text the name contains, without regard to ASCII case."
+          },
+          "observation_type": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ObservationType"
+            },
+            "description": "Observation types."
+          },
+          "release": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Releases."
+          },
+          "session_id": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Session ids."
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags; a row with any of them matches."
+          },
+          "user_id": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "User ids."
+          },
+          "version": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Versions."
+          }
+        },
+        "additionalProperties": false
+      },
       "LoginRequest": {
         "type": "object",
         "description": "`POST auth/login`.",
@@ -16741,7 +16845,7 @@
               "string",
               "null"
             ],
-            "description": "The `next_cursor` of the previous page, with the same query, mode, fields and window."
+            "description": "The `next_cursor` of the previous page, with the same query, mode, fields, filters and window."
           },
           "fields": {
             "type": [
@@ -16752,6 +16856,17 @@
               "$ref": "#/components/schemas/SearchField"
             },
             "description": "The fields to search, each once; default `input` and `output`."
+          },
+          "filters": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ListFilter",
+                "description": "Keeps only the hits whose span matches, as the span list's filters test a span; `name` keeps the spans\nwhose name contains the text. None by default."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "from": {
             "type": "string",

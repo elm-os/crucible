@@ -58,8 +58,8 @@ pub use metrics::{
 };
 pub use payload::{PayloadField, PayloadRangeRequest, payload_range};
 pub use search::{
-    SEARCH_MAX_LIMIT, SEARCH_SNIPPET, SearchField, SearchKey, SearchPlan, SearchRequest, search,
-    search_spans,
+    SEARCH_MAX_LIMIT, SEARCH_SNIPPET, SEARCH_SPANS_PER_LOOKUP, SearchField, SearchKey, SearchPlan,
+    SearchRequest, search, search_spans,
 };
 pub use sessions::{SESSION_LIST_MAX_LIMIT, SessionListRequest, session_detail, session_list};
 pub use span_children::{

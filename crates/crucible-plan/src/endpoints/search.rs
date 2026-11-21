@@ -22,6 +22,10 @@ pub type SearchKey = (Timestamp, u32, SpanId);
 
 /// The most hits one search returns.
 pub const SEARCH_MAX_LIMIT: u32 = 200;
+/// The most hits one core lookup ([`search_spans`]) names. Its three key lists then take at most 192 of the
+/// 1,000 values and settings one ClickHouse request holds, which leaves room for the largest list filter the
+/// core rows test and for the pending deletions a read carries; a larger page takes several lookups.
+pub const SEARCH_SPANS_PER_LOOKUP: usize = 64;
 /// The snippet of each searched string field: it starts this many bytes before the first token found.
 pub const SEARCH_SNIPPET: Snippet = Snippet {
     before: 80,
@@ -164,7 +168,7 @@ pub fn search(
 
 /// Search, step 2: every column of `span_core` for the hits of step 1 (their `start_minute`, `trace_hash` and
 /// `span_id`) that also match `rest`, in no defined order. A hit whose core row is missing or filtered out has
-/// no row.
+/// no row. More than [`SEARCH_SPANS_PER_LOOKUP`] hits are refused.
 pub fn search_spans(
     scope: ProjectScope,
     window: TimeWindow,
@@ -173,6 +177,9 @@ pub fn search_spans(
     hits: &[SearchKey],
     rest: &Filter,
 ) -> Result<Option<QueryPlan>, PlanError> {
+    if hits.len() > SEARCH_SPANS_PER_LOOKUP {
+        return Err(PlanError::ListLength("hits"));
+    }
     let list = |values: Vec<Literal>| {
         let mut distinct: Vec<Literal> = Vec::with_capacity(values.len());
         for value in values {

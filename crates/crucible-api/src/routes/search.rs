@@ -10,9 +10,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use crucible_api_types as wire;
 use crucible_api_types::{FieldError, Problem, ProblemCode, SearchPage, SearchRequest};
-use crucible_plan::{SEARCH_MAX_LIMIT, SearchField, TokenMode};
+use crucible_plan::{Filter, FilterField, SEARCH_MAX_LIMIT, SearchField, TokenMode};
 use crucible_query as query;
-use crucible_query::{SEARCH_MAX_TOKENS, SearchQuery, search_tokens};
+use crucible_query::{QueryServiceError, SEARCH_MAX_TOKENS, SearchQuery, search_tokens};
 use crucible_records::{RequestId, TimeWindow, Timestamp};
 use utoipa::OpenApi;
 
@@ -20,8 +20,9 @@ use super::cursor_invalid;
 use crate::access::{ApiState, Project};
 use crate::convert::{meta, span};
 use crate::cursor::Cursors;
+use crate::filters::plan_filter;
 use crate::params::check_window;
-use crate::problem::{ApiError, problem, request_id};
+use crate::problem::{ApiError, field_error, problem, request_id};
 
 /// The longest query, in bytes.
 const MAX_QUERY_BYTES: usize = 1_024;
@@ -42,8 +43,9 @@ pub(super) struct Paths;
 /// Search span payloads
 ///
 /// The spans that started in the window whose input, output or metadata hold the query, newest first, each
-/// with the matching part of its fields. Search reads the store only: a span acknowledged moments ago may be
-/// missing, and the page then says `consistency: lagging`.
+/// with the matching part of its fields. `filters` keeps the spans that match, with the conditions of the span
+/// list, `name` among them. Search reads the store only: a span acknowledged moments ago may be missing, and
+/// the page then says `consistency: lagging`.
 #[utoipa::path(
     post,
     path = "/api/v1/projects/{project_id}/search",
@@ -85,7 +87,23 @@ pub(crate) async fn search(
     let service = state.service(rid)?;
     let query = SearchQuery { cursor, ..query };
     let page = service.search(&project.ctx, query.clone()).await;
-    let page = page.map_err(|e| ApiError::query(rid, &e))?;
+    let page = page.map_err(|error| match error {
+        // A filter member the search cannot evaluate is the request's to change.
+        QueryServiceError::Validation(field)
+            if FilterField::ALL.iter().any(|known| known.as_str() == field) =>
+        {
+            let message = "search cannot test this member; drop it";
+            ApiError::validation(
+                rid,
+                vec![field_error(
+                    &format!("filters/{field}"),
+                    "unsupported",
+                    message,
+                )],
+            )
+        }
+        other => ApiError::query(rid, &other),
+    })?;
     Ok(Json(search_page(&page, &query, &cursors)))
 }
 
@@ -251,7 +269,8 @@ fn checked(
             .map(|kind| search_tokens(&request.query, kind, mode).len())
             .collect();
         if counts.iter().all(|count| *count == 0) {
-            let message = "the query has nothing to search for: `input` and `output` need a letter or a                            digit, `metadata` a `key=value` entry";
+            let message = "the query has nothing to search for: `input` and `output` need a letter or a \
+                           digit, `metadata` a `key=value` entry";
             error(&mut errors, "query", "no_tokens", message);
         } else if counts.iter().any(|count| *count > SEARCH_MAX_TOKENS) {
             let message = format!("the query has more than {SEARCH_MAX_TOKENS} tokens; shorten it");
@@ -264,6 +283,16 @@ fn checked(
         let message = format!("expected an integer from 1 to {SEARCH_MAX_LIMIT}");
         error(&mut errors, "limit", "out_of_range", &message);
     }
+    let filter = match &request.filters {
+        Some(filters) => plan_filter(filters).unwrap_or_else(|problems| {
+            for problem in problems {
+                let member = format!("filters/{}", problem.member);
+                error(&mut errors, &member, problem.code, &problem.message);
+            }
+            Filter::all()
+        }),
+        None => Filter::all(),
+    };
     match window {
         Some(window) if errors.is_empty() => Ok((
             SearchQuery {
@@ -271,6 +300,7 @@ fn checked(
                 text: request.query,
                 mode,
                 fields,
+                filter,
                 limit: request.limit,
                 cursor: None,
             },

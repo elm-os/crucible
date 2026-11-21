@@ -667,12 +667,14 @@ The answer is cut to its first hit; the second is the agent span, whose output h
 | `query` | Required; at most 1,024 bytes and 64 tokens. For `input` and `output` it splits into tokens at ASCII punctuation, spaces and controls, compared without regard to ASCII case. For `metadata` each whitespace-separated term is a whole `key=value` entry, compared as written |
 | `mode` | `all` (default): every token occurs. `any`: at least one does. `phrase`: the tokens occur in order and adjacent |
 | `fields` | Any of `input`, `output` and `metadata`, each once; default `input` and `output` |
+| `filters` | Optional: the filters of the span list as one object, each testing the hit's span: `environment`, `release`, `version`, `level`, `observation_type`, `user_id`, `session_id`, `tags` and `metadata` (`key=value`) take lists of values, at most 100 each, and `name` the text a span's name contains, without regard to ASCII case. Each member must hold; a list holds when any value matches. The MCP server's `list_traces` and `list_spans` take the same object as `filter` |
 | `from`, `to` | Required: the window over the spans' start times |
 | `limit` | 1 to 200, default 50 |
-| `cursor` | The `next_cursor` of the previous page, with the same query, mode, fields and window |
+| `cursor` | The `next_cursor` of the previous page, with the same query, mode, fields, filters and window |
 
 Search reads ClickHouse only, so a span acknowledged a moment ago may be missing; the page then says
-`consistency: lagging`.
+`consistency: lagging`. A filter, like a phrase, can leave a page with fewer hits than `limit`, even none, while
+`has_more` is true: send `next_cursor` to read on.
 
 ## Payloads
 

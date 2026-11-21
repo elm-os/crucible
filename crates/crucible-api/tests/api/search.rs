@@ -1,11 +1,13 @@
 //! `POST projects/{project_id}/search`: the hits with their highlights, pages through signed cursors, and the
 //! problems of a body that is not a search (contract 8.7, 12.3, 12.4 and 12.6).
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Method, Request, StatusCode};
-use crucible_records::TableId;
+use crucible_records::{Level, TableId};
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -76,6 +78,111 @@ fn refunds() -> World {
 
 fn request(query: &str) -> Value {
     json!({ "query": query, "from": at(-DAY), "to": at(DAY) })
+}
+
+/// Three spans of trace 1 a minute apart, newest first, whose inputs all mention a refund, each with its own
+/// environment, name, level and metadata.
+fn teams() -> World {
+    let mut world = World::new(100);
+    let spans = [
+        ("prod", "checkout", Level::Default, "team=pay"),
+        ("dev", "refund-tool", Level::Error, "team=ops"),
+        ("prod", "chat", Level::Error, "team=pay"),
+    ];
+    let entries: Vec<_> = spans
+        .iter()
+        .enumerate()
+        .map(|(i, (environment, name, level, _))| {
+            let start = NOW.saturating_add_micros(-(i as i64) * MINUTE);
+            let mut entry = span(1, 10 + i as u64, 0, start);
+            entry.summary.environment = Arc::from(*environment);
+            entry.summary.name = Arc::from(*name);
+            entry.summary.level = *level;
+            entry
+        })
+        .collect();
+    let lsn = world.ack(entries.clone());
+    for (entry, (.., metadata)) in entries.iter().zip(spans) {
+        let row = span_payload_row(entry, lsn, NOW, "a refund", &[metadata]);
+        world.store.insert(TableId::SpanPayload, row);
+    }
+    world.settle();
+    world
+}
+
+fn span_ids(reply: &Reply) -> Vec<String> {
+    reply.body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{:#}", reply.body))
+        .iter()
+        .map(|hit| hit["span"]["span_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn search_takes_the_filters_of_the_lists() {
+    run(|env| async move {
+        let world = teams();
+        let api = api(&env, &world);
+        let filtered = |filters: Value| {
+            let mut body = request("refund");
+            body["filters"] = filters;
+            body
+        };
+        // A condition on the span's core row, one on its payload, both, and the name.
+        let prod = search(&api, &filtered(json!({"environment": ["prod"]}))).await;
+        assert_eq!(span_ids(&prod), ["000000000000000a", "000000000000000c"]);
+        let both = json!({"level": ["error"], "metadata": ["team=pay"]});
+        let both = search(&api, &filtered(both)).await;
+        assert_eq!(span_ids(&both), ["000000000000000c"]);
+        let named = search(&api, &filtered(json!({"name": "REFUND"}))).await;
+        assert_eq!(span_ids(&named), ["000000000000000b"]);
+        // No filter, and an empty one, find every span.
+        assert_eq!(span_ids(&search(&api, &request("refund")).await).len(), 3);
+        assert_eq!(span_ids(&search(&api, &filtered(json!({}))).await).len(), 3);
+
+        // A page whose hits the filter drops still moves on, and its cursor is bound to the filter.
+        let mut dev = filtered(json!({"environment": ["dev"]}));
+        dev["limit"] = json!(1);
+        let first = search(&api, &dev).await;
+        assert_eq!(span_ids(&first), Vec::<String>::new());
+        assert_eq!(first.body["has_more"], true);
+        let mut other = filtered(json!({"environment": ["prod"]}));
+        other["limit"] = json!(1);
+        other["cursor"] = first.body["next_cursor"].clone();
+        search(&api, &other)
+            .await
+            .assert_problem(400, "cursor_invalid");
+        dev["cursor"] = first.body["next_cursor"].clone();
+        let second = search(&api, &dev).await;
+        assert_eq!(span_ids(&second), ["000000000000000b"]);
+
+        // Each refused member is named.
+        let refused = |reply: Reply| {
+            reply.assert_problem(422, "validation_failed");
+            reply
+                .field_errors()
+                .into_iter()
+                .map(|(pointer, code)| (pointer.to_owned(), code.to_owned()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |pointer: &str, code: &str| (pointer.to_owned(), code.to_owned());
+        let entry = filtered(json!({"metadata": ["team"]}));
+        assert_eq!(
+            refused(search(&api, &entry).await),
+            [pair("/filters/metadata", "invalid_value")]
+        );
+        let tags: Vec<String> = (0..101).map(|i| format!("t{i}")).collect();
+        let many = filtered(json!({ "tags": tags }));
+        assert_eq!(
+            refused(search(&api, &many).await),
+            [pair("/filters/tags", "too_many_values")]
+        );
+        let loud = filtered(json!({"level": ["loud"]}));
+        assert_eq!(refused(search(&api, &loud).await)[0].1, "invalid");
+        let unknown = filtered(json!({"color": ["red"]}));
+        assert_eq!(refused(search(&api, &unknown).await)[0].1, "invalid");
+    });
 }
 
 #[test]
@@ -172,7 +279,7 @@ fn bodies_that_are_not_a_search_are_validation_problems_with_pointers() {
             "invalid"
         );
         let mut extra = request("refund");
-        extra["filters"] = json!({});
+        extra["filter"] = json!({});
         assert_eq!(refused(&search(&api, &extra).await)[0].1, "invalid");
         let mut name = request("refund");
         name["fields"] = json!(["input", "name"]);
